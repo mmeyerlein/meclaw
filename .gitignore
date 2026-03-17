@@ -1,0 +1,25 @@
+# Credentials (never commit!)
+config.sql
+.env
+
+# PostgreSQL dumps
+*.dump
+*.sql.bak
+99_dump_*.sql
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+pgdata/

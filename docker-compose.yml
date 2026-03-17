@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  meclaw:
+    build: .
+    container_name: meclaw
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"   # PostgreSQL
+      - "8080:8080"   # Admin UI
+    volumes:
+      - meclaw-data:/var/lib/postgresql/data
+      - ${MECLAW_CONFIG:-./config.sql}:/config/config.sql:ro  # Mount your config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d meclaw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  meclaw-data:
