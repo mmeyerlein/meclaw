@@ -27,7 +27,7 @@
 
 ---
 
-> **🤖 100% Vibe-Coded.** This entire project — every SQL function, every trigger chain, every line of Python, this README, and even the website — was built through conversational AI. The human ([Marcus Meyer](https://linkedin.com/in/marcus-meyer-585429a3/)) designed the architecture and made decisions. The code was written by [Claude Opus 4](https://anthropic.com/claude) via [OpenClaw](https://github.com/openclaw/openclaw). No line was typed by hand.
+> **🤖 100% Vibe-Coded.** This entire project — every SQL function, every trigger chain, every line of Python, this README, and even the website — was built through conversational AI. The human ([Marcus Meyer](https://linkedin.com/in/marcus-meyer-585429a3/)) designed the architecture and made decisions. The code was written by [Claude Opus 4.6](https://anthropic.com/claude) via [OpenClaw](https://github.com/openclaw/openclaw). No line was typed by hand.
 
 ---
 
