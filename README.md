@@ -46,7 +46,7 @@ That's a real query. It fires a trigger chain that routes through a graph, loads
 ## Quick Start
 
 ```bash
-git clone https://github.com/meclaw/meclaw.git
+git clone https://github.com/mmeyerlein/meclaw.git
 cd meclaw
 cp config.example.sql config.sql   # Add your API keys
 docker compose up -d               # Done.
@@ -196,7 +196,7 @@ MeClaw stands on the shoulders of these PostgreSQL extensions:
 
 - 🌐 **Website:** [meclaw.ai](https://meclaw.ai)
 - 📖 **Docs:** [docs/](docs/)
-- 🐛 **Issues:** [GitHub Issues](https://github.com/meclaw/meclaw/issues)
+- 🐛 **Issues:** [GitHub Issues](https://github.com/mmeyerlein/meclaw/issues)
 
 ---
 
