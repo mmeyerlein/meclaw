@@ -42,8 +42,14 @@ RUN git clone --depth 1 --branch v0.20.2 https://github.com/supabase/pg_net.git 
 RUN git clone --depth 1 https://github.com/vibhorkum/pg_background.git /tmp/pg_background \
     && cd /tmp/pg_background && make && make install && rm -rf /tmp/pg_background
 
+# pg_search (ParadeDB BM25): install pre-built .deb v0.15.10 (stable with PG17)
+RUN curl -fsSL -o /tmp/pg_search.deb \
+    https://github.com/paradedb/paradedb/releases/download/v0.15.10/postgresql-17-pg-search_0.15.10-1PARADEDB-bookworm_amd64.deb \
+    && apt-get install -y /tmp/pg_search.deb \
+    && rm /tmp/pg_search.deb
+
 # PostgreSQL config
-RUN echo "shared_preload_libraries = 'pg_cron,pg_net,age'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample \
+RUN echo "shared_preload_libraries = 'pg_cron,pg_net,age,pg_search'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample \
     && echo "pg_net.database_name = 'meclaw'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample \
     && echo "cron.database_name = 'meclaw'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample \
     && echo "pg_background.max_workers = 256" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample
