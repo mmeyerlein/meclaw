@@ -81,73 +81,73 @@ Incoming Message
 ### Node Types
 
 ```cypher
-(:Entity)      -- Person, Project, Tool, Concept (canonical IDs)
-(:Event)       -- Ein Gespräch / Turn / Aktion (immutable)
-(:Prototype)   -- Emergentes Konzept aus Mustern
-(:Decision)    -- Entscheidung mit vollständigem Trace
-(:MemCell)     -- Boundary-detected Gesprächs-Chunk
+(:Entity)      -- Person, project, tool, or concept (canonical IDs)
+(:Event)       -- A conversation turn or action (immutable)
+(:Prototype)   -- An emergent concept derived from patterns
+(:Decision)    -- A decision with a complete audit trace
+(:MemCell)     -- A boundary-detected conversation chunk
 ```
 
-### Edge Types (5 semantische Typen)
+### Edge Types (5 Semantic Types)
 
 ```cypher
--- 1. TEMPORAL: Reihenfolge ist Struktur
+-- 1. TEMPORAL: ordering is structure
 (:Event)-[:TEMPORAL {seq: INT, at: TIMESTAMP}]->(:Event)
 
--- 2. ACTIVATION: Welches Konzept wurde aktiviert
+-- 2. ACTIVATION: which concept was triggered
 (:Event)-[:ACTIVATES {weight: FLOAT}]->(:Prototype)
 
--- 3. ASSOCIATION: Hebbian Co-Aktivierung
+-- 3. ASSOCIATION: Hebbian co-activation
 (:Prototype)-[:ASSOCIATED {weight: FLOAT, updated_seq: INT}]->(:Prototype)
 
--- 4. ENTITY: Wer/Was war dabei (hard links, präzise)
+-- 4. ENTITY: who or what was involved (hard links, precise)
 (:Entity)-[:INVOLVED_IN]->(:Event)
 
--- 5. CITATION: Entscheidungs-Audit-Trail
+-- 5. CITATION: decision audit trail
 (:Decision)-[:CITES {authority: INT, at: TIMESTAMP}]->(:Event)
 ```
 
 ### Entity Resolution
 
-Canonical IDs mit Alias-Mapping:
+Canonical IDs with alias mapping:
 ```sql
--- Entitäts-Tabelle mit Aliases
+-- Entity table with aliases
 CREATE TABLE meclaw.entities (
     id TEXT PRIMARY KEY,           -- 'meclaw:person:marcus-meyer'
     canonical_name TEXT,
     aliases TEXT[],                -- ['Marcus', 'Marcus Meyer', 'mm']
     entity_type TEXT,              -- 'person', 'project', 'tool', 'concept'
     created_seq BIGINT,
-    vector vector(1536)            -- pgvector für fuzzy entity matching
+    vector vector(1536)            -- pgvector for fuzzy entity matching
 );
 ```
 
-"Marcus Meyer", "Marcus" und "mm" → alle resolven zu `meclaw:person:marcus-meyer`.
+"Marcus Meyer", "Marcus", and "mm" all resolve to `meclaw:person:marcus-meyer`.
 
 ---
 
 ## Value-Aware Memory: Reward System
 
-### Drei Reward-Quellen
+### Three Reward Sources
 
 **1. Novelty (Intrinsic Curiosity)**
 ```sql
--- Novelty = Abstand zum nächsten bekannten Prototype
+-- Novelty = distance to the nearest known prototype
 novelty = 1 - MAX(cosine_similarity(new_embedding, prototype.vector))
--- Unbekanntes bekommt bis zu 5× Gewicht
+-- Unknown information receives up to 5× weight
 ```
 
 **2. Implicit Feedback (Temporal Difference Learning)**
 ```
-Turn N:   Walter sagt X
-Turn N+1: Marcus sagt "genau richtig!" → Turn N reward += 0.8
-Turn N+1: Marcus sagt "nein, falsch"   → Turn N reward -= 0.8
+Turn N:   Walter says X
+Turn N+1: Marcus says "exactly right!" → Turn N reward += 0.8
+Turn N+1: Marcus says "no, that's wrong" → Turn N reward -= 0.8
 ```
-Sentiment-Analyse des *nächsten* Turns, rückwirkend auf vorherigen Event angewendet.
+Sentiment analysis of the *next* turn applied retroactively to the previous event.
 
 **3. Explicit Feedback**
 ```sql
--- Approval/Rejection eines Proposals
+-- Approval or rejection of a proposal
 UPDATE meclaw.messages SET reward = reward + 10.0 WHERE id = $decision_id;  -- approved
 UPDATE meclaw.messages SET reward = reward - 5.0  WHERE id = $decision_id;  -- rejected
 ```
@@ -155,7 +155,7 @@ UPDATE meclaw.messages SET reward = reward - 5.0  WHERE id = $decision_id;  -- r
 ### Reward Propagation (Discounted Returns)
 
 ```sql
--- Rückwärts propagieren: frühe Events in einer erfolgreichen Kette bekommen Credit
+-- Propagate backward: early events in a successful chain receive credit
 UPDATE meclaw.messages m
 SET reward = reward + (outcome_reward * POW(0.9, seq_distance))
 WHERE id IN (SELECT id FROM event_chain WHERE terminal_event = $success_event);
@@ -181,14 +181,14 @@ Inspired by the Continuous Thought Machine (Darlow et al., 2025):
 ### Tick-Based Retrieval
 
 ```
-Tick 1: Query embedding → Prototypes aktivieren (Standard pgvector)
-Tick 2: Top-Prototypes blend in query embedding → driftet zu relevantem Konzeptbereich
-Tick 3: Konvergenz check (Entropie < threshold) → fertig
-        Oder weiterer Drift...
+Tick 1: Query embedding → activate prototypes (standard pgvector)
+Tick 2: Top prototypes blend into query embedding → drifts toward relevant concept region
+Tick 3: Convergence check (entropy < threshold) → done
+        Or continue drifting...
 ```
 
-Simple queries: 1 Tick. Ambiguous/complex queries: 2-3 Ticks.
-**Adaptive compute — Tiefe entsteht aus Schwierigkeit, nicht aus fixem Parameter.**
+Simple queries: 1 tick. Ambiguous/complex queries: 2–3 ticks.
+**Adaptive compute — depth emerges from query difficulty, not a fixed parameter.**
 
 ### Stage 1: Fast Retrieval (parallel)
 
@@ -210,7 +210,7 @@ FROM (...) GROUP BY id ORDER BY rrf_score DESC LIMIT 20;
 ### Stage 2: Graph Expansion (AGE Cypher)
 
 ```cypher
--- Anchor Events finden, dann Graph traversieren
+-- Find anchor events, then traverse the graph
 MATCH path = (anchor:Event {id: $anchor_id})
              -[:TEMPORAL|ACTIVATION|ASSOCIATION*1..3]->
              (related)
@@ -219,19 +219,19 @@ RETURN related, length(path) as hops
 ORDER BY hops, related.value_score DESC
 ```
 
-Multi-hop Antworten entstehen am Ende von Ketten — nicht in einzelnen Dokumenten.
+Multi-hop answers emerge at the end of chains — not inside individual documents.
 
 ### Stage 3: LLM-Guided Re-ranking (optional)
 
-Bei komplexen Queries: LLM liest Cluster-Summaries und entscheidet welche Kandidaten wirklich relevant sind. Günstig (Summaries, nicht Rohdaten), aber dramatisch präziser.
+For complex queries: the LLM reads cluster summaries and decides which candidates are truly relevant. Cheap (summaries, not raw data), but dramatically more precise.
 
 ---
 
 ## Prototype Engine (PDP Layer)
 
-### Prototypen entstehen aus Mustern
+### Prototypes emerge from patterns
 
-Wenn eine neue Observation zu keinem bestehenden Prototype passt (Novelty > 0.7):
+When a new observation does not match any existing prototype (novelty > 0.7):
 ```sql
 INSERT INTO meclaw.prototypes (id, centroid, weight, value_stats)
 VALUES ($new_id, $embedding, 1.0, '{}');
@@ -240,21 +240,21 @@ VALUES ($new_id, $embedding, 1.0, '{}');
 ### Hebbian Learning: "Neurons that fire together, wire together"
 
 ```sql
--- Co-Aktivierung zweier Prototypes → Association-Edge stärken
+-- Co-activation of two prototypes → strengthen the association edge
 UPDATE meclaw.prototype_associations
 SET weight = weight + 0.1 * activation_a * activation_b
 WHERE prototype_a = $pa AND prototype_b = $pb;
 ```
 
-### Prototype Mitosis (Widerspruchs-Handling)
+### Prototype Mitosis (Conflict Handling)
 
-Wenn `gisela` mit `erfolg` (reward: +5) UND `einsamkeit` (reward: -2) assoziiert:
+When `gisela` is associated with both `success` (reward: +5) and `loneliness` (reward: -2):
 ```cypher
--- Prototype splittet in zwei sub-Konzepte
+-- Prototype splits into two sub-concepts
 MATCH (p:Prototype {id: 'gisela'})
 CREATE (p1:Prototype {id: 'gisela-product', parent: 'gisela'})
 CREATE (p2:Prototype {id: 'gisela-mission', parent: 'gisela'})
--- Edges umverteilen nach value_signal
+-- Redistribute edges according to value signal
 ```
 
 ---
@@ -262,25 +262,25 @@ CREATE (p2:Prototype {id: 'gisela-mission', parent: 'gisela'})
 ## Sleep Consolidation (Nightly - pg_cron)
 
 ```sql
--- 1. Schwache Associations prunen
+-- 1. Prune weak associations
 DELETE FROM meclaw.prototype_associations WHERE weight < 0.1;
 
--- 2. Ähnliche Prototypes mergen (compatible values)
+-- 2. Merge similar prototypes (compatible values)
 -- Cosine similarity > 0.92 AND reward_stats compatible → merge
 
--- 3. Hebbian Gewichte rekalibrieren gegen Temporal-Graph Ground Truth
+-- 3. Recalibrate Hebbian weights against temporal graph ground truth
 
--- 4. Stale Precedents markieren
+-- 4. Mark stale precedents
 UPDATE meclaw.decisions
 SET is_stale = true
-WHERE last_cited_seq < current_seq - 1000  -- lang nicht mehr zitiert
+WHERE last_cited_seq < current_seq - 1000  -- not cited in a long time
 AND was_once_influential = true;
 ```
 
 ### Citation Authority Curves
 
 ```sql
--- Trending precedent: wird Standard-Praxis
+-- Trending precedent: becoming standard practice
 SELECT decision_id,
   COUNT(*) FILTER (WHERE cited_seq > now_seq - 50) as recent_citations,
   COUNT(*) FILTER (WHERE cited_seq < now_seq - 50) as old_citations
@@ -288,7 +288,7 @@ FROM meclaw.citations
 GROUP BY decision_id
 HAVING recent_citations > old_citations * 2;
 
--- Stale precedent: niemand folgt mehr
+-- Stale precedent: no one follows it anymore
 SELECT decision_id FROM meclaw.citations
 GROUP BY decision_id
 HAVING MAX(cited_seq) < now_seq - 500;
@@ -296,7 +296,7 @@ HAVING MAX(cited_seq) < now_seq - 500;
 
 ---
 
-## Schema (Kern-Tabellen)
+## Schema (Core Tables)
 
 ```sql
 -- Events (immutable, append-only)
@@ -312,7 +312,7 @@ CREATE TABLE meclaw.brain_events (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Prototypes (emergente Konzepte)
+-- Prototypes (emergent concepts)
 CREATE TABLE meclaw.prototypes (
     id TEXT PRIMARY KEY,
     centroid vector(1536),
@@ -362,86 +362,86 @@ CREATE TABLE meclaw.decision_traces (
 ## The Five Bees
 
 ### 1. extract_bee
-**Trigger:** Nach jedem LLM-Turn
-**Funktion:**
-- LLM extrahiert Entities, Events, Relations aus dem Gespräch
-- Entity Resolution gegen bestehende Entitäten
-- Neue Nodes und Edges in AGE Graph
-- Embedding berechnen (pgvector)
-- Temporal-Edge zur vorherigen Event-Node
+**Trigger:** After every LLM turn
+**Function:**
+- LLM extracts entities, events, and relations from the conversation
+- Entity resolution against existing entities
+- New nodes and edges written to the AGE graph
+- Embedding computed (pgvector)
+- Temporal edge linked to the previous event node
 
 ### 2. novelty_bee
-**Trigger:** Nach extract_bee
-**Funktion:**
-- Abstand neues Event-Embedding zu nächstem Prototype
+**Trigger:** After extract_bee
+**Function:**
+- Distance from new event embedding to nearest prototype
 - novelty = 1 - max_cosine_similarity
 - Update `brain_events.novelty`
-- Ggf. neues Prototype anlegen wenn novelty > threshold
+- Create a new prototype if novelty > threshold
 
 ### 3. feedback_bee
-**Trigger:** Beginn jedes Turns
-**Funktion:**
-- Sentiment-Analyse der User-Nachricht
-- Positiv ("genau!", "danke", "perfekt") → vorheriger Event reward += 0.8
-- Negativ ("falsch", "nein", "nicht richtig") → vorheriger Event reward -= 0.8
-- Reward rückwärts durch Event-Chain propagieren (discounted)
+**Trigger:** Start of every turn
+**Function:**
+- Sentiment analysis of the user's message
+- Positive ("exactly!", "thanks", "perfect") → prior event reward += 0.8
+- Negative ("wrong", "no", "that's not right") → prior event reward -= 0.8
+- Propagate reward backward through event chain (discounted)
 
 ### 4. retrieve_bee
-**Trigger:** Vor jedem LLM-Call (context_bee integration)
-**Funktion:**
+**Trigger:** Before every LLM call (context_bee integration)
+**Function:**
 - Stage 1: pg_search + pgvector + RRF → Top-20
-- Stage 2: AGE Graph Expansion (1-3 Ticks, CTM-style)
-- Stage 3: Value-aware Ranking (similarity × reward × novelty × recency)
-- Output: Top-5 Memories für Kontext-Injection
+- Stage 2: AGE graph expansion (1–3 ticks, CTM-style)
+- Stage 3: Value-aware ranking (similarity × reward × novelty × recency)
+- Output: Top-5 memories injected into context
 
 ### 5. consolidation_bee
-**Trigger:** pg_cron, täglich 03:00 UTC
-**Funktion:**
-- Schwache Association-Edges prunen
-- Compatible Prototypes mergen
-- Conflicting Prototypes splitten (Mitosis)
-- Hebbian Gewichte rekalibrieren
-- Stale Precedents markieren
-- Citation Authority Curves berechnen
+**Trigger:** pg_cron, daily at 03:00 UTC
+**Function:**
+- Prune weak association edges
+- Merge compatible prototypes
+- Split conflicting prototypes (mitosis)
+- Recalibrate Hebbian weights
+- Mark stale precedents
+- Compute citation authority curves
 
 ---
 
-## Implementation Plan (Iterativ)
+## Implementation Plan (Iterative)
 
 ### Phase 1 — Foundation (Minimal Viable Memory)
-- [ ] Schema: `brain_events`, `entities` Tabellen
-- [ ] `extract_bee`: Entities + Events in AGE + pgvector Embedding
-- [ ] `retrieve_bee`: Stage 1 nur (pg_search + pgvector + RRF)
-- [ ] Integration in context_bee
+- [ ] Schema: `brain_events`, `entities` tables
+- [ ] `extract_bee`: entities + events in AGE + pgvector embeddings
+- [ ] `retrieve_bee`: stage 1 only (pg_search + pgvector + RRF)
+- [ ] Integration into context_bee
 
 ### Phase 2 — Learning
-- [ ] `novelty_bee`: Novelty-Score + Prototype-Erstellung
-- [ ] `feedback_bee`: Retroaktiver Reward aus User-Reaktion
-- [ ] Reward-gewichtetes Ranking in retrieve_bee
+- [ ] `novelty_bee`: novelty score + prototype creation
+- [ ] `feedback_bee`: retroactive reward from user reactions
+- [ ] Reward-weighted ranking in retrieve_bee
 
 ### Phase 3 — Graph Intelligence
-- [ ] AGE Temporal-Edges (Sequence-Numbers)
-- [ ] Graph Expansion in retrieve_bee (Stage 2)
-- [ ] Entity Resolution (Aliases, canonical IDs)
+- [ ] AGE temporal edges (sequence numbers)
+- [ ] Graph expansion in retrieve_bee (stage 2)
+- [ ] Entity resolution (aliases, canonical IDs)
 
 ### Phase 4 — Consolidation
 - [ ] `consolidation_bee` via pg_cron
-- [ ] Prototype Mitosis
-- [ ] Citation Layer + Authority Curves
+- [ ] Prototype mitosis
+- [ ] Citation layer + authority curves
 
 ### Phase 5 — CTM Retrieval
-- [ ] Tick-based iterative Retrieval
-- [ ] Adaptive Compute (Entropy als Convergence-Signal)
+- [ ] Tick-based iterative retrieval
+- [ ] Adaptive compute (entropy as convergence signal)
 
 ---
 
 ## Key Design Principles
 
-1. **Alles in PostgreSQL** — kein externer Service, keine externe Runtime
-2. **Append-only Events** — niemals löschen, Temporal-History ist heilig
-3. **Reward als First-Class Data** — jede Memory hat einen Wert, der sich ändert
-4. **LLM bleibt unberührt** — das Learning passiert in der Datenbank
-5. **Iterativ bauen** — Phase 1 alleine ist schon besser als EverMemOS
+1. **Everything in PostgreSQL** — no external services, no external runtime
+2. **Append-only events** — never delete; temporal history is sacred
+3. **Reward as first-class data** — every memory has a value that changes over time
+4. **LLM stays untouched** — all learning happens in the database
+5. **Build iteratively** — Phase 1 alone already beats EverMemOS
 
 ---
 
@@ -456,5 +456,5 @@ CREATE TABLE meclaw.decision_traces (
 
 ---
 
-*BRAIN.md ist das Architektur-Dokument für den MeClaw Memory Hive.*
-*Stand: 2026-03-19 — Basis für alle brain_bee Implementierungen.*
+*BRAIN.md is the architecture document for the MeClaw Memory Hive.*
+*Last updated: 2026-03-19 — the foundation for all brain_bee implementations.*
