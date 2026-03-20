@@ -1,5 +1,5 @@
 # MeClaw — Design Principles
-As of: 2026-03-17 — binding, non-negotiable
+As of: 2026-03-20 — binding, non-negotiable
 
 ---
 
@@ -22,13 +22,22 @@ As of: 2026-03-17 — binding, non-negotiable
 - Messages are hierarchical:
   ```
   workspace / group
-    └── conversation
+    └── channel
           └── message (e.g. Telegram → response)
                 └── sub-messages (tool calls, LLM calls etc.)
   ```
 - **Append-only**: Messages are NEVER updated, only new ones created
 - **Auditable**: complete history always reconstructable
 - **Status as DB column**: current state lives NOT in JSON payload, but as a separate column — queryable, trigger-capable
+- **Channel-scoped**: every message belongs to exactly one channel
+
+### Channels as Universal Primitive
+- **Everything flows through channels** — external (Telegram, Slack), internal (messages table + triggers), tool calls
+- A channel is an **append-only message stream** with a **shared extraction cache**
+- A message is atomic and belongs to exactly one channel
+- Channels have **no intelligence** — they are passive streams with an extraction layer
+- Entities/events are extracted **once per channel**, not per agent
+- Channel-level extraction is shared; agent-level ranking is personal
 
 ### Message States (OS Metaphor)
 Messages are like tasks in an operating system:
@@ -127,24 +136,180 @@ pg_net processes HTTP requests in batches. All requests landing in the same comm
 
 ---
 
-## 2. Security & Isolation
+## 2. Agent Model
 
-### One Hive = One Container = One PostgreSQL Instance
+### Agent = Multi-Hive Root
 
-MeClaw needs no internal security model. Isolation comes from the container.
+An agent is the root of a hierarchical Hive tree:
+
+- **Agent = AIEOS Identity + Brain + Channels + Multi-Hive**
+- An agent owns at least one Hive, but can own multiple
+- There are **no orphan Hives** — every Hive belongs to exactly one agent
+- The agent boundary is the primary security boundary
+
+### System Agent
+
+The System Agent is the first agent that exists:
+
+- Created during bootstrap, before any other agent
+- Owns all infrastructure Hives: Router, Channel IO, Admin, Logging
+- Has no user-facing personality — pure infrastructure
+- Manages channel lifecycle, agent registration, system health
+
+### Agent Types
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `system` | Infrastructure management | System Agent (exactly one) |
+| `agent` | User-facing AI assistant | Walter, Support Bot |
+| `workspace` | Institutional memory container | gisela-workspace |
+
+---
+
+## 3. Channel Model
+
+### Channels as Universal Primitive
+
+A channel is the fundamental communication unit in MeClaw:
+
+- **External channels:** Telegram, Slack, Web — bidirectional user communication
+- **Internal channels:** messages table + triggers — inter-bee, inter-agent communication
+- **Tool channels:** tool calls and results flow through channels
+
+### Channel Properties
+
+1. **Append-only stream** — messages are never mutated or deleted
+2. **Shared extraction cache** — entities/events extracted once per channel
+3. **No intelligence** — channels don't think; intelligence lives in agents
+4. **Multi-subscriber** — multiple agents can subscribe to the same channel
+5. **Scoped access** — agents must explicitly subscribe to a channel
+
+### Extract Once, Rank Many
+
+When a message arrives in a channel, extraction happens **once** at the channel level. Each subscribed agent then applies its own personal ranking (rewards, novelty, personality-fit) on top of the shared extraction. No duplication.
+
+---
+
+## 4. Entity Model
+
+### Everything is an AIEOS Entity
+
+All first-class objects in MeClaw are entities with AIEOS-compatible identity:
+
+| Entity Type | AIEOS Identity | Brain | Channels |
+|-------------|---------------|-------|----------|
+| **Person (User)** | neural_matrix (observed), OCEAN (observed), explicit + observed profiles | — | Participates in channels |
+| **Agent** | neural_matrix (defined), OCEAN, moral_compass, linguistics, capabilities | ✅ Personal | Subscribes to channels |
+| **Workspace** | neural_matrix (institutional), capabilities | ✅ Institutional | Owns workspace channels |
+| **Project** | Minimal (tags, scope) | — | Scope/tag within workspace |
+| **Tool** | capabilities | — | Tool channels |
+| **Concept** | embedding | — | — |
+
+### Users Are Entities, Not a Separate Concept
+
+There is no "user" table. A user is an entity with `type: person`:
+
+- Carries AIEOS-compatible identity (partially observed, partially explicit)
+- **explicit_profile:** self-reported data ("I live in Berlin")
+- **observed_profile:** agent-learned data (communication style, preferences)
+- Entity observations track agent's learnings about the user over time
+- consolidation_bee merges observations nightly
+
+### Workspaces Are Agents
+
+A workspace is an agent with `type: workspace`:
+
+- Has its own brain (institutional memory)
+- Has its own channels (workspace-wide communication)
+- Has AIEOS identity (institutional personality/culture)
+- Projects are scopes/tags within the workspace — not separate agents
+
+---
+
+## 5. Knowledge Graph vs Execution Graph
+
+MeClaw maintains two strictly separated graph types:
+
+### Knowledge Graph (Persistent)
+
+- **Append-only**, versioned via sequence numbers
+- Contains: entities, events, relations, prototypes, associations
+- Stored in AGE (`meclaw_graph`)
+- Shared extraction layer (channel-level) + personal overlays (agent-level rewards)
+- Volatile but reconstructable — Layer 1 can be rebuilt from Layer 0
+
+### Execution Graph (Ephemeral)
+
+- **Per-request**, built by the router/planner
+- Contains: bee execution order, hive call stack, routing decisions
+- Lives only for the duration of a single request
+- Built from Hive definitions in AGE, but the instance is transient
+- Discarded after request completion
+
+**Rule:** Never mix persistent knowledge with ephemeral execution state. The knowledge graph accumulates learning. The execution graph is disposable infrastructure.
+
+---
+
+## 6. Storage Hierarchy
+
+Five layers, from raw to abstract:
+
+| Layer | Content | Scope | Mutability |
+|-------|---------|-------|------------|
+| **0** | Raw Messages | Channel (append-only) | Immutable |
+| **1** | Extracted Entities, Events, Relations | Channel (shared) | Append-only, versioned via seq |
+| **2** | Rewards, Novelty Scores | Agent (personal) | Mutable |
+| **3** | Prototypes, Associations | Agent (personal) | Mutable |
+| **4** | Decision Traces | Agent (personal) | Immutable |
+
+### Properties
+
+- **Layers 0-1 are shared:** multiple agents read the same raw data and extractions
+- **Layers 2-4 are personal:** each agent has its own learned overlays
+- **Layer 1 is recoverable:** can be rebuilt from Layer 0 by re-running extract_bee
+- **Layers 2-3 are volatile but valuable:** learned knowledge, rebuildable but time-consuming
+
+---
+
+## 7. Security & Isolation
+
+### Agent Boundary = Security Boundary
+
+The agent is the primary security boundary in MeClaw:
+
+| Boundary | Trust Level | Mechanism |
+|----------|------------|-----------|
+| **Within Agent** | Full trust | All hives share brain, graph, memory |
+| **Between Agents (same instance)** | Controlled sharing | Channels with explicit subscriptions, agent-scoped brain tables |
+| **Between Agents (different containers)** | No shared state | Network only (pg_net) |
+| **Between Workspaces** | Complete isolation | Separate PostgreSQL instances |
+
+### Scoping Model
+
+Data access is controlled by three scope levels:
+
+| Scope | Visibility | Use Case |
+|-------|-----------|----------|
+| **private** | Only the agent's own channels | Personal conversations, drafts |
+| **shared** | All channels the agent subscribes to | Multi-agent collaboration |
+| **workspace** | Institutional knowledge across workspace | Organizational memory, policies |
+
+### Container Isolation (Deployment Level)
+
+For maximum isolation: one agent per container.
 
 ```
-Container A: Hive "support"
+Container A: Agent "walter"
   └─ PostgreSQL
-     └─ MeClaw (receiver, llm, memory, escalation bees)
+     └─ MeClaw (receiver, llm, memory, tool bees)
 
-Container B: Hive "assistant"
+Container B: Agent "support"
   └─ PostgreSQL
-     └─ MeClaw (receiver, llm, tool bees)
+     └─ MeClaw (receiver, llm, escalation bees)
 ```
 
-**Within a Hive:** Full trust. All bees share DB, graph, messages, memory.
-**Between Hives:** Container boundary. No access. Period.
+**Within a container:** Full trust. All bees share DB, graph, messages, memory.
+**Between containers:** Network boundary. No access. Period.
 
 ### Why No Internal RBAC/Capabilities
 
@@ -152,6 +317,7 @@ Container B: Hive "assistant"
 - plpython3u is "untrusted" — full OS access. This is intentional.
 - SQL-level sandboxing would be theater. A `DO $$ import os; os.system('...') $$` bypasses any SQL restriction.
 - The container is the real boundary: resource limits, network policy, ephemeral filesystem.
+- Agent-level scoping handles data isolation; container-level handles code isolation.
 
 ### plpython3u = The Agent's Hands
 
@@ -164,20 +330,20 @@ An agent with plpython3u doesn't just have hands — it has a **3D printer for h
 
 ### Multi-Tenant = Multi-Container
 
-- No shared-DB multi-tenancy
-- One Hive per container → maximum isolation
+- No shared-DB multi-tenancy for untrusted tenants
+- One agent (or trusted agent group) per container → maximum isolation
 - Scaling = more containers, not more schemas
-- Communication between Hives: explicitly via network (pg_net), not via shared state
+- Communication between containers: explicitly via network (pg_net), not via shared state
 
 ---
 
-## 3. Scaling & High Availability
+## 8. Scaling & High Availability
 
 ### HA: Streaming Replication + Watchdog
 
 ```
 Primary (active)               Standby (hot)
-├── MeClaw Hive (active)      ├── MeClaw Hive (passive)
+├── MeClaw Agents (active)    ├── MeClaw Agents (passive)
 ├── pg_net ✓                   ├── pg_net ✗ (sleeping)
 ├── pg_cron ✓                  ├── pg_cron ✗
 ├── Triggers ✓                 ├── Triggers ✗
@@ -185,28 +351,28 @@ Primary (active)               Standby (hot)
 ```
 
 - Failover via Patroni/etcd
-- After promotion: pg_cron watchdog detects "no poll active" → starts poll → Hive lives
+- After promotion: pg_cron watchdog detects "no poll active" → starts poll → agents live
 - Max 1 minute downtime (watchdog interval)
 
-### Horizontal Scaling = Multi-Hive, Not Multi-Node
+### Horizontal Scaling = Multi-Agent, Not Multi-Node
 
-A single Hive scales **vertically**. PostgreSQL on one server handles thousands of messages/s. A Hive with 50 bees and 100 parallel tasks is no problem.
+A single agent scales **vertically**. PostgreSQL on one server handles thousands of messages/s. An agent with 50 bees and 100 parallel tasks is no problem.
 
-**Why no Hive across multiple nodes:**
+**Why no agent across multiple nodes:**
 - pg_net, pg_cron, pg_background, triggers — only run on primary
-- Hive is write-heavy (every bee = INSERT) → no multi-primary
+- Agent is write-heavy (every bee = INSERT) → no multi-primary
 - Distributed locks for trigger chains = unnecessary complexity
 
-**Horizontal scaling = more Hives, more containers:**
+**Horizontal scaling = more agents, more containers:**
 ```
 Kubernetes Cluster
-├── Container: support-hive (PG + MeClaw)
-├── Container: assistant-hive (PG + MeClaw)
-├── Container: analytics-hive (PG + MeClaw)
-└── Container: support-hive-standby (HA replica)
+├── Container: walter-agent (PG + MeClaw)
+├── Container: support-agent (PG + MeClaw)
+├── Container: analytics-agent (PG + MeClaw)
+└── Container: walter-standby (HA replica)
 ```
 
-More load = more Hives = more containers. Kubernetes distributes.
+More load = more agents = more containers. Kubernetes distributes.
 
 ### Read Scaling
 
@@ -215,10 +381,10 @@ What can run on replicas:
 - **Analytics** — event stream via logical replication
 - **Monitoring** — dashboards on standby instead of loading primary
 
-### Communication Between Hives
+### Communication Between Agents (Cross-Container)
 
 - Via **pg_net** (HTTP) — no shared state, no distributed locks
-- Hive A sends request to Hive B → Hive B responds → done
+- Agent A sends request to Agent B → Agent B responds → done
 - No shared filesystem, no shared database
 
 ### Summary
@@ -227,8 +393,8 @@ What can run on replicas:
 |---|---|
 | **HA** | Streaming Replication + Patroni + Watchdog |
 | **Read scaling** | Replicas for pgvector/analytics |
-| **Write scaling** | Vertical (sufficient for a single Hive) |
-| **Horizontal scaling** | Multi-Hive = Multi-Container |
+| **Write scaling** | Vertical (sufficient for a single agent) |
+| **Horizontal scaling** | Multi-Agent = Multi-Container |
 
 ---
 
