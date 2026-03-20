@@ -16,6 +16,30 @@ The LLM stays untouched. All learning happens in the database.
 
 ---
 
+## Standards & Influences
+
+MeClaw follows established open standards rather than reinventing the wheel:
+
+| Standard | What it defines | How MeClaw uses it |
+|----------|----------------|-------------------|
+| **AIEOS v1.2** | Portable agent identity (psychology, linguistics, capabilities) | Entity schema for agents; neural_matrix drives retrieval personality |
+| **AGENTS.md** | Project instructions for coding agents | Input format when working in codebases |
+| **Markdown Compressor** | Lossless/lossy token reduction for agent instructions | context_bee static prefix compression |
+
+### AIEOS Integration (AI Entity Object Specification)
+
+AIEOS (https://aieos.org) defines the "Soul Layer" of an agent as structured data. MeClaw adopts this for all agent-type entities in the graph:
+
+- **Neural Matrix** (0.0–1.0): creativity, empathy, logic, adaptability, charisma, reliability — influences retrieval ranking
+- **OCEAN Traits**: openness, conscientiousness, extraversion, agreeableness, neuroticism — personality consistency
+- **Moral Compass**: alignment, core values, conflict resolution style — behavioral boundaries
+- **Linguistics**: formality level, forbidden words, catchphrases, vocabulary level — consistent voice
+- **Capabilities**: skills with priority 1–10 — autonomous skill discovery and task orchestration
+
+This means an agent's personality is not prose in a markdown file — it is queryable, structured data in the graph that directly affects how memories are stored, weighted, and retrieved.
+
+---
+
 ## Theoretical Foundation
 
 ### Complementary Learning Systems (CLS)
@@ -29,26 +53,29 @@ Inspired by biological memory:
 
 Standard RAG: `Similarity(query, memory) → rank`
 
-Memory Hive: `Similarity × Novelty × Reward × Recency × GraphDistance → rank`
+Memory Hive: `Similarity × Novelty × Reward × Recency × PersonalityFit × GraphDistance → rank`
 
-A correction from 6 months ago with high negative reward surfaces alongside yesterday's events — because the system knows it mattered.
+A correction from 6 months ago with high negative reward surfaces alongside yesterday's events — because the system knows it mattered. An empathetic agent retrieves emotional context that a purely logical agent would skip.
 
 ### Why This Beats EverMemOS / Mem0 / Zep
 
-| System | Stores | Retrieves | Learns |
-|--------|--------|-----------|--------|
-| Mem0, Zep | ✅ | ✅ similarity only | ❌ |
-| EverMemOS | ✅ | ✅ hybrid BM25+vector | ❌ |
-| MeClaw Memory Hive | ✅ | ✅ value-aware graph traversal | ✅ |
+| System | Stores | Retrieves | Learns | Identity-Aware |
+|--------|--------|-----------|--------|----------------|
+| Mem0, Zep | ✅ | ✅ similarity only | ❌ | ❌ |
+| EverMemOS | ✅ | ✅ hybrid BM25+vector | ❌ | ❌ |
+| MeClaw Memory Hive | ✅ | ✅ value-aware graph traversal | ✅ | ✅ AIEOS |
 
 ---
 
 ## Architecture: The Memory Hive
 
-Five specialized Bees, one PostgreSQL database.
+Six specialized Bees, one PostgreSQL database.
 
 ```
 Incoming Message
+      ↓
+  context_bee ─── compress static prefix ─────────→ Optimized context (lossless)
+      │            (SOUL/AGENTS/Skills → compressed)
       ↓
   extract_bee ──────────────────────────────────────→ AGE Graph
       │                                               (Entities, Events,
@@ -63,6 +90,7 @@ Incoming Message
       ↓
   retrieve_bee ─── CTM-style iterative retrieval ─→ ranked context for LLM
       │             (pg_search + pgvector + AGE traversal)
+      │             personality_fit from agent's neural_matrix
       ↓
    LLM Bee (unchanged, policy network)
       │
@@ -82,6 +110,7 @@ Incoming Message
 
 ```cypher
 (:Entity)      -- Person, project, tool, or concept (canonical IDs)
+(:Agent)       -- An AI agent with AIEOS-compatible identity (extends Entity)
 (:Event)       -- A conversation turn or action (immutable)
 (:Prototype)   -- An emergent concept derived from patterns
 (:Decision)    -- A decision with a complete audit trace
@@ -111,18 +140,31 @@ Incoming Message
 
 Canonical IDs with alias mapping:
 ```sql
--- Entity table with aliases
+-- Entity table with aliases and AIEOS-compatible identity
 CREATE TABLE meclaw.entities (
-    id TEXT PRIMARY KEY,           -- 'meclaw:person:marcus-meyer'
-    canonical_name TEXT,
-    aliases TEXT[],                -- ['Marcus', 'Marcus Meyer', 'mm']
-    entity_type TEXT,              -- 'person', 'project', 'tool', 'concept'
-    created_seq BIGINT,
-    vector vector(1536)            -- pgvector for fuzzy entity matching
+    id TEXT PRIMARY KEY,              -- 'meclaw:person:marcus-meyer' or 'meclaw:agent:walter'
+    canonical_name TEXT NOT NULL,
+    aliases TEXT[],                    -- ['Marcus', 'Marcus Meyer', 'mm']
+    entity_type TEXT,                  -- 'person', 'agent', 'project', 'tool', 'concept'
+    -- AIEOS Psychology (Soul Layer) — agents only
+    neural_matrix JSONB,              -- {creativity: 0.7, empathy: 0.8, logic: 0.9, ...}
+    traits JSONB,                     -- {ocean: {openness: 0.8, ...}, mbti: 'INTJ'}
+    moral_compass JSONB,              -- {alignment: 'neutral-good', core_values: [...]}
+    -- AIEOS Linguistics — agents only
+    linguistics JSONB,                -- {formality: 0.3, forbidden_words: [...], catchphrases: [...]}
+    -- AIEOS Capabilities — agents only
+    capabilities JSONB,               -- [{name: 'sql_read', priority: 1}, ...]
+    -- AIEOS Metadata
+    aieos_entity_id UUID,             -- AIEOS registry UUID (optional, for agent-to-agent)
+    aieos_public_key TEXT,            -- Ed25519 public key (optional, for signing)
+    -- Standard fields
+    embedding vector(1536),
+    created_seq BIGINT
 );
 ```
 
 "Marcus Meyer", "Marcus", and "mm" all resolve to `meclaw:person:marcus-meyer`.
+Agent "Walter" lives at `meclaw:agent:walter` with full AIEOS identity.
 
 ---
 
@@ -161,15 +203,64 @@ SET reward = reward + (outcome_reward * POW(0.9, seq_distance))
 WHERE id IN (SELECT id FROM event_chain WHERE terminal_event = $success_event);
 ```
 
-### Retrieval Ranking
+### Retrieval Ranking (Personality-Aware)
+
+The agent's neural_matrix directly influences what gets retrieved:
 
 ```sql
+-- personality_fit: how well a memory aligns with the agent's cognitive profile
+-- e.g., high-empathy agent boosts emotionally significant memories
+-- e.g., high-logic agent boosts factual/analytical memories
+
 ORDER BY (
-    semantic_similarity * 0.35 +
-    reward              * 0.30 +
-    novelty             * 0.20 +
-    recency             * 0.15
+    semantic_similarity * 0.25 +
+    reward              * 0.25 +
+    novelty             * 0.15 +
+    recency             * 0.10 +
+    personality_fit     * 0.15 +
+    graph_distance      * 0.10
 ) DESC
+```
+
+The `personality_fit` score is computed by comparing the memory's content-type vector against the agent's neural_matrix weights. Emotional memories score higher for empathetic agents; analytical memories score higher for logical agents.
+
+---
+
+## Context Pipeline: Compression + Caching
+
+### Static Prefix Compression (Markdown Compressor)
+
+Inspired by https://github.com/oborchers/fractional-cto — the context_bee applies lossless compression to all static context files before they enter the LLM context window:
+
+```
+Raw Static Files (SOUL.md, AGENTS.md, Skills, BRAIN.md)
+      ↓
+  Lossless Compress (20-40% token reduction, zero risk)
+    - Remove redundant whitespace and formatting
+    - Consolidate repeated information
+    - Strip decorative markdown and HTML comments
+    - NEVER remove: specific values, behavioral rules, tool names, paths, edge cases
+      ↓
+  Compressed Static Prefix
+      ↓
+  ── Cache Breakpoint ──  (Anthropic prompt caching boundary)
+      ↓
+  Dynamic Context (retrieve_bee output, conversation history)
+      ↓
+  LLM
+```
+
+**Rules (from Markdown Compressor):**
+- Always safe to remove: filler, restated information, hedging, verbose transitions, decorative markdown
+- Never remove: specific values/thresholds, behavioral rules (NEVER/ALWAYS), tool names and paths, decision logic, output formats, edge cases, YAML frontmatter
+
+### Cache Strategy
+
+The compressed static prefix is stable across turns → high cache hit rate.
+Dynamic memories change per turn → always after the cache breakpoint.
+
+```
+[System + Compressed SOUL + Compressed Skills] → CACHE BREAKPOINT → [Memories + History + Current]
 ```
 
 ---
@@ -333,12 +424,24 @@ CREATE TABLE meclaw.prototype_associations (
     PRIMARY KEY (prototype_a, prototype_b)
 );
 
--- Entities (canonical IDs)
+-- Entities (AIEOS-compatible, canonical IDs)
 CREATE TABLE meclaw.entities (
-    id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,              -- 'meclaw:person:marcus-meyer' or 'meclaw:agent:walter'
     canonical_name TEXT NOT NULL,
     aliases TEXT[],
-    entity_type TEXT,
+    entity_type TEXT,                  -- 'person', 'agent', 'project', 'tool', 'concept'
+    -- AIEOS Psychology (Soul Layer)
+    neural_matrix JSONB,              -- {creativity: 0.7, empathy: 0.8, logic: 0.9, ...}
+    traits JSONB,                     -- {ocean: {...}, mbti: '', enneagram: '', temperament: ''}
+    moral_compass JSONB,              -- {alignment: '', core_values: [], conflict_resolution: ''}
+    -- AIEOS Linguistics
+    linguistics JSONB,                -- {formality: 0.3, forbidden_words: [], catchphrases: []}
+    -- AIEOS Capabilities
+    capabilities JSONB,               -- [{name: '', priority: 1, description: '', uri: ''}]
+    -- AIEOS Metadata (optional, for agent-to-agent discovery)
+    aieos_entity_id UUID,
+    aieos_public_key TEXT,            -- Ed25519
+    -- Standard fields
     embedding vector(1536),
     created_seq BIGINT
 );
@@ -359,18 +462,28 @@ CREATE TABLE meclaw.decision_traces (
 
 ---
 
-## The Five Bees
+## The Six Bees
 
-### 1. extract_bee
+### 1. context_bee (updated)
+**Trigger:** Before every LLM call
+**Function:**
+- Load static context files (SOUL, AGENTS, Skills)
+- Apply lossless compression (markdown compressor rules)
+- Set cache breakpoint after compressed static prefix
+- Append dynamic memories from retrieve_bee
+- Append conversation history
+
+### 2. extract_bee
 **Trigger:** After every LLM turn
 **Function:**
 - LLM extracts entities, events, and relations from the conversation
-- Entity resolution against existing entities
+- Entity resolution against existing entities (AIEOS-compatible)
 - New nodes and edges written to the AGE graph
+- Agent entities carry full AIEOS identity (neural_matrix, linguistics, capabilities)
 - Embedding computed (pgvector)
 - Temporal edge linked to the previous event node
 
-### 2. novelty_bee
+### 3. novelty_bee
 **Trigger:** After extract_bee
 **Function:**
 - Distance from new event embedding to nearest prototype
@@ -378,7 +491,7 @@ CREATE TABLE meclaw.decision_traces (
 - Update `brain_events.novelty`
 - Create a new prototype if novelty > threshold
 
-### 3. feedback_bee
+### 4. feedback_bee
 **Trigger:** Start of every turn
 **Function:**
 - Sentiment analysis of the user's message
@@ -386,15 +499,16 @@ CREATE TABLE meclaw.decision_traces (
 - Negative ("wrong", "no", "that's not right") → prior event reward -= 0.8
 - Propagate reward backward through event chain (discounted)
 
-### 4. retrieve_bee
+### 5. retrieve_bee
 **Trigger:** Before every LLM call (context_bee integration)
 **Function:**
 - Stage 1: pg_search + pgvector + RRF → Top-20
 - Stage 2: AGE graph expansion (1–3 ticks, CTM-style)
-- Stage 3: Value-aware ranking (similarity × reward × novelty × recency)
+- Stage 3: Personality-aware ranking (similarity × reward × novelty × recency × personality_fit × graph_distance)
+- personality_fit derived from requesting agent's neural_matrix
 - Output: Top-5 memories injected into context
 
-### 5. consolidation_bee
+### 6. consolidation_bee
 **Trigger:** pg_cron, daily at 03:00 UTC
 **Function:**
 - Prune weak association edges
@@ -409,29 +523,35 @@ CREATE TABLE meclaw.decision_traces (
 ## Implementation Plan (Iterative)
 
 ### Phase 1 — Foundation (Minimal Viable Memory)
-- [ ] Schema: `brain_events`, `entities` tables
+- [ ] Schema: `brain_events`, `entities` tables (AIEOS-compatible)
 - [ ] `extract_bee`: entities + events in AGE + pgvector embeddings
 - [ ] `retrieve_bee`: stage 1 only (pg_search + pgvector + RRF)
-- [ ] Integration into context_bee
+- [ ] `context_bee`: lossless compression of static prefix + cache breakpoint
+- [ ] Integration: context_bee calls retrieve_bee for dynamic memories
 
 ### Phase 2 — Learning
 - [ ] `novelty_bee`: novelty score + prototype creation
 - [ ] `feedback_bee`: retroactive reward from user reactions
 - [ ] Reward-weighted ranking in retrieve_bee
+- [ ] AIEOS neural_matrix seed for first agent (Walter)
 
 ### Phase 3 — Graph Intelligence
 - [ ] AGE temporal edges (sequence numbers)
 - [ ] Graph expansion in retrieve_bee (stage 2)
 - [ ] Entity resolution (aliases, canonical IDs)
+- [ ] Personality-fit scoring using agent's neural_matrix
+- [ ] AGENTS.md parsing for codebase context
 
 ### Phase 4 — Consolidation
 - [ ] `consolidation_bee` via pg_cron
 - [ ] Prototype mitosis
 - [ ] Citation layer + authority curves
 
-### Phase 5 — CTM Retrieval
+### Phase 5 — CTM Retrieval + Multi-Agent
 - [ ] Tick-based iterative retrieval
 - [ ] Adaptive compute (entropy as convergence signal)
+- [ ] AIEOS agent-to-agent discovery (Ed25519 signing, registry lookup)
+- [ ] Shared memory graph across multiple agents
 
 ---
 
@@ -442,6 +562,8 @@ CREATE TABLE meclaw.decision_traces (
 3. **Reward as first-class data** — every memory has a value that changes over time
 4. **LLM stays untouched** — all learning happens in the database
 5. **Build iteratively** — Phase 1 alone already beats EverMemOS
+6. **Follow open standards** — AIEOS for identity, AGENTS.md for project context
+7. **Personality is data** — an agent's soul is queryable structured data, not just prose
 
 ---
 
@@ -449,6 +571,9 @@ CREATE TABLE meclaw.decision_traces (
 
 - Hippocampus Paper: https://sebhunte.vercel.app/blog/hippocampus-locomo (91.1% LoCoMo cumulative)
 - EverMemOS: https://github.com/EverMind-AI/EverMemOS (93% LoCoMo isolated)
+- AIEOS: https://aieos.org — AI Entity Object Specification v1.2
+- AGENTS.md: https://agents.md — Open format for coding agent instructions
+- Markdown Compressor: https://github.com/oborchers/fractional-cto
 - Foundation Capital Context Graph Thesis
 - Continuous Thought Machine: Darlow et al., 2025, Sakana AI
 - LoCoMo Benchmark: Maharana et al., 2024
@@ -457,4 +582,4 @@ CREATE TABLE meclaw.decision_traces (
 ---
 
 *BRAIN.md is the architecture document for the MeClaw Memory Hive.*
-*Last updated: 2026-03-19 — the foundation for all brain_bee implementations.*
+*Last updated: 2026-03-20 — AIEOS identity, context compression, personality-aware retrieval.*
