@@ -36,6 +36,16 @@
 - **Novelty Bee** — Agent-level novelty scoring + prototype creation (2026-03-20)
 - **Feedback Bee** — Keyword-based sentiment → retroactive reward on previous events (2026-03-20)
 - **MeClaw Watchdog Fix** — Checks poll age, not just existence (2026-03-20)
+- **Phase 3: Graph Intelligence** (2026-03-20)
+  - `messages.seq` column finally added (pg_cron pause trick)
+  - AGE Temporal Edges — Event→Event sequence linking in extract_bee
+  - Entity Resolution — `resolve_entity()` + `get_entity()` (canonical, alias, fuzzy)
+  - Personality-Fit Scoring — agent + user neural_matrix influence retrieval ranking
+  - retrieve_bee v3 — RRF + Graph Expansion + Personality-Fit + Recency + Novelty (6-signal ranking)
+  - feedback_bee — Discounted reward propagation (γ=0.9, depth=5)
+  - novelty_bee integrated into extract trigger
+  - AGENTS.md Parser stub for codebase context ingestion
+  - Embedding API key fixed (was using revoked key)
 - **Docs v3 — Fundamental Architecture Redesign** (2026-03-20, commit ce143c0)
   - Channels as universal primitive (channel-level extraction, shared across agents)
   - Agent = Multi-Hive Root (hierarchical, no orphan hives)
