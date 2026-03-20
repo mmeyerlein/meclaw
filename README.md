@@ -172,7 +172,7 @@ MeClaw stands on the shoulders of these PostgreSQL extensions:
 
 ## Status
 
-**v0.1.0** — Pre-release. Core architecture works. Bot runs on Claude Sonnet 4.
+**v0.1.0** — Memory Hive. 30 SQL files, 6 Bees, Knowledge Graph, LLM extraction, 69 smoke tests. 100% vibe-coded.
 
 - [x] Event-driven trigger chain
 - [x] Apache AGE graph routing
