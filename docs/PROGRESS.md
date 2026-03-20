@@ -99,6 +99,14 @@
 - hebbian_update: co-activation via entity_events → prototype_associations
 - Prototype seeds for discovered entities
 
+### Phase 7a — Smoke Tests ☐
+> Minimal test suite before v0.1.0 release. `SELECT meclaw.run_smoke_tests();`
+
+- [ ] Schema smoke: all tables, functions, indices, pg_cron jobs, AGE graph exist
+- [ ] Pipeline smoke: message → extract → embedding → LLM extraction → retrieve
+- [ ] Unit tests: resolve_entity, llm_sentiment, get_query_embedding, personality_fit, create_or_resolve_entity
+- [ ] `30_smoke_tests.sql` — single function, PASS or explosion
+
 ### Phase 8 — Swarm Foundation ☐
 > Prerequisite for autonomous Dev-Workflow "Hello World"
 
@@ -157,4 +165,4 @@
 
 ---
 
-*Last updated: 2026-03-20 — Phases 1-7 complete.*
+*Last updated: 2026-03-20 — Phases 1-7 complete. Next: 7a (smoke tests) → v0.1.0 release.*
