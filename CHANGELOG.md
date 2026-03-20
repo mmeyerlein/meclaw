@@ -55,6 +55,14 @@
   - Workspace Agent stub (`meclaw:workspace:default`)
   - Prototype Mitosis flagging (high variance → decay)
   - Seeded 5 observations about Marcus → observed_profile populated
+- **Phase 5: CTM Retrieval + Multi-Agent** (2026-03-20)
+  - `ctm_retrieve` — tick-based iterative retrieval (1-3 ticks, entropy convergence)
+  - Query embedding drifts toward relevant concept region (α=0.3 blending)
+  - Adaptive compute: simple queries converge in 1 tick, complex in 2-3
+  - `share_channel` — cross-agent channel sharing with scope enforcement
+  - `discover_agents` — AIEOS-compatible agent discovery by capability
+  - `cross_agent_retrieve` — query another agent's memory through shared channels only
+  - `generate_agent_keypair` — Ed25519 stub for future AIEOS signing
 - **Docs v3 — Fundamental Architecture Redesign** (2026-03-20, commit ce143c0)
   - Channels as universal primitive (channel-level extraction, shared across agents)
   - Agent = Multi-Hive Root (hierarchical, no orphan hives)
