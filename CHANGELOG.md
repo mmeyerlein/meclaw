@@ -80,6 +80,33 @@
   - personality_fit v2: 5-dimensional keyword clusters (technical, emotional, creative, analytical, organizational) + user alignment
   - `hebbian_update()`: co-activation tracking via entity_events → prototype_associations
   - Prototype seeds for all discovered entities
+- **Phase 7a: Smoke Tests** (2026-03-20, commit 7819589)
+  - `run_smoke_tests()`: 69 assertions (schema, pipeline, function unit tests)
+  - Schema: 15 tables, 26 functions, 4 indices, pg_cron, AGE graph, entities, providers
+  - Pipeline: brain_events, embeddings, LLM extraction, retrieve_bee, entity_events
+  - Unit: resolve_entity, create_or_resolve_entity, get_query_embedding, personality_fit, llm_sentiment
+- **Phase 8: Swarm Foundation** (2026-03-20, commit 28b0158)
+  - `llm_models` table: model registry with capabilities, cost, tier, speed, quality (4 models seeded)
+  - `skills` table: 9 built-in skills with categories and requirements
+  - `execution_plans` + `execution_steps`: DAG-based task execution with cost tracking
+  - `concierge_bee`: gpt-4o-mini classifier (simple/moderate/complex)
+  - `planner_bee`: generates execution DAG from skills + models
+  - `dag_executor`: runs plan steps in dependency order with cost per step
+  - `dag_feedback`: reward at plan level
+  - `swarm_process`: full pipeline (classify → plan → execute)
+  - `select_model`: picks cheapest model meeting skill requirements
+- **Phase 9: Context Pipeline** (2026-03-20, commit d859498)
+  - `markdown_compress()`: lossless token reduction (fillers, whitespace, tables, decorative markdown)
+  - `context_cache` table: cached compressed static prefix (1h TTL)
+  - `build_static_prefix()`: agent identity + user profile + skills → compressed
+  - `context_bee_v3`: compressed prefix + CTM retrieval + cache breakpoint marker
+  - `estimate_tokens()`: rough token count helper
+  - `parse_agents_md()`: structured AGENTS.md parser (sections, rules extraction)
+- **Phase 10: Extended Tests + Cost Monitoring** (2026-03-20, commit 4336084)
+  - `run_extended_tests()`: 39 assertions for phases 8+9 + integration
+  - `run_all_tests()`: combined smoke + extended = 108 assertions
+  - `cost_summary` view: daily DAG execution cost per agent
+  - `extraction_cost_summary` view: daily extraction token usage
 - **Docs v3 — Fundamental Architecture Redesign** (2026-03-20, commit ce143c0)
   - Channels as universal primitive (channel-level extraction, shared across agents)
   - Agent = Multi-Hive Root (hierarchical, no orphan hives)
