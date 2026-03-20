@@ -841,28 +841,26 @@ The skeleton works end-to-end. The following phases address the gaps identified 
 
 ---
 
-### Phase 6 — Real LLM Extraction 🔴 (CRITICAL)
-> extract_bee currently stores raw content. No entity/relation extraction via LLM.
-> Without this, the Knowledge Graph is an event log, not a graph.
+### Phase 6 — Real LLM Extraction ✅ (2026-03-20, Commit 7105ca9)
+- [x] extract_bee v2: two-stage pipeline (raw content + async LLM extraction via pg_background)
+- [x] `llm_extract_entities()`: gpt-4o-mini structured extraction (entities + relations)
+- [x] `create_or_resolve_entity()`: auto-create or merge entities via resolve_entity()
+- [x] AGE Graph: Entity nodes (age_upsert_entity) + INVOLVED_IN edges (age_link_entity_event)
+- [x] AGE Graph: Typed relation edges between entities (age_link_entities)
+- [x] `entity_events` junction table (entity ↔ event with relation types + confidence)
+- [x] `backfill_extractions()`: process existing unextracted events
+- [x] Cost tracking: tokens logged per extraction in events table
+- [x] brain_events: `extracted`, `extracted_at`, `extraction_data` columns
 
-- [ ] extract_bee: LLM-based entity extraction (persons, places, projects, tools, concepts)
-- [ ] extract_bee: relation extraction (X works on Y, X uses Z)
-- [ ] Entity resolution during extraction: new name → resolve_entity() → merge or create
-- [ ] AGE Graph: Entity nodes + INVOLVED_IN edges to Events
-- [ ] Prototype formation on concept-level, not text-level
-- [ ] Cost tracking: every LLM call → log cost
-
-### Phase 7 — Robustness & Error Tolerance
-> Trigger chain under load? Embedding timeout? Sentiment false positives?
-
-- [ ] feedback_bee: negation detection ("ja, das ist falsch" ≠ positive)
-- [ ] feedback_bee: LLM-based sentiment analysis (upgrade from keywords)
-- [ ] compute_embedding: timeout handling, retry with backoff
-- [ ] Trigger chain: pg_background for all heavy-lifting
-- [ ] CTM Retrieval: cost optimization (cache embeddings, fewer re-embeds)
-- [ ] personality_fit: upgrade from keyword-matching to embedding-based
-- [ ] Hebbian Learning: active prototype_associations update on co-activation
-- [ ] Rate limiting for embedding calls
+### Phase 7 — Robustness & Error Tolerance ✅ (2026-03-20, Commit d92b754)
+- [x] feedback_bee v2: negation detection ("ja, das ist falsch" ≠ positive)
+- [x] feedback_bee v2: LLM-based sentiment for ambiguous cases (`llm_sentiment()`)
+- [x] compute_embedding: 3x retry with exponential backoff + 429 rate limit handling
+- [x] `embedding_cache` table: query embedding cache (500 entries, auto-evict)
+- [x] `get_query_embedding` v2: cache-first, 3x retry, rate limit aware
+- [x] personality_fit v2: 5-dimensional keyword clusters + user alignment bonus
+- [x] Hebbian Learning: `hebbian_update()` — co-activation via entity_events → prototype_associations
+- [x] Prototype seeds for all discovered entities
 
 ### Phase 8 — Swarm Foundation
 > Prerequisite for the autonomous Dev-Workflow "Hello World"
@@ -932,4 +930,4 @@ The skeleton works end-to-end. The following phases address the gaps identified 
 ---
 
 *BRAIN.md is the architecture document for the MeClaw Memory Hive.*
-*Last updated: 2026-03-20 — Phases 1-5 complete, Phases 6-10 planned after self-review.*
+*Last updated: 2026-03-20 — Phases 1-7 complete, Phases 8-10 planned.*

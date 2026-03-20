@@ -63,6 +63,23 @@
   - `discover_agents` — AIEOS-compatible agent discovery by capability
   - `cross_agent_retrieve` — query another agent's memory through shared channels only
   - `generate_agent_keypair` — Ed25519 stub for future AIEOS signing
+- **Phase 6: Real LLM Extraction** (2026-03-20, commit 7105ca9)
+  - extract_bee v2: two-stage pipeline (raw content + async LLM extraction via pg_background)
+  - `llm_extract_entities()`: gpt-4o-mini structured extraction (entities + relations + cost tracking)
+  - `create_or_resolve_entity()`: auto-create or merge entities via resolve_entity()
+  - AGE Graph helpers: `age_upsert_entity`, `age_link_entity_event`, `age_link_entities` (avoid SQL MERGE conflict)
+  - `entity_events` junction table (entity ↔ event with relation types + confidence)
+  - `backfill_extractions()`: process existing unextracted events
+  - brain_events: `extracted`, `extracted_at`, `extraction_data` columns
+- **Phase 7: Robustness & Error Tolerance** (2026-03-20, commit d92b754)
+  - feedback_bee v2: negation detection + LLM-based sentiment for ambiguous cases
+  - `llm_sentiment()`: structured sentiment classification (gpt-4o-mini, confidence-weighted rewards)
+  - compute_embedding: 3x retry with exponential backoff + 429 rate limit handling
+  - `embedding_cache` table: query embedding cache (500 entries, auto-evict)
+  - `get_query_embedding` v2: cache-first, retry, rate limit aware
+  - personality_fit v2: 5-dimensional keyword clusters (technical, emotional, creative, analytical, organizational) + user alignment
+  - `hebbian_update()`: co-activation tracking via entity_events → prototype_associations
+  - Prototype seeds for all discovered entities
 - **Docs v3 — Fundamental Architecture Redesign** (2026-03-20, commit ce143c0)
   - Channels as universal primitive (channel-level extraction, shared across agents)
   - Agent = Multi-Hive Root (hierarchical, no orphan hives)
