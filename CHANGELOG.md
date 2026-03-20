@@ -46,6 +46,15 @@
   - novelty_bee integrated into extract trigger
   - AGENTS.md Parser stub for codebase context ingestion
   - Embedding API key fixed (was using revoked key)
+- **Phase 4: Consolidation & User Modeling** (2026-03-20)
+  - `consolidation_bee` — nightly: prune associations, merge prototypes, decay decisions, Hebbian recalibration
+  - `consolidation_nightly` — pg_cron at 03:00 UTC, runs all agents
+  - `observe_entity` — upsert observations with confidence tracking
+  - Entity observation consolidation — merge duplicates, increase confidence
+  - `observed_profile` auto-update from consolidated observations
+  - Workspace Agent stub (`meclaw:workspace:default`)
+  - Prototype Mitosis flagging (high variance → decay)
+  - Seeded 5 observations about Marcus → observed_profile populated
 - **Docs v3 — Fundamental Architecture Redesign** (2026-03-20, commit ce143c0)
   - Channels as universal primitive (channel-level extraction, shared across agents)
   - Agent = Multi-Hive Root (hierarchical, no orphan hives)
