@@ -38,6 +38,10 @@
 | 27 | ctm_retrieval | 5 | CTM tick-based retrieval, multi-agent sharing, AIEOS discovery |
 | 28 | extract_bee_v2 | 6 | LLM entity+relation extraction, AGE graph helpers, entity_events |
 | 29 | phase7_robustness | 7 | LLM sentiment, negation, retry/backoff, embedding cache, Hebbian |
+| 30 | smoke_tests | 7a | Schema, pipeline, function unit tests (69 assertions) |
+| 31 | phase8_swarm | 8 | Model registry, skills, concierge, planner, DAG executor, feedback |
+| 32 | phase9_context_pipeline | 9 | Markdown compression, static prefix cache, context_bee_v3, agents_md parser |
+| 33 | phase10_tests | 10 | Extended tests (39), run_all_tests, cost_summary views |
 
 ---
 
@@ -107,33 +111,40 @@
 - [ ] Unit tests: resolve_entity, llm_sentiment, get_query_embedding, personality_fit, create_or_resolve_entity
 - [ ] `30_smoke_tests.sql` — single function, PASS or explosion
 
-### Phase 8 — Swarm Foundation ☐
+### Phase 8 — Swarm Foundation ✅ `28b0158`
 > Prerequisite for autonomous Dev-Workflow "Hello World"
 
-- [ ] concierge_bee: classifier (gpt-4o-mini), routes simple vs complex
-- [ ] Multi-Model Pool: capabilities + cost in llm_providers/llm_models
-- [ ] Skill Registry: structured defs in DB, queryable, with embedding
-- [ ] planner_bee: top-tier LLM generates DAG from skill+model pool
-- [ ] Feedback loop at DAG level (reward per DAG + per bee)
+- [x] concierge_bee: gpt-4o-mini classifier (simple/moderate/complex)
+- [x] llm_models table: model registry with capabilities, cost, tier, speed, quality (4 models seeded)
+- [x] skills table: 9 built-in skills with categories and requirements
+- [x] select_model: picks cheapest model meeting skill requirements
+- [x] planner_bee: generates DAG from skills + models (gpt-4o for complex)
+- [x] execution_plans + execution_steps: DAG tracking with cost
+- [x] dag_executor: runs steps in dependency order, cost per step
+- [x] dag_feedback: reward at plan level
+- [x] swarm_process: full pipeline (classify → plan → execute)
+- ⚠️ NOT wired into live trigger chain — manual invocation only
 
-### Phase 9 — Context Pipeline ☐
+### Phase 9 — Context Pipeline ✅ `d859498`
 > context_bee is basic — no compression, no caching
 
-- [ ] Lossless markdown compression (20-40% token reduction)
-- [ ] Anthropic cache breakpoint (stable prefix → high hit rate)
-- [ ] Use ctm_retrieve instead of standard retrieve_bee
-- [ ] AGENTS.md parser: full implementation
+- [x] markdown_compress(): lossless token reduction (fillers, whitespace, tables)
+- [x] context_cache table: cached compressed static prefix (1h TTL)
+- [x] build_static_prefix(): agent identity + user profile + skills → compressed
+- [x] context_bee_v3: compressed prefix + CTM retrieval + cache breakpoint marker
+- [x] estimate_tokens(): rough token count helper
+- [x] parse_agents_md(): structured AGENTS.md parser
+- ⚠️ context_bee_v3 NOT wired — v2 still active in trigger chain
 
-### Phase 10 — Tests & Validation ☐
+### Phase 10 — Tests & Validation ✅ `4336084`
 > Every phase produces debt. This is where it gets paid.
 
-- [ ] Unit: resolve_entity, personality_fit, observe_entity, feedback_bee sentiment, retrieve_bee ranking
-- [ ] Integration: full message flow (user_input → extract → novelty → embedding → retrieve → context → llm → sender)
-- [ ] Regression: schema validation, pg_cron jobs, embedding provider reachable
-- [ ] Load: parallel messages, embedding timeouts, pg_background limits
-- [ ] Cost: OpenRouter spend per day/week/agent
-
-**Rule: Tests after every phase, not at the end.**
+- [x] run_smoke_tests(): 69 assertions (schema, pipeline, unit tests)
+- [x] run_extended_tests(): 39 assertions (phases 8+9, integration)
+- [x] run_all_tests(): combined 108 assertions
+- [x] cost_summary view: daily DAG execution cost per agent
+- [x] extraction_cost_summary view: daily extraction token usage
+- ⚠️ Only happy-path tests — no negative tests (timeout, corrupt data, concurrency)
 
 ---
 
@@ -146,10 +157,15 @@
 | ~~personality_fit~~ | ~~Keyword-only~~ | ~~Medium~~ | ~~7~~ ✅ Fixed (5-dim) |
 | ~~Embedding~~ | ~~No retry/backoff~~ | ~~Medium~~ | ~~7~~ ✅ Fixed |
 | ~~Hebbian~~ | ~~No active update~~ | ~~Medium~~ | ~~7~~ ✅ Fixed |
-| CTM Retrieval | Up to 12 API calls per retrieval (3 ticks) | Medium | Optimize later |
-| Tests | Zero test coverage | High | 10 (incremental) |
-| Context Pipeline | No compression, no cache breakpoint | Medium | 9 |
-| Swarm | No routing, no planning, no skill registry | — | 8 |
+| CTM Retrieval | Up to 12 API calls per retrieval (3 ticks), unvalidiert mit wenig Daten | Medium | Needs 500+ events |
+| ~~Tests~~ | ~~Zero test coverage~~ | ~~High~~ | ~~10~~ ✅ 108 tests |
+| ~~Context Pipeline~~ | ~~No compression, no cache breakpoint~~ | ~~Medium~~ | ~~9~~ ✅ Built, not wired |
+| ~~Swarm~~ | ~~No routing, no planning~~ | ~~—~~ | ~~8~~ ✅ Built, not wired |
+| Live Wiring | context_bee_v3 + swarm not in trigger chain | High | Next |
+| Graph empty | 7 entities, 5 edges — needs real traffic | High | Organic growth |
+| Happy-path only | No negative/error tests | Medium | P1 |
+| plpython3u | 22 functions with full OS access | Medium | P2 audit |
+| Cost tracking | Only DAG tracked, not extract/embed/sentiment | Low | P1 |
 
 ---
 
@@ -165,4 +181,4 @@
 
 ---
 
-*Last updated: 2026-03-20 — v0.1.0 released. Phases 1-7a complete.*
+*Last updated: 2026-03-20 — Phases 1-10 complete. Review: impressive prototype, premature release. Next: wire v3+swarm into live flow, real traffic.*
