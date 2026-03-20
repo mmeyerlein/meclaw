@@ -99,7 +99,7 @@
 - hebbian_update: co-activation via entity_events → prototype_associations
 - Prototype seeds for discovered entities
 
-### Phase 7a — Smoke Tests ☐
+### Phase 7a — Smoke Tests ✅ `7819589`
 > Minimal test suite before v0.1.0 release. `SELECT meclaw.run_smoke_tests();`
 
 - [ ] Schema smoke: all tables, functions, indices, pg_cron jobs, AGE graph exist
@@ -165,4 +165,4 @@
 
 ---
 
-*Last updated: 2026-03-20 — Phases 1-7 complete. Next: 7a (smoke tests) → v0.1.0 release.*
+*Last updated: 2026-03-20 — v0.1.0 released. Phases 1-7a complete.*

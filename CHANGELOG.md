@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-03-20
 
 ### Added
 - **Core Architecture** — Event-driven trigger chain, append-only messages
