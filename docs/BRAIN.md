@@ -794,44 +794,111 @@ CREATE TABLE meclaw.decision_traces (
 
 ## Implementation Plan (Iterative)
 
-### Phase 1 — Foundation (Minimal Viable Memory)
-- [ ] Schema: `brain_events`, `entities`, `entity_observations` tables (AIEOS-compatible, with dual profiles)
-- [ ] Schema: `channels` table with extraction cache support
-- [ ] `extract_bee` (channel-level): entities + events in AGE + pgvector embeddings
-- [ ] `retrieve_bee`: stage 1 only (pg_search + pgvector + RRF)
-- [ ] `context_bee`: lossless compression of static prefix + cache breakpoint
-- [ ] Integration: context_bee calls retrieve_bee for dynamic memories
-- [ ] System Agent: bootstrap first agent with infrastructure hives
+### Phase 1 — Foundation ✅ (2026-03-20, Commit 58c4540)
+- [x] Schema: `brain_events`, `entities`, `entity_observations` tables
+- [x] Schema: `channels` with extraction cache, `agent_channels`
+- [x] `extract_bee` (channel-level): raw content → brain_events + embeddings
+- [x] `retrieve_bee`: BM25 + pgvector + RRF
+- [x] `context_bee_v2`: memory retrieval integration
+- [x] System Agent + Walter Agent bootstrap in AGE + entities
 
-### Phase 2 — Learning
-- [ ] `novelty_bee` (agent-level): novelty score + prototype creation
-- [ ] `feedback_bee` (agent-level): retroactive reward from user reactions
-- [ ] Reward-weighted ranking in retrieve_bee
-- [ ] AIEOS neural_matrix seed for first agent (Walter)
-- [ ] User entity creation with explicit_profile from USER.md
+### Phase 2 — Learning ✅ (2026-03-20, Commit 1ff1063)
+- [x] `novelty_bee`: novelty score + prototype creation (threshold 0.7)
+- [x] `feedback_bee`: keyword-based retroactive reward
+- [x] Reward-weighted ranking in retrieve_bee
+- [x] AIEOS neural_matrix seed for Walter
+- [x] Marcus Meyer entity with explicit_profile
 
-### Phase 3 — Graph Intelligence
-- [ ] AGE temporal edges (sequence numbers)
-- [ ] Graph expansion in retrieve_bee (stage 2)
-- [ ] Entity resolution (aliases, canonical IDs)
-- [ ] Personality-fit scoring using agent's AND user's neural_matrix
-- [ ] Scoping model: private / shared / workspace
-- [ ] AGENTS.md parsing for codebase context
+### Phase 3 — Graph Intelligence ✅ (2026-03-20, Commit 939e13d)
+- [x] AGE temporal edges (Event→Event TEMPORAL)
+- [x] Graph expansion in retrieve_bee (±3 neighbors)
+- [x] Entity resolution (`resolve_entity`: canonical, alias, fuzzy)
+- [x] Personality-fit scoring (agent + user neural_matrix)
+- [x] Scoping via agent_channels filter
+- [x] AGENTS.md parser stub
+- [x] `messages.seq` column
 
-### Phase 4 — Consolidation & User Modeling
-- [ ] `consolidation_bee` via pg_cron (agent-level)
-- [ ] Entity observation consolidation (merge, confidence, prune)
-- [ ] observed_profile updates from consolidated observations
-- [ ] Prototype mitosis
-- [ ] Citation layer + authority curves
-- [ ] Workspace Agent: institutional memory
+### Phase 4 — Consolidation & User Modeling ✅ (2026-03-20, Commit 77a6e80)
+- [x] `consolidation_bee` via pg_cron (03:00 UTC)
+- [x] Entity observation consolidation (merge, confidence, prune)
+- [x] `observed_profile` auto-updates from observations
+- [x] Prototype mitosis flagging (high variance → decay)
+- [x] `observe_entity()` upsert helper
+- [x] Workspace Agent stub
 
-### Phase 5 — CTM Retrieval + Multi-Agent
-- [ ] Tick-based iterative retrieval
-- [ ] Adaptive compute (entropy as convergence signal)
-- [ ] AIEOS agent-to-agent discovery (Ed25519 signing, registry lookup)
-- [ ] Shared memory graph across multiple agents (channel-level extraction sharing)
-- [ ] Multi-workspace support
+### Phase 5 — CTM Retrieval + Multi-Agent ✅ (2026-03-20, Commit 167a0ad)
+- [x] `ctm_retrieve`: tick-based iterative retrieval (1-3 ticks, entropy convergence)
+- [x] Adaptive compute (Shannon entropy < 0.3 → stop)
+- [x] `discover_agents`: AIEOS-compatible discovery
+- [x] `share_channel` + `cross_agent_retrieve`: shared memory graph
+- [x] Ed25519 keypair stub
+
+---
+
+### ⚠️ Reflection: Phases 1-5 are deployed but at ~70% depth.
+
+The skeleton works end-to-end. The following phases address the gaps identified during self-review.
+
+---
+
+### Phase 6 — Real LLM Extraction 🔴 (CRITICAL)
+> extract_bee currently stores raw content. No entity/relation extraction via LLM.
+> Without this, the Knowledge Graph is an event log, not a graph.
+
+- [ ] extract_bee: LLM-based entity extraction (persons, places, projects, tools, concepts)
+- [ ] extract_bee: relation extraction (X works on Y, X uses Z)
+- [ ] Entity resolution during extraction: new name → resolve_entity() → merge or create
+- [ ] AGE Graph: Entity nodes + INVOLVED_IN edges to Events
+- [ ] Prototype formation on concept-level, not text-level
+- [ ] Cost tracking: every LLM call → log cost
+
+### Phase 7 — Robustness & Error Tolerance
+> Trigger chain under load? Embedding timeout? Sentiment false positives?
+
+- [ ] feedback_bee: negation detection ("ja, das ist falsch" ≠ positive)
+- [ ] feedback_bee: LLM-based sentiment analysis (upgrade from keywords)
+- [ ] compute_embedding: timeout handling, retry with backoff
+- [ ] Trigger chain: pg_background for all heavy-lifting
+- [ ] CTM Retrieval: cost optimization (cache embeddings, fewer re-embeds)
+- [ ] personality_fit: upgrade from keyword-matching to embedding-based
+- [ ] Hebbian Learning: active prototype_associations update on co-activation
+- [ ] Rate limiting for embedding calls
+
+### Phase 8 — Swarm Foundation
+> Prerequisite for the autonomous Dev-Workflow "Hello World"
+
+- [ ] concierge_bee: classifier (gpt-4o-mini), routes simple vs complex
+- [ ] Multi-Model Pool: model capabilities + cost in llm_providers/llm_models
+- [ ] Skill Registry: skills as structured defs in DB, queryable, with embedding
+- [ ] planner_bee: top-tier LLM generates DAG from skill+model pool
+- [ ] Feedback loop at DAG level (reward per DAG + per bee)
+
+### Phase 9 — Context Pipeline
+> context_bee is basic — no compression, no caching
+
+- [ ] context_bee: lossless markdown compression (20-40% token reduction)
+- [ ] context_bee: Anthropic cache breakpoint (stable prefix → high hit rate)
+- [ ] context_bee: use ctm_retrieve instead of standard retrieve_bee
+- [ ] AGENTS.md parser: full implementation (not just stub)
+
+### Phase 10 — Tests & Validation
+> Every phase above produces technical debt. This is where it gets paid.
+
+- [ ] Unit Tests: SQL assertions for all core functions
+  - resolve_entity, personality_fit, observe_entity, consolidation_bee
+  - feedback_bee sentiment detection (positive, negative, negation, neutral)
+  - retrieve_bee ranking order (rewarded > neutral > punished)
+- [ ] Integration Tests: end-to-end message flow
+  - user_input → extract → novelty → embedding → retrieve → context → llm → sender
+  - Trigger chain stability under parallel messages
+- [ ] Regression Tests: run on every deploy
+  - Schema validation (all tables, indices, functions exist)
+  - pg_cron jobs active
+  - Embedding provider reachable
+- [ ] Load Tests: parallel messages, embedding timeouts, pg_background limits
+- [ ] Cost Monitoring: OpenRouter spend per day/week/agent
+
+**Rule: After every phase, run a test batch from Phase 10. Not all at the end — incremental.**
 
 ---
 
@@ -865,4 +932,4 @@ CREATE TABLE meclaw.decision_traces (
 ---
 
 *BRAIN.md is the architecture document for the MeClaw Memory Hive.*
-*Last updated: 2026-03-20 — Channel architecture, scoping model, user modeling, workspace agents.*
+*Last updated: 2026-03-20 — Phases 1-5 complete, Phases 6-10 planned after self-review.*
