@@ -288,28 +288,41 @@ def run_signal_pipeline(conn, skip_extraction=False):
             print(f"  [pipeline] BM25 check warn: {e}")
 
 
-def retrieve_context_full(conn, question, limit=10, ctm_enabled=False):
+def retrieve_context_full(conn, question, limit=10, ctm_enabled=False,
+                          rerank=False, rerank_pool=20):
     """
     Use retrieve_bee to get relevant brain context for a question.
+    If rerank=True, uses LLM re-ranking (Stage 3) via retrieve_reranked.
     Returns (context_text, source_tags) tuple.
     """
     with conn.cursor() as cur:
         try:
-            cur.execute(
-                """
-                SELECT content, score, source
-                FROM meclaw.retrieve_bee(%s, %s, %s, %s)
-                ORDER BY score DESC
-                """,
-                (BENCHMARK_AGENT_ID, question, limit, ctm_enabled)
-            )
+            if rerank:
+                cur.execute(
+                    """
+                    SELECT content, score, source
+                    FROM meclaw.retrieve_reranked(%s, %s, %s, %s, %s)
+                    """,
+                    (BENCHMARK_AGENT_ID, question, limit, ctm_enabled, rerank_pool)
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT content, score, source
+                    FROM meclaw.retrieve_bee(%s, %s, %s, %s)
+                    ORDER BY score DESC
+                    """,
+                    (BENCHMARK_AGENT_ID, question, limit, ctm_enabled)
+                )
             rows = cur.fetchall()
             if rows:
                 sources = list({r[2] for r in rows if r[2]})
+                if rerank:
+                    sources.append('reranked')
                 context = "\n".join(r[0] for r in rows if r[0])
                 return context, sources
         except Exception as e:
-            print(f"    [warn] retrieve_bee: {e}")
+            print(f"    [warn] retrieve{'_reranked' if rerank else '_bee'}: {e}")
             conn.rollback()
             conn.autocommit = True
 
@@ -372,7 +385,8 @@ def check_brain_stats(conn):
 
 def run_single_question(conn, channel_id, item, qi, total,
                         cumulative=False, ctm_enabled=False,
-                        skip_extraction=False):
+                        skip_extraction=False, rerank=False,
+                        top_k=10):
     """Process one benchmark question: feed sessions, run pipeline, retrieve."""
     qid = item['question_id']
     qtype = item['question_type']
@@ -432,7 +446,9 @@ def run_single_question(conn, channel_id, item, qi, total,
     # ── Retrieve context for the question ──────────────────────────────────
     ctm_label = " (CTM)" if ctm_enabled else ""
     print(f"  [retrieve{ctm_label}] {question[:80]}")
-    context, sources = retrieve_context_full(conn, question, ctm_enabled=ctm_enabled)
+    context, sources = retrieve_context_full(conn, question, limit=top_k,
+                                              ctm_enabled=ctm_enabled,
+                                              rerank=rerank)
 
     result = {
         "question_id": qid,
@@ -454,7 +470,8 @@ def run_single_question(conn, channel_id, item, qi, total,
 
 
 def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
-                  cumulative=False, ctm_enabled=False, skip_extraction=False):
+                  cumulative=False, ctm_enabled=False, skip_extraction=False,
+                  rerank=False, top_k=10):
     """Run the full benchmark."""
     with open(data_path) as f:
         data = json.load(f)
@@ -468,13 +485,14 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
     mode_str = "cumulative" if cumulative else "reset (default)"
     ctm_str = " + CTM" if ctm_enabled else ""
     ext_str = " (skip-extraction)" if skip_extraction else ""
+    rerank_str = f" + rerank (top-{top_k})" if rerank else f" (top-{top_k})"
 
     print(f"MeClaw LongMemEval Benchmark")
     print(f"Dataset: {data_path}")
     print(f"Questions: {len(data)}")
     print(f"Channel: {channel_id}")
     print(f"Agent: {BENCHMARK_AGENT_ID}")
-    print(f"Mode: {mode_str}{ctm_str}{ext_str}")
+    print(f"Mode: {mode_str}{ctm_str}{ext_str}{rerank_str}")
     print(f"{'='*60}")
 
     # In cumulative mode: do one initial reset at start only
@@ -489,6 +507,8 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
             cumulative=cumulative,
             ctm_enabled=ctm_enabled,
             skip_extraction=skip_extraction,
+            rerank=rerank,
+            top_k=top_k,
         )
         results.append(result)
 
@@ -572,9 +592,26 @@ if __name__ == "__main__":
             "Keeps: similarity, recency, novelty (prototype-based)."
         ),
     )
+    p.add_argument(
+        "--rerank",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable LLM re-ranking (Stage 3). Retrieves top-20 candidates, "
+            "then uses gpt-4o-mini to re-rank by relevance. ~$0.35 for 500 questions."
+        ),
+    )
+    p.add_argument(
+        "--top-k",
+        type=int,
+        default=10,
+        help="Number of results to return from retrieval (default: 10).",
+    )
     args = p.parse_args()
 
     run_benchmark(args.data, args.db, args.limit, args.output,
                   cumulative=args.cumulative,
                   ctm_enabled=args.ctm,
-                  skip_extraction=args.skip_extraction)
+                  skip_extraction=args.skip_extraction,
+                  rerank=args.rerank,
+                  top_k=args.top_k)
