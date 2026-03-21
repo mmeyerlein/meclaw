@@ -49,21 +49,12 @@ That's a real query. It fires a trigger chain that routes through a graph, loads
 git clone https://github.com/mmeyerlein/meclaw.git
 cd meclaw
 cp config.example.sql config.sql   # Add your API keys
-docker compose up -d               # Done.
+docker compose -f docker-compose.build.yml up -d
 ```
 
 Open `http://localhost:8080` — your agent is running.
 
-<details>
-<summary><b>Manual install (existing PostgreSQL 17)</b></summary>
-
-```bash
-# Required extensions: age, pg_cron, pg_net, pgvector, pg_background, plpython3u
-psql -d your_db -f install.sql
-psql -d your_db -f config.sql
-```
-
-</details>
+📖 **More install options** (Portainer, manual PostgreSQL): [docs/INSTALL.md](docs/INSTALL.md)
 
 ## How It Works
 
