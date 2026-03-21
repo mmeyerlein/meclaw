@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.2.0] — 2026-03-21
+
+### Added
+- **LongMemEval Benchmark** — Runner + Evaluator for 500-question benchmark (`benchmarks/longmemeval_runner.py`, `longmemeval_eval.py`)
+- **Dual LLM Judge** — Separate Context Quality and Answer Correctness judges (no contamination)
+- **Batch Embeddings** — Single API call for up to 50 texts (55x speedup)
+- **Fact-Augmented Key Expansion** — `facts_text` column with dual BM25 index on content + extracted entities/relations
+- **Trigger Chain** — Automated pipeline: extract_bee → novelty_bee (async) → feedback_bee
+- **CTM Retrieval** — Optional tick-based embedding drift retrieval (Stage 4 in retrieve_bee)
+- **Prototype Activation** — Seed prototypes from events, centroid computation, novelty-driven creation
+- **User Modeling** — Automatic preference extraction from conversations, auto-create sender entities
+- **Temporal Edges** — AGE Event→Event temporal chain with TEMPORAL edge type
+- **Entity→Event AGE Links** — INVOLVED_IN edges linking entities to events in Apache AGE graph
+- **Graph-Based Retrieval** — Cypher traversal for related events via entity co-occurrence and temporal proximity
+- **ACTION_PLAN.md** — Roadmap document for AGE Graph activation phases
+
+### Changed
+- **retrieve_bee v3** — 6-signal ranking: BM25 + Vector + Graph Expansion + facts_text + RRF fusion
+- **extract_bee** — Preserves message timestamp in brain_events.created_at, creates AGE Event nodes + TEMPORAL edges
+- **novelty_bee** — Integrated prototype update with centroid computation
+- **feedback_bee v2** — Clean single signature (UUID, TEXT), dropped zombie overload
+- **llm_extract_entities** — Extracts user preferences, auto-creates sender entities
+- **Smoke Tests** — Data-dependent tests now SKIP instead of FAIL on fresh DB; 4 new tests for temporal edges, facts_text, graph retrieval, prototypes
+- **X-Title Header** — All OpenRouter API calls identify as "MeClaw"
+
+### Fixed
+- **Ambiguous `event_id`** in retrieve_bee PL/pgSQL CTEs (column vs return variable)
+- **Ambiguous `channel_id`** in retrieve_bee (table alias added)
+- **Cypher escaping** — Apostrophes in entity names no longer crash AGE queries
+- **get_query_embedding** — Non-cached version removed, only cached+retry version active
+- **init-meclaw.sh** — All 39 SQL files in correct dependency order
+- **SQL file numbering** — Resolved duplicate file numbers (35, 36) from parallel development
+- **`pg_background` workers** — `max_worker_processes` increased to 32
+
+### Infrastructure
+- **39 SQL files** (was 33) — clean numbering 01-39
+- **Test Suite** — 103 PASS, 9 SKIP, 0 FAIL (smoke + extended)
+
+---
+
 ## [0.1.0] — 2026-03-20
 
 ### Added

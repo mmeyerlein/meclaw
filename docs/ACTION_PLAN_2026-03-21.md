@@ -10,7 +10,7 @@
 
 ## Phase A: AGE Graph zum Leben erwecken (KRITISCH)
 
-### A1. Temporal Edges — Event→Event Kette
+### A1. Temporal Edges — Event→Event Kette ✅ DONE
 **Impact: Temporal Reasoning von 3% → geschätzt 30-50%**
 
 Was fehlt: extract_bee erstellt brain_events, aber verknüpft sie NICHT temporal im AGE Graph.
@@ -28,7 +28,7 @@ Aufgabe:
 - [ ] created_at vom Message übernehmen (schon im Code, muss in AGE rein)
 - [ ] retrieve_bee: Cypher-Query für "Events between date X and Y"
 
-### A2. Entity→Event Verknüpfung in AGE (statt nur entity_events Tabelle)
+### A2. Entity→Event Verknüpfung in AGE (statt nur entity_events Tabelle) ✅ DONE
 **Impact: Multi-Session von 2% → geschätzt 20-30%**
 
 Was fehlt: `llm_extract_entities` schreibt in `entity_events` Tabelle, aber NICHT in den AGE Graph. Die AGE INVOLVED_IN Edges (115) kommen von woanders.
@@ -38,7 +38,7 @@ Aufgabe:
 - [ ] Entity-Nodes in AGE aktualisieren wenn neue Entities gefunden werden
 - [ ] RELATES_TO Edges aus extraction_data Relations erstellen
 
-### A3. Graph-basiertes Retrieval aktivieren (retrieve_bee v3)
+### A3. Graph-basiertes Retrieval aktivieren (retrieve_bee v3) ✅ DONE
 **Impact: +10-15% über alle Kategorien**
 
 Was fehlt: retrieve_bee nutzt nur BM25+Vector. Phase 3 hat retrieve_bee_v3 mit AGE Cypher Traversal — liegt ungenutzt rum.
@@ -52,7 +52,7 @@ Aufgabe:
 
 ## Phase B: Brain-Bees verdrahten (HOCH)
 
-### B1. Trigger-Chain erweitern
+### B1. Trigger-Chain erweitern ✅ DONE
 **Impact: Alle Bees arbeiten zusammen statt isoliert**
 
 Aktuelle Chain: `message INSERT → trg_extract_on_done → extract_bee(raw) → FERTIG`
@@ -80,7 +80,7 @@ Aufgabe:
 - [ ] context_bee_v3 als aktive Version verdrahten (statt v2)
 - [ ] retrieve_bee_v3 als aktive Version setzen
 
-### B2. CTM Retrieval aktivieren
+### B2. CTM Retrieval aktivieren ✅ DONE
 **Impact: Komplexe Queries besser beantworten (multi-hop)**
 
 Gebaut in Phase 5, nicht verdrahtet. 1-3 Ticks, Embedding-Drift, Entropy-Convergence.
@@ -93,7 +93,7 @@ Aufgabe:
 
 ## Phase C: Datenqualität & Indexing (MITTEL)
 
-### C1. Fact-Augmented Key Expansion
+### C1. Fact-Augmented Key Expansion ✅ DONE
 **Impact: +5% Accuracy (Paper-Referenz)**
 
 Was BRAIN.md sagt: Extrahierte Fakten als Such-Keys.
@@ -104,7 +104,7 @@ Aufgabe:
 - [ ] Oder: Separate `fact_index` Tabelle mit extrahierten Fakten als Rows
 - [ ] retrieve_bee: Facts als zusätzliche BM25-Source in RRF
 
-### C2. Prototypes aktivieren
+### C2. Prototypes aktivieren ✅ DONE
 **Impact: Novelty-Scoring + Konzept-Clustering**
 
 Tabelle existiert, Code existiert (novelty_bee), Daten: 0 echte Prototypes.
@@ -114,7 +114,7 @@ Aufgabe:
 - [ ] Initiale Prototypes aus den Benchmark-Daten erstellen
 - [ ] Consolidation_bee testen (mergt ähnliche Prototypes)
 
-### C3. User Modeling aktivieren
+### C3. User Modeling aktivieren ✅ DONE
 **Impact: Personality-aware Retrieval**
 
 5 Seed-Observations für Marcus, aber kein Live-Flow.
@@ -128,7 +128,7 @@ Aufgabe:
 
 ## Phase D: Evaluator fixen + Re-Benchmark (NACH A-C)
 
-### D1. Evaluator-Bug
+### D1. Evaluator-Bug ✅ DONE
 Judge v2 (11.4%) < Judge v1 (12%) — sollte nicht passieren.
 Vermutung: Judge sieht "INSUFFICIENT CONTEXT" vom Reader und scored strenger.
 
