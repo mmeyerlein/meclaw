@@ -314,6 +314,65 @@ BEGIN
     END;
 
     -- =========================================================================
+    -- LEVEL 4: Phase C/B Tests (temporal, facts_text, retrieve_bee source, prototypes)
+    -- =========================================================================
+
+    -- 4.1 TEMPORAL edges > 0 in AGE graph
+    BEGIN
+        SELECT COUNT(*) INTO v_count FROM ag_catalog.cypher(
+            'meclaw_graph',
+            $$ MATCH ()-[r:TEMPORAL]->() RETURN count(r) AS cnt $$
+        ) AS (cnt agtype);
+        IF v_count > 0 THEN
+            v_pass := v_pass + 1;
+        ELSE
+            v_fail := v_fail + 1;
+            v_results := array_append(v_results, 'FAIL: no TEMPORAL edges in AGE graph meclaw_graph');
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        v_fail := v_fail + 1;
+        v_results := array_append(v_results, 'FAIL: TEMPORAL edge check threw: ' || SQLERRM);
+    END;
+
+    -- 4.2 facts_text IS NOT NULL for at least some extracted events
+    SELECT COUNT(*) INTO v_count
+    FROM meclaw.brain_events
+    WHERE extracted = TRUE AND facts_text IS NOT NULL AND facts_text <> '';
+    IF v_count > 0 THEN
+        v_pass := v_pass + 1;
+    ELSE
+        v_fail := v_fail + 1;
+        v_results := array_append(v_results, 'FAIL: no extracted brain_events with facts_text populated');
+    END IF;
+
+    -- 4.3 retrieve_bee source contains 'graph' or 'rrf'
+    BEGIN
+        SELECT COUNT(*) INTO v_count
+        FROM meclaw.retrieve_bee('meclaw:agent:walter', 'test', 3)
+        WHERE source ILIKE '%graph%' OR source ILIKE '%rrf%';
+        IF v_count > 0 THEN
+            v_pass := v_pass + 1;
+        ELSE
+            v_fail := v_fail + 1;
+            v_results := array_append(v_results, 'FAIL: retrieve_bee returned no results with source containing ''graph'' or ''rrf''');
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        v_fail := v_fail + 1;
+        v_results := array_append(v_results, 'FAIL: retrieve_bee source check threw: ' || SQLERRM);
+    END;
+
+    -- 4.4 prototypes with centroid IS NOT NULL > 0
+    SELECT COUNT(*) INTO v_count
+    FROM meclaw.prototypes
+    WHERE centroid IS NOT NULL;
+    IF v_count > 0 THEN
+        v_pass := v_pass + 1;
+    ELSE
+        v_fail := v_fail + 1;
+        v_results := array_append(v_results, 'FAIL: no prototypes with centroid populated');
+    END IF;
+
+    -- =========================================================================
     -- RESULT
     -- =========================================================================
 

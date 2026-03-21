@@ -47,7 +47,13 @@ for sqlfile in \
     sql/30_smoke_tests.sql \
     sql/31_phase8_swarm.sql \
     sql/32_phase9_context_pipeline.sql \
-    sql/33_phase10_tests.sql
+    sql/33_phase10_tests.sql \
+    sql/34_temporal_edges.sql \
+    sql/35_fact_keys.sql \
+    sql/36_trigger_chain.sql \
+    sql/37_ctm_retrieval_v2.sql \
+    sql/38_prototypes_activation.sql \
+    sql/39_user_modeling.sql
 do
     echo ">>> $(basename $sqlfile)"
     OUTPUT=$(psql -U "$PGUSER" -d meclaw -f "$MECLAW_DIR/$sqlfile" 2>&1)

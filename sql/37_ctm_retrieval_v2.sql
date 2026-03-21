@@ -238,10 +238,10 @@ BEGIN
             END;
         END IF;
 
-        -- Stage 1 (BM25) for CTM anchors: get top-5 BM25 results as seed
+        -- Stage 1 (BM25 + facts_text) for CTM anchors: get top-5 BM25 results as seed
         -- Stage 2 (CTM): drift query embedding toward BM25 anchors, then iterate
         RETURN QUERY
-        WITH bm25_results AS (
+        WITH content_bm25 AS (
             SELECT
                 be.id AS event_id,
                 be.content,
@@ -249,8 +249,7 @@ BEGIN
                 be.channel_id,
                 COALESCE(be.reward, 0.0) AS reward,
                 COALESCE(be.novelty, 0.0) AS novelty,
-                be.created_at,
-                ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+                be.created_at
             FROM meclaw.brain_events be
             WHERE be.content @@@ p_query
                 AND be.channel_id = ANY(v_channel_ids)
@@ -258,8 +257,39 @@ BEGIN
             ORDER BY paradedb.score(be.id) DESC
             LIMIT 20
         ),
+        facts_bm25 AS (
+            SELECT
+                be.id AS event_id,
+                be.content,
+                paradedb.score(be.id) AS bm25_score,
+                be.channel_id,
+                COALESCE(be.reward, 0.0) AS reward,
+                COALESCE(be.novelty, 0.0) AS novelty,
+                be.created_at
+            FROM meclaw.brain_events be
+            WHERE be.facts_text @@@ p_query
+                AND be.channel_id = ANY(v_channel_ids)
+                AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+            ORDER BY paradedb.score(be.id) DESC
+            LIMIT 20
+        ),
+        bm25_results AS (
+            SELECT
+                COALESCE(c.event_id, f.event_id) AS event_id,
+                COALESCE(c.content, f.content) AS content,
+                COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) AS bm25_score,
+                COALESCE(c.channel_id, f.channel_id) AS channel_id,
+                COALESCE(c.reward, f.reward, 0.0) AS reward,
+                COALESCE(c.novelty, f.novelty, 0.0) AS novelty,
+                COALESCE(c.created_at, f.created_at) AS created_at,
+                ROW_NUMBER() OVER (
+                    ORDER BY COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) DESC
+                ) AS bm25_rank
+            FROM content_bm25 c
+            FULL OUTER JOIN facts_bm25 f ON c.event_id = f.event_id
+        ),
         bm25_anchors AS (
-            -- Top BM25 results used as CTM drift seed
+            -- Top BM25+facts results used as CTM drift seed
             SELECT array_agg(b.event_id ORDER BY b.bm25_rank) AS anchor_ids
             FROM bm25_results b
             WHERE b.bm25_rank <= 5
@@ -351,8 +381,9 @@ BEGIN
         END;
     END IF;
 
+    -- Normal path: BM25 across content AND facts_text (C1 + B2 merged)
     RETURN QUERY
-    WITH bm25_results AS (
+    WITH content_bm25_n AS (
         SELECT
             be.id AS event_id,
             be.content,
@@ -361,14 +392,46 @@ BEGIN
             COALESCE(be.reward, 0.0) AS reward,
             COALESCE(be.novelty, 0.0) AS novelty,
             be.created_at,
-            be.seq,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+            be.seq
         FROM meclaw.brain_events be
         WHERE be.content @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
         LIMIT 20
+    ),
+    facts_bm25_n AS (
+        SELECT
+            be.id AS event_id,
+            be.content,
+            paradedb.score(be.id) AS bm25_score,
+            be.channel_id,
+            COALESCE(be.reward, 0.0) AS reward,
+            COALESCE(be.novelty, 0.0) AS novelty,
+            be.created_at,
+            be.seq
+        FROM meclaw.brain_events be
+        WHERE be.facts_text @@@ p_query
+            AND be.channel_id = ANY(v_channel_ids)
+            AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+        ORDER BY paradedb.score(be.id) DESC
+        LIMIT 20
+    ),
+    bm25_results AS (
+        SELECT
+            COALESCE(c.event_id, f.event_id) AS event_id,
+            COALESCE(c.content, f.content) AS content,
+            COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) AS bm25_score,
+            COALESCE(c.channel_id, f.channel_id) AS channel_id,
+            COALESCE(c.reward, f.reward, 0.0) AS reward,
+            COALESCE(c.novelty, f.novelty, 0.0) AS novelty,
+            COALESCE(c.created_at, f.created_at) AS created_at,
+            COALESCE(c.seq, f.seq, 0) AS seq,
+            ROW_NUMBER() OVER (
+                ORDER BY COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) DESC
+            ) AS bm25_rank
+        FROM content_bm25_n c
+        FULL OUTER JOIN facts_bm25_n f ON c.event_id = f.event_id
     ),
     vector_results AS (
         SELECT
@@ -504,23 +567,51 @@ BEGIN
     LIMIT p_limit;
 
 EXCEPTION WHEN OTHERS THEN
-    -- Fallback: pure RRF without graph (if AGE fails etc.)
+    -- Fallback: pure RRF without graph (if AGE fails etc.) — includes facts_text BM25
     RETURN QUERY
-    WITH bm25_results AS (
+    WITH content_bm25_fb AS (
         SELECT
             be.id AS event_id,
             be.content,
             paradedb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
-            be.created_at,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+            be.created_at
         FROM meclaw.brain_events be
         WHERE be.content @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
         LIMIT 20
+    ),
+    facts_bm25_fb AS (
+        SELECT
+            be.id AS event_id,
+            be.content,
+            paradedb.score(be.id) AS bm25_score,
+            be.channel_id,
+            COALESCE(be.reward, 0.0) AS reward,
+            be.created_at
+        FROM meclaw.brain_events be
+        WHERE be.facts_text @@@ p_query
+            AND be.channel_id = ANY(v_channel_ids)
+            AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+        ORDER BY paradedb.score(be.id) DESC
+        LIMIT 20
+    ),
+    bm25_results AS (
+        SELECT
+            COALESCE(c.event_id, f.event_id) AS event_id,
+            COALESCE(c.content, f.content) AS content,
+            COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) AS bm25_score,
+            COALESCE(c.channel_id, f.channel_id) AS channel_id,
+            COALESCE(c.reward, f.reward, 0.0) AS reward,
+            COALESCE(c.created_at, f.created_at) AS created_at,
+            ROW_NUMBER() OVER (
+                ORDER BY COALESCE(c.bm25_score, 0) + COALESCE(f.bm25_score, 0) DESC
+            ) AS bm25_rank
+        FROM content_bm25_fb c
+        FULL OUTER JOIN facts_bm25_fb f ON c.event_id = f.event_id
     ),
     vector_results AS (
         SELECT
@@ -569,9 +660,10 @@ $fn$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.retrieve_bee(text, text, integer, boolean) IS
 'Agent-level memory retrieval with 4-stage pipeline:
-CTM=OFF (default): Stage 1 (BM25) + Stage 2 (Vector RRF) + Stage 3 (AGE Graph)
-CTM=ON: Stage 1 (BM25) + Stage 2 (CTM Drift) → merged RRF final ranking
+CTM=OFF (default): Stage 1 (BM25+facts_text RRF) + Stage 2 (Vector RRF) + Stage 3 (AGE Graph)
+CTM=ON: Stage 1 (BM25+facts_text RRF) + Stage 2 (CTM Drift) → merged RRF final ranking
 CTM uses stored brain_events.embedding - ZERO extra API calls.
+facts_text search (C1) integrated in all paths via FULL OUTER JOIN RRF.
 Pass p_ctm_enabled=TRUE to activate CTM mode.';
 
 -- =============================================================================

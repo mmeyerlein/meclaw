@@ -626,47 +626,14 @@ END;
 $fn$ LANGUAGE plpgsql;
 
 -- =============================================================================
--- 6. Helper: get query embedding (synchronous, for retrieve_bee)
+-- 6. Comments only — get_query_embedding (non-cached) was here.
+--    REMOVED: the cached version in 29_phase7_robustness.sql (sql/29) takes
+--    precedence and must NOT be overwritten here. get_query_embedding is now
+--    defined only in 29_phase7_robustness.sql with embedding_cache support.
 -- =============================================================================
-
-CREATE OR REPLACE FUNCTION meclaw.get_query_embedding(p_text TEXT)
-RETURNS vector(1536) AS $fn$
-    import json
-    import requests
-
-    plan_prov = plpy.prepare("SELECT base_url, api_key, config FROM meclaw.llm_providers WHERE id = $1", ["text"])
-    prov = plan_prov.execute(["embedding-openrouter"])
-    if not prov:
-        return None
-
-    base_url = prov[0]["base_url"]
-    api_key = prov[0]["api_key"]
-    config = json.loads(prov[0]["config"]) if prov[0]["config"] else {}
-    model = config.get("model", "openai/text-embedding-3-small")
-
-    text = p_text[:8000]
-
-    try:
-        resp = requests.post(
-            base_url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://meclaw.ai", "X-Title": "MeClaw"},
-            json={"model": model, "input": text},
-            timeout=30
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        embedding = data["data"][0]["embedding"]
-        return "[" + ",".join(str(x) for x in embedding) + "]"
-    except Exception as e:
-        plpy.warning(f"get_query_embedding failed: {e}")
-        return None
-$fn$ LANGUAGE plpython3u;
 
 COMMENT ON FUNCTION meclaw.compute_embedding IS
 'Compute embedding for a single brain_event via OpenRouter embedding API.';
 
 COMMENT ON FUNCTION meclaw.compute_embeddings_batch IS
 'Batch compute embeddings for brain_events without embeddings. Rate-limited.';
-
-COMMENT ON FUNCTION meclaw.get_query_embedding IS
-'Get embedding vector for a query string. Used by retrieve_bee for vector search.';
