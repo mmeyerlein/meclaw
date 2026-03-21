@@ -257,7 +257,80 @@ END;
 $fn$ LANGUAGE plpgsql;
 
 -- =============================================================================
--- 5. Update retrieve_bee with vector search + RRF
+-- 5a. Graph Expansion Helper (plpython3u, can use AGE dynamically)
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION meclaw.graph_expand_events(
+    p_anchor_ids TEXT[],   -- array of event_id UUIDs as text
+    p_is_temporal BOOLEAN DEFAULT FALSE
+)
+RETURNS TABLE (event_id UUID, graph_hop INT) AS $fn$
+    import re
+
+    if not p_anchor_ids:
+        return []
+
+    seen = set()
+    results = []
+
+    for anchor_id in p_anchor_ids:
+        # Sanitize UUID to prevent injection
+        if not re.match(r'^[0-9a-f-]{36}$', anchor_id):
+            continue
+
+        # TEMPORAL traversal (1-3 hops, forward direction)
+        try:
+            plpy.execute("LOAD 'age'")
+            plpy.execute("SET search_path = ag_catalog, meclaw, public")
+            qry = """
+                SELECT * FROM cypher('meclaw_graph', $$
+                    MATCH (anchor:Event {{event_id: '{anchor}' }})-[:TEMPORAL*1..3]->(n:Event)
+                    RETURN n.event_id AS nid
+                $$) AS (nid ag_catalog.agtype)
+            """.format(anchor=anchor_id).replace('{{', '{').replace('}}', '}')
+            rows = plpy.execute(qry)
+            for row in rows:
+                nid = row['nid']
+                if nid:
+                    # Strip surrounding quotes from agtype string
+                    nid_clean = str(nid).strip('"')
+                    if nid_clean not in seen:
+                        seen.add(nid_clean)
+                        results.append((nid_clean, 1))
+        except Exception as e:
+            plpy.warning(f"graph_expand temporal from {anchor_id}: {e}")
+
+        # Entity-based expansion via INVOLVED_IN (2 hops: Event->Entity->Event)
+        try:
+            plpy.execute("LOAD 'age'")
+            plpy.execute("SET search_path = ag_catalog, meclaw, public")
+            qry = """
+                SELECT * FROM cypher('meclaw_graph', $$
+                    MATCH (en:Entity)-[:INVOLVED_IN]->(anchor:Event {{event_id: '{anchor}' }})
+                    MATCH (en)-[:INVOLVED_IN]->(n:Event)
+                    WHERE n.event_id <> '{anchor}'
+                    RETURN n.event_id AS nid
+                $$) AS (nid ag_catalog.agtype)
+            """.format(anchor=anchor_id).replace('{{', '{').replace('}}', '}')
+            rows = plpy.execute(qry)
+            for row in rows:
+                nid = row['nid']
+                if nid:
+                    nid_clean = str(nid).strip('"')
+                    if nid_clean not in seen:
+                        seen.add(nid_clean)
+                        results.append((nid_clean, 2))
+        except Exception as e:
+            plpy.warning(f"graph_expand entity from {anchor_id}: {e}")
+
+    return results
+$fn$ LANGUAGE plpython3u;
+
+COMMENT ON FUNCTION meclaw.graph_expand_events IS
+'Expand from anchor event IDs via AGE graph (TEMPORAL + INVOLVED_IN). Returns neighbor event_ids with hop distance.';
+
+-- =============================================================================
+-- 5. retrieve_bee v3: BM25 + Vector RRF + AGE Graph Expansion + 6-Signal Ranking
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION meclaw.retrieve_bee(
@@ -278,6 +351,9 @@ DECLARE
     v_channel_ids UUID[];
     v_query_embedding vector(1536);
     v_has_embeddings BOOLEAN;
+    v_is_temporal_query BOOLEAN;
+    v_now TIMESTAMPTZ;
+    v_max_seq BIGINT;
 BEGIN
     -- 1. Get channels this agent can access
     SELECT array_agg(ac.channel_id)
@@ -289,14 +365,18 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 2. Check if we have any embeddings at all
+    -- 2. Detect temporal query (for TEMPORAL-edge-first traversal)
+    v_is_temporal_query := (
+        lower(p_query) ~ '\m(first|before|after|when|how many days|earliest|latest|last time|since|until|between)\M'
+    );
+
+    -- 3. Check if we have embeddings, compute query embedding
     SELECT EXISTS(
         SELECT 1 FROM meclaw.brain_events be
         WHERE be.embedding IS NOT NULL AND be.channel_id = ANY(v_channel_ids)
         LIMIT 1
     ) INTO v_has_embeddings;
 
-    -- 3. If we have embeddings, compute query embedding for vector search
     IF v_has_embeddings THEN
         BEGIN
             SELECT meclaw.get_query_embedding(p_query) INTO v_query_embedding;
@@ -305,7 +385,184 @@ BEGIN
         END;
     END IF;
 
-    -- 4. RRF Fusion: BM25 + Vector (when available)
+    -- Get reference values for recency scoring
+    SELECT clock_timestamp(), COALESCE(MAX(be2.seq), 1)
+    INTO v_now, v_max_seq
+    FROM meclaw.brain_events be2
+    WHERE be2.channel_id = ANY(v_channel_ids);
+
+    -- 4. Stage 1: BM25 + Vector RRF (top-20 anchors)
+    -- 5. Stage 2: AGE Graph Expansion from top-5 anchors
+    -- 6. Stage 3: 6-Signal Ranking
+    RETURN QUERY
+    WITH bm25_results AS (
+        SELECT
+            be.id AS event_id,
+            be.content,
+            paradedb.score(be.id) AS bm25_score,
+            be.channel_id,
+            COALESCE(be.reward, 0.0) AS reward,
+            COALESCE(be.novelty, 0.0) AS novelty,
+            be.created_at,
+            be.seq,
+            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+        FROM meclaw.brain_events be
+        WHERE be.content @@@ p_query
+            AND be.channel_id = ANY(v_channel_ids)
+            AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+        ORDER BY paradedb.score(be.id) DESC
+        LIMIT 20
+    ),
+    vector_results AS (
+        SELECT
+            be.id AS event_id,
+            be.content,
+            1 - (be.embedding <=> v_query_embedding) AS vec_score,
+            be.channel_id,
+            COALESCE(be.reward, 0.0) AS reward,
+            COALESCE(be.novelty, 0.0) AS novelty,
+            be.created_at,
+            be.seq,
+            ROW_NUMBER() OVER (ORDER BY be.embedding <=> v_query_embedding) AS vec_rank
+        FROM meclaw.brain_events be
+        WHERE v_query_embedding IS NOT NULL
+            AND be.embedding IS NOT NULL
+            AND be.channel_id = ANY(v_channel_ids)
+            AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+        ORDER BY be.embedding <=> v_query_embedding
+        LIMIT 20
+    ),
+    -- Stage 1 RRF: combine BM25 and vector ranks
+    stage1_rrf AS (
+        SELECT
+            COALESCE(b.event_id, v.event_id) AS event_id,
+            COALESCE(b.content, v.content) AS content,
+            COALESCE(1.0 / (60 + b.bm25_rank), 0) + COALESCE(1.0 / (60 + v.vec_rank), 0) AS rrf_score,
+            COALESCE(b.channel_id, v.channel_id) AS channel_id,
+            COALESCE(b.reward, v.reward, 0.0) AS reward,
+            COALESCE(b.novelty, v.novelty, 0.0) AS novelty,
+            COALESCE(b.created_at, v.created_at) AS created_at,
+            COALESCE(b.seq, v.seq, 0) AS seq
+        FROM bm25_results b
+        FULL OUTER JOIN vector_results v ON b.event_id = v.event_id
+    ),
+    -- Top-5 anchors for graph expansion
+    anchors AS (
+        SELECT s1.event_id, s1.rrf_score
+        FROM stage1_rrf s1
+        ORDER BY s1.rrf_score DESC
+        LIMIT 5
+    ),
+    -- Stage 2: AGE Graph Expansion via plpython3u helper
+    -- Collects anchor event_ids as array, expands via TEMPORAL + INVOLVED_IN
+    anchor_ids_arr AS (
+        SELECT array_agg(a.event_id::TEXT) AS ids FROM anchors a
+    ),
+    all_graph_neighbors AS (
+        SELECT ge.event_id, MIN(ge.graph_hop) AS min_hop
+        FROM anchor_ids_arr,
+        LATERAL meclaw.graph_expand_events(ids, v_is_temporal_query) ge
+        GROUP BY ge.event_id
+    ),
+    -- Fetch brain_events data for graph neighbors (filter by channel access)
+    graph_events AS (
+        SELECT
+            be.id AS event_id,
+            be.content,
+            be.channel_id,
+            COALESCE(be.reward, 0.0) AS reward,
+            COALESCE(be.novelty, 0.0) AS novelty,
+            be.created_at,
+            be.seq,
+            COALESCE(gn.min_hop, 3) AS graph_hop
+        FROM all_graph_neighbors gn
+        JOIN meclaw.brain_events be ON be.id = gn.event_id
+        WHERE be.channel_id = ANY(v_channel_ids)
+            AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
+    ),
+    -- Graph-expanded candidates with RRF rank placeholder (rank = 20 + hop*10)
+    graph_rrf AS (
+        SELECT
+            ge.event_id,
+            ge.content,
+            1.0 / (60 + 20 + ge.graph_hop * 10) AS rrf_score,
+            ge.channel_id,
+            ge.reward,
+            ge.novelty,
+            ge.created_at,
+            ge.seq
+        FROM graph_events ge
+        -- Only include if NOT already in stage1_rrf
+        WHERE ge.event_id NOT IN (SELECT s1b.event_id FROM stage1_rrf s1b)
+    ),
+    -- Merge stage1 + graph expansion
+    all_candidates AS (
+        SELECT s1.event_id, s1.content, s1.rrf_score, s1.channel_id, s1.reward, s1.novelty, s1.created_at, s1.seq
+        FROM stage1_rrf s1
+        UNION ALL
+        SELECT gr.event_id, gr.content, gr.rrf_score, gr.channel_id, gr.reward, gr.novelty, gr.created_at, gr.seq
+        FROM graph_rrf gr
+    ),
+    -- 6-Signal Ranking:
+    --   1. BM25/Vector RRF score (base relevance)
+    --   2. Graph distance bonus (captured via graph_rrf above)
+    --   3. Recency (exponential decay: newer = better)
+    --   4. Reward (reinforcement signal)
+    --   5. Novelty (information value)
+    -- (personality_fit omitted for now)
+    scored AS (
+        SELECT
+            c.event_id,
+            c.content,
+            c.channel_id,
+            c.reward,
+            c.created_at,
+            -- Recency: 0..1, half-life ~7 days
+            EXP(-EXTRACT(EPOCH FROM (v_now - c.created_at)) / (7 * 86400.0)) AS recency_score,
+            -- Normalize reward to 0..1 range (assume reward in -10..10)
+            LEAST(1.0, GREATEST(0.0, (c.reward + 10.0) / 20.0)) AS reward_score,
+            -- Novelty already 0..1
+            COALESCE(c.novelty, 0.0) AS novelty_score,
+            -- Base RRF
+            c.rrf_score
+        FROM all_candidates c
+    ),
+    final_scored AS (
+        SELECT
+            s.event_id,
+            s.content,
+            s.channel_id,
+            s.reward,
+            s.created_at,
+            -- Weighted 6-signal score:
+            -- RRF: 50%, Recency: 20%, Reward: 15%, Novelty: 15%
+            -- For temporal queries, boost recency weight
+            CASE WHEN v_is_temporal_query THEN
+                s.rrf_score * 0.40 + s.recency_score * 0.35 + s.reward_score * 0.15 + s.novelty_score * 0.10
+            ELSE
+                s.rrf_score * 0.50 + s.recency_score * 0.20 + s.reward_score * 0.15 + s.novelty_score * 0.15
+            END AS final_score,
+            CASE
+                WHEN s.rrf_score > 0 AND v_query_embedding IS NOT NULL THEN 'rrf_graph'::TEXT
+                WHEN s.rrf_score > 0 THEN 'bm25_graph'::TEXT
+                ELSE 'graph'::TEXT
+            END AS source
+        FROM scored s
+    )
+    SELECT
+        fs.event_id,
+        fs.content,
+        fs.final_score::FLOAT AS score,
+        fs.source,
+        fs.channel_id,
+        fs.reward,
+        fs.created_at
+    FROM final_scored fs
+    ORDER BY fs.final_score DESC
+    LIMIT p_limit;
+
+EXCEPTION WHEN OTHERS THEN
+    -- Fallback: if graph expansion fails (e.g. AGE not loaded), return pure RRF
     RETURN QUERY
     WITH bm25_results AS (
         SELECT
@@ -340,7 +597,6 @@ BEGIN
         ORDER BY be.embedding <=> v_query_embedding
         LIMIT 20
     ),
-    -- RRF: combine BM25 and vector ranks
     combined AS (
         SELECT
             COALESCE(b.event_id, v.event_id) AS event_id,
@@ -357,8 +613,8 @@ BEGIN
         c.content,
         (c.rrf_score + c.reward * 0.01)::FLOAT AS score,
         CASE
-            WHEN v_query_embedding IS NOT NULL THEN 'rrf'::TEXT
-            ELSE 'bm25'::TEXT
+            WHEN v_query_embedding IS NOT NULL THEN 'rrf_fallback'::TEXT
+            ELSE 'bm25_fallback'::TEXT
         END AS source,
         c.channel_id,
         c.reward,
