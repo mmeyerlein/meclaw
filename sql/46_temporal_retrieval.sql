@@ -279,9 +279,13 @@ BEGIN
 
     v_query := COALESCE(v_expanded.expanded_query, p_query);
     
-    -- Parse time filters
+    -- Parse time filters (date-only values → end of day / start of day)
     IF v_expanded.time_filter_before IS NOT NULL THEN
         v_before_date := v_expanded.time_filter_before::TIMESTAMPTZ;
+        -- If date-only (00:00:00), extend to end of day
+        IF v_before_date = date_trunc('day', v_before_date) THEN
+            v_before_date := v_before_date + interval '1 day' - interval '1 second';
+        END IF;
     END IF;
     IF v_expanded.time_filter_after IS NOT NULL THEN
         v_after_date := v_expanded.time_filter_after::TIMESTAMPTZ;
@@ -291,6 +295,10 @@ BEGIN
     IF v_before_date IS NULL AND p_question_date IS NOT NULL THEN
         BEGIN
             v_before_date := meclaw.parse_benchmark_date(p_question_date);
+            -- Ensure end-of-day if date portion only
+            IF v_before_date IS NOT NULL AND v_before_date = date_trunc('day', v_before_date) THEN
+                v_before_date := v_before_date + interval '1 day' - interval '1 second';
+            END IF;
         EXCEPTION WHEN OTHERS THEN
             NULL;
         END;
