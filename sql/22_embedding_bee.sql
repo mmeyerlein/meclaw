@@ -90,11 +90,10 @@ $fn$ LANGUAGE plpython3u;
 -- 3. Batch compute embeddings for all events without embedding
 -- =============================================================================
 
-CREATE OR REPLACE FUNCTION meclaw.compute_embeddings_batch(p_limit INT DEFAULT 50)
+CREATE OR REPLACE FUNCTION meclaw.compute_embeddings_batch(p_limit INT DEFAULT 100)
 RETURNS INT AS $fn$
     import json
     import requests
-    import time
 
     # Get embedding provider config
     plan_prov = plpy.prepare("SELECT base_url, api_key, config FROM meclaw.llm_providers WHERE id = $1", ["text"])
@@ -107,6 +106,7 @@ RETURNS INT AS $fn$
     api_key = prov[0]["api_key"]
     config = json.loads(prov[0]["config"]) if prov[0]["config"] else {}
     model = config.get("model", "openai/text-embedding-3-small")
+    batch_size = config.get("batch_size", 50)  # OpenAI supports up to 2048
 
     # Get events without embeddings
     plan_events = plpy.prepare("""
@@ -119,12 +119,18 @@ RETURNS INT AS $fn$
     if not events:
         return 0
 
+    # Collect all texts and IDs
+    items = [(str(row["id"]), row["content"][:8000]) for row in events]
     count = 0
-    for row in events:
-        event_id = str(row["id"])
-        content = row["content"][:8000]
+
+    # Process in batches (single API call per batch!)
+    for batch_start in range(0, len(items), batch_size):
+        batch = items[batch_start:batch_start + batch_size]
+        ids = [b[0] for b in batch]
+        texts = [b[1] for b in batch]
 
         try:
+            # ONE API call for the entire batch
             resp = requests.post(
                 base_url,
                 headers={
@@ -133,26 +139,49 @@ RETURNS INT AS $fn$
                     "HTTP-Referer": "https://meclaw.ai",
                     "X-Title": "MeClaw"
                 },
-                json={"model": model, "input": content},
-                timeout=30
+                json={"model": model, "input": texts},
+                timeout=60
             )
             resp.raise_for_status()
             data = resp.json()
-            embedding = data["data"][0]["embedding"]
 
-            vec_str = "[" + ",".join(str(x) for x in embedding) + "]"
+            # Update all embeddings from the batch response
             update_plan = plpy.prepare(
                 "UPDATE meclaw.brain_events SET embedding = $1::vector WHERE id = $2",
                 ["text", "uuid"]
             )
-            update_plan.execute([vec_str, event_id])
-            count += 1
+            for emb_item in data["data"]:
+                idx = emb_item["index"]
+                embedding = emb_item["embedding"]
+                vec_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                update_plan.execute([vec_str, ids[idx]])
+                count += 1
 
-            # Rate limiting: 100ms between requests
-            time.sleep(0.1)
+            plpy.notice(f"compute_embeddings_batch: {len(batch)} embeddings in 1 API call")
 
         except Exception as e:
-            plpy.warning(f"compute_embeddings_batch: failed for {event_id}: {e}")
+            plpy.warning(f"compute_embeddings_batch: batch failed ({len(batch)} items): {e}")
+            # Fallback: try one by one for this batch
+            for event_id, content in batch:
+                try:
+                    resp = requests.post(
+                        base_url,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://meclaw.ai",
+                            "X-Title": "MeClaw"
+                        },
+                        json={"model": model, "input": content},
+                        timeout=30
+                    )
+                    resp.raise_for_status()
+                    embedding = resp.json()["data"][0]["embedding"]
+                    vec_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                    update_plan.execute([vec_str, event_id])
+                    count += 1
+                except Exception as e2:
+                    plpy.warning(f"compute_embeddings_batch: single fallback failed for {event_id}: {e2}")
 
     return count
 $fn$ LANGUAGE plpython3u;

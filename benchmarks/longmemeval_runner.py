@@ -189,23 +189,15 @@ def run_single_question(conn, channel_id, item, qi, total):
     
     check_brain_stats(conn)
     
-    # Wait for async embedding/extraction workers to complete
-    print(f"  [wait] Waiting for embeddings...")
-    for wait_round in range(60):  # max 120 seconds
-        time.sleep(2)
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*) as total,
-                  SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) as embedded
-                FROM meclaw.brain_events
-            """)
-            row = cur.fetchone()
-            total_be, embedded = row[0], row[1]
-            if embedded >= total_be * 0.8 or embedded >= total_msgs // 2:
-                print(f"  [wait] {embedded}/{total_be} embedded after {(wait_round+1)*2}s")
-                break
-    else:
-        print(f"  [wait] Timeout — {embedded}/{total_be} embedded")
+    # Batch-embed all events at once (single API call!)
+    print(f"  [embed] Batch embedding...")
+    t0 = time.time()
+    with conn.cursor() as cur:
+        cur.execute("SELECT meclaw.compute_embeddings_batch(200)")
+        result = cur.fetchone()
+        embedded = result[0] if result else 0
+    elapsed = time.time() - t0
+    print(f"  [embed] {embedded} embeddings in {elapsed:.1f}s")
     
     # Retrieve context for the question
     context = retrieve_context(conn, question)
