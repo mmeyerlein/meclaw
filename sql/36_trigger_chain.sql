@@ -49,13 +49,20 @@ BEGIN
 
                 IF v_agent_id IS NOT NULL THEN
                     -- Async: novelty_bee läuft im Hintergrund, blockiert den Trigger nicht
-                    PERFORM pg_background_launch(
-                        format(
-                            'SELECT meclaw.novelty_bee(%L, %L)',
-                            v_agent_id,
-                            v_brain_event_id
-                        )
-                    );
+                    -- Exception handler: if worker slots exhausted, skip silently
+                    -- (novelty can be backfilled later via run_signal_pipeline)
+                    BEGIN
+                        PERFORM pg_background_launch(
+                            format(
+                                'SELECT meclaw.novelty_bee(%L, %L)',
+                                v_agent_id,
+                                v_brain_event_id
+                            )
+                        );
+                    EXCEPTION WHEN OTHERS THEN
+                        -- Log but don't fail — novelty_bee is non-critical
+                        NULL;
+                    END;
                 END IF;
             END IF;
 
