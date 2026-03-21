@@ -11,6 +11,16 @@ Usage:
     --data /tmp/longmemeval/data/longmemeval_oracle.json \
     --limit 5 --output /tmp/longmemeval/results.json
 
+  # Cumulative mode (brain accumulates across questions):
+  python3 longmemeval_runner.py \
+    --data /tmp/longmemeval/data/longmemeval_oracle.json \
+    --limit 5 --cumulative --output /tmp/longmemeval/results_cumulative.json
+
+  # CTM mode (uses BM25+CTM drift retrieval):
+  python3 longmemeval_runner.py \
+    --data /tmp/longmemeval/data/longmemeval_oracle.json \
+    --limit 5 --ctm --output /tmp/longmemeval/results_ctm.json
+
 Requires: psycopg2-binary
 """
 
@@ -122,12 +132,14 @@ def feed_message(conn, channel_id, role, content, session_date=""):
     return msg_id
 
 
-def retrieve_context(conn, question, limit=10):
+def retrieve_context(conn, question, limit=10, ctm_enabled=False):
     """Use retrieve_bee to get relevant brain context for a question."""
     with conn.cursor() as cur:
         try:
-            cur.execute("SELECT meclaw.retrieve_bee('meclaw:agent:system', %s, %s)", 
-                       (question, limit))
+            cur.execute(
+                "SELECT meclaw.retrieve_bee('meclaw:agent:system', %s, %s, %s)",
+                (question, limit, ctm_enabled)
+            )
             result = cur.fetchone()
             if result and result[0]:
                 return result[0]
@@ -179,7 +191,7 @@ def check_brain_stats(conn):
               f"(embedded={emb_count}, extracted={ext_count}) entities={entity_count}")
 
 
-def run_single_question(conn, channel_id, item, qi, total):
+def run_single_question(conn, channel_id, item, qi, total, cumulative=False, ctm_enabled=False):
     """Process one benchmark question: feed sessions, ask, return result."""
     qid = item['question_id']
     qtype = item['question_type']
@@ -192,11 +204,15 @@ def run_single_question(conn, channel_id, item, qi, total):
     print(f"[{qi+1}/{total}] {qid} ({qtype})")
     print(f"  Q: {question[:100]}")
     print(f"  A: {str(expected)[:100]}")
+    if cumulative:
+        print(f"  [mode] cumulative — brain NOT cleared before this question")
     
-    # Reset brain for this question
-    reset_brain(conn)
+    # In reset mode (default): clear brain before each question
+    # In cumulative mode: skip reset, sessions accumulate across questions
+    if not cumulative:
+        reset_brain(conn)
     
-    # Feed all sessions
+    # Feed all sessions for this question
     total_msgs = 0
     for si, session in enumerate(sessions):
         date = dates[si] if si < len(dates) else ""
@@ -218,7 +234,9 @@ def run_single_question(conn, channel_id, item, qi, total):
     print(f"  [embed] {embedded} embeddings in {elapsed:.1f}s")
     
     # Retrieve context for the question
-    context = retrieve_context(conn, question)
+    ctm_label = " (CTM)" if ctm_enabled else ""
+    print(f"  [retrieve{ctm_label}] {question[:80]}")
+    context = retrieve_context(conn, question, ctm_enabled=ctm_enabled)
     
     result = {
         "question_id": qid,
@@ -238,7 +256,8 @@ def run_single_question(conn, channel_id, item, qi, total):
     return result
 
 
-def run_benchmark(data_path, db_dsn, limit=None, output_path=None):
+def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
+                  cumulative=False, ctm_enabled=False):
     """Run the full benchmark."""
     with open(data_path) as f:
         data = json.load(f)
@@ -249,15 +268,27 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None):
     conn = get_conn(db_dsn)
     channel_id = get_or_create_channel(conn)
     
+    mode_str = "cumulative" if cumulative else "reset (default)"
+    ctm_str = " + CTM" if ctm_enabled else ""
+    
     print(f"MeClaw LongMemEval Benchmark")
     print(f"Dataset: {data_path}")
     print(f"Questions: {len(data)}")
     print(f"Channel: {channel_id}")
+    print(f"Mode: {mode_str}{ctm_str}")
     print(f"{'='*60}")
+    
+    # In cumulative mode: do one initial reset at start only
+    if cumulative:
+        print("[cumulative] Initial brain reset (once at start)")
+        reset_brain(conn)
     
     results = []
     for qi, item in enumerate(data):
-        result = run_single_question(conn, channel_id, item, qi, len(data))
+        result = run_single_question(
+            conn, channel_id, item, qi, len(data),
+            cumulative=cumulative, ctm_enabled=ctm_enabled
+        )
         results.append(result)
     
     # Summary
@@ -266,6 +297,7 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None):
     print(f"{'='*60}")
     retrieved = sum(1 for r in results if r['retrieved_context'])
     print(f"Questions: {len(results)}")
+    print(f"Mode: {mode_str}{ctm_str}")
     print(f"Retrieved context: {retrieved}/{len(results)} ({100*retrieved/len(results):.0f}%)")
     
     from collections import Counter
@@ -298,6 +330,26 @@ if __name__ == "__main__":
     p.add_argument("--db", default=DB_DSN)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--output", "-o", default=None)
+    p.add_argument(
+        "--cumulative",
+        action="store_true",
+        default=False,
+        help=(
+            "Cumulative mode: brain is NOT reset between questions. "
+            "Sessions accumulate so Graph/Temporal/Facts/Prototypes can build "
+            "across the full benchmark. Default: reset brain per question."
+        ),
+    )
+    p.add_argument(
+        "--ctm",
+        action="store_true",
+        default=False,
+        help=(
+            "CTM mode: call retrieve_bee with p_ctm_enabled=TRUE "
+            "(BM25 + Contextual Trajectory Matching drift retrieval)."
+        ),
+    )
     args = p.parse_args()
     
-    run_benchmark(args.data, args.db, args.limit, args.output)
+    run_benchmark(args.data, args.db, args.limit, args.output,
+                  cumulative=args.cumulative, ctm_enabled=args.ctm)
