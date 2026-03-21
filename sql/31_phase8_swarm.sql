@@ -42,11 +42,11 @@ EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
 -- Seed models
-INSERT INTO meclaw.llm_models (id, provider_id, display_name, capabilities, context_window, max_output, cost_per_1k_input, cost_per_1k_output, tier, speed, quality) VALUES
-    ('openai/gpt-4o-mini', 'openrouter', 'GPT-4o Mini', ARRAY['chat', 'function_calling', 'json_mode', 'vision'], 128000, 16384, 0.00015, 0.0006, 'cheap', 'fast', 'medium'),
-    ('openai/gpt-4o', 'openrouter', 'GPT-4o', ARRAY['chat', 'function_calling', 'json_mode', 'vision'], 128000, 16384, 0.0025, 0.01, 'standard', 'medium', 'high'),
-    ('anthropic/claude-sonnet-4', 'openrouter', 'Claude Sonnet 4', ARRAY['chat', 'function_calling', 'json_mode', 'vision', 'code'], 200000, 8192, 0.003, 0.015, 'standard', 'medium', 'high'),
-    ('anthropic/claude-opus-4', 'openrouter', 'Claude Opus 4', ARRAY['chat', 'function_calling', 'json_mode', 'vision', 'code'], 200000, 32000, 0.015, 0.075, 'premium', 'slow', 'frontier')
+INSERT INTO meclaw.llm_models (id, provider_id, model_name, display_name, capabilities, context_window, max_output, cost_per_1k_input, cost_per_1k_output, tier, speed, quality) VALUES
+    ('openai/gpt-4o-mini', 'openrouter', 'openai/gpt-4o-mini', 'GPT-4o Mini', ARRAY['chat', 'function_calling', 'json_mode', 'vision'], 128000, 16384, 0.00015, 0.0006, 'cheap', 'fast', 'medium'),
+    ('openai/gpt-4o', 'openrouter', 'openai/gpt-4o', 'GPT-4o', ARRAY['chat', 'function_calling', 'json_mode', 'vision'], 128000, 16384, 0.0025, 0.01, 'standard', 'medium', 'high'),
+    ('anthropic/claude-sonnet-4', 'openrouter', 'anthropic/claude-sonnet-4', 'Claude Sonnet 4', ARRAY['chat', 'function_calling', 'json_mode', 'vision', 'code'], 200000, 8192, 0.003, 0.015, 'standard', 'medium', 'high'),
+    ('anthropic/claude-opus-4', 'openrouter', 'anthropic/claude-opus-4', 'Claude Opus 4', ARRAY['chat', 'function_calling', 'json_mode', 'vision', 'code'], 200000, 32000, 0.015, 0.075, 'premium', 'slow', 'frontier')
 ON CONFLICT (id) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
