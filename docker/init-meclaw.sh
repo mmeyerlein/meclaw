@@ -13,7 +13,7 @@ MECLAW_DIR="/docker-entrypoint-initdb.d/meclaw"
 echo ">>> Creating database 'meclaw'..."
 psql -U "$PGUSER" -c "CREATE DATABASE meclaw;" 2>/dev/null || echo "    (database already exists)"
 
-# 2. Run all SQL files in order
+# 2. Run all SQL files in dependency order
 FAILED=0
 for sqlfile in \
     sql/01_extensions.sql \
@@ -25,11 +25,11 @@ for sqlfile in \
     sql/07_io_bees.sql \
     sql/08_triggers.sql \
     sql/09_age_graph.sql \
-    sql/10_seed.sql \
     sql/12_admin_bee.sql \
     sql/13_context_bee.sql \
     sql/14_tools.sql \
     sql/15_llm_providers.sql \
+    sql/10_seed.sql \
     sql/16_brain_schema.sql \
     sql/17_age_agents.sql \
     sql/18_seed_agents.sql \

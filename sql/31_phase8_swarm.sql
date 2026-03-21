@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS meclaw.llm_models (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Ensure columns exist (may have been created by 15_llm_providers.sql with different schema)
+DO $$ BEGIN
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS capabilities TEXT[] DEFAULT '{}';
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS context_window INT DEFAULT 128000;
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS max_output INT DEFAULT 4096;
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS cost_per_1k_input FLOAT DEFAULT 0.0;
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS cost_per_1k_output FLOAT DEFAULT 0.0;
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS speed TEXT DEFAULT 'medium';
+    ALTER TABLE meclaw.llm_models ADD COLUMN IF NOT EXISTS quality TEXT DEFAULT 'medium';
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
 -- Seed models
 INSERT INTO meclaw.llm_models (id, provider_id, display_name, capabilities, context_window, max_output, cost_per_1k_input, cost_per_1k_output, tier, speed, quality) VALUES
     ('openai/gpt-4o-mini', 'openrouter', 'GPT-4o Mini', ARRAY['chat', 'function_calling', 'json_mode', 'vision'], 128000, 16384, 0.00015, 0.0006, 'cheap', 'fast', 'medium'),
