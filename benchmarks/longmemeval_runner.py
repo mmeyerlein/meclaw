@@ -343,8 +343,9 @@ def retrieve_context_full(conn, question, limit=10, ctm_enabled=False,
                 return context, sources
         except Exception as e:
             import traceback
+            err_detail = traceback.format_exc()
             print(f"    [warn] retrieve: {e}")
-            traceback.print_exc()
+            print(f"    [traceback] {err_detail}")
             conn.rollback()
             conn.autocommit = True
 
