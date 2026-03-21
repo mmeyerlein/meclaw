@@ -198,10 +198,11 @@ DECLARE
     v_message_type TEXT;
     v_task_id UUID;
     v_event_id UUID;
+    v_created_at TIMESTAMPTZ;
 BEGIN
-    -- Get message details
-    SELECT channel_id, content->>'input', type, task_id
-    INTO v_channel_id, v_content, v_message_type, v_task_id
+    -- Get message details (including timestamp for temporal indexing)
+    SELECT channel_id, content->>'input', type, task_id, created_at
+    INTO v_channel_id, v_content, v_message_type, v_task_id, v_created_at
     FROM meclaw.messages
     WHERE id = p_msg_id;
 
@@ -220,11 +221,11 @@ BEGIN
         END IF;
     END IF;
 
-    -- Create brain_event (shared, channel-level: agent_id = NULL)
+    -- Create brain_event with original timestamp (temporal indexing!)
     INSERT INTO meclaw.brain_events (
-        message_id, channel_id, agent_id, content
+        message_id, channel_id, agent_id, content, created_at
     ) VALUES (
-        p_msg_id, v_channel_id, NULL, v_content
+        p_msg_id, v_channel_id, NULL, v_content, COALESCE(v_created_at, clock_timestamp())
     ) RETURNING id INTO v_event_id;
 
     -- Compute embedding asynchronously via pg_background

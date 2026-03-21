@@ -66,10 +66,27 @@ def get_or_create_channel(conn):
         return ch_id
 
 
+def parse_benchmark_date(date_str):
+    """Parse LongMemEval date format: '2023/04/10 (Mon) 17:50' → datetime."""
+    if not date_str:
+        return None
+    try:
+        # Remove day-of-week: '2023/04/10 (Mon) 17:50' → '2023/04/10 17:50'
+        import re
+        clean = re.sub(r'\s*\([A-Za-z]+\)\s*', ' ', date_str).strip()
+        from datetime import datetime
+        return datetime.strptime(clean, "%Y/%m/%d %H:%M")
+    except:
+        return None
+
+
 def feed_message(conn, channel_id, role, content, session_date=""):
     """Insert a single message into MeClaw and trigger extract_bee."""
     msg_id = str(uuid.uuid4())
     task_id = str(uuid.uuid4())
+    
+    # Parse session date for temporal indexing
+    ts = parse_benchmark_date(session_date)
     
     with conn.cursor() as cur:
         # Create task first (FK constraint)
@@ -88,11 +105,12 @@ def feed_message(conn, channel_id, role, content, session_date=""):
         else:
             content_json = json.dumps({"output": content, "benchmark_date": session_date})
         
+        # Use session timestamp for created_at (temporal indexing!)
         cur.execute("""
             INSERT INTO meclaw.messages (id, task_id, channel_id, type, sender, 
                                          status, content, created_at)
-            VALUES (%s, %s, %s, %s, %s, 'done', %s, NOW())
-        """, (msg_id, task_id, channel_id, msg_type, sender, content_json))
+            VALUES (%s, %s, %s, %s, %s, 'done', %s, COALESCE(%s, NOW()))
+        """, (msg_id, task_id, channel_id, msg_type, sender, content_json, ts))
         
         # Trigger extract_bee on user messages (brain processing)
         if role == "user":
