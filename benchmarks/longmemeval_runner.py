@@ -289,15 +289,26 @@ def run_signal_pipeline(conn, skip_extraction=False):
 
 
 def retrieve_context_full(conn, question, limit=10, ctm_enabled=False,
-                          rerank=False, rerank_pool=20):
+                          rerank=False, rerank_pool=20, question_date=None,
+                          smart=False):
     """
     Use retrieve_bee to get relevant brain context for a question.
+    If smart=True, uses retrieve_smart (temporal expansion + reranking).
     If rerank=True, uses LLM re-ranking (Stage 3) via retrieve_reranked.
     Returns (context_text, source_tags) tuple.
     """
     with conn.cursor() as cur:
         try:
-            if rerank:
+            if smart:
+                cur.execute(
+                    """
+                    SELECT content, score, source
+                    FROM meclaw.retrieve_smart(%s, %s, %s, %s, %s, %s)
+                    """,
+                    (BENCHMARK_AGENT_ID, question, question_date,
+                     limit, rerank, ctm_enabled)
+                )
+            elif rerank:
                 cur.execute(
                     """
                     SELECT content, score, source
@@ -317,12 +328,14 @@ def retrieve_context_full(conn, question, limit=10, ctm_enabled=False,
             rows = cur.fetchall()
             if rows:
                 sources = list({r[2] for r in rows if r[2]})
-                if rerank:
+                if smart:
+                    sources.append('smart')
+                elif rerank:
                     sources.append('reranked')
                 context = "\n".join(r[0] for r in rows if r[0])
                 return context, sources
         except Exception as e:
-            print(f"    [warn] retrieve{'_reranked' if rerank else '_bee'}: {e}")
+            print(f"    [warn] retrieve: {e}")
             conn.rollback()
             conn.autocommit = True
 
@@ -386,7 +399,7 @@ def check_brain_stats(conn):
 def run_single_question(conn, channel_id, item, qi, total,
                         cumulative=False, ctm_enabled=False,
                         skip_extraction=False, rerank=False,
-                        top_k=10):
+                        top_k=10, smart=False, decompose=False):
     """Process one benchmark question: feed sessions, run pipeline, retrieve."""
     qid = item['question_id']
     qtype = item['question_type']
@@ -439,6 +452,57 @@ def run_single_question(conn, channel_id, item, qi, total,
     # ── Run full signal pipeline (LLM extraction, novelty, graph) ──────────
     run_signal_pipeline(conn, skip_extraction=skip_extraction)
 
+    # ── Session Decomposition: split messages into atomic facts ─────────────
+    if decompose:
+        print("  [decompose] Splitting messages into atomic facts...")
+        t0 = time.time()
+        with conn.cursor() as cur:
+            # Get all brain_events without decomposed facts
+            cur.execute("""
+                SELECT id, content, to_char(created_at, 'YYYY/MM/DD') as date_str
+                FROM meclaw.brain_events
+                WHERE content IS NOT NULL AND length(content) > 50
+                ORDER BY seq
+            """)
+            events = cur.fetchall()
+            total_facts = 0
+            for eid, econtent, edate in events:
+                try:
+                    cur.execute(
+                        "SELECT fact, fact_date, fact_type FROM meclaw.decompose_message(%s, %s)",
+                        (econtent, edate)
+                    )
+                    facts = cur.fetchall()
+                    for fact_text, fact_date, fact_type in facts:
+                        if fact_text and len(fact_text) > 10 and fact_text != econtent:
+                            # Create a new brain_event for each fact
+                            parsed_date = None
+                            if fact_date and fact_date != "unknown":
+                                try:
+                                    from datetime import datetime
+                                    parsed_date = datetime.strptime(fact_date, "%Y-%m-%d")
+                                except:
+                                    pass
+                            cur.execute("""
+                                INSERT INTO meclaw.brain_events 
+                                    (channel_id, content, created_at)
+                                SELECT channel_id, %s, COALESCE(%s, created_at)
+                                FROM meclaw.brain_events WHERE id = %s
+                            """, (fact_text, parsed_date, eid))
+                            total_facts += 1
+                except Exception as e:
+                    print(f"    [warn] decompose {eid}: {e}")
+            
+            elapsed = time.time() - t0
+            print(f"  [decompose] {total_facts} facts from {len(events)} events in {elapsed:.1f}s")
+            
+            # Embed the new fact events
+            if total_facts > 0:
+                print(f"  [embed] Embedding {total_facts} decomposed facts...")
+                cur.execute("SELECT meclaw.compute_embeddings_batch(500)")
+                emb_result = cur.fetchone()
+                print(f"  [embed] {emb_result[0] if emb_result else 0} new embeddings")
+
     # ── Final stats after pipeline ──────────────────────────────────────────
     print("  [after pipeline]")
     check_brain_stats(conn)
@@ -446,9 +510,12 @@ def run_single_question(conn, channel_id, item, qi, total,
     # ── Retrieve context for the question ──────────────────────────────────
     ctm_label = " (CTM)" if ctm_enabled else ""
     print(f"  [retrieve{ctm_label}] {question[:80]}")
+    question_date = item.get('question_date', None)
     context, sources = retrieve_context_full(conn, question, limit=top_k,
                                               ctm_enabled=ctm_enabled,
-                                              rerank=rerank)
+                                              rerank=rerank,
+                                              question_date=question_date,
+                                              smart=smart)
 
     result = {
         "question_id": qid,
@@ -471,7 +538,7 @@ def run_single_question(conn, channel_id, item, qi, total,
 
 def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
                   cumulative=False, ctm_enabled=False, skip_extraction=False,
-                  rerank=False, top_k=10):
+                  rerank=False, top_k=10, smart=False, decompose=False):
     """Run the full benchmark."""
     with open(data_path) as f:
         data = json.load(f)
@@ -485,6 +552,8 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
     mode_str = "cumulative" if cumulative else "reset (default)"
     ctm_str = " + CTM" if ctm_enabled else ""
     ext_str = " (skip-extraction)" if skip_extraction else ""
+    smart_str = " + smart" if smart else ""
+    decompose_str = " + decompose" if decompose else ""
     rerank_str = f" + rerank (top-{top_k})" if rerank else f" (top-{top_k})"
 
     print(f"MeClaw LongMemEval Benchmark")
@@ -492,7 +561,7 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
     print(f"Questions: {len(data)}")
     print(f"Channel: {channel_id}")
     print(f"Agent: {BENCHMARK_AGENT_ID}")
-    print(f"Mode: {mode_str}{ctm_str}{ext_str}{rerank_str}")
+    print(f"Mode: {mode_str}{ctm_str}{ext_str}{rerank_str}{smart_str}{decompose_str}")
     print(f"{'='*60}")
 
     # In cumulative mode: do one initial reset at start only
@@ -509,6 +578,8 @@ def run_benchmark(data_path, db_dsn, limit=None, output_path=None,
             skip_extraction=skip_extraction,
             rerank=rerank,
             top_k=top_k,
+            smart=smart,
+            decompose=decompose,
         )
         results.append(result)
 
@@ -602,6 +673,24 @@ if __name__ == "__main__":
         ),
     )
     p.add_argument(
+        "--smart",
+        action="store_true",
+        default=False,
+        help=(
+            "Smart retrieval: temporal query expansion + time-filtered retrieval "
+            "+ LLM re-ranking. The full pipeline. Includes --rerank implicitly."
+        ),
+    )
+    p.add_argument(
+        "--decompose",
+        action="store_true",
+        default=False,
+        help=(
+            "Session decomposition: LLM splits messages into atomic facts "
+            "with individual timestamps. ~$3-5 for 500 questions."
+        ),
+    )
+    p.add_argument(
         "--top-k",
         type=int,
         default=10,
@@ -614,4 +703,6 @@ if __name__ == "__main__":
                   ctm_enabled=args.ctm,
                   skip_extraction=args.skip_extraction,
                   rerank=args.rerank,
-                  top_k=args.top_k)
+                  top_k=args.top_k,
+                  smart=args.smart,
+                  decompose=args.decompose)
