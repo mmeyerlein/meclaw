@@ -306,6 +306,9 @@ BEGIN
     END IF;
 
     -- Step 2: Temporal-Filtered Retrieval
+    RAISE NOTICE 'retrieve_smart: query=%, before=%, after=%, order=%',
+        left(v_query, 60), v_before_date, v_after_date, v_temporal_order;
+
     IF p_rerank THEN
         -- Get broad pool for reranking
         SELECT jsonb_agg(jsonb_build_object(
@@ -321,16 +324,24 @@ BEGIN
             LEAST(p_limit * 3, 30), v_temporal_order, p_ctm_enabled
         ) r;
 
+        RAISE NOTICE 'retrieve_smart: temporal candidates=%',
+            CASE WHEN v_candidates IS NULL THEN 0 ELSE jsonb_array_length(v_candidates) END;
+
         IF v_candidates IS NULL OR jsonb_array_length(v_candidates) = 0 THEN
-            -- Fallback without time filter
+            -- Fallback without time filter using ORIGINAL query (not expanded)
+            RAISE NOTICE 'retrieve_smart: fallback to retrieve_bee without time filter';
             SELECT jsonb_agg(jsonb_build_object(
                 'id', r.event_id::text,
                 'content', r.content,
                 'score', r.score,
-                'source', r.source
+                'source', r.source,
+                'created_at', r.created_at
             ))
             INTO v_candidates
             FROM meclaw.retrieve_bee(p_agent_id, p_query, p_limit * 3, p_ctm_enabled) r;
+            
+            RAISE NOTICE 'retrieve_smart: bee fallback candidates=%',
+                CASE WHEN v_candidates IS NULL THEN 0 ELSE jsonb_array_length(v_candidates) END;
         END IF;
 
         IF v_candidates IS NOT NULL AND jsonb_array_length(v_candidates) > 0 THEN
