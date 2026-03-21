@@ -191,6 +191,16 @@ RETURNS TABLE (
     created_at TIMESTAMPTZ
 ) AS $fn$
 DECLARE
+    -- ==========================================================================
+    -- E1: 6-Signal Weighted Ranking (BRAIN.md)
+    -- ==========================================================================
+    w_similarity   CONSTANT FLOAT := 0.25;
+    w_reward       CONSTANT FLOAT := 0.25;
+    w_novelty      CONSTANT FLOAT := 0.15;
+    w_recency      CONSTANT FLOAT := 0.10;
+    w_personality  CONSTANT FLOAT := 0.15;
+    w_graph_dist   CONSTANT FLOAT := 0.10;
+
     v_channel_ids UUID[];
     v_query_embedding vector(1536);
     v_has_embeddings BOOLEAN;
@@ -331,7 +341,7 @@ BEGIN
             FROM bm25_results b
             FULL OUTER JOIN ctm_results c ON b.event_id = c.event_id
         ),
-        -- Final 4-signal ranking (recency + reward + novelty + RRF)
+        -- E1: 6-Signal Weighted Ranking (CTM path uses rrf_score as similarity proxy)
         final_scored AS (
             SELECT
                 m.event_id,
@@ -340,10 +350,13 @@ BEGIN
                 m.reward,
                 m.created_at,
                 m.ctm_source AS source,
-                m.rrf_score * 0.50
-                    + EXP(-EXTRACT(EPOCH FROM (v_now - m.created_at)) / (7 * 86400.0)) * 0.20
-                    + LEAST(1.0, GREATEST(0.0, (m.reward + 10.0) / 20.0)) * 0.15
-                    + COALESCE(m.novelty, 0.0) * 0.15
+                -- similarity: normalize RRF score to ~[0,1] (max theoretical RRF for 2 sources = 1/61+1/61 ≈ 0.033)
+                LEAST(1.0, m.rrf_score / 0.033)          * w_similarity
+                    + LEAST(1.0, GREATEST(0.0, (COALESCE(m.reward, 0.0) + 10.0) / 20.0)) * w_reward
+                    + LEAST(1.0, GREATEST(0.0, COALESCE(m.novelty, 0.0)))                * w_novelty
+                    + 1.0 / (1.0 + EXTRACT(EPOCH FROM (v_now - m.created_at)) / 86400.0) * w_recency
+                    + COALESCE(meclaw.personality_fit(p_agent_id, NULL::TEXT, m.content), 0.5) * w_personality
+                    + 1.0                                                                  * w_graph_dist  -- CTM: no graph hops
                 AS final_score
             FROM merged_rrf m
         )
@@ -499,7 +512,7 @@ BEGIN
         WHERE be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
     ),
-    -- Graph-expanded candidates
+    -- Graph-expanded candidates (with graph_hop for distance signal)
     graph_rrf AS (
         SELECT
             ge.event_id,
@@ -509,19 +522,41 @@ BEGIN
             ge.reward,
             ge.novelty,
             ge.created_at,
-            ge.seq
+            ge.seq,
+            ge.graph_hop
         FROM graph_events ge
         WHERE ge.event_id NOT IN (SELECT s1b.event_id FROM stage1_rrf s1b)
     ),
-    -- Merge stage1 + graph expansion
+    -- Merge stage1 + graph expansion (stage1 events get hop=0 = "direct match")
     all_candidates AS (
-        SELECT s1.event_id, s1.content, s1.rrf_score, s1.channel_id, s1.reward, s1.novelty, s1.created_at, s1.seq
+        SELECT s1.event_id, s1.content, s1.rrf_score, s1.channel_id, s1.reward, s1.novelty, s1.created_at, s1.seq,
+               0 AS graph_hop
         FROM stage1_rrf s1
         UNION ALL
-        SELECT gr.event_id, gr.content, gr.rrf_score, gr.channel_id, gr.reward, gr.novelty, gr.created_at, gr.seq
+        SELECT gr.event_id, gr.content, gr.rrf_score, gr.channel_id, gr.reward, gr.novelty, gr.created_at, gr.seq,
+               gr.graph_hop
         FROM graph_rrf gr
     ),
-    -- 6-Signal Ranking
+    -- Retrieve per-event cosine similarity for similarity signal
+    candidate_similarity AS (
+        SELECT
+            be.id AS event_id,
+            CASE
+                WHEN v_query_embedding IS NOT NULL AND be.embedding IS NOT NULL
+                THEN LEAST(1.0, GREATEST(0.0, 1.0 - (be.embedding <=> v_query_embedding)))
+                ELSE 0.5  -- neutral when no embedding
+            END AS sim_score
+        FROM meclaw.brain_events be
+        WHERE be.id IN (SELECT ac.event_id FROM all_candidates ac)
+    ),
+    -- E1: 6-Signal Weighted Ranking
+    -- Signals normalized to [0,1]:
+    --   similarity  : cosine similarity from pgvector (already 0-1)
+    --   reward      : COALESCE(reward, 0) rescaled from [-10,10] → [0,1]
+    --   novelty     : COALESCE(novelty, 0) (already 0-1 stored)
+    --   recency     : 1/(1 + age_days) decay
+    --   personality : meclaw.personality_fit(agent, NULL, content) (returns 0-1)
+    --   graph_dist  : 1/(1 + hop_count)
     scored AS (
         SELECT
             c.event_id,
@@ -529,11 +564,24 @@ BEGIN
             c.channel_id,
             c.reward,
             c.created_at,
-            EXP(-EXTRACT(EPOCH FROM (v_now - c.created_at)) / (7 * 86400.0)) AS recency_score,
-            LEAST(1.0, GREATEST(0.0, (c.reward + 10.0) / 20.0)) AS reward_score,
-            COALESCE(c.novelty, 0.0) AS novelty_score,
-            c.rrf_score
+            c.rrf_score,
+            -- similarity signal
+            COALESCE(cs.sim_score, 0.5) AS sig_similarity,
+            -- reward signal: rescale [-10,10] → [0,1]
+            LEAST(1.0, GREATEST(0.0, (COALESCE(c.reward, 0.0) + 10.0) / 20.0)) AS sig_reward,
+            -- novelty signal
+            LEAST(1.0, GREATEST(0.0, COALESCE(c.novelty, 0.0))) AS sig_novelty,
+            -- recency signal: 1 / (1 + age_in_days)
+            1.0 / (1.0 + EXTRACT(EPOCH FROM (v_now - c.created_at)) / 86400.0) AS sig_recency,
+            -- personality_fit: (agent_id, user_id=NULL, content)
+            COALESCE(
+                meclaw.personality_fit(p_agent_id, NULL::TEXT, c.content),
+                0.5
+            ) AS sig_personality,
+            -- graph distance signal: 1 / (1 + hops)
+            1.0 / (1.0 + c.graph_hop::FLOAT) AS sig_graph_dist
         FROM all_candidates c
+        LEFT JOIN candidate_similarity cs ON cs.event_id = c.event_id
     ),
     final_scored AS (
         SELECT
@@ -542,11 +590,14 @@ BEGIN
             s.channel_id,
             s.reward,
             s.created_at,
-            CASE WHEN v_is_temporal_query THEN
-                s.rrf_score * 0.40 + s.recency_score * 0.35 + s.reward_score * 0.15 + s.novelty_score * 0.10
-            ELSE
-                s.rrf_score * 0.50 + s.recency_score * 0.20 + s.reward_score * 0.15 + s.novelty_score * 0.15
-            END AS final_score,
+            -- Weighted sum of 6 signals (BRAIN.md weights)
+            s.sig_similarity  * w_similarity
+            + s.sig_reward    * w_reward
+            + s.sig_novelty   * w_novelty
+            + s.sig_recency   * w_recency
+            + s.sig_personality * w_personality
+            + s.sig_graph_dist  * w_graph_dist
+            AS final_score,
             CASE
                 WHEN s.rrf_score > 0 AND v_query_embedding IS NOT NULL THEN 'rrf_graph'::TEXT
                 WHEN s.rrf_score > 0 THEN 'bm25_graph'::TEXT
@@ -659,9 +710,10 @@ END;
 $fn$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.retrieve_bee(text, text, integer, boolean) IS
-'Agent-level memory retrieval with 4-stage pipeline:
+'Agent-level memory retrieval with E1: 6-Signal Weighted Ranking (BRAIN.md).
 CTM=OFF (default): Stage 1 (BM25+facts_text RRF) + Stage 2 (Vector RRF) + Stage 3 (AGE Graph)
 CTM=ON: Stage 1 (BM25+facts_text RRF) + Stage 2 (CTM Drift) → merged RRF final ranking
+Final score = similarity*0.25 + reward*0.25 + novelty*0.15 + recency*0.10 + personality_fit*0.15 + graph_distance*0.10
 CTM uses stored brain_events.embedding - ZERO extra API calls.
 facts_text search (C1) integrated in all paths via FULL OUTER JOIN RRF.
 Pass p_ctm_enabled=TRUE to activate CTM mode.';
