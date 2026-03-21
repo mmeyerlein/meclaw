@@ -63,7 +63,14 @@ def reset_brain(conn):
         cur.execute("DELETE FROM meclaw.messages")
         cur.execute("DELETE FROM meclaw.tasks")
         cur.execute("DELETE FROM meclaw.channel_conversation")
-    print("  [reset] Brain cleared")
+    # VACUUM to refresh BM25 index after TRUNCATE
+    # (ParadeDB rt_fetch out-of-bounds if stale row mappings remain)
+    old_autocommit = conn.autocommit
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("VACUUM meclaw.brain_events")
+    conn.autocommit = old_autocommit
+    print("  [reset] Brain cleared + VACUUM")
 
 
 def get_or_create_channel(conn):
