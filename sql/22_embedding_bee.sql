@@ -63,7 +63,9 @@ RETURNS VOID AS $fn$
             base_url,
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://meclaw.ai",
+                "X-Title": "MeClaw"
             },
             json={"model": model, "input": content},
             timeout=30
@@ -127,7 +129,9 @@ RETURNS INT AS $fn$
                 base_url,
                 headers={
                     "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://meclaw.ai",
+                    "X-Title": "MeClaw"
                 },
                 json={"model": model, "input": content},
                 timeout=30
@@ -359,7 +363,7 @@ RETURNS vector(1536) AS $fn$
     try:
         resp = requests.post(
             base_url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://meclaw.ai", "X-Title": "MeClaw"},
             json={"model": model, "input": text},
             timeout=30
         )

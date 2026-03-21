@@ -213,6 +213,8 @@ if "openrouter" in url:
     rows = plpy.execute("SELECT api_key FROM meclaw.llm_providers WHERE id = 'openrouter' AND api_key IS NOT NULL")
     if rows.nrows() > 0:
         headers["Authorization"] = "Bearer " + rows[0]["api_key"]
+    headers["HTTP-Referer"] = "https://meclaw.ai"
+    headers["X-Title"] = "MeClaw"
 elif "10.235.74" in url:
     rows = plpy.execute("SELECT api_key FROM meclaw.llm_providers WHERE id = 'vllm-local' AND api_key IS NOT NULL")
     if rows.nrows() > 0 and rows[0]["api_key"]:

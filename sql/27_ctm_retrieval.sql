@@ -61,7 +61,7 @@ CREATE OR REPLACE FUNCTION meclaw.ctm_retrieve(
     def get_embedding(text):
         resp = requests.post(
             api_url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://meclaw.ai", "X-Title": "MeClaw"},
             json={"model": model, "input": text[:8000]},
             timeout=30
         )
