@@ -13,7 +13,7 @@ MECLAW_DIR="/docker-entrypoint-initdb.d/meclaw"
 echo ">>> Creating database 'meclaw'..."
 psql -U "$PGUSER" -c "CREATE DATABASE meclaw;" 2>/dev/null || echo "    (database already exists)"
 
-# 2. Run SQL files in order (continue on error per file, but log)
+# 2. Run all SQL files in order
 FAILED=0
 for sqlfile in \
     sql/01_extensions.sql \
@@ -24,18 +24,36 @@ for sqlfile in \
     sql/06_llm_bee.sql \
     sql/07_io_bees.sql \
     sql/08_triggers.sql \
-    sql/14_tools.sql \
-    sql/15_llm_providers.sql \
     sql/09_age_graph.sql \
+    sql/10_seed.sql \
     sql/12_admin_bee.sql \
     sql/13_context_bee.sql \
-    sql/10_seed.sql
+    sql/14_tools.sql \
+    sql/15_llm_providers.sql \
+    sql/16_brain_schema.sql \
+    sql/17_age_agents.sql \
+    sql/18_seed_agents.sql \
+    sql/19_extract_bee.sql \
+    sql/20_retrieve_bee.sql \
+    sql/21_context_bee_v2.sql \
+    sql/22_embedding_bee.sql \
+    sql/23_novelty_bee.sql \
+    sql/24_feedback_bee.sql \
+    sql/25_phase3_graph_intelligence.sql \
+    sql/26_consolidation_bee.sql \
+    sql/27_ctm_retrieval.sql \
+    sql/28_extract_bee_v2.sql \
+    sql/29_phase7_robustness.sql \
+    sql/30_smoke_tests.sql \
+    sql/31_phase8_swarm.sql \
+    sql/32_phase9_context_pipeline.sql \
+    sql/33_phase10_tests.sql
 do
     echo ">>> $(basename $sqlfile)"
     OUTPUT=$(psql -U "$PGUSER" -d meclaw -f "$MECLAW_DIR/$sqlfile" 2>&1)
     if echo "$OUTPUT" | grep -qi "ERROR:"; then
         echo "    ⚠️  Errors in $sqlfile (continuing...)"
-        echo "$OUTPUT" | grep -i "ERROR:" | head -3
+        echo "$OUTPUT" | grep -i "ERROR:" | head -5
         FAILED=$((FAILED + 1))
     fi
 done
@@ -60,9 +78,10 @@ psql -U "$PGUSER" -d meclaw -c "
 echo ">>> Starting channel bee..."
 psql -U "$PGUSER" -d meclaw -f "$MECLAW_DIR/sql/11_start.sql" 2>&1 | grep -v "^$"
 
-# 6. Admin bee starts via watchdog cron (max 60s after boot)
-# Note: pg_background_launch during initdb gets killed on PG restart
-echo ">>> Admin bee will start via watchdog (within 60s of boot)"
+# 6. Run smoke tests
+echo ">>> Running smoke tests..."
+RESULT=$(psql -U "$PGUSER" -d meclaw -t -c "SELECT meclaw.run_smoke_tests();" 2>&1)
+echo "    $RESULT"
 
 echo ""
 echo "========================================="
@@ -71,4 +90,6 @@ if [ $FAILED -eq 0 ]; then
 else
     echo "  MeClaw v0.1.0 — Ready (${FAILED} file(s) had errors)"
 fi
+echo "  Run smoke tests:  SELECT meclaw.run_smoke_tests();"
+echo "  Run full tests:   SELECT meclaw.run_all_tests();"
 echo "========================================="

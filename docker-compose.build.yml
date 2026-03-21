@@ -1,6 +1,7 @@
+# Use this if you want to build locally instead of pulling from ghcr.io
 services:
   meclaw:
-    image: ghcr.io/mmeyerlein/meclaw:latest
+    build: .
     container_name: meclaw
     environment:
       POSTGRES_USER: postgres
