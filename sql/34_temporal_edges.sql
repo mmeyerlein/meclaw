@@ -116,11 +116,12 @@ BEGIN
         END IF;
     END IF;
 
-    -- Stage 1: brain_event anlegen mit Timestamp
+    -- Stage 1: brain_event anlegen mit Timestamp aus der Message
     INSERT INTO meclaw.brain_events (
-        message_id, channel_id, agent_id, content, extracted
+        message_id, channel_id, agent_id, content, extracted, created_at
     ) VALUES (
-        p_msg_id, v_channel_id, NULL, v_content, FALSE
+        p_msg_id, v_channel_id, NULL, v_content, FALSE,
+        COALESCE((SELECT m.created_at FROM meclaw.messages m WHERE m.id = p_msg_id), NOW())
     ) RETURNING id, seq, created_at INTO v_event_id, v_seq, v_created_at;
 
     -- Stage 1b: AGE Event-Node mit vollständigen Properties anlegen

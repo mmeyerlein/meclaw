@@ -23,8 +23,9 @@ DECLARE
 BEGIN
     -- Only trigger on status change to 'done'
     IF NEW.status = 'done' AND (OLD.status IS NULL OR OLD.status != 'done') THEN
-        -- Only extract from user_input and llm_result
-        IF NEW.type IN ('user_input', 'llm_result') THEN
+        -- Only extract from user_input (user messages create brain_events)
+        -- llm_result intentionally excluded: assistant responses don't add to episodic memory
+        IF NEW.type = 'user_input' THEN
 
             -- 1. Channel-level extraction (sync, fast)
             PERFORM meclaw.extract_bee(NEW.id);

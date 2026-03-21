@@ -139,12 +139,8 @@ def feed_message(conn, channel_id, role, content, session_date=""):
             VALUES (%s, %s, %s, %s, %s, 'done', %s, COALESCE(%s, NOW()))
         """, (msg_id, task_id, channel_id, msg_type, sender, content_json, ts))
 
-        # Trigger extract_bee on user messages (brain processing)
-        if role == "user":
-            try:
-                cur.execute("SELECT meclaw.extract_bee(%s)", (msg_id,))
-            except Exception as e:
-                print(f"    [warn] extract_bee: {e}")
+        # NOTE: extract_bee is triggered automatically by trg_extract_on_done
+        # when message status='done'. Do NOT call it manually — causes duplicates.
 
     return msg_id
 
@@ -416,6 +412,15 @@ def run_single_question(conn, channel_id, item, qi, total,
         embedded = result[0] if result else 0
     elapsed = time.time() - t0
     print(f"  [embed] {embedded} embeddings in {elapsed:.1f}s")
+
+    # ── Reset spurious rewards from trigger-based feedback_bee ──────────────
+    # feedback_bee fires on each user_input and rewards the previous event
+    # based on sentiment. For benchmark conversations this is noise.
+    with conn.cursor() as cur:
+        cur.execute("UPDATE meclaw.brain_events SET reward = 0.0 WHERE reward != 0.0")
+        reset_count = cur.rowcount
+        if reset_count > 0:
+            print(f"  [reward] Reset {reset_count} spurious rewards to 0")
 
     # ── Run full signal pipeline (LLM extraction, novelty, graph) ──────────
     run_signal_pipeline(conn, skip_extraction=skip_extraction)
