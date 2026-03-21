@@ -63,14 +63,20 @@ def reset_brain(conn):
         cur.execute("DELETE FROM meclaw.messages")
         cur.execute("DELETE FROM meclaw.tasks")
         cur.execute("DELETE FROM meclaw.channel_conversation")
-    # VACUUM to refresh BM25 index after TRUNCATE
-    # (ParadeDB rt_fetch out-of-bounds if stale row mappings remain)
+    # Recreate BM25 index after TRUNCATE
+    # ParadeDB's BM25 index gets corrupted (rt_fetch out-of-bounds)
+    # after TRUNCATE. DROP + CREATE is the only reliable fix.
     old_autocommit = conn.autocommit
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("VACUUM meclaw.brain_events")
+        cur.execute("DROP INDEX IF EXISTS meclaw.idx_brain_events_bm25")
+        cur.execute("""
+            CREATE INDEX idx_brain_events_bm25 ON meclaw.brain_events
+            USING bm25 (id, content, facts_text)
+            WITH (key_field='id', text_fields='{"content": {}, "facts_text": {}}')
+        """)
     conn.autocommit = old_autocommit
-    print("  [reset] Brain cleared + VACUUM")
+    print("  [reset] Brain cleared + BM25 rebuilt")
 
 
 def get_or_create_channel(conn):
