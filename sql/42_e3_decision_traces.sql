@@ -46,42 +46,37 @@ CREATE OR REPLACE FUNCTION meclaw.cite_events(
     p_evidence_ids UUID[]
 )
 RETURNS INT
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_count INT := 0;
-    v_eid UUID;
-    v_seq BIGINT;
-BEGIN
-    -- Get current sequence for authority tracking
-    SELECT COALESCE(MAX(seq), 0) INTO v_seq FROM meclaw.brain_events;
+LANGUAGE plpython3u AS $func$
+    import json
 
-    -- For each evidence event, attempt to create a CITES edge in AGE
-    FOREACH v_eid IN ARRAY p_evidence_ids LOOP
-        BEGIN
-            EXECUTE format(
-                'LOAD ''age''; SET search_path = ag_catalog, meclaw, public; '
-                'SELECT * FROM cypher(''meclaw_graph'', $$ '
-                'MERGE (d:Decision {id: ''%s''}) '
-                'MERGE (e:Event {id: ''%s''}) '
-                'MERGE (d)-[c:CITES]->(e) '
-                'SET c.authority = %s, c.at = ''%s'' '
-                'RETURN d '
-                '$$) AS (v agtype)',
-                replace(p_trace_id::text, '''', ''''''),
-                replace(v_eid::text, '''', ''''''),
-                v_seq,
-                to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-            );
-            v_count := v_count + 1;
-        EXCEPTION WHEN OTHERS THEN
-            -- Log but continue
-            NULL;
-        END;
-    END LOOP;
+    plan = plpy.prepare("SELECT COALESCE(MAX(seq), 0) as maxseq FROM meclaw.brain_events")
+    row = plpy.execute(plan)
+    v_seq = row[0]["maxseq"]
 
-    RETURN v_count;
-END;
-$$;
+    count = 0
+    for eid in p_evidence_ids:
+        try:
+            trace_id_safe = str(p_trace_id).replace("'", "\\'")
+            eid_safe = str(eid).replace("'", "\\'")
+            ts = plpy.execute("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') as ts")[0]["ts"]
+
+            cypher = """
+                MERGE (d:Decision {id: '%s'})
+                MERGE (e:Event {id: '%s'})
+                MERGE (d)-[c:CITES]->(e)
+                SET c.authority = %d, c.at = '%s'
+                RETURN d
+            """ % (trace_id_safe, eid_safe, v_seq, ts)
+
+            plpy.execute("LOAD 'age'")
+            plpy.execute("SET search_path = ag_catalog, meclaw, public")
+            plpy.execute("SELECT * FROM cypher('meclaw_graph', $$ %s $$) AS (v agtype)" % cypher)
+            count += 1
+        except Exception as e:
+            plpy.warning("cite_events error for %s: %s" % (eid, str(e)))
+
+    return count
+$func$;
 
 COMMENT ON FUNCTION meclaw.cite_events IS
 'Creates CITES edges in AGE graph linking a Decision to its evidence Events.';
@@ -146,12 +141,7 @@ BEGIN
             p_query,
             v_evidence_ids,
             v_prototypes,
-            jsonb_build_object(
-                'top_score', (SELECT MAX(r.score) FROM unnest(v_evidence_ids) WITH ORDINALITY AS t(eid, ord)
-                              JOIN meclaw.brain_events be ON be.id = t.eid
-                              CROSS JOIN LATERAL (SELECT score FROM meclaw.retrieve_bee(p_agent_id, p_query, 1, false) LIMIT 1) r),
-                'result_count', array_length(v_evidence_ids, 1)
-            ),
+            jsonb_build_object('result_count', array_length(v_evidence_ids, 1)),
             'retrieve'
         );
 
