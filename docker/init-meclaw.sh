@@ -53,7 +53,9 @@ for sqlfile in \
     sql/36_trigger_chain.sql \
     sql/37_ctm_retrieval_v2.sql \
     sql/38_prototypes_activation.sql \
-    sql/39_user_modeling.sql
+    sql/39_user_modeling.sql \
+    sql/40_e2_reward_propagation.sql \
+    sql/41_e4_e5_graph_edges.sql
 do
     echo ">>> $(basename $sqlfile)"
     OUTPUT=$(psql -U "$PGUSER" -d meclaw -f "$MECLAW_DIR/$sqlfile" 2>&1)
