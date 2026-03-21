@@ -290,8 +290,8 @@ BEGIN
 
     -- 2. Check if we have any embeddings at all
     SELECT EXISTS(
-        SELECT 1 FROM meclaw.brain_events
-        WHERE embedding IS NOT NULL AND channel_id = ANY(v_channel_ids)
+        SELECT 1 FROM meclaw.brain_events be
+        WHERE be.embedding IS NOT NULL AND be.channel_id = ANY(v_channel_ids)
         LIMIT 1
     ) INTO v_has_embeddings;
 
