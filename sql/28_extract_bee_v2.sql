@@ -38,24 +38,30 @@ CREATE INDEX IF NOT EXISTS idx_entity_events_entity ON meclaw.entity_events(enti
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION meclaw.age_upsert_entity(p_entity_id TEXT, p_name TEXT, p_type TEXT)
 RETURNS VOID AS $fn$
+    import re
+    def cypher_escape(s):
+        # Escape backslashes first, then single quotes for AGE cypher strings
+        return s.replace("\\", "\\\\").replace("'", "\\'")
     try:
         plpy.execute("SET search_path = ag_catalog, meclaw, public")
-        plpy.execute(plpy.prepare("""
+        plpy.execute("""
             SELECT * FROM cypher('meclaw_graph', $$
                 MERGE (e:Entity {entity_id: '%s'})
                 SET e.name = '%s', e.type = '%s'
             $$) AS (v agtype)
         """ % (
-            p_entity_id.replace("'", "''"),
-            p_name.replace("'", "''"),
-            p_type.replace("'", "''")
-        )))
+            cypher_escape(p_entity_id),
+            cypher_escape(p_name),
+            cypher_escape(p_type)
+        ))
     except Exception as e:
         plpy.warning(f"age_upsert_entity: {e}")
 $fn$ LANGUAGE plpython3u;
 
 CREATE OR REPLACE FUNCTION meclaw.age_link_entity_event(p_entity_id TEXT, p_event_id TEXT)
 RETURNS VOID AS $fn$
+    def cypher_escape(s):
+        return s.replace("\\", "\\\\").replace("'", "\\'")
     try:
         plpy.execute("SET search_path = ag_catalog, meclaw, public")
         plpy.execute("""
@@ -65,8 +71,8 @@ RETURNS VOID AS $fn$
                 MERGE (e)-[:INVOLVED_IN]->(ev)
             $$) AS (v agtype)
         """ % (
-            p_entity_id.replace("'", "''"),
-            p_event_id.replace("'", "''")
+            cypher_escape(p_entity_id),
+            cypher_escape(p_event_id)
         ))
     except Exception as e:
         plpy.warning(f"age_link_entity_event: {e}")
@@ -74,6 +80,8 @@ $fn$ LANGUAGE plpython3u;
 
 CREATE OR REPLACE FUNCTION meclaw.age_link_entities(p_from TEXT, p_to TEXT, p_type TEXT)
 RETURNS VOID AS $fn$
+    def cypher_escape(s):
+        return s.replace("\\", "\\\\").replace("'", "\\'")
     try:
         plpy.execute("SET search_path = ag_catalog, meclaw, public")
         plpy.execute("""
@@ -83,9 +91,9 @@ RETURNS VOID AS $fn$
                 MERGE (a)-[:RELATES_TO {type: '%s'}]->(b)
             $$) AS (v agtype)
         """ % (
-            p_from.replace("'", "''"),
-            p_to.replace("'", "''"),
-            p_type.replace("'", "''")
+            cypher_escape(p_from),
+            cypher_escape(p_to),
+            cypher_escape(p_type)
         ))
     except Exception as e:
         plpy.warning(f"age_link_entities: {e}")
@@ -468,3 +476,92 @@ $fn$ LANGUAGE plpython3u;
 -- 7. Mark existing events as unextracted for backfill
 -- -----------------------------------------------------------------------------
 UPDATE meclaw.brain_events SET extracted = FALSE WHERE extracted IS NULL;
+
+-- -----------------------------------------------------------------------------
+-- 8. backfill_entity_graph() — sync existing entity_events into AGE graph
+--    Ensures entities from relational table have nodes + INVOLVED_IN edges in AGE.
+--    Also recreates RELATES_TO edges from extraction_data->relations.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION meclaw.backfill_entity_graph(p_limit INT DEFAULT 500)
+RETURNS JSONB AS $fn$
+import json
+
+upsert_ok = 0
+upsert_fail = 0
+involved_ok = 0
+involved_fail = 0
+
+# Step 1: Upsert all entities from relational table into AGE
+# Use list() to fully materialize before iteration (avoids rt_fetch bounds issue)
+ent_rows = list(plpy.execute("""
+    SELECT id, canonical_name, entity_type
+    FROM meclaw.entities
+    LIMIT %d
+""" % int(p_limit)))
+
+for row in ent_rows:
+    try:
+        plpy.execute(plpy.prepare(
+            "SELECT meclaw.age_upsert_entity($1, $2, $3)",
+            ["text", "text", "text"]
+        ), [row["id"], row["canonical_name"], row["entity_type"]])
+        upsert_ok += 1
+    except Exception as e:
+        plpy.warning(f"backfill_entity_graph upsert_entity failed for {row['id']}: {e}")
+        upsert_fail += 1
+
+# Step 2: Create INVOLVED_IN edges from entity_events relational table
+ee_rows = list(plpy.execute("""
+    SELECT ee.entity_id, ee.event_id::text as event_id
+    FROM meclaw.entity_events ee
+    WHERE ee.relation_type IN ('MENTIONED_IN', 'INVOLVED_IN')
+    LIMIT %d
+""" % int(p_limit)))
+
+for row in ee_rows:
+    try:
+        plpy.execute(plpy.prepare(
+            "SELECT meclaw.age_link_entity_event($1, $2)",
+            ["text", "text"]
+        ), [row["entity_id"], row["event_id"]])
+        involved_ok += 1
+    except Exception as e:
+        plpy.warning(f"backfill_entity_graph link_entity_event failed: {e}")
+        involved_fail += 1
+
+# Step 3: RELATES_TO edges — extracted relations are stored in entity_events
+# with non-standard relation_type values (e.g. WORKS_ON, USES, DISCUSSES)
+# Rebuild edges for entity pairs that co-appear with typed relations
+relates_ok = 0
+relates_fail = 0
+
+rel_rows = list(plpy.execute("""
+    SELECT DISTINCT ee1.entity_id as from_id, ee2.entity_id as to_id, ee1.relation_type as rel_type
+    FROM meclaw.entity_events ee1
+    JOIN meclaw.entity_events ee2 ON ee1.event_id = ee2.event_id
+    WHERE ee1.relation_type NOT IN ('MENTIONED_IN', 'INVOLVED_IN')
+      AND ee2.relation_type IN ('MENTIONED_IN', 'INVOLVED_IN')
+      AND ee1.entity_id != ee2.entity_id
+    LIMIT %d
+""" % int(p_limit)))
+
+for row in rel_rows:
+    try:
+        plpy.execute(plpy.prepare(
+            "SELECT meclaw.age_link_entities($1, $2, $3)",
+            ["text", "text", "text"]
+        ), [row["from_id"], row["to_id"], row["rel_type"]])
+        relates_ok += 1
+    except Exception as e:
+        plpy.warning(f"backfill_entity_graph link_entities failed: {e}")
+        relates_fail += 1
+
+return json.dumps({
+    "entities_upserted": upsert_ok,
+    "entities_failed": upsert_fail,
+    "involved_in_created": involved_ok,
+    "involved_in_failed": involved_fail,
+    "relates_to_created": relates_ok,
+    "relates_to_failed": relates_fail
+})
+$fn$ LANGUAGE plpython3u;
