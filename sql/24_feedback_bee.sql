@@ -5,8 +5,13 @@
 -- Agent-level retroactive reward from user reactions.
 -- When a user responds positively/negatively, the PREVIOUS event gets reward.
 -- Uses simple keyword-based sentiment (Phase 1). Phase 2: LLM-based.
+--
+-- NOTE: v1 signature (p_agent_id TEXT, p_msg_id UUID) is superseded by
+-- v2 signature in 29_phase7_robustness.sql (p_msg_id UUID, p_agent_id TEXT).
+-- Drop the old overload to avoid ambiguity.
+DROP FUNCTION IF EXISTS meclaw.feedback_bee(TEXT, UUID);
 
-CREATE OR REPLACE FUNCTION meclaw.feedback_bee(p_agent_id TEXT, p_msg_id UUID)
+CREATE OR REPLACE FUNCTION meclaw.feedback_bee(p_msg_id UUID, p_agent_id TEXT)
 RETURNS VOID AS $$
 DECLARE
     v_content TEXT;
@@ -101,7 +106,8 @@ BEGIN
                 LIMIT 1;
 
                 IF v_agent_id IS NOT NULL THEN
-                    PERFORM meclaw.feedback_bee(v_agent_id, NEW.id);
+                    -- v2 signature: p_msg_id first, then p_agent_id
+                    PERFORM meclaw.feedback_bee(NEW.id, v_agent_id);
                 END IF;
             END IF;
         END IF;

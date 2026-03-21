@@ -292,6 +292,21 @@ try:
                 if resolved:
                     target_entity_id = resolved
 
+        if not target_entity_id and sender.strip():
+            # Auto-create a 'person' entity for the unknown sender so preferences are not lost
+            try:
+                row = plpy.execute(plpy.prepare(
+                    "SELECT meclaw.create_or_resolve_entity($1, 'person')",
+                    ["text"]
+                ), [sender.strip()])
+                if row:
+                    target_entity_id = row[0]["create_or_resolve_entity"]
+                if target_entity_id:
+                    entity_ids[sender.strip().lower()] = target_entity_id
+                    plpy.notice(f"llm_extract_entities: auto-created/resolved person entity '{sender}' → {target_entity_id}")
+            except Exception as ex:
+                plpy.warning(f"llm_extract_entities: failed to auto-create entity for sender '{sender}': {ex}")
+
         if not target_entity_id:
             plpy.warning(f"llm_extract_entities: no entity for sender '{sender}', skipping preference '{pref_key}'")
             continue
