@@ -261,7 +261,7 @@ BEGIN
                 COALESCE(be.novelty, 0.0) AS novelty,
                 be.created_at
             FROM meclaw.brain_events be
-            WHERE be.content @@@ p_query
+            WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
                 AND be.channel_id = ANY(v_channel_ids)
                 AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
             ORDER BY paradedb.score(be.id) DESC
@@ -277,7 +277,7 @@ BEGIN
                 COALESCE(be.novelty, 0.0) AS novelty,
                 be.created_at
             FROM meclaw.brain_events be
-            WHERE be.facts_text @@@ p_query
+            WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
                 AND be.channel_id = ANY(v_channel_ids)
                 AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
             ORDER BY paradedb.score(be.id) DESC
@@ -407,7 +407,7 @@ BEGIN
             be.created_at,
             be.seq
         FROM meclaw.brain_events be
-        WHERE be.content @@@ p_query
+        WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
@@ -424,7 +424,7 @@ BEGIN
             be.created_at,
             be.seq
         FROM meclaw.brain_events be
-        WHERE be.facts_text @@@ p_query
+        WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
@@ -629,7 +629,7 @@ EXCEPTION WHEN OTHERS THEN
             COALESCE(be.reward, 0.0) AS reward,
             be.created_at
         FROM meclaw.brain_events be
-        WHERE be.content @@@ p_query
+        WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
@@ -644,7 +644,7 @@ EXCEPTION WHEN OTHERS THEN
             COALESCE(be.reward, 0.0) AS reward,
             be.created_at
         FROM meclaw.brain_events be
-        WHERE be.facts_text @@@ p_query
+        WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
         ORDER BY paradedb.score(be.id) DESC
