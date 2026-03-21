@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.0] — 2026-03-21
+
+### Added
+- **6-Signal Weighted Ranking** — `similarity*0.25 + reward*0.25 + novelty*0.15 + recency*0.10 + personality_fit*0.15 + graph_distance*0.10` in retrieve_bee
+- **Reward Propagation** — Discounted returns (γ=0.9, depth 5) backward through event chain
+- **Decision Traces** — `log_decision_trace`, `cite_events` with CITES edges in AGE graph
+- **ACTIVATES Edges** — Event→Prototype edges in AGE (top-3 per event)
+- **ASSOCIATION Edges** — Prototype→Prototype Hebbian edges mirrored in AGE
+- **Prototype Mitosis** — `detect_conflicting_prototypes`, `split_prototype` for reward-conflicted prototypes
+- **MemCell Nodes** — Boundary-detected conversation chunks via embedding distance, BELONGS_TO edges
+- **LLM Re-Ranking (Stage 3)** — `retrieve_reranked` with gpt-4o-mini candidate re-ranking (~$0.35/500 questions)
+- **Citation Authority** — `trending_precedents` and `stale_precedents` views
+- **Runner: Signal Pipeline** — Explicit backfill for embeddings, entities, novelty, temporal, facts after feed
+- **Runner: `--rerank`** — Enable LLM re-ranking in benchmark
+- **Runner: `--top-k`** — Configurable result count (default: 10)
+- **Runner: `--cumulative`** — Brain persists across questions
+- **Runner: `--ctm`** — CTM drift retrieval mode
+- **Runner: `--skip-extraction`** — Skip expensive LLM entity extraction
+
+### Fixed
+- **Duplicate brain_events** — Trigger + manual `extract_bee` call created 2x events per message
+- **Trigger scope** — Changed from `user_input + llm_result` to `user_input` only (assistant messages don't create brain_events)
+- **Wrong timestamps** — `brain_events.created_at` now inherits from `messages.created_at` instead of `NOW()`
+- **pg_background exhaustion** — Exception handler prevents crash when worker slots full during bulk insert
+- **Spurious rewards** — Runner resets feedback_bee rewards before retrieval (benchmark conversations have meaningless sentiment)
+- **AGE Cypher in PL/pgSQL** — Converted `cite_events` and `build_memcells` to plpython3u to avoid `$$` quoting hell
+
+### Infrastructure
+- **45 SQL files** (was 39) — clean numbering 01-45
+- **Test Suite** — 108 PASS, 4 SKIP, 0 FAIL
+
 ## [0.2.0] — 2026-03-21
 
 ### Added
