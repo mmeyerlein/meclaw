@@ -441,6 +441,17 @@ def run_single_question(conn, channel_id, item, qi, total,
             total_msgs += 1
         print(f"  [feed] Session {si+1}/{len(sessions)}: {len(session)} msgs ({date})")
 
+    # ── Wait for pg_background triggers to complete ─────────────────────────
+    # extract_bee runs async via pg_background on each message insert.
+    # Wait until brain_events appear (up to 10s).
+    for _ in range(20):
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM meclaw.brain_events")
+            n_events = cur.fetchone()[0]
+            if n_events > 0:
+                break
+        time.sleep(0.5)
+
     check_brain_stats(conn)
 
     # ── Batch-embed all events at once (single API call!) ──────────────────
