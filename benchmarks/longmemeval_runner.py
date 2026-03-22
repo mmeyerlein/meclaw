@@ -60,8 +60,8 @@ def reset_brain(conn):
     with conn.cursor() as cur:
         cur.execute("TRUNCATE meclaw.brain_events CASCADE")
         cur.execute("TRUNCATE meclaw.entity_events CASCADE")
-        cur.execute("DELETE FROM meclaw.messages")
-        cur.execute("DELETE FROM meclaw.tasks")
+        cur.execute("TRUNCATE meclaw.messages CASCADE")
+        cur.execute("TRUNCATE meclaw.tasks CASCADE")
         cur.execute("DELETE FROM meclaw.channel_conversation")
     # NOTE: ParadeDB < 0.19.0 had rt_fetch out-of-bounds bug after TRUNCATE
     # requiring DROP+CREATE of BM25 index. Fixed in pg_search >= 0.22.2.
