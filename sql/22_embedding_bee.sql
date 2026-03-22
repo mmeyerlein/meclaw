@@ -399,18 +399,18 @@ BEGIN
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             COALESCE(be.novelty, 0.0) AS novelty,
             be.created_at,
             be.seq,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+            ROW_NUMBER() OVER (ORDER BY pdb.score(be.id) DESC) AS bm25_rank
         FROM meclaw.brain_events be
         WHERE be.content @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     vector_results AS (
@@ -568,16 +568,16 @@ EXCEPTION WHEN OTHERS THEN
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             be.created_at,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+            ROW_NUMBER() OVER (ORDER BY pdb.score(be.id) DESC) AS bm25_rank
         FROM meclaw.brain_events be
         WHERE be.content @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     vector_results AS (

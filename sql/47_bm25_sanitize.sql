@@ -73,7 +73,7 @@ BEGIN
         SELECT
             be.id,
             be.content,
-            paradedb.score(be.id)::FLOAT,
+            pdb.score(be.id)::FLOAT,
             be.channel_id,
             COALESCE(be.reward, 0.0)::FLOAT,
             COALESCE(be.novelty, 0.0)::FLOAT,
@@ -82,14 +82,14 @@ BEGIN
         WHERE be.content @@@ v_safe_query
             AND be.channel_id = ANY(p_channel_ids)
             AND (p_agent_id IS NULL OR be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT p_limit;
     ELSIF p_field = 'facts_text' THEN
         RETURN QUERY
         SELECT
             be.id,
             be.content,
-            paradedb.score(be.id)::FLOAT,
+            pdb.score(be.id)::FLOAT,
             be.channel_id,
             COALESCE(be.reward, 0.0)::FLOAT,
             COALESCE(be.novelty, 0.0)::FLOAT,
@@ -98,7 +98,7 @@ BEGIN
         WHERE be.facts_text @@@ v_safe_query
             AND be.channel_id = ANY(p_channel_ids)
             AND (p_agent_id IS NULL OR be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT p_limit;
     END IF;
     

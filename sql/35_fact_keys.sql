@@ -132,11 +132,11 @@ BEGIN
         SELECT
             be.id AS bid,
             be.content AS bcontent,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id AS bchan,
             COALESCE(be.reward, 0.0) AS breward,
             be.created_at AS bts,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS bm25_rank
+            ROW_NUMBER() OVER (ORDER BY pdb.score(be.id) DESC) AS bm25_rank
         FROM meclaw.brain_events be
         WHERE be.content @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)
@@ -148,11 +148,11 @@ BEGIN
         SELECT
             be.id AS fid,
             be.content AS fcontent,
-            paradedb.score(be.id) AS facts_score,
+            pdb.score(be.id) AS facts_score,
             be.channel_id AS fchan,
             COALESCE(be.reward, 0.0) AS freward,
             be.created_at AS fts,
-            ROW_NUMBER() OVER (ORDER BY paradedb.score(be.id) DESC) AS facts_rank
+            ROW_NUMBER() OVER (ORDER BY pdb.score(be.id) DESC) AS facts_rank
         FROM meclaw.brain_events be
         WHERE be.facts_text @@@ p_query
             AND be.channel_id = ANY(v_channel_ids)

@@ -255,7 +255,7 @@ BEGIN
             SELECT
                 be.id AS event_id,
                 be.content,
-                paradedb.score(be.id) AS bm25_score,
+                pdb.score(be.id) AS bm25_score,
                 be.channel_id,
                 COALESCE(be.reward, 0.0) AS reward,
                 COALESCE(be.novelty, 0.0) AS novelty,
@@ -264,14 +264,14 @@ BEGIN
             WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
                 AND be.channel_id = ANY(v_channel_ids)
                 AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-            ORDER BY paradedb.score(be.id) DESC
+            ORDER BY pdb.score(be.id) DESC
             LIMIT 20
         ),
         facts_bm25 AS (
             SELECT
                 be.id AS event_id,
                 be.content,
-                paradedb.score(be.id) AS bm25_score,
+                pdb.score(be.id) AS bm25_score,
                 be.channel_id,
                 COALESCE(be.reward, 0.0) AS reward,
                 COALESCE(be.novelty, 0.0) AS novelty,
@@ -280,7 +280,7 @@ BEGIN
             WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
                 AND be.channel_id = ANY(v_channel_ids)
                 AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-            ORDER BY paradedb.score(be.id) DESC
+            ORDER BY pdb.score(be.id) DESC
             LIMIT 20
         ),
         bm25_results AS (
@@ -400,7 +400,7 @@ BEGIN
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             COALESCE(be.novelty, 0.0) AS novelty,
@@ -410,14 +410,14 @@ BEGIN
         WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     facts_bm25_n AS (
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             COALESCE(be.novelty, 0.0) AS novelty,
@@ -427,7 +427,7 @@ BEGIN
         WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     bm25_results AS (
@@ -624,7 +624,7 @@ EXCEPTION WHEN OTHERS THEN
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             be.created_at
@@ -632,14 +632,14 @@ EXCEPTION WHEN OTHERS THEN
         WHERE be.content @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     facts_bm25_fb AS (
         SELECT
             be.id AS event_id,
             be.content,
-            paradedb.score(be.id) AS bm25_score,
+            pdb.score(be.id) AS bm25_score,
             be.channel_id,
             COALESCE(be.reward, 0.0) AS reward,
             be.created_at
@@ -647,7 +647,7 @@ EXCEPTION WHEN OTHERS THEN
         WHERE be.facts_text @@@ meclaw.sanitize_bm25_query(p_query)
             AND be.channel_id = ANY(v_channel_ids)
             AND (be.agent_id IS NULL OR be.agent_id = p_agent_id)
-        ORDER BY paradedb.score(be.id) DESC
+        ORDER BY pdb.score(be.id) DESC
         LIMIT 20
     ),
     bm25_results AS (
