@@ -63,20 +63,10 @@ def reset_brain(conn):
         cur.execute("DELETE FROM meclaw.messages")
         cur.execute("DELETE FROM meclaw.tasks")
         cur.execute("DELETE FROM meclaw.channel_conversation")
-    # Recreate BM25 index after TRUNCATE
-    # ParadeDB's BM25 index gets corrupted (rt_fetch out-of-bounds)
-    # after TRUNCATE. DROP + CREATE is the only reliable fix.
-    old_autocommit = conn.autocommit
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute("DROP INDEX IF EXISTS meclaw.idx_brain_events_bm25")
-        cur.execute("""
-            CREATE INDEX idx_brain_events_bm25 ON meclaw.brain_events
-            USING bm25 (id, content, facts_text)
-            WITH (key_field='id', text_fields='{"content": {}, "facts_text": {}}')
-        """)
-    conn.autocommit = old_autocommit
-    print("  [reset] Brain cleared + BM25 rebuilt")
+    # NOTE: ParadeDB < 0.19.0 had rt_fetch out-of-bounds bug after TRUNCATE
+    # requiring DROP+CREATE of BM25 index. Fixed in pg_search >= 0.22.2.
+    # See: https://github.com/paradedb/paradedb/issues/2462
+    print("  [reset] Brain cleared")
 
 
 def get_or_create_channel(conn):
@@ -464,15 +454,6 @@ def run_single_question(conn, channel_id, item, qi, total,
     elapsed = time.time() - t0
     print(f"  [embed] {embedded} embeddings in {elapsed:.1f}s")
 
-    # ── VACUUM to refresh BM25 index after inserts ─────────────────────────
-    # ParadeDB's BM25 index has stale row mappings after INSERT, causing
-    # rt_fetch out-of-bounds. VACUUM refreshes the index.
-    old_ac = conn.autocommit
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute("VACUUM meclaw.brain_events")
-    conn.autocommit = old_ac
-
     # ── Reset spurious rewards from trigger-based feedback_bee ──────────────
     # feedback_bee fires on each user_input and rewards the previous event
     # based on sentiment. For benchmark conversations this is noise.
@@ -539,13 +520,6 @@ def run_single_question(conn, channel_id, item, qi, total,
     # ── Final stats after pipeline ──────────────────────────────────────────
     print("  [after pipeline]")
     check_brain_stats(conn)
-
-    # ── VACUUM before retrieve — BM25 index needs refresh after pipeline UPDATEs
-    old_ac2 = conn.autocommit
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute("VACUUM meclaw.brain_events")
-    conn.autocommit = old_ac2
 
     # ── Retrieve context for the question ──────────────────────────────────
     ctm_label = " (CTM)" if ctm_enabled else ""
