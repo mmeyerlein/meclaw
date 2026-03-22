@@ -183,19 +183,19 @@ for rel in relations:
         except Exception as e:
             plpy.warning(f"batch_extract relation: {e}")
 
-# Mark all events as extracted, store facts_text
-# If facts have msg_seq references, use them; otherwise distribute all facts to all events
+# Build combined facts_text for ALL facts (searchable by BM25)
 all_facts_text = " | ".join(all_facts) if all_facts else None
+
+# Strategy: set facts_text on EACH event that has matching facts,
+# AND create a summary facts_text on events without specific facts
 extracted_count = 0
 for idx, eid in event_map.items():
     facts_for_event = fact_by_idx.get(idx, [])
-    # Use per-event facts if available, otherwise fall back to all facts on first event
     if facts_for_event:
         facts_text = " | ".join(facts_for_event)
-    elif idx == 1 and all_facts_text:
-        facts_text = all_facts_text  # Put all facts on first event as fallback
     else:
-        facts_text = None
+        facts_text = None  # No specific facts for this event
+    
     try:
         plpy.execute(plpy.prepare(
             "UPDATE meclaw.brain_events SET "
@@ -204,11 +204,40 @@ for idx, eid in event_map.items():
             "facts_text = COALESCE($2, facts_text) "
             "WHERE id = $3",
             ["text", "text", "uuid"]
-        ), [json.dumps({"batch": True, "entities": len(entities), "facts": len(facts)}),
+        ), [json.dumps({"batch": True, "entities": len(entities), "facts": len(facts_for_event)}),
             facts_text, eid])
         extracted_count += 1
     except Exception as e:
         plpy.warning(f"batch_extract update {eid}: {e}")
+
+# Create a SUMMARY brain_event with ALL facts combined (for BM25 discovery)
+# This ensures facts are findable even when msg_seq mapping is imperfect
+if all_facts_text and len(all_facts_text) > 20:
+    try:
+        # Use the channel_id and timestamp from the first event
+        first_eid = event_map.get(1)
+        if first_eid:
+            plan_ts = plpy.prepare(
+                "SELECT channel_id, MIN(created_at) as min_ts FROM meclaw.brain_events "
+                "WHERE id = ANY($1::uuid[]) GROUP BY channel_id",
+                ["text"])
+            ts_row = plan_ts.execute(["{" + ",".join(event_list) + "}"])
+            if ts_row:
+                ch_id = ts_row[0]["channel_id"]
+                min_ts = ts_row[0]["min_ts"]
+                plpy.execute(plpy.prepare(
+                    "INSERT INTO meclaw.brain_events "
+                    "(channel_id, content, facts_text, extracted, extracted_at, "
+                    " extraction_data, created_at) "
+                    "VALUES ($1, $2, $3, TRUE, clock_timestamp(), "
+                    " '{\"type\": \"session_summary\"}'::jsonb, $4)",
+                    ["uuid", "text", "text", "timestamptz"]
+                ), [ch_id,
+                    "Session summary: " + all_facts_text[:4000],
+                    all_facts_text[:8000],
+                    min_ts])
+    except Exception as e:
+        plpy.warning(f"batch_extract summary event: {e}")
 
 return extracted_count
 $fn$ LANGUAGE plpython3u;
