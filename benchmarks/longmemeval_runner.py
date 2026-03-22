@@ -540,6 +540,13 @@ def run_single_question(conn, channel_id, item, qi, total,
     print("  [after pipeline]")
     check_brain_stats(conn)
 
+    # ── VACUUM before retrieve — BM25 index needs refresh after pipeline UPDATEs
+    old_ac2 = conn.autocommit
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("VACUUM meclaw.brain_events")
+    conn.autocommit = old_ac2
+
     # ── Retrieve context for the question ──────────────────────────────────
     ctm_label = " (CTM)" if ctm_enabled else ""
     print(f"  [retrieve{ctm_label}] {question[:80]}")
