@@ -45,6 +45,7 @@ RUN git clone --depth 1 https://github.com/vibhorkum/pg_background.git /tmp/pg_b
 # pg_search (ParadeDB BM25): install pre-built .deb v0.22.2
 # Upgraded from v0.15.10 to fix rt_fetch out-of-bounds bug (GitHub #2462, #3135)
 # Breaking changes since v0.19.0: paradedb.score → pdb.score
+# Requires AVX2 CPU (host passthrough on KVM)
 RUN curl -fsSL -o /tmp/pg_search.deb \
     https://github.com/paradedb/paradedb/releases/download/v0.22.2/postgresql-17-pg-search_0.22.2-1PARADEDB-bookworm_amd64.deb \
     && apt-get install -y /tmp/pg_search.deb \
