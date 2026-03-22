@@ -57,7 +57,7 @@ BEGIN
     v_next_bee  := trim(both '"' from v_next_bee);
     v_next_type := trim(both '"' from v_next_type);
 
-    -- ── Kein nächster Node → Stack poppen oder done ────────
+    -- ── No next node → pop stack or done ────────
     IF v_next_bee IS NULL THEN
         IF jsonb_array_length(v_stack) > 0 THEN
             v_frame      := v_stack->-1;
@@ -88,7 +88,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- ── call_bee: Stack pushen ──────────────────────────────
+    -- ── call_bee: push stack ──────────────────────────────
     IF v_next_type = 'call_bee' THEN
         EXECUTE format(
             'SELECT bee_config::text FROM cypher(''meclaw_graph'', $q$
@@ -129,7 +129,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- ── Normale Bee ─────────────────────────────────────────
+    -- ── Normal bee ─────────────────────────────────────────
     v_new_content := v_content || jsonb_build_object(
         'current_bee', v_next_bee
     );
@@ -166,7 +166,7 @@ BEGIN
 
     v_target_hive := p_config->>'target_hive';
 
-    -- Entry Bee + Type + Config laden
+    -- Load entry bee + type + config
     EXECUTE format(
         'SELECT bee_id::text, bee_type::text, bee_config::text
          FROM cypher(''meclaw_graph'', $q$
@@ -185,14 +185,14 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Stack pushen: Return-Adresse = call_bee
+    -- Push stack: return address = call_bee
     v_new_stack := p_stack || jsonb_build_object(
         'hive',       'main-graph',
         'return_bee', p_bee_id,
         'condition',  'on_return'
     );
 
-    -- Original-Message auf waiting setzen
+    -- Set original message to waiting
     UPDATE meclaw.messages
     SET status = 'waiting', waiting_for = 'call_return'
     WHERE id = p_msg_id;
@@ -200,10 +200,10 @@ BEGIN
     PERFORM meclaw.log_event(p_msg_id, p_task_id, 'call_bee', 'called',
         jsonb_build_object('target_hive', v_target_hive, 'entry_bee', v_entry_bee));
 
-    -- Entry-Bee DIREKT aufrufen (nicht über router_bee)
+    -- Call entry bee DIRECTLY (not via router_bee)
     CASE v_entry_type
         WHEN 'llm_bee' THEN
-            -- Neue Message für LLM mit Stack
+            -- New message for LLM with stack
             INSERT INTO meclaw.messages (
                 task_id, channel_id, previous_id, type, sender, status, content
             )
@@ -217,7 +217,7 @@ BEGIN
             FROM meclaw.messages WHERE id = p_msg_id
             RETURNING id INTO v_new_msg_id;
 
-            -- LLM direkt aufrufen
+            -- Call LLM directly
             PERFORM meclaw.llm_bee(v_new_msg_id, p_task_id, v_entry_bee,
                                    v_entry_cfg::jsonb, 
                                    (SELECT content FROM meclaw.messages WHERE id = v_new_msg_id));
@@ -240,12 +240,12 @@ DECLARE
     v_new_stack     JSONB;
     v_new_msg_id    UUID;
 BEGIN
-    -- Obersten Frame vom Stack holen
-    v_frame      := p_stack->-1;  -- letztes Element
+    -- Get the top frame from the stack
+    v_frame      := p_stack->-1;  -- last element
     v_return_bee := v_frame->>'return_bee';
     v_new_stack  := p_stack - (jsonb_array_length(p_stack) - 1);
 
-    -- Neue Return-Message anlegen
+    -- Create new return message
     INSERT INTO meclaw.messages (
         task_id, channel_id, previous_id, type, sender, status, content
     )
@@ -272,4 +272,3 @@ END;
 $function$
 
 ;
-

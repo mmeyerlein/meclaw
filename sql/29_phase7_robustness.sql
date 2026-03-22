@@ -31,7 +31,7 @@ BEGIN
 
     IF v_content IS NULL OR v_msg_type != 'user_input' THEN RETURN; END IF;
 
-    -- Skip very short messages (just "ok", "ja" etc. — ambiguous)
+    -- Skip very short messages (just "ok", "yes" etc. — ambiguous)
     IF length(v_content) < 3 THEN RETURN; END IF;
 
     -- Stage 1: Fast keyword detection (unchanged, as pre-filter)

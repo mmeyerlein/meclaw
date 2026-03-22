@@ -1,38 +1,38 @@
-# Tiefenanalyse: MeClaw Benchmark-Strategie
+# Deep Analysis: MeClaw Benchmark Strategy
 
-> Erstellt: 2026-03-21 19:00
-> Basis: BRAIN.md, Alinea/Hippocampus Paper, LongMemEval Paper, aktuelle Implementierung v0.3.0
-> Ziel: Maximale Benchmark-Verbesserung mit vorhandenen Bordmitteln
+> Created: 2026-03-21 19:00
+> Basis: BRAIN.md, Alinea/Hippocampus Paper, LongMemEval Paper, current implementation v0.3.0
+> Goal: Maximum benchmark improvement using available tools
 
 ---
 
-## 1. Was Alinea anders macht (und warum 93.8% temporal)
+## 1. What Alinea Does Differently (and Why 93.8% Temporal)
 
 ### 1.1 Raphtory = Temporal-First Graph
 
-Der entscheidende Unterschied zwischen Alinea und MeClaw ist **nicht** die Architektur (die ist fast identisch — wir haben sie von Alinea abgeleitet). Der Unterschied ist **Raphtory als temporal-first Graph Engine**.
+The decisive difference between Alinea and MeClaw is **not** the architecture (which is nearly identical — we derived ours from Alinea). The difference is **Raphtory as a temporal-first graph engine**.
 
-In Raphtory ist Zeit eine **strukturelle Dimension**, nicht eine Property. Jede Edge, jede Property hat eine native temporal History. Man kann den Graph zu JEDEM Zeitpunkt "windowed" betrachten:
+In Raphtory, time is a **structural dimension**, not a property. Every edge, every property has a native temporal history. You can view the graph "windowed" at ANY point in time:
 
 ```
-"Was wusste das System am 15. März 2023 über Julia?"
+"What did the system know about Julia on March 15, 2023?"
 → Window graph to 2023-03-15
-→ Alle Edges, Properties, Entities sichtbar wie sie zu dem Zeitpunkt waren
+→ All edges, properties, entities visible as they were at that point
 ```
 
-In Apache AGE (MeClaw) ist Zeit eine **Property auf Nodes/Edges**:
+In Apache AGE (MeClaw), time is a **property on nodes/edges**:
 ```cypher
 MATCH (e:Event) WHERE e.created_at < '2023-03-15' RETURN e
 ```
 
-Das funktioniert für einfache Queries, aber für **Temporal Reasoning** fehlt:
-- Kein natives Graph-Windowing
-- Kein "Zustand des Graphen zu Zeitpunkt X"
-- Kein temporal-aware Traversal (Pfade die zeitlich konsistent sind)
+This works for simple queries, but for **temporal reasoning** it lacks:
+- No native graph windowing
+- No "state of the graph at point X"
+- No temporally-aware traversal (paths that are temporally consistent)
 
-### 1.2 Wie Alinea temporale Fragen löst
+### 1.2 How Alinea Solves Temporal Questions
 
-Für "Was war das erste Problem nach dem Service?":
+For "What was the first problem after the service?":
 
 **Alinea/Raphtory:**
 1. Window graph to time of "first service" event
@@ -40,25 +40,25 @@ Für "Was war das erste Problem nach dem Service?":
 3. First event matching "problem/issue" = answer
 4. Temporal ordering is inherent in graph structure
 
-**MeClaw/AGE (aktuell):**
+**MeClaw/AGE (current):**
 1. BM25 search "car service issue problem"
-2. Vector similarity auf Query-Embedding
-3. RRF Fusion → Top-K ranked by relevance, NOT by temporal order
-4. LLM Re-Ranking hilft, aber versteht keine Graph-Struktur
+2. Vector similarity on query embedding
+3. RRF fusion → Top-K ranked by relevance, NOT by temporal order
+4. LLM re-ranking helps, but doesn't understand graph structure
 
-### 1.3 PostgreSQL als Raphtory-Ersatz
+### 1.3 PostgreSQL as a Raphtory Substitute
 
-Hier die gute Nachricht: PostgreSQL KANN temporal-windowed Queries. Nicht nativ wie Raphtory, aber über SQL:
+Here's the good news: PostgreSQL CAN do temporal-windowed queries. Not natively like Raphtory, but via SQL:
 
 ```sql
--- "Alle Events zwischen Service-Datum und 7 Tage danach"
+-- "All events between service date and 7 days after"
 SELECT * FROM meclaw.brain_events
 WHERE channel_id = $ch
   AND created_at BETWEEN $service_date AND ($service_date + interval '7 days')
 ORDER BY created_at ASC;
 ```
 
-Und mit AGE Cypher + WHERE-Clauses:
+And with AGE Cypher + WHERE clauses:
 ```cypher
 MATCH (service:Event)-[:TEMPORAL*1..5]->(next:Event)
 WHERE service.created_at >= '2023-03-15' 
@@ -67,54 +67,54 @@ RETURN next
 ORDER BY next.created_at ASC
 ```
 
-**Wir KÖNNEN temporales Windowing machen — wir tun es nur nicht.**
+**We CAN do temporal windowing — we just don't do it.**
 
 ---
 
-## 2. Was LongMemEval eigentlich testet
+## 2. What LongMemEval Actually Tests
 
-### 2.1 Die 5+1 Kategorien
+### 2.1 The 5+1 Categories
 
-| Kategorie | n | Was getestet wird | Unser Score (v0.2.0) |
+| Category | n | What Is Tested | Our Score (v0.2.0) |
 |---|---|---|---|
-| temporal-reasoning | 133 | Zeitliche Ordnung von Events ("first", "before", "after") | 3% |
-| multi-session | 133 | Fakten aus >1 Session verbinden | 2% → 0.8% |
-| knowledge-update | 78 | Aktualisierte Fakten ("was ist der neueste Stand?") | 17% |
-| single-session-user | 70 | Fakten die der User gesagt hat | 14% |
-| single-session-assistant | 56 | Fakten die der Assistant gesagt hat | 46% |
-| single-session-preference | 30 | Implizite Präferenzen des Users | 17% |
+| temporal-reasoning | 133 | Temporal ordering of events ("first", "before", "after") | 3% |
+| multi-session | 133 | Connecting facts from >1 session | 2% → 0.8% |
+| knowledge-update | 78 | Updated facts ("what is the latest status?") | 17% |
+| single-session-user | 70 | Facts the user stated | 14% |
+| single-session-assistant | 56 | Facts the assistant stated | 46% |
+| single-session-preference | 30 | Implicit user preferences | 17% |
 
-### 2.2 Schlüssel-Insight aus dem LongMemEval Paper
+### 2.2 Key Insight from the LongMemEval Paper
 
-Das Paper empfiehlt 3 Optimierungen:
+The paper recommends 3 optimizations:
 
 1. **Session Decomposition for Value Granularity**
-   - Statt ganze Sessions zu speichern → in atomare Fakten/Statements zerlegen
-   - Jeder Fakt bekommt sein eigenes Embedding
-   - "GPS issue after service" wird ein eigener Fakt, nicht Teil einer 300-Wörter-Nachricht
+   - Instead of storing entire sessions → decompose into atomic facts/statements
+   - Each fact gets its own embedding
+   - "GPS issue after service" becomes its own fact, not part of a 300-word message
 
 2. **Fact-Augmented Key Expansion**
-   - Extrahierte Entities/Fakten als zusätzliche Such-Keys
-   - Wir haben `facts_text` — aber es wird nur bei LLM Extraction befüllt
+   - Extracted entities/facts as additional search keys
+   - We have `facts_text` — but it's only populated with LLM extraction
 
 3. **Time-Aware Query Expansion**
-   - Frage nach temporalem Kontext: "first issue after service" → "issue AND date > service_date"
-   - LLM reformuliert die Query mit Zeitfilter
+   - Ask for temporal context: "first issue after service" → "issue AND date > service_date"
+   - LLM reformulates the query with time filter
 
-### 2.3 `question_date` — unser ungenutztes Ass
+### 2.3 `question_date` — Our Unused Ace
 
-Jede Frage hat ein `question_date`! Z.B. "2023/04/10 23:07". Das ist der Zeitpunkt an dem die Frage gestellt wird — ALLE relevanten Sessions liegen davor.
+Every question has a `question_date`! E.g. "2023/04/10 23:07". This is the point in time when the question is asked — ALL relevant sessions lie before it.
 
-Wir nutzen das **überhaupt nicht**. Der Runner ignoriert question_date komplett.
+We don't use this **at all**. The runner completely ignores question_date.
 
 ---
 
-## 3. Wo MeClaw steht vs. was möglich ist
+## 3. Where MeClaw Stands vs. What's Possible
 
-### 3.1 Aktuelle Pipeline (v0.3.0, Reset-Modus)
+### 3.1 Current Pipeline (v0.3.0, Reset Mode)
 
 ```
-Feed Sessions (mit korrekten Timestamps) →
+Feed Sessions (with correct timestamps) →
 extract_bee (user_input only, created_at from message) →
 Batch Embedding →
 Signal Pipeline:
@@ -126,70 +126,70 @@ Signal Pipeline:
 Return Context
 ```
 
-### 3.2 Was fehlt für maximalen Benchmark
+### 3.2 What's Missing for Maximum Benchmark Performance
 
-| Feature | Impact (geschätzt) | Aufwand | Verfügbar? |
+| Feature | Estimated Impact | Effort | Available? |
 |---|---|---|---|
-| **Session Decomposition** | +15-25% | Mittel | Teilweise (extract_bee + LLM) |
-| **Time-Aware Query Expansion** | +10-20% temporal | Gering | Nein, aber einfach |
-| **question_date als Retrieval-Filter** | +5-10% temporal | Gering | Daten vorhanden |
-| **has_answer Turns priorisieren** | +10-15% | Gering | Daten vorhanden |
-| **LLM Extraction aktivieren** | +5-10% | Kostet $10-15 | Ja, --skip-extraction weglassen |
-| **PostgreSQL Temporal Windowing** | +10-15% temporal | Mittel | SQL verfügbar |
-| **Snapshot-basiertes Graph-Windowing** | +5-10% temporal | Hoch | Theoretisch möglich |
+| **Session Decomposition** | +15-25% | Medium | Partially (extract_bee + LLM) |
+| **Time-Aware Query Expansion** | +10-20% temporal | Low | No, but easy |
+| **question_date as retrieval filter** | +5-10% temporal | Low | Data available |
+| **Prioritize has_answer turns** | +10-15% | Low | Data available |
+| **Enable LLM extraction** | +5-10% | Costs $10-15 | Yes, drop --skip-extraction |
+| **PostgreSQL Temporal Windowing** | +10-15% temporal | Medium | SQL available |
+| **Snapshot-based graph windowing** | +5-10% temporal | High | Theoretically possible |
 
 ---
 
-## 4. Konkrete Strategie: Maximaler Benchmark mit Bordmitteln
+## 4. Concrete Strategy: Maximum Benchmark With Available Tools
 
-### Phase 1: Quick Wins (kein neuer Code in SQL nötig)
+### Phase 1: Quick Wins (no new SQL code needed)
 
-#### 1a. question_date als Retrieval-Filter
-Die Frage hat ein Datum. Alle Sessions liegen zeitlich davor. 
-Im Runner: Wenn die Frage gestellt wird, gib retrieve_bee einen Zeitfilter mit:
+#### 1a. question_date as Retrieval Filter
+The question has a date. All sessions are temporally prior to it.
+In the runner: when a question is asked, pass a time filter to retrieve_bee:
 ```python
-# Nur Events VOR dem question_date retrieven
+# Only retrieve events BEFORE question_date
 context = retrieve_bee(agent, query, limit=10, 
                        before_date=question_date)
 ```
 
-#### 1b. has_answer-Turns identifizieren
-LongMemEval markiert welche Turns die Antwort enthalten (`has_answer: true`).
-→ Wir können das NICHT für den Benchmark nutzen (das wäre Cheating).
-ABER: Wir können prüfen ob unser Retrieval diese Turns findet → Diagnose.
+#### 1b. Identify has_answer Turns
+LongMemEval marks which turns contain the answer (`has_answer: true`).
+→ We CANNOT use this for the benchmark (that would be cheating).
+BUT: We can check whether our retrieval finds these turns → diagnostic.
 
-#### 1c. Top-K + Re-Ranking bereits aktiviert
-Schon implementiert. ✅
+#### 1c. Top-K + Re-Ranking Already Enabled
+Already implemented. ✅
 
-### Phase 2: Session Decomposition (mittlerer Aufwand)
+### Phase 2: Session Decomposition (Medium Effort)
 
-Statt die ganze User-Message als einen brain_event zu speichern:
+Instead of storing the entire user message as one brain_event:
 
 ```
-Nachricht: "I recently had my car serviced on March 15th and 
+Message: "I recently had my car serviced on March 15th and 
 the GPS started malfunctioning. Also, I'm thinking of getting 
 the car detailed and looking at accessories."
 
 → Decomposition:
-  Fakt 1: "Car was serviced on March 15th" [date: 2023-03-15]
-  Fakt 2: "GPS system started malfunctioning after service" [date: after 2023-03-15]
-  Fakt 3: "Considering car detailing" [date: ~2023-03-15]
-  Fakt 4: "Looking at car accessories" [date: ~2023-03-15]
+  Fact 1: "Car was serviced on March 15th" [date: 2023-03-15]
+  Fact 2: "GPS system started malfunctioning after service" [date: after 2023-03-15]
+  Fact 3: "Considering car detailing" [date: ~2023-03-15]
+  Fact 4: "Looking at car accessories" [date: ~2023-03-15]
 ```
 
-Jeder Fakt bekommt:
-- Eigenes Embedding
-- Eigenen Timestamp
-- Eigene Entity-Links
+Each fact gets:
+- Its own embedding
+- Its own timestamp
+- Its own entity links
 
-Implementierung:
-- LLM Call: "Extrahiere atomare Fakten mit Zeitangaben aus dieser Nachricht"
-- Pro Fakt einen brain_event erstellen
-- Kostet ~1 LLM Call pro Message, aber dramatisch bessere Retrieval-Granularität
+Implementation:
+- LLM call: "Extract atomic facts with timestamps from this message"
+- Create one brain_event per fact
+- Costs ~1 LLM call per message, but dramatically better retrieval granularity
 
-### Phase 3: Time-Aware Query Expansion (geringer Aufwand)
+### Phase 3: Time-Aware Query Expansion (Low Effort)
 
-Vor dem Retrieval: LLM reformuliert die Frage mit temporalem Kontext.
+Before retrieval: LLM reformulates the question with temporal context.
 
 ```
 Original: "What was the first issue I had with my new car after its first service?"
@@ -197,23 +197,23 @@ Expanded: "car issue problem after first service, chronologically first event af
 + Temporal Filter: "events ordered by created_at ASC, after service event"
 ```
 
-Implementierung:
-- 1 LLM Call pro Frage
+Implementation:
+- 1 LLM call per question
 - Output: (expanded_query, temporal_direction, temporal_anchor)
 - temporal_direction: "after" | "before" | "between" | "latest" | "first"
-- temporal_anchor: Referenz-Event oder Datum
+- temporal_anchor: reference event or date
 
-### Phase 4: PostgreSQL Temporal Retrieval (mittlerer Aufwand)
+### Phase 4: PostgreSQL Temporal Retrieval (Medium Effort)
 
-Für temporale Fragen einen speziellen Retrieval-Pfad:
+A dedicated retrieval path for temporal questions:
 
 ```sql
--- 1. Finde Anchor-Event (z.B. "first service")
+-- 1. Find anchor event (e.g. "first service")
 SELECT id, created_at FROM meclaw.brain_events
 WHERE content ILIKE '%first service%' OR content ILIKE '%serviced%'
 ORDER BY created_at ASC LIMIT 1;
 
--- 2. Forward-Traverse: Nächste Events nach Anchor
+-- 2. Forward-traverse: next events after anchor
 SELECT * FROM meclaw.brain_events
 WHERE created_at > $anchor_date
   AND channel_id = $channel
@@ -221,102 +221,102 @@ ORDER BY created_at ASC
 LIMIT 10;
 ```
 
-Oder mit AGE:
+Or with AGE:
 ```cypher
 MATCH (anchor:Event)-[:TEMPORAL*1..10]->(next:Event)
 WHERE anchor.id = $anchor_id
 RETURN next ORDER BY next.created_at ASC
 ```
 
-### Phase 5: Snapshot-basiertes Graph-Windowing (hoher Aufwand, optional)
+### Phase 5: Snapshot-Based Graph Windowing (High Effort, Optional)
 
-PostgreSQL hat keine native temporale Graph-Engine wie Raphtory. ABER:
+PostgreSQL has no native temporal graph engine like Raphtory. BUT:
 - **Savepoints**: `SAVEPOINT before_question; ... ROLLBACK TO before_question;`
-- **Schema Snapshots**: Für jede Frage den Graph-Zustand einfrieren
+- **Schema Snapshots**: Freeze graph state for each question
 - **Materialized Views**: `CREATE MATERIALIZED VIEW graph_at_date AS SELECT ... WHERE created_at <= $date`
 
-Das ist der Raphtory-Ersatz — nicht so elegant, aber funktional.
+This is the Raphtory substitute — not as elegant, but functional.
 
 ---
 
-## 5. Priorisierung: ROI pro Feature
+## 5. Prioritization: ROI per Feature
 
-| Prio | Feature | Impact | Aufwand | ROI |
+| Prio | Feature | Impact | Effort | ROI |
 |------|---------|--------|---------|-----|
 | 🔴 1 | Session Decomposition (Fact-Level Events) | +15-25% | 4h | ★★★★★ |
 | 🔴 2 | Time-Aware Query Expansion | +10-20% temporal | 2h | ★★★★ |
-| 🔴 3 | Temporal Retrieval Pfad (SQL/AGE) | +10-15% temporal | 3h | ★★★★ |
-| 🟡 4 | question_date als Filter | +5-10% | 1h | ★★★ |
-| 🟡 5 | LLM Extraction (--skip-extraction weglassen) | +5-10% | $15 | ★★★ |
-| 🟢 6 | Snapshot Graph-Windowing | +5-10% | 8h | ★★ |
+| 🔴 3 | Temporal Retrieval Path (SQL/AGE) | +10-15% temporal | 3h | ★★★★ |
+| 🟡 4 | question_date as filter | +5-10% | 1h | ★★★ |
+| 🟡 5 | LLM Extraction (drop --skip-extraction) | +5-10% | $15 | ★★★ |
+| 🟢 6 | Snapshot Graph Windowing | +5-10% | 8h | ★★ |
 
-**Empfehlung: Prio 1-3 implementieren → erwarteter Gesamtimpact: +30-50%**
+**Recommendation: Implement Prio 1-3 → expected total impact: +30-50%**
 
-Von 12% auf geschätzt 42-62%. Das wäre in der Nähe von "Naive RAG optimiert" (Paper: 30-50%) und deutlich über dem bisherigen.
+From 12% to an estimated 42-62%. That would be close to "Optimized Naive RAG" (Paper: 30-50%) and well above the previous result.
 
-Für 85%+ (Alinea-Niveau) bräuchten wir wahrscheinlich Session Decomposition + Temporal Retrieval + einen starken Reader/Judge — und einen besseren Backbone (GPT-5 statt gpt-4o-mini).
-
----
-
-## 6. Warum der Benchmark bisher nicht gestiegen ist
-
-### Das fundamentale Problem
-
-Unser Benchmark testet aktuell: "Kannst du in ~18 user Messages (nach Deduplizierung) die richtige Information finden?"
-
-Die Antwort ist: Ja, meistens — BM25+Vector findet relevanten Content in 90%+ der Fälle. Das Problem ist:
-1. **Granularität**: Die RICHTIGE Information ist ein Nebensatz in einer langen Message
-2. **Ranking**: Ähnliche Messages ranken ähnlich (0.43-0.46 Band)
-3. **Temporal**: "First", "before", "after" erfordert zeitliche Ordnung, nicht Similarity
-
-Alle unsere Features (6-Signal, Graph, Prototypes, Hebbian) helfen bei **langfristiger Akkumulation** — aber der Benchmark testet **isolierte Retrieval-Genauigkeit pro Frage**.
-
-### Was WIRKLICH hilft
-
-1. **Fact-Level Granularität** (Session Decomposition) → GPS ist eigener Fakt, nicht Nebensatz
-2. **Temporale Queries** → "first after X" wird zu einem zeitlichen Filter, nicht Keyword-Match
-3. **LLM Re-Ranking** → Versteht "first issue after service" semantisch (bereits implementiert)
+For 85%+ (Alinea-level) we would likely need Session Decomposition + Temporal Retrieval + a strong reader/judge — and a better backbone (GPT-5 instead of gpt-4o-mini).
 
 ---
 
-## 7. Raphtory vs. PostgreSQL: Was wir emulieren können
+## 6. Why the Benchmark Hasn't Improved More
 
-| Raphtory Feature | PostgreSQL Equivalent | Qualität |
+### The Fundamental Problem
+
+Our benchmark currently tests: "Can you find the right information in ~18 user messages (after deduplication)?"
+
+The answer is: yes, mostly — BM25+Vector finds relevant content in 90%+ of cases. The problem is:
+1. **Granularity**: The RIGHT information is a subordinate clause in a long message
+2. **Ranking**: Similar messages rank similarly (0.43-0.46 band)
+3. **Temporal**: "First", "before", "after" requires temporal ordering, not similarity
+
+All our features (6-signal, Graph, Prototypes, Hebbian) help with **long-term accumulation** — but the benchmark tests **isolated retrieval accuracy per question**.
+
+### What ACTUALLY Helps
+
+1. **Fact-level granularity** (Session Decomposition) → GPS is its own fact, not a subordinate clause
+2. **Temporal queries** → "first after X" becomes a temporal filter, not keyword matching
+3. **LLM re-ranking** → understands "first issue after service" semantically (already implemented)
+
+---
+
+## 7. Raphtory vs. PostgreSQL: What We Can Emulate
+
+| Raphtory Feature | PostgreSQL Equivalent | Quality |
 |---|---|---|
-| Temporal Windowing | `WHERE created_at <= $date` | 90% — fehlt nur Live-Property-Versioning |
-| Native Temporal Edges | AGE TEMPORAL Edges mit created_at Property | 80% — kein bi-temporales Modell |
-| Time-Travel Queries | Savepoints / Materialized Views | 60% — nicht so elegant |
-| Property Evolution | Audit-Tables / JSONB History | 70% — manuell |
-| Temporal Aggregation | Window Functions | 95% — PostgreSQL ist hier stark |
+| Temporal Windowing | `WHERE created_at <= $date` | 90% — only lacks live property versioning |
+| Native Temporal Edges | AGE TEMPORAL edges with created_at property | 80% — no bi-temporal model |
+| Time-Travel Queries | Savepoints / Materialized Views | 60% — not as elegant |
+| Property Evolution | Audit tables / JSONB history | 70% — manual |
+| Temporal Aggregation | Window functions | 95% — PostgreSQL is strong here |
 
-**Fazit: PostgreSQL kann ~80% von Raphtory's temporal Features emulieren.** Die fehlenden 20% (native Property-Versioning, bi-temporales Modell) sind für den LongMemEval-Benchmark nicht kritisch, weil wir keine Property-Änderungen über Zeit tracken müssen — wir brauchen nur Event-Ordering und Time-Window-Queries.
-
----
-
-## 8. Konkreter Umsetzungsplan
-
-### Schritt 1: retrieve_bee mit Temporal-Filter erweitern
-- Neuer Parameter: `p_before_date TIMESTAMPTZ DEFAULT NULL`
-- Wenn gesetzt: `WHERE be.created_at <= p_before_date`
-- Runner übergibt `question_date` als Filter
-
-### Schritt 2: Session Decomposition im Runner
-- Nach feed_message: LLM Call "decompose this message into atomic facts with dates"
-- Pro Fakt: eigener brain_event mit eigenem Timestamp
-- Kostet ~1 LLM Call pro User-Message (~$3-5 für 500 Fragen)
-
-### Schritt 3: Time-Aware Query Expansion
-- Vor retrieve: LLM reformuliert Frage
-- Erkennt temporale Richtung ("first after", "last before", "between")
-- Generiert Zeitfilter für retrieve_bee
-
-### Schritt 4: Benchmark laufen lassen
-- `--rerank --top-k 10` (bereits implementiert)
-- Neu: `--decompose` (Session Decomposition)
-- Neu: `--time-aware` (Query Expansion)
-- Erwartung: 40-60% statt 12%
+**Conclusion: PostgreSQL can emulate ~80% of Raphtory's temporal features.** The missing 20% (native property versioning, bi-temporal model) are not critical for the LongMemEval benchmark, because we don't need to track property changes over time — we only need event ordering and time-window queries.
 
 ---
 
-*Diese Analyse ist die Basis für die nächste Entwicklungsphase.*
-*Priorität: Session Decomposition > Time-Aware Expansion > Temporal Retrieval Filter*
+## 8. Concrete Implementation Plan
+
+### Step 1: Extend retrieve_bee with Temporal Filter
+- New parameter: `p_before_date TIMESTAMPTZ DEFAULT NULL`
+- If set: `WHERE be.created_at <= p_before_date`
+- Runner passes `question_date` as filter
+
+### Step 2: Session Decomposition in the Runner
+- After feed_message: LLM call "decompose this message into atomic facts with dates"
+- Per fact: own brain_event with own timestamp
+- Costs ~1 LLM call per user message (~$3-5 for 500 questions)
+
+### Step 3: Time-Aware Query Expansion
+- Before retrieve: LLM reformulates question
+- Detects temporal direction ("first after", "last before", "between")
+- Generates time filter for retrieve_bee
+
+### Step 4: Run Benchmark
+- `--rerank --top-k 10` (already implemented)
+- New: `--decompose` (Session Decomposition)
+- New: `--time-aware` (Query Expansion)
+- Expectation: 40-60% instead of 12%
+
+---
+
+*This analysis is the basis for the next development phase.*
+*Priority: Session Decomposition > Time-Aware Expansion > Temporal Retrieval Filter*

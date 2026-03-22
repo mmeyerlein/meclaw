@@ -1,22 +1,22 @@
--- MeClaw v0.1.0 — E4 + E5: AGE Graph Edges für Prototype-Aktivierungen & Assoziationen
+-- MeClaw v0.1.0 — E4 + E5: AGE Graph Edges for Prototype Activations & Associations
 -- Date: 2026-03-21
 -- Ref: docs/BRAIN.md (Prototype Engine, AGE Graph Intelligence)
 --
--- E4: ACTIVATES Edges   → (:Event)-[:ACTIVATES {weight}]->(:Prototype)
---     Top-3 aktivierte Prototypes pro Event (höchste Cosine-Similarity)
---     Wird in novelty_bee v3 integriert (nach Prototype-Matching)
+-- E4: ACTIVATES edges   → (:Event)-[:ACTIVATES {weight}]->(:Prototype)
+--     Top-3 activated prototypes per event (highest cosine similarity)
+--     Integrated into novelty_bee v3 (after prototype matching)
 --
--- E5: ASSOCIATION Edges → (:Prototype)-[:ASSOCIATED {weight}]->(:Prototype)
---     Spiegelt prototype_associations als AGE Edges
---     Update nach hebbian_update v3 via backfill_prototype_graph()
+-- E5: ASSOCIATION edges → (:Prototype)-[:ASSOCIATED {weight}]->(:Prototype)
+--     Mirrors prototype_associations as AGE edges
+--     Updated after hebbian_update v3 via backfill_prototype_graph()
 --
--- TECHNISCHES:
---   - Funktionen nutzen $func$ als Body-Delimiter (da Cypher-Format $c$...$c$ verwendet)
---   - AGE Setup innerhalb jeder Funktion via LOAD + SET LOCAL search_path
---   - Prototype-IDs werden für Cypher via replace() apostrophen-escaped
+-- TECHNICAL:
+--   - Functions use $func$ as body delimiter (since Cypher format uses $c$...$c$)
+--   - AGE setup inside each function via LOAD + SET LOCAL search_path
+--   - Prototype IDs are apostrophe-escaped via replace() for Cypher
 
 -- =============================================================================
--- Hilfsfunktion: AGE in aktueller Session laden
+-- Helper function: load AGE in current session
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw._age_setup()
 RETURNS VOID AS $func$
@@ -28,7 +28,7 @@ $func$ LANGUAGE plpgsql;
 
 -- =============================================================================
 -- E4: create_activates_edges(p_event_id, p_agent_id)
--- Erstellt ACTIVATES Edges für die Top-3 Prototypes eines Events
+-- Creates ACTIVATES edges for the Top-3 prototypes of an event
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.create_activates_edges(
     p_event_id UUID,
@@ -43,7 +43,7 @@ DECLARE
 BEGIN
     PERFORM meclaw._age_setup();
 
-    -- Event-Embedding laden
+    -- Load event embedding
     SELECT embedding INTO v_event_embedding
     FROM meclaw.brain_events WHERE id = p_event_id;
 
@@ -51,16 +51,16 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Event-ID für Cypher sanitizen
+    -- Sanitize event ID for Cypher
     v_event_id_safe := replace(p_event_id::TEXT, '''', '''''');
 
-    -- Event-Node in AGE erstellen (MERGE = idempotent)
+    -- Create event node in AGE (MERGE = idempotent)
     EXECUTE format(
         'SELECT * FROM ag_catalog.cypher(''meclaw_graph'', $c$ MERGE (e:Event {id: %L}) RETURN e $c$) AS (v ag_catalog.agtype)',
         v_event_id_safe
     );
 
-    -- Top-3 Prototypes nach Cosine-Similarity
+    -- Top-3 prototypes by cosine similarity
     FOR v_proto IN
         SELECT
             p.id,
@@ -71,19 +71,19 @@ BEGIN
         ORDER BY p.centroid <=> v_event_embedding
         LIMIT 3
     LOOP
-        -- Nur positive Similarity
+        -- Only positive similarity
         CONTINUE WHEN v_proto.similarity <= 0.0;
 
-        -- Prototype-ID sanitizen
+        -- Sanitize prototype ID
         v_proto_id_safe := replace(v_proto.id, '''', '''''');
 
-        -- Prototype-Node in AGE erstellen wenn noch nicht vorhanden
+        -- Create prototype node in AGE if not yet present
         EXECUTE format(
             'SELECT * FROM ag_catalog.cypher(''meclaw_graph'', $c$ MERGE (p:Prototype {id: %L}) RETURN p $c$) AS (v ag_catalog.agtype)',
             v_proto_id_safe
         );
 
-        -- ACTIVATES Edge erstellen / aktualisieren (MERGE + SET weight)
+        -- Create / update ACTIVATES edge (MERGE + SET weight)
         EXECUTE format(
             'SELECT * FROM ag_catalog.cypher(''meclaw_graph'', $c$
                 MATCH (e:Event {id: %L}), (p:Prototype {id: %L})
@@ -100,12 +100,12 @@ END;
 $func$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.create_activates_edges IS
-'E4: Erstellt ACTIVATES Edges im AGE Graph für die Top-3 aktivierten Prototypes eines Events.
-Aufgerufen nach novelty_bee. Erstellt Event- und Prototype-Nodes wenn noch nicht vorhanden.
-Gewicht = Cosine-Similarity zwischen Event-Embedding und Prototype-Centroid.';
+'E4: Creates ACTIVATES edges in the AGE graph for the Top-3 activated prototypes of an event.
+Called after novelty_bee. Creates event and prototype nodes if not yet present.
+Weight = cosine similarity between event embedding and prototype centroid.';
 
 -- =============================================================================
--- novelty_bee v3 — integriert E4 ACTIVATES Edges
+-- novelty_bee v3 — integrates E4 ACTIVATES edges
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.novelty_bee(p_agent_id TEXT, p_event_id UUID)
 RETURNS VOID AS $func$
@@ -120,20 +120,20 @@ DECLARE
     v_new_proto_id TEXT;
     v_new_proto_seq BIGINT;
 BEGIN
-    -- Event-Embedding laden
+    -- Load event embedding
     SELECT embedding INTO v_event_embedding
     FROM meclaw.brain_events WHERE id = p_event_id;
 
     IF v_event_embedding IS NULL THEN
-        RETURN; -- Embedding noch nicht verfügbar, später verarbeiten
+        RETURN; -- Embedding not yet available, process later
     END IF;
 
-    -- Anzahl Prototypes des Agents mit Centroid
+    -- Count prototypes for this agent with centroid
     SELECT COUNT(*) INTO v_prototype_count
     FROM meclaw.prototypes
     WHERE agent_id = p_agent_id AND centroid IS NOT NULL;
 
-    -- Nächsten Prototype finden
+    -- Find nearest prototype
     IF v_prototype_count > 0 THEN
         SELECT
             p.id,
@@ -146,17 +146,17 @@ BEGIN
         LIMIT 1;
     END IF;
 
-    -- Novelty Score: 0 = identisch zu bekanntem Prototype, 1 = völlig neu
+    -- Novelty score: 0 = identical to known prototype, 1 = completely new
     v_novelty := 1.0 - COALESCE(v_max_similarity, 0.0);
 
-    -- brain_event mit Novelty aktualisieren
+    -- Update brain_event with novelty
     UPDATE meclaw.brain_events
     SET novelty = v_novelty
     WHERE id = p_event_id;
 
-    -- Entscheidung: Neuer Prototype oder Update bestehender Centroid
+    -- Decision: new prototype or update existing centroid
     IF v_novelty > 0.7 OR v_prototype_count = 0 THEN
-        -- Neues Konzept erkannt → Prototype erstellen
+        -- New concept detected → create prototype
         v_new_proto_id := p_agent_id || ':proto:' || gen_random_uuid()::text;
         SELECT seq INTO v_new_proto_seq FROM meclaw.brain_events WHERE id = p_event_id;
 
@@ -172,14 +172,14 @@ BEGIN
             v_new_proto_seq
         );
     ELSE
-        -- Bekanntes Muster → Centroid via Online Running Average anpassen
-        -- alpha = 1/(n+2): Je mehr Aktivierungen, desto langsamer die Drift
+        -- Known pattern → adjust centroid via online running average
+        -- alpha = 1/(n+2): the more activations, the slower the drift
         SELECT activation_count INTO v_activation
         FROM meclaw.prototypes WHERE id = v_nearest_prototype_id;
 
         v_alpha := 1.0 / (v_activation + 2.0);
 
-        -- pgvector 0.8.x: Kein vector*scalar Operator → via vector_to_float4 + string_agg
+        -- pgvector 0.8.x: no vector*scalar operator → via vector_to_float4 + string_agg
         UPDATE meclaw.prototypes
         SET activation_count = activation_count + 1,
             last_activated_seq = (SELECT seq FROM meclaw.brain_events WHERE id = p_event_id),
@@ -196,10 +196,10 @@ BEGIN
         WHERE id = v_nearest_prototype_id;
     END IF;
 
-    -- E4: ACTIVATES Edges für Top-3 Prototypes erstellen
+    -- E4: create ACTIVATES edges for Top-3 prototypes
     PERFORM meclaw.create_activates_edges(p_event_id, p_agent_id);
 
-    -- Audit-Log
+    -- Audit log
     INSERT INTO meclaw.events (bee_type, event, payload)
     VALUES ('novelty_bee', 'novelty_computed', jsonb_build_object(
         'event_id', p_event_id,
@@ -214,15 +214,15 @@ END;
 $func$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.novelty_bee IS
-'Agent-level novelty scoring v3 (mit E4 ACTIVATES Edges).
-Berechnet Distanz von Event-Embedding zu nächstem Prototype.
-Novelty > 0.7 → Neuer Prototype. Sonst → Centroid-Update via Online Running Average.
-Erstellt nach Prototype-Matching ACTIVATES Edges im AGE Graph (Top-3 Prototypes).
-Kompatibel mit pgvector 0.8.x (via vector_to_float4 + string_agg, kein vector*scalar).';
+'Agent-level novelty scoring v3 (with E4 ACTIVATES edges).
+Calculates distance from event embedding to nearest prototype.
+Novelty > 0.7 → new prototype. Otherwise → centroid update via online running average.
+After prototype matching, creates ACTIVATES edges in the AGE graph (Top-3 prototypes).
+Compatible with pgvector 0.8.x (via vector_to_float4 + string_agg, no vector*scalar).';
 
 -- =============================================================================
 -- E5: upsert_association_edge(prototype_a, prototype_b, weight)
--- Erstellt/aktualisiert eine ASSOCIATED Edge im AGE Graph
+-- Creates/updates an ASSOCIATED edge in the AGE graph
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.upsert_association_edge(
     p_prototype_a TEXT,
@@ -236,11 +236,11 @@ DECLARE
 BEGIN
     PERFORM meclaw._age_setup();
 
-    -- IDs sanitizen (Apostrophe escapen)
+    -- Sanitize IDs (escape apostrophes)
     v_proto_a_safe := replace(p_prototype_a, '''', '''''');
     v_proto_b_safe := replace(p_prototype_b, '''', '''''');
 
-    -- Prototype-Nodes in AGE erstellen wenn noch nicht vorhanden
+    -- Create prototype nodes in AGE if not yet present
     EXECUTE format(
         'SELECT * FROM ag_catalog.cypher(''meclaw_graph'', $c$ MERGE (p:Prototype {id: %L}) RETURN p $c$) AS (v ag_catalog.agtype)',
         v_proto_a_safe
@@ -250,7 +250,7 @@ BEGIN
         v_proto_b_safe
     );
 
-    -- ASSOCIATED Edge: MERGE + SET weight
+    -- ASSOCIATED edge: MERGE + SET weight
     EXECUTE format(
         'SELECT * FROM ag_catalog.cypher(''meclaw_graph'', $c$
             MATCH (a:Prototype {id: %L}), (b:Prototype {id: %L})
@@ -266,11 +266,11 @@ END;
 $func$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.upsert_association_edge IS
-'E5: Erstellt oder aktualisiert eine ASSOCIATED Edge im AGE Graph zwischen zwei Prototypes.
-Erstellt Prototype-Nodes wenn noch nicht vorhanden. Idempotent via MERGE.';
+'E5: Creates or updates an ASSOCIATED edge in the AGE graph between two prototypes.
+Creates prototype nodes if not yet present. Idempotent via MERGE.';
 
 -- =============================================================================
--- E5: hebbian_update v3 — aktualisiert AGE ASSOCIATED Edges nach Hebbian Learning
+-- E5: hebbian_update v3 — updates AGE ASSOCIATED edges after Hebbian learning
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.hebbian_update(p_event_id UUID, p_reward_delta FLOAT)
 RETURNS VOID AS $func$
@@ -283,22 +283,22 @@ DECLARE
     v_agent_id TEXT;
     v_new_weight FLOAT;
 BEGIN
-    -- Alle beteiligten Entities dieses Events
+    -- All entities involved in this event
     SELECT array_agg(entity_id) INTO v_entities
     FROM meclaw.entity_events
     WHERE event_id = p_event_id;
 
     IF v_entities IS NULL OR array_length(v_entities, 1) < 2 THEN
-        RETURN; -- Keine Co-Aktivierung möglich
+        RETURN; -- No co-activation possible
     END IF;
 
     SELECT COALESCE(MAX(seq), 0) INTO v_current_seq FROM meclaw.brain_events;
 
-    -- Agent-ID des Events (Fallback: walter)
+    -- Agent ID of the event (fallback: walter)
     SELECT COALESCE(agent_id, 'meclaw:agent:walter') INTO v_agent_id
     FROM meclaw.brain_events WHERE id = p_event_id;
 
-    -- Auto-Stub: Alle Entities als Prototype-Knoten registrieren wenn noch nicht vorhanden
+    -- Auto-stub: register all entities as prototype nodes if not already present
     INSERT INTO meclaw.prototypes (id, agent_id, centroid, weight, activation_count, last_activated_seq, created_seq)
     SELECT
         e.entity_id,
@@ -313,10 +313,10 @@ BEGIN
     WHERE NOT EXISTS (SELECT 1 FROM meclaw.prototypes p WHERE p.id = e.entity_id)
     ON CONFLICT (id) DO NOTHING;
 
-    -- Hebbian Paarweise-Verknüpfung: Co-Aktivierung stärkt Assoziation
+    -- Hebbian pairwise linking: co-activation strengthens association
     FOR i IN 1..array_length(v_entities, 1) LOOP
         FOR j IN (i+1)..array_length(v_entities, 1) LOOP
-            -- Konsistente Reihenfolge (lexikografisch)
+            -- Consistent ordering (lexicographic)
             IF v_entities[i] <= v_entities[j] THEN
                 v_entity_a := v_entities[i];
                 v_entity_b := v_entities[j];
@@ -325,7 +325,7 @@ BEGIN
                 v_entity_b := v_entities[i];
             END IF;
 
-            -- Upsert in prototype_associations, Gewicht zurückgeben
+            -- Upsert into prototype_associations, return new weight
             INSERT INTO meclaw.prototype_associations (prototype_a, prototype_b, weight, last_updated_seq)
             VALUES (
                 v_entity_a,
@@ -339,7 +339,7 @@ BEGIN
                 last_updated_seq = v_current_seq
             RETURNING meclaw.prototype_associations.weight INTO v_new_weight;
 
-            -- E5: AGE ASSOCIATED Edge aktualisieren
+            -- E5: update AGE ASSOCIATED edge
             PERFORM meclaw.upsert_association_edge(v_entity_a, v_entity_b, v_new_weight);
         END LOOP;
     END LOOP;
@@ -347,15 +347,15 @@ END;
 $func$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.hebbian_update IS
-'Hebbian Learning v3 (mit E5 ASSOCIATED Edges im AGE Graph).
-Co-aktivierte Entities im gleichen Event stärken ihre Assoziation.
-Erstellt automatisch Prototype-Stubs für noch nicht registrierte Entities.
-Spiegelt jede Assoziation als ASSOCIATED Edge im AGE Graph (MERGE + SET weight).
+'Hebbian Learning v3 (with E5 ASSOCIATED edges in the AGE graph).
+Co-activated entities in the same event strengthen their association.
+Automatically creates prototype stubs for not-yet-registered entities.
+Mirrors each association as an ASSOCIATED edge in the AGE graph (MERGE + SET weight).
 Idempotent via ON CONFLICT.';
 
 -- =============================================================================
 -- E5: backfill_prototype_graph()
--- Spiegelt alle bestehenden prototype_associations in den AGE Graph
+-- Mirrors all existing prototype_associations into the AGE graph
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.backfill_prototype_graph()
 RETURNS INT AS $func$
@@ -378,18 +378,18 @@ BEGIN
         'associations_mirrored', v_count
     ));
 
-    RAISE NOTICE 'backfill_prototype_graph: % Assoziationen in AGE Graph gespiegelt.', v_count;
+    RAISE NOTICE 'backfill_prototype_graph: % associations mirrored into AGE graph.', v_count;
     RETURN v_count;
 END;
 $func$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.backfill_prototype_graph IS
-'E5: Spiegelt alle bestehenden prototype_associations als ASSOCIATED Edges in den AGE Graph.
-Idempotent: Nutzt MERGE — bestehende Edges werden nur geupdated.
-Aufruf: SELECT meclaw.backfill_prototype_graph();';
+'E5: Mirrors all existing prototype_associations as ASSOCIATED edges into the AGE graph.
+Idempotent: uses MERGE — existing edges are only updated.
+Call: SELECT meclaw.backfill_prototype_graph();';
 
 -- =============================================================================
--- Initialisierung: Backfill falls prototype_associations vorhanden
+-- Initialization: backfill if prototype_associations exist
 -- =============================================================================
 DO $do$
 DECLARE
@@ -399,10 +399,10 @@ BEGIN
     SELECT COUNT(*) INTO v_assoc_count FROM meclaw.prototype_associations;
 
     IF v_assoc_count > 0 THEN
-        RAISE NOTICE 'Starte backfill_prototype_graph für % Assoziationen...', v_assoc_count;
+        RAISE NOTICE 'Starting backfill_prototype_graph for % associations...', v_assoc_count;
         SELECT meclaw.backfill_prototype_graph() INTO v_mirrored;
-        RAISE NOTICE 'Backfill abgeschlossen: % ASSOCIATED Edges in AGE.', v_mirrored;
+        RAISE NOTICE 'Backfill complete: % ASSOCIATED edges in AGE.', v_mirrored;
     ELSE
-        RAISE NOTICE 'Keine prototype_associations vorhanden — Backfill übersprungen.';
+        RAISE NOTICE 'No prototype_associations present — backfill skipped.';
     END IF;
 END $do$;

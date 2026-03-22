@@ -1,27 +1,27 @@
--- MeClaw v0.1.0 — Phase A1: Temporal Edges im AGE Graph
+-- MeClaw v0.1.0 — Phase A1: Temporal Edges in the AGE Graph
 -- Date: 2026-03-21
 -- 
--- Ergänzt den AGE Graph um:
---   1. Event-Nodes mit vollständigen Properties (seq, channel_id, created_at)
---   2. TEMPORAL Edges zwischen aufeinanderfolgenden Events im gleichen Channel
---   3. Backfill für bestehende Events ohne TEMPORAL Edges
+-- Extends the AGE graph with:
+--   1. Event nodes with full properties (seq, channel_id, created_at)
+--   2. TEMPORAL edges between consecutive events in the same channel
+--   3. Backfill for existing events without TEMPORAL edges
 --
--- Änderungen an extract_bee: Nach brain_event INSERT werden AGE Event-Node
--- und TEMPORAL Edge synchron (innerhalb des gleichen Calls) angelegt.
+-- Changes to extract_bee: after brain_event INSERT, the AGE event node
+-- and TEMPORAL edge are created synchronously (within the same call).
 -- =============================================================================
 
 -- =============================================================================
--- 1. AGE Event-Node mit Properties anlegen / aktualisieren
+-- 1. Create / update AGE event node with properties
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.age_upsert_event_node(
     p_event_id   TEXT,
     p_seq        BIGINT,
     p_channel_id TEXT,
-    p_created_at TEXT  -- ISO 8601 Timestamp als String
+    p_created_at TEXT  -- ISO 8601 timestamp as string
 ) RETURNS VOID AS $fn$
     try:
         plpy.execute("SET search_path = ag_catalog, meclaw, public")
-        # Verwende MERGE + SET um Event-Node anzulegen oder zu aktualisieren
+        # Use MERGE + SET to create or update the event node
         plpy.execute("""
             SELECT * FROM cypher('meclaw_graph', $$
                 MERGE (e:Event {event_id: '%s'})
@@ -38,17 +38,17 @@ CREATE OR REPLACE FUNCTION meclaw.age_upsert_event_node(
 $fn$ LANGUAGE plpython3u;
 
 COMMENT ON FUNCTION meclaw.age_upsert_event_node IS
-'Legt einen AGE Event-Node an (oder aktualisiert ihn) mit seq, channel_id und created_at.';
+'Creates (or updates) an AGE event node with seq, channel_id, and created_at.';
 
 -- =============================================================================
--- 2. TEMPORAL Edge zum vorherigen Event im gleichen Channel setzen
+-- 2. Set TEMPORAL edge to the previous event in the same channel
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.age_link_temporal(
-    p_event_id   TEXT,   -- UUID des aktuellen Events
-    p_channel_id TEXT,   -- UUID des Channels (als Text)
-    p_seq        BIGINT  -- seq des aktuellen Events
+    p_event_id   TEXT,   -- UUID of the current event
+    p_channel_id TEXT,   -- UUID of the channel (as text)
+    p_seq        BIGINT  -- seq of the current event
 ) RETURNS BOOLEAN AS $fn$
-    # Suche das direkt vorherige Event im gleichen Channel (nach seq)
+    # Find the directly preceding event in the same channel (by seq)
     plan = plpy.prepare("""
         SELECT id::text AS prev_id
         FROM meclaw.brain_events
@@ -59,7 +59,7 @@ CREATE OR REPLACE FUNCTION meclaw.age_link_temporal(
 
     result = plan.execute([p_channel_id, p_seq])
     if not result:
-        return False  # Kein Vorgänger → kein TEMPORAL Edge
+        return False  # No predecessor → no TEMPORAL edge
 
     prev_event_id = result[0]["prev_id"]
 
@@ -79,10 +79,10 @@ CREATE OR REPLACE FUNCTION meclaw.age_link_temporal(
 $fn$ LANGUAGE plpython3u;
 
 COMMENT ON FUNCTION meclaw.age_link_temporal IS
-'Erstellt eine TEMPORAL Edge vom vorherigen Event zum aktuellen Event im gleichen Channel (seq-basiert).';
+'Creates a TEMPORAL edge from the previous event to the current event in the same channel (seq-based).';
 
 -- =============================================================================
--- 3. extract_bee — erweitert um AGE Event-Node + TEMPORAL Edge
+-- 3. extract_bee — extended with AGE event node + TEMPORAL edge
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.extract_bee(p_msg_id UUID)
 RETURNS VOID AS $$
@@ -95,18 +95,18 @@ DECLARE
     v_seq         BIGINT;
     v_created_at  TIMESTAMPTZ;
 BEGIN
-    -- Nachrichten-Details laden
+    -- Load message details
     SELECT channel_id, content->>'input', type, task_id
     INTO v_channel_id, v_content, v_message_type, v_task_id
     FROM meclaw.messages
     WHERE id = p_msg_id;
 
-    -- Nur user_input und llm_result verarbeiten
+    -- Only process user_input and llm_result
     IF v_message_type NOT IN ('user_input', 'llm_result') THEN
         RETURN;
     END IF;
 
-    -- Inhalt aus output-Feld holen falls input leer
+    -- Get content from output field if input is empty
     IF v_content IS NULL OR v_content = '' THEN
         SELECT content->>'output' INTO v_content
         FROM meclaw.messages WHERE id = p_msg_id;
@@ -116,7 +116,7 @@ BEGIN
         END IF;
     END IF;
 
-    -- Stage 1: brain_event anlegen mit Timestamp aus der Message
+    -- Stage 1: create brain_event with timestamp from the message
     INSERT INTO meclaw.brain_events (
         message_id, channel_id, agent_id, content, extracted, created_at
     ) VALUES (
@@ -124,7 +124,7 @@ BEGIN
         COALESCE((SELECT m.created_at FROM meclaw.messages m WHERE m.id = p_msg_id), NOW())
     ) RETURNING id, seq, created_at INTO v_event_id, v_seq, v_created_at;
 
-    -- Stage 1b: AGE Event-Node mit vollständigen Properties anlegen
+    -- Stage 1b: create AGE event node with full properties
     BEGIN
         PERFORM meclaw.age_upsert_event_node(
             v_event_id::text,
@@ -133,13 +133,13 @@ BEGIN
             to_char(v_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
         );
     EXCEPTION WHEN OTHERS THEN
-        -- AGE-Fehler blockieren nicht den Message-Flow
+        -- AGE errors do not block the message flow
         INSERT INTO meclaw.events (msg_id, task_id, bee_type, event, payload)
         VALUES (p_msg_id, v_task_id, 'extract_bee', 'age_event_node_failed',
             jsonb_build_object('error', SQLERRM, 'event_id', v_event_id));
     END;
 
-    -- Stage 1c: TEMPORAL Edge zum vorherigen Event im gleichen Channel
+    -- Stage 1c: TEMPORAL edge to the previous event in the same channel
     BEGIN
         PERFORM meclaw.age_link_temporal(
             v_event_id::text,
@@ -147,13 +147,13 @@ BEGIN
             v_seq
         );
     EXCEPTION WHEN OTHERS THEN
-        -- AGE-Fehler blockieren nicht den Message-Flow
+        -- AGE errors do not block the message flow
         INSERT INTO meclaw.events (msg_id, task_id, bee_type, event, payload)
         VALUES (p_msg_id, v_task_id, 'extract_bee', 'age_temporal_edge_failed',
             jsonb_build_object('error', SQLERRM, 'event_id', v_event_id));
     END;
 
-    -- Stage 1d: Embedding asynchron berechnen
+    -- Stage 1d: compute embedding asynchronously
     BEGIN
         PERFORM pg_background_launch(
             format('SELECT meclaw.compute_embedding(%L::uuid)', v_event_id)
@@ -164,7 +164,7 @@ BEGIN
             jsonb_build_object('error', SQLERRM, 'event_id', v_event_id));
     END;
 
-    -- Stage 2: LLM Entity-Extraktion asynchron
+    -- Stage 2: LLM entity extraction asynchronously
     BEGIN
         PERFORM pg_background_launch(
             format('SELECT meclaw.llm_extract_entities(%L::uuid)', v_event_id)
@@ -175,7 +175,7 @@ BEGIN
             jsonb_build_object('error', SQLERRM, 'event_id', v_event_id));
     END;
 
-    -- Channel-Tracking aktualisieren
+    -- Update channel tracking
     UPDATE meclaw.channels
     SET last_extracted_seq = COALESCE(
         (SELECT MAX(seq) FROM meclaw.brain_events WHERE channel_id = v_channel_id), 0
@@ -184,7 +184,7 @@ BEGIN
     updated_at = clock_timestamp()
     WHERE id = v_channel_id;
 
-    -- Extraktion loggen
+    -- Log extraction
     INSERT INTO meclaw.events (msg_id, task_id, bee_type, event, payload)
     VALUES (p_msg_id, v_task_id, 'extract_bee', 'extraction_queued',
         jsonb_build_object(
@@ -198,11 +198,11 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION meclaw.extract_bee IS
-'Zweistufige Extraktion: (1) brain_event + AGE Event-Node + TEMPORAL Edge, (2) Embedding + Entity-Extraktion async.';
+'Two-stage extraction: (1) brain_event + AGE event node + TEMPORAL edge, (2) embedding + entity extraction async.';
 
 -- =============================================================================
--- 4. Backfill: Bestehende AGE Event-Nodes mit Properties ausstatten
---    und TEMPORAL Edges für alle Events ohne Vorgänger-Edge anlegen
+-- 4. Backfill: populate existing AGE event nodes with properties
+--    and create TEMPORAL edges for all events without a predecessor edge
 -- =============================================================================
 CREATE OR REPLACE FUNCTION meclaw.backfill_temporal_edges()
 RETURNS TABLE(
@@ -214,7 +214,7 @@ import time
 
 plpy.execute("SET search_path = ag_catalog, meclaw, public")
 
-# Alle brain_events laden (geordnet nach seq)
+# Load all brain_events (ordered by seq)
 plan = plpy.prepare("""
     SELECT
         id::text AS event_id,
@@ -236,7 +236,7 @@ for row in events:
     channel_id  = row["channel_id"]
     created_at  = row["created_at_str"]
 
-    # AGE Event-Node aktualisieren (Properties setzen)
+    # Update AGE event node (set properties)
     try:
         plpy.execute("""
             SELECT meclaw.age_upsert_event_node('%s', %d, '%s', '%s')
@@ -247,7 +247,7 @@ for row in events:
         err += 1
         continue
 
-    # TEMPORAL Edge zum Vorgänger setzen
+    # Set TEMPORAL edge to predecessor
     try:
         result = plpy.execute("""
             SELECT meclaw.age_link_temporal('%s', '%s', %d)
@@ -262,4 +262,4 @@ return [(updated, created, err)]
 $fn$ LANGUAGE plpython3u;
 
 COMMENT ON FUNCTION meclaw.backfill_temporal_edges IS
-'Backfill: Setzt seq/channel_id/created_at auf bestehenden AGE Event-Nodes und erstellt TEMPORAL Edges.';
+'Backfill: sets seq/channel_id/created_at on existing AGE event nodes and creates TEMPORAL edges.';

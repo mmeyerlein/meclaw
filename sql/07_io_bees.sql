@@ -14,7 +14,7 @@ BEGIN
     v_output  := p_content->>'output';
     v_chat_id := p_content->>'telegram_chat_id';
 
-    -- Fallback: llm_result aus task holen
+    -- Fallback: retrieve llm_result from task
     IF v_output IS NULL OR v_output = '' THEN
         SELECT m.content->>'output', m.content->>'telegram_chat_id'
         INTO v_output, v_chat_id
@@ -24,7 +24,7 @@ BEGIN
         ORDER BY m.created_at DESC LIMIT 1;
     END IF;
 
-    -- Channel-Type prüfen
+    -- Check channel type
     SELECT c.type INTO v_channel_type FROM meclaw.channels c
     WHERE c.id = (SELECT channel_id FROM meclaw.messages WHERE id = p_msg_id);
 
@@ -73,10 +73,10 @@ BEGIN
     UPDATE meclaw.messages SET status='running', assigned_to='main-receiver-bee'
     WHERE id = p_msg_id;
 
-    -- Long-Poll — ALLEIN im nächsten Commit-Batch
+    -- Long-poll — ALONE in the next commit batch
     PERFORM meclaw.channel_bee_start();
 
-    -- Done — Task komplett abgeschlossen
+    -- Done — task fully complete
     UPDATE meclaw.messages SET status='done' WHERE id = p_msg_id;
     UPDATE meclaw.tasks SET status='done', updated_at=clock_timestamp()
     WHERE id = p_task_id;

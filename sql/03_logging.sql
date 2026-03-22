@@ -66,7 +66,7 @@ AS $function$
 DECLARE
     v_poll_running BOOLEAN;
 BEGIN
-    -- Prüfen ob ein Long-Poll aktiv ist
+    -- Check whether a long-poll is active
     SELECT EXISTS (
         SELECT 1 FROM meclaw.net_requests WHERE type = 'telegram_poll'
     ) INTO v_poll_running;
@@ -79,4 +79,3 @@ END;
 $function$
 
 ;
-
