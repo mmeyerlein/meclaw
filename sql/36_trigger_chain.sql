@@ -23,9 +23,11 @@ DECLARE
 BEGIN
     -- Only trigger on status change to 'done'
     IF NEW.status = 'done' AND (OLD.status IS NULL OR OLD.status != 'done') THEN
-        -- Only extract from user_input (user messages create brain_events)
-        -- llm_result intentionally excluded: assistant responses don't add to episodic memory
-        IF NEW.type = 'user_input' THEN
+        -- Extract from user_input AND llm_result (both create brain_events)
+        -- user_input: user messages → episodic memory
+        -- llm_result: assistant responses → also stored for retrieval
+        --   (needed for single-session-assistant type queries)
+        IF NEW.type IN ('user_input', 'llm_result') THEN
 
             -- 1. Channel-level extraction (sync, fast)
             PERFORM meclaw.extract_bee(NEW.id);
@@ -67,9 +69,7 @@ BEGIN
             END IF;
 
             -- 3. feedback_bee: only for user_input (user reacts to previous event)
-            --    Signature v2: (p_msg_id UUID, p_agent_id TEXT)
-            --    Trigger loop protection: feedback_bee only changes brain_events.reward,
-            --    no INSERT/UPDATE on messages → no loop possible
+            --    llm_result should NOT trigger feedback (no user reaction to score)
             IF NEW.type = 'user_input' AND NEW.channel_id IS NOT NULL THEN
                 -- Find agent for this channel
                 IF v_agent_id IS NULL THEN
@@ -101,5 +101,6 @@ CREATE TRIGGER trg_extract_on_done
     EXECUTE FUNCTION meclaw.trg_extract_on_done();
 
 COMMENT ON FUNCTION meclaw.trg_extract_on_done IS
-'Phase B1: extract_bee (sync) → novelty_bee (async, pg_background) → feedback_bee (sync, user_input only).
-Loop-safe: feedback_bee only modifies brain_events.reward, not messages.';
+'Phase B1: extract_bee (sync, user_input + llm_result) → novelty_bee (async, pg_background) → feedback_bee (sync, user_input only).
+Loop-safe: feedback_bee only modifies brain_events.reward, not messages.
+v0.3.2: llm_result extraction added for single-session-assistant benchmark improvement.';
