@@ -61,7 +61,8 @@ for sqlfile in \
     sql/44_e8_memcell_nodes.sql \
     sql/45_e9_llm_reranking.sql \
     sql/46_temporal_retrieval.sql \
-    sql/47_bm25_sanitize.sql
+    sql/47_bm25_sanitize.sql \
+    sql/48_batch_extraction.sql
 do
     echo ">>> $(basename $sqlfile)"
     OUTPUT=$(psql -U "$PGUSER" -d meclaw -f "$MECLAW_DIR/$sqlfile" 2>&1)

@@ -176,19 +176,23 @@ def run_signal_pipeline(conn, skip_extraction=False):
             unextracted = cur.fetchone()[0]
 
             if unextracted > 0:
-                print(f"  [pipeline] LLM extraction: {unextracted} events...")
+                print(f"  [pipeline] LLM batch extraction: {unextracted} events...")
                 t0 = time.time()
-                # backfill_extractions processes up to p_limit events with 0.5s rate-limit sleep
-                # Call in batches of 50 until done
-                total_extracted = 0
-                batch = 50
-                max_iterations = (unextracted // batch) + 2
-                for _ in range(max_iterations):
-                    cur.execute("SELECT meclaw.backfill_extractions(%s)", (batch,))
-                    n = cur.fetchone()[0]
-                    total_extracted += n
-                    if n == 0:
-                        break
+                # batch_extract: 1 LLM call per channel instead of per event
+                try:
+                    cur.execute("SELECT meclaw.backfill_extractions_batch(%s)", (200,))
+                    total_extracted = cur.fetchone()[0]
+                except Exception as e:
+                    print(f"  [pipeline] batch extraction failed, falling back to per-event: {e}")
+                    total_extracted = 0
+                    batch = 50
+                    max_iterations = (unextracted // batch) + 2
+                    for _ in range(max_iterations):
+                        cur.execute("SELECT meclaw.backfill_extractions(%s)", (batch,))
+                        n = cur.fetchone()[0]
+                        total_extracted += n
+                        if n == 0:
+                            break
                 elapsed = time.time() - t0
                 print(f"  [pipeline] extracted {total_extracted} events in {elapsed:.1f}s")
             else:
