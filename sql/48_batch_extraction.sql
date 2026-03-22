@@ -35,15 +35,18 @@ if not rows:
     return 0
 
 # Build a single combined text with event markers
+# Use 1-based index (not internal seq) so LLM can reference back
 event_texts = []
-event_map = {}  # seq → event_id
-for row in rows:
+event_map = {}  # idx → event_id (1-based)
+event_list = []  # ordered list of event_ids
+for i, row in enumerate(rows):
+    idx = i + 1  # 1-based index for LLM
     eid = str(row["id"])
-    seq = row["seq"]
     content = row["content"][:2000]  # Cap per event
     created = row["created_at"]
-    event_map[seq] = eid
-    event_texts.append(f"[MSG {seq} | {created}]\n{content}")
+    event_map[idx] = eid
+    event_list.append(eid)
+    event_texts.append(f"[MSG {idx} | {created}]\n{content}")
 
 combined = "\n\n".join(event_texts)
 # Cap total at ~6000 chars for cost/context control
@@ -154,13 +157,15 @@ for ent in entities:
 
 # Process facts → update facts_text on relevant events
 facts = parsed.get("facts", [])
-fact_by_seq = {}  # seq → [fact strings]
+fact_by_idx = {}  # idx → [fact strings]
+all_facts = []  # fallback: all facts as one string
 for fact in facts:
     if not isinstance(fact, dict) or not fact.get("fact"):
         continue
-    seq = fact.get("msg_seq")
-    if seq and seq in event_map:
-        fact_by_seq.setdefault(seq, []).append(fact["fact"])
+    all_facts.append(fact["fact"])
+    idx = fact.get("msg_seq")
+    if idx and idx in event_map:
+        fact_by_idx.setdefault(idx, []).append(fact["fact"])
 
 # Process relations
 relations = parsed.get("relations", [])
@@ -179,10 +184,18 @@ for rel in relations:
             plpy.warning(f"batch_extract relation: {e}")
 
 # Mark all events as extracted, store facts_text
+# If facts have msg_seq references, use them; otherwise distribute all facts to all events
+all_facts_text = " | ".join(all_facts) if all_facts else None
 extracted_count = 0
-for seq, eid in event_map.items():
-    facts_for_event = fact_by_seq.get(seq, [])
-    facts_text = " | ".join(facts_for_event) if facts_for_event else None
+for idx, eid in event_map.items():
+    facts_for_event = fact_by_idx.get(idx, [])
+    # Use per-event facts if available, otherwise fall back to all facts on first event
+    if facts_for_event:
+        facts_text = " | ".join(facts_for_event)
+    elif idx == 1 and all_facts_text:
+        facts_text = all_facts_text  # Put all facts on first event as fallback
+    else:
+        facts_text = None
     try:
         plpy.execute(plpy.prepare(
             "UPDATE meclaw.brain_events SET "
