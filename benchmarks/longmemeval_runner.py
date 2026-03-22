@@ -198,6 +198,21 @@ def run_signal_pipeline(conn, skip_extraction=False):
             else:
                 print("  [pipeline] LLM extraction: nothing to do")
 
+        # ── Step 1b: Embed newly created fact events ──────────────────────
+        if not skip_extraction:
+            cur.execute("""
+                SELECT COUNT(*) FROM meclaw.brain_events
+                WHERE embedding IS NULL AND content IS NOT NULL AND length(content) >= 10
+            """)
+            unembedded = cur.fetchone()[0]
+            if unembedded > 0:
+                print(f"  [embed] Embedding {unembedded} new fact events...")
+                t0 = time.time()
+                cur.execute("SELECT meclaw.compute_embeddings_batch(%s)", (unembedded + 10,))
+                n = cur.fetchone()[0]
+                elapsed = time.time() - t0
+                print(f"  [embed] {n} embeddings in {elapsed:.1f}s")
+
         # ── Step 2: facts_text repair (should auto-fire via trigger, but ensure) ─
         cur.execute("""
             UPDATE meclaw.brain_events
