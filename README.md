@@ -15,7 +15,7 @@
   <a href="https://github.com/pgvector/pgvector"><img src="https://img.shields.io/badge/pgvector-Semantic_Memory-blue?style=flat-square" alt="pgvector" /></a>
   <a href="https://github.com/supabase/pg_net"><img src="https://img.shields.io/badge/pg__net-Async_HTTP-green?style=flat-square" alt="pg_net" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square" alt="Apache 2.0" /></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.3.0-brightgreen?style=flat-square" alt="v0.3.0" /></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.3.1-brightgreen?style=flat-square" alt="v0.3.1" /></a>
 </p>
 
 <p align="center">

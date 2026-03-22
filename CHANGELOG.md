@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.1] — 2026-03-22
+
+### Upgraded
+- **ParadeDB pg_search 0.15.10 → 0.22.2** — Fixes `rt_fetch used out-of-bounds` bug (GitHub #2462, #3135)
+- **VM CPU: KVM → host passthrough** — Required for AVX2 (ParadeDB 0.19+)
+- **VM specs: 2→4 cores, 4→8 GB RAM**
+
+### Fixed
+- **BM25 Query Sanitization** — `sanitize_bm25_query()` removes special chars that crash ParadeDB BM25 parser (apostrophes, parens, etc.)
+- **time_filter_before date-only → end-of-day** — LLM returns "2023-05-28" parsed as 00:00:00, filtering out same-day events. Now extends to 23:59:59
+- **VACUUM after embed + pipeline** — BM25 index refresh after INSERT/UPDATE cycles
+- **DROP+CREATE BM25 index on reset** — Ensures clean index state between benchmark questions
+- **pg_background timing** — Wait loop for async extract_bee triggers to complete before embed
+- **paradedb.score → pdb.score** — v0.19.0 breaking change applied to all 29 occurrences
+
+### Changed
+- SQL files: 47 (added `sql/47_bm25_sanitize.sql`)
+- Runner: `--smart` and `--decompose` flags for temporal-aware retrieval
+- Benchmark results: 16/20 Smart retrieval (80%) with v0.22.2, 0 rt_fetch errors
+
 ## [0.3.0] — 2026-03-21
 
 ### Added

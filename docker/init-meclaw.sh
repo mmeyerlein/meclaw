@@ -1,9 +1,9 @@
 #!/bin/bash
-# MeClaw v0.3.0 — Docker Init Script
+# MeClaw v0.3.1 — Docker Init Script
 # Runs as docker-entrypoint-initdb.d entrypoint (first boot only)
 
 echo "========================================="
-echo "  MeClaw v0.3.0 — Initializing"
+echo "  MeClaw v0.3.1 — Initializing"
 echo "========================================="
 
 PGUSER="${POSTGRES_USER:-postgres}"
@@ -100,9 +100,9 @@ echo "    $RESULT"
 echo ""
 echo "========================================="
 if [ $FAILED -eq 0 ]; then
-    echo "  MeClaw v0.3.0 — Ready ✅"
+    echo "  MeClaw v0.3.1 — Ready ✅"
 else
-    echo "  MeClaw v0.3.0 — Ready (${FAILED} file(s) had errors)"
+    echo "  MeClaw v0.3.1 — Ready (${FAILED} file(s) had errors)"
 fi
 echo "  Run smoke tests:  SELECT meclaw.run_smoke_tests();"
 echo "  Run full tests:   SELECT meclaw.run_all_tests();"

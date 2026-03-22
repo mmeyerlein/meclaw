@@ -94,8 +94,20 @@
 
 ---
 
+## v0.3.1 — ParadeDB Upgrade Quick Test (20 Fragen, 2026-03-22)
+
+**ParadeDB:** 0.15.10 → 0.22.2 | **VM:** 4 cores, 8GB RAM, AVX2 CPU
+
+| Metrik | v0.3.0 (buggy BM25) | v0.3.1 (fixed) |
+|---|---|---|
+| rt_fetch errors | 490/500 | **0/20** |
+| Smart retrieval | 9/500 (1.8%) | **16/20 (80%)** |
+| Fallback | 491/500 (98%) | 4/20 (20%) |
+
+**500-Fragen Test steht aus** — erwartet deutlich bessere Ergebnisse.
+
 ## Nächste Tests
 
-- [ ] Test 3: `--smart --decompose --limit 50` (Stichprobe mit Fact-Level Decomposition)
-- [ ] Test 2: `--smart --decompose` (500 Fragen, ~14h — abhängig von Test 3)
+- [ ] 500-Fragen Benchmark mit v0.3.1 --smart (ParadeDB 0.22.2)
+- [ ] Test mit --smart --decompose --limit 50
 - [ ] Test ohne --skip-extraction (LLM Extraction für facts_text + entities)

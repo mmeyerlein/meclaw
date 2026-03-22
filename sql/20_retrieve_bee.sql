@@ -12,7 +12,7 @@
 -- 1. BM25 Index on brain_events
 -- =============================================================================
 
--- pg_search 0.15.10 BM25 index for full-text search
+-- pg_search 0.22.2 BM25 index for full-text search
 -- Uses the @@@ operator for querying
 CREATE INDEX IF NOT EXISTS idx_brain_events_bm25
 ON meclaw.brain_events
