@@ -464,6 +464,15 @@ def run_single_question(conn, channel_id, item, qi, total,
     elapsed = time.time() - t0
     print(f"  [embed] {embedded} embeddings in {elapsed:.1f}s")
 
+    # ── VACUUM to refresh BM25 index after inserts ─────────────────────────
+    # ParadeDB's BM25 index has stale row mappings after INSERT, causing
+    # rt_fetch out-of-bounds. VACUUM refreshes the index.
+    old_ac = conn.autocommit
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("VACUUM meclaw.brain_events")
+    conn.autocommit = old_ac
+
     # ── Reset spurious rewards from trigger-based feedback_bee ──────────────
     # feedback_bee fires on each user_input and rewards the previous event
     # based on sentiment. For benchmark conversations this is noise.
