@@ -89,25 +89,29 @@ base_url = row[0]["base_url"]
 
 date_context = f" The conversation took place on {p_session_date}." if p_session_date else ""
 
-prompt = f"""Extract atomic facts from this message. Each fact should be a single, self-contained statement.
+prompt = f"""Extract atomic facts from this message. Each fact must be completely self-contained — a reader should understand it WITHOUT seeing the original message.
 
 Message:{date_context}
 "{p_content}"
 
 Return a JSON array of objects with:
-- "fact": the atomic fact as a clear statement
+- "fact": the atomic fact as a clear, self-contained statement
 - "fact_date": specific date mentioned (YYYY-MM-DD format) or "unknown"  
 - "fact_type": one of "event", "preference", "fact", "opinion"
 
-Rules:
-- Split compound sentences into individual facts
-- Include temporal references ("on March 15th", "last week", "two months ago")
-- Resolve relative dates using the conversation date if provided
+CRITICAL Rules:
+- Each fact MUST include its own time reference. Never split a temporal reference from its fact.
+  BAD: "User bought training pads for Luna" (missing when)
+  GOOD: "User bought training pads for Luna about a month ago (around {p_session_date or 'unknown date'})"
+- Resolve relative dates ("last week", "two months ago", "yesterday") to absolute dates using the conversation date
+- Include BOTH the original relative phrase AND the resolved date in the fact text
+  Example: "User started bird watching about two months ago (around January 2023)"
+- Split compound sentences into individual facts, but preserve temporal context in EACH fact
 - Skip generic filler ("that's great", "thanks")
-- Keep each fact under 50 words
+- Keep each fact under 60 words
 - Return ONLY valid JSON array
 
-Example: [{{"fact": "User had car serviced on March 15th 2023", "fact_date": "2023-03-15", "fact_type": "event"}}, {{"fact": "GPS system malfunctioned after service", "fact_date": "2023-03-15", "fact_type": "event"}}]"""
+Example: [{{"fact": "User had car serviced on March 15th 2023", "fact_date": "2023-03-15", "fact_type": "event"}}, {{"fact": "GPS system started malfunctioning after the car service on March 15th 2023", "fact_date": "2023-03-15", "fact_type": "event"}}]"""
 
 try:
     url = base_url.rstrip("/") + "/chat/completions"
@@ -313,9 +317,10 @@ BEGIN
         v_temporal_order := NULL;
     END IF;
 
-    -- Step 2: Temporal-Filtered Retrieval
+    -- Step 2: Dual-Query Retrieval (expanded + original, merged & deduplicated)
+    -- Using both queries catches cases where the expanded query matches wrong topics
     IF p_rerank THEN
-        -- Get broad pool for reranking
+        -- 2a. Expanded query with time filter
         SELECT jsonb_agg(jsonb_build_object(
             'id', r.event_id::text,
             'content', r.content,
@@ -326,11 +331,30 @@ BEGIN
         INTO v_candidates
         FROM meclaw.retrieve_temporal(
             p_agent_id, v_query, v_before_date, v_after_date,
-            LEAST(p_limit * 3, 30), v_temporal_order, p_ctm_enabled
+            LEAST(p_limit * 2, 20), v_temporal_order, p_ctm_enabled
         ) r;
 
+        -- 2b. Original query (no expansion, with time filter) — catches what expansion missed
+        IF v_query != p_query THEN
+            SELECT COALESCE(v_candidates, '[]'::jsonb) || COALESCE(jsonb_agg(jsonb_build_object(
+                'id', r.event_id::text,
+                'content', r.content,
+                'score', r.score * 0.9,  -- slight penalty for non-expanded
+                'source', r.source,
+                'created_at', r.created_at
+            )), '[]'::jsonb)
+            INTO v_candidates
+            FROM meclaw.retrieve_temporal(
+                p_agent_id, p_query, v_before_date, v_after_date,
+                LEAST(p_limit * 2, 20), v_temporal_order, p_ctm_enabled
+            ) r
+            WHERE r.event_id::text NOT IN (
+                SELECT e->>'id' FROM jsonb_array_elements(COALESCE(v_candidates, '[]'::jsonb)) e
+            );
+        END IF;
+
         IF v_candidates IS NULL OR jsonb_array_length(v_candidates) = 0 THEN
-            -- Fallback without time filter using ORIGINAL query (not expanded)
+            -- Fallback without time filter using ORIGINAL query
             SELECT jsonb_agg(jsonb_build_object(
                 'id', r.event_id::text,
                 'content', r.content,
