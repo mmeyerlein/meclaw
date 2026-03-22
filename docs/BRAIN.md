@@ -821,5 +821,72 @@ CREATE TABLE meclaw.decision_traces (
 
 ---
 
+## Competitive Analysis: Honcho (plastic-labs)
+
+> Added: 2026-03-22. Source: https://github.com/plastic-labs/honcho
+> Status: Interesting for next steps — not yet integrated.
+
+Honcho is the current SOTA memory system. Key benchmarks:
+- **90.4% LongMem S** (500 questions, ~115K tokens/question) with only 5-16% of context tokens
+- **88.8% LongMem M** (>1M tokens) — less than 2% drop-off vs S
+- **89.9% LoCoMo** (beating their own 86.9% from Neuromancer XR release)
+- BEAM SOTA across all tiers (100K, 500K, 1M, 10M)
+
+### Architecture (5 Modules)
+
+1. **Deriver** (real-time): Token-batched (~1024 tokens) background reasoning on every message. Extracts "Observations" at levels: `explicit`, `deductive`, `inductive`, `contradiction`. Stored in pgvector. Default model: `gemini-2.5-flash-lite`.
+
+2. **Dreamer** (offline, the killer feature): Runs after idle periods (min 8h between dreams). Three phases:
+   - **Surprisal Sampling**: kNN trees (kdtree/balltree) on embeddings to find "surprising" observations
+   - **Deduction Specialist**: derives new logical conclusions from explicit facts
+   - **Induction Specialist**: recognizes patterns across multiple conclusions
+   - Default model: `claude-sonnet-4` with 8192 thinking budget
+
+3. **Dialectic** (query endpoint): 5 reasoning levels from minimal ($0.001, 1 tool iteration) to max ($0.50, 10 tool iterations with 2048 thinking budget). Natural language queries about peers.
+
+4. **Summary**: Automatic session summaries (Gemini 2.5 Flash).
+
+5. **Reconciler**: Vector store consistency maintenance.
+
+### Custom Models
+
+- **Neuromancer XR**: Fine-tuned Qwen3-8B on ~10K manually curated reasoning traces. Specializes in explicit + deductive conclusion extraction. Proprietary (not on HuggingFace). Scored 86.9% LoCoMo vs 80.0% Claude Sonnet baseline vs 69.6% base Qwen3-8B.
+- Standard models (Gemini Flash Lite, Haiku 4.5) still achieve near-SOTA results.
+- Supports: `anthropic`, `openai`, `google`, `groq`, `vllm`, `custom` providers.
+
+### Why the High Benchmark Scores
+
+1. **Token efficiency**: Atomic conclusions instead of raw context → median 5% of original tokens needed → less noise → better answers.
+2. **Pre-query dreaming**: Reasoning runs BEFORE questions are asked. All conclusions are pre-computed.
+3. **Multi-level dialectic**: Up to 10 tool iterations with thinking budget for complex queries.
+
+### What MeClaw Can Learn from Honcho
+
+| Honcho Feature | MeClaw Equivalent | Gap |
+|---|---|---|
+| Surprisal Sampling (kNN trees) | — | **New**: Mathematical novelty detection on embeddings |
+| Dreaming (offline reasoning) | consolidation_bee (nightly) | **Enhance**: Add deduction + induction specialists |
+| Contradiction Detection (document level) | — | **New**: Explicit contradiction tracking |
+| Peer Cards (auto-updated summaries) | — | **New**: Compact per-entity summaries |
+| Formal Logic Scaffolding (premises chain) | — | **New**: Hierarchical conclusion provenance |
+| Observation Levels (explicit→deductive→inductive) | brain_events (flat) | **Enhance**: Add certainty levels to events |
+
+### What MeClaw Already Does Better
+
+| Feature | MeClaw | Honcho |
+|---|---|---|
+| Knowledge Graph | AGE graph (entities, events, prototypes, edges) | No graph — pgvector only |
+| Temporal Retrieval | Query expansion + time filter (implemented) | "In development" |
+| Hybrid Retrieval | BM25 (ParadeDB) + pgvector + graph expansion + 6-signal ranking | pgvector only |
+| Transparency | Decision traces, SQL, full audit trail | Black box API |
+| Identity-Aware | AIEOS neural_matrix influences ranking | No personality layer |
+| Channel-Shared Extraction | Extract once per channel, rank per agent | No multi-agent scoping |
+
+### Key Takeaway
+
+Honcho proves: **less is more for retrieval, more is more for background reasoning.** Give the LLM fewer, higher-quality conclusions (not raw events). But invest heavily in offline reasoning (dreaming with strong models + large thinking budgets).
+
+---
+
 *BRAIN.md is the architecture document for the MeClaw Memory Hive.*
 *For implementation status, see [PROGRESS.md](PROGRESS.md).*
