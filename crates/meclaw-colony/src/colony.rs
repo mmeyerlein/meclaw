@@ -1115,6 +1115,14 @@ pub struct ColonyTaskConfig {
     /// is unroutable at the root hive `/` (HiveNoRoute) goes here instead of the
     /// DLQ. `None` (default) → unchanged DLQ behaviour.
     pub egress_tx: Option<mpsc::Sender<Message>>,
+    /// Test-only deterministic sync hook. When set, the colony fires one tick on
+    /// this channel right before it begins the inline death-ack-wait of a
+    /// disconnect mutation (i.e. peace-stops sent, about to block). Lets a test
+    /// release a wedged cell at exactly that point instead of guessing with a
+    /// wall-clock sleep. `None` (default, production) → never touched, so the
+    /// runtime path is byte-identical to before. Same opt-in pattern as
+    /// `egress_tx`/`heartbeat_tx`.
+    pub death_ack_wait_tx: Option<mpsc::Sender<()>>,
 }
 
 impl ColonyTaskConfig {
@@ -1147,6 +1155,7 @@ impl ColonyTaskConfig {
             env_source,
             heartbeat_tx: None,
             egress_tx: None,
+            death_ack_wait_tx: None,
         }
     }
 
@@ -1160,6 +1169,14 @@ impl ColonyTaskConfig {
     /// Opt into the Direct-Mode stdio egress sink (root-hive HiveNoRoute → stdout).
     pub fn with_egress(mut self, tx: mpsc::Sender<Message>) -> Self {
         self.egress_tx = Some(tx);
+        self
+    }
+
+    /// Test-only: opt into the deterministic death-ack-wait sync signal (see
+    /// [`ColonyTaskConfig::death_ack_wait_tx`]). Production never calls this, so
+    /// the field stays `None` and the runtime path is unchanged.
+    pub fn with_death_ack_wait_signal(mut self, tx: mpsc::Sender<()>) -> Self {
+        self.death_ack_wait_tx = Some(tx);
         self
     }
 }
@@ -1179,6 +1196,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         env_source,
         heartbeat_tx,
         egress_tx,
+        death_ack_wait_tx,
     } = cfg;
     #[cfg(debug_assertions)]
     meclaw_core::init_validator();
@@ -1491,6 +1509,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                         blob_store.clone(),
                                         colony_config.blob_inline_max_bytes,
                                         env_source.as_deref(),
+                                        death_ack_wait_tx.as_ref(),
                                     ).await;
                                     let _ = ack.send(outcome);
                                 }
@@ -1758,6 +1777,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             blob_store.clone(),
                             colony_config.blob_inline_max_bytes,
                             env_source.as_deref(),
+                            death_ack_wait_tx.as_ref(),
                         ).await;
                         let _ = ack.send(outcome);
                     }
@@ -2449,6 +2469,7 @@ pub(crate) async fn handle_mutation(
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — delivery-boundary resolution
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold for EDA error-reply paths
     env_source: Option<&std::path::Path>, // U8 (RULED A8) — die vom Start gemerkte Env-Quelle; None ⇒ Default `<root>/.env`
+    death_ack_wait_tx: Option<&mpsc::Sender<()>>, // test-only deterministic sync hook; None in production (byte-identical prod path)
 ) -> crate::mutation::MutationOutcome {
     use crate::mutation::MutationOutcome;
 
@@ -4504,6 +4525,15 @@ pub(crate) async fn handle_mutation(
     // term-timeout per deactivated Awake cell. Happy path: every death_ack fires
     // < term_timeout() → proceed to flush+commit. Timeout on ANY cell → full in-RAM
     // rollback + discard buffer → Rejected{term_timeout} (colony.db untouched).
+    // Test-only deterministic sync point: the peace-stops are sent and the colony
+    // is about to block on the inline death-ack-wait. Fire ONE tick so a test can
+    // release a wedged cell at exactly this moment (replacing a flaky wall-clock
+    // sleep). `None` in production → this is a no-op and the path is unchanged.
+    if !death_acks.is_empty()
+        && let Some(tx) = death_ack_wait_tx
+    {
+        let _ = tx.try_send(());
+    }
     for (node, rx) in death_acks {
         match tokio::time::timeout(term_timeout(), rx).await {
             Ok(_) => {

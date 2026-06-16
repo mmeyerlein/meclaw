@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](#)
-[![tests](https://img.shields.io/badge/tests-closing_in_on_2000-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-closing%20in%20on%202000-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -115,7 +115,7 @@ A tool-loop is `llm → dispatcher → tools → collector → llm`, with the lo
 
 Reshaping the graph is a first-class runtime move. A cell emits a mutation diff (`add_nodes`, `add_edges`, `swap_nodes`, and the rest), the colony validates it and applies it atomically while everything keeps running. This part is real and tested today.
 
-The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it. The mutation engine is here now. The builder-hive, an `llm` plus `code` topology that writes those diffs straight from a plain-English brief, is the next thing on the bench. Not shipped yet. See the roadmap.
+The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it. The mutation engine is here now. The builder-hive, an `llm` plus `code` topology that writes those diffs straight from a plain-English request, is the next thing on the bench. Not shipped yet. See the roadmap.
 
 ## Where it's at
 
@@ -127,7 +127,7 @@ Not here yet: the builder-hive (plain English to topology) is next, not shipped.
 
 ## Roadmap
 
-Next up: the builder-hive (briefs in, graph mutations out). After that: federation across colonies, more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
+Next up: the builder-hive (requests in, graph mutations out). After that: federation across colonies, more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 
 ## Contributing
 

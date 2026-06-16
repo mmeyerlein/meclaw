@@ -329,9 +329,13 @@ async fn llm_cell_handle_with_messages_hits_mock_openai() {
     assert_eq!(em.content["meta"]["provider"], "openai");
     assert_eq!(em.content["meta"]["model"], "gpt-4o-mock");
     assert_eq!(em.content["meta"]["response_id"], "chatcmpl-test-001");
+    // latency_ms is whole-millisecond wall time around the provider call. A warm
+    // local mock in a release build answers in well under 1ms, so 0 is a correct
+    // value (the old `> 0` assertion assumed debug-speed timing and flaked in
+    // release). Assert presence + valid u64 instead.
     assert!(
-        em.content["meta"]["latency_ms"].as_u64().unwrap() > 0,
-        "latency_ms must be >0: {}",
+        em.content["meta"]["latency_ms"].as_u64().is_some(),
+        "latency_ms must be a present u64 (0 is valid for a sub-ms call): {}",
         em.content["meta"]["latency_ms"]
     );
 }

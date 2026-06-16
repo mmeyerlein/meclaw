@@ -684,6 +684,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 blob_store.clone(),
                 blob_inline_max_bytes,
                 env_source,
+                None, // /colony/mutations dispatch path: no test sync hook
             )
             .await;
             let reply_body = build_mutation_reply(&outcome);

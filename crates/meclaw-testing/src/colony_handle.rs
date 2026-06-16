@@ -156,6 +156,22 @@ impl ColonyHandle {
         blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
         env_source: Option<std::path::PathBuf>,
     ) -> Self {
+        Self::build_with_blob_store_and_signal(
+            dir, tempdir, factories, blob_store, env_source, None,
+        )
+    }
+
+    /// Like [`build_with_blob_store`] but optionally wires the colony's
+    /// deterministic death-ack-wait sync signal (test-only; `None` in production
+    /// and for every existing constructor, so the colony path is unchanged).
+    fn build_with_blob_store_and_signal(
+        dir: std::path::PathBuf,
+        tempdir: Option<tempfile::TempDir>,
+        factories: CellFactoryRegistry,
+        blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
+        env_source: Option<std::path::PathBuf>,
+        death_ack_wait_tx: Option<mpsc::Sender<()>>,
+    ) -> Self {
         let db = ColonyDb::open(&dir.join("colony.db")).expect("open colony.db");
         let (inbox_tx, inbox_rx) = mpsc::channel(1000);
         let (outputs_tx, outputs_rx) = mpsc::channel(1000);
@@ -172,7 +188,7 @@ impl ColonyHandle {
         // Absent → defaults (no behaviour change for existing tests).
         let colony_config =
             meclaw_colony::colony_config::read_colony_config(&dir).unwrap_or_default();
-        let join = tokio::spawn(colony_task(meclaw_colony::ColonyTaskConfig::new(
+        let mut cfg = meclaw_colony::ColonyTaskConfig::new(
             self_tx,
             inbox_rx,
             outputs_tx.clone(),
@@ -183,7 +199,11 @@ impl ColonyHandle {
             colony_config.clone(),
             blob_store.clone(),
             env_source,
-        )));
+        );
+        if let Some(tx) = death_ack_wait_tx {
+            cfg = cfg.with_death_ack_wait_signal(tx);
+        }
+        let join = tokio::spawn(colony_task(cfg));
         Self {
             inbox_tx,
             outputs_tx,
@@ -193,6 +213,32 @@ impl ColonyHandle {
             db_path: dir,
             blob_store,
         }
+    }
+
+    /// Test-only: like [`new_with_factories_at`], but also wires the colony's
+    /// deterministic death-ack-wait signal. Returns the handle plus a receiver
+    /// that fires exactly once when the colony is about to block on the inline
+    /// death-ack-wait of a disconnect mutation. A test awaits that tick to
+    /// release a wedged cell at the precise point the term-timeout path begins,
+    /// replacing a flaky wall-clock sleep.
+    pub fn new_with_factories_and_death_ack_signal_at(
+        dir: &tempfile::TempDir,
+        factories: Vec<(String, Arc<dyn meclaw_colony::CellFactory>)>,
+    ) -> (Self, mpsc::Receiver<()>) {
+        let mut registry = CellFactoryRegistry::new();
+        for (name, factory) in factories {
+            registry.insert(name, factory);
+        }
+        let (tx, rx) = mpsc::channel::<()>(8);
+        let handle = Self::build_with_blob_store_and_signal(
+            dir.path().to_path_buf(),
+            None,
+            registry,
+            None,
+            None,
+            Some(tx),
+        );
+        (handle, rx)
     }
 
     /// Phase-13.5 A8 demo constructor: caller-owned dir + factories + a real

@@ -524,7 +524,8 @@ async fn lr_backpressure_disconnect_term_timeout_then_natural_unblock_retry_comm
         release: release_slot.clone(),
     });
 
-    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    let (h, mut death_ack_wait_rx) =
+        ColonyHandle::new_with_factories_and_death_ack_signal_at(&td, echo_factories());
     // /sink BEFORE bootstrap (anti-cascade) — a REAL CaptureCell that consumes
     // from outputs so the colony's natural drain (step 5) has somewhere to go.
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(FLOOD + 64);
@@ -583,7 +584,15 @@ async fn lr_backpressure_disconnect_term_timeout_then_natural_unblock_retry_comm
     // so nothing has been drained yet.
     let mutation = spawn_remove_edge(&h, "lr", "sink");
     // Let the colony reach the death-ack-await stall BEFORE releasing.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Deterministic sync (replaces the old wall-clock sleep that flaked in
+    // release): wait until the colony has sent the peace-stop and is about to
+    // block on the inline death-ack-wait. Only THEN release the wedged cell, so
+    // the term-timeout ordering holds regardless of build profile or CPU load.
+    // 30s is a generous failure marker, not a semantic discriminator.
+    tokio::time::timeout(Duration::from_secs(30), death_ack_wait_rx.recv())
+        .await
+        .expect("colony must reach the inline death-ack-wait within 30s")
+        .expect("death-ack-wait signal channel closed unexpectedly");
     // THEN release → cell floods > capacity → blocks on the full outputs_tx →
     // death_ack never fires → term_timeout reject.
     let _ = release_tx.send(());
@@ -605,9 +614,14 @@ async fn lr_backpressure_disconnect_term_timeout_then_natural_unblock_retry_comm
         1,
         "edge must remain after term_timeout rollback"
     );
+    // No-Delete after term_timeout rollback: the entry must STILL EXIST (a real
+    // zombie would be deleted or broken). The `active` flag is transient here —
+    // the natural unblock below immediately re-parks the cell — so we assert the
+    // durable no-delete invariant; the clean park (`drain_until_parked`) and the
+    // committing retry disconnect below prove no-zombie non-racily.
     assert!(
-        ram_entry(&h, "/lr").await.expect("/lr").active,
-        "/lr must stay active after rollback (no zombie)"
+        ram_entry(&h, "/lr").await.is_some(),
+        "/lr entry must still exist after term_timeout rollback (no-delete)"
     );
 
     // NATURAL UNBLOCK: the colony loop resumed, is draining outputs_rx into /sink
@@ -665,7 +679,8 @@ async fn stateful_backpressure_disconnect_term_timeout_then_natural_unblock_retr
         release: release_slot.clone(),
     });
 
-    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    let (h, mut death_ack_wait_rx) =
+        ColonyHandle::new_with_factories_and_death_ack_signal_at(&td, echo_factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(FLOOD + 64);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
@@ -726,7 +741,15 @@ async fn stateful_backpressure_disconnect_term_timeout_then_natural_unblock_retr
     // DISCONNECT FIRST (concurrent) → colony stalls in death-ack-await → THEN
     // release → flood blocks on full outputs_tx → term_timeout reject.
     let mutation = spawn_remove_edge(&h, "sf", "sink");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Deterministic sync (replaces the old wall-clock sleep that flaked in
+    // release): wait until the colony has sent the peace-stop and is about to
+    // block on the inline death-ack-wait. Only THEN release the wedged cell, so
+    // the term-timeout ordering holds regardless of build profile or CPU load.
+    // 30s is a generous failure marker, not a semantic discriminator.
+    tokio::time::timeout(Duration::from_secs(30), death_ack_wait_rx.recv())
+        .await
+        .expect("colony must reach the inline death-ack-wait within 30s")
+        .expect("death-ack-wait signal channel closed unexpectedly");
     let _ = release_tx.send(());
 
     let outcome = mutation.await.expect("mutation task");
@@ -744,9 +767,14 @@ async fn stateful_backpressure_disconnect_term_timeout_then_natural_unblock_retr
         1,
         "edge must remain after term_timeout rollback"
     );
+    // No-Delete after term_timeout rollback: the entry must STILL EXIST (a real
+    // zombie would be deleted or broken). The `active` flag is transient here —
+    // the natural unblock below immediately re-parks the cell — so we assert the
+    // durable no-delete invariant; the clean park (`drain_until_parked`) and the
+    // committing retry disconnect below prove no-zombie non-racily.
     assert!(
-        ram_entry(&h, "/sf").await.expect("/sf").active,
-        "/sf must stay active after rollback (no zombie)"
+        ram_entry(&h, "/sf").await.is_some(),
+        "/sf entry must still exist after term_timeout rollback (no-delete)"
     );
 
     // NATURAL UNBLOCK → cell parks NotYetSpawned.
@@ -848,7 +876,8 @@ async fn lr_term_timeout_rollback_preserves_node_identity_no_delete() {
         release: release_slot.clone(),
     });
 
-    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    let (h, mut death_ack_wait_rx) =
+        ColonyHandle::new_with_factories_and_death_ack_signal_at(&td, echo_factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(FLOOD + 64);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
@@ -895,7 +924,15 @@ async fn lr_term_timeout_rollback_preserves_node_identity_no_delete() {
     h.send(probe("/lr")).await;
     entered_rx.await.expect("/lr must enter handle()");
     let mutation = spawn_remove_edge(&h, "lr", "sink");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Deterministic sync (replaces the old wall-clock sleep that flaked in
+    // release): wait until the colony has sent the peace-stop and is about to
+    // block on the inline death-ack-wait. Only THEN release the wedged cell, so
+    // the term-timeout ordering holds regardless of build profile or CPU load.
+    // 30s is a generous failure marker, not a semantic discriminator.
+    tokio::time::timeout(Duration::from_secs(30), death_ack_wait_rx.recv())
+        .await
+        .expect("colony must reach the inline death-ack-wait within 30s")
+        .expect("death-ack-wait signal channel closed unexpectedly");
     let _ = release_tx.send(());
 
     match mutation.await.expect("mutation task") {
@@ -905,14 +942,13 @@ async fn lr_term_timeout_rollback_preserves_node_identity_no_delete() {
         other => panic!("expected Rejected{{term_timeout}}, got {other:?}"),
     }
 
-    // After the atomic rollback: SAME entry, SAME identity, still active, edge back.
+    // After the atomic rollback: SAME entry, SAME identity, edge back. The
+    // `active` flag is transient (the natural unblock below re-parks the cell),
+    // so we assert the durable No-Delete invariants instead — entry STAYS and
+    // cell_id is stable — plus the clean park + committing retry below.
     let after_reject = ram_entry(&h, "/lr")
         .await
         .expect("/lr entry must STAY after rollback (No-Delete)");
-    assert!(
-        after_reject.active,
-        "/lr stays active after rollback (no zombie)"
-    );
     assert_eq!(
         after_reject.cell_id, cell_id,
         "cell_id STABLE across the term_timeout rollback (No-Delete: same node, not re-created)"
