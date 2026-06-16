@@ -1,0 +1,11 @@
+digraph topology {
+  rankdir=TB;
+  "/capture" [shape=box];
+  "/llm" [shape=box];
+  "/park" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/store" [shape=box];
+  "/capture" -> "/llm" [label="hop.route == 'ullm'"];
+  "/capture" -> "/store" [label="hop.route == 'ustore'"];
+  "/store" -> "/park" [label="hop.operation == 'insert'"];
+}

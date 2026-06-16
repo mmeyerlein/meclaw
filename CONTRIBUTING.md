@@ -1,0 +1,100 @@
+# Contributing to meclaw
+
+meclaw is a framework for building agentic harnesses, and swarms of them, as a directory tree.
+Issues, discussions, and PRs are all open. This file tells you how to build it, how to test it,
+where the truth lives, and what makes a good first contribution.
+
+First rule: read the honest status before you start. meclaw is **v0.1.0**, a proof of concept
+for the DSL and the self-modifying substrate. The mutation substrate is real and tested. The
+builder-hive (plain English to topology) is **not shipped yet**. If a change implies the
+builder runs, or claims macOS support, or claims federation / multi-builder / a native
+Anthropic provider, it does not match reality and will not land. Keep us honest.
+
+## Build it
+
+Linux, a recent stable Rust toolchain (the repo pins one in `rust-toolchain.toml`).
+
+```bash
+git clone https://github.com/mmeyerlein/meclaw
+cd meclaw
+cargo build --release
+# binary: ./target/release/meclaw
+```
+
+Run a colony as a daemon and watch it in the UI:
+
+```bash
+./target/release/meclaw --root ./examples/swarm --daemon --api 127.0.0.1:7777
+# open http://127.0.0.1:7777/ui/
+```
+
+The `llm` cells talk to any OpenAI-compatible endpoint (OpenRouter by default). Drop a key in
+`examples/swarm/.env` and start the daemon with `--env ./examples/swarm/.env`. See
+`examples/swarm/README.md` and `examples/hello/README.md` for the full walkthrough.
+
+## Test it
+
+```bash
+cargo test                 # the full suite, debug
+cargo clippy -- -D warnings
+cargo fmt --check
+```
+
+Notes that will save you time:
+
+- Run the suite in **debug** (`cargo test`). A couple of tests exercise a validation gate that
+  is on by default only in debug builds, so they report as failures under
+  `cargo test --release`. Debug is green.
+- New behavior comes with a test. The hot routing paths are byte-pinned against fixtures on
+  purpose, so they cannot quietly drift. If a fixture gate fails, that is the point. Do not
+  edit the fixture to make it pass without understanding why it moved.
+
+## Where the truth lives
+
+`docs/` is the spec, and the spec is the source of truth. Before anything non-trivial, read
+[`docs/meclaw-overview.md`](docs/meclaw-overview.md). It is the full system spec: the cell
+model, the actor substrate, routing, mutations, the lot. `docs/cell-types.md` covers each
+built-in cell, `docs/config.md` covers the `config.json` format.
+
+When code and a comment disagree, the code wins. When the spec and the code disagree, that is a
+bug worth an issue.
+
+## The model in one breath
+
+A colony is a folder. Folders marked `type: "hive"` are scopes that hold the graph. Every other
+node is a Cell, an actor with one mailbox and one job. Cells are dumb: a cell knows its
+contract, its params, and the one message in front of it, nothing else. The edges do the
+thinking: routing, filtering, fan-out, loopback. The tool-loop is not a `while` loop, it is an
+edge that routes back. Read `examples/hello` (two cells, one edge), then `examples/swarm` (the
+loop as an edge), and it clicks.
+
+## Good first contributions
+
+These are genuinely useful and scoped to land without a week of context:
+
+- **Example colonies.** New showcase trees under `examples/`. A summarizer, a router, a
+  retry-with-backoff shape, a multi-tool agent. Small, real, runnable under the daemon, with a
+  short voice-matched README in the folder. Use `examples/hello` and `examples/swarm` as the
+  template.
+- **Template cells.** Reusable subtrees under a `templates/` directory: a well-built `code`
+  tool, a store-backed memory, a clean dispatcher or collector. The `code` cell is the Swiss
+  army knife here.
+- **Docs.** Clarify a section of `docs/`, add a worked example, fix a place where the spec and
+  the code have drifted apart. Precision is the whole game.
+
+Browse the issues labelled `good first issue` for specifics. If you want to attempt something
+bigger off the roadmap (the builder-hive, federation, capability checks with teeth, durability
+hardening), open an issue first so we can talk shape before you write code.
+
+## Pull requests
+
+- One logical change per PR. Keep commits clean.
+- `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` all green.
+- New behavior has a test. New cells and examples run under the daemon.
+- Match the surrounding voice in any prose. Confident, credible, no hype. And no spaced
+  em-dashes, they read as machine-written.
+
+## License
+
+By contributing, you agree your work is dual-licensed under MIT or Apache-2.0, the same terms
+as the project. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

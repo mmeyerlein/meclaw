@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, re\nd = json.load(sys.stdin)\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    sys.stdout.write(json.dumps({\"messages\": []})); sys.exit(0)\nc = calls[0]\nargs = json.loads(c.get(\"text\", \"{}\")).get(\"arguments\", {})\nif isinstance(args, str):\n    args = json.loads(args or \"{}\")\nexpr = str(args.get(\"expr\", \"\")).strip()\nif expr and re.fullmatch(r\"[0-9.\\s+\\-*/()]+\", expr):\n    try:\n        val = str(eval(expr, {\"__builtins__\": {}}, {}))\n    except Exception as e:\n        val = \"error: %s\" % e\nelse:\n    val = \"refused: only arithmetic allowed\"\nresult = {\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": c.get(\"id\", \"call\"),\n          \"text\": \"%s = %s\" % (expr, val)}\nsys.stdout.write(json.dumps({\"messages\": [c, result]}))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

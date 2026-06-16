@@ -1,0 +1,57 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\nd = json.load(sys.stdin)\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    # Echo guard: error replies / non-tool input end here (terminal empty multi-send).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nout = [{\"header\": {\"route\": \"c_asst\"}, \"messages\": calls}]\nfor i, c in enumerate(calls):\n    wrapper = json.loads(c.get(\"text\", \"{}\"))\n    name = wrapper.get(\"name\", \"unknown\")\n    args = wrapper.get(\"arguments\", \"{}\")\n    if not isinstance(args, str):\n        args = json.dumps(args)\n    out.append({\n        \"header\": {\"tool_name\": name},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": c.get(\"id\", \"call-%d\" % i), \"text\": args}]\n    })\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "c_asst"
+          ],
+          "required": false
+        },
+        "tool_name": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "M4 dispatcher, multi-send: unwraps ALL of the planner's OpenAI-form tool_calls ({name, arguments}) \u2014 one routed message per call (raw args, hop.tool_name) plus the assistant turn to the collector (c_asst lane) as the fan-in expectation set.",
+    "use_when": "Between the loop llm and the tool cells; the run-4 'first tool_call wins' drop is gone (v2).",
+    "not_in_scope": "No arg validation; unknown tool names route to the dead-letter drain edge.",
+    "emits_meaning": "c_asst: the verbatim tool_call turns (thread row + expected-id set). Per call: one tool_call turn with raw args, hop.tool_name as routing discriminator. No tool_calls in input (e.g. substrate error reply echo) -> NOTHING (empty multi-send, terminal).",
+    "consumes_meaning": "messages[]: the planner's assistant tool_call turns in OpenAI function-call form.",
+    "examples": [
+      "3 tool_calls -> 4 emissions: 1x c_asst (3 turns) + 3x {tool_name: web_search, args {query}}"
+    ]
+  }
+}

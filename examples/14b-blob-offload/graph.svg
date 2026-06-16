@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="870" font-family="monospace" font-size="13">
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#444"/></marker>
+<path d="M280 62 H310 V152 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="103" fill="#a00">hop.route == &apos;ullm&apos;</text>
+<path d="M280 62 H310 V242 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="148" fill="#a00">hop.route == &apos;ustore&apos;</text>
+<path d="M280 152 H310 V332 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="238" fill="#a00">hop.finish_reason != &apos;tool_calls&apos;</text>
+<path d="M280 152 H310 V422 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="283" fill="#a00">hop.finish_reason == &apos;tool_calls&apos;</text>
+<path d="M280 242 H310 V512 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="373" fill="#a00">context.store_origin == &apos;user&apos;</text>
+<path d="M280 242 H310 V602 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="418" fill="#a00">context.store_origin == &apos;collector&apos;</text>
+<path d="M280 422 H310 V692 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="553" fill="#a00">hop.finish_reason == &apos;tool_calls&apos;</text>
+<path d="M280 602 H310 V152 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="373" fill="#a00">hop.route == &apos;fire&apos;</text>
+<path d="M280 602 H310 V512 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="553" fill="#a00">hop.route == &apos;park&apos;</text>
+<path d="M280 602 H310 V242 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="418" fill="#a00">hop.route == &apos;cguard&apos;</text>
+<path d="M280 602 H310 V242 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="418" fill="#a00">hop.route == &apos;cstore&apos;</text>
+<path d="M280 692 H310 V602 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="643" fill="#a00">hop.route == &apos;c_asst&apos;</text>
+<path d="M280 692 H310 V782 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="733" fill="#a00">hop.route == &apos;tool&apos;</text>
+<path d="M280 782 H310 V602 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="316" y="688" fill="#a00">hop.route == &apos;c_res&apos;</text>
+<rect x="60" y="40" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="66" text-anchor="middle" fill="#111">/capture</text>
+<rect x="60" y="130" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="156" text-anchor="middle" fill="#111">/llm</text>
+<rect x="60" y="220" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="246" text-anchor="middle" fill="#111">/store</text>
+<rect x="60" y="310" width="220" height="44" rx="4" fill="#efe" stroke="#333" stroke-width="1.5" stroke-dasharray="2,2"/>
+<text x="170" y="336" text-anchor="middle" fill="#111">/sink (test probe)</text>
+<polygon points="170,394 288,422 170,450 52,422" fill="#eef" stroke="#338" stroke-width="1.5" stroke-dasharray="5,3"/>
+<text x="170" y="426" text-anchor="middle" fill="#338">/tool-loop (hive)</text>
+<rect x="60" y="490" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="516" text-anchor="middle" fill="#111">/park</text>
+<rect x="60" y="580" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="606" text-anchor="middle" fill="#111">/tool-loop/collector</text>
+<rect x="60" y="670" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="696" text-anchor="middle" fill="#111">/tool-loop/dispatcher</text>
+<rect x="60" y="760" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="786" text-anchor="middle" fill="#111">/tool-loop/tool-a</text>
+</svg>

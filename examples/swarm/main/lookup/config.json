@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    sys.stdout.write(json.dumps({\"messages\": []})); sys.exit(0)\nc = calls[0]\nargs = json.loads(c.get(\"text\", \"{}\")).get(\"arguments\", {})\nif isinstance(args, str):\n    args = json.loads(args or \"{}\")\ntopic = str(args.get(\"topic\", \"\")).strip().lower()\nFACTS = {\n    \"meclaw\": \"meclaw is a framework for building agentic harnesses as a directory tree.\",\n    \"rust\": \"Rust is a systems language with memory safety and no garbage collector.\",\n    \"tokio\": \"Tokio is an asynchronous runtime for Rust, built on cooperative tasks.\",\n    \"actor model\": \"The actor model isolates state in actors that talk only via messages.\",\n}\nfact = FACTS.get(topic, \"No fact on file for '%s'.\" % topic)\nresult = {\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": c.get(\"id\", \"call\"), \"text\": fact}\nsys.stdout.write(json.dumps({\"messages\": [c, result]}))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

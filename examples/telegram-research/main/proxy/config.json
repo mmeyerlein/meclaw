@@ -1,0 +1,103 @@
+{
+  "cell": {
+    "type": "proxy",
+    "timeout": -1
+  },
+  "params": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN:-REPLACE_WITH_YOUR_BOT_TOKEN}",
+    "emit_to": "../prep",
+    "long_poll_timeout_ms": 35000,
+    "long_poll_request_secs": 30,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "base_url": "https://api.telegram.org"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "set TELEGRAM_BOT_TOKEN in your .env",
+        "description": "Telegram bot token (BotFather)"
+      },
+      "long_poll_request_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "Telegram-side getUpdates long-poll wait in seconds"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around sendMessage"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "platform": {
+          "type": "string",
+          "values": [
+            "telegram"
+          ],
+          "required": false
+        },
+        "chat_id": {
+          "type": "number",
+          "required": false
+        },
+        "user_id": {
+          "type": "number",
+          "required": false
+        },
+        "message_id": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "chat_id": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:proxy",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Bridges Telegram chats to the topology. Inbound chat messages emerge as one user-origin turn each; messages from the topology are written back to the chat.",
+    "use_when": "Whenever a hive needs a Telegram surface. One proxy cell per bot token.",
+    "not_in_scope": "Does not understand bot commands, does not keep chat history, does not transform messages beyond extracting text and identifiers.",
+    "emits_meaning": "Two emission shapes, hence no required hop fields: (a) source emission \u2014 one user-origin turn per inbound Telegram message, hop carries chat_id/user_id/message_id/platform (promoted to context on edge 1); (b) inbound-error emission (missing_chat_id/missing_assistant_turn/send_failed/invalid_body) \u2014 empty messages[], hop carries error_code + msg_type 'proxy_inbound_error'. Declaring chat_id/platform as required breaks shape (b) against the substrate emits validation (run-1 finding, applied here pre-flight run-4).",
+    "consumes_meaning": "messages[]: the last assistant turn is sent to the chat. context.chat_id selects the target Telegram chat (promoted by the proxy's out-edge).",
+    "examples": [
+      "Inbound Telegram 'Hi' -> emit body { messages: [{ origin: 'user', type: 'text', text: 'Hi' }] }, hop { platform: 'telegram', chat_id: 12345, user_id: 67890 }"
+    ]
+  }
+}

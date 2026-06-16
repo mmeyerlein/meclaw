@@ -1,0 +1,42 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\nh = d.get(\"header\", {})\nctx = h.get(\"context\", {})\ntid = ctx.get(\"turn_id\", \"\")\nmsgs = d.get(\"messages\", [])\nuser_turn = msgs[0] if msgs else {}\nop = {\"operation\":\"insert\",\"table\":\"thread\",\n      \"row\":{\"turn_id\":tid,\"iter\":0,\"role\":\"user\",\"turn\":json.dumps(user_turn)}}\nout = [\n  {\"header\":{\"route\":\"ustore\"},\n   \"messages\":[{\"origin\":\"assistant\",\"type\":\"tool_call\",\"id\":\"u-ins\",\"text\":json.dumps(op)}]},\n  {\"header\":{\"route\":\"ullm\"}, \"system\": d.get(\"system\", {}), \"messages\": msgs},\n]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": ["ustore", "ullm"]
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "turn_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  }
+}

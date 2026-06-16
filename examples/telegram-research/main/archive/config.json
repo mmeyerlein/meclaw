@@ -1,0 +1,51 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid\n\nd = json.load(sys.stdin)\nctx = d.get(\"header\", {}).get(\"context\", {})\n\nanswer = \"\"\nfor m in d.get(\"messages\", []):\n    if m.get(\"origin\") == \"assistant\" and m.get(\"type\") == \"text\":\n        answer = m.get(\"text\", \"\")\n        break\nif not answer:\n    # Echo guard: store insert replies (tool_result) fall back here via reply_to \u2014\n    # without this guard they loop (run-4 finding: 56 echo rows until TTL).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nargs = {\"operation\": \"insert\", \"table\": \"answers\",\n        \"row\": {\"id\": str(uuid.uuid4()), \"question\": ctx.get(\"question\", \"\"), \"answer\": answer}}\nout = [{\"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": \"archive-\" + args[\"row\"][\"id\"][:8], \"text\": json.dumps(args)}]}]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {}
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "question": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ],
+    "multi_send_capable": true
+  },
+  "description": {
+    "purpose": "M2 bridge: converts the synthesizer's assistant turn into a store-native insert tool_call (operation/table/row) for the answers table.",
+    "use_when": "Between an llm cell and a store cell \u2014 stores are driven by tool_call args, not headers.",
+    "not_in_scope": "No deduplication, no update semantics \u2014 append-only archiving.",
+    "emits_meaning": "messages[]: one tool_call turn with {operation: 'insert', table: 'answers', row: {id, question, answer}}.",
+    "consumes_meaning": "messages[]: the planner's final assistant TEXT turn (answer). Inputs without an assistant text turn \u2014 in particular the memory store's insert reply echoing back via the reply_to fallback \u2014 are swallowed (empty multi-send, terminal). context.question keys the row.",
+    "examples": [
+      "assistant 'CEL is...' -> tool_call {operation: insert, table: answers, row: {...}}"
+    ]
+  }
+}

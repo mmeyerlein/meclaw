@@ -1,0 +1,5 @@
+{"schema":{"doc_id":"text","text":"text"}}
+{"doc_id":"d1","text":"Cats are small domesticated felines that purr."}
+{"doc_id":"d2","text":"Dogs are loyal canines that bark and fetch."}
+{"doc_id":"d3","text":"The Eiffel Tower is a landmark in Paris France."}
+{"doc_id":"d4","text":"Python is a programming language used for scripting."}

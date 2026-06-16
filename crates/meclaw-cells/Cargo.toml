@@ -1,0 +1,22 @@
+[package]
+name = "meclaw-cells"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+meclaw-core = { path = "../meclaw-core" }
+meclaw-colony = { path = "../meclaw-colony" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+croner = "3"
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+meclaw-testing = { path = "../meclaw-testing" }

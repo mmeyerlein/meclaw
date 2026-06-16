@@ -1,0 +1,25 @@
+{
+  "cell": { "type": "code" },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\nsys.stdout.write(json.dumps(d))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": { "type": "array" }
+      }
+    },
+    "consumes": {
+      "context": {
+        "turn_id": { "type": "string", "required": true }
+      },
+      "body": {
+        "messages": { "type": "array", "required": true }
+      }
+    }
+  }
+}

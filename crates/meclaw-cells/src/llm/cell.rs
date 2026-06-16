@@ -1,0 +1,822 @@
+//! Phase-8 LlmCell core — orchestrates parse/persist/translate/wire/emit per
+//! handle()-Reihenfolge (Plan § 9). T17-T22 grow this incrementally.
+
+use crate::llm::translate::TranslateError;
+use crate::llm::{output, params::LlmParams, state, translate, wire};
+use meclaw_colony::stateful_cell::StatefulCell;
+use meclaw_core::serde_json::Value;
+use meclaw_core::{Body, Message, OutputSink};
+
+/// Phase-8 LlmCell. First production stateful-cell with cell.db.
+///
+/// Holds `LlmParams` + `reqwest::Client` as fields. The cell.db `Connection`
+/// arrives as `&mut`-param from `cell_task_stateful` per Phase-6.5
+/// Connection-Ownership-Modell — NOT a field on LlmCell.
+///
+/// T17: struct + no-op handle (boilerplate). T18 grows handle() with Plan § 9
+/// Schritt 1 (parse input body) + Schritt 2 (system.* UPSERT). T19-T22 grow
+/// it further (messages-write, translate, wire, emit).
+pub struct LlmCell {
+    /// Pre-validated and parsed params from `LlmParams::parse(raw)`.
+    pub params: LlmParams,
+    /// reqwest client — built in `LlmCellFactory::spawn_cell` (T24), cloned
+    /// into the RespawnFn closure.
+    pub http: reqwest::Client,
+}
+
+impl LlmCell {
+    /// Implementation detail — production entry point is `LlmCellFactory`;
+    /// direct construction is `pub` only so tests/integration tests can
+    /// drive the cell without the full Colony.
+    #[doc(hidden)]
+    pub fn new(params: LlmParams, http: reqwest::Client) -> Self {
+        Self { params, http }
+    }
+}
+
+/// Returns the current wall-clock time as Unix milliseconds (i64). Used for
+/// the `meta.started_at` field on emissions.
+fn unix_ms_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_millis() as i64
+}
+
+/// Returns the current wall-clock time as Unix seconds (i64). Used for the
+/// `updated_at` / `received_at` columns of `cell.db` SQL writes.
+fn unix_secs_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_secs() as i64
+}
+
+/// Extract OpenAI-tool objects from a `system_tree.tools.*` sub-object.
+///
+/// Each leaf `{"text": "<json>"}` under `system.tools` is parsed as the
+/// OpenAI tool-object JSON. Keys are visited in alphabetical order so the
+/// resulting `Vec<Value>` is deterministic. Missing `tools` key, non-object
+/// `tools`, or empty `tools` all return `Ok(Vec::new())`.
+///
+/// `concat_system_prompt` (T4) skips `tools` at top-level, so `system_tree`
+/// can be passed unchanged to both helpers.
+fn extract_tools(system_tree: &Value) -> Result<Vec<Value>, TranslateError> {
+    let Some(obj) = system_tree.as_object() else {
+        return Ok(Vec::new());
+    };
+    let Some(tools_obj) = obj.get("tools").and_then(|v| v.as_object()) else {
+        return Ok(Vec::new());
+    };
+    let mut keys: Vec<&String> = tools_obj.keys().collect();
+    keys.sort();
+    let mut out = Vec::with_capacity(keys.len());
+    for name in keys {
+        let leaf = &tools_obj[name];
+        let Some(text) = leaf.get("text").and_then(|v| v.as_str()) else {
+            return Err(TranslateError::ToolCallParse(format!(
+                "system.tools.{name}: leaf has no text field"
+            )));
+        };
+        let parsed: Value = meclaw_core::serde_json::from_str(text)
+            .map_err(|e| TranslateError::ToolCallParse(format!("system.tools.{name}: {e}")))?;
+        out.push(parsed);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::manual_async_fn)]
+impl StatefulCell for LlmCell {
+    /// LlmCell message handler. Walks the Plan § 9 Reihenfolge:
+    /// parse input body → persist system.* + messages[] atomically →
+    /// Q3-silence-or-translate → wire-call (A-Timeout) → parse response →
+    /// emit assistant turn (or `emit_error` on any failure with Gate-1
+    /// messages pass-through).
+    fn handle<'a>(
+        &'a mut self,
+        msg: Message,
+        sink: &'a OutputSink,
+        db: &'a mut meclaw_colony::DbConn,
+    ) -> impl std::future::Future<Output = ()> + Send + 'a {
+        async move {
+            let started_at_unix_ms = unix_ms_now();
+            let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
+
+            // Schritt 1: Parse input body. Validation failures → emit_error
+            // with source="parse", input_messages=[], NO DB write.
+            let content = match &msg.body {
+                Body::Inline(v) => v.clone(),
+                Body::Blob(_) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        "provider_error",
+                        "invalid input body: blob bodies are Phase-12 deferred",
+                        "parse",
+                        vec![],
+                        started_at_unix_ms,
+                        0,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let content_obj = match content.as_object() {
+                Some(o) => o,
+                None => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        "provider_error",
+                        "invalid input body: not a JSON object",
+                        "parse",
+                        vec![],
+                        started_at_unix_ms,
+                        0,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+            // Schritt 1b (W4b): params-update slot (config.md § Zugriff Z.20).
+            // Handled FIRST and strictly: the `params` block is merged into
+            // self.params + persisted to cell.db, THEN any system/messages run
+            // with the updated params (this call already uses the new model).
+            // A params-only message persists and returns silently (analog Q3).
+            // All-or-nothing: an immutable/unknown/malformed update is a loud
+            // `invalid_input` reject with NO partial apply.
+            let has_params = content_obj.contains_key("params");
+            if let Some(params_val) = content_obj.get("params") {
+                let update_obj = match params_val.as_object() {
+                    Some(o) => o.clone(),
+                    None => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            "invalid_input",
+                            "invalid params slot: not a JSON object",
+                            "parse",
+                            vec![],
+                            started_at_unix_ms,
+                            0,
+                            None,
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                match self.params.apply_update(&update_obj) {
+                    Ok((new_params, overlay)) => {
+                        let now = unix_secs_now();
+                        let persist_result = db
+                            .call(move |conn| {
+                                crate::params_overlay::persist_params_overlay(conn, &overlay, now)
+                            })
+                            .await;
+                        if let Err(e) = persist_result {
+                            output::emit_error(
+                                sink,
+                                reply_target,
+                                "provider_error",
+                                &format!("cell.db params write failed: {e}"),
+                                "parse",
+                                vec![],
+                                started_at_unix_ms,
+                                0,
+                                None,
+                                None,
+                            )
+                            .await;
+                            return;
+                        }
+                        // Live apply — this call's inference (if any) uses it.
+                        self.params = new_params;
+                    }
+                    Err(e) => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            "invalid_input",
+                            &e.detail(),
+                            "parse",
+                            vec![],
+                            started_at_unix_ms,
+                            0,
+                            None,
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+
+            let system = content_obj.get("system");
+            let messages = content_obj.get("messages");
+            if system.is_none() && messages.is_none() {
+                // params-only message: already persisted above, stay silent.
+                if has_params {
+                    return;
+                }
+                output::emit_error(
+                    sink,
+                    reply_target,
+                    "provider_error",
+                    "invalid input body: requires system or messages slot",
+                    "parse",
+                    vec![],
+                    started_at_unix_ms,
+                    0,
+                    None,
+                    None,
+                )
+                .await;
+                return;
+            }
+
+            // Schritt 3 (prep): Validate messages-slot shape. If present but
+            // NOT a JSON array → parse-error (same code path as other parse
+            // failures, no DB write).
+            let messages_array: Option<Vec<meclaw_core::serde_json::Value>> = match messages {
+                Some(v) => match v.as_array() {
+                    Some(arr) => Some(arr.clone()),
+                    None => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            "provider_error",
+                            "invalid input body: messages slot must be a JSON array",
+                            "parse",
+                            vec![],
+                            started_at_unix_ms,
+                            0,
+                            None,
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
+                },
+                None => None,
+            };
+
+            // Schritt 2+3: Flatten system.* into leaves and persist BOTH
+            // system + optional messages atomically in one transaction via
+            // `system_first_persist`. Q2 system-first order.
+            let system_leaves: Vec<(String, meclaw_core::serde_json::Value)> = match system {
+                Some(sys) => state::flatten_to_leaves(sys, ""),
+                None => Vec::new(),
+            };
+            let now_secs = unix_secs_now();
+            let messages_value = messages_array
+                .as_ref()
+                .map(|m| meclaw_core::serde_json::Value::Array(m.clone()));
+            let persist_result = {
+                let sys_leaves = system_leaves.clone();
+                let msgs_val = messages_value.clone();
+                db.call(move |conn| {
+                    state::system_first_persist(conn, &sys_leaves, msgs_val.as_ref(), now_secs)
+                })
+                .await
+            };
+            if let Err(e) = persist_result {
+                output::emit_error(
+                    sink,
+                    reply_target,
+                    "provider_error",
+                    &format!("cell.db write failed: {e}"),
+                    "parse",
+                    messages_array.unwrap_or_default(),
+                    started_at_unix_ms,
+                    0,
+                    None,
+                    None,
+                )
+                .await;
+                return;
+            }
+
+            // Schritt 4: Q3 system-only-Schweigen. If no messages slot, the
+            // persist above already happened — return without emit/inference.
+            let input_messages = match messages_array {
+                Some(m) => m,
+                None => return,
+            };
+
+            // Schritt 5: Build-Translate (sync, pure).
+            // 5a: read full system-tree from cell.db.
+            let system_tree = match db.call(|conn| state::read_system_tree(conn)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        "provider_error",
+                        &format!("cell.db read_system_tree failed: {e}"),
+                        "parse",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            // 5b: extract OpenAI tool objects from system.tools.*.
+            let tools = match extract_tools(&system_tree) {
+                Ok(t) => t,
+                Err(e) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        translate::translate_error_to_code(&e),
+                        &format!("translate: {e:?}"),
+                        "translate",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            // 5c: concat system-prompt (skips tools-subtree at top-level).
+            let system_string =
+                match translate::concat_system_prompt(&system_tree, &self.params.system_order) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            translate::translate_error_to_code(&e),
+                            &format!("translate: {e:?}"),
+                            "translate",
+                            input_messages,
+                            started_at_unix_ms,
+                            (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                            None,
+                            None,
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+            // 5d: build OpenAI Chat-Completions request body.
+            let request_json = match translate::build_openai_request(
+                &self.params,
+                &system_string,
+                &input_messages,
+                &tools,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        translate::translate_error_to_code(&e),
+                        &format!("translate: {e:?}"),
+                        "translate",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            // Schritt 6: HTTP-Call (async, A-Timeout via call_openai's
+            // internal tokio::time::timeout wrapper).
+            let url = format!(
+                "{}{}",
+                self.params
+                    .base_url
+                    .as_deref()
+                    .unwrap_or(wire::OPENAI_DEFAULT_BASE_URL),
+                wire::OPENAI_CHAT_COMPLETIONS_PATH
+            );
+            let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
+            // A4: the Translate boundary decides each param's wire destination —
+            // attribution params become HTTP request headers (body-params stay
+            // in `request_json`).
+            let attribution_headers = translate::build_attribution_headers(&self.params);
+            let wire_result = wire::call_openai(
+                &self.http,
+                &url,
+                &self.params.api_key,
+                &attribution_headers,
+                &request_json,
+                timeout,
+            )
+            .await;
+            let response_json = match wire_result {
+                Ok(json) => json,
+                Err(err) => {
+                    let code = wire::wire_error_to_code(&err);
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        code,
+                        &format!("wire: {err:?}"),
+                        "wire",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            // Schritt 7: Parse-Translate-Response (sync, pure). On parse fail
+            // we still defensively try to surface model/response_id from the
+            // raw response so the error-meta carries them when available.
+            let translated = match translate::parse_openai_response(&response_json) {
+                Ok(t) => t,
+                Err(e) => {
+                    let resp_model = response_json.get("model").and_then(|v| v.as_str());
+                    let resp_id = response_json.get("id").and_then(|v| v.as_str());
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        translate::translate_error_to_code(&e),
+                        &format!("translate response parse: {e:?}"),
+                        "parse",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        resp_model,
+                        resp_id,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+            // Schritt 8: Emit assistant-Turn as atomares UBF (Ende).
+            let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
+            output::emit_assistant_turn(
+                sink,
+                reply_target,
+                translated.assistant_turn,
+                &translated.finish_reason,
+                translated.tokens_prompt,
+                translated.tokens_completion,
+                &translated.model,
+                &translated.response_id,
+                started_at_unix_ms,
+                latency_ms,
+            )
+            .await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meclaw_core::serde_json::json;
+    use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    fn mk_cell() -> LlmCell {
+        // Default unit-test cell: points at an unbound loopback port + tiny
+        // A-timeout. Tests that exercise the inference path see a fast
+        // WireError::Network. Mock-server-driven inference lives in
+        // tests/phase_8_cell.rs.
+        let raw = json!({
+            "provider": "openai",
+            "model": "gpt-4o",
+            "api_key": "sk-test",
+            "base_url": "http://127.0.0.1:1",
+            "external_timeout_ms": 100u64,
+        });
+        let params = LlmParams::parse(&raw).unwrap();
+        let http = reqwest::Client::builder().build().unwrap();
+        LlmCell::new(params, http)
+    }
+
+    fn mk_sink() -> (OutputSink, mpsc::Receiver<meclaw_core::CellEmission>) {
+        let (tx, rx) = mpsc::channel(8);
+        let sink = OutputSink::new(
+            tx,
+            Path::new("/llm"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            32,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        (sink, rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_system_only_no_emit_q3_silence() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .body(Body::Inline(
+                json!({"system": {"facts": {"x": {"text": "v"}}}}),
+            ))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        // DB written.
+        let v: String = db
+            .call(|conn| {
+                conn.query_row(
+                    "SELECT value FROM system WHERE slot_path='facts.x'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+            })
+            .await;
+        assert_eq!(v, r#"{"text":"v"}"#);
+        // No emission — Q3 silence.
+        assert!(
+            rx.try_recv().is_err(),
+            "system-only input MUST NOT emit (Q3 silence)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_params_only_persists_overlay_and_no_emit() {
+        // W4b (b): a params-only message persists the overlay to cell.db and
+        // returns WITHOUT emitting (params-only silence, analog Q3).
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .body(Body::Inline(json!({"params": {"model": "gpt-4o-mini"}})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        // Overlay persisted.
+        let stored: String = db
+            .call(|conn| {
+                conn.query_row("SELECT value FROM params WHERE key='model'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+            })
+            .await;
+        assert_eq!(stored, r#""gpt-4o-mini""#);
+        // Live self.params already reflects the update (this call's path).
+        assert_eq!(cell.params.model, "gpt-4o-mini");
+        // No emission — params-only silence.
+        assert!(
+            rx.try_recv().is_err(),
+            "params-only input MUST NOT emit (silence)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_malformed_params_rejects_invalid_input_no_partial() {
+        // W4b (d): a malformed params block (valid model + bad temperature type)
+        // → loud invalid_input reject, NO partial apply (overlay stays empty).
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(
+                json!({"params": {"model": "gpt-4o-mini", "temperature": "hot"}}),
+            ))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["finish_reason"], "error");
+        assert_eq!(em.content["header"]["error_code"], "invalid_input");
+        assert_eq!(em.content["meta"]["error"]["source"], "parse");
+        // No partial apply: overlay empty AND live params unchanged.
+        let count: i64 = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM params", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(count, 0, "malformed update must NOT partially persist");
+        assert_eq!(cell.params.model, "gpt-4o");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_immutable_param_update_rejects_invalid_input() {
+        // W4b (e): updating an immutable field (api_key) → loud invalid_input,
+        // no overlay write (secret-hygiene; W4 Authorization-guard extended).
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({"params": {"api_key": "leaked"}})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["error_code"], "invalid_input");
+        let detail = em.content["meta"]["error"]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("immutable") && !detail.contains("leaked"),
+            "detail must name the rule, never the value: {detail}"
+        );
+        let count: i64 = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM params", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_params_slot_not_object_rejects_invalid_input() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({"params": "not-an-object"})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["error_code"], "invalid_input");
+        assert_eq!(em.content["meta"]["error"]["source"], "parse");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_messages_only_writes_last_input_then_wire_error_to_unbound_port() {
+        // T20 rewrite of the T19 placeholder: messages-only input now flows
+        // through Schritt 5+6 and hits the wire. `mk_cell` points at an
+        // unbound loopback port with a 100ms A-timeout → WireError::Network
+        // → emit_error(provider_error, source="wire"). The cell.db write
+        // from Schritt 3 must still be visible afterwards.
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msgs = json!([{"origin":"user","type":"text","text":"Hi"}]);
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({"messages": msgs.clone()})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        // cell.db.last_input written (Schritt 3 persisted before wire call).
+        let stored: String = db
+            .call(|conn| {
+                conn.query_row("SELECT message_json FROM last_input WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+            })
+            .await;
+        let parsed: meclaw_core::serde_json::Value =
+            meclaw_core::serde_json::from_str(&stored).unwrap();
+        assert_eq!(parsed, msgs);
+        // Wire-error emit reached the sink.
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.target, Path::new("/observer"));
+        assert_eq!(em.content["header"]["finish_reason"], "error");
+        assert_eq!(em.content["meta"]["error"]["source"], "wire");
+        // Gate-1: messages pass-through unchanged.
+        assert_eq!(em.content["messages"], json!(msgs));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_messages_not_array_rejects_with_provider_error() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({"messages": "not-an-array"})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["error_code"], "provider_error");
+        let detail = em.content["meta"]["error"]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("must be a JSON array"),
+            "detail must mention array requirement: {detail}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_invalid_body_emits_provider_error_and_no_db_write() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!(42)))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.target, Path::new("/observer"));
+        assert_eq!(em.content["header"]["finish_reason"], "error");
+        assert_eq!(em.content["header"]["error_code"], "provider_error");
+        assert_eq!(em.content["meta"]["error"]["source"], "parse");
+        let count: i64 = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM system", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(count, 0, "parse-fail must NOT write to cell.db");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_translate_error_text_id_in_system_emits_provider_error() {
+        // T20: text_id-leaf in system → BlobUnsupported (Phase-12 deferred) →
+        // emit_error(provider_error, source="translate"). Gate-1: messages
+        // pass-through unchanged.
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({
+                "system": {"identity": {"body": {"text_id": "01HX"}}},
+                "messages": [{"origin":"user","type":"text","text":"Hi"}]
+            })))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["finish_reason"], "error");
+        assert_eq!(em.content["header"]["error_code"], "provider_error");
+        assert_eq!(em.content["meta"]["error"]["source"], "translate");
+        // Gate-1: messages pass-through unchanged.
+        assert_eq!(em.content["messages"][0]["text"], "Hi");
+        assert_eq!(em.content["messages"][0]["origin"], "user");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_missing_both_slots_emits_provider_error() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = mk_cell();
+        let (sink, mut rx) = mk_sink();
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .body(Body::Inline(json!({"unrelated": "field"})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.unwrap();
+        assert_eq!(em.content["header"]["error_code"], "provider_error");
+        let detail = em.content["meta"]["error"]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("requires system or messages"),
+            "detail must mention missing slots: {detail}"
+        );
+        let count: i64 = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM system", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(count, 0);
+    }
+}

@@ -1,0 +1,12 @@
+{
+  "scope": "/",
+  "ctx": {},
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "echo",
+        "template": "echo"
+      }
+    ]
+  }
+}

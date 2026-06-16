@@ -1,0 +1,17 @@
+{
+  "cell": { "type": "store" },
+  "params": {
+    "schema": {
+      "corpus": {
+        "doc_id": "text",
+        "text": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  }
+}

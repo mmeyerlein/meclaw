@@ -1,0 +1,31 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Runtime state (created when the daemon runs)
+/log.jsonl
+/colony.db
+/colony.db-*
+**/cell.db
+**/cell.db-*
+/blobs/
+/.staging/
+
+# Runtime state from running any example colony in place
+/examples/**/colony.db
+/examples/**/colony.db-*
+/examples/**/log.jsonl
+/examples/**/blobs/
+/examples/**/.staging/
+/examples/**/.env
+
+# Secrets
+.env
+
+# IDE
+/.vscode/
+/.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db

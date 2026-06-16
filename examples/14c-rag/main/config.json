@@ -1,0 +1,11 @@
+{
+  "cell": { "type": "hive" },
+  "params": { "graph": { "edges": [
+    { "from": "./ask", "to": "./corpus",
+      "modifier": { "set_context": { "rag_question": "hop.rag_question" } } },
+    { "from": "./corpus", "to": "./retrieve" },
+    { "from": "./retrieve", "to": "./llm",
+      "modifier": { "set_context": { "retrieved_top_k": "hop.top_k" } } },
+    { "from": "./llm", "to": "./capture" }
+  ] } }
+}

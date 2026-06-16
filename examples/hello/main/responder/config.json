@@ -1,0 +1,29 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "openai/gpt-4o-mini",
+    "api_key": "${OPENROUTER_API_KEY:-OPENROUTER_API_KEY-not-set}",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.3,
+    "max_tokens": 256
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    }
+  }
+}

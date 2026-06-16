@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meclaw.dev/schemas/ubf-body.json",
+  "title": "Universal Body Format (UBF)",
+  "description": "Body schema for messages routed through Colony. Three central slots (system, messages, attachments) — at least one must be set. A pure file upload (attachments-only) is a legitimate message shape. Cell-specific top-level slots are allowed.",
+  "type": "object",
+  "anyOf": [
+    {"required": ["system"]},
+    {"required": ["messages"]},
+    {"required": ["attachments"]}
+  ],
+  "properties": {
+    "system": {"type": "object"},
+    "messages": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/MessageEntry"}
+    },
+    "attachments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Attachment"}
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "MessageEntry": {
+      "oneOf": [
+        {"$ref": "#/$defs/TurnObject"},
+        {"$ref": "#/$defs/TurnPointer"},
+        {"$ref": "#/$defs/BulkPointer"}
+      ]
+    },
+    "TurnObject": {
+      "type": "object",
+      "required": ["origin", "type"],
+      "properties": {
+        "origin": {"enum": ["user", "assistant", "tool", "system"]},
+        "type": {"enum": ["text", "tool_call", "tool_result", "image", "audio"]},
+        "text": {"type": "string"},
+        "id": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"type": {"enum": ["tool_call", "tool_result"]}},
+            "required": ["type"]
+          },
+          "then": {"required": ["id"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "TurnPointer": {
+      "type": "object",
+      "required": ["text_id"],
+      "properties": {
+        "text_id": {"type": "string", "format": "uuid"}
+      },
+      "additionalProperties": false
+    },
+    "BulkPointer": {
+      "type": "object",
+      "required": ["messages_id"],
+      "properties": {
+        "messages_id": {"type": "string", "format": "uuid"}
+      },
+      "additionalProperties": false
+    },
+    "Attachment": {
+      "type": "object",
+      "required": ["blob_id", "mime_type", "size_bytes"],
+      "properties": {
+        "blob_id": {"type": "string", "format": "uuid"},
+        "mime_type": {"type": "string"},
+        "filename": {"type": ["string", "null"]},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

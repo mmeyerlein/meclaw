@@ -1,0 +1,31 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\nuser = next((m for m in d.get(\"messages\", [])\n             if m.get(\"origin\") == \"user\" and m.get(\"type\") == \"text\"), None)\nif user is None:\n    sys.stdout.write(\"[]\"); sys.exit(0)\nTOOLS = {\n    \"lookup\": {\"description\": \"Look up a short fact about a topic.\",\n               \"parameters\": {\"type\": \"object\",\n                              \"properties\": {\"topic\": {\"type\": \"string\"}},\n                              \"required\": [\"topic\"]}},\n    \"calc\": {\"description\": \"Evaluate a simple arithmetic expression, e.g. '6 * 7'.\",\n             \"parameters\": {\"type\": \"object\",\n                            \"properties\": {\"expr\": {\"type\": \"string\"}},\n                            \"required\": [\"expr\"]}},\n}\nout = [{\n    \"header\": {\"question\": user.get(\"text\", \"\")},\n    \"system\": {\n        \"identity\": {\"soul\": {\"text\": (\n            \"You are a small agent running inside a meclaw swarm. \"\n            \"Use a tool when it helps, one tool call at a time. \"\n            \"When a tool result answers the question, reply with a short final \"\n            \"answer in plain text and do not call another tool.\")}},\n        \"tools\": {name: {\"text\": json.dumps(\n            {\"type\": \"function\", \"function\": {\"name\": name, **schema}})}\n            for name, schema in TOOLS.items()},\n    },\n    \"messages\": [user],\n}]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

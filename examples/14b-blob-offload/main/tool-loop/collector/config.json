@@ -1,0 +1,69 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\nh = d.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\ntid = ctx.get(\"turn_id\", \"\")\nit = int(ctx.get(\"iter\", 0))\nfiring = ctx.get(\"firing\", \"\") == \"1\"\nop = hop.get(\"operation\")\nra = int(hop.get(\"rows_affected\", 0))\nrt = hop.get(\"route\")\ndef emit(route, msgs):\n    sys.stdout.write(json.dumps({\"header\":{\"route\":route},\"messages\":msgs}))\ndef store_op(route, o):\n    emit(route, [{\"origin\":\"assistant\",\"type\":\"tool_call\",\"id\":\"c-op\",\"text\":json.dumps(o)}])\ndef park():\n    emit(\"park\", [])\ndef ids_of(turn):\n    # tool_call ids carried by an assistant turn (list) or single dict.\n    items = turn if isinstance(turn, list) else [turn]\n    return [t.get(\"id\",\"\") for t in items if isinstance(t, dict) and t.get(\"type\")==\"tool_call\" and t.get(\"id\")]\ndef rows_of(d):\n    rows = json.loads(d.get(\"messages\",[{}])[0].get(\"text\",\"[]\"))\n    return [r for r in rows if r.get(\"turn_id\")==tid]\ndef fire_thread(rows):\n    # Full cumulative thread across all iters (sorted by iter, then\n    # user<assistant<tool within an iter). One assistant tool-call turn may be\n    # a JSON list; tool turns are dicts.\n    msgs = []\n    for r in sorted(rows, key=lambda r:(int(r.get(\"iter\",0)), 0 if r.get(\"role\")==\"user\" else (1 if r.get(\"role\")==\"assistant\" else 2))):\n        t = json.loads(r.get(\"turn\",\"null\"))\n        if isinstance(t, list): msgs.extend(t)\n        elif t is not None: msgs.append(t)\n    emit(\"fire\", msgs)\ndef is_complete(rows):\n    # iter-scoped tool-call-id-set difference (NOT a count); iter-2 expected/\n    # received must not mix iter-1 rows.\n    cur = [r for r in rows if int(r.get(\"iter\",0))==it]\n    expected, received = set(), set()\n    for r in cur:\n        t = json.loads(r.get(\"turn\",\"null\"))\n        if r.get(\"role\")==\"assistant\":\n            expected.update(ids_of(t))\n        elif r.get(\"role\")==\"tool\":\n            tt = t if isinstance(t, dict) else {}\n            if tt.get(\"id\"): received.add(tt.get(\"id\"))\n    return bool(expected and expected <= received)\nif op == \"insert\":\n    # RMW step 2: after persisting a turn, fetch the full thread for the decision.\n    store_op(\"cstore\", {\"operation\":\"select\",\"table\":\"thread\",\n              \"columns\":[\"turn_id\",\"iter\",\"role\",\"turn\"],\"where\":{\"turn_id\":tid}})\nelif op == \"select\" and firing:\n    # Guard already won (atomic single-fire); fire the cumulative thread once.\n    fire_thread(rows_of(d))\nelif op == \"select\":\n    # RMW step 3: if the CURRENT iter is complete, attempt the atomic fire-guard\n    # (UPDATE on the assistant row's `fired` flag; the serial store makes exactly\n    # one of N racing selects win). Multi-tool-call fan-in produces multiple\n    # complete-selects -- the guard collapses them to a single fire.\n    if is_complete(rows_of(d)):\n        store_op(\"cguard\", {\"operation\":\"update\",\"table\":\"thread\",\n                  \"set\":{\"fired\":1},\n                  \"where\":{\"turn_id\":tid,\"iter\":it,\"role\":\"assistant\",\"fired\":0}})\n    else:\n        park()\nelif op == \"update\":\n    # Guard outcome: rows_affected==1 means THIS select won the fire-race; re-\n    # select (carrying firing=1) to rebuild + fire. Otherwise a peer already\n    # fired this iter -> park.\n    if ra == 1:\n        store_op(\"cguard\", {\"operation\":\"select\",\"table\":\"thread\",\n                  \"columns\":[\"turn_id\",\"iter\",\"role\",\"turn\"],\"where\":{\"turn_id\":tid}})\n    else:\n        park()\nelif rt == \"c_asst\":\n    # Assistant tool-call turn arrives fresh on the immediate predecessor hop.\n    # `fired:0` seeds the per-iter fire-guard.\n    msgs = d.get(\"messages\", [])\n    store_op(\"cstore\", {\"operation\":\"insert\",\"table\":\"thread\",\n              \"row\":{\"turn_id\":tid,\"iter\":it,\"role\":\"assistant\",\"turn\":json.dumps(msgs),\"fired\":0}})\nelif rt == \"c_res\":\n    # One tool_result turn per invocation; its id joins the received set.\n    msgs = d.get(\"messages\", [])\n    turn = msgs[0] if msgs else {}\n    store_op(\"cstore\", {\"operation\":\"insert\",\"table\":\"thread\",\n              \"row\":{\"turn_id\":tid,\"iter\":it,\"role\":\"tool\",\"turn\":json.dumps(turn)}})\nelse:\n    park()\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "cstore",
+            "cguard",
+            "fire",
+            "park"
+          ]
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "turn_id": {
+          "type": "string",
+          "required": true
+        },
+        "iter": {
+          "type": "int",
+          "required": false
+        },
+        "firing": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "operation": {
+          "type": "string",
+          "required": false
+        },
+        "rows_affected": {
+          "type": "int",
+          "required": false
+        }
+      }
+    }
+  }
+}

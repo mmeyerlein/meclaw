@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./responder",
+          "to": "./sink"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,639 @@
+//! Pure connectivity- and activity-recompute logic (Phase 13.5-Lifecycle-3b).
+//!
+//! The activity of every graph node (cell or hive) is **fully derived from the
+//! edge table** — there is no explicit activate/deactivate mutation op (spec:
+//! `docs/meclaw-overview.md` § Konnektivität & Aktivität). This module holds the
+//! pure functions that recompute that state; wiring into `handle_mutation` is a
+//! separate step (Task 4). Every function here takes references and returns
+//! values — no side effects, no `.await`.
+//!
+//! Rules (spec § Konnektivität & Aktivität, `docs/cell-types.md` § hive
+//! Konnektivität):
+//! - **connected**: a node participates in ≥1 edge (as `from` **or** `to`) at
+//!   its scope level. A hive's *internal* wiring does not count for its own
+//!   connectivity — only edges of the parent level that reference the hive path.
+//!   Since edges that reference a hive use the hive's absolute path as `from`/`to`
+//!   endpoint, [`is_connected`] applied to the hive path captures exactly those
+//!   parent-level edges.
+//! - **active** (recursive): a node is active iff it is connected **and** its
+//!   parent-hive is active. The root (`/`) is always active. A disconnected hive
+//!   therefore deactivates its entire subtree regardless of internal wiring.
+
+use crate::edge_table::EdgeTable;
+use crate::hive_scope::HiveScopeTable;
+use meclaw_core::Path;
+use std::collections::HashSet;
+
+/// Returns true if `path` participates in at least one edge — as `from`
+/// **or** as `to`.
+///
+/// This is the spec's connectivity predicate (`docs/meclaw-overview.md`
+/// § Konnektivität & Aktivität): a single in- or out-edge suffices. For a hive
+/// path this captures exactly the parent-level edges that reference the hive
+/// (internal wiring uses descendant paths as endpoints, not the hive path).
+pub fn is_connected(path: &Path, edges: &EdgeTable) -> bool {
+    !edges.edges_from(path).is_empty() || !edges.edges_to(path).is_empty()
+}
+
+/// R12 — returns true if any edge CROSSES the scope boundary of `path`:
+/// exactly one endpoint lies strictly inside the subtree under `path`
+/// (`<path>/...`), the other outside it. A depth-port edge
+/// (`/anchor → /h/dispatch`) wires the unit to the world without naming the
+/// hive path itself, so it must connect the hive (spec § Konnektivität:
+/// edge paths are scope-relative without depth restriction — the companion
+/// rule to the R12 `add_edges` depth resolution). Purely INTERNAL wiring
+/// (both endpoints inside) still does not count.
+///
+/// Callers gate this on registered hive paths ([`compute_active`]); for the
+/// root (`/`) every endpoint is "inside", so no edge ever crosses it — the
+/// root stays governed by its always-active rule.
+pub fn has_boundary_crossing_edge(path: &Path, edges: &EdgeTable) -> bool {
+    let p = path.as_str();
+    if p == "/" {
+        return false;
+    }
+    edges.iter().any(|e| {
+        let from_inside = is_strict_descendant(e.from.as_str(), p);
+        let to_inside = is_strict_descendant(e.to.as_str(), p);
+        from_inside != to_inside
+    })
+}
+
+/// Segment-aware strict-descendant test (`/h/c1` under `/h`; `/house` not).
+fn is_strict_descendant(candidate: &str, ancestor: &str) -> bool {
+    candidate.len() > ancestor.len()
+        && candidate.starts_with(ancestor)
+        && candidate.as_bytes().get(ancestor.len()) == Some(&b'/')
+}
+
+/// Recursively computes whether the node at `path` is **active**.
+///
+/// Spec rule (`docs/meclaw-overview.md` § Konnektivität & Aktivität): a node is
+/// active iff it is itself [`is_connected`] **and** its parent-hive is active;
+/// the root (`/`) is always active. This is the path-segment parent chain walked
+/// upward — no root-to-leaf traversal — so the cost is O(edges) local plus
+/// O(depth) for the chain.
+///
+/// Activity is fully edge-derived, so neither the registry nor `hive_scopes`
+/// table is consulted in the recursion: hives carry no registry entry (their
+/// activity is computed, never stored), and a hive's connectivity is captured by
+/// [`is_connected`] on its own path — edges that reference an ancestor hive use
+/// the hive's absolute path as their endpoint, while a hive's *internal* wiring
+/// uses descendant paths and therefore correctly does not count. `hive_scopes`
+/// is consulted to identify which ancestor paths are hives: only a parent that is
+/// a registered hive scope gates its subtree. A non-hive ancestor (or the root)
+/// is treated as the always-active top-level scope.
+pub fn compute_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTable) -> bool {
+    // R12: a REGISTERED hive also counts as connected when an edge crosses its
+    // scope boundary (depth-port wiring) — see `has_boundary_crossing_edge`.
+    // Cells keep the pure reference predicate (they have no descendants).
+    let connected = is_connected(path, edges)
+        || (hive_scopes.get(path).is_some() && has_boundary_crossing_edge(path, edges));
+    connected && parent_hive_active(path, edges, hive_scopes)
+}
+
+/// Returns whether the parent-hive of `path` is active.
+///
+/// The root (`/`) is the implicit top-level scope and is always active, so any
+/// node whose parent is the root is gated only by its own connectivity. A parent
+/// that is a registered hive scope gates its subtree: it is active iff it is
+/// [`is_connected`] (via parent-level edges referencing its path) **and** its own
+/// parent-hive is active — applied recursively up to the root. A parent that is
+/// not a registered hive scope is treated as a top-level (always-active) boundary.
+fn parent_hive_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTable) -> bool {
+    let parent = path.parent();
+    if parent.as_str() == "/" || parent.as_str() == path.as_str() {
+        // Parent is the always-active root scope, or `path` had no proper parent.
+        return true;
+    }
+    if hive_scopes.get(&parent).is_none() {
+        // The parent is not a registered hive — no hive gates this node above its
+        // immediate scope, so treat the boundary as always-active.
+        return true;
+    }
+    compute_active(&parent, edges, hive_scopes)
+}
+
+/// Computes the set of node paths whose activity must be recomputed after a
+/// mutation, given the paths directly involved in the mutation (`add_edges` /
+/// `remove_edges` `from`/`to` endpoints and `remove_nodes` paths).
+///
+/// Spec F1 (`docs/meclaw-overview.md` § Konnektivität & Aktivität): the affected
+/// scope is the **local edge participation plus the parent chain** — no
+/// root-to-leaf walk. Because removing the last edge of a hive deactivates its
+/// **entire subtree** (internal wiring notwithstanding), each involved path also
+/// contributes its subtree: every `known_paths` entry that is the path itself or
+/// a descendant (`<involved>/...`). Finally each involved path contributes its
+/// parent chain up to (and including) the root, so a reconnect can re-activate
+/// ancestors.
+///
+/// `known_paths` is the universe of registered node paths (Task 4 passes the
+/// registry keys) — needed because subtree members are arbitrary and cannot be
+/// derived from a path string alone.
+///
+/// R12: `hive_paths` are the registered hive-scope paths. A depth-port edge
+/// can flip the activity of a HIVE ANCESTOR of an involved endpoint (the
+/// crossing connects the hive, see [`has_boundary_crossing_edge`]), and a hive
+/// flip gates its whole subtree — so a parent-chain member that is a
+/// registered hive AND whose boundary the mutation actually CROSSES (≥1
+/// involved path strictly inside, ≥1 outside) contributes its subtree too.
+/// Locality is preserved: an all-internal mutation pulls no hive subtree, and
+/// for the root every path is "inside" (nothing crosses it), so no
+/// root-to-leaf walk is introduced.
+pub fn affected_scope(
+    involved: &[Path],
+    known_paths: &[Path],
+    hive_paths: &[Path],
+) -> HashSet<Path> {
+    let mut scope: HashSet<Path> = HashSet::new();
+    for path in involved {
+        // The involved path itself.
+        scope.insert(path.clone());
+        // Subtree members: known paths equal to or under `path`.
+        for known in known_paths {
+            if is_self_or_descendant(known, path) {
+                scope.insert(known.clone());
+            }
+        }
+        // Parent chain up to the root. R12: a registered-hive parent whose
+        // boundary the mutation crosses contributes its subtree (its activity
+        // may flip via the crossing edge).
+        let mut cur = path.clone();
+        loop {
+            let parent = cur.parent();
+            if parent.as_str() == cur.as_str() {
+                break; // reached root (`/`) or a fixed point
+            }
+            scope.insert(parent.clone());
+            let is_hive = hive_paths.iter().any(|h| h == &parent);
+            let crossed = is_hive && involved.iter().any(|p| !is_self_or_descendant(p, &parent));
+            if crossed {
+                for known in known_paths {
+                    if is_self_or_descendant(known, &parent) {
+                        scope.insert(known.clone());
+                    }
+                }
+            }
+            if parent.as_str() == "/" {
+                break;
+            }
+            cur = parent;
+        }
+    }
+    scope
+}
+
+/// Returns true if `candidate` is `ancestor` itself or a path strictly nested
+/// under it (segment-aware: `/a/b` is under `/a`, but `/ab` is not).
+///
+/// `pub(crate)` so the subtree-staging containment check
+/// ([`crate::mutation::subtree::stage_subtree`]) can reuse the same
+/// segment-aware predicate instead of duplicating it.
+pub(crate) fn is_self_or_descendant(candidate: &Path, ancestor: &Path) -> bool {
+    let (c, a) = (candidate.as_str(), ancestor.as_str());
+    if c == a {
+        return true;
+    }
+    if a == "/" {
+        // Everything absolute is under the root.
+        return c.starts_with('/');
+    }
+    // `a` followed by a `/` boundary guards against `/ab` matching `/a`.
+    c.starts_with(a) && c.as_bytes().get(a.len()) == Some(&b'/')
+}
+
+/// Builds the **post-state** edge view a mutation's connectivity-recompute
+/// (Apply-Schritt 10b) will see, computed at Apply-Schritt 9 (the eager-spawn
+/// loop) — BEFORE the diff's edges have been applied to the live `edges` table.
+///
+/// Paket-3 P3-C1 (Reviewer-Auflage A3): the C1 activity gate must derive a
+/// would-be-inactive cell's activity against the edges as they WILL be after
+/// the diff applies, NOT the current committed `edges` (a fresh cell would
+/// always look inactive there). The view is
+/// `current ∪ adds − removes`, mirroring exactly what Schritt 10b recomputes
+/// against: Schritt 10b runs after `add_edges` (insert), `remove_edges` /
+/// `remove_nodes` (remove) have mutated `edges` in place, so this pure helper
+/// reconstructs the same set on a clone.
+///
+/// `adds` are `(from, to)` endpoint pairs (scope-resolved `add_edges`);
+/// `remove_pairs` are `(from, to)` pairs (scope-resolved `remove_edges`);
+/// `remove_node_paths` are node paths (scope-resolved `remove_nodes`) whose
+/// EVERY edge (`from == p` OR `to == p`) is dropped — the disconnect semantics
+/// of Apply-Schritt 10. Only endpoints matter to [`compute_active`] (it
+/// consults `edges_from`/`edges_to`), so synthesized edges carry no condition /
+/// modifier and a throwaway UUID.
+///
+/// NOTE (minimal cut): `swap_nodes`-swing and subtree-internal edges are NOT
+/// folded in here. They run in Apply-Schritte 9b/9c (after the single-cell
+/// spawn loop) and cannot change the activity of a single-cell `add_nodes`
+/// staged cell — `swap` produces no `staged` single cell whose activity hinges
+/// on the swing, and subtree cells live in `staged_subtrees`, not `staged`.
+/// The P8 case is specifically a single-cell `add_nodes` whose
+/// `add_edges` / `remove_*` derive it inactive, which this view covers exactly.
+pub fn post_state_edges(
+    current: &EdgeTable,
+    adds: &[(Path, Path)],
+    remove_pairs: &[(Path, Path)],
+    remove_node_paths: &[Path],
+) -> EdgeTable {
+    // Rebuild the view from the current edges (EdgeTable is not Clone — Edge is),
+    // dropping every removed edge as we go. `remove_edges`: exact (from, to)
+    // match. `remove_nodes`: every edge touching the node path (from OR to).
+    // Mirrors Schritt 10's remove-before-add ordering for the recompute view.
+    let mut view = EdgeTable::new();
+    for e in current.iter() {
+        let removed = remove_pairs.iter().any(|(f, t)| &e.from == f && &e.to == t)
+            || remove_node_paths.iter().any(|p| &e.from == p || &e.to == p);
+        if !removed {
+            view.insert(e.clone());
+        }
+    }
+    // Then apply adds (endpoint-only synthetic edges).
+    for (from, to) in adds {
+        view.insert(crate::edge_table::Edge {
+            id: meclaw_core::Uuid::now_v7(),
+            from: from.clone(),
+            to: to.clone(),
+            condition: None,
+            modifier: None,
+        });
+    }
+    view
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge_table::Edge;
+    use meclaw_core::Uuid;
+
+    fn edge(from: &str, to: &str) -> Edge {
+        Edge {
+            id: Uuid::now_v7(),
+            from: Path::new(from),
+            to: Path::new(to),
+            condition: None,
+            modifier: None,
+        }
+    }
+
+    #[test]
+    fn is_connected_false_when_no_edge_touches_path() {
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/a", "/b"));
+        assert!(!is_connected(&Path::new("/lonely"), &edges));
+    }
+
+    #[test]
+    fn is_connected_true_with_only_outbound_edge() {
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/src", "/dst"));
+        assert!(is_connected(&Path::new("/src"), &edges));
+    }
+
+    #[test]
+    fn is_connected_true_with_only_inbound_edge() {
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/src", "/dst"));
+        assert!(is_connected(&Path::new("/dst"), &edges));
+    }
+
+    use crate::hive_scope::{HiveScope, HiveScopeTable};
+
+    fn hive_scopes(paths: &[&str]) -> HiveScopeTable {
+        let mut t = HiveScopeTable::new();
+        for p in paths {
+            t.register(HiveScope { path: Path::new(p) });
+        }
+        t
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.5: table-driven activity over a synthetic
+    /// topology — no Colony spawn.
+    ///
+    /// Topology: root `/`; top-level cell `/top`; hive `/h`; cells `/h/c1`,
+    /// `/h/c2` inside the hive.
+    #[test]
+    fn compute_active_recursive_rules() {
+        let hs = hive_scopes(&["/h"]);
+
+        // (a) root child connected → active.
+        {
+            let mut edges = EdgeTable::new();
+            edges.insert(edge("/top", "/sink"));
+            assert!(
+                compute_active(&Path::new("/top"), &edges, &hs),
+                "(a) connected node directly under root is active"
+            );
+        }
+
+        // (b) connected node under an inactive parent-hive → inactive.
+        // `/h/c1`→`/h/c2` is INTERNAL wiring: both cells are connected, but the
+        // hive `/h` has no parent-level edge, so the whole subtree is inactive.
+        {
+            let mut edges = EdgeTable::new();
+            edges.insert(edge("/h/c1", "/h/c2"));
+            assert!(
+                !compute_active(&Path::new("/h/c1"), &edges, &hs),
+                "(b) connected node under disconnected hive is inactive"
+            );
+            assert!(
+                !compute_active(&Path::new("/h"), &edges, &hs),
+                "(c) hive with only internal wiring is inactive — internal edges do not count"
+            );
+        }
+
+        // (c) hive active iff ≥1 parent-level edge points at its path; then a
+        // connected node inside it is active.
+        {
+            let mut edges = EdgeTable::new();
+            edges.insert(edge("/top", "/h")); // parent-level edge → hive connected
+            edges.insert(edge("/h/c1", "/h/c2")); // internal wiring
+            assert!(
+                compute_active(&Path::new("/h"), &edges, &hs),
+                "(c) hive with a parent-level edge is active"
+            );
+            assert!(
+                compute_active(&Path::new("/h/c1"), &edges, &hs),
+                "(c) connected node under an active hive is active"
+            );
+        }
+
+        // (d) subtree under a disconnected hive → all inactive despite internal
+        // edges. Remove the parent-level edge again: only internal wiring remains.
+        {
+            let mut edges = EdgeTable::new();
+            edges.insert(edge("/h/c1", "/h/c2"));
+            for n in ["/h", "/h/c1", "/h/c2"] {
+                assert!(
+                    !compute_active(&Path::new(n), &edges, &hs),
+                    "(d) {n} under disconnected hive must be inactive"
+                );
+            }
+        }
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.5: a disconnected node (no edge at all) is
+    /// inactive even directly under the root.
+    #[test]
+    fn compute_active_disconnected_node_is_inactive() {
+        let hs = hive_scopes(&[]);
+        let edges = EdgeTable::new();
+        assert!(!compute_active(&Path::new("/lonely"), &edges, &hs));
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.5: nested hives — a node is inactive if ANY
+    /// ancestor hive in its chain is disconnected.
+    #[test]
+    fn compute_active_nested_hive_chain() {
+        let hs = hive_scopes(&["/outer", "/outer/inner"]);
+        let mut edges = EdgeTable::new();
+        // `/outer` connected to root, `/outer/inner` connected to `/outer`,
+        // `/outer/inner/leaf` connected internally.
+        edges.insert(edge("/top", "/outer"));
+        edges.insert(edge("/outer/x", "/outer/inner"));
+        edges.insert(edge("/outer/inner/leaf", "/outer/inner/other"));
+        assert!(compute_active(&Path::new("/outer/inner/leaf"), &edges, &hs));
+
+        // Now disconnect the INNER hive (drop the edge pointing at it).
+        let mut edges2 = EdgeTable::new();
+        edges2.insert(edge("/top", "/outer"));
+        edges2.insert(edge("/outer/inner/leaf", "/outer/inner/other"));
+        assert!(
+            !compute_active(&Path::new("/outer/inner/leaf"), &edges2, &hs),
+            "leaf under disconnected inner hive is inactive even though outer is active"
+        );
+    }
+
+    fn paths(ps: &[&str]) -> Vec<Path> {
+        ps.iter().map(|p| Path::new(p)).collect()
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.7: removing the last edge of a hive puts the
+    /// whole subtree (plus the parent chain) into the affected scope.
+    #[test]
+    fn affected_scope_includes_full_subtree_and_parent_chain() {
+        // Registry universe.
+        let known = paths(&["/top", "/h", "/h/c1", "/h/c2", "/h/sub/deep", "/unrelated"]);
+        // The removed edge referenced the hive `/h`.
+        let involved = paths(&["/h"]);
+        let scope = affected_scope(&involved, &known, &[]);
+
+        // Whole subtree of `/h`.
+        for n in ["/h", "/h/c1", "/h/c2", "/h/sub/deep"] {
+            assert!(scope.contains(&Path::new(n)), "{n} must be in scope");
+        }
+        // Parent chain up to root.
+        assert!(scope.contains(&Path::new("/")), "root must be in scope");
+        // Unrelated node not pulled in.
+        assert!(!scope.contains(&Path::new("/unrelated")));
+        // `/top` is a sibling, not an ancestor or descendant of `/h`.
+        assert!(!scope.contains(&Path::new("/top")));
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.7: a leaf edge endpoint pulls in only itself
+    /// plus its parent chain (no spurious siblings) and respects segment
+    /// boundaries (`/h` must not match `/house`).
+    #[test]
+    fn affected_scope_leaf_endpoint_and_segment_boundary() {
+        let known = paths(&["/h", "/h/c1", "/house", "/house/x"]);
+        let involved = paths(&["/h/c1"]);
+        let scope = affected_scope(&involved, &known, &[]);
+
+        assert!(scope.contains(&Path::new("/h/c1")));
+        assert!(scope.contains(&Path::new("/h"))); // parent
+        assert!(scope.contains(&Path::new("/"))); // root
+        // Segment boundary: `/house*` must NOT be dragged in by `/h`.
+        assert!(!scope.contains(&Path::new("/house")));
+        assert!(!scope.contains(&Path::new("/house/x")));
+    }
+
+    /// Phase 13.5-Lifecycle-3b T2.7: multiple involved paths union their scopes.
+    #[test]
+    fn affected_scope_unions_multiple_involved_paths() {
+        let known = paths(&["/a", "/a/x", "/b", "/b/y"]);
+        let involved = paths(&["/a", "/b/y"]);
+        let scope = affected_scope(&involved, &known, &[]);
+        for n in ["/a", "/a/x", "/b/y", "/b", "/"] {
+            assert!(scope.contains(&Path::new(n)), "{n} expected in union scope");
+        }
+    }
+
+    fn pair(from: &str, to: &str) -> (Path, Path) {
+        (Path::new(from), Path::new(to))
+    }
+
+    /// Paket-3 P3-C1 (A3 pin): a deriving edge present ONLY in the diff buffer
+    /// (an `add`), not yet in the committed table, IS visible in the post-state
+    /// view → `compute_active` against the view sees it. The fresh cell `/h/lr`
+    /// is connected (lr→sink) but its parent hive `/h` is inactive → inactive.
+    #[test]
+    fn post_state_view_includes_buffer_only_add_edge_and_derives_inactive() {
+        let hs = hive_scopes(&["/h"]);
+        // Committed edges are EMPTY — the deriving edge exists only in the diff.
+        let current = EdgeTable::new();
+        let adds = vec![pair("/h/lr", "/h/sink")];
+        let view = post_state_edges(&current, &adds, &[], &[]);
+        // The buffer-only edge is visible in the view.
+        assert!(
+            is_connected(&Path::new("/h/lr"), &view),
+            "buffer edge visible"
+        );
+        // Parent hive `/h` has no incoming edge → inactive → the cell is inactive.
+        assert!(
+            !compute_active(&Path::new("/h/lr"), &view, &hs),
+            "cell connected only via buffer edge under inactive hive → inactive"
+        );
+    }
+
+    /// Paket-3 P3-C1 / C2 grace counter-case: WITHOUT the deriving edge, the
+    /// fresh cell under root is edge-less → `is_connected == false` → the C1 gate
+    /// (which keys on `is_connected && !compute_active`) does NOT fire → spawn.
+    #[test]
+    fn post_state_view_edge_less_cell_stays_disconnected_grace() {
+        let current = EdgeTable::new();
+        let view = post_state_edges(&current, &[], &[], &[]);
+        assert!(
+            !is_connected(&Path::new("/lr"), &view),
+            "edge-less fresh cell is not connected → Grace path (gate does not fire)"
+        );
+    }
+
+    /// Paket-3 P3-C1: a `remove_nodes` path drops EVERY edge touching it (from OR
+    /// to) in the post-state view — so removing the last gating edge of a parent
+    /// hive deactivates a previously-active sibling correctly.
+    #[test]
+    fn post_state_view_remove_node_drops_all_touching_edges() {
+        let mut current = EdgeTable::new();
+        current.insert(edge("/top", "/h")); // gating edge for hive /h
+        current.insert(edge("/h/c1", "/h/c2"));
+        // remove_nodes /top → every edge touching /top is dropped (the gate edge).
+        let view = post_state_edges(&current, &[], &[], &[Path::new("/top")]);
+        assert!(
+            !is_connected(&Path::new("/h"), &view),
+            "removing /top drops /top→/h → hive /h disconnected in the view"
+        );
+    }
+
+    /// Paket-3 P3-C1: a `remove_edges` (from, to) pair drops the exact matching
+    /// edge in the post-state view (mirrors Schritt 10's exact-pair match).
+    #[test]
+    fn post_state_view_remove_edge_drops_exact_pair() {
+        let mut current = EdgeTable::new();
+        current.insert(edge("/top", "/h"));
+        let view = post_state_edges(&current, &[], &[pair("/top", "/h")], &[]);
+        assert!(
+            !is_connected(&Path::new("/h"), &view),
+            "remove_edges /top→/h drops the gate edge → hive /h disconnected"
+        );
+    }
+
+    // ── R12: boundary-crossing edges connect the hive (depth-port semantics) ──
+
+    /// R12: a depth edge crossing INTO the hive subtree (`/anchor → /h/c1`)
+    /// connects the hive itself — the unit is wired to the world, no island
+    /// status. Internal wiring under the now-active hive activates too.
+    #[test]
+    fn hive_connected_by_inbound_boundary_crossing_edge() {
+        let hs = hive_scopes(&["/h"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/anchor", "/h/c1"));
+        edges.insert(edge("/h/c1", "/h/c2"));
+        assert!(
+            compute_active(&Path::new("/h"), &edges, &hs),
+            "hive crossed by an inbound depth edge must be active"
+        );
+        assert!(compute_active(&Path::new("/h/c1"), &edges, &hs));
+        assert!(
+            compute_active(&Path::new("/h/c2"), &edges, &hs),
+            "internally wired cell under the now-active hive must be active"
+        );
+    }
+
+    /// R12: an OUTBOUND crossing (`/h/c1 → /sink`) connects the hive too —
+    /// a single in- OR out-port suffices (spec connectivity predicate).
+    #[test]
+    fn hive_connected_by_outbound_boundary_crossing_edge() {
+        let hs = hive_scopes(&["/h"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/h/c1", "/sink"));
+        assert!(
+            compute_active(&Path::new("/h"), &edges, &hs),
+            "hive crossed by an outbound depth edge must be active"
+        );
+        assert!(compute_active(&Path::new("/h/c1"), &edges, &hs));
+    }
+
+    /// R12 guard: internal wiring alone still does NOT connect the hive —
+    /// both endpoints lie inside the subtree, nothing crosses the boundary
+    /// (pre-R12 pin `post_state_view_includes_buffer_only_add_edge_and_
+    /// derives_inactive` semantics preserved).
+    #[test]
+    fn internal_wiring_alone_still_leaves_hive_disconnected() {
+        let hs = hive_scopes(&["/h"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/h/c1", "/h/c2"));
+        assert!(!compute_active(&Path::new("/h"), &edges, &hs));
+        assert!(!compute_active(&Path::new("/h/c1"), &edges, &hs));
+    }
+
+    /// R12: nested hives — a depth edge into `/a/b/leaf` crosses BOTH `/a`
+    /// and `/a/b`; the whole chain activates.
+    #[test]
+    fn nested_hives_connected_by_deep_crossing_edge() {
+        let hs = hive_scopes(&["/a", "/a/b"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/anchor", "/a/b/leaf"));
+        assert!(compute_active(&Path::new("/a"), &edges, &hs));
+        assert!(compute_active(&Path::new("/a/b"), &edges, &hs));
+        assert!(compute_active(&Path::new("/a/b/leaf"), &edges, &hs));
+    }
+
+    /// R12 guard: crossing connectivity is gated on REGISTERED hives — a
+    /// non-hive path gains nothing from edges under a same-prefix path.
+    #[test]
+    fn crossing_connectivity_only_applies_to_registered_hives() {
+        let hs = hive_scopes(&[]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/anchor", "/h/c1"));
+        assert!(
+            !compute_active(&Path::new("/h"), &edges, &hs),
+            "/h is not a registered hive scope → no crossing connectivity"
+        );
+    }
+
+    /// R12: `affected_scope` pulls in the SUBTREE of a registered-hive
+    /// ANCESTOR whose boundary the mutation CROSSES (the depth edge
+    /// `/anchor → /h/c1` puts `/anchor` outside and `/h/c1` inside) — the
+    /// crossing can flip the hive's activity, which gates its whole subtree
+    /// (`/h/c2` must be recomputed although only `/h/c1` is an endpoint).
+    #[test]
+    fn affected_scope_includes_subtree_of_crossed_hive_ancestors() {
+        let known = paths(&["/anchor", "/h/c1", "/h/c2", "/unrelated"]);
+        let involved = paths(&["/anchor", "/h/c1"]);
+        let hives = paths(&["/h"]);
+        let scope = affected_scope(&involved, &known, &hives);
+        assert!(
+            scope.contains(&Path::new("/h/c2")),
+            "sibling under the crossed hive ancestor must be recomputed"
+        );
+        assert!(!scope.contains(&Path::new("/unrelated")));
+    }
+
+    /// R12 locality guards: (a) an all-INTERNAL mutation (both endpoints
+    /// inside `/h`) pulls no hive subtree beyond the involved paths; (b) a
+    /// root-level mutation never pulls the root's subtree (everything is
+    /// "inside" the root, nothing crosses it) — test-relevant: a registered
+    /// root hive must not turn every mutation into a colony-wide recompute.
+    #[test]
+    fn affected_scope_internal_mutation_stays_local() {
+        let known = paths(&["/h/c1", "/h/c2", "/h/c3", "/t", "/c", "/lonely"]);
+        // (a) internal edge /h/c1 → /h/c2: /h/c3 is NOT pulled in.
+        let scope = affected_scope(&paths(&["/h/c1", "/h/c2"]), &known, &paths(&["/h"]));
+        assert!(!scope.contains(&Path::new("/h/c3")));
+        // (b) root-level edge /t → /c with the ROOT registered as hive:
+        // /lonely must NOT be recomputed (no colony-wide walk).
+        let scope = affected_scope(&paths(&["/t", "/c"]), &known, &paths(&["/"]));
+        assert!(!scope.contains(&Path::new("/lonely")));
+    }
+}

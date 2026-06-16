@@ -1,0 +1,82 @@
+{
+  "cell": {
+    "type": "web_search"
+  },
+  "params": {
+    "endpoint": "${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}",
+    "api_key": "${SEARCH_API_KEY:-}",
+    "external_timeout_ms": 15000,
+    "max_concurrency": 8
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "endpoint": {
+        "type": "string",
+        "secret": false,
+        "default": "http://127.0.0.1:8080/search",
+        "description": "Search endpoint queried as GET <endpoint>?q=<query>"
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "Optional bearer token for the search endpoint"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "web_search"
+          ],
+          "required": true
+        },
+        "result_count": {
+          "type": "number",
+          "required": true
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bytes": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:search"
+    ]
+  },
+  "description": {
+    "purpose": "Queries a generic search endpoint and emits the result list as one tool_result turn.",
+    "use_when": "Behind an llm dispatcher (tool_name == 'web_search') or in a research pipeline. The endpoint must speak the generic {results:[...]} shape — front a provider with a shim if it does not.",
+    "not_in_scope": "No provider adapters, no result ranking, no pagination. A non-conforming response is not an error (result_count 0, body passed through).",
+    "emits_meaning": "messages[]: one tool_result turn, text = JSON result list (title/url/snippet per hit). hop.result_count: number of hits; error_code only on io_error/timeout/invalid_input.",
+    "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {query}.",
+    "examples": [
+      "{\"query\":\"agetech telephony\"} -> tool_result text '[{\"title\":...}]', hop { operation: 'web_search', result_count: 3 }"
+    ]
+  }
+}

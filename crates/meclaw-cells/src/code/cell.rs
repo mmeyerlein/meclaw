@@ -1,0 +1,614 @@
+//! CodeCell: stateless cell that runs a user-supplied script (Python
+//! first) as a subprocess. stdin = serialized Message; stdout = content
+//! JSON (Object → 1 msg, Array → N msgs if multi_send_capable).
+
+use crate::code::{CodeParams, params::Script, wire};
+use crate::process::{KillingTimeoutErr, KillingTimeoutOutput, with_killing_timeout};
+use meclaw_colony::StatelessCell;
+use meclaw_core::serde_json::{Map, Value, json};
+use meclaw_core::{CellOutput, Message, OutputSink, Path};
+
+/// Phase-9 CodeCell: stateless cell that runs a user-supplied script
+/// (Python first) as a subprocess. stdin = serialized Message;
+/// stdout = content JSON (Object → 1 msg, Array → N msgs if
+/// `multi_send_capable`).
+pub struct CodeCell {
+    /// Pre-validated params (runner = "python3", script source, optional
+    /// timeout + concurrency).
+    pub params: CodeParams,
+    /// Whether this cell may emit multiple output messages per input.
+    /// Set from `contract.multi_send_capable` via the `CellFactory` trait
+    /// param (Phase 11). The Phase-9 `params`-bridge has been removed.
+    pub multi_send_capable: bool,
+    /// Pre-compiled emits validators (P13/D-017). `None` if no `emits`
+    /// declared. Set from `contract.emits` via the `CellFactory` trait param.
+    pub emits: Option<std::sync::Arc<meclaw_core::CompiledEmits>>,
+    /// Effective enforcement flag (resolved at spawn by Colony,
+    /// `cfg!(debug_assertions) || strict_validation`).
+    pub validate_emits: bool,
+}
+
+impl CodeCell {
+    /// Construct a new CodeCell. Implementation detail — production
+    /// entry is `CodeCellFactory`.
+    #[doc(hidden)]
+    pub fn new(
+        params: CodeParams,
+        multi_send_capable: bool,
+        emits: Option<std::sync::Arc<meclaw_core::CompiledEmits>>,
+        validate_emits: bool,
+    ) -> Self {
+        Self {
+            params,
+            multi_send_capable,
+            emits,
+            validate_emits,
+        }
+    }
+}
+
+/// Build `(cmd, args)` for `tokio::process::Command::new(cmd).args(args)`.
+fn build_command(p: &CodeParams) -> (String, Vec<String>) {
+    match &p.script {
+        Script::Path(path) => (p.runner.clone(), vec![path.clone()]),
+        Script::Inline(code) => (p.runner.clone(), vec!["-c".into(), code.clone()]),
+    }
+}
+
+/// Inject `exit_code`/`duration_ms`/`had_stderr` headers. Per spec
+/// (cell-types.md Z.220–225) these OVERRIDE any matching keys the
+/// script wrote.
+fn inject_standard_headers(
+    mut content: Value,
+    exit_code: i32,
+    duration_ms: i64,
+    had_stderr: bool,
+) -> Value {
+    let obj = content.as_object_mut().expect("parsed not object");
+    let header = obj
+        .entry("header".to_string())
+        .or_insert(Value::Object(Map::new()));
+    let h_obj = header.as_object_mut().expect("header not object");
+    h_obj.insert("exit_code".into(), Value::from(exit_code));
+    h_obj.insert("duration_ms".into(), Value::from(duration_ms));
+    h_obj.insert("had_stderr".into(), Value::Bool(had_stderr));
+    content
+}
+
+/// Emit an `invalid_input` error body to `target`.
+async fn emit_invalid_input(sink: &OutputSink, target: &Path, msg: String) {
+    let body = json!({
+        "header":{"finish_reason":"error","error_code":"invalid_input"},
+        "messages":[{"origin":"tool","type":"tool_result","text":msg,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+/// Emit a spawn / I/O error body to `target`.
+async fn emit_spawn_error(sink: &OutputSink, target: &Path, msg: String) {
+    let body = json!({
+        "header":{"finish_reason":"error","error_code":"io_error"},
+        "messages":[{"origin":"tool","type":"tool_result","text":msg,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+/// Emit a `script_timeout` error body to `target`.
+async fn emit_script_timeout(sink: &OutputSink, target: &Path, started: std::time::Instant) {
+    let dms = started.elapsed().as_millis() as i64;
+    let body = json!({
+        "header":{"finish_reason":"error","error_code":"script_timeout","duration_ms":dms},
+        "messages":[{"origin":"tool","type":"tool_result","text":"script timed out","id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+/// Emit a `script_failed` error body (non-zero exit code) to `target`.
+async fn emit_script_failed(
+    sink: &OutputSink,
+    target: &Path,
+    out: &KillingTimeoutOutput,
+    duration_ms: i64,
+) {
+    // B.1: emit the failing script's output in the shared `bash` sentinel-marker
+    // form — stdout followed by a delimited stderr block — so `code` and `bash`
+    // produce an identical combined-output shape on the failure path.
+    let stdout_s = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr_s = String::from_utf8_lossy(&out.stderr).to_string();
+    let text = if out.stderr.is_empty() {
+        stdout_s
+    } else {
+        format!(
+            "{stdout_s}\n{}\n{stderr_s}{}",
+            crate::bash::STDERR_START,
+            crate::bash::STDERR_END
+        )
+    };
+    let body = json!({
+        "header":{
+            "finish_reason":"error","error_code":"script_failed",
+            "exit_code": out.exit_code,
+            "had_stderr": !out.stderr.is_empty(),
+            "duration_ms": duration_ms,
+        },
+        "messages":[{"origin":"tool","type":"tool_result","text":text,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+/// Emit an `invalid_json` error body to `target`.
+async fn emit_invalid_json(
+    sink: &OutputSink,
+    target: &Path,
+    msg: String,
+    duration_ms: i64,
+    out: &KillingTimeoutOutput,
+) {
+    let body = json!({
+        "header":{
+            "finish_reason":"error","error_code":"invalid_json",
+            "duration_ms":duration_ms,"exit_code":out.exit_code,
+            "had_stderr": !out.stderr.is_empty(),
+        },
+        "messages":[{"origin":"tool","type":"tool_result","text":msg,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+/// Emit a contract-violation error body to `target`. Handles both the
+/// multi-send-not-declared case and a `contract.emits` body/header violation.
+async fn emit_contract_violation(
+    sink: &OutputSink,
+    target: &Path,
+    code: &'static str,
+    duration_ms: i64,
+) {
+    let detail = match code {
+        "multi_send_not_declared" => "script emitted JSON-Array without multi_send_capable",
+        "contract_violation" => "script output violates contract.emits",
+        _ => "contract violation",
+    };
+    let body = json!({
+        "header":{
+            "finish_reason":"error","error_code":code,"duration_ms":duration_ms,
+        },
+        "messages":[{"origin":"tool","type":"tool_result","text":detail,"id":""}]
+    });
+    let _ = sink
+        .push(CellOutput {
+            target: target.clone(),
+            content: body,
+        })
+        .await;
+}
+
+#[allow(clippy::manual_async_fn)]
+impl StatelessCell for CodeCell {
+    /// Handle one message: serialize to stdin-JSON, spawn the configured
+    /// runner script as a subprocess, collect stdout, parse output JSON,
+    /// inject standard headers (`exit_code`/`duration_ms`/`had_stderr`)
+    /// and push to `sink`. Error paths emit structured error bodies
+    /// with `finish_reason: "error"`.
+    fn handle<'a>(
+        &'a self,
+        msg: Message,
+        sink: &'a OutputSink,
+    ) -> impl std::future::Future<Output = ()> + Send + 'a {
+        async move {
+            let started = std::time::Instant::now();
+            // W2b (Ruling A1, mirror of proxy::emit_inbound_error): on a missing
+            // `reply_to`, `/colony/dead_letters` is the READ endpoint, NOT a valid
+            // delivery target. Emit the error as a normal emission to the input's
+            // own `msg.target`; matching no out-edge it ends LOUDLY as `no_route`
+            // in the DLQ instead of being silently parked at the read endpoint.
+            let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
+
+            let stdin_json = match wire::build_stdin_json(&msg) {
+                Ok(s) => s,
+                Err(e) => {
+                    emit_invalid_input(sink, &reply_target, e).await;
+                    return;
+                }
+            };
+
+            let (cmd, args) = build_command(&self.params);
+            let mut child = match tokio::process::Command::new(&cmd)
+                .args(&args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    emit_spawn_error(sink, &reply_target, e.to_string()).await;
+                    return;
+                }
+            };
+
+            // Stdin-Write nebenläufig: vermeidet Pipe-Deadlock bei
+            // großem stdin/stdout — stdin-Pipe-Puffer voll, Skript wartet
+            // auf stdout-Reader, der erst in with_killing_timeout startet.
+            let stdin_opt = child.stdin.take();
+            let stdin_bytes = stdin_json.into_bytes();
+            let _write_task = tokio::spawn(async move {
+                if let Some(mut s) = stdin_opt {
+                    use tokio::io::AsyncWriteExt;
+                    // Swallow rationale (documented POC boundary): a broken
+                    // pipe (script exits before consuming stdin) is already the
+                    // observable signal via the script's exit code / stdout
+                    // parse (surfaces as `invalid_json`/`script_failed`), so the
+                    // write error needs no separate diagnostic here.
+                    let _ = s.write_all(&stdin_bytes).await;
+                    // Drop schließt die Pipe → Skript sieht EOF.
+                }
+            });
+
+            let timeout =
+                std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));
+            let out = match with_killing_timeout(child, timeout).await {
+                Ok(o) => o,
+                Err(KillingTimeoutErr::Elapsed) => {
+                    emit_script_timeout(sink, &reply_target, started).await;
+                    return;
+                }
+                Err(KillingTimeoutErr::Io(e)) => {
+                    emit_spawn_error(sink, &reply_target, e.to_string()).await;
+                    return;
+                }
+            };
+
+            let duration_ms = started.elapsed().as_millis() as i64;
+            let had_stderr = !out.stderr.is_empty();
+
+            if out.exit_code != 0 {
+                emit_script_failed(sink, &reply_target, &out, duration_ms).await;
+                return;
+            }
+
+            let stdout_text = String::from_utf8_lossy(&out.stdout).to_string();
+            let parsed = match wire::parse_stdout_json(&stdout_text) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit_invalid_json(sink, &reply_target, e, duration_ms, &out).await;
+                    return;
+                }
+            };
+
+            if parsed.len() > 1 && !self.multi_send_capable {
+                emit_contract_violation(
+                    sink,
+                    &reply_target,
+                    "multi_send_not_declared",
+                    duration_ms,
+                )
+                .await;
+                return;
+            }
+
+            // Auflage A1+A2: validate the FINAL wire-level content (after
+            // inject_standard_headers), and do it in two passes so a violation
+            // in any message yields exactly ONE contract_violation reply with
+            // ZERO regular emits (no partial-emit mix).
+            // Pass 1: build with_headers for ALL parsed contents AND validate each.
+            let mut wire: Vec<Value> = Vec::with_capacity(parsed.len());
+            for content in parsed {
+                let with_headers =
+                    inject_standard_headers(content, out.exit_code, duration_ms, had_stderr);
+                if self.validate_emits
+                    && let Some(compiled) = &self.emits
+                    && let Err(reason) = meclaw_core::validate_emits(&with_headers, compiled)
+                {
+                    tracing::warn!(error = %reason, "code emit violates contract.emits");
+                    emit_contract_violation(sink, &reply_target, "contract_violation", duration_ms)
+                        .await;
+                    return;
+                }
+                wire.push(with_headers);
+            }
+            // Pass 2: push all only now that all are valid.
+            for with_headers in wire {
+                let _ = sink
+                    .push(CellOutput {
+                        target: reply_target.clone(),
+                        content: with_headers,
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::code::{CodeParams, Script};
+    use meclaw_colony::StatelessCell;
+    use meclaw_core::serde_json::json;
+    use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
+    use tokio::sync::mpsc;
+
+    fn make_sink(otx: mpsc::Sender<meclaw_core::CellEmission>) -> OutputSink {
+        OutputSink::new(
+            otx,
+            Path::new("/code"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            64,
+            meclaw_core::Headers::new(),
+            None,
+        )
+    }
+
+    /// Minimal valid params for unit tests (no-op python3 script).
+    fn sample_params() -> CodeParams {
+        CodeParams {
+            runner: "python3".into(),
+            script: Script::Inline("pass".into()),
+            external_timeout_ms: Some(10_000),
+            max_concurrency: None,
+        }
+    }
+
+    #[test]
+    fn code_cell_carries_emits_validator() {
+        let emits: meclaw_core::EmitsBlock =
+            meclaw_core::serde_json::from_str(r#"{"body":{"messages":{"type":"array"}},"hop":{}}"#)
+                .unwrap();
+        let compiled = std::sync::Arc::new(meclaw_core::CompiledEmits::compile(&emits).unwrap());
+        let cell = CodeCell::new(sample_params(), false, Some(compiled), true);
+        assert!(cell.validate_emits);
+        assert!(cell.emits.is_some());
+    }
+
+    // ---- C2 test scaffolding -------------------------------------------------
+
+    /// Build a `CodeCell` whose script writes `script_stdout` verbatim to
+    /// stdout (single Object emission), with a compiled `emits` contract and
+    /// the given `validate` flag. `multi_send_capable=false`.
+    fn code_cell_with_emits(emits_json: &str, validate: bool, script_stdout: &str) -> CodeCell {
+        code_cell_with_emits_inner(emits_json, validate, script_stdout, false)
+    }
+
+    /// Like `code_cell_with_emits` but `multi_send_capable=true` — `script_stdout`
+    /// is expected to be a JSON array (multi-send).
+    fn code_cell_with_emits_multi(
+        emits_json: &str,
+        validate: bool,
+        script_stdout: &str,
+    ) -> CodeCell {
+        code_cell_with_emits_inner(emits_json, validate, script_stdout, true)
+    }
+
+    fn code_cell_with_emits_inner(
+        emits_json: &str,
+        validate: bool,
+        script_stdout: &str,
+        multi_send: bool,
+    ) -> CodeCell {
+        let emits: meclaw_core::EmitsBlock = meclaw_core::serde_json::from_str(emits_json).unwrap();
+        let compiled = std::sync::Arc::new(meclaw_core::CompiledEmits::compile(&emits).unwrap());
+        // The script echoes a fixed literal — embed it as a python string
+        // literal via serde_json so quoting is safe.
+        let literal = meclaw_core::serde_json::to_string(script_stdout).unwrap();
+        let script = format!("import sys; sys.stdout.write({literal})");
+        let params = CodeParams {
+            runner: "python3".into(),
+            script: Script::Inline(script),
+            external_timeout_ms: Some(10_000),
+            max_concurrency: None,
+        };
+        CodeCell::new(params, multi_send, Some(compiled), validate)
+    }
+
+    /// Drive `cell.handle` once and return the single pushed emission.
+    async fn run_handle(cell: &CodeCell) -> meclaw_core::CellEmission {
+        let mut outs = run_handle_collect(cell).await;
+        assert_eq!(outs.len(), 1, "expected exactly one emission");
+        outs.remove(0)
+    }
+
+    /// Drive `cell.handle` once and collect ALL pushed emissions.
+    async fn run_handle_collect(cell: &CodeCell) -> Vec<meclaw_core::CellEmission> {
+        let (otx, mut orx) = mpsc::channel(16);
+        let sink = make_sink(otx);
+        let msg = MessageBuilder::new(Path::new("/code"))
+            .body(Body::Inline(json!({"messages":[]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(msg, &sink).await;
+        drop(sink);
+        let mut outs = Vec::new();
+        while let Some(em) = orx.recv().await {
+            outs.push(em);
+        }
+        outs
+    }
+
+    /// Accessor helpers for an emission's header fields.
+    trait EmissionHeader {
+        fn header_error_code(&self) -> Option<&str>;
+        fn header_finish_reason(&self) -> Option<&str>;
+    }
+    impl EmissionHeader for meclaw_core::CellEmission {
+        fn header_error_code(&self) -> Option<&str> {
+            self.content["header"]["error_code"].as_str()
+        }
+        fn header_finish_reason(&self) -> Option<&str> {
+            self.content["header"]["finish_reason"].as_str()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn body_violation_yields_contract_violation_when_flag_on() {
+        // contract requires body.messages:array required; script writes an
+        // object without messages. inject_standard_headers only touches the
+        // header, so the body stays violated post-injection.
+        let cell = code_cell_with_emits(
+            r#"{"body":{"messages":{"type":"array","required":true}},"hop":{}}"#,
+            true,
+            r#"{"header":{},"foo":"bar"}"#,
+        );
+        let out = run_handle(&cell).await;
+        assert_eq!(out.header_error_code(), Some("contract_violation"));
+        assert_eq!(out.header_finish_reason(), Some("error"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn header_violation_yields_contract_violation_when_flag_on() {
+        // contract requires header.finish_reason required; script omits it.
+        // inject_standard_headers does NOT add finish_reason → still violated.
+        let cell = code_cell_with_emits(
+            r#"{"body":{},"hop":{"finish_reason":{"type":"string","required":true}}}"#,
+            true,
+            r#"{"messages":[]}"#,
+        );
+        let out = run_handle(&cell).await;
+        assert_eq!(out.header_error_code(), Some("contract_violation"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flag_off_skips_validation_release_default() {
+        // Knob off → violating emission passes through unchanged.
+        // (Direct flag injection, since cfg!(debug_assertions) is true in tests.)
+        let cell = code_cell_with_emits(
+            r#"{"body":{"messages":{"type":"array","required":true}},"hop":{}}"#,
+            false,
+            r#"{"header":{},"foo":"bar"}"#,
+        );
+        let out = run_handle(&cell).await;
+        assert_ne!(out.header_error_code(), Some("contract_violation"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multi_send_violation_in_second_message_emits_nothing_regular() {
+        // Auflage A2 pin: violation in message 2 → exactly ONE contract_violation,
+        // ZERO regular emits (no partial-emit mix).
+        let cell = code_cell_with_emits_multi(
+            r#"{"body":{"messages":{"type":"array","required":true}},"hop":{}}"#,
+            true,
+            // Array: [0] valid, [1] violates (no messages)
+            r#"[{"messages":[]},{"header":{},"foo":"bar"}]"#,
+        );
+        let outs = run_handle_collect(&cell).await;
+        assert_eq!(outs.len(), 1, "exactly one reply");
+        assert_eq!(outs[0].header_error_code(), Some("contract_violation"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn array_with_multi_send_emits_two_messages() {
+        let cell = CodeCell::new(
+            CodeParams {
+                runner: "python3".into(),
+                script: Script::Inline(
+                    r#"import sys,json; sys.stdout.write(json.dumps([
+                        {"messages":[{"origin":"assistant","type":"text","text":"a"}]},
+                        {"messages":[{"origin":"assistant","type":"text","text":"b"}]}
+                    ]))"#
+                        .into(),
+                ),
+                external_timeout_ms: Some(10_000),
+                max_concurrency: None,
+            },
+            true,
+            None,
+            false,
+        );
+        let (otx, mut orx) = mpsc::channel(8);
+        let sink = make_sink(otx);
+        let msg = MessageBuilder::new(Path::new("/code"))
+            .body(Body::Inline(json!({"messages":[]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(msg, &sink).await;
+        drop(sink);
+        let _a = orx.recv().await.unwrap();
+        let _b = orx.recv().await.unwrap();
+        assert!(orx.recv().await.is_none(), "exactly 2 emissions");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn array_without_multi_send_yields_contract_violation() {
+        let cell = CodeCell::new(
+            CodeParams {
+                runner: "python3".into(),
+                script: Script::Inline(
+                    r#"import sys,json; sys.stdout.write(json.dumps([{"messages":[]},{"messages":[]}]))"#
+                        .into(),
+                ),
+                external_timeout_ms: Some(10_000),
+                max_concurrency: None,
+            },
+            false,
+            None,
+            false,
+        );
+        let (otx, mut orx) = mpsc::channel(8);
+        let sink = make_sink(otx);
+        let msg = MessageBuilder::new(Path::new("/code"))
+            .body(Body::Inline(json!({"messages":[]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(msg, &sink).await;
+        drop(sink);
+        let em = orx.recv().await.unwrap();
+        assert_eq!(
+            em.content["header"]["error_code"],
+            "multi_send_not_declared"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inline_python3_emits_object_body() {
+        let cell = CodeCell::new(
+            CodeParams {
+                runner: "python3".into(),
+                script: Script::Inline(
+                    r#"import sys,json; sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","text":"out"}]}))"#.into(),
+                ),
+                external_timeout_ms: Some(10_000),
+                max_concurrency: None,
+            },
+            false,
+            None,
+            false,
+        );
+        let (otx, mut orx) = mpsc::channel(8);
+        let sink = make_sink(otx);
+        let msg = MessageBuilder::new(Path::new("/code"))
+            .body(Body::Inline(json!({"messages":[]})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        cell.handle(msg, &sink).await;
+        drop(sink);
+        let em = orx.recv().await.unwrap();
+        let headers = &em.content["header"];
+        assert_eq!(headers["exit_code"], 0);
+        assert_eq!(headers["had_stderr"], false);
+    }
+}

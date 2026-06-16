@@ -1,0 +1,36 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\ndata = json.load(sys.stdin)\nturns = data.get(\"messages\", [])\nout = {\n    \"header\": {\"msg_type\": \"collected\"},\n    \"messages\": turns,\n}\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        }
+      },
+      "hop": {
+        "msg_type": {
+          "type": "string",
+          "values": ["collected"]
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}
