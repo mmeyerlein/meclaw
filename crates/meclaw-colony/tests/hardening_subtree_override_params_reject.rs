@@ -1,7 +1,7 @@
 //! F2-Ruling (R10, 2026-06-11): `override_params` on a SUBTREE `add_nodes` is
 //! an explicit REJECT (`schema`) instead of a silent no-op.
 //!
-//! Finding (builder/corpus/02-llm-unit-solo/RECEIPT.md F2 / E3): every
+//! Finding: every
 //! addressing form of `override_params` on a subtree template COMMITTED and
 //! applied nothing — `stage.rs` dispatches subtree templates to
 //! `stage_subtree_merge` without ever reading `override_params` (the nested

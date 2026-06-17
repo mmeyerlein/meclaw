@@ -2,7 +2,7 @@
 //! wake on first delivery (Hot/Cold model), exactly like single-cell
 //! `add_nodes` and the bootstrap path.
 //!
-//! Finding (builder/corpus/02-llm-unit-solo/RECEIPT.md F1, Marcus-Ruling):
+//! Finding (ruling):
 //! the subtree registration path (colony.rs apply-Schritt 9c) installed an
 //! INERT WakeFn for EVERY subtree cell — a pre-R12 assumption ("subtree stays
 //! inactive until a later add_edges; routing dead-letters it") that R12's
