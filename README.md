@@ -24,6 +24,14 @@ An `llm` cell makes one provider call and emits one message. That's it. No inner
 
 And since the harness is just files on disk, the swarm can rewrite it. Add a cell. Rewire an edge. Decide a loop was the wrong shape entirely and build something else. You wrote the first version. After that, it's the swarm's problem.
 
+Here's the whole thing in eight seconds. One task in, one answer out, and the
+tool-loop you'd normally hand-write showing up as a path through the tree:
+
+![meclaw: the loop is an edge](docs/demo.svg)
+
+That's `docs/demo.sh` driving `examples/swarm`. Replay it yourself with
+`asciinema play docs/demo.cast`.
+
 ## What meclaw is
 
 A framework for building agentic harnesses, and swarms of them, as a directory tree. One Rust binary. Linux.
