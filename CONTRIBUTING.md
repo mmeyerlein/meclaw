@@ -42,9 +42,13 @@ cargo fmt --check
 
 Notes that will save you time:
 
-- Run the suite in **debug** (`cargo test`). A couple of tests exercise a validation gate that
-  is on by default only in debug builds, so they report as failures under
-  `cargo test --release`. Debug is green.
+- Run the suite in **debug** (`cargo test`). This is the canonical, deterministic run. A couple
+  of tests exercise a validation gate that is on by default only in debug builds, so they report
+  as failures under `cargo test --release`. Debug is green.
+- A couple of tests can flake in **release** builds under heavy parallelism, on wall-clock timing
+  rather than logic, notably `paket_4` (backpressure `term_timeout`) and `phase_8` (MockOpenAI).
+  These are test-harness timing artifacts, not product bugs. Debug is the canonical run; if you
+  hit one in release, re-run rather than chase it.
 - New behavior comes with a test. The hot routing paths are byte-pinned against fixtures on
   purpose, so they cannot quietly drift. If a fixture gate fails, that is the point. Do not
   edit the fixture to make it pass without understanding why it moved.

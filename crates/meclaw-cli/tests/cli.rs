@@ -47,7 +47,10 @@ fn cli_version_prints_to_stdout_and_exits_0() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("meclaw"), "stdout: {stdout}");
-    assert!(stdout.contains("0.0.0"), "stdout: {stdout}");
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "stdout: {stdout}"
+    );
     assert!(output.stderr.is_empty(), "stderr must be empty");
 
     let log_in_cwd = tmp.path().join("log.jsonl");
