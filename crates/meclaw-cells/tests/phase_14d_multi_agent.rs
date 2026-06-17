@@ -654,7 +654,7 @@ async fn final_answer_coupled_to_turn() {
 
 /// **14-D-5 Positiv — Validator akzeptiert die committete Multi-Agent-Topologie.**
 ///
-/// Bootstraps the full `examples/14d-multi-agent/` tree via `plan_bootstrap`
+/// Bootstraps the full `tests/fixtures/14d-multi-agent/` tree via `plan_bootstrap`
 /// (validate-only, no spawn, no HTTP). Asserts `Ok`:
 ///
 /// - `consumes.context.turn_id` required at billing/tech/capture is reachable via
@@ -752,11 +752,11 @@ fn validator_rejects_unreachable_turn_id() {
 
 /// **14-D-6 — Live-Graph-SVG/DOT aus gebooteter Multi-Agent-Topologie.**
 ///
-/// Bootet den vollständigen `examples/14d-multi-agent/`-Baum (TempDir-Kopie,
+/// Bootet den vollständigen `tests/fixtures/14d-multi-agent/`-Baum (TempDir-Kopie,
 /// beide llm-Cells gegen Mocks), liest den Live-Graph via
 /// `ColonyMsg::ReadGraph` für den Scope `/`, rendert `graph.dot` + `graph.svg`
 /// mit dem zero-dep-Generator (identisch zu 14c) und schreibt sie nach
-/// `examples/14d-multi-agent/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
+/// `tests/fixtures/14d-multi-agent/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
 ///
 /// Assertions:
 /// - Alle 4 Topology-Knoten (`/router`, `/billing`, `/tech`, `/capture`)
@@ -778,7 +778,7 @@ async fn topology_svg_from_live_graph() {
     // Live-Graph lesen: Scope "/" liefert alle Topology-Knoten + Edges.
     let (nodes, edges) = support::live_graph(&h, &["/"]).await;
 
-    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach examples/14d-multi-agent/ schreiben.
+    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach tests/fixtures/14d-multi-agent/ schreiben.
     support::emit_dot_if_requested("14d-multi-agent", &nodes, &edges);
 
     // --- DOT/SVG für Assertions lokal rendern (unabhängig von MECLAW_EMIT_DOT) ---

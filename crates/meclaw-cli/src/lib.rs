@@ -94,12 +94,13 @@ pub fn check_tokio_console(
     Ok(Some(addr))
 }
 
-/// Command-line interface surface per `docs/meclaw-overview.md` CLI
-/// section. All spec-table flags through Phase 12 are active (`--env`
-/// landed late as U7, roadmap 2026-06-11). Unknown flags are rejected
-/// by clap.
+/// Command-line interface surface. Unknown flags are rejected by clap.
 #[derive(Debug, clap::Parser)]
-#[command(name = "meclaw", version, about)]
+#[command(
+    name = "meclaw",
+    version,
+    about = "File-based, LLM-oriented actor workflow system for agentic harnesses."
+)]
 pub struct Cli {
     /// Filesystem root of the colony.
     #[arg(long, default_value = ".")]
@@ -117,56 +118,54 @@ pub struct Cli {
     #[arg(long = "log-filter")]
     pub log_filter: Option<String>,
 
-    /// `.env`-Datei für Variablen-Substitution (Default: `<root>/.env`).
-    /// Spec-Flag-Tabelle Phase 6; nachverdrahtet als U7 (roadmap 2026-06-11).
+    /// `.env` file for variable substitution. Default: `<root>/.env`.
     #[arg(long, value_name = "PATH")]
     pub env: Option<PathBuf>,
 
-    /// Templates-Verzeichnis (Default: `<root>/templates`). Phase 11.
+    /// Templates directory. Default: `<root>/templates`.
     #[arg(long, value_name = "PATH")]
     pub templates: Option<PathBuf>,
 
-    /// Templates-Registry neu aufbauen aus `templates/`-Verzeichnis. Phase 11.
+    /// Rebuild the templates registry from the `templates/` directory.
     #[arg(long, default_value_t = false)]
     pub rescan_templates: bool,
 
-    /// HTTP-API + Web-UI Bind-Adresse (Phase 12). Default: off (kein Port).
+    /// Bind address for the HTTP API and operator web UI. Default: off (no port opened).
     #[arg(long, value_name = "BIND")]
     pub api: Option<std::net::SocketAddr>,
 
-    /// Daemon-Mode: Foreground, kein stdin/stdout-Bridge (Phase 12).
-    /// Operator-unabhängig von `--api` (U9, RULED A8): `--daemon` ohne `--api`
-    /// startet die Colony HEADLESS (Spawn + Bootstrap, Timer-/Proxy-Topologien
-    /// laufen, KEIN HTTP-Server) bis SIGTERM/ctrl_c; `--daemon --api` läuft mit
-    /// HTTP-Server. Kein fork/setsid (systemd Type=simple).
+    /// Daemon mode: foreground, no stdin/stdout bridge. Independent of
+    /// `--api`: `--daemon` without `--api` runs the colony headless (spawn +
+    /// bootstrap, timer/proxy topologies run, no HTTP server) until
+    /// SIGTERM/ctrl_c; `--daemon --api` runs with the HTTP server. No
+    /// fork/setsid (systemd Type=simple).
     #[arg(long, default_value_t = false)]
     pub daemon: bool,
 
-    /// Dry-Run: Bootstrap + Schema + Templates + Mutations-Replay,
-    /// keine Cell-Spawns, kein HTTP-Listen (Phase 12).
+    /// Dry run: bootstrap, schema checks, templates, and mutation replay;
+    /// no cell spawns, no HTTP listen.
     #[arg(long, default_value_t = false)]
     pub validate: bool,
 
-    /// Strict-Mode für `--validate` (Phase-16 W1a A8): hebt sonst nur
-    /// gewarnte statische Befunde — insbesondere dangling `params.graph`-
-    /// Endpoints, die ein statischer Lauf nicht gegen die Laufzeit-Registry
-    /// auflösen kann — auf harte Fehler an (Exit != 0). Default aus: Operator
-    /// entscheidet (nginx -t-Stil).
+    /// Strict mode for `--validate`: promotes otherwise-warned static
+    /// findings (in particular dangling `params.graph` endpoints that a
+    /// static run cannot resolve against the runtime registry) to hard
+    /// errors (non-zero exit). Off by default; the operator decides
+    /// (nginx -t style).
     #[arg(long, default_value_t = false)]
     pub strict: bool,
 
-    /// Blob-Storage-Verzeichnis (Phase 12). Default: `<root>/blobs`.
+    /// Blob storage directory. Default: `<root>/blobs`.
     #[arg(long, value_name = "PATH")]
     pub blobs: Option<PathBuf>,
 
-    /// tokio-console-Debug-Layer aktivieren (U10, RULED A8). Opt-in: Default
-    /// AUS — ohne dieses Flag wird KEIN Debug-Port gebunden (vorher: fest 6669,
-    /// band bei jedem Lauf, kollidierte still bei Parallel-Start).
+    /// Enable the tokio-console debug layer. Opt-in: off by default. Without
+    /// this flag no debug port is bound.
     #[arg(long, default_value_t = false)]
     pub tokio_console: bool,
 
-    /// Bind-Port des tokio-console-Layers (U10). Nur wirksam mit
-    /// `--tokio-console`. Default 6669 (historischer Default).
+    /// Bind port for the tokio-console layer. Only effective with
+    /// `--tokio-console`. Default 6669.
     #[arg(
         long = "tokio-console-port",
         value_name = "PORT",

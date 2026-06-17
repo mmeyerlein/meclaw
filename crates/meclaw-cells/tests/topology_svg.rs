@@ -285,7 +285,7 @@ pub async fn write_topology_diagram(
 }
 
 /// Spiegelt das kanonische 14a-Topologie-Diagramm in den eingecheckten
-/// Beispiel-Ordner `examples/14a-tool-loop/` — NUR unter Env-Gate
+/// Beispiel-Ordner `tests/fixtures/14a-tool-loop/` — NUR unter Env-Gate
 /// `MECLAW_EMIT_DOT=1` (sonst no-op; gleicher Mechanismus wie
 /// `emit_dot_if_requested` der 14b/c/d-Examples in `support_14b.rs`).
 /// Kanonischer Producer ist `tool_loop_end_to_end_reaches_collector` —
@@ -307,7 +307,7 @@ pub fn emit_14a_example_diagram_if_requested(g: &LiveGraph) {
             cells: g.cells.clone(),
         };
         let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/14a-tool-loop");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/14a-tool-loop");
         std::fs::write(dir.join("topology.svg"), render_topology_svg(&sorted)).unwrap();
         std::fs::write(dir.join("topology.dot"), render_topology_dot(&sorted)).unwrap();
     }

@@ -1,10 +1,10 @@
-//! Post-Phase-14-Audit (#8): `examples/demo-colony` als gebauter E2E-Test.
+//! Post-Phase-14-Audit (#8): `tests/fixtures/demo-colony` als gebauter E2E-Test.
 //!
 //! Die manuelle 8-Punkte-Demo aus `examples/README.md` hatte bis hier null
 //! automatisierte Abdeckung — Bootstrap-Aenderungen konnten die committeten
 //! Demo-Fixtures still rot machen. Dieser Test bootet den COMMITTETEN
 //! Beispiel-Baum (Kopie in ein TempDir — examples/ bleibt read-only,
-//! No-Delete-Policy), wendet `examples/demo-mutation.json` wortgleich via
+//! No-Delete-Policy), wendet `tests/fixtures/demo-mutation.json` wortgleich via
 //! `POST /colony/mutations` an und beweist `/echo` ueber positive Receipts:
 //! Registry-Eintrag (bash-Cell) + Message-Log-Row mit `to_path == "/echo"`.
 //!
@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 /// Repo-relativer Pfad zu `examples/<name>` (Crate liegt zwei Ebenen tiefer).
 fn examples_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples")
+        .join("../../tests/fixtures")
         .join(name)
 }
 

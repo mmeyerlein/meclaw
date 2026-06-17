@@ -184,14 +184,14 @@ fn dlq_entry_for<'a>(
     matches[0]
 }
 
-/// Kopiert den eingecheckten `examples/14a-tool-loop/main/`-Baum nach `<td>/main`
+/// Kopiert den eingecheckten `tests/fixtures/14a-tool-loop/main/`-Baum nach `<td>/main`
 /// und überschreibt den llm-Placeholder-`base_url` auf den Mock. Quelle ist der
 /// COMMITTED Baum (Single Source of Truth der Demo-Topologie) — Laufzeit-State
 /// landet im `TempDir`, der eingecheckte Baum bleibt sauber. `base_url` ist der
 /// echte Override-Punkt (am Code via `LlmParams` geerdet).
 fn copy_example_tree(td: &std::path::Path, base_url: &str) {
     let src =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/14a-tool-loop/main");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/14a-tool-loop/main");
     copy_dir_recursive(&src, &td.join("main"));
     std::fs::write(td.join("main/llm/config.json"), llm_config(base_url)).unwrap();
 }

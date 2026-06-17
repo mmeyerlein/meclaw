@@ -1,8 +1,8 @@
-# Rust build artifacts
+# Rust-Build-Artefakte
 /target/
 **/*.rs.bk
 
-# Runtime state (created when the daemon runs)
+# Runtime-State (entsteht beim Daemon-Run)
 /log.jsonl
 /colony.db
 /colony.db-*
@@ -11,7 +11,16 @@
 /blobs/
 /.staging/
 
-# Runtime state from running any example colony in place
+# Demo-Fixture-State (entsteht, wenn jemand `meclaw --root examples/demo-colony`
+# direkt im Repo laufen laesst; Fixture-Disziplin: NUR config.json + template.json
+# bleiben committet, alles andere ist generiert und ignoriert).
+/tests/fixtures/demo-colony/colony.db
+/tests/fixtures/demo-colony/colony.db-*
+/tests/fixtures/demo-colony/log.jsonl
+/tests/fixtures/demo-colony/blobs/
+/tests/fixtures/demo-colony/.staging/
+
+# Runtime state from running any example colony in place.
 /examples/**/colony.db
 /examples/**/colony.db-*
 /examples/**/log.jsonl
@@ -19,13 +28,43 @@
 /examples/**/.staging/
 /examples/**/.env
 
+# Runtime state from running any fixture colony in place (tests copy to tmp,
+# but emit-dot / ad-hoc runs may still touch these).
+/tests/fixtures/**/colony.db
+/tests/fixtures/**/colony.db-*
+/tests/fixtures/**/cell.db
+/tests/fixtures/**/cell.db-*
+/tests/fixtures/**/log.jsonl
+/tests/fixtures/**/blobs/
+/tests/fixtures/**/.staging/
+
 # Secrets
-.env
+/.env
 
 # IDE
 /.vscode/
 /.idea/
 
-# OS junk
+# Local agent / tooling state
+/.claude/
+
+# Curated launch-export working tree (separate private repo, never dev-master history)
+/.launch-export/
+
+# Internal launch tracker (strategy, posting accounts) — never exported
+/LAUNCH-PLAN.md
+
+# OS-Junk
 .DS_Store
 Thumbs.db
+
+# === Deutsche Design-Doku (lokale Durability — Item 4, 2026-05-21) ===
+# docs/, plans/, CLAUDE.md, PROGRESS.md werden lokal getrackt, damit Lessons
+# + Pläne mit der Code-History versionsfest sind. Sie sind NICHT Teil eines
+# späteren GitHub-Exports (v0.1.0): der wird kuratiert + englisch und
+# exportiert nur einen Subset. Bis dahin: alles bleibt im lokalen Repo.
+# PROGRESS.md ist schon getrackt (Marker-Eintrag effektiv no-op).
+/PROGRESS.md
+
+# README.md bleibt erstmal deutsch im Repo;
+# wird in Phase 16 durch eine englische Version ersetzt, bevor du das erste Mal pushst.

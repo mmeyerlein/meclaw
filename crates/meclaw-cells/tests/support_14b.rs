@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 /// Repo-root-relativer Pfad zu einem eingecheckten Beispiel-Baum.
 pub fn example_dir(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples")
+        .join("../../tests/fixtures")
         .join(name)
 }
 
@@ -262,7 +262,7 @@ fn live_graph_from_dtos(nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) -> topol
 /// Schreibt `graph.svg` + `graph.dot` in den eingecheckten Beispiel-Ordner, beide
 /// aus dem LIVE gebooteten Graph via den shared zero-dep Renderer
 /// (`render_topology_svg`/`render_topology_dot`) — identischer Mechanismus wie
-/// `examples/14a-tool-loop/topology.svg`. NUR unter Env-Gate `MECLAW_EMIT_DOT=1`
+/// `tests/fixtures/14a-tool-loop/topology.svg`. NUR unter Env-Gate `MECLAW_EMIT_DOT=1`
 /// (sonst no-op, CI/normale Läufe sind read-only).
 pub fn emit_dot_if_requested(example_name: &str, nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) {
     if std::env::var("MECLAW_EMIT_DOT").as_deref() == Ok("1") {

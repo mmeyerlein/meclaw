@@ -80,7 +80,7 @@ async fn boot_code_and_store(td: &TempDir) -> (ColonyHandle, mpsc::Receiver<mecl
 
 /// Repo-root-relativer Pfad zum eingecheckten 14c-rag-Beispiel-Baum.
 fn example_dir_14c() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/14c-rag")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/14c-rag")
 }
 
 /// Kopiert den 14c-rag-Baum in `dst` (rekursiv, ohne SVG/DOT-Artefakte).
@@ -704,7 +704,7 @@ fn factories_14c() -> CellFactoryRegistry {
 
 /// **14-C-5 Positiv — Validator akzeptiert die committete RAG-Topologie.**
 ///
-/// Bootstrappt den vollständigen `examples/14c-rag/`-Baum (alle 5 Knoten +
+/// Bootstrappt den vollständigen `tests/fixtures/14c-rag/`-Baum (alle 5 Knoten +
 /// reale Edges) via `plan_bootstrap` (validate-only, kein Spawn).
 /// `consumes.context.rag_question` an retrieve + llm ist via der
 /// `ask→corpus`-`set_context`-Wurzel reachable; keine required-hop-Verletzung.
@@ -802,10 +802,10 @@ fn patch_llm_base_url_14c(dir: &std::path::Path, base_url: &str) {
 
 /// **14-C-6 — Live-Graph-SVG/DOT aus gebooteter RAG-Topologie.**
 ///
-/// Bootet den vollständigen `examples/14c-rag/`-Baum (TempDir-Kopie, llm gegen Mock),
+/// Bootet den vollständigen `tests/fixtures/14c-rag/`-Baum (TempDir-Kopie, llm gegen Mock),
 /// liest den Live-Graph via `ColonyMsg::ReadGraph` für den Scope `/main`,
 /// rendert `graph.dot` + `graph.svg` mit dem zero-dep-Generator (identisch zu 14a/14b)
-/// und schreibt sie nach `examples/14c-rag/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
+/// und schreibt sie nach `tests/fixtures/14c-rag/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
 ///
 /// Assertions:
 /// - Alle 5 Knoten (`/ask`, `/corpus`, `/retrieve`, `/llm`, `/capture`) erscheinen im DOT.
@@ -864,7 +864,7 @@ async fn topology_svg_from_live_graph() {
     // (bootstrap_from_filesystem strippt das top-level-Verzeichnis → Pfade: /ask, /corpus, …).
     let (nodes, edges) = support::live_graph(&h, &["/"]).await;
 
-    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach examples/14c-rag/ schreiben.
+    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach tests/fixtures/14c-rag/ schreiben.
     support::emit_dot_if_requested("14c-rag", &nodes, &edges);
 
     // --- DOT/SVG für Assertions lokal rendern (unabhängig von MECLAW_EMIT_DOT) ---

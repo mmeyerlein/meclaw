@@ -8,7 +8,7 @@ Blob-Storage). Form ist 1:1 die aus den gruenen E2E-Tests
 ## Layout
 
 ```
-examples/
+tests/fixtures/
   demo-colony/
     demo/                    # hive-marker (FS-Name wird beim Bootstrap zu meclaw /)
       config.json            # {"cell":{"type":"hive"}}
@@ -36,7 +36,7 @@ nie `{"type":"hive"}` direkt — `plan_bootstrap` parsed sonst nichts.
 cargo build --workspace --release
 
 # 2. Fixtures nach /tmp kopieren (No-Delete-Policy: kein in-place-Schreiben in examples/)
-cp -r examples/demo-colony /tmp/demo-colony
+cp -r tests/fixtures/demo-colony /tmp/demo-colony
 
 # 3. meclaw mit --api + --blobs starten
 ./target/release/meclaw \
@@ -49,11 +49,11 @@ curl http://127.0.0.1:7777/health                                   # 200 "ok"
 curl http://127.0.0.1:7777/ui/                                      # Dashboard
 curl -X POST http://127.0.0.1:7777/colony/mutations \
   -H 'Content-Type: application/json' \
-  -d @examples/demo-mutation.json                                   # 200 Committed
+  -d @tests/fixtures/demo-mutation.json                                   # 200 Committed
 curl http://127.0.0.1:7777/ui/registry                              # /echo sichtbar
 curl -X POST http://127.0.0.1:7777/messages \
   -F target=/echo \
-  -F attachment=@examples/demo-mutation.json                        # 202 + attachments[]
+  -F attachment=@tests/fixtures/demo-mutation.json                        # 202 + attachments[]
 # Trace-View ist search-by-trace_id (siehe Phase-12-Limitations
 # "/ui/trace ist search-by-trace_id"). Hop-Baum mit attachments[] sichtbar
 # machen: jüngste trace_id aus der JSON-Sicht ziehen, dann UI ansteuern.
