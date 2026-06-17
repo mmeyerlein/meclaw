@@ -2,7 +2,7 @@
 
 # meclaw
 
-**Build an agentic harness swarm as a directory tree. Then watch it refactor itself behind your back.**
+**Build an agentic harness swarm as a directory tree. The swarm can rewire itself while it runs.**
 
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
@@ -22,7 +22,7 @@ meclaw doesn't ship you a loop.
 
 An `llm` cell makes one provider call and emits one message. That's it. No inner loop, ever. The tool-loop, ReAct, plan-and-execute, every harness pattern you've ever wired by hand, becomes a shape in your filesystem instead. Tools are cells. The loop is an edge that routes back. The harness is topology.
 
-And since the harness is just files on disk, the swarm can rewrite it. Add a cell. Rewire an edge. Decide a loop was the wrong shape entirely and build something else. You wrote the first version. After that, it's the swarm's problem.
+And since the harness is just files on disk, the swarm can rewrite it. Add a cell. Rewire an edge. Decide a loop was the wrong shape entirely and build something else. You wrote the first version. From there, rewiring is a runtime move, yours or the swarm's.
 
 Here's the whole thing in eight seconds. One task in, one answer out, and the
 tool-loop you'd normally hand-write showing up as a path through the tree:
@@ -41,7 +41,7 @@ A harness is the scaffolding around an LLM: the tool-loop, the orchestration, th
 - **The filesystem is the topology.** The directory tree *is* your harness. Every node is a Cell (an actor). Folders marked `type: "hive"` are scopes: authority and mutation boundaries that hold the graph. No second config format to learn. The tree is the truth.
 - **Cells are dumb. The edges do the thinking.** A cell has no idea who sent it a message or who comes next. It knows its contract, its params, and the one message in front of it. Routing, filtering, fan-out, loopback, all of it lives on the edges.
 - **One LLM cell, a pile of tool cells.** `llm` thinks. Everything else (`bash`, `code`, `file`, `store`, `web_fetch`, `mcp`, and friends) is a tool cell. There is no built-in loop bolting them together. You draw it. That's the whole trick: the harness is topology, not control flow buried in someone's framework.
-- **The swarm tunes itself.** Rewiring the graph is a runtime primitive. Any cell can emit a mutation and reshape the tree while the colony runs. The point is that the agents write those mutations themselves: read the topology, decide it needs another tool or a smarter loopback, ship the diff. Self-modification isn't a feature bolted on the side. It's the reason the thing exists.
+- **The swarm tunes itself.** Rewiring the graph is a runtime primitive. Any cell can emit a mutation and reshape the tree while the colony runs. The goal is agents that write those mutations themselves: read the topology, decide it needs another tool or a smarter loopback, ship the diff. Self-modification isn't a feature bolted on the side. It's the reason the thing exists.
 - **It runs as a daemon.** A long-lived process you drive over HTTP, with a read-only web UI to watch the swarm do its thing. nginx energy. One binary, a few flags, a mode switch.
 - **Durable and atomic.** Messages are atomic. State persists per cell in SQLite. Traces rebuild from a central log. Kill it, restart it, it picks up where it left off.
 
