@@ -4,6 +4,40 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.2] — 2026-08-07
+
+### Added
+
+- **`memory-hive@1`** — a 9-cell agent-memory topology template (`store`, `writer`, `recall`,
+  `extract-glue`, `extractor`, `dream-glue`, `dreamer`, `cron`, `embed`) built entirely from
+  existing cell types, with **no substrate changes**:
+  - **Bi-temporal facts** — `valid_from`/`valid_until` (event time) alongside
+    `recorded_at`/`expired_at` (system time) plus `superseded_by`, so "what is true now",
+    "what was true in May" and "what did we believe in May" are all answerable. Nothing is
+    ever deleted: supersession stamps an expiry, belief retraction flips a flag.
+  - **Batched extraction** — an accumulating gate (~512 tokens or a 30-minute-old item) keeps
+    the LLM cost per turn at zero; the synchronous write path stays LLM-free and immediate.
+    A second, inline ingress accepts pre-extracted payloads from a front-line model; both go
+    through one validator and one `(episode_id, claim_hash)` dedup.
+  - **Idempotent nightly consolidation** — the delta window derives from the run log and every
+    written value derives from the window end, so a replayed run leaves memory byte-identical
+    and a missed timer firing needs no catch-up.
+  - **Embedding lane with graceful degradation** — a dead embedder leaves rows queued with
+    `NULL` blobs; writes and recall keep working and the hive never hard-fails on it.
+  - Recall ships tier 0 only: a deterministic, token-budgeted context bundle. Higher tiers
+    (multi-leg retrieval, synthesis) and the store-side query layer they need are next up.
+
+  Ships in the **private builder workspace**; public packaging of the builder core is pending.
+
+### Notes
+
+- The template works against the current equality-only `store` ops by design (no `ORDER BY`,
+  `LIMIT`, `LIKE` or `IS NULL`): temporal and freshness filtering happens in its `code` cells
+  until the store gains a query layer.
+- New roadmap defer: `cell-types.md` § `code` states that a successful script's stderr is
+  logged at warn level, while the implementation only sets the `had_stderr` header. Needs a
+  ruling (align the code or shorten the spec).
+
 ## [0.1.1] — 2026-08-07
 
 ### Added
