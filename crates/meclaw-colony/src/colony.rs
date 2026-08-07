@@ -478,6 +478,20 @@ pub enum ColonyMsg {
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadTraceReply>,
     },
+    /// P1 (message browser): paginierter, gefilterter Read über
+    /// `colony.db::message_log`. Spiegelt `ReadTrace` — `spawn_blocking` +
+    /// frische `SQLITE_OPEN_READ_ONLY`-Connection, die gesamte Logik lebt in
+    /// `colony_dispatch::handle_read_messages`.
+    ///
+    /// **Honest warning**: stallt die Colony-Inbox-Loop für die Query-Dauer.
+    /// Begrenzt durch `filter.scan_budget` (≤ 50_000 gelesene Rows), nicht durch
+    /// `limit` allein. Off-Loop-Reads sind post-v0.1.0 (`docs/roadmap.md`).
+    ReadMessages {
+        /// Filter + Paging-Cursor; alle Caps werden im Dispatch-Helper geklemmt.
+        filter: crate::api_dto::MessageLogFilter,
+        /// Reply channel; dropped on Shutdown-drain.
+        ack: oneshot::Sender<crate::api_dto::ReadMessagesReply>,
+    },
     /// Phase 12-B step-7.5: Scope-gefilterte Graph-Snapshot (Nodes + Edges).
     /// Nodes = Registry-Entries deren Pfad mit `scope` beginnt.
     /// Edges = `EdgeTable`-Entries deren `from` UND `to` im Scope liegen.
@@ -1485,6 +1499,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 ColonyMsg::ReadTrace { ack, .. } => {
                                     drop(ack);
                                 }
+                                ColonyMsg::ReadMessages { ack, .. } => {
+                                    drop(ack);
+                                }
                                 ColonyMsg::Mutation { payload, reply_to, trace_id, parent_message_id, ack } => {
                                     // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
                                     // (ColonyDb ist !Sync → kein &ColonyDb über .await-Grenze).
@@ -1727,6 +1744,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         let reply = crate::colony_dispatch::handle_read_trace(
                             &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
                         ).await;
+                        let _ = ack.send(reply);
+                    }
+                    ColonyMsg::ReadMessages { filter, ack } => {
+                        let db_path = colony_db.db_path().to_path_buf();
+                        let reply = crate::colony_dispatch::handle_read_messages(&db_path, filter).await;
                         let _ = ack.send(reply);
                     }
                     ColonyMsg::ReadGraph { scope, ack } => {

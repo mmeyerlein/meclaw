@@ -99,6 +99,9 @@ pub async fn delete_dead_letters(State(colony): State<Arc<ColonyHandle>>) -> imp
             error_code: dl.reason.as_code().to_string(),
             trace_id: dl.message.trace_id.to_string(),
             created_at: dl.message.created_at,
+            // P1: on the drain path the full envelope is in hand, so the id is
+            // always available — no `message_json` reparse needed.
+            message_id: Some(dl.message.id.to_string()),
         })
         .collect();
     (StatusCode::OK, Json(json!({ "dead_letters": entries })))

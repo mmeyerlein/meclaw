@@ -13,6 +13,7 @@
 pub mod dead_letters;
 pub mod events;
 pub mod graph;
+pub mod message_log;
 pub mod messages;
 pub mod mutations;
 pub mod registry;

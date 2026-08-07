@@ -306,8 +306,8 @@ pub fn emit_14a_example_diagram_if_requested(g: &LiveGraph) {
             hives: g.hives.clone(),
             cells: g.cells.clone(),
         };
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/14a-tool-loop");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/14a-tool-loop");
         std::fs::write(dir.join("topology.svg"), render_topology_svg(&sorted)).unwrap();
         std::fs::write(dir.join("topology.dot"), render_topology_dot(&sorted)).unwrap();
     }

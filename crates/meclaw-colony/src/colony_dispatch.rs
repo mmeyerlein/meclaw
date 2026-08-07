@@ -110,6 +110,12 @@ pub fn handle_read_dead_letters(
             error_code: r.error_code,
             trace_id: r.trace_id,
             created_at: r.created_at,
+            // P1: best-effort projection out of the persisted envelope. A row
+            // without a parseable `id` is not an error — the consumer degrades
+            // to the trace-level link.
+            message_id: serde_json::from_str::<serde_json::Value>(&r.message_json)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())),
         })
         .collect();
     crate::api_dto::ReadDeadLettersReply { entries }
@@ -191,6 +197,207 @@ pub fn handle_read_mutations_audit(
         })
         .collect();
     crate::api_dto::ReadMutationsAuditReply { entries }
+}
+
+/// P1 (message browser): paginated, filtered read over `colony.db::message_log`.
+///
+/// Same shape as [`handle_read_trace`] — `spawn_blocking` plus a fresh
+/// `SQLITE_OPEN_READ_ONLY` connection, so the WAL reader never touches the
+/// writer thread. **Honest warning**: like every `Read*` arm it stalls the
+/// Colony-Inbox loop for the query duration; the stall is bounded by
+/// `scan_budget` (≤ 50_000 rows), not by `limit` alone.
+///
+/// Two-stage query (plan § F3): the inner select narrows through an existing
+/// index (`created_at` for ordering + range, `trace_id`, `parent_message_id`,
+/// `to_path`) and is capped at `scan_budget` rows; the outer select applies the
+/// predicates `message_log` has no index for (`correlation_id`, `from_path`,
+/// `body_kind`). When the inner select hits its cap, `scan_truncated` says so —
+/// the residual predicates then only saw that window.
+///
+/// Never logs filter values or payloads (secret hygiene) — errors report the
+/// failure class only.
+pub async fn handle_read_messages(
+    db_path: &std::path::Path,
+    filter: crate::api_dto::MessageLogFilter,
+) -> crate::api_dto::ReadMessagesReply {
+    let limit = filter.limit.clamp(1, 1000);
+    let scan_budget = filter.scan_budget.clamp(1, 50_000);
+    let db_path = db_path.to_path_buf();
+
+    let join = tokio::task::spawn_blocking(
+        move || -> rusqlite::Result<(Vec<crate::api_dto::MessageLogDto>, usize)> {
+            let conn = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )?;
+            const COLUMNS: &str = "id, trace_id, parent_message_id, correlation_id, ttl,
+                 from_path, to_path, reply_to, headers, body_kind, body_payload, created_at";
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+            // Single-row lookup by PRIMARY KEY short-circuits every other filter.
+            if let Some(id) = filter.id.as_ref() {
+                let sql = format!("SELECT {COLUMNS} FROM message_log WHERE id = ? LIMIT 1");
+                params.push(Box::new(id.clone()));
+                let rows = query_message_log(&conn, &sql, &params)?;
+                let scanned = rows.len();
+                return Ok((rows, scanned));
+            }
+
+            // --- inner select: indexed predicates only, capped at scan_budget ---
+            let mut inner = format!("SELECT {COLUMNS} FROM message_log WHERE 1=1");
+            if let Some(t) = filter.trace_id.as_ref() {
+                inner.push_str(" AND trace_id = ?");
+                params.push(Box::new(t.clone()));
+            }
+            if let Some(p) = filter.parent_message_id.as_ref() {
+                inner.push_str(" AND parent_message_id = ?");
+                params.push(Box::new(p.clone()));
+            }
+            if let Some(prefix) = filter.to_path_prefix.as_ref() {
+                let (lo, hi) = path_prefix_range(prefix);
+                inner.push_str(" AND to_path >= ?");
+                params.push(Box::new(lo));
+                if let Some(hi) = hi {
+                    inner.push_str(" AND to_path < ?");
+                    params.push(Box::new(hi));
+                }
+            }
+            if let Some(s) = filter.since {
+                inner.push_str(" AND created_at >= ?");
+                params.push(Box::new(s));
+            }
+            if let Some(u) = filter.until {
+                inner.push_str(" AND created_at <= ?");
+                params.push(Box::new(u));
+            }
+            if let Some(cursor) = filter.before.as_ref() {
+                inner.push_str(" AND (created_at < ? OR (created_at = ? AND id < ?))");
+                params.push(Box::new(cursor.created_at));
+                params.push(Box::new(cursor.created_at));
+                params.push(Box::new(cursor.id.clone()));
+            }
+            inner.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+            params.push(Box::new(scan_budget as i64));
+            // Everything bound so far belongs to the inner select — the COUNT
+            // probe below re-binds exactly this prefix.
+            let inner_param_count = params.len();
+
+            // --- outer select: residual predicates inside the scanned window ---
+            let mut outer = format!("SELECT {COLUMNS} FROM ({inner}) WHERE 1=1");
+            if let Some(c) = filter.correlation_id.as_ref() {
+                outer.push_str(" AND correlation_id = ?");
+                params.push(Box::new(c.clone()));
+            }
+            if let Some(prefix) = filter.from_path_prefix.as_ref() {
+                let (lo, hi) = path_prefix_range(prefix);
+                outer.push_str(" AND from_path >= ?");
+                params.push(Box::new(lo));
+                if let Some(hi) = hi {
+                    outer.push_str(" AND from_path < ?");
+                    params.push(Box::new(hi));
+                }
+            }
+            if let Some(k) = filter.body_kind.as_ref() {
+                outer.push_str(" AND body_kind = ?");
+                params.push(Box::new(k.clone()));
+            }
+            outer.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+            params.push(Box::new(limit as i64));
+
+            let rows = query_message_log(&conn, &outer, &params)?;
+
+            // How many rows did the inner select actually read? The outer LIMIT
+            // hides that, so probe it separately — the inner select's params are
+            // the leading `inner_param_count` entries of `params`.
+            let count_sql = format!("SELECT COUNT(*) FROM ({inner})");
+            let mut count_stmt = conn.prepare(&count_sql)?;
+            let inner_params: Vec<&dyn rusqlite::ToSql> = params
+                .iter()
+                .take(inner_param_count)
+                .map(|b| b.as_ref())
+                .collect();
+            let scanned: i64 = count_stmt
+                .query_row(rusqlite::params_from_iter(inner_params.iter()), |r| {
+                    r.get(0)
+                })?;
+            Ok((rows, scanned as usize))
+        },
+    )
+    .await;
+
+    let (entries, scanned) = match join {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::error!(error = ?e, "ReadMessages SQL failed");
+            (Vec::new(), 0)
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, "ReadMessages spawn_blocking failed");
+            (Vec::new(), 0)
+        }
+    };
+    let next = if entries.len() == limit {
+        entries.last().map(|e| crate::api_dto::MessageLogCursor {
+            created_at: e.created_at,
+            id: e.id.clone(),
+        })
+    } else {
+        None
+    };
+    crate::api_dto::ReadMessagesReply {
+        entries,
+        next,
+        scan_budget,
+        scan_truncated: scanned >= scan_budget,
+    }
+}
+
+/// Run a prepared `message_log` select and map every row to [`crate::api_dto::MessageLogDto`].
+/// Column order must match the `COLUMNS` constant in [`handle_read_messages`].
+fn query_message_log(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[Box<dyn rusqlite::ToSql>],
+) -> rusqlite::Result<Vec<crate::api_dto::MessageLogDto>> {
+    let mut stmt = conn.prepare(sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(rusqlite::params_from_iter(refs.iter()), |r| {
+        Ok(crate::api_dto::MessageLogDto {
+            id: r.get(0)?,
+            trace_id: r.get(1)?,
+            parent_message_id: r.get(2)?,
+            correlation_id: r.get(3)?,
+            ttl: r.get(4)?,
+            from_path: r.get(5)?,
+            to_path: r.get(6)?,
+            reply_to: r.get(7)?,
+            headers_json: r.get(8)?,
+            body_kind: r.get(9)?,
+            body_payload: r.get(10)?,
+            created_at: r.get(11)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Encode a string prefix as a half-open range `[lo, hi)`.
+///
+/// P1 (message browser): `LIKE 'p%'` is only index-optimized when
+/// `case_sensitive_like=ON`, which this workspace does not set — a range
+/// comparison drives the B-Tree index unconditionally. `hi` is `None` when no
+/// successor exists (empty prefix, or a prefix consisting only of `0xFF` bytes);
+/// the caller then omits the upper bound and the prefix matches everything from
+/// `lo` onwards.
+pub(crate) fn path_prefix_range(prefix: &str) -> (String, Option<String>) {
+    let lo = prefix.to_string();
+    let mut bytes = prefix.as_bytes().to_vec();
+    while let Some(last) = bytes.pop() {
+        if last < 0xff {
+            bytes.push(last + 1);
+            return (lo, String::from_utf8(bytes).ok());
+        }
+    }
+    (lo, None)
 }
 
 /// Phase 12-B step-7.6: spawn_blocking + WAL Read-Only Connection.
@@ -818,6 +1025,379 @@ fn handle_read_templates_from_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P1 Task 8: the DLQ read projection carries the dead-lettered message's
+    /// own id, so the dead-letter view can link to the exact origin message
+    /// instead of only its trace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dead_letter_dto_carries_message_id_from_envelope() {
+        use crate::persist::writer::ColonyWriteOp;
+
+        let trace = "019ebb7e-0000-7000-8000-000000000abc";
+        let msg_id = "019ebb7e-0000-7000-8000-000000000d1e";
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        db.send_op(ColonyWriteOp::InsertDeadLetter {
+            sender_path: "/sender".into(),
+            original_target: "/target".into(),
+            resolved_target: "/target".into(),
+            error_code: "no_route".into(),
+            trace_id: trace.into(),
+            created_at: 100,
+            message_json: format!(r#"{{"id":"{msg_id}","trace_id":"{trace}"}}"#),
+        })
+        .await;
+        db.shutdown_async().await;
+
+        let db2 = crate::ColonyDb::open(&db_path).unwrap();
+        let reply = handle_read_dead_letters(&db2, None, None, 10);
+        assert_eq!(reply.entries[0].message_id.as_deref(), Some(msg_id));
+        db2.shutdown_async().await;
+    }
+
+    /// Old rows whose envelope has no `id` (or is not JSON at all) must NOT
+    /// fail the read — they yield `None` and the view falls back to the
+    /// trace-level link.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dead_letter_dto_tolerates_rows_without_message_id() {
+        use crate::persist::writer::ColonyWriteOp;
+
+        let trace = "019ebb7e-0000-7000-8000-000000000abc";
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        for (ts, envelope) in [
+            (100i64, r#"{"target":"/b"}"#.to_string()),
+            (200, "not json at all".to_string()),
+        ] {
+            db.send_op(ColonyWriteOp::InsertDeadLetter {
+                sender_path: "/sender".into(),
+                original_target: "/target".into(),
+                resolved_target: "/target".into(),
+                error_code: "no_route".into(),
+                trace_id: trace.into(),
+                created_at: ts,
+                message_json: envelope,
+            })
+            .await;
+        }
+        db.shutdown_async().await;
+
+        let db2 = crate::ColonyDb::open(&db_path).unwrap();
+        let reply = handle_read_dead_letters(&db2, None, None, 10);
+        assert_eq!(reply.entries.len(), 2, "both rows survive the read");
+        assert!(
+            reply.entries.iter().all(|e| e.message_id.is_none()),
+            "no id in the envelope yields None, never an error"
+        );
+        db2.shutdown_async().await;
+    }
+
+    /// P1 test fixture: write one `message_log` row through the real writer op
+    /// (no hand-rolled SQL — the row shape stays honest against the DDL).
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_log_row(
+        db: &crate::ColonyDb,
+        id: &str,
+        created_at: i64,
+        from: &str,
+        to: &str,
+        trace_id: &str,
+        parent: Option<&str>,
+        correlation: Option<&str>,
+        body_kind: &str,
+        body_payload: Option<&str>,
+    ) {
+        db.send_op(crate::persist::writer::ColonyWriteOp::InsertMessageLog(
+            crate::persist::writer::MessageLogRow {
+                id: id.into(),
+                trace_id: trace_id.into(),
+                parent_message_id: parent.map(|s| s.into()),
+                correlation_id: correlation.map(|s| s.into()),
+                ttl: 32,
+                from_path: from.into(),
+                to_path: to.into(),
+                reply_to: None,
+                headers_json: "{}".into(),
+                body_kind: body_kind.into(),
+                body_payload: body_payload.map(|s| s.into()),
+                created_at,
+            },
+        ))
+        .await;
+    }
+
+    /// Shorthand for the common case: inline body, no parent/correlation.
+    async fn insert_simple_row(
+        db: &crate::ColonyDb,
+        id: &str,
+        created_at: i64,
+        from: &str,
+        to: &str,
+    ) {
+        insert_log_row(
+            db,
+            id,
+            created_at,
+            from,
+            to,
+            "019ebb7e-0000-7000-8000-0000000000ff",
+            None,
+            None,
+            "inline",
+            Some(r#"{"messages":[]}"#),
+        )
+        .await;
+    }
+
+    /// P1 Task 3a: newest-first ordering, limit, and the keyset cursor a full
+    /// page hands out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_returns_newest_first_and_respects_limit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        for (id, ts) in [("m1", 100i64), ("m2", 200), ("m3", 300)] {
+            insert_simple_row(&db, id, ts, "/a", "/b").await;
+        }
+        db.shutdown_async().await;
+
+        let filter = crate::api_dto::MessageLogFilter {
+            limit: 2,
+            scan_budget: 5000,
+            ..Default::default()
+        };
+        let reply = handle_read_messages(&db_path, filter).await;
+
+        assert_eq!(reply.entries.len(), 2, "limit honoured");
+        assert_eq!(reply.entries[0].id, "m3", "newest first");
+        assert_eq!(reply.entries[1].id, "m2");
+        let cursor = reply.next.expect("full page yields a cursor");
+        assert_eq!(cursor.id, "m2");
+        assert_eq!(cursor.created_at, 200);
+        assert!(!reply.scan_truncated);
+        assert_eq!(reply.scan_budget, 5000);
+    }
+
+    /// P1 Task 3b: the keyset cursor excludes its own row and breaks
+    /// `created_at` ties by `id`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_cursor_returns_strictly_older_rows() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        insert_simple_row(&db, "m1", 100, "/a", "/b").await;
+        insert_simple_row(&db, "m2", 200, "/a", "/b").await;
+        insert_simple_row(&db, "m3", 200, "/a", "/b").await; // shares created_at with m2
+        db.shutdown_async().await;
+
+        let filter = crate::api_dto::MessageLogFilter {
+            limit: 10,
+            scan_budget: 5000,
+            before: Some(crate::api_dto::MessageLogCursor {
+                created_at: 200,
+                id: "m3".into(),
+            }),
+            ..Default::default()
+        };
+        let reply = handle_read_messages(&db_path, filter).await;
+        let ids: Vec<&str> = reply.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["m2", "m1"],
+            "cursor row itself excluded, tie broken by id"
+        );
+        assert!(reply.next.is_none(), "partial page yields no cursor");
+    }
+
+    /// P1 Task 3c: indexed predicate (`to_path` prefix) and residual predicate
+    /// (`from_path` prefix) both filter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_filters_by_indexed_and_residual_predicates() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        insert_simple_row(&db, "m1", 100, "/src/one", "/mem/a").await;
+        insert_simple_row(&db, "m2", 200, "/other", "/mem/b").await;
+        insert_simple_row(&db, "m3", 300, "/src/two", "/elsewhere").await;
+        db.shutdown_async().await;
+
+        let by_to = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                to_path_prefix: Some("/mem".into()),
+                limit: 10,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        let ids: Vec<&str> = by_to.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["m2", "m1"], "indexed to_path prefix");
+
+        let by_from = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                from_path_prefix: Some("/src".into()),
+                limit: 10,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        let ids: Vec<&str> = by_from.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["m3", "m1"], "residual from_path prefix");
+    }
+
+    /// P1 Task 3c: `body_kind` + `correlation_id` are residual predicates too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_filters_by_body_kind_and_correlation() {
+        let corr = "019ebb7e-0000-7000-8000-000000000c07";
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        insert_log_row(
+            &db,
+            "inline1",
+            100,
+            "/a",
+            "/b",
+            "019ebb7e-0000-7000-8000-0000000000ff",
+            None,
+            Some(corr),
+            "inline",
+            Some("{}"),
+        )
+        .await;
+        insert_log_row(
+            &db,
+            "blob1",
+            200,
+            "/a",
+            "/b",
+            "019ebb7e-0000-7000-8000-0000000000ff",
+            None,
+            None,
+            "blob",
+            Some("019ebb7e-0000-7000-8000-00000000b10b"),
+        )
+        .await;
+        db.shutdown_async().await;
+
+        let blobs = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                body_kind: Some("blob".into()),
+                limit: 10,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        let ids: Vec<&str> = blobs.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["blob1"]);
+
+        let correlated = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                correlation_id: Some(corr.into()),
+                limit: 10,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        let ids: Vec<&str> = correlated.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["inline1"]);
+    }
+
+    /// P1 Task 3c: an exhausted scan budget is reported, never silently
+    /// swallowed — the residual filter only saw the scanned window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_flags_truncation_when_scan_budget_exhausted() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        for i in 0..5 {
+            insert_simple_row(&db, &format!("m{i}"), 100 + i, "/noise", "/b").await;
+        }
+        insert_simple_row(&db, "target", 1, "/wanted", "/b").await; // oldest row
+        db.shutdown_async().await;
+
+        let reply = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                from_path_prefix: Some("/wanted".into()),
+                limit: 10,
+                scan_budget: 3, // window does not reach "target"
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(
+            reply.entries.is_empty(),
+            "residual filter only sees the scanned window"
+        );
+        assert!(
+            reply.scan_truncated,
+            "an exhausted budget must be reported to the caller"
+        );
+        assert_eq!(reply.scan_budget, 3);
+    }
+
+    /// P1 Task 3d: `id` is a PRIMARY-KEY lookup that overrides every other filter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_messages_by_id_returns_exactly_one_row() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&db_path).unwrap();
+        insert_simple_row(&db, "m1", 100, "/a", "/b").await;
+        insert_simple_row(&db, "m2", 200, "/a", "/b").await;
+        db.shutdown_async().await;
+
+        let reply = handle_read_messages(
+            &db_path,
+            crate::api_dto::MessageLogFilter {
+                id: Some("m1".into()),
+                to_path_prefix: Some("/zzz".into()), // competing filter is ignored
+                limit: 10,
+                scan_budget: 5000,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(reply.entries.len(), 1);
+        assert_eq!(reply.entries[0].id, "m1");
+        assert!(reply.next.is_none());
+        assert!(!reply.scan_truncated);
+    }
+
+    /// P1 Task 2: prefix filters are encoded as half-open ranges so SQLite can
+    /// drive them off a B-Tree index.
+    #[test]
+    fn prefix_range_bounds_ordinary_path() {
+        let (lo, hi) = path_prefix_range("/mem");
+        assert_eq!(lo, "/mem");
+        assert_eq!(hi.as_deref(), Some("/men"), "last byte incremented");
+    }
+
+    #[test]
+    fn prefix_range_has_no_upper_bound_for_empty_prefix() {
+        let (lo, hi) = path_prefix_range("");
+        assert_eq!(lo, "");
+        assert!(hi.is_none(), "empty prefix matches everything");
+    }
+
+    #[test]
+    fn prefix_range_excludes_sibling_outside_the_prefix() {
+        // "/a" schliesst "/ab" ein (String-Prefix-Semantik wie der bestehende
+        // LIKE-Filter in handle_read_trace), "/b" nicht.
+        let (lo, hi) = path_prefix_range("/a");
+        let hi = hi.expect("successor exists");
+        assert!("/ab" >= lo.as_str() && "/ab" < hi.as_str());
+        assert!("/b" >= hi.as_str());
+    }
 
     /// Phase-16 W2 (A2) + W6d (A6): the DLQ read DTO is self-locating — it carries
     /// `trace_id` + `created_at` (read off the persisted envelope), and the `since`

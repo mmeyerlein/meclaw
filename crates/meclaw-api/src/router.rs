@@ -4,7 +4,7 @@
 
 use crate::ColonyHandle;
 use crate::handlers::{
-    dead_letters, events, graph, messages, mutations, registry, templates, trace,
+    dead_letters, events, graph, message_log, messages, mutations, registry, templates, trace,
 };
 use crate::ui;
 use axum::Router;
@@ -75,6 +75,8 @@ pub fn build_router(
         .route("/colony/templates/rescan", post(templates::post_rescan))
         .route("/colony/events", get(events::get_events))
         .route("/colony/trace", get(trace::get_trace))
+        // P1 message browser — read-only surface over colony.db::message_log.
+        .route("/colony/messages", get(message_log::get_message_log))
         .route("/colony/graph", get(graph::get_graph))
         .route(
             "/colony/mutations",
@@ -92,6 +94,8 @@ pub fn build_router(
             "/ui/dead_letters",
             get(ui::dead_letters::get_dead_letters_ui),
         )
+        .route("/ui/messages", get(ui::messages::get_messages_ui))
+        .route("/ui/message", get(ui::message::get_message_ui))
         .route("/ui/trace", get(ui::trace::get_trace_ui))
         .route("/ui/templates", get(ui::templates::get_templates_ui))
         .with_state(state)

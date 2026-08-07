@@ -247,4 +247,115 @@ pub struct DeadLetterDto {
     pub trace_id: String,
     /// Unix-seconds timestamp of the dead-lettered message (powers `?since=`).
     pub created_at: i64,
+    /// P1 (message browser): id of the dead-lettered message, parsed out of the
+    /// persisted `message_json` envelope. `None` for rows written before this
+    /// field existed, or whose envelope carries no `id` — consumers fall back to
+    /// the trace-level link rather than treating it as an error.
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+
+/// Filter for [`crate::ColonyMsg::ReadMessages`] — the P1 message browser.
+///
+/// All fields are optional and AND-combined. The dispatch helper splits them into
+/// two groups: **indexed** predicates (`trace_id`, `parent_message_id`,
+/// `to_path_prefix`, `since`/`until`, `before`) narrow the row set through an
+/// existing `message_log` index, **residual** predicates (`correlation_id`,
+/// `from_path_prefix`, `body_kind`) are applied afterwards, inside the window the
+/// indexed pass produced. `message_log` has no index on `from_path`, `body_kind`
+/// or `correlation_id` (`persist::schema` DDL) — hence the window, and hence
+/// [`ReadMessagesReply::scan_truncated`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MessageLogFilter {
+    /// Exact message id — single-row lookup via PRIMARY KEY. Wins over every
+    /// other field when set.
+    pub id: Option<String>,
+    /// Exact `trace_id` (indexed: `idx_msglog_trace`).
+    pub trace_id: Option<String>,
+    /// Exact `parent_message_id` (indexed: `idx_msglog_parent`).
+    pub parent_message_id: Option<String>,
+    /// Exact `correlation_id` — residual predicate, no index.
+    pub correlation_id: Option<String>,
+    /// `to_path` prefix, range-encoded (indexed: `idx_msglog_to`).
+    pub to_path_prefix: Option<String>,
+    /// `from_path` prefix, range-encoded — residual predicate, no index.
+    pub from_path_prefix: Option<String>,
+    /// Exact `body_kind` (`"inline"` | `"blob"`) — residual predicate, no index.
+    pub body_kind: Option<String>,
+    /// Lower bound on `created_at` (Unix seconds, inclusive).
+    pub since: Option<i64>,
+    /// Upper bound on `created_at` (Unix seconds, inclusive).
+    pub until: Option<i64>,
+    /// Keyset cursor: return only rows strictly older than `(created_at, id)`.
+    pub before: Option<MessageLogCursor>,
+    /// Rows returned. Clamped to `1..=1000` by the dispatch helper.
+    pub limit: usize,
+    /// Hard ceiling on rows READ before residual filtering. Clamped to
+    /// `1..=50_000` by the dispatch helper; the HTTP layer defaults it to 5000.
+    pub scan_budget: usize,
+}
+
+/// Keyset-pagination cursor: the `(created_at, id)` pair of the last row on a page.
+///
+/// `created_at` has second granularity, so ties are common; `id` (UUIDv7 string)
+/// is the stable tie-breaker. Keyset paging keeps every page index-driven —
+/// `OFFSET` would make the scan grow with the page number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageLogCursor {
+    /// `created_at` of the last row on the previous page.
+    pub created_at: i64,
+    /// `id` of the last row on the previous page.
+    pub id: String,
+}
+
+/// Reply for [`crate::ColonyMsg::ReadMessages`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadMessagesReply {
+    /// Rows, newest first (`created_at DESC, id DESC`).
+    pub entries: Vec<MessageLogDto>,
+    /// Cursor for the next (older) page; `None` when the page was not full.
+    pub next: Option<MessageLogCursor>,
+    /// The scan budget actually applied (post-clamp) — the UI reports it verbatim
+    /// when `scan_truncated` is set.
+    pub scan_budget: usize,
+    /// `true` when the scan budget was exhausted, i.e. the residual predicates
+    /// (`from_path_prefix`, `body_kind`, `correlation_id`) only saw that window.
+    /// Callers MUST surface this; silent truncation reads as "nothing matched".
+    pub scan_truncated: bool,
+}
+
+#[cfg(test)]
+mod message_log_dto_tests {
+    use super::*;
+
+    #[test]
+    fn message_log_filter_defaults_are_empty() {
+        let f = MessageLogFilter::default();
+        assert!(f.id.is_none());
+        assert!(f.trace_id.is_none());
+        assert!(f.before.is_none());
+        assert_eq!(f.limit, 0, "limit is set explicitly by the caller");
+        assert_eq!(
+            f.scan_budget, 0,
+            "scan_budget is set explicitly by the caller"
+        );
+    }
+
+    #[test]
+    fn read_messages_reply_roundtrips_through_json() {
+        let reply = ReadMessagesReply {
+            entries: Vec::new(),
+            next: Some(MessageLogCursor {
+                created_at: 42,
+                id: "abc".into(),
+            }),
+            scan_budget: 5000,
+            scan_truncated: true,
+        };
+        let s = serde_json::to_string(&reply).expect("serialize");
+        let back: ReadMessagesReply = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back.next.expect("cursor").created_at, 42);
+        assert!(back.scan_truncated);
+        assert_eq!(back.scan_budget, 5000);
+    }
 }

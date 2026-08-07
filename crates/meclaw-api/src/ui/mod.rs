@@ -11,6 +11,9 @@ pub mod dashboard;
 pub mod dead_letters;
 pub mod errors;
 pub mod graph;
+pub mod message;
+pub mod message_render;
+pub mod messages;
 pub mod registry;
 pub mod templates;
 pub mod trace;
@@ -65,6 +68,7 @@ pub(crate) fn layout(title: &str, content: Markup) -> Markup {
                     a href="/ui/registry" { "Registry" }
                     a href="/ui/graph" { "Graph" }
                     a href="/ui/dead_letters" { "Dead Letters" }
+                    a href="/ui/messages" { "Messages" }
                     a href="/ui/trace" { "Trace" }
                     a href="/ui/templates" { "Templates" }
                 }

@@ -83,6 +83,7 @@ fn render_table(entries: &[DeadLetterDto]) -> Markup {
                     th { "Sender" }
                     th { "Original Target" }
                     th { "Resolved Target" }
+                    th { "Original" }
                 }
             }
             tbody {
@@ -92,6 +93,15 @@ fn render_table(entries: &[DeadLetterDto]) -> Markup {
                         td { code { (e.sender_path) } }
                         td { code { (e.original_target) } }
                         td { code { (e.resolved_target) } }
+                        // P1: pivot into the message browser. Message-exact when
+                        // the persisted envelope carried an id, trace-exact
+                        // otherwise — never a dead end.
+                        td {
+                            @match &e.message_id {
+                                Some(id) => a href=(format!("/ui/message?id={id}")) { "Message" },
+                                None => a href=(format!("/ui/messages?trace_id={}", e.trace_id)) { "Trace" },
+                            }
+                        }
                     }
                 }
             }
