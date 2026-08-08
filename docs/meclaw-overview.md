@@ -327,7 +327,7 @@ Until hardening: **no permission layer**. Whoever can deliver a mutation message
 |---|---|
 | **Colony** | The overall system and the only authority. Holds the central `HashMap<Path, ActorHandle>` registry, routes all messages, manages lifecycle, templates, `config.json`. Has path `/colony`. Runs as its own Tokio task with its own mailbox. |
 | **Hive** | Directory with `config.json` `type: "hive"`. **Scope marker** for the authority boundary and mutation scope of a path prefix, no own actor, no mailbox, no own `cell.db`. Additionally acts as a **logical transit node** in the routing graph, evaluated by colony. The hierarchy effect in the DSL remains; the implementation is flat. |
-| **Cell type** | Behavioral classification of an addressable cell: `llm`, `bash`, `code`, `store`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`. Each cell type brings its own `params` schema and capability set. Cells with one of these values are kept by colony as actors in the `HashMap<Path, ActorHandle>` registry. |
+| **Cell type** | Behavioral classification of an addressable cell: `llm`, `bash`, `code`, `store`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`, `harness`. Each cell type brings its own `params` schema and capability set. Cells with one of these values are kept by colony as actors in the `HashMap<Path, ActorHandle>` registry. |
 | **Cell** | Directory with `config.json` of a particular cell type. Topologically neutral, the role follows from the location (template or instance). |
 | **Hive scope marker** | Directory with `config.json` `type: "hive"`. **Not an actor**: no Tokio task, no mailbox, no `cell.db`, no `ActorHandle` entry in the cell registry. Nevertheless a **junction in the system**: colony keeps a separate hive scope table (path prefix, authority boundary, mutation scope, initial `params.graph`). At filesystem bootstrap the hive marker is recorded; on mutations it acts as a scope boundary. **Addressable as a transit target**, colony forwards based on the hive out-edges, never delivers (see "Hive paths as target: transit evaluation" and `cell-types.md` section `hive`). |
 | **Template** | A cell (or cell subtree including hive scope markers) in the `templates/` folder. Role: class / blueprint. Copied on instantiation. |
@@ -1835,13 +1835,15 @@ Behavior:
 | `llm` | 110000 (110s) | 120000 (120s) |
 | `web_fetch` | 25000 (25s) | 30000 (30s) |
 | `web_search` | 25000 (25s) | 30000 (30s) |
-| `bash` one-shot | 50000 (50s) | 60000 (60s) |
+| `bash` one-shot | 60000 (60s) | 90000 (90s) |
 | `file` / `edit` | 10000 (10s) | 15000 (15s) |
 | `store` | 60000 (60s) | 300000 (5 min) |
 | `code` (stateful/stateless) | 60000 (60s) | 90000 (90s), an operator matter |
-| `proxy` / `timer` / `mcp` | — (cell-type-internal, handler-specific) | `0` or `-1` (no backstop, long by definition) |
+| `proxy` / `timer` / `mcp` / `harness` | — (cell-type-internal, handler-specific) | `0` or `-1` (no backstop, long by definition) |
 
 These defaults are set finally in phase 7/8, when the cell-type implementation becomes real. The operator overrides at any time per instance.
+
+For `harness`, A sits on `startup_timeout_ms` and the stdin writes; the **task runtime is deliberately unbounded** (a working coding agent may take minutes) — the stop lever is the `cancel` message (see `cell-types.md` § `harness`).
 
 #### Foot-gun: a CPU loop without `.await`
 
@@ -2030,6 +2032,7 @@ HTTP status `/colony/mutations` (POST): **200** on `Committed`, **422 Unprocessa
 | JSON schema | `jsonschema` (Draft 2020-12) |
 | Test tmp directories (dev-deps, from phase 0) | `tempfile` |
 | File watcher | not in scope |
+| Process-group signals (from P8) | `libc` 0.2 — only `killpg`/`SIGTERM`/`SIGKILL`/`pid_t`, unix-only, one module (sanctioned 2026-08-08) |
 
 ---
 

@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-api"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -1320,10 +1320,11 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cells"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "croner",
+ "libc",
  "meclaw-colony",
  "meclaw-core",
  "meclaw-testing",
@@ -1338,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -1361,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-colony"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cel",
  "meclaw-core",
@@ -1378,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1389,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-testing"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "meclaw-colony",
  "meclaw-core",

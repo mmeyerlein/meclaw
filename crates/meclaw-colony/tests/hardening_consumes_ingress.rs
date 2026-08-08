@@ -55,7 +55,7 @@ fn registry() -> CellFactoryRegistry {
 /// to `/sink`). `/n` is the contract-less echo consumer (vacuous).
 /// `/m` is the STATEFUL consumer (multi_update, same consumes block) for the
 /// DLQ branch — the boot edge `p → m` satisfies its fan-in check too
-/// (ein teilnehmender required-Konsument braucht ≥1 liefernde In-Edge);
+/// (a participating required consumer needs ≥1 delivering in-edge);
 /// the delivery boundary checks the ACTUAL message independently of that.
 fn write_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/p")).unwrap();

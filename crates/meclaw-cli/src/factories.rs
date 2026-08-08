@@ -12,6 +12,7 @@
 //! start).
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::harness::HarnessCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::{
     BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
@@ -34,6 +35,7 @@ use std::sync::Arc;
 /// - `"proxy"` → `ProxyCellFactory` (long-running chat-platform ingress/egress)
 /// - `"timer"` → `TimerCellFactory` (long-running scheduled-tick source)
 /// - `"mcp"` → `McpCellFactory` (long-running MCP tool bridge)
+/// - `"harness"` → `HarnessCellFactory` (long-running agent-harness supervisor)
 ///
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
@@ -53,6 +55,7 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     reg.insert("proxy".to_string(), Arc::new(ProxyCellFactory));
     reg.insert("timer".to_string(), Arc::new(TimerCellFactory));
     reg.insert("mcp".to_string(), Arc::new(McpCellFactory));
+    reg.insert("harness".to_string(), Arc::new(HarnessCellFactory));
     reg
 }
 
@@ -85,13 +88,13 @@ mod tests {
     #[test]
     fn registry_wires_proxy_timer_mcp_factories() {
         let reg = built_in_factories();
-        for name in &["proxy", "timer", "mcp"] {
+        for name in &["proxy", "timer", "mcp", "harness"] {
             assert!(
                 reg.contains_key(*name),
                 "registry missing long-running factory: {name}"
             );
         }
-        assert_eq!(reg.len(), 11, "8 Phase-9 + proxy/timer/mcp");
+        assert_eq!(reg.len(), 12, "8 Phase-9 + proxy/timer/mcp + harness");
     }
 
     #[test]

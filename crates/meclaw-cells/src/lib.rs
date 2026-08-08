@@ -5,6 +5,7 @@ pub mod boundary;
 pub mod code;
 pub mod edit;
 pub mod file;
+pub mod harness;
 pub mod llm;
 pub mod mcp;
 pub mod params_overlay;

@@ -1,6 +1,6 @@
 //! Phase-10-B doc-comment audit (CLAUDE.md § Coding standards). Checks that
 //! every public item in `crates/meclaw-cells/src/timer/**/*.rs` carries a
-//! `///`-Doc oder `#[doc(...)]`-Attribut tragen. Symmetrisch zu
+//! `///` doc or a `#[doc(...)]` attribute. Symmetric to
 //! `doc_comment_audit_phase_9.rs` (Phase-9-Audit-Test).
 
 use std::fs;

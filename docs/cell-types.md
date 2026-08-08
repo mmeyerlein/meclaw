@@ -28,6 +28,7 @@ Detailed spec of the built-in cell types. On conflict between this file and `mec
 | `proxy` | external-chat bridge (Telegram first), dual task | yes, long-running | atomic-emitting (user turn per external message) | 10 |
 | `timer` | periodic event emitter, second-accurate, dual task | yes, long-running | atomic-emitting (schedule body) | 10 |
 | `mcp` | MCP-provider bridge, dual task | yes, long-running | atomic-emitting | 10 |
+| `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running | P8 |
 
 **Status per cell type / per phase** (which cell is live today, which deferred) → `PROGRESS.md` § Status.
 
@@ -539,3 +540,31 @@ This way a long-running provider call never blocks the acceptance of new tool-ca
 **`params`**: `transport` (optional, `"http"` default | `"stdio"`); on `http` the provider `endpoint` (HTTP URL for JSON-RPC) + auth credentials (via `${VAR}`); on `stdio` `command` (required), optional `args`, `env`, `cwd`, `kill_grace_ms` (default 2000). `endpoint` and `command` at the same time ⇒ loud reject. Plus discovery configuration, optional `external_timeout_ms` (A-timeout, `error_code: "provider_timeout"`) as well as `query_timeout_ms` (A-timeout for `cell.db` ops via `DbConn::call_with_timeout`).
 
 **Runtime param updates (β, `config.md` § Access L.20):** like `llm` (see there): top-level `params` body slot, persisted in the `cell.db`, replayed on wake/respawn. **Mutable:** `external_timeout_ms`: takes effect **immediately live** (path A, the next `call_tool` uses it; the I/O task has post-discovery **no** live-re-readable value, hence purely handle-side), and `query_timeout_ms` (path C, the running `DbConn` adopts the new A-timeout for the next cell.db op). **Immutable per `mcp`:** `endpoint` + `auth` (bearer), credential/identity, as well as `transport`, `command`, `args`, `env`, `cwd`, `kill_grace_ms` (process identity of the child). An update attempt on it or an unknown key ⇒ loud reject (`error_code: "invalid_input"`), no partial apply. A params-only message persists and stays silent.
+
+---
+
+## `harness`: agent harness as a supervised child process
+
+**Task**: long-running. Operates a full agent harness (today: Claude Code in print mode) as a supervised child process out of the topology — the harness pre-prompts, loops and uses its own tools; that is exactly the point (delegating whole coding tasks instead of single model calls). One child process **per task**: session continuity comes from the harness's `--resume`, not from process lifetime.
+
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), prescribed — see `meclaw-overview.md`, section "Long-running cells: dual task". The I/O task owns the child process entirely (on the `stdio_child` core, like `mcp` stdio); the handler owns the task register and the emissions. Exactly **one** task at a time per cell — parallelism is a topology matter (multiple cells, each with its own worktree).
+
+**Task lifecycle**: `Booted` → idle → `start_task` → spawn → frame stream → child end → idle. An ending child process is the **normal case** here and does **not** panic the cell — the counter-semantics to `mcp` stdio, where child death ends the cell.
+
+**Non-idempotency (core invariant)**: the `cell.db` table `harness_tasks` is a tombstone register. The row is `running` **before** the spawn; after a supervisor restart every unfinished row is set to `unknown` and reported exactly once as `unknown_outcome` ("inspect worktree") — **never** restarted. A `task_id` runs exactly once (dedup); `task_id` is therefore a required input, not a generated fallback.
+
+**Emission mode**: long-running, stateful.
+
+**Body format of the emissions**: five forms — `accepted` (synchronous as a `tool_result` in the trace of the triggering message; carries the `task_id` as the anchor) and `progress` / `question` / `result` / `error` (origin emissions to `params.emit_to`, each with a fresh trace; correlation via `header.task_id`).
+
+**Output header**: `harness_event`, `task_id`, `session_id`, `status`, `workspace`, `duration_ms`, `num_turns`, `cost_usd`, `model`, `phase`, `tool_name`, `request_id`, `error_code`. **The header carries only what was observed** — no `branch`/`commit`: the harness's self-report stays prose in the turn; verification (tests, diff inspection) is a follow-up step of the topology.
+
+**Failure classification** (`error_code`, closed): `invalid_input`, `harness_busy`, `workspace_invalid`, `spawn_failed`, `startup_timeout`, `harness_crashed`, `cancelled`, `unknown_outcome`, `query_timeout`.
+
+**Cancel**: a `cancel` message (with `task_id`) sets the tombstone to `cancelled` **before** the child is stopped (process-group kill including grandchildren) and emits the task end marked `cancelled`; the cell accepts new tasks afterwards. Cancel is the stop lever for the deliberately unbounded task runtime (see overview § Timeouts).
+
+**`params`**: `adapter` (required; today only `"claude-code"`), `emit_to` (required), `workspace_root` (required, canonicalized — tasks run only below it), `command`, `model` (from `${VAR}`), `permission_mode`, `max_turns`, `max_budget_usd`, `allowed_tools`, `extra_args`, `env`, `env_passthrough`, `approval` (`off` | `channel`), `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms`, `kill_grace_ms`.
+
+**Trust model (empirically established 2026-08-09)**: `harness` is **not a sandbox**. The harness brings its own tools (shell, file access, network) and runs with the rights of the colony process. The load-bearing V1 barriers are **`env_clear` + `env_passthrough`** (the harness does not see the colony's secrets) and the **canonicalized cwd clamp** under `workspace_root`. **`allowed_tools` is explicitly NOT an upper bound**: the CLI treats `--allowedTools` **additively** to what the permission mode allows anyway — in the acceptance smoke, `Bash` ran despite `allowed_tools: ["Write"]`. `allowed_tools` extends, it does not restrict. Sandbox/container build-out = roadmap defer, as with `bash`; `harness` cells run only in trusted topologies.
+
+**Runtime param updates (β)**: mutable `model`, `max_turns`, `max_budget_usd`, `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms` — take effect from the **next** task. Immutable and a loud reject (`invalid_input`): `adapter`, `command`, `emit_to`, `workspace_root`, `env`, `env_passthrough`, `permission_mode`, `allowed_tools`, `extra_args`, `approval`, `kill_grace_ms` — that is the containment boundary. A params-only message persists and stays silent.

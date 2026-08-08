@@ -2,8 +2,8 @@
 //! real `line_json_test_server` fixture.
 
 use meclaw_cells::stdio_child::{
-    ChildCommand, ChildEvent, ChildSpec, CorrelationKey, ServeConfig, StdioChild,
-    serve::serve_child,
+    ChildCommand, ChildEvent, ChildExit, ChildSpec, CorrelationKey, ServeConfig, StdioChild,
+    serve::{serve_child, serve_child_until_exit},
 };
 use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
@@ -18,6 +18,7 @@ fn fixture_spec(args: &[&str]) -> ChildSpec {
         env: Vec::new(),
         cwd: None,
         kill_grace_ms: 500,
+        ..ChildSpec::default()
     }
 }
 
@@ -159,6 +160,86 @@ async fn a_dying_child_answers_the_in_flight_request_before_announcing_its_death
     // Second half: only then does the death reach the handler.
     match next_event(&mut events).await {
         ChildEvent::Exited(x) => assert_eq!(x.detail(), "exit code 3"),
+        other => panic!("expected the exit event, got {other:?}"),
+    }
+}
+
+/// P8: a consumer's command enum may carry commands that are NOT for the child.
+///
+/// The `harness` cell type sends "start a task" over the same channel it sends
+/// child writes over, because the I/O sub-task owns both the idle wait and the
+/// running child. While a child is running such a command cannot be honoured —
+/// and must not end the loop either. It is dropped with a warning, and the
+/// loop keeps serving.
+#[derive(Debug)]
+enum MixedCommand {
+    ForTheChild(ChildCommand),
+    ForTheIoTaskItself,
+}
+
+impl TryFrom<MixedCommand> for ChildCommand {
+    type Error = ();
+    fn try_from(c: MixedCommand) -> Result<Self, ()> {
+        match c {
+            MixedCommand::ForTheChild(c) => Ok(c),
+            MixedCommand::ForTheIoTaskItself => Err(()),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_command_that_is_not_for_the_child_is_skipped_not_fatal() {
+    let child = StdioChild::spawn(&fixture_spec(&["echo"])).expect("spawn fixture");
+    let (cmd_tx, cmd_rx) = mpsc::channel::<MixedCommand>(8);
+    let (ev_tx, mut ev_rx) = mpsc::channel::<ChildEvent>(64);
+    tokio::spawn(serve_child(child, by_id, serve_config(), cmd_rx, ev_tx));
+
+    cmd_tx
+        .send(MixedCommand::ForTheIoTaskItself)
+        .await
+        .expect("send the foreign command");
+    cmd_tx
+        .send(MixedCommand::ForTheChild(ChildCommand::Send {
+            line: json!({"still": "alive"}),
+            correlate: None,
+            reply: None,
+        }))
+        .await
+        .expect("send a real command");
+
+    // Had the foreign command been treated as a shutdown (or a conversion
+    // panic), this frame would never arrive.
+    match next_event(&mut ev_rx).await {
+        ChildEvent::Frame(v) => assert_eq!(v["still"], "alive"),
+        other => panic!("the loop did not survive the foreign command: {other:?}"),
+    }
+}
+
+/// P8: the same loop, but as the borrowing variant that HANDS BACK the fate.
+///
+/// `mcp` needs the parking form (a dead child ends the cell); a `harness` needs
+/// this one, because there a dead child is the normal end of one task and the
+/// I/O task has to go back to waiting for the next one. Both share the loop —
+/// only the epilogue differs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_child_until_exit_hands_the_fate_back_to_its_caller() {
+    let child = StdioChild::spawn(&fixture_spec(&["exit", "3"])).expect("spawn fixture");
+    let (_cmd_tx, mut cmd_rx) = mpsc::channel::<ChildCommand>(8);
+    let (ev_tx, mut ev_rx) = mpsc::channel::<ChildEvent>(64);
+    let join = tokio::spawn(async move {
+        serve_child_until_exit(child, by_id, serve_config(), &mut cmd_rx, &ev_tx).await
+    });
+
+    let exit = tokio::time::timeout(Duration::from_secs(30), join)
+        .await
+        .expect("serve_child_until_exit did not return within 30s")
+        .expect("task panicked");
+    assert_eq!(exit, ChildExit::Code(3), "wrong fate handed back");
+
+    // The event is still emitted — the caller learns the fate twice, once for
+    // its own control flow and once through the handler's event channel.
+    match ev_rx.recv().await.expect("event channel closed") {
+        ChildEvent::Exited(x) => assert_eq!(x, ChildExit::Code(3)),
         other => panic!("expected the exit event, got {other:?}"),
     }
 }

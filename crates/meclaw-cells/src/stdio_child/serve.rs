@@ -95,25 +95,61 @@ pub async fn serve_child<K, C, E>(
     events: tokio::sync::mpsc::Sender<E>,
 ) where
     K: Fn(&JsonValue) -> Option<CorrelationKey> + Send,
-    C: Into<ChildCommand>,
+    C: TryInto<ChildCommand>,
+    E: From<ChildEvent>,
+{
+    let last_exit = serve_child_until_exit(child, correlator, cfg, &mut cmds, &events).await;
+    // A1′: never return. But parking silently would be wrong: the handler is
+    // biased towards its mailbox over its event channel, so it can accept one
+    // more message BEFORE it has seen `Exited` — and that message's request
+    // would then sit in `cmds` until its A-timeout elapsed, turning a known
+    // death into a slow `provider_timeout`. So keep draining and answer every
+    // late request immediately with the child's fate.
+    drain_after_death(&mut cmds, last_exit).await;
+}
+
+/// The same loop, but it **returns** the child's fate instead of parking.
+///
+/// The borrowing form exists because the two consumers disagree about what a
+/// dead child means. For `mcp` it ends the cell, so the parking epilogue of
+/// `serve_child` is right. For `harness` a dead child is the ORDINARY end of
+/// one task: the I/O sub-task has to reclaim its channels and wait for the next
+/// task, which a parked loop could never do. Handing back `ChildExit` keeps the
+/// loop itself single-sourced.
+///
+/// This is not an A1′ loophole: A1′ governs `run_io`, and a `run_io` built on
+/// this function still never returns — it loops back into its idle wait.
+pub async fn serve_child_until_exit<K, C, E>(
+    child: crate::stdio_child::spawn::StdioChild,
+    correlator: K,
+    cfg: ServeConfig,
+    cmds: &mut tokio::sync::mpsc::Receiver<C>,
+    events: &tokio::sync::mpsc::Sender<E>,
+) -> crate::stdio_child::error::ChildExit
+where
+    K: Fn(&JsonValue) -> Option<CorrelationKey> + Send,
+    C: TryInto<ChildCommand>,
     E: From<ChildEvent>,
 {
     // Split the child so the read future and the write future can coexist in
     // one `select!` — two methods on `&mut StdioChild` could not.
+    // The guard travels with the loop: if this task is cancelled, dropping it
+    // here is what reaps the child's descendants.
     let crate::stdio_child::spawn::StdioChild {
         mut child,
         mut stdin,
         mut stdout,
+        mut guard,
     } = child;
     let mut pending: std::collections::HashMap<
         CorrelationKey,
         oneshot::Sender<Result<JsonValue, StdioChildError>>,
     > = std::collections::HashMap::new();
-    // The loop yields how the child ended, so the post-mortem drain below can
-    // report the same fate to late callers.
-    let last_exit = loop {
+    // The loop yields how the child ended, so the caller's epilogue can report
+    // the same fate to late callers.
+    loop {
         tokio::select! {
-            cmd = cmds.recv() => match cmd.map(Into::into) {
+            cmd = cmds.recv() => match next_child_command(cmd) {
                 Some(ChildCommand::Send { line, correlate, reply }) => {
                     let written = tokio::time::timeout(
                         cfg.write_timeout,
@@ -140,13 +176,15 @@ pub async fn serve_child<K, C, E>(
                 }
                 // An explicit shutdown and a dropped command channel mean the
                 // same thing: nobody will talk to this child again.
-                Some(ChildCommand::Shutdown) | None => {
-                    let reassembled = crate::stdio_child::spawn::StdioChild { child, stdin, stdout };
+                Some(ChildCommand::Shutdown) => {
+                    let reassembled = crate::stdio_child::spawn::StdioChild { child, stdin, stdout, guard };
                     let exit = reassembled.terminate(cfg.kill_grace).await;
                     fail_pending(&mut pending, exit);
                     let _ = events.send(E::from(ChildEvent::Exited(exit))).await;
                     break exit;
                 }
+                // Not for the child (already warned about); keep serving.
+                None => {}
             },
             frame = crate::stdio_child::frame::next_frame(&mut stdout) => match frame {
                 Ok(Some(crate::stdio_child::frame::Frame::Json(v))) => {
@@ -163,34 +201,50 @@ pub async fn serve_child<K, C, E>(
                 // handler must be able to emit its error reply before it acts
                 // on the death (ratified liveness slice D1).
                 Ok(None) | Err(_) => {
-                    let exit = reap(&mut child, cfg.kill_grace).await;
+                    let exit = reap(&mut child, guard.pgid(), cfg.kill_grace).await;
+                    // The group was just swept; a later drop must not signal a
+                    // group id the kernel may have handed on.
+                    guard.disarm();
                     fail_pending(&mut pending, exit);
                     let _ = events.send(E::from(ChildEvent::Exited(exit))).await;
                     break exit;
                 }
             },
         }
-    };
+    }
+}
 
-    // A1′: never return. But parking silently would be wrong: the handler is
-    // biased towards its mailbox over its event channel, so it can accept one
-    // more message BEFORE it has seen `Exited` — and that message's request
-    // would then sit in `cmds` until its A-timeout elapsed, turning a known
-    // death into a slow `provider_timeout`. So keep draining and answer every
-    // late request immediately with the child's fate.
-    drain_after_death(&mut cmds, last_exit).await;
+/// What one received command means to the loop.
+///
+/// A consumer may send commands over this channel that are not for the child
+/// at all — the `harness` cell type sends "start a task", which only makes
+/// sense while no child is running. Such a command is skipped with a warning:
+/// treating it as a shutdown would kill a healthy child, and panicking on it
+/// would take the cell down for a message it simply had nothing to do with.
+fn next_child_command<C: TryInto<ChildCommand>>(received: Option<C>) -> Option<ChildCommand> {
+    match received {
+        // Channel closed: nobody will talk to this child again.
+        None => Some(ChildCommand::Shutdown),
+        Some(cmd) => match cmd.try_into() {
+            Ok(cmd) => Some(cmd),
+            Err(_) => {
+                tracing::warn!("stdio child: command not addressed to the child, skipped");
+                None
+            }
+        },
+    }
 }
 
 /// Post-mortem: answer late requests instantly instead of letting them time
 /// out, then park once nobody can ask any more.
-async fn drain_after_death<C: Into<ChildCommand>>(
+async fn drain_after_death<C: TryInto<ChildCommand>>(
     cmds: &mut tokio::sync::mpsc::Receiver<C>,
     exit: crate::stdio_child::error::ChildExit,
 ) {
     while let Some(cmd) = cmds.recv().await {
-        if let ChildCommand::Send {
+        if let Ok(ChildCommand::Send {
             reply: Some(tx), ..
-        } = cmd.into()
+        }) = cmd.try_into()
         {
             let _ = tx.send(Err(StdioChildError::ChildGone(exit)));
         }
@@ -214,21 +268,33 @@ fn fail_pending(
 
 /// Collect the exit status of a child whose stdout already ended. Bounded by
 /// the kill grace, then SIGKILL — a child may close stdout and linger.
+///
+/// The group sweep at the end matters most on this path: a harness that
+/// finished its task closes stdout and exits on its own, while a background
+/// job it started may still be running.
 async fn reap(
     child: &mut tokio::process::Child,
+    pgid: Option<u32>,
     grace: std::time::Duration,
 ) -> crate::stdio_child::error::ChildExit {
     use crate::stdio_child::error::ChildExit;
-    use crate::stdio_child::spawn::exit_of;
-    match tokio::time::timeout(grace, child.wait()).await {
+    use crate::stdio_child::spawn::{exit_of, reap_signals, signal_group};
+    let exit = match tokio::time::timeout(grace, child.wait()).await {
         Ok(Ok(status)) => exit_of(status),
         Ok(Err(_)) => ChildExit::SpawnLost,
         Err(_) => {
-            let _ = child.start_kill();
+            match pgid {
+                Some(_) => signal_group(pgid, reap_signals::SIGKILL),
+                None => {
+                    let _ = child.start_kill();
+                }
+            }
             match child.wait().await {
                 Ok(status) => exit_of(status),
                 Err(_) => ChildExit::SpawnLost,
             }
         }
-    }
+    };
+    signal_group(pgid, reap_signals::SIGKILL);
+    exit
 }

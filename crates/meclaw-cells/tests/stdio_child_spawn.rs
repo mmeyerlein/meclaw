@@ -21,6 +21,7 @@ fn fixture_spec(mode: &str) -> ChildSpec {
         env: Vec::new(),
         cwd: None,
         kill_grace_ms: 500,
+        ..ChildSpec::default()
     }
 }
 

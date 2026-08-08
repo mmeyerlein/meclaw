@@ -220,7 +220,7 @@ async fn committed_mutation_leaves_single_committed_row_no_reject() {
     h.shutdown().await;
 }
 
-/// (e′) The Abgrenzung from the other side: an APPLY-stage failure (echo node
+/// (e′) The demarcation from the other side: an APPLY-stage failure (echo node
 /// without the required `echo_to` param → spawn fails AFTER validation, after the
 /// `in_flight` row is written) leaves a `status='failed'` row — NEVER a
 /// `rejected` one. Validate-Reject and Apply-failed are distinct classes; the

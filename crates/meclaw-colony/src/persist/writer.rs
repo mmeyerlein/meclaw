@@ -472,7 +472,7 @@ fn apply_op(
             ack,
         } => {
             // `INSERT OR IGNORE` enforces the Validate-Reject vs. Apply-failed
-            // Abgrenzung at the storage layer: a validate-stage reject has a
+            // Demarcation at the storage layer: a validate-stage reject has a
             // FRESH mutation id (no prior row), so this always inserts the
             // `rejected` row. An apply-stage failure that also funnels through
             // `send_eda_reject` (the staging/rename-failure path) ALREADY owns an

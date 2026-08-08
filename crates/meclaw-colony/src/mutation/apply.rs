@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn apply_mutation_stages_and_renames_add_node() {
         let td = TempDir::new().unwrap();
-        // Phase-11 T16: braucht ein Template-Verzeichnis + TemplatesRegistry-Stub.
+        // Phase-11 T16: needs a template directory + a TemplatesRegistry stub.
         let templates = setup_echo_template(&td);
         let diff = json!({"add_nodes": [{"name": "n_apply", "template": "echo"}]});
         let (staged, _subtrees) = apply_mutation(

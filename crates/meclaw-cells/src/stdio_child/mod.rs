@@ -15,6 +15,10 @@ pub mod error;
 /// Line-JSON framing on top of the child's pipes.
 pub mod frame;
 
+/// Process-group signalling for descendant reaping (unix only).
+#[cfg(unix)]
+pub(crate) mod reap;
+
 /// The endless serve loop for the I/O sub-task.
 pub mod serve;
 

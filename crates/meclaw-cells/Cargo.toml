@@ -16,6 +16,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.39", features = ["bundled", "functions"] }
 croner = "3"
 chrono = "0.4"
+# P8 (sanctioned 2026-08-08): killing a whole process group needs killpg,
+# which std does not expose. Used for exactly four symbols (killpg, SIGTERM,
+# SIGKILL, pid_t) in one unix-only module, `stdio_child/reap.rs`.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

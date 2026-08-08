@@ -194,6 +194,10 @@ fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport,
             env,
             cwd,
             kill_grace_ms,
+            // An MCP server is a single well-behaved process that inherits its
+            // environment — the P8 containment switches stay off here on
+            // purpose (pinned by a regression test).
+            ..ChildSpec::default()
         },
     })
 }

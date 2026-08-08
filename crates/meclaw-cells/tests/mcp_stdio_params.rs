@@ -74,6 +74,22 @@ fn stdio_defaults_are_empty_args_and_a_two_second_grace() {
     }
 }
 
+/// P8 regression: the child-spec grew two containment switches for the
+/// `harness` cell type. `mcp` must keep the pre-P8 behaviour — inherited
+/// environment, no process group — or its stdio transport would silently change
+/// under an unrelated package.
+#[test]
+fn the_mcp_transport_leaves_the_p8_containment_switches_off() {
+    let p = McpParams::parse(&json!({"transport": "stdio", "command": "srv"})).expect("parse");
+    match p.transport {
+        McpTransport::Stdio { spec } => {
+            assert!(!spec.process_group, "mcp must not open a process group");
+            assert!(!spec.env_clear, "mcp must keep inheriting its environment");
+        }
+        other => panic!("expected stdio, got {other:?}"),
+    }
+}
+
 #[test]
 fn stdio_without_command_is_rejected() {
     let err = McpParams::parse(&json!({"transport": "stdio"})).expect_err("must reject");

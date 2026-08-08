@@ -4,6 +4,83 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.8] — 2026-08-09
+
+An agent harness — Claude Code in print mode — supervised as a cell.
+
+### Added
+
+- **The `harness` cell type.** A full agent harness runs as a supervised child
+  process driven from the topology: a message starts a task, the harness's
+  progress streams back as typed emissions, and its outcome arrives as a
+  structured result. One child process **per task** — the workspace differs per
+  task, and a process boundary is the natural transaction boundary for work that
+  changes files. Long-running, dual-task, and the twelfth built-in cell type.
+- **A task register that refuses to repeat itself.** Every other cell type is
+  idempotent: replay a message, get the same answer. A harness task mutates a
+  repository, so replaying it is not the same answer — it is a second run
+  against a tree somebody may already be reviewing. `cell.db.harness_tasks` is
+  therefore a tombstone register, not a work queue: the row is committed
+  **before** the child is spawned, a repeated `task_id` is refused outright, and
+  a supervisor restart turns every unfinished row into "unknown outcome, inspect
+  the workspace" — never into a new run. There is no code path from the table
+  back to a running task.
+- **A dead child is normal here.** For `mcp` the child *is* the cell's ability
+  to answer, so its death is a panic. For a harness the child is one task, and
+  its exit is how a task ends: the cell classifies the outcome, closes the
+  tombstone, emits the result, and goes back to waiting. The I/O sub-task
+  cycles — idle, spawn, stream, idle — instead of parking.
+- **Five typed emissions.** `accepted` answers the requesting message inside its
+  trace and hands back the `task_id`; `progress`, `question`, `result` and
+  `error` travel the origin lane to `params.emit_to`, correlated by that id. The
+  result header carries only what was **observed** — the workspace we assigned,
+  the status we decided, and the numbers the harness reported about itself
+  (session, model, turns, cost). It deliberately carries no branch or commit:
+  the harness's own summary travels as prose, and verifying it is a follow-up
+  step in the topology, not a field to be trusted.
+- **A stop lever.** `cancel` marks the task as cancelled **before** killing it,
+  so whoever reads the table next sees a deliberate cancellation rather than a
+  mystery, then tears down the whole process group. Proven against a task that
+  never ends on its own, with the kill required to land promptly rather than
+  outlast a timeout.
+- **A permission channel, wired but off by default.** A `can_use_tool` control
+  request becomes a `question` emission; an `answer` message becomes the
+  control response. With `approval: "off"` (the default) a question is reported
+  **and** refused in the same breath, so a harness is never left waiting for an
+  answer nobody will give.
+- **Process-group reaping in the stdio-child core.** An agent harness spawns
+  process trees — shells, search tools, sub-agents — and `kill_on_drop` reaches
+  only the direct child. `ChildSpec.process_group` starts the child as a group
+  leader; teardown escalates SIGTERM → grace → SIGKILL across the **group**, and
+  a `Drop` guard covers the paths that never reach an explicit teardown (task
+  abort, peer panic, colony exit). The test proves both the child and its
+  grandchild leave `/proc`, and a control case shows the grandchild surviving
+  without the group — so the proof discriminates. `mcp` is unaffected.
+- **Environment containment.** `ChildSpec.env_clear` wipes the inherited
+  environment before applying an explicit list, so a child sees exactly what it
+  was handed. The `harness` cell type uses it with a short passthrough
+  allow-list; `mcp` keeps inheriting as before.
+- **`serve_child_until_exit`.** The serve loop, but returning the child's fate
+  instead of parking on it. `serve_child` is now its parking epilogue, so both
+  consumers share one loop.
+
+### Changed
+
+- **The serve loop accepts commands that are not for the child.** Its command
+  type is now `TryInto<ChildCommand>`: a consumer may send control messages of
+  its own over the same channel, and one that cannot be delivered to the child
+  is skipped with a warning rather than read as a shutdown. `mcp` is unchanged —
+  an existing `From` impl satisfies the looser bound for free.
+
+### Notes
+
+- **`harness` is not a sandbox.** It runs with the permissions of the colony
+  process and brings its own tools. The dependable limits are the environment
+  allow-list and the canonicalised workspace clamp; a measured run confirmed
+  that the vendor's `--allowedTools` flag **widens** what a harness may do
+  rather than bounding it. Treat `harness` the way `bash` is treated: only in
+  topologies you trust.
+
 ## [0.1.7] — 2026-08-08
 
 A reusable stdio-child core, and the `mcp` cell's second transport riding on it.
