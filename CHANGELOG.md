@@ -4,6 +4,73 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.5] — 2026-08-08
+
+The memory hive gets its full read path. No Rust behaviour changed in this release —
+everything below lives in the private builder workspace (templates, fixtures, evals);
+the only tracked source change is a rename of public test fixtures to generic names.
+
+### Added
+
+- **Recall tier 1 — four retrieval legs, fused, no LLM.** A query fans out into
+  keyword (`search` over episodes and facts), semantic (`similar` over binarized
+  embeddings), graph (entity anchors → `traverse`, yielding the episodes the edges
+  came from) and temporal (an as-of `select`). Each leg returns a ranked id list;
+  the lists are merged with **reciprocal rank fusion** (`Σ w/(K+rank)`, K=60) in a
+  code cell, hydrated in one round and cut to a token budget. Ties break by best
+  rank, then a fixed leg priority, then kind and id — two identical requests
+  produce byte-identical candidate lists.
+- **Degradation as arithmetic, not as a special case.** An empty leg contributes no
+  fusion term, so a dead embedder makes the result mathematically identical to a
+  fusion of the remaining three legs. The embedding lane's query mode therefore
+  *always* answers — with a vector or with `degraded: true` — because silence would
+  hang the fan-in forever.
+- **Recall tier 2 (`dialectic`).** An answer synthesised over the tier-1 candidates
+  with the source priority beliefs → facts → episodes and a **mandatory gap
+  statement**. The gap is enforced by the caller, not hoped for: an answer without
+  one is still delivered but carries `gap_missing`, and a provider error downgrades
+  to the tier-1 candidates instead of going silent.
+- **As-of recall.** Any tier can be evaluated at a past instant, so "what was true in
+  May" is a parameter rather than a promise.
+- **Historical ingest.** A turn may carry its own event time; the write path keeps
+  the caller's `happened_at` and stamps `recorded_at` from its own clock — which is
+  exactly the bi-temporal split the schema is built on.
+- **Explicit extraction flush.** An operator (or an ingest job) can drain the
+  extraction queue immediately instead of waiting for the batch gate's age timeout.
+- **Scenario suite as the development gate.** One case per capability — a hand-written
+  mini corpus with known gold facts, defined queries and deterministic assertions.
+  17 cases, 55 assertions; 13 of them cost nothing because facts enter through the
+  inline ingress rather than through a model. Ships in the private builder workspace.
+
+### Fixed
+
+- **Facts inherited the ingest instant as their event time.** An extracted fact whose
+  `valid_from` the model did not state fell back to "now", so an as-of query answered
+  about the ingest rather than about the conversation. The fallback is now a chain:
+  what the extractor claims → when the episode happened → our clock.
+- **A superseded fact could still be recalled.** Only the temporal leg filtered
+  `expired_at`; the keyword and semantic legs kept ranking invalidated facts. The
+  filter now sits at hydration and therefore covers every leg. The raw episode that
+  mentioned the old value stays retrievable on purpose — episodes are append-only.
+- **A session-boot recall without a query was swallowed.** The echo guard keyed on the
+  query being non-empty, which is precisely what the deterministic tier-0 bundle does
+  not have. Request detection now keys on what the port edge promotes.
+- **The batch claim was unbounded.** The extraction gate claimed every pending row, so
+  a bulk ingest turned hundreds of turns into a single model call. Batches are now
+  bounded by the token threshold and an item cap.
+- **A fenced JSON answer stalled the extraction lane.** Model output wrapped in a code
+  fence failed to parse and the batch was requeued forever. Fences are stripped, and
+  an answer that stays unparseable is parked for inspection instead of spinning.
+
+### Measured
+
+First eval numbers, on the **smoke stage only — 10 questions, all of them the easiest
+category** (`single-session-user`) and therefore no statement about the whole set:
+retrieval Recall@5 100 %, Recall@1 100 %, MRR 1.0; judged end-to-end 90 % by a judge
+model, 80 % under a strict manual reading. Model identity for every call is taken from
+the provider's `response.model`, never from configuration. Details and the honest
+caveats live with the project, not in this repo.
+
 ## [0.1.4] — 2026-08-08
 
 ### Added

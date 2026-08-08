@@ -25,9 +25,9 @@ fn as_of_query_on_facts_schema_returns_only_facts_valid_at_t() {
     .unwrap();
     conn.execute(
         "INSERT INTO facts VALUES \
-         ('f1','user:marcus','isst ketogen','2026-01-01T00:00:00Z',NULL),\
-         ('f2','user:marcus','isst vegan','2025-01-01T00:00:00Z','2026-01-01T00:00:00Z'),\
-         ('f3','user:marcus','zieht um','2026-09-01T00:00:00Z',NULL),\
+         ('f1','user:u1','diet keto','2026-01-01T00:00:00Z',NULL),\
+         ('f2','user:u1','diet vegan','2025-01-01T00:00:00Z','2026-01-01T00:00:00Z'),\
+         ('f3','user:u1','relocates','2026-09-01T00:00:00Z',NULL),\
          ('f4','user:other','irrelevant','2020-01-01T00:00:00Z',NULL)",
         [],
     )
@@ -37,7 +37,7 @@ fn as_of_query_on_facts_schema_returns_only_facts_valid_at_t() {
     let args = json!({
         "operation":"select","table":"facts","columns":["id","claim"],
         "where":{
-            "subject":"user:marcus",
+            "subject":"user:u1",
             "valid_from":{"lte": t},
             "valid_until":{"or_null":{"gt": t}}
         },
@@ -331,13 +331,13 @@ fn fts_is_backfilled_into_an_existing_cell_db_on_next_open() {
         apply_schema_ddl(&conn, &p.schema).unwrap();
         apply_fts_ddl(&conn, &p.fts).unwrap();
         let args = json!({"operation":"insert","table":"facts",
-                          "row":{"id":"f1","claim":"marcus isst ketogen"}});
+                          "row":{"id":"f1","claim":"acme ships v1"}});
         assert_eq!(dispatch(&conn, &args).unwrap().rows_affected, 1);
         // no index yet
         assert_eq!(
             dispatch(
                 &conn,
-                &json!({"operation":"search","table":"facts","columns":["id"],"match":"ketogen"})
+                &json!({"operation":"search","table":"facts","columns":["id"],"match":"ships"})
             )
             .unwrap()
             .error_code,
@@ -357,7 +357,7 @@ fn fts_is_backfilled_into_an_existing_cell_db_on_next_open() {
     let out = dispatch(
         &conn,
         &json!({"operation":"search","table":"facts","columns":["id","claim"],
-                "match":"ketogen"}),
+                "match":"ships"}),
     )
     .unwrap();
     assert_eq!(out.error_code, None);

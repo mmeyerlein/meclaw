@@ -198,14 +198,14 @@ mod tests {
         // an "old" cell.db: base table with data, no FTS anywhere
         conn.execute("CREATE TABLE facts (id TEXT, claim TEXT)", [])
             .unwrap();
-        conn.execute("INSERT INTO facts VALUES ('f1','marcus isst ketogen')", [])
+        conn.execute("INSERT INTO facts VALUES ('f1','acme ships v1')", [])
             .unwrap();
 
         apply_fts_ddl(&conn, &fts_decl("facts", &["claim"])).unwrap();
 
         let n: i64 = conn
             .query_row(
-                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'ketogen'",
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'ships'",
                 [],
                 |r| r.get(0),
             )
@@ -216,13 +216,16 @@ mod tests {
         );
 
         // triggers keep the index in sync with insert / update / delete
-        conn.execute("INSERT INTO facts VALUES ('f2','marcus baut p3')", [])
+        conn.execute("INSERT INTO facts VALUES ('f2','acme builds alpha')", [])
             .unwrap();
-        conn.execute("UPDATE facts SET claim='marcus baut p4' WHERE id='f2'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE facts SET claim='acme builds beta' WHERE id='f2'",
+            [],
+        )
+        .unwrap();
         let hit: i64 = conn
             .query_row(
-                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'p4'",
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'beta'",
                 [],
                 |r| r.get(0),
             )
@@ -230,7 +233,7 @@ mod tests {
         assert_eq!(hit, 1);
         let stale: i64 = conn
             .query_row(
-                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'p3'",
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'alpha'",
                 [],
                 |r| r.get(0),
             )
@@ -239,7 +242,7 @@ mod tests {
         conn.execute("DELETE FROM facts WHERE id='f2'", []).unwrap();
         let gone: i64 = conn
             .query_row(
-                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'p4'",
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'beta'",
                 [],
                 |r| r.get(0),
             )
@@ -250,7 +253,7 @@ mod tests {
         apply_fts_ddl(&conn, &fts_decl("facts", &["claim"])).unwrap();
         let again: i64 = conn
             .query_row(
-                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'ketogen'",
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH 'ships'",
                 [],
                 |r| r.get(0),
             )

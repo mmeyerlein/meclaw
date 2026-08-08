@@ -628,14 +628,14 @@ fn demo_traverse_over_entity_edges_with_a_cycle() {
                    "valid_until":until}),
         );
     };
-    edge_row("e1", "marcus", "gisela", "entity", 5, Value::Null);
-    edge_row("e2", "gisela", "berlin", "entity", 2, Value::Null);
-    edge_row("e3", "berlin", "marcus", "entity", 1, Value::Null); // closes the cycle
-    edge_row("e4", "marcus", "einsamkeit", "causal", 3, Value::Null);
+    edge_row("e1", "node-a", "node-b", "entity", 5, Value::Null);
+    edge_row("e2", "node-b", "node-c", "entity", 2, Value::Null);
+    edge_row("e3", "node-c", "node-a", "entity", 1, Value::Null); // closes the cycle
+    edge_row("e4", "node-a", "node-d", "causal", 3, Value::Null);
     edge_row(
         "e5",
-        "marcus",
-        "adviqo",
+        "node-a",
+        "node-e",
         "entity",
         9,
         json!("2026-02-01T00:00:00Z"),
@@ -644,7 +644,7 @@ fn demo_traverse_over_entity_edges_with_a_cycle() {
     // 1. live edges only, both kinds, depth 3 — the cycle must not spin.
     let p = traverse_on(
         &c,
-        json!({"start":"marcus","kind":"edge_kind","weight":"weight",
+        json!({"start":"node-a","kind":"edge_kind","weight":"weight",
                "columns":["episode_id"],"max_depth":3,
                "where":{"valid_until":{"is_null":true}}}),
     );
@@ -660,14 +660,14 @@ fn demo_traverse_over_entity_edges_with_a_cycle() {
         .collect();
     assert_eq!(
         reached,
-        ["berlin", "einsamkeit", "gisela"]
+        ["node-c", "node-d", "node-b"]
             .iter()
             .map(|s| s.to_string())
             .collect(),
         "every live edge is followed; the cycle adds no new node"
     );
     assert!(
-        !reached.contains("adviqo"),
+        !reached.contains("node-e"),
         "the expired edge must be filtered out by the temporal predicate"
     );
     // Depth is non-decreasing (the CTE walks breadth first); the order WITHIN a
@@ -685,16 +685,16 @@ fn demo_traverse_over_entity_edges_with_a_cycle() {
     );
 
     // The two-hop path carries its accumulated weight and its last edge.
-    let berlin = find_path(&p, "berlin");
-    assert_eq!(berlin["depth"], 2);
+    let node_c = find_path(&p, "node-c");
+    assert_eq!(node_c["depth"], 2);
     assert_eq!(
-        berlin["weight_sum"], 7,
-        "5 + 2 along marcus->gisela->berlin"
+        node_c["weight_sum"], 7,
+        "5 + 2 along node-a->node-b->node-c"
     );
-    assert_eq!(berlin["edge"]["kind"], "entity");
-    assert_eq!(berlin["edge"]["episode_id"], "ep-e2");
+    assert_eq!(node_c["edge"]["kind"], "entity");
+    assert_eq!(node_c["edge"]["episode_id"], "ep-e2");
 
-    // The cycle-closing edge berlin->marcus is pruned: marcus is already on that
+    // The cycle-closing edge node-c->node-a is pruned: node-a is already on that
     // path (as its start), and a path never visits a node twice (plan R2).
     for i in 0..p["paths"].as_array().unwrap().len() {
         let nodes = path_of(&p, i);
@@ -707,22 +707,22 @@ fn demo_traverse_over_entity_edges_with_a_cycle() {
             .unwrap()
             .iter()
             .all(|r| r["depth"].as_i64().unwrap() <= 2),
-        "depth 3 would require re-entering marcus — correctly pruned"
+        "depth 3 would require re-entering node-a — correctly pruned"
     );
 
     // 2. the caller can narrow to one edge kind — P3 operators, unchanged.
     let causal = traverse_on(
         &c,
-        json!({"start":"marcus","where":{"edge_kind":"causal","valid_until":{"is_null":true}}}),
+        json!({"start":"node-a","where":{"edge_kind":"causal","valid_until":{"is_null":true}}}),
     );
     assert_eq!(causal["paths"].as_array().unwrap().len(), 1);
-    assert_eq!(causal["paths"][0]["node"], "einsamkeit");
+    assert_eq!(causal["paths"][0]["node"], "node-d");
 
     // 3. guards bite on this graph too.
-    let capped = traverse_on(&c, json!({"start":"marcus","max_depth":3,"max_nodes":2}));
+    let capped = traverse_on(&c, json!({"start":"node-a","max_depth":3,"max_nodes":2}));
     assert_eq!(capped["paths"].as_array().unwrap().len(), 2);
     assert_eq!(capped["truncated"], true);
-    let shallow = traverse_on(&c, json!({"start":"marcus","max_depth":1}));
+    let shallow = traverse_on(&c, json!({"start":"node-a","max_depth":1}));
     assert_eq!(
         shallow["paths"].as_array().unwrap().len(),
         3,

@@ -297,7 +297,7 @@ mod tests {
 
     fn traverse_base() -> Value {
         json!({"operation":"traverse","table":"entity_edges",
-               "src":"src_entity","dst":"dst_entity","start":"e:marcus"})
+               "src":"src_entity","dst":"dst_entity","start":"e:n1"})
     }
 
     fn with(extra: Value) -> Value {

@@ -340,7 +340,7 @@ mod tests {
         let v = meclaw_core::serde_json::json!({
             "table":"entity_edges","src":"src_entity","dst":"dst_entity",
             "kind":"edge_kind","weight":"weight","columns":["episode_id"],
-            "start":["e:marcus"],"where":{"valid_until":{"is_null":true}},
+            "start":["e:n1"],"where":{"valid_until":{"is_null":true}},
             "max_depth":3,"max_nodes":10});
         let spec = crate::store::query::parse::parse_traverse(v.as_object().unwrap()).unwrap();
         let (stmt, vals) = render_traverse(&spec, &cat(&c, "entity_edges")).unwrap();
