@@ -1,4 +1,4 @@
-//! Phase-16 W2d (Substrat, Marcus-Ruling 2026-06-12): a cell emission targeting
+//! Phase-16 W2d (Substrat, ruling 2026-06-12): a cell emission targeting
 //! the READ-only `/colony/dead_letters` endpoint is HARD-REJECTED — it must NOT
 //! be served as a read whose reply re-injects back to the emitting cell (the
 //! pre-W2d ~13 000-message source loop). `/colony/dead_letters` (and the other

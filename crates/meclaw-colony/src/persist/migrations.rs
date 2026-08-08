@@ -10,7 +10,7 @@
 //! ein flüchtiger In-Memory-`VecDeque`, sondern persistiert in `colony.db`
 //! (Crash-/Shutdown-Survival der Diagnose-Wahrheit). Spalten: die 6 Lokalisierungs-
 //! Felder (`DeadLetterDto`) PLUS `message_json` — der volle Message-Envelope,
-//! serialisiert mit denselben Primitiven wie `message_log` (Marcus-Ruling W6d:
+//! serialisiert mit denselben Primitiven wie `message_log` (ruling W6d:
 //! Envelope mitpersistieren → Drain rekonstruiert volle `DeadLetter` aus DB).
 //! `CREATE TABLE IF NOT EXISTS`, additiv (keine Spalten-Änderung an Bestehendem).
 //!

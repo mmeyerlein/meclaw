@@ -23,7 +23,7 @@
 //! (`MockMcpServer::start(|method, params| ...)`). This file implements the
 //! **canned-response-sequence API** (`Vec<MockResponse>`, one per expected
 //! request, in arrival order) instead — mirroring `tests/mock_openai.rs` as
-//! directed by Marcus. The closure approach is not established pattern here
+//! an explicit design decision. The closure approach is not established pattern here
 //! and would require a custom TCP server; the sequence approach reuses the
 //! battle-tested `start_mock_server_capturing` substrate.
 

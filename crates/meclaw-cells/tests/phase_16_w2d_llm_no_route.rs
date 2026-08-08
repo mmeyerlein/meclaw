@@ -1,4 +1,4 @@
-//! Phase-16 W2d (Substrat, Marcus-Ruling 2026-06-12): the LLM cell no longer
+//! Phase-16 W2d (Substrat, ruling 2026-06-12): the LLM cell no longer
 //! hard-codes `/colony/dead_letters` as its reply-target fallback. With no
 //! `reply_to` AND no matching out-edge, its assistant-turn emission travels from
 //! its own path (`msg.target`) and dead-letters as `no_route` — NOT a write to

@@ -1,6 +1,6 @@
 //! `ColonyDb`-Struct: Writer-Thread + read-only-Connection für `colony.db`.
 //!
-//! **Single-Owner-Invariante (FIX 2, Marcus-Review 2026-05-20)**: `writer_tx` lebt
+//! **Single-Owner-Invariante (FIX 2, review 2026-05-20)**: `writer_tx` lebt
 //! genau in einem Owner (`ColonyDb`), wird NIE in einen längerlebigen Scope geklont.
 //! Alle Sends gehen per Borrow (`&colony_db.writer_tx`). Beim `shutdown()` ist das
 //! Drop des Senders der einzige Auslöser für den Writer-Thread-Exit.

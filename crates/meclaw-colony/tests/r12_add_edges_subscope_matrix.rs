@@ -1,4 +1,4 @@
-//! R12 — `add_edges` depth-endpoint resolution into sub-scopes (Marcus ruling
+//! R12 — `add_edges` depth-endpoint resolution into sub-scopes (ruling
 //! option A, 2026-06-11; empirical matrix: builder/templates/llm-unit/RECEIPT.md).
 //!
 //! Spec Z.227 declares edge `from`/`to` as paths RELATIVE TO THE HIVE SCOPE —

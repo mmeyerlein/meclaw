@@ -62,7 +62,7 @@ async fn combined_params_and_messages_use_new_model_and_header_this_call() {
     let msg = MessageBuilder::new(Path::new("/llm"))
         .reply_to(Path::new("/observer"))
         .body(Body::Inline(json!({
-            "params": {"model": "gpt-4o-mini", "http_referer": "https://gisela.ai"},
+            "params": {"model": "gpt-4o-mini", "http_referer": "https://example.com"},
             "messages": [{"origin": "user", "type": "text", "text": "Hi"}]
         })))
         .build();
@@ -75,7 +75,7 @@ async fn combined_params_and_messages_use_new_model_and_header_this_call() {
     // … and the new attribution param reached the wire as a header.
     assert_eq!(
         snaps[0].headers.get("http-referer").map(|s| s.as_str()),
-        Some("https://gisela.ai")
+        Some("https://example.com")
     );
     // overlay persisted to cell.db.
     let stored: String = db

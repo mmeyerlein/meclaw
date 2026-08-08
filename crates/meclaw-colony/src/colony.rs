@@ -90,7 +90,7 @@ pub(crate) const TERM_TIMEOUT_ERROR_CODE: &str = "term_timeout";
 /// "Task ⇔ aktiv" violation (zombie). Instead the whole mutation is rejected
 /// atomically (edges rolled back, no durable write).
 ///
-/// **Guard-Bleibt (Marcus 2026-06-07, P4-B2 closure): this guard STAYS as the
+/// **Guard-Bleibt (ruling 2026-06-07, P4-B2 closure): this guard STAYS as the
 /// PERMANENT backstop — it is NOT interim and NOT unreachable.** Slice-4
 /// stop-wiring restoration (`renotify_stop_wiring` on the reconnect-eager and
 /// crash/backstop-restart paths) closes the COMMON case, but three classes of
@@ -1037,14 +1037,14 @@ pub enum CellDiedOutcome {
 /// the `message_timeout` B-backstop up to `restart_limit` times with a fresh
 /// mpsc pair; remove normally-exiting cells; mark restart-exhausted cells `failed`.
 ///
-/// **Paket-3 P3-B-restart (sanctioned corridor break #1, Marcus 2026-06-07)**: the
+/// **Paket-3 P3-B-restart (sanctioned corridor break #1, ruling 2026-06-07)**: the
 /// remove-vs-restart branch keys on `DeathKind` instead of the binary
 /// `was_panic`. `Normal` → remove; `Panic` OR `Backstop` → one_for_one restart.
 /// The `message_timeout` backstop is the first legitimate NON-panic death that
 /// must restart (spec § Timeouts B). AUDIT-PRE14-001: panic priority is enforced
 /// in `spawn_watcher` (a panic yields `Panic` regardless of the backstop signal).
 ///
-/// **Paket-6 P7-failed (sanctioned corridor break #2, Marcus 2026-06-07)**: the
+/// **Paket-6 P7-failed (sanctioned corridor break #2, ruling 2026-06-07)**: the
 /// restart-EXHAUSTION branch (`restart_count > restart_limit`) marks the entry
 /// `failed` in-memory (`failed=true; active=false`) and RETAINS it (No-Delete)
 /// instead of `registry.remove`; signature returns `CellDiedOutcome`. The corridor
@@ -1826,7 +1826,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 } else {
                     em
                 };
-                // W2b (Ruling A1, Marcus 2026-06-12): a substrate-generated error
+                // W2b (Ruling A1, ruling 2026-06-12): a substrate-generated error
                 // reply addressed to a known sender (`direct_reply` — consumes_violation
                 // ingress check / message_timeout backstop) is delivered DIRECTLY to
                 // its `target` (== the input's reply_to) via route_with_log, exactly
@@ -1980,7 +1980,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 let (cell_hop, _body_unused) = split_content_header(em.content.clone());
                 let merged_headers = em.input_headers.carry_context_with_hop(cell_hop);
 
-                // W2b (Ruling A1 + Marcus 2026-06-12): a cell emission targeting a
+                // W2b (Ruling A1 + the spec owner 2026-06-12): a cell emission targeting a
                 // /colony/* VIRTUAL service endpoint (EDA — cell-emitted mutation/read,
                 // phase-13.5 A6) is DISPATCHED DIRECTLY, before apply_edges. /colony/*
                 // are virtual endpoints (overview § Routing-Fehler), not topology nodes,
@@ -2462,7 +2462,7 @@ fn subtree_inert_respawn() -> crate::RespawnFn {
 /// `in_flight`/`failed` belong to the post-validate Apply stage.)
 ///
 /// All error paths use `return MutationOutcome::Rejected { ... }`; no flag
-/// patterns, no labelled continues (Marcus' Korrektur 1).
+/// patterns, no labelled continues (correction 1).
 ///
 /// **Phase-5 borrow-pattern**: the `ColonyDb` itself is non-Send (rusqlite
 /// `Connection` is not Sync), so it is NEVER borrowed across `.await`. The
@@ -3368,7 +3368,7 @@ pub(crate) async fn handle_mutation(
     }
 
     // Apply-Sequenz Schritt 9: Cell-Spawn + DIRECT registry.insert (NO Self-Send).
-    // Marcus' Korrektur 2: the Mutation arm already holds `&mut registry`. A
+    // correction 2: the Mutation arm already holds `&mut registry`. A
     // self-send (`inbox_self_tx.send(ColonyMsg::Register).await`) would deadlock
     // because the select! loop cannot process its own message while the Mutation
     // arm is still executing. Direct in-memory insert + fire-and-forget
@@ -3625,7 +3625,7 @@ pub(crate) async fn handle_mutation(
 
         // Phase-13-K-2: branch per CellKind. Active → DIRECT insert (stateless,
         // status Awake). Dormant → DIRECT insert (stateful, status
-        // NotYetSpawned). NO Self-Send (Marcus' Korrektur 2) — die Mutation-arm
+        // NotYetSpawned). NO Self-Send (correction 2) — die Mutation-arm
         // hält &mut registry, und ColonyMsg::Register/RegisterDormant würde die
         // select!-Loop blockieren.
         let cell_id = Uuid::now_v7();
@@ -4382,7 +4382,7 @@ pub(crate) async fn handle_mutation(
     // fires stops mid-iteration). At this point NO `active` flip has happened
     // yet, so the reject only needs to roll back the in-RAM edge ops.
     //
-    // F5 CONTRACT — guard is the PERMANENT backstop (Guard-Bleibt, Marcus
+    // F5 CONTRACT — guard is the PERMANENT backstop (Guard-Bleibt, the spec owner
     // 2026-06-07, P4-B closure; NOT interim, NOT unreachable):
     //   • Slice-4 T6 restored stop-wiring on the reconnect-eager path and the
     //     crash/backstop-restart path: both now call `renotify_stop_wiring`, so a
@@ -4493,7 +4493,7 @@ pub(crate) async fn handle_mutation(
             // decides whether the task starts NOW or waits for the first message.
             //
             // Deliberate reconnect (false→true flip): clear `failed` + reset the
-            // restart budget (Marcus: any genuine reconnect flip → restart_count = 0,
+            // restart budget (any genuine reconnect flip → restart_count = 0,
             // including a merely-inactive cell — broad reset).
             entry.active = true;
             entry.failed = false;
@@ -4764,7 +4764,7 @@ async fn send_eda_reject(
                 // ein DLQ-Fall — wir können hier NICHT dispatch_colony_endpoint aufrufen
                 // (kein colony_db/factories/root in send_eda_reject-Scope, und ein Reentry
                 // in /colony/mutations wäre eine Endlosschleife). DLQ-Push direkt inline
-                // mit sender-pass-through (Marcus' MUST-FIX #2).
+                // mit sender-pass-through (must-fix #2).
                 tracing::warn!(
                     endpoint = %endpoint.as_str(),
                     sender = %sender.as_str(),
@@ -4915,7 +4915,7 @@ fn handle_unresolved(
 /// (the single source of truth); the `VecDeque` is a transient hand-off buffer
 /// that the single-owner `colony_task` flushes to the `dead_letters` table after
 /// every handled event (`persist_dead_letters`). drop-oldest is gone — the
-/// diagnostic truth is kept, not evicted (Marcus' ruling, W6d). `push_dead_letter`
+/// diagnostic truth is kept, not evicted (ruling, W6d). `push_dead_letter`
 /// stays pure (no DB I/O, no `.await`) so it remains callable from inside the
 /// byte-frozen `route()` corridor.
 ///

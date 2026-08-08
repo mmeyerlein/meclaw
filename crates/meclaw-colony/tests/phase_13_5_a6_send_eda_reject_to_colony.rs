@@ -1,4 +1,4 @@
-//! Phase-13.5-A6 T6 Regressions-Test (Marcus' T6-Auflage 2):
+//! Phase-13.5-A6 T6 Regressions-Test (T6 requirement 2):
 //!
 //! Pinnt das `send_eda_reject`-Verhalten, wenn eine rejected Mutation
 //! `reply_to = /colony/<endpoint>` hat. Der Reply-Pfad ist die 4. callsite

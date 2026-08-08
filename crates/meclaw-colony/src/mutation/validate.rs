@@ -519,7 +519,7 @@ pub fn validate_post_state_with_templates_scoped(
             // (pure, here): `adopt` is an object declaring the expected identity
             // with a mandatory `type`; `template` is mutually exclusive; a bare
             // `adopt: true` / an `adopt` without `type` is a `schema` reject (NO
-            // blind adoption — Marcus 2026-06-12). The FS/registry-dependent
+            // blind adoption — ruling 2026-06-12). The FS/registry-dependent
             // checks (path exists, unregistered, on-disk type/version match) live
             // in `colony::handle_mutation` Step 1a. Skip the template-existence /
             // factory checks below for an adopt entry.

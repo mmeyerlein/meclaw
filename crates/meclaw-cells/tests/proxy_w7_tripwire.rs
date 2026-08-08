@@ -1,4 +1,4 @@
-//! Phase-10-C T15 / W7-Tripwire (Marcus 2026-05-24):
+//! Phase-10-C T15 / W7-Tripwire (ruling 2026-05-24):
 //! „Das Client-timeout für den Long-Poll MUSS größer sein als der an
 //!  Telegram gesendete getUpdates?timeout=<sek>-Wert, sonst kappt der
 //!  Client seinen eigenen gültigen Poll."

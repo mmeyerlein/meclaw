@@ -136,7 +136,7 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
     // Ziel im DLQ landen — wuerde z.B. eine CellInactive-Regression beim
     // Mutations-Spawn aufdecken (externer Sender → /echo dead-lettered).
     //
-    // W2d (Substrat, Marcus-Ruling 2026-06-12): die bash-Cell antwortet auf das
+    // W2d (Substrat, ruling 2026-06-12): die bash-Cell antwortet auf das
     // „demo ping" (KEIN tool_call) mit einer Op-Error-Reply. Ohne `reply_to`
     // emittiert sie diese seit W2d an ihren EIGENEN Pfad (`msg.target` = /echo),
     // nicht mehr an den `/colony/dead_letters`-READ-Endpoint; matcht keine

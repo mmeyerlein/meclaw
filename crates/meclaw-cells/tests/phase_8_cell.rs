@@ -2,7 +2,7 @@
 //!
 //! T11: call_openai HTTP/error/timeout/auth-redact. T12-T15: state.rs DB-IO
 //! against TestRoot. T18-T22: LlmCell handle() orchestration. T23 onwards
-//! lives in tests/phase_8_demo.rs after Marcus' T23-T26 rewrite.
+//! lives in tests/phase_8_demo.rs after the T23-T26 rewrite.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;

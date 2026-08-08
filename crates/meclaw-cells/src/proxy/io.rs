@@ -117,7 +117,7 @@ impl BackoffState {
 /// Defensively bound explicitly (`let events_tx = events_tx;`), so that
 /// future refactors do not lose the binding.
 ///
-/// T8-design (Marcus' correction against the livelock-bug): sleep + poll
+/// T8-design (correction against the livelock bug): sleep + poll
 /// live in ONE combined `work`-future per loop iteration, pinned INSIDE
 /// the loop, wrapped in `select!` against `reconfig_rx.recv()`. This
 /// guarantees (a) no race between a "sleep-arm" and a "poll-arm" (the

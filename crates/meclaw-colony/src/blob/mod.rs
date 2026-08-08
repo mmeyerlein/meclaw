@@ -1,5 +1,5 @@
 //! Phase-12-X: Blob-Storage für attachments[]-Slot.
-//! Concrete `DiskBlobStore` ohne Trait-Abstraktion (Variante b, Marcus-Direktive).
+//! Concrete `DiskBlobStore` ohne Trait-Abstraktion (Variante b, directive).
 //!
 //! Layout (docs/meclaw-overview.md § Blob-Storage Z.1311):
 //!   blobs/<uuid-v7>.<ext>            # Blob-Inhalt

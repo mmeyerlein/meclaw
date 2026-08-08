@@ -52,7 +52,7 @@ pub struct CellEmission {
     pub target: Path,
     /// Cell-emittierter Content (Body-Bau in Colony).
     pub content: Value,
-    /// W2b (Ruling A1, Marcus 2026-06-12): when `true`, this emission is a
+    /// W2b (Ruling A1, ruling 2026-06-12): when `true`, this emission is a
     /// substrate-generated **error reply** addressed to a known sender
     /// (`target` == the input's `reply_to`) — e.g. `consumes_violation` or the
     /// `message_timeout` backstop. The outputs-arm delivers it DIRECTLY to
@@ -110,7 +110,7 @@ impl OutputSink {
     /// Push a substrate-generated **error reply** addressed to a known sender
     /// (`out.target` == the input's `reply_to`). Sets `direct_reply` so the
     /// outputs-arm delivers it DIRECTLY via `route_with_log` rather than through
-    /// the sender's out-edges (W2b Ruling A1, Marcus 2026-06-12). Used by the
+    /// the sender's out-edges (W2b Ruling A1, ruling 2026-06-12). Used by the
     /// `consumes_violation` ingress check and the `message_timeout` backstop.
     pub async fn push_direct_reply(
         &self,

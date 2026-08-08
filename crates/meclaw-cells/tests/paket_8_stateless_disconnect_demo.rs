@@ -326,7 +326,7 @@ async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
 // Demo (a-late) — Late-Worker-Emission nach Park → DLQ / inaktiv
 // ───────────────────────────────────────────────────────────────────────────
 //
-// ## Marcus-Pin: "Worker laufen aus" ist getestetes Verhalten
+// ## pin: "Worker laufen aus" ist getestetes Verhalten
 //
 // `stateless_dispatcher` spawns ONE detached `tokio::task` per message (Z.635 in
 // `cell_task.rs`): the worker holds a per-message `OutputSink` + semaphore permit

@@ -1,5 +1,5 @@
 //! Paket-3 P3-B-restart (sanctioned `handle_cell_died` corridor break,
-//! Marcus 2026-06-07): the `cell.message_timeout` B-backstop now triggers a
+//! the spec owner 2026-06-07): the `cell.message_timeout` B-backstop now triggers a
 //! one_for_one **RESTART** (via `DeathKind::Backstop`), not removal.
 //!
 //! Full-topology proof through the REAL corridor: a `hang` cell (woken by a

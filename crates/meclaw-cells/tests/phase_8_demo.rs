@@ -27,7 +27,7 @@ async fn demo_e2e_text_completion() {
     // 1. Mock first — bind 127.0.0.1:0, grab the addr → base_url. The
     //    `LlmCell`'s `params.base_url` will point at this in the config.json
     //    written in step 2 (Plan § 27 K-c: Mock-Port-vor-Config-Schreiben).
-    let mock = MockOpenAI::start(vec![canned_chat_completion("Hallo Marcus!", "stop")]).await;
+    let mock = MockOpenAI::start(vec![canned_chat_completion("Hello there!", "stop")]).await;
     let base_url = format!("{}/v1", mock.base_url);
 
     // 2. TempDir tree:
@@ -101,8 +101,8 @@ async fn demo_e2e_text_completion() {
         .reply_to(Path::new("/sink"))
         .body(Body::Inline(json!({
             "system": {
-                "identity": {"soul": {"text": "Du bist Claudi."}},
-                "facts":    {"user_name": {"text": "Marcus"}}
+                "identity": {"soul": {"text": "You are the assistant."}},
+                "facts":    {"user_name": {"text": "Ada"}}
             },
             "messages": [{"origin":"user","type":"text","text":"Hi"}]
         })))
@@ -125,10 +125,10 @@ async fn demo_e2e_text_completion() {
     assert_eq!(req.temperature(), Some(0.7));
     let messages = req.messages().expect("body has messages[]");
     assert_eq!(messages.len(), 2, "leading system + user turn expected");
-    // system_order = ["identity", "facts"] → identity-text "Du bist Claudi."
-    // first, then facts-text "Marcus", joined with "\n\n".
+    // system_order = ["identity", "facts"] → identity-text "You are the assistant."
+    // first, then facts-text "Ada", joined with "\n\n".
     assert_eq!(messages[0]["role"], "system");
-    assert_eq!(messages[0]["content"], "Du bist Claudi.\n\nMarcus");
+    assert_eq!(messages[0]["content"], "You are the assistant.\n\nAda");
     assert_eq!(messages[1]["role"], "user");
     assert_eq!(messages[1]["content"], "Hi");
 
@@ -143,7 +143,7 @@ async fn demo_e2e_text_completion() {
     };
     assert_eq!(body["messages"][0]["origin"], "assistant");
     assert_eq!(body["messages"][0]["type"], "text");
-    assert_eq!(body["messages"][0]["text"], "Hallo Marcus!");
+    assert_eq!(body["messages"][0]["text"], "Hello there!");
     assert_eq!(em.headers.hop["finish_reason"], "stop");
     assert_eq!(em.headers.hop["tokens_prompt"], 10);
     assert_eq!(em.headers.hop["tokens_completion"], 5);
@@ -315,7 +315,7 @@ async fn demo_e2e_tool_call() {
     h.shutdown().await;
 }
 
-/// T29: `demo_error_rate_limit` — Marcus' explicit critical demo. Full
+/// T29: `demo_error_rate_limit` — the explicit critical demo. Full
 /// production-bootstrap-spawn pipeline (TempDir + `/main/llm` config →
 /// `ColonyHandle.spawn /sink` → `bootstrap_from_filesystem` → probe to
 /// `/llm`) with the mock returning HTTP 429.
@@ -437,7 +437,7 @@ async fn demo_error_rate_limit() {
         body["meta"]
     );
 
-    // ─── GATE-1 (Marcus' critical assert): output.messages == input.messages ───
+    // ─── GATE-1 (the critical assert): output.messages == input.messages ───
     // The user-turn is UNCHANGED in the output body. No assistant-turn
     // appended, no empty array, no mutation. Concretely: one-element array
     // containing the original user-turn, byte-equal.
@@ -477,7 +477,7 @@ async fn demo_error_rate_limit() {
     h.shutdown().await;
 }
 
-/// T30: `demo_system_only_no_emit` — Marcus' second explicitly named critical
+/// T30: `demo_system_only_no_emit` — the second explicitly named critical
 /// demo (Plan § 11.4 + § 16). Full production-bootstrap-spawn pipeline
 /// (TempDir + `/main/llm` config → `ColonyHandle.spawn /sink` →
 /// `bootstrap_from_filesystem` → probe to `/llm`) with input that carries
@@ -565,7 +565,7 @@ async fn demo_system_only_no_emit() {
         .build();
     h.send(probe).await;
 
-    // ─── ASSERT 1 (Marcus' deep-watch): Sink receives NOTHING within 500ms ───
+    // ─── ASSERT 1 (deep-watch requirement): Sink receives NOTHING within 500ms ───
     // Q3 silence: handle() returns after Schritt-2 persist, no inference,
     // no emit. `tokio::time::timeout(...)` returns `Err` on timeout —
     // exactly what we want (no message arrived).
@@ -620,7 +620,7 @@ async fn demo_system_only_no_emit() {
     h.shutdown().await;
 }
 
-/// T31: `demo_a_timeout` — Marcus' last Phase-8 demo. Full production-bootstrap-
+/// T31: `demo_a_timeout` — the last Phase-8 demo. Full production-bootstrap-
 /// spawn pipeline (TempDir + `/main/llm` config → `ColonyHandle.spawn /sink` →
 /// `bootstrap_from_filesystem` → probe to `/llm`) with the mock holding back
 /// its response by 5 seconds while `params.external_timeout_ms = 200`.

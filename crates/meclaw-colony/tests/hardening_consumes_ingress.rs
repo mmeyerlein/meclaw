@@ -111,7 +111,7 @@ fn ubf_probe(target: &str) -> MessageBuilder {
 /// der Ordnungs-Anker; danach beweist ein KURZES bounded Fenster auf /sink,
 /// dass der Echo-Receipt des Ziels AUSBLEIBT.
 ///
-/// W2b DIRECT-REPLY-PIN (Ruling A1, Marcus 2026-06-12): `/c` trägt jetzt die
+/// W2b DIRECT-REPLY-PIN (Ruling A1, ruling 2026-06-12): `/c` trägt jetzt die
 /// Catch-all-Out-Edge `./c→/sink` (write_topology). Die `consumes_violation`-
 /// Error-Reply MUSS trotzdem DIREKT an `/cap` (reply_to) gehen — via
 /// route_with_log, NICHT über `/c`s Out-Edges. Beweis hier doppelt: (1) `/cap`

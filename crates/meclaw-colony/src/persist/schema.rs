@@ -127,7 +127,7 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '4');
 /// PRAGMA-Reihenfolge analog `setup_cell_db`: `journal_mode=WAL`, `synchronous=NORMAL`,
 /// `foreign_keys=ON`. DDL ist idempotent.
 ///
-/// **FIX 1 (Marcus-Review 2026-05-20)**: `message_log` enthält `correlation_id`,
+/// **FIX 1 (review 2026-05-20)**: `message_log` enthält `correlation_id`,
 /// `ttl`, `reply_to` — lasttragend für Phase 8/10-Request/Response-Korrelation.
 pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;

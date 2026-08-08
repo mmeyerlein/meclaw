@@ -1,6 +1,6 @@
 //! Paket-4 P4-A1/A2: the P5-defer-proof backpressure-disconnect pin-demos.
 //!
-//! These two demos are the empirical proof of the **P5-defer premise** (Marcus
+//! These two demos are the empirical proof of the **P5-defer premise** (
 //! 2026-06-07): when a cell is disconnected while BLOCKED ON A FULL `outputs_tx`
 //! (real backpressure), today's Variante-A gives a clean `Rejected{term_timeout}`
 //! (full rollback, no zombie); then the colony loop RESUMES, drains `outputs_rx`,

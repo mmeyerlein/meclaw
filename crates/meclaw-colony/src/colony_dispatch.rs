@@ -406,7 +406,7 @@ pub(crate) fn path_prefix_range(prefix: &str) -> (String, Option<String>) {
 ///
 /// Phase 13.5-A6: extracted verbatim from `colony_task` inbox-arm — same
 /// semantics, two callers expected (inbox-arm now, outputs-arm in T3).
-/// `db_path: &std::path::Path` per Marcus' MOD #4: helper opens its own
+/// `db_path: &std::path::Path` per the spec owner' MOD #4: helper opens its own
 /// read-only Connection via `spawn_blocking`, no `&ColonyDb` borrow over
 /// `.await` (keeps the future Send + reusable from T3's outputs-arm-dispatch).
 ///
@@ -813,7 +813,7 @@ fn build_trace_reply(reply: &crate::api_dto::ReadTraceReply) -> meclaw_core::ser
 ///
 /// **`/colony/events`** ist deferred (U4) und fällt in den `_ =>`-Arm
 /// → `ColonyEndpointUnimplemented`-DLQ-push mit `sender`-pass-through
-/// (Marcus' MUST-FIX #2).
+/// (must-fix #2).
 ///
 /// Spec: `docs/meclaw-overview.md` § /colony als virtueller Endpunkt (Z.393-417).
 ///
@@ -905,7 +905,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/dead_letters" => {
-            // W2d (Substrat, Marcus-Ruling 2026-06-12): `/colony/dead_letters` is
+            // W2d (Substrat, ruling 2026-06-12): `/colony/dead_letters` is
             // a READ-ONLY diagnostic sink, served EXCLUSIVELY via the dedicated
             // API inbox variants `ColonyMsg::ReadDeadLetters`/`DrainDeadLetters`
             // — NEVER via EDA dispatch. A dispatch that lands here is therefore an
@@ -971,7 +971,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
         }
         // `/colony/events` (U4-deferred) + any unknown `/colony/<x>` →
         // ColonyEndpointUnimplemented DLQ with `sender` pass-through
-        // (Marcus' MUST-FIX #2: sender from RouteAction::ColonyDispatch,
+        // (must-fix #2: sender from RouteAction::ColonyDispatch,
         // NOT msg.reply_to).
         _ => {
             tracing::warn!(
@@ -1443,7 +1443,7 @@ mod tests {
     }
 
     /// Phase-13.5-A6-T3 failing-test-first: pinnt das `sender`-pass-through-Verhalten
-    /// (Marcus' MUST-FIX #2) für unknown `/colony/<x>` endpoints.
+    /// (must-fix #2) für unknown `/colony/<x>` endpoints.
     ///
     /// Beweist:
     /// - `RouteAction::Done` zurück (terminal, kein Cascade-Loop).

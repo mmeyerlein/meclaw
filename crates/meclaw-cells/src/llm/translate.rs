@@ -17,7 +17,7 @@ pub(crate) enum TranslateError {
     /// function-call JSON (`{"name": ..., "arguments": "..."}`).
     ToolCallParse(String),
     /// Response carried a `finish_reason` that is null, missing or unknown —
-    /// NEVER silently treated as `stop` (Marcus-Präzisierung 4).
+    /// NEVER silently treated as `stop` (-Präzisierung 4).
     UnknownFinishReason(String),
     /// Response JSON shape mismatch (missing `choices[0]`, `model`, `id`, …).
     ResponseShape(String),
@@ -280,7 +280,7 @@ pub(crate) struct TranslatedResponse {
 /// 2. Map `finish_reason`: `stop`/`length`/`tool_calls`/`content_filter`
 ///    pass-through; legacy `function_call` → `tool_calls`; null/missing/unknown
 ///    → `UnknownFinishReason` (NEVER silently coerced to `stop`,
-///    Marcus-Präzisierung 4).
+///    the spec owner-Präzisierung 4).
 /// 3. Build `assistant_turn`: each `message.tool_calls[i]` → one UBF
 ///    `tool_call`-turn (id pass-through, text = serde-stringified
 ///    `function`). If `message.content` is a non-null string, append a
@@ -650,13 +650,16 @@ mod tests {
 
     #[test]
     fn attribution_headers_set_map_to_wire_names() {
-        let params = p_attr(Some("https://gisela.ai"), Some("Gisela"));
+        let params = p_attr(Some("https://example.com"), Some("Example App"));
         let headers = super::build_attribution_headers(&params);
         assert_eq!(
             headers,
             vec![
-                ("HTTP-Referer".to_string(), "https://gisela.ai".to_string()),
-                ("X-Title".to_string(), "Gisela".to_string()),
+                (
+                    "HTTP-Referer".to_string(),
+                    "https://example.com".to_string()
+                ),
+                ("X-Title".to_string(), "Example App".to_string()),
             ]
         );
     }
@@ -672,11 +675,14 @@ mod tests {
 
     #[test]
     fn attribution_headers_partial_only_set_field() {
-        let params = p_attr(Some("https://gisela.ai"), None);
+        let params = p_attr(Some("https://example.com"), None);
         let headers = super::build_attribution_headers(&params);
         assert_eq!(
             headers,
-            vec![("HTTP-Referer".to_string(), "https://gisela.ai".to_string())]
+            vec![(
+                "HTTP-Referer".to_string(),
+                "https://example.com".to_string()
+            )]
         );
     }
 
@@ -705,9 +711,9 @@ mod tests {
         let mut env = HashMap::new();
         env.insert(
             "OPENROUTER_HTTP_REFERER".to_string(),
-            "https://gisela.ai".to_string(),
+            "https://example.com".to_string(),
         );
-        env.insert("OPENROUTER_X_TITLE".to_string(), "Gisela".to_string());
+        env.insert("OPENROUTER_X_TITLE".to_string(), "Example App".to_string());
         let raw = json!({
             "provider": "openai", "model": "gpt-4o", "api_key": "x",
             "http_referer": "${OPENROUTER_HTTP_REFERER}",
@@ -720,8 +726,11 @@ mod tests {
         assert_eq!(
             headers,
             vec![
-                ("HTTP-Referer".to_string(), "https://gisela.ai".to_string()),
-                ("X-Title".to_string(), "Gisela".to_string()),
+                (
+                    "HTTP-Referer".to_string(),
+                    "https://example.com".to_string()
+                ),
+                ("X-Title".to_string(), "Example App".to_string()),
             ]
         );
     }

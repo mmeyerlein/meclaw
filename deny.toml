@@ -1,5 +1,5 @@
 # cargo-deny configuration — dependency license allowlist + RUSTSEC advisory gate.
-# Added: Phase-16 W7 Doc-Takt (Audit S4-License-2, Marcus-Ruling A, 2026-06-13).
+# Added: Phase-16 W7 Doc-Takt (Audit S4-License-2, ruling A, 2026-06-13).
 # Run: `cargo deny check`  (install: `cargo install cargo-deny`).
 # Schema: cargo-deny v2 ([advisories]/[licenses] `version = 2`).
 

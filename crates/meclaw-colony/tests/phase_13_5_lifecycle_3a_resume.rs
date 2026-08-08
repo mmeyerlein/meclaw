@@ -6,7 +6,7 @@
 //! (fresh cell_id). If the directory exists → Reconnect/Resume: NO new cell_id,
 //! `config.json` untouched, `cell.db` resumed (M1).
 //!
-//! Auflagen (Marcus):
+//! Requirements:
 //! - A1: `config.json` is NOT rewritten on Reconnect (config-rewrite is
 //!   `swap_nodes`-exclusive = Slice 4). Reconnect = no staging output for the
 //!   existing node (directory completely untouched).

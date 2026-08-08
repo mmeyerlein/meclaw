@@ -253,7 +253,7 @@ async fn phase_13_5_a6_read_registry_round_trip_via_cell_emit() {
 // ---------------------------------------------------------------------------
 // Test 3: Unknown-Endpunkt DLQ mit sender_path = Cell-Pfad.
 //
-// CRITICAL: Marcus' MUST-FIX #1 — sender_path im DLQ-Entry MUSS /probe sein.
+// CRITICAL: must-fix #1 — sender_path im DLQ-Entry MUSS /probe sein.
 // Beweist Auto-reply_to-Stempel via OutputSink/build_follow_up_with (Spec Z.891).
 // ---------------------------------------------------------------------------
 
@@ -328,7 +328,7 @@ async fn phase_13_5_a6_unknown_endpoint_dlq_sender_is_cell_path() {
         "A6-E2E: DLQ reason is ColonyEndpointUnimplemented; got: {:?}",
         entry.reason
     );
-    // CRITICAL — Marcus' MUST-FIX #1 proof:
+    // CRITICAL — must-fix #1 proof:
     assert_eq!(
         entry.sender_path.as_str(),
         "/probe",

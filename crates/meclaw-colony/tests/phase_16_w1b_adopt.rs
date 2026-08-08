@@ -226,7 +226,7 @@ async fn adopt_with_template_is_schema_reject() {
 }
 
 /// (d.4) 2b grammar — a bare `adopt` without a declared `type` ⇒ `schema`
-/// (no blind adoption, Marcus 2026-06-12).
+/// (no blind adoption, ruling 2026-06-12).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adopt_without_type_is_schema_reject() {
     let td = tempfile::TempDir::new().unwrap();

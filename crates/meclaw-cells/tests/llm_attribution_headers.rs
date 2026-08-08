@@ -23,8 +23,11 @@ async fn wire_request_carries_attribution_headers() {
     let client = reqwest::Client::builder().build().unwrap();
     let body = serde_json::json!({"model": "gpt-4o"});
     let extra = vec![
-        ("HTTP-Referer".to_string(), "https://gisela.ai".to_string()),
-        ("X-Title".to_string(), "Gisela".to_string()),
+        (
+            "HTTP-Referer".to_string(),
+            "https://example.com".to_string(),
+        ),
+        ("X-Title".to_string(), "Example App".to_string()),
     ];
     call_openai(
         &client,
@@ -42,11 +45,11 @@ async fn wire_request_carries_attribution_headers() {
     // Headers are lowercased by the capturing listener.
     assert_eq!(
         snaps[0].headers.get("http-referer").map(|s| s.as_str()),
-        Some("https://gisela.ai")
+        Some("https://example.com")
     );
     assert_eq!(
         snaps[0].headers.get("x-title").map(|s| s.as_str()),
-        Some("Gisela")
+        Some("Example App")
     );
 }
 
@@ -130,8 +133,8 @@ async fn cell_handle_passes_attribution_params_to_wire_and_keeps_body_clean() {
         "model": "gpt-4o",
         "api_key": "test-key-W4",
         "base_url": format!("{}/v1", mock.base_url),
-        "http_referer": "https://gisela.ai",
-        "x_title": "Gisela",
+        "http_referer": "https://example.com",
+        "x_title": "Example App",
     });
     let params = LlmParams::parse(&raw).unwrap();
     let http = reqwest::Client::builder().build().unwrap();
@@ -164,11 +167,11 @@ async fn cell_handle_passes_attribution_params_to_wire_and_keeps_body_clean() {
     // (a) attribution params reached the wire as headers.
     assert_eq!(
         snaps[0].headers.get("http-referer").map(|s| s.as_str()),
-        Some("https://gisela.ai")
+        Some("https://example.com")
     );
     assert_eq!(
         snaps[0].headers.get("x-title").map(|s| s.as_str()),
-        Some("Gisela")
+        Some("Example App")
     );
     // (e) Authorization is the single auth header, equal to the api_key Bearer.
     assert_eq!(

@@ -2,7 +2,7 @@
 //!
 //! Two integration scenarios:
 //! 1. Roundtrip: send a valid `add_nodes` mutation, verify Committed, verify
-//!    the new cell is REGISTERED AND ADDRESSABLE (Marcus: not just config.json
+//!    the new cell is REGISTERED AND ADDRESSABLE (not just config.json
 //!    on disk — must prove cell-task is live).
 //! 2. Validate-Reject: send a mutation with unknown template + reply_to set;
 //!    verify Rejected (template_missing), verify mutation_log has the expected

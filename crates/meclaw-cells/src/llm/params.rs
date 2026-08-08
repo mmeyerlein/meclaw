@@ -186,12 +186,12 @@ mod tests {
     fn parse_reads_attribution_fields() {
         let raw = json!({
             "provider": "openai", "model": "gpt-4o", "api_key": "x",
-            "http_referer": "https://gisela.ai",
-            "x_title": "Gisela",
+            "http_referer": "https://example.com",
+            "x_title": "Example App",
         });
         let p = LlmParams::parse(&raw).unwrap();
-        assert_eq!(p.http_referer.as_deref(), Some("https://gisela.ai"));
-        assert_eq!(p.x_title.as_deref(), Some("Gisela"));
+        assert_eq!(p.http_referer.as_deref(), Some("https://example.com"));
+        assert_eq!(p.x_title.as_deref(), Some("Example App"));
     }
 
     #[test]

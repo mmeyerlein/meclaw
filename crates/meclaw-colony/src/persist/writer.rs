@@ -1,7 +1,7 @@
 //! Schreib-Ops für `colony.db`-Writer-Thread.
 //!
 //! Drei Operation-Varianten:
-//! - `InitialApply` — atomarer Bundle für Erst-Boot (FIX 3, Marcus-Review 2026-05-20):
+//! - `InitialApply` — atomarer Bundle für Erst-Boot (FIX 3, review 2026-05-20):
 //!   Edges + Hive-Scopes in EINER Transaktion. Schützt vor Mischzustand bei
 //!   Crash-mid-first-boot.
 //! - `UpsertRegistry` — pro `ColonyMsg::Register`, op-before-ack-Invariante (T22).

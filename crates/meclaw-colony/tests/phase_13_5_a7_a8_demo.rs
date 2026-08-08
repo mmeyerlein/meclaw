@@ -376,7 +376,7 @@ async fn demo_g_colony_json_absent_defaults_broken_hard_fail() {
     let cfg = read_colony_config(absent.path()).expect("absent colony.json → defaults");
     assert_eq!(cfg.blob_inline_max_bytes, 65_536);
 
-    // Broken → hard boot fail (Marcus-Ruling 1). The CLI `--validate` exit-code
+    // Broken → hard boot fail (ruling 1). The CLI `--validate` exit-code
     // proof lives in `meclaw-cli/tests/phase_13_5_a7_a8_validate_colony_json.rs`.
     let broken = tempfile::TempDir::new().unwrap();
     std::fs::write(broken.path().join("colony.json"), "{ not valid json").unwrap();

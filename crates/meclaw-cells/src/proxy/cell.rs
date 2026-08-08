@@ -260,7 +260,7 @@ impl LongRunningCell for ProxyCell {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let Some(text) = text else {
-                // W12 (Marcus 2026-05-24): KEIN silent drop. Error-Reply
+                // W12 (ruling 2026-05-24): KEIN silent drop. Error-Reply
                 // analog W5/W6 — symmetrische Inbound-Fehlerklassifikation.
                 crate::proxy::emit::emit_inbound_error(
                     sink,

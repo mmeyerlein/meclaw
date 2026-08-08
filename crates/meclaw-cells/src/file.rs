@@ -240,7 +240,7 @@ enum OpOutcome {
 
 /// Runs a `FileOp` synchronously. Called from `spawn_blocking`.
 ///
-/// Builds a temporary `FileCell` for resolve-method access (Marcus' Verify-Notiz 3).
+/// Builds a temporary `FileCell` for resolve-method access (verify note 3).
 fn run_op(base: &StdPath, op: FileOp) -> OpOutcome {
     let cell = FileCell {
         base_path: base.to_path_buf(),

@@ -8,7 +8,7 @@
 //! (it keeps its edges, so `now_active` would otherwise wrongly revive it).
 //!
 //! Every genuine false→true reconnect flip clears `failed` and resets
-//! `restart_count = 0` (Marcus: broad reset, including merely-inactive cells).
+//! `restart_count = 0` (broad reset, including merely-inactive cells).
 //!
 //! Demos (all behavioural / positive-receipt where a live cell is claimed):
 //!   - d-nachbar: failed cell WITH edges; a mutation touching ANOTHER node via
