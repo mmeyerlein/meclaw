@@ -57,29 +57,31 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 
 ## `store`: typed persistent storage
 
-**Task**: CRUD cell with its own `cell.db`. Schema and column types can be defined in `params.schema`; the cell creates the tables from it. Dynamically it can also create a new table per message.
+**Task**: CRUD cell with its own `cell.db`. Schema and column types can be defined in `params.schema`; the cell creates the tables from it. Dynamically it can also create a new table per message. Table and column names pass a syntax gate (P3, 2026-08-08): `[A-Za-z_][A-Za-z0-9_]{0,62}`, no `sqlite_` prefix, no `_fts` suffix. The only strings ever formatted into SQL are what the SQLite catalog (`sqlite_master`/`pragma_table_info`) itself returned or values from an internal enum — caller text reaches statements exclusively as bind parameters.
 
 **Emission mode**: atomic-emitting. Per query message one response message with the result as a turn.
 
-**Input format** (Phase-9 brainstorm E7, analogous to `bash`): structured JSON args in the `tool_call` turn. Mandatory field `operation` (`"insert"`/`"select"`/`"update"`/`"delete"`/`"create_table"`) + `table`, plus operation-specific fields:
+**Input format** (Phase-9 brainstorm E7, analogous to `bash`): structured JSON args in the `tool_call` turn. Mandatory field `operation` (`"insert"`/`"select"`/`"update"`/`"delete"`/`"create_table"`/`"search"`) + `table`, plus operation-specific fields:
 
 - `insert`: `row` (object `{ "<column>": <value> }`).
-- `select`: `columns` (**mandatory**, array of column names with at least one entry; the projection) + optional `where`. There is **no** projectionless `SELECT *`: if `columns` is missing or empty, the cell answers with a regular `tool_result` with `error_code: "invalid_input"` (no cell crash). The result is an array of row objects, projected onto the requested columns.
+- `select`: `columns` (**mandatory**, array of column names with at least one entry; the projection) + optional `where`, `order_by` (array of `{ "col": "<column>", "dir": "asc"|"desc" }`, multi-column) and `limit` (integer ≥ 1, **no** implicit default, no cap — the runaway guard is `query_timeout_ms`). There is **no** projectionless `SELECT *`: if `columns` is missing or empty, the cell answers with `finish_reason: "error"` and `error_code: "invalid_input"` (no cell crash; doc-to-code correction, Marcus ruling 2026-08-08). The result is an array of row objects, projected onto the requested columns.
 - `update`: `set` (object) + optional `where`.
 - `delete`: optional `where`.
 - `create_table`: `columns` as a **2-level map** `{ "<column>": "<type>" }` (types `text`/`int`/`json`), **not** `schema`.
+- `search` (P3): `match` (**mandatory** — FTS5 query syntax) + `columns` (**mandatory**, as in `select`) + optional `where`/`order_by`/`limit`. Only on tables with a `params.fts` declaration (otherwise `invalid_input`). Every result row additionally carries a `rank` column (bm25, smaller is better); without `order_by`, `rank` is the default ordering.
 
-`columns` thus has a different form depending on the operation: with `select` an **array of column names** (projection), with `create_table` a **2-level type map**. `where` is a flat equality object `{ "<column>": <value> }`. `schema` is exclusively the `params` block (bootstrap tables). Phase 9 accepts only `tool_call` turns; direct use with `user`/`system` origin (see below) is a Phase-9 limitation.
+`columns` thus has a different form depending on the operation: with `select` an **array of column names** (projection), with `create_table` a **2-level type map**. `where`: per column either a bare value (shorthand for `eq`) or an operator object with exactly one key out of `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` (array), `is_null` (bool), `or_null` (wrapping exactly one comparison operator, depth 1). An object with an unknown key ⇒ `invalid_input`. The operator forms apply uniformly to `select`/`search`/`update`/`delete` (one shared `build_where` path). `schema` is exclusively the `params` block (bootstrap tables). Phase 9 accepts only `tool_call` turns; direct use with `user`/`system` origin (see below) is a Phase-9 limitation.
 
 **Body format of the response**: `messages[]` with a single turn. In tool-loop use typically `{ origin: "tool", type: "tool_result", text: "<json-serialized result>", id: "<tool_call_id>" }`. In direct use outside a tool-loop, the `origin` may also be `user` or `system` depending on the application convention; `id` is then omitted.
 
 **Output header** (`hop` compartment, expires on the next cell emission): `operation`, `rows_affected`, `duration_ms`, optional `error_code`.
 
-**Failure classification** (Phase-9 brainstorm E5, analogous to `bash`): SQL errors (constraint violation, type mismatch, unknown table/column) are **regular `tool_result` turns** with `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"` / `"query_timeout"` / `"invalid_input"` for malformed args or unknown operation), **not** `finish_reason: "error"`. Rationale: the LLM/caller reads the code and decides (retry, schema correction, different operation). Only internal errors (DB corruption, spawn error) trigger a cell crash + restart.
+**Failure classification** (Phase-9 brainstorm E5, analogous to `bash`): SQL errors (constraint violation, type mismatch, unknown table/column) are **regular `tool_result` turns** with `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"` / `"query_timeout"` / `"invalid_input"` for malformed args or unknown operation), **not** `finish_reason: "error"`. Rationale: the LLM/caller reads the code and decides (retry, schema correction, different operation). Only internal errors (DB corruption, spawn error) trigger a cell crash + restart. Since P3, `unknown_column` also covers `select`/`where`/`order_by` (previously only the `insert` path via the SQLite error text).
 
 **`params`**:
 
 - `schema` (Phase-9 brainstorm E6): 2-level map `{ "<table>": { "<column>": "<type>" } }` with types `text` / `int` / `json`. Constraints (PK / NOT NULL / UNIQUE / default / index) are **deferred** in Phase 9. A separate design pass is needed.
+- `fts` (P3): map `{ "<table>": ["<column>", …] }` — enables an FTS5 full-text index (external-content table + triggers) over the listed columns. Only tables from `params.schema`, only `text`/`json` columns; **no FTS for tables created via `create_table`** (known limit P3). Immutable like `schema`. Existing `cell.db`s build the index once on the next spawn — including rows written before the declaration; a declared column drifting from the live schema ⇒ loud spawn error.
 - `query_timeout_ms` (concept A, see overview § Timeouts): per-query enforced timeout via `DbConn`'s `InterruptHandle`.
 - Optional seed data (convention path `seed/<table>.jsonl`). Seed takes effect only on `OpenStatus::Created` of the `cell.db` (see overview § Seed concept).
 

@@ -77,6 +77,7 @@ async fn store_code_unknown_table() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
     // No table created → SELECT hits "no such table".
     let em = run_store_op(
@@ -104,6 +105,7 @@ async fn store_code_unknown_column() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
     // Column "nosuch" is not declared → "table t has no column named nosuch".
     let em = run_store_op(
@@ -128,6 +130,7 @@ async fn store_code_constraint_violation() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
     // Duplicate PK → SQLITE_CONSTRAINT.
     let em = run_store_op(
@@ -152,6 +155,7 @@ async fn store_code_type_mismatch() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -173,21 +177,25 @@ async fn store_code_sql_error_backstop() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
-    // A malformed `table` name injects a dangling clause into the generated SQL
-    // (`SELECT "a" FROM "t" GROUP BY ("`), producing a generic SQLITE_ERROR
-    // ("incomplete input") whose message matches NEITHER known prefix
-    // ("no such table" / "has no column named") → the classify backstop must
-    // degrade to the generic `sql_error` (D-015 Watchlist invariant: never a
-    // misclassification, only coarser diagnostics).
-    // (Empirically verified: the ops layer quotes plain identifiers, so a
-    // genuine generic error needs a structural break in the statement, not just
-    // an unknown column name — a quoted unknown identifier becomes a string
-    // literal in SQLite and does NOT error.)
+    // TRIGGER CHANGED IN P3 (behaviour of the backstop is unchanged).
+    // Until P3 this test reached the backstop by injecting a dangling clause via
+    // a malformed `table` name (`SELECT "a" FROM "t" GROUP BY ("`). P3 resolves
+    // every identifier against the SQLite catalog *before* building SQL, so that
+    // payload now stops one layer earlier as `unknown_table` — the hole this
+    // test used as a lever is closed (and pinned below in
+    // `store_code_malformed_table_name_is_rejected_by_the_catalog`).
+    // The D-015 Watchlist invariant still needs a live proof, so the trigger is
+    // now a genuinely generic SQLite failure with valid identifiers: updating a
+    // VIEW yields "cannot modify v because it is a view", which matches NEITHER
+    // known prefix → the classifier must degrade to `sql_error`, never
+    // misclassify.
+    conn_view(&mut db).await;
     let em = run_store_op(
         &mut cell,
         &mut db,
-        r#"{"operation":"select","table":"t\" GROUP BY (","columns":["a"]}"#,
+        r#"{"operation":"update","table":"v","set":{"a":1}}"#,
     )
     .await;
     assert_eq!(
@@ -198,6 +206,50 @@ async fn store_code_sql_error_backstop() {
         em.content["messages"][0]["text"]
     );
     assert!(em.content["header"].get("finish_reason").is_none());
+}
+
+/// Create the view the backstop test updates through. Kept out of the test body
+/// so the payload above stays the only interesting line.
+async fn conn_view(db: &mut DbConn) {
+    db.call(|c| {
+        c.execute_batch("CREATE VIEW v AS SELECT a FROM t;")
+            .unwrap();
+    })
+    .await;
+}
+
+/// P3 regression lock: the identifier that used to slip a dangling clause into
+/// the generated SQL is now rejected by the catalog — no statement is built, the
+/// answer is a regular `tool_result` with `unknown_table`, and nothing executes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn store_code_malformed_table_name_is_rejected_by_the_catalog() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute("CREATE TABLE t (a INTEGER)", []).unwrap();
+    let mut db = DbConn::wrap(conn, None);
+    let mut cell = StoreCell::new(StoreParams {
+        schema: Default::default(),
+        query_timeout_ms: None,
+        fts: Default::default(),
+    });
+    let em = run_store_op(
+        &mut cell,
+        &mut db,
+        r#"{"operation":"select","table":"t\" GROUP BY (","columns":["a"]}"#,
+    )
+    .await;
+    assert_eq!(error_code(&em), Some("unknown_table"));
+    assert!(em.content["header"].get("finish_reason").is_none());
+    let still_there: i64 = db
+        .call(|c| {
+            c.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='t'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+        .await;
+    assert_eq!(still_there, 1, "the base table must be untouched");
 }
 
 // ── 6) query_timeout (DbConn InterruptHandle path) ──────────────────────────
@@ -223,6 +275,7 @@ async fn store_code_query_timeout() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: Some(timeout.as_millis() as u64),
+        fts: Default::default(),
     });
 
     // A full-table SELECT over 400k rows — interruptible inside SQLite, far

@@ -4,6 +4,41 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.3] — 2026-08-08
+
+### Added
+
+- **store: query layer.** `where` accepts comparison operators (`eq`, `neq`, `lt`,
+  `lte`, `gt`, `gte`, `in`, `is_null`, `or_null(<op>)`) next to bare equality;
+  new `order_by` (multi-column, `asc`/`desc`) and `limit` (integer >= 1, no
+  implicit default). Bi-temporal as-of queries, top-k and recency now run in the
+  store instead of fetch-all plus filtering in a code cell.
+- **store: `search` operation** over SQLite FTS5. Opt in per table via the new
+  `params.fts` (`{"<table>": ["<column>", ...]}`); every result row carries a
+  `rank` column (bm25, smaller is better). External-content index plus triggers;
+  an existing `cell.db` builds its index once on the next spawn, so rows written
+  before the declaration become searchable.
+- **memory-hive template**: recall legs and the dream lane push their predicates
+  into the store; `store` declares full-text indexes on `episodes.content` and
+  `facts.claim` (the keyword recall leg itself lands in P5).
+
+### Changed
+
+- **store: identifiers are resolved against the SQLite catalog.** Table and
+  column names are matched against `sqlite_master`/`pragma_table_info` and only
+  the catalog's own spelling is ever written into a statement; caller text
+  reaches SQL exclusively as a bound parameter.
+- **store: `select` with an unknown column now reports `unknown_column`** instead
+  of the generic `sql_error` (the code was always specified, only the classifier
+  missed this path). No new error codes were introduced.
+
+### Security
+
+- **store: identifier syntax gate on the two DDL paths.** `create_table` and
+  `params.schema` accept `[A-Za-z_][A-Za-z0-9_]{0,62}` only, reject the `sqlite_`
+  prefix and the reserved `_fts` suffix. Both used to format caller strings
+  straight into DDL.
+
 ## [0.1.2] — 2026-08-07
 
 ### Added

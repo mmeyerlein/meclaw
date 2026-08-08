@@ -33,7 +33,8 @@ impl CellFactory for StoreCellFactory {
     /// Sequence (per Brainstorm E1+E3+E4):
     /// 1. Parse params (`StoreParams::parse`).
     /// 2. `open_or_create_cell_db_with_status` → `(Connection, OpenStatus)`.
-    /// 3. `apply_schema_ddl` (Ad-hoc-DDL from `params.schema`, sync).
+    /// 3. `apply_schema_ddl` (Ad-hoc-DDL from `params.schema`, sync), then
+    ///    `apply_fts_ddl` (P3: FTS5 index + triggers from `params.fts`, idempotent).
     /// 4. If `OpenStatus::Created` → `load_seed_if_present` (sync, fresh-only).
     /// 5. `DbConn::wrap` (with optional `query_timeout` from params).
     /// 6. `tokio::spawn(cell_task_stateful(...))`.
@@ -93,6 +94,7 @@ impl CellFactory for StoreCellFactory {
                         .expect("respawn: restore params from cell.db overlay");
                 ddl::apply_schema_ddl(&conn, &effective.schema)
                     .expect("respawn: apply_schema_ddl failed");
+                ddl::apply_fts_ddl(&conn, &effective.fts).expect("respawn: apply_fts_ddl failed");
                 let to = effective
                     .query_timeout_ms
                     .map(std::time::Duration::from_millis);
@@ -143,6 +145,9 @@ impl CellFactory for StoreCellFactory {
             let effective = crate::params_overlay::restore::<StoreParams>(&conn, &wake_birth)
                 .expect("wake: restore params from cell.db overlay");
             ddl::apply_schema_ddl(&conn, &effective.schema).expect("wake: apply_schema_ddl");
+            // FTS DDL runs BEFORE the seed, so seeded rows are indexed by the
+            // triggers on the way in (and an existing cell.db catches up here).
+            ddl::apply_fts_ddl(&conn, &effective.fts).expect("wake: apply_fts_ddl");
             if status == OpenStatus::Created {
                 seed::load_seed_if_present(&conn, &wake_cell_dir, &effective.schema)
                     .expect("wake: load_seed_if_present");

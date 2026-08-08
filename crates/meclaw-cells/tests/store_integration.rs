@@ -20,6 +20,7 @@ async fn insert_then_select_round_trip() {
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);
@@ -84,6 +85,7 @@ async fn sql_error_emits_tool_result_with_error_code_header_not_finish_reason() 
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
         query_timeout_ms: None,
+        fts: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);

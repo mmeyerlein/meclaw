@@ -6,6 +6,7 @@ pub mod factory;
 pub mod ops;
 pub mod output;
 pub mod params;
+pub mod query;
 pub mod seed;
 pub use cell::StoreCell;
 pub use factory::StoreCellFactory;
