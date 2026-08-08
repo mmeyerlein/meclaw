@@ -1,7 +1,7 @@
-//! Phase-10-C T12: handle (Inbound-Sink Happy-Path). Pure Sink — kein
-//! OutputSink-Emit bei Erfolg. T13 deckt die Fehlerpfade ab
-//! (`missing_chat_id`/`send_failed`/`missing_assistant_turn`) plus den
-//! `/colony/dead_letters`-Fallback bei fehlendem `reply_to`.
+//! Phase-10-C T12: handle (the inbound sink happy path). A pure sink — no
+//! OutputSink emit on success. T13 covers the failure paths
+//! (`missing_chat_id`/`send_failed`/`missing_assistant_turn`) plus the
+//! `/colony/dead_letters` fallback when `reply_to` is absent.
 
 use meclaw_cells::proxy::cell::ProxyCell;
 use meclaw_cells::proxy::telegram::TelegramClient;
@@ -73,7 +73,7 @@ async fn handle_happy_path_calls_send_message_no_emit() {
 
     cell.handle(msg, &sink, &mut db, &rc_tx).await;
 
-    // 1. sendMessage am Mock empfangen mit chat_id + text.
+    // 1. sendMessage received at the mock with chat_id + text.
     let cap = cap.lock().await;
     assert_eq!(cap.len(), 1);
     let body: serde_json::Value = serde_json::from_slice(&cap[0].body).unwrap();
@@ -83,18 +83,18 @@ async fn handle_happy_path_calls_send_message_no_emit() {
         "extrahierter letzter assistant-Turn"
     );
 
-    // 2. Pure Sink: KEIN OutputSink-Emit im Happy-Path.
+    // 2. Pure sink: NO OutputSink emit on the happy path.
     assert!(
         tokio::time::timeout(Duration::from_millis(100), out_rx.recv())
             .await
             .is_err(),
-        "Pure-Sink-Disziplin: kein Emit bei Erfolg"
+        "pure-sink discipline: no emit on success"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handle_without_chat_id_emits_missing_chat_id_error_reply() {
-    // Kein mock_http nötig — handle erreicht den sendMessage-Call nicht.
+    // No mock_http needed — handle never reaches the sendMessage call.
     let client = TelegramClient::new("http://unused", "T").unwrap();
     let mut cell = ProxyCell::new(
         client,
@@ -139,7 +139,7 @@ async fn handle_without_chat_id_emits_missing_chat_id_error_reply() {
         Some("missing_chat_id")
     );
 
-    // Nicht-Konversations-Origin: messages[] ist leer (kein user/assistant-Turn).
+    // Non-conversational origin: messages[] is empty (no user/assistant turn).
     let messages = em
         .content
         .get("messages")
@@ -147,7 +147,7 @@ async fn handle_without_chat_id_emits_missing_chat_id_error_reply() {
         .unwrap();
     assert!(
         messages.is_empty(),
-        "Error-Reply trägt KEINEN Konversations-Turn"
+        "the error reply carries NO conversation turn"
     );
 }
 
@@ -204,9 +204,9 @@ async fn handle_send_failed_emits_send_failed_error_reply() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handle_without_reply_to_emits_to_own_target_not_colony_dead_letters() {
-    // W2 (Ruling A1): missing_chat_id ohne reply_to emittiert NICHT mehr an
-    // den READ-Endpoint /colony/dead_letters, sondern als normale Emission an
-    // das eigene `msg.target` (/p) — matcht keine Out-Edge ⇒ no_route in der DLQ.
+    // W2 (ruling A1): missing_chat_id without reply_to no longer emits to the READ
+    // endpoint /colony/dead_letters, but as a normal emission to the cell's own
+    // `msg.target` (/p) — matching no out-edge ⇒ no_route in the DLQ.
     let client = TelegramClient::new("http://unused", "T").unwrap();
     let mut cell = ProxyCell::new(
         client,
@@ -244,8 +244,8 @@ async fn handle_without_reply_to_emits_to_own_target_not_colony_dead_letters() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handle_without_assistant_turn_emits_missing_assistant_turn_error_reply() {
-    // W12: chat_id vorhanden, aber messages[] hat KEINEN assistant-text-
-    // Turn. Kein silent drop (frühere Plan-Version war falsch) — stattdessen
+    // W12: chat_id present, but messages[] has NO assistant text turn. No silent
+    // drop (an earlier plan version had this wrong) — instead
     // Error-Reply analog W5/W6.
     let client = TelegramClient::new("http://unused", "T").unwrap();
     let mut cell = ProxyCell::new(
@@ -263,7 +263,7 @@ async fn handle_without_assistant_turn_emits_missing_assistant_turn_error_reply(
         .context(context_with_chat_id(12345))
         .body(Body::Inline(json!({
             "messages": [
-                // Nur user-Turn (z.B. Topologie hat den assistant-Turn vergessen)
+                // User turn only (e.g. the topology forgot the assistant turn)
                 { "origin": "user", "type": "text", "text": "no assistant here" }
             ]
         })))
@@ -297,6 +297,6 @@ async fn handle_without_assistant_turn_emits_missing_assistant_turn_error_reply(
         .unwrap();
     assert!(
         messages.is_empty(),
-        "W12-Reply trägt KEINEN Konversations-Turn"
+        "the W12 reply carries NO conversation turn"
     );
 }

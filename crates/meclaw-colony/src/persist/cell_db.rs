@@ -1,17 +1,17 @@
-//! cell.db Helper: snapshot_tx schreibt system.* + last_input in EINER Transaktion.
+//! cell.db helpers: snapshot_tx writes system.* + last_input in ONE transaction.
 //!
-//! Phase-6.5: `open_or_create_cell_db` ist die einzige Authority über cell.db-
-//! Identität (M1 Resume-mit-State). Existierende DB wird geöffnet (resume, alle
-//! Rows bleiben), nicht-existierende neu erstellt (fresh + `setup_cell_db`).
-//! `setup_cell_db` ist idempotent (CREATE TABLE IF NOT EXISTS), darum auch im
-//! resume-Pfad ohne Schaden aufrufbar.
+//! Phase-6.5: `open_or_create_cell_db` is the only authority over cell.db
+//! identity (M1 resume-with-state). An existing DB is opened (resume, all rows
+//! stay), a non-existing one is created fresh (`setup_cell_db`).
+//! `setup_cell_db` is idempotent (CREATE TABLE IF NOT EXISTS), so it can be
+//! called on the resume path without harm.
 //!
-//! Wird ausschließlich von der Factory-RespawnFn-Closure aufgerufen — vor
-//! `tokio::spawn(cell_task_stateful(..., conn))`. Open-Failure ist `panic!` in
-//! der Closure → Supervisor-Restart-Loop bis `restart_limit` (Phase 5
-//! § Restart-Strategie, "deterministisch panickende Cell").
+//! Called exclusively from the factory's RespawnFn closure — before
+//! `tokio::spawn(cell_task_stateful(..., conn))`. An open failure is a `panic!`
+//! inside the closure → supervisor restart loop up to `restart_limit` (phase 5
+//! § Restart strategy, "deterministically panicking cell").
 
-/// Open an existing cell.db or create a new one (M1 Resume-mit-State).
+/// Open an existing cell.db or create a new one (M1 resume-with-state).
 ///
 /// If the parent directory does not exist, it is created via
 /// `std::fs::create_dir_all` (supports nested cell paths like `/foo/bar/cell.db`).
@@ -58,8 +58,8 @@ pub fn open_or_create_cell_db_with_status(
     Ok((conn, status))
 }
 
-/// Snapshot am handle()-Ende: alle system.*-Slots Upsert + last_input Replace,
-/// in EINER Transaktion. Plan E3.
+/// Snapshot at the end of handle(): upsert every system.* slot + replace
+/// last_input, in ONE transaction. Plan E3.
 pub fn snapshot_tx(
     conn: &mut rusqlite::Connection,
     system_upserts: &[(String, String)],

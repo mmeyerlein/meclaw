@@ -1,12 +1,12 @@
 //! Phase-7 Slice-1 Demo (file-Cell).
 //!
 //! Topologie: /file (FileCell, base_path=TempDir) + /sink (terminale
-//! CaptureCell). Probe an /file mit reply_to=/sink (Entscheidung 7.1 — Tool
-//! antwortet via envelope-Default an seinen Caller). CaptureCell ist
-//! terminal (kein Re-Emit) → kein Cascade-Loop (Phase-6.5-Lesson).
+//! CaptureCell). A probe to /file with reply_to=/sink (decision 7.1 — the tool
+//! answers its caller via the envelope default). The CaptureCell is terminal (no
+//! re-emit) → no cascade loop (phase-6.5 lesson).
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/file/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/file/` directory is created and loaded via RescanTemplates.
 
 use meclaw_cells::FileCellFactory;
 use meclaw_colony::CellFactory;
@@ -15,7 +15,7 @@ use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
 
 /// Phase-11 T16: Legt ein minimales `file`-Template-Verzeichnis in `root/templates/file/`
-/// an und lädt es via `RescanTemplates` in die Colony-Registry.
+/// and loads it into the colony registry via `RescanTemplates`.
 async fn setup_file_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");
     let file_tpl = templates_root.join("file");
@@ -237,7 +237,7 @@ async fn phase_7_slice_1_demo_fanout_n_reads_all_arrive() {
     }
     assert_eq!(
         received, N,
-        "all N reads must arrive at /sink (verliert-nicht im echten FileCell-Pfad)"
+        "all N reads must arrive at /sink (no loss on the real FileCell path)"
     );
 
     h.shutdown().await;

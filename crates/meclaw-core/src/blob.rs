@@ -1,6 +1,6 @@
-//! Blob-Referenz für attachments[]-Slot (Phase 12). I/O-rein.
-//! sha256 ist optional und wird in Phase 12 nicht berechnet
-//! (docs/meclaw-overview.md § Blob-Storage, Sidecar-Schema Z.1334).
+//! Blob reference for the attachments[] slot (phase 12). I/O-free.
+//! sha256 is optional and is not computed in phase 12
+//! (docs/meclaw-overview.md § Blob storage, sidecar schema l.1334).
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

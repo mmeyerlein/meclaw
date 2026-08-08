@@ -73,7 +73,7 @@ pub fn should_fail_rename(committed: usize) -> bool {
     }
 }
 
-/// Phase-6 Apply-Sequenz Schritt 7 hook. In release no-op; in tests parks until released.
+/// Phase-6 apply sequence step 7 hook. In release no-op; in tests parks until released.
 pub async fn park_after_rename() {
     #[cfg(feature = "test-hooks")]
     {

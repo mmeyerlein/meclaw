@@ -1,22 +1,22 @@
 //! Phase-13 End-to-End-Lifecycle-Demo (Task 13-K-3).
 //!
-//! POSITIVES RECEIPT durch alle vier Status-Übergänge einer stateful Cell:
-//!   1. NotYetSpawned (direkt nach Boot, vor jedem Wake-Pre-Send).
-//!   2. Awake (1. Wake → cell.db Created, counter=1).
-//!   3. Asleep (Idle-Despawn nach `idle_timeout_ms`-Ablauf).
-//!   4. Awake (2. Wake → cell.db Resumed via overlay_from_db, counter=2).
+//! POSITIVE RECEIPT across all four status transitions of a stateful cell:
+//!   1. NotYetSpawned (directly after boot, before any wake-pre-send).
+//!   2. Awake (1st wake → cell.db Created, counter=1).
+//!   3. Asleep (idle despawn after `idle_timeout_ms` elapses).
+//!   4. Awake (2nd wake → cell.db Resumed via overlay_from_db, counter=2).
 //!
-//! Counter steigt monoton 0→1→2 — Beweis für cell.db-Resume via
-//! `OpenStatus::Resumed`-Pfad (build_cell_with_open_db lädt `system.counter`
-//! beim zweiten Wake aus der zwischengeschriebenen cell.db).
+//! The counter rises monotonically 0→1→2 — proof of the cell.db resume via the
+//! `OpenStatus::Resumed` path (build_cell_with_open_db loads `system.counter`
+//! on the second wake from the cell.db written in between).
 //!
-//! Topologie (vorlage: `phase_7_5_demo::demo_production_bootstrap_spawn_with_restart`):
+//! Topology (modelled on `phase_7_5_demo::demo_production_bootstrap_spawn_with_restart`):
 //!   td.path()/main/config.json            (hive, root)
 //!   td.path()/main/persist/config.json    (persist_mock, idle_timeout_ms=120,
-//!                                          echo_to=/sink, ohne panic_after)
-//!   /sink                                 (CaptureCell, direkt via h.spawn
-//!                                          VOR bootstrap registriert für
-//!                                          Anti-Cascade)
+//!                                          echo_to=/sink, without panic_after)
+//!   /sink                                 (CaptureCell, registered directly via
+//!                                          h.spawn BEFORE bootstrap for
+//!                                          anti-cascade)
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg};
@@ -62,10 +62,10 @@ async fn read_registry_status(h: &ColonyHandle, path: &str) -> String {
 async fn lifecycle_full_cycle_with_db_resume() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // FS-Tree: root-hive + stateful persist_mock mit:
-    //   - idle_timeout_ms = 120ms (klein, Test deterministisch)
-    //   - cell.timeout = 0 (Idle-Modell, Default)
-    //   - echo_to = /sink (Output landet bei Sink, kein Self-Loop)
+    // FS tree: root hive + stateful persist_mock with:
+    //   - idle_timeout_ms = 120ms (small, keeps the test deterministic)
+    //   - cell.timeout = 0 (idle model, default)
+    //   - echo_to = /sink (output lands at the sink, no self-loop)
     write(
         td.path(),
         "main/config.json",
@@ -88,8 +88,8 @@ async fn lifecycle_full_cycle_with_db_resume() {
         vec![("persist_mock".to_string(), persist_factory.clone())],
     );
 
-    // /sink VOR bootstrap registrieren (Anti-Cascade: /persist's echo_to muss
-    // resolved sein, sonst landet die Cell-Output-Emission im DLQ).
+    // Register /sink BEFORE bootstrap (anti-cascade: /persist's echo_to must be
+    // resolvable, otherwise the cell output emission lands in the DLQ).
     let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(16);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
@@ -111,7 +111,7 @@ async fn lifecycle_full_cycle_with_db_resume() {
     h.add_edge(Uuid::now_v7(), Path::new("/persist"), Path::new("/sink"))
         .await;
 
-    // RECEIPT 1: NotYetSpawned direkt nach Boot.
+    // RECEIPT 1: NotYetSpawned directly after boot.
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "NotYetSpawned",
@@ -133,20 +133,20 @@ async fn lifecycle_full_cycle_with_db_resume() {
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Awake",
-        "RECEIPT 2: status=Awake nach erstem Wake-Pre-Send"
+        "RECEIPT 2: status=Awake after the first wake pre-send"
     );
 
-    // RECEIPT 3: Idle ausgewartet → Status=Asleep.
-    // 120ms idle_timeout + Puffer für Sleep-Arm + WriteOp-Flush → 260ms.
+    // RECEIPT 3: idle elapsed → status=Asleep.
+    // 120ms idle_timeout + buffer for the sleep arm + WriteOp flush → 260ms.
     tokio::time::sleep(Duration::from_millis(260)).await;
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Asleep",
-        "RECEIPT 3: status=Asleep nach Idle-Despawn"
+        "RECEIPT 3: status=Asleep after the idle despawn"
     );
 
-    // RECEIPT 4: 2. Wake → cell.db Resumed (overlay_from_db lädt counter=1),
-    // handle inkrementiert auf 2, Status=Awake.
+    // RECEIPT 4: 2nd wake → cell.db Resumed (overlay_from_db loads counter=1),
+    // handle increments to 2, status=Awake.
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
     let m2 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
@@ -161,7 +161,7 @@ async fn lifecycle_full_cycle_with_db_resume() {
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Awake",
-        "RECEIPT 4: status=Awake nach zweitem Wake-Pre-Send"
+        "RECEIPT 4: status=Awake after the second wake pre-send"
     );
 
     h.shutdown().await;

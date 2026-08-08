@@ -12,21 +12,21 @@
 //!
 //! Mirrors `colony::handle_mutation`, verified against `colony.rs` 2026-06-10:
 //!
-//! 1. **Schritt 8** — `remove_nodes`: COLLECT resolved paths only (no edge
+//! 1. **Step 8** — `remove_nodes`: COLLECT resolved paths only (no edge
 //!    mutation yet).
-//! 2. **Schritt 9** — `add_nodes` single-cell staging/spawn (node
+//! 2. **Step 9** — `add_nodes` single-cell staging/spawn (node
 //!    registration).
-//! 3. **Schritt 9b** — `swap_nodes`: edge swing over the table as it is at
+//! 3. **Step 9b** — `swap_nodes`: edge swing over the table as it is at
 //!    that point (live edges only — subtree/`add_edges` inserts come later);
 //!    resulting self-loops are dropped (`plan_edge_swing` semantics).
-//! 4. **Schritt 9c** — subtree registration + internal-edge insert (with
+//! 4. **Step 9c** — subtree registration + internal-edge insert (with
 //!    `contains_equal` dedup).
-//! 5. **Schritt 10, first block** — `remove_nodes` DISCONNECT: ALL edges
+//! 5. **Step 10, first block** — `remove_nodes` DISCONNECT: ALL edges
 //!    incident to each removed path are removed. NOTE: this runs BEFORE
-//!    `add_edges`/`remove_edges` ("Reihenfolge remove-vor-add" — a same-diff
+//!    `add_edges`/`remove_edges` ("remove-before-add ordering" — a same-diff
 //!    `add_edges` edge to a removed-and-rewired node survives).
-//! 6. **Schritt 10** — `add_edges` insert (with dedup).
-//! 7. **Schritt 10** — `remove_edges`: filter with
+//! 6. **Step 10** — `add_edges` insert (with dedup).
+//! 7. **Step 10** — `remove_edges`: filter with
 //!    [`super::validate::remove_edges_pattern_hits`] against the table at that
 //!    point — which ALREADY contains this diff's added edges (swing inserts,
 //!    subtree internal edges, `add_edges`).
@@ -203,7 +203,7 @@ pub fn build_post_state_header_views(
         })
         .collect();
 
-    // ── Schritt 8 mirror: remove_nodes — collect resolved paths only ────────
+    // ── Step 8 mirror: remove_nodes — collect resolved paths only ───────────
     let mut removed_node_paths: Vec<String> = Vec::new();
     if let Some(rems) = diff_subst.get("remove_nodes").and_then(|v| v.as_array()) {
         for r in rems {
@@ -218,7 +218,7 @@ pub fn build_post_state_header_views(
         }
     }
 
-    // ── Schritt 9 + 9c node views: add_nodes (single-cell + subtree cells) ──
+    // ── Step 9 + 9c node views: add_nodes (single-cell + subtree cells) ─────
     // Subtree internal edges are collected here but inserted AFTER the swap
     // arm, mirroring the 9b-before-9c order in `handle_mutation`.
     let mut subtree_edges: Vec<PostStateEdge> = Vec::new();
@@ -318,7 +318,7 @@ pub fn build_post_state_header_views(
         }
     }
 
-    // ── Schritt 9b mirror: swap_nodes — edge swing, self-loops dropped ──────
+    // ── Step 9b mirror: swap_nodes — edge swing, self-loops dropped ─────────
     // Runs on the CURRENT list (live edges only at this point — subtree and
     // add_edges inserts come later), mirroring `plan_edge_swing`'s input.
     if let Some(swaps) = diff_subst.get("swap_nodes").and_then(|v| v.as_array()) {
@@ -362,12 +362,12 @@ pub fn build_post_state_header_views(
         }
     }
 
-    // ── Schritt 9c mirror: subtree internal edges (dedup) ───────────────────
+    // ── Step 9c mirror: subtree internal edges (dedup) ──────────────────────
     for e in subtree_edges {
         push_dedup(&mut post_edges, e);
     }
 
-    // ── Schritt 10 mirror, first block: remove_nodes DISCONNECT ─────────────
+    // ── Step 10 mirror, first block: remove_nodes DISCONNECT ────────────────
     // ALL incident edges removed. Runs BEFORE add_edges (remove-vor-add); the
     // node view stays in the map — the participation filter drops it if no
     // later edge rewires the node.
@@ -375,7 +375,7 @@ pub fn build_post_state_header_views(
         post_edges.retain(|e| e.from != *p && e.to != *p);
     }
 
-    // ── Schritt 10 mirror: add_edges (dedup) ────────────────────────────────
+    // ── Step 10 mirror: add_edges (dedup) ───────────────────────────────────
     if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
         for e in adds {
             let (Some(from_name), Some(to_name)) = (
@@ -407,7 +407,7 @@ pub fn build_post_state_header_views(
         }
     }
 
-    // ── Schritt 10 mirror: remove_edges (exact apply predicate) ─────────────
+    // ── Step 10 mirror: remove_edges (exact apply predicate) ────────────────
     // Filters the CURRENT list — which, like the live EdgeTable at this point
     // in the apply sequence, already contains this diff's added edges.
     if let Some(rems) = diff_subst.get("remove_edges").and_then(|v| v.as_array()) {
@@ -797,9 +797,9 @@ mod tests {
 
     #[test]
     fn remove_nodes_disconnect_runs_before_add_edges() {
-        // Verified arm order: the remove_nodes DISCONNECT (Schritt 10, first
+        // Verified arm order: the remove_nodes DISCONNECT (step 10, first
         // block) runs BEFORE add_edges — a same-diff edge rewiring the removed
-        // node survives ("remove-vor-add": remove+add at the same path).
+        // node survives ("remove-before-add": remove+add at the same path).
         let nc = contracts(&[
             ("/a", node_view(&[], &[], &[])),
             ("/b", node_view(&[], &[], &[])),

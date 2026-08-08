@@ -1,5 +1,5 @@
-//! Phase-4 Demo Test 1: Filesystem-Bootstrap aus einem im TempDir
-//! aufgebauten Beispiel-Tree (kein Laden aus examples/).
+//! Phase-4 demo test 1: filesystem bootstrap from an example tree built in a
+//! TempDir (no loading from examples/).
 //!
 //! Tree:
 //!   /                   (hive, root)

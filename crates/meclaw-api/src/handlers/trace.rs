@@ -1,10 +1,10 @@
 //! GET /colony/trace — Phase 12-B T8.6.
 //!
-//! Wrappt `ColonyMsg::ReadTrace` (spawn_blocking + SQLITE_OPEN_READ_ONLY).
-//! UUID-Fields (`trace_id`, `correlation_id`) werden hier inline geprueft;
-//! Parse-Fehler → 400 `{"error": "bad_query", "detail": "..."}`. T13
-//! systematisiert das spaeter (gemeinsamer 400-Helper); fuer T8 nur die
-//! beiden UUID-Felder.
+//! Wraps `ColonyMsg::ReadTrace` (spawn_blocking + SQLITE_OPEN_READ_ONLY).
+//! The UUID fields (`trace_id`, `correlation_id`) are checked inline here;
+//! a parse error yields 400 `{"error": "bad_query", "detail": "..."}`. T13
+//! systematizes this later (a shared 400 helper); for T8 only these two UUID
+//! fields.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -19,29 +19,29 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `GET /colony/trace`.
+/// Query params for `GET /colony/trace`.
 #[derive(Debug, Deserialize)]
 pub struct TraceQuery {
-    /// Optional: Filter auf `trace_id` (UUID-String).
+    /// Optional: filter on `trace_id` (UUID string).
     pub trace_id: Option<String>,
-    /// Optional: Filter auf `to_path`-Prefix.
+    /// Optional: filter on the `to_path` prefix.
     pub path_prefix: Option<String>,
-    /// Optional: Filter auf `correlation_id` (UUID-String).
+    /// Optional: filter on `correlation_id` (UUID string).
     pub correlation_id: Option<String>,
-    /// `?error=true` → nur Rows mit `error_code` im Headers-JSON.
+    /// `?error=true` → only rows with an `error_code` in the headers JSON.
     pub error: Option<bool>,
-    /// Optional: nur Rows mit `created_at >= since` (Unix-Sek).
+    /// Optional: only rows with `created_at >= since` (Unix seconds).
     pub since: Option<i64>,
     /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
-/// Handler fuer `GET /colony/trace`.
+/// Handler for `GET /colony/trace`.
 pub async fn get_trace(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<TraceQuery>,
 ) -> impl IntoResponse {
-    // UUID-Parsing inline (T13 zentralisiert).
+    // UUID parsing inline (T13 centralizes it).
     let trace_id = match q.trace_id.as_deref().map(Uuid::parse_str) {
         Some(Ok(u)) => Some(u),
         Some(Err(_)) => {

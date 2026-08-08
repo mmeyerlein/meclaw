@@ -1,20 +1,20 @@
-//! Phase-13.5-A6 Demo: Cell→/colony-Routing volle Symmetrie via Cell-Emit-Pfad.
+//! Phase-13.5-A6 demo: cell→/colony routing, full symmetry via the cell-emit path.
 //!
-//! Drei Beweis-Cases mit EmitOnceMockCell (Cell-Emit, KEIN manuelles reply_to):
-//!   1. Cell emittiert /colony/mutations mit valider add_edges-Diff → Reply
-//!      {mutation: {outcome: "committed"}} bei der Cell.
-//!   2. Cell emittiert /colony/registry → Reply {registry: [...]} bei der Cell.
-//!   3. Cell emittiert /colony/bogus → ColonyEndpointUnimplemented DLQ
-//!      mit sender = Cell-pfad (Auto-stempel via OutputSink/build_follow_up_with
-//!      pro spec Z.891).
+//! Three proof cases with EmitOnceMockCell (cell emit, NO manual reply_to):
+//!   1. The cell emits /colony/mutations with a valid add_edges diff → reply
+//!      {mutation: {outcome: "committed"}} arrives at the cell.
+//!   2. The cell emits /colony/registry → reply {registry: [...]} at the cell.
+//!   3. The cell emits /colony/bogus → a ColonyEndpointUnimplemented DLQ entry
+//!      with sender = the cell path (auto-stamped via
+//!      OutputSink/build_follow_up_with per spec Z.891).
 //!
-//! Mechanismus-Beweis: OutputSink füllt CellEmission.sender_path beim
-//! Cell-emit; Outputs-Arm baut Reply mit reply_to=sender_path. Probe sendet
-//! KEIN manuelles reply_to — der Auto-Stempel wird beim Reply der Mechanismus.
+//! Mechanism proof: OutputSink fills CellEmission.sender_path on the cell emit;
+//! the outputs arm builds the reply with reply_to=sender_path. The probe sends
+//! NO manual reply_to — the auto-stamp becomes the mechanism on the reply.
 //!
-//! Anti-Cascade-Disziplin (Phase-6.5-Lesson): /probe wird via
-//! `register_spawned` VOR `bootstrap_from_filesystem` registriert, damit
-//! der Reply-Pfad an /probe resolved ist.
+//! Anti-cascade discipline (phase-6.5 lesson): /probe is registered via
+//! `register_spawned` BEFORE `bootstrap_from_filesystem`, so that the reply path
+//! to /probe resolves.
 
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 /// Helper: spawn an `EmitOnceMockCellFactory`-Cell on `path` (registered
 /// dormant in Colony, will be woken on first message).
 ///
-/// `cell_dir` muss existieren — wir nutzen ein eigenes Temp-Sub-Verzeichnis,
-/// damit `open_or_create_cell_db` einen sauberen Pfad hat.
+/// `cell_dir` must exist — we use a dedicated temp sub-directory so that
+/// `open_or_create_cell_db` has a clean path.
 async fn spawn_emit_once_probe(
     h: &ColonyHandle,
     cell_dir: std::path::PathBuf,
@@ -71,15 +71,15 @@ fn body_as_value(msg: &meclaw_core::Message) -> &Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_13_5_a6_mutation_round_trip_committed_via_cell_emit() {
-    // Topologie:
-    //   /a, /b — echo-Cells (existierende Nodes, damit add_edges validiert).
-    //   /probe — EmitOnceMockCell, emittiert beim ersten Input einen
-    //            /colony/mutations-CellOutput mit valider add_edges-Diff.
-    //   Erwartet: /probe.capture_rx empfängt Reply mit
+    // Topology:
+    //   /a, /b — echo cells (existing nodes, so that add_edges validates).
+    //   /probe — EmitOnceMockCell, emits on the first input a
+    //            /colony/mutations cell output with a valid add_edges diff.
+    //   Expected: /probe.capture_rx receives a reply with
     //   body.mutation.outcome="committed".
     //
-    // KEIN manuelles reply_to in der Probe — Auto-Stempel via OutputSink
-    // (Spec Z.891) ist der Beweis-Mechanismus.
+    // NO manual reply_to in the probe — the auto-stamp via OutputSink
+    // (spec Z.891) is the proof mechanism.
 
     let td = TempDir::new().unwrap();
     create_dir_all(td.path().join("main/a")).unwrap();
@@ -102,8 +102,8 @@ async fn phase_13_5_a6_mutation_round_trip_committed_via_cell_emit() {
 
     let h = ColonyHandle::new();
 
-    // /probe braucht ein eigenes cell_dir (außerhalb von td, damit der
-    // bootstrap-walk es nicht sieht).
+    // /probe needs its own cell_dir (outside td, so the bootstrap walk does not
+    // see it).
     let probe_dir = h.tempdir_path().join("probe_dir");
     std::fs::create_dir_all(&probe_dir).unwrap();
 
@@ -178,7 +178,7 @@ async fn phase_13_5_a6_mutation_round_trip_committed_via_cell_emit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_13_5_a6_read_registry_round_trip_via_cell_emit() {
     // EmitOnceMockCell emit /colony/registry → Reply {registry: [...]}
-    // landet bei der Cell via auto reply_to-Stempel.
+    // arrives at the cell via the auto reply_to stamp.
 
     let td = TempDir::new().unwrap();
     create_dir_all(td.path().join("main/a")).unwrap();
@@ -251,10 +251,10 @@ async fn phase_13_5_a6_read_registry_round_trip_via_cell_emit() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Unknown-Endpunkt DLQ mit sender_path = Cell-Pfad.
+// Test 3: unknown-endpoint DLQ with sender_path = the cell path.
 //
-// CRITICAL: must-fix #1 — sender_path im DLQ-Entry MUSS /probe sein.
-// Beweist Auto-reply_to-Stempel via OutputSink/build_follow_up_with (Spec Z.891).
+// CRITICAL: must-fix #1 — sender_path in the DLQ entry MUST be /probe.
+// Proves the auto reply_to stamp via OutputSink/build_follow_up_with (spec Z.891).
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -291,10 +291,10 @@ async fn phase_13_5_a6_unknown_endpoint_dlq_sender_is_cell_path() {
         .build();
     h.send(trigger).await;
 
-    // Dispatcher braucht einen Moment. Unter Workspace-Last (default
-    // test-threads) ist der Tokio-Scheduler-Druck größer — deterministisches
-    // poll-then-drain statt fixed-sleep, sonst flake'd der Test (siehe Phase-8/
-    // Phase-11/Phase-13-50-cell-Klasse der timing-fragilen demos).
+    // The dispatcher needs a moment. Under workspace load (default test-threads)
+    // the Tokio scheduler pressure is higher — deterministic poll-then-drain
+    // instead of a fixed sleep, otherwise the test flakes (see the phase-8/
+    // phase-11/phase-13 50-cell class of timing-fragile demos).
     let bogus_dlq;
     let dlq;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -332,7 +332,7 @@ async fn phase_13_5_a6_unknown_endpoint_dlq_sender_is_cell_path() {
     assert_eq!(
         entry.sender_path.as_str(),
         "/probe",
-        "A6-E2E-CRITICAL: DLQ sender_path is the Cell-pfad (auto-stempel via OutputSink); got: {:?}",
+        "A6-E2E-CRITICAL: DLQ sender_path is the cell path (auto-stamped via OutputSink); got: {:?}",
         entry.sender_path
     );
 

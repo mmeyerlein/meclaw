@@ -1,7 +1,7 @@
 //! Phase-7 Slice-3 web_search-Demo.
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/web_search/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/web_search/` directory is created and loaded via RescanTemplates.
 
 use meclaw_cells::WebSearchCellFactory;
 use meclaw_colony::CellFactory;
@@ -23,7 +23,7 @@ fn make_tool_call_probe(args: &str, id: &str, reply_to: Path) -> meclaw_core::Me
         .build()
 }
 
-/// Phase-11 T16: Legt ein minimales `web_search`-Template-Verzeichnis an und lädt es
+/// Phase-11 T16: creates a minimal `web_search` template directory and loads it
 /// via `RescanTemplates` in die Colony-Registry.
 async fn setup_web_search_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");
@@ -182,7 +182,7 @@ async fn phase_7_web_search_demo_non_conforming_is_graceful() {
         .unwrap()
         .unwrap();
     assert_eq!(m.headers.hop["result_count"], 0);
-    // GRACEFUL — KEIN finish_reason=error
+    // GRACEFUL — NO finish_reason=error
     assert!(
         m.headers.hop.get("finish_reason").is_none() || m.headers.hop["finish_reason"] != "error"
     );

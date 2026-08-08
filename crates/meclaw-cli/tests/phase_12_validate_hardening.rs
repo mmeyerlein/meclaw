@@ -1,32 +1,32 @@
-//! Phase-12-Close T28: --validate-Haertung (additiv, kein Korridor-Touch).
+//! Phase-12-close T28: hardening of --validate (additive, no corridor touch).
 //!
-//! Vor T28 hat --validate NUR den Templates-Scan validiert (boot_load_or_scan)
-//! und exit 0 zurueckgegeben — auch bei inkonsistenter colony.db oder
-//! mehreren Top-Level-Cell-Dirs (siehe PROGRESS § Phase-12-Limitations,
-//! Commit 5762e69, --validate-Scope-Luecke).
+//! Before T28, --validate validated ONLY the templates scan (boot_load_or_scan)
+//! and returned exit 0 — even with an inconsistent colony.db or several
+//! top-level cell dirs (see PROGRESS § phase-12 limitations, commit 5762e69,
+//! the --validate scope gap).
 //!
-//! T28 erweitert --validate additiv um:
+//! T28 extends --validate additively with:
 //!   1. plan_bootstrap (Filesystem-Bootstrap-Plan: MultipleRootDirs / NoRootDir
 //!      / InvalidParams / CorruptCellDb).
 //!   2. probe_boot_state (colony.db-Consistency: registry/edges/hive_scopes
 //!      mixed counts -> Inconsistent).
 //!
-//! Jeder Fehler aggregiert + Klartext auf stderr; exit !=0 wenn IRGENDEIN
-//! Check failt. exit 0 nur wenn alle drei (Templates + Plan + colony.db) clean.
+//! Every error aggregates + plain text on stderr; exit !=0 when ANY check
+//! fails. exit 0 only when all three (templates + plan + colony.db) are clean.
 //!
-//! KEIN Colony/axum-Spawn (--validate returnt vor dem Spawn). probe_boot_state
-//! wird DIREKT aufgerufen und Inconsistent hier graceful behandelt (Print +
-//! return Err) — NICHT ueber den colony_task-Panic-Pfad (colony.rs:386,
-//! Phase-5-Bestand). Die Panic-Site bleibt unangetastet (eigener Robustheits-
-//! Pass nach Phase 13/14).
+//! NO colony/axum spawn (--validate returns before the spawn). probe_boot_state
+//! is called DIRECTLY and Inconsistent is handled gracefully here (print +
+//! return Err) — NOT via the colony_task panic path (colony.rs:386, phase-5
+//! legacy). The panic site stays untouched (its own robustness pass after
+//! phase 13/14).
 
 use meclaw_cli::{Cli, run};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-/// Helper: minimale valid-fixture im TempDir (single hive-marker, kein
-/// templates-Verzeichnis). Spiegelt das Pattern aus
-/// `phase_12_x_e2e_attachment_in_trace.rs:30` und `phase_12_b_demo.rs:41`.
+/// Helper: a minimal valid fixture in the TempDir (single hive marker, no
+/// templates directory). Mirrors the pattern from
+/// `phase_12_x_e2e_attachment_in_trace.rs:30` and `phase_12_b_demo.rs:41`.
 fn write_valid_fixture(root: &std::path::Path) {
     std::fs::create_dir_all(root.join("demo")).unwrap();
     std::fs::write(

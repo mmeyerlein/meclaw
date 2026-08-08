@@ -17,7 +17,7 @@ pub enum Script {
 /// Parsed `code` params.
 ///
 /// Phase 9: `runner` must be exactly `"python3"` (spec correction
-/// 2026-05-23 — kanonischer Phase-9-Runner ist das real existierende
+/// 2026-05-23 — the canonical phase-9 runner is the actually existing
 /// Binary auf Ubuntu 24, cell-types.md Z.234 Doc-Update folgt im
 /// Design-Repo). Other values (incl. `"python"`, `"ruby"`, ...) are
 /// rejected with `'params.runner: only "python3" is supported in Phase 9'`.
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn rejects_non_python3_runner() {
-        // "python" (without "3") rejected — Phase-9 kanonisch ist "python3"
+        // "python" (without "3") rejected — the phase-9 canonical name is "python3"
         // (spec correction 2026-05-23, cell-types.md Z.234).
         let r1 = CodeParams::parse(&json!({"runner":"python","script_path":"x.py"}));
         assert!(

@@ -1,4 +1,4 @@
-//! Phase-10-C T11: handle_event persistiert Cursor VOR Emit (Phase-5-Kanon).
+//! Phase-10-C T11: handle_event persists the cursor BEFORE emitting (phase-5 canon).
 //! Header chat_id/user_id/platform/message_id (Spec cell-types.md Z.370).
 
 use meclaw_cells::proxy::cell::ProxyCell;
@@ -46,7 +46,7 @@ async fn handle_event_persists_cursor_before_emit() {
     let persisted = db.call(|c| load_offset(c)).await.unwrap();
     assert_eq!(persisted, 43);
 
-    // 2. Emission abgesetzt: target=/dst, content trägt Header + UBF.
+    // 2. Emission dispatched: target=/dst, the content carries the header + UBF.
     let em = origin_rx.recv().await.expect("emission");
     assert_eq!(em.target.as_str(), "/dst");
     assert_eq!(em.parent_message_id, None, "Source-Emission via OriginSink");

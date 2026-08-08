@@ -5,9 +5,9 @@
 //! Before the fix the `./`-prefixed endpoint rejected as `edge_schema`
 //! ("from='./a' unknown") because validate compared the raw string against the
 //! bare `add_nodes` short-names, and `resolve_scoped_path` (apply) string-joined
-//! `/./a` — a path the routing layer never matches. Spec § Mutation-Format:
-//! "Damit darf eine add_edges-Edge auf eine Node zeigen, die im selben Diff per
-//! add_nodes neu kommt."
+//! `/./a` — a path the routing layer never matches. Spec § Mutation format:
+//! "an `add_edges` edge may point to a node that newly arrives in the same diff
+//! via `add_nodes`."
 //!
 //! This drives the real mutation path and proves BOTH halves:
 //!   * the composite add_nodes + add_edges diff COMMITS, and

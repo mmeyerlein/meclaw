@@ -1,66 +1,66 @@
-//! `ColonyDb`-Struct: Writer-Thread + read-only-Connection für `colony.db`.
+//! `ColonyDb` struct: writer thread + read-only connection for `colony.db`.
 //!
-//! **Single-Owner-Invariante (FIX 2, review 2026-05-20)**: `writer_tx` lebt
-//! genau in einem Owner (`ColonyDb`), wird NIE in einen längerlebigen Scope geklont.
-//! Alle Sends gehen per Borrow (`&colony_db.writer_tx`). Beim `shutdown()` ist das
-//! Drop des Senders der einzige Auslöser für den Writer-Thread-Exit.
+//! **Single-owner invariant (FIX 2, review 2026-05-20)**: `writer_tx` lives in
+//! exactly one owner (`ColonyDb`) and is NEVER cloned into a longer-lived scope.
+//! All sends go through a borrow (`&colony_db.writer_tx`). On `shutdown()` the
+//! drop of the sender is the only trigger for the writer thread's exit.
 
 use crate::persist::writer::ColonyWriteOp;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::thread::JoinHandle;
 
-/// Lifecycle-Handle für `colony.db`: Writer-Thread + read-only-Connection.
+/// Lifecycle handle for `colony.db`: writer thread + read-only connection.
 pub struct ColonyDb {
-    /// Sender in den Writer-Thread. Single-Owner per FIX 2.
+    /// Sender into the writer thread. Single owner per FIX 2.
     ///
-    /// Phase-12-Pre: bounded `tokio::sync::mpsc::channel(1000)` mit
-    /// kooperativem `.send().await`-Backpressure. Writer-Receiver bleibt
-    /// `std::thread`-based und drained via `blocking_recv()`.
+    /// Phase-12-Pre: bounded `tokio::sync::mpsc::channel(1000)` with
+    /// cooperative `.send().await` backpressure. The writer receiver stays
+    /// `std::thread`-based and drains via `blocking_recv()`.
     pub(crate) writer_tx: tokio::sync::mpsc::Sender<ColonyWriteOp>,
-    /// Read-only-Connection für Trace-Queries (Cells lesen colony.db nicht direkt).
+    /// Read-only connection for trace queries (cells do not read colony.db directly).
     pub(crate) read_conn: rusqlite::Connection,
-    /// JoinHandle des Writer-Threads. `Option` nur für Drop-Sicherheit;
-    /// in T12 `shutdown()` consumiert ihn via self-Destructuring.
+    /// JoinHandle of the writer thread. `Option` only for drop safety;
+    /// in T12 `shutdown()` consumes it via self-destructuring.
     pub(crate) writer_join: Option<JoinHandle<()>>,
-    /// Atomic counter (sent - committed). Shared mit Writer-Thread, der
-    /// nach jedem committed Op dekrementiert.
+    /// Atomic counter (sent - committed). Shared with the writer thread, which
+    /// decrements it after every committed op.
     ///
-    /// `pub(crate)` damit `colony.rs::handle_register` den Counter inline
-    /// inkrementieren kann, ohne `&ColonyDb` über `.await` zu borrowen
-    /// (`&ColonyDb` ist nicht `Send`, weil `rusqlite::Connection` !Sync ist).
+    /// `pub(crate)` so that `colony.rs::handle_register` can increment the counter
+    /// inline without borrowing `&ColonyDb` across `.await`
+    /// (`&ColonyDb` is not `Send` because `rusqlite::Connection` is !Sync).
     pub(crate) queue_depth: Arc<AtomicI64>,
     /// Filesystem path of `colony.db`. Used by Phase-12-B `ReadTrace` to open
-    /// a fresh `SQLITE_OPEN_READ_ONLY`-Connection inside `spawn_blocking`
+    /// a fresh `SQLITE_OPEN_READ_ONLY` connection inside `spawn_blocking`
     /// (WAL allows concurrent readers — the writer thread is unaffected).
     db_path: std::path::PathBuf,
 }
 
-/// Persistierte Mutation-Log-Row aus der `mutation_log`-Tabelle (Phase 6).
+/// Persisted mutation-log row from the `mutation_log` table (phase 6).
 ///
-/// Phase 12-B step-7.4: konsumiert von `ColonyMsg::ReadMutationsAudit`-Inbox-Arm
-/// und in der HTTP-API-Schicht (Task 8) als Audit-Read.
+/// Phase 12-B step-7.4: consumed by the `ColonyMsg::ReadMutationsAudit` inbox arm
+/// and in the HTTP API layer (task 8) as an audit read.
 #[derive(Debug, Clone)]
 pub struct MutationLogRow {
-    /// Mutation-ID (UUID v7 als String).
+    /// Mutation ID (UUID v7 as a string).
     pub id: String,
-    /// Scope-Pfad-String, an dem die Mutation appliziert wurde.
+    /// Scope path string the mutation was applied at.
     pub scope: String,
-    /// Original-Payload als JSON-String (diff + ctx).
+    /// Original payload as a JSON string (diff + ctx).
     pub payload_json: String,
     /// Status: "in_flight" | "committed" | "failed".
     pub status: String,
-    /// Optional: Failure-Reason-String (nur bei `status='failed'`).
+    /// Optional: failure-reason string (only for `status='failed'`).
     pub failure_reason: Option<String>,
-    /// Unix-Sekunden bei Anlage.
+    /// Unix seconds at creation time.
     pub created_at: i64,
-    /// Unix-Sekunden bei Commit/Fail (NULL solange `in_flight`).
+    /// Unix seconds at commit/fail time (NULL while `in_flight`).
     pub committed_at: Option<i64>,
-    /// Phase-16 W3 (A6): `error_code` einer Validate-Stage-Reject-Row
-    /// (NULL bei in_flight/committed/failed).
+    /// Phase-16 W3 (A6): `error_code` of a validate-stage reject row
+    /// (NULL for in_flight/committed/failed).
     pub error_code: Option<String>,
-    /// Phase-16 W3 (A6): Trace-ID des Antrags bei einer Reject-Row
-    /// (NULL bei in_flight/committed/failed).
+    /// Phase-16 W3 (A6): trace ID of the request on a reject row
+    /// (NULL for in_flight/committed/failed).
     pub trace_id: Option<String>,
 }
 
@@ -80,24 +80,24 @@ pub struct PersistedRegistryEntry {
     pub status: String,
 }
 
-/// Persistierte Template-Row aus der `templates`-Tabelle (Phase 11 11-A).
+/// Persisted template row from the `templates` table (phase 11 11-A).
 #[derive(Debug, Clone)]
 pub struct TemplateRow {
-    /// Template-ID (UUID v7).
+    /// Template ID (UUID v7).
     pub template_id: String,
-    /// Template-Name (aus `template.json`).
+    /// Template name (from `template.json`).
     pub name: String,
-    /// Optional: Semantic-Version-String.
+    /// Optional: semantic-version string.
     pub version: Option<String>,
-    /// Absoluter Pfad zum Template-Verzeichnis.
+    /// Absolute path to the template directory.
     pub filesystem_path: String,
-    /// `description`-Feld als JSON-Blob.
+    /// `description` field as a JSON blob.
     pub description_json: String,
-    /// `tags`-Feld als JSON-Array-String.
+    /// `tags` field as a JSON array string.
     pub tags_json: String,
-    /// Optional: Autor-String.
+    /// Optional: author string.
     pub author: Option<String>,
-    /// Unix-Sekunden beim letzten Scan.
+    /// Unix seconds of the last scan.
     pub scanned_at: i64,
 }
 
@@ -128,11 +128,11 @@ pub struct DeadLetterRow {
 }
 
 impl ColonyDb {
-    /// Öffnet `colony.db` an `path`, initialisiert Schema, spawnt Writer-Thread.
+    /// Opens `colony.db` at `path`, initializes the schema, spawns the writer thread.
     ///
-    /// Der Writer-Thread läuft in einer blockierenden Loop (`run_writer`) und verarbeitet
-    /// `ColonyWriteOp`-Nachrichten in Batches (max `BATCH_MAX` pro Transaktion).
-    /// Der Thread beendet sich, wenn der Sender gedroppt wird (Channel disconnected).
+    /// The writer thread runs in a blocking loop (`run_writer`) and processes
+    /// `ColonyWriteOp` messages in batches (max `BATCH_MAX` per transaction).
+    /// The thread terminates when the sender is dropped (channel disconnected).
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let writer_conn = rusqlite::Connection::open(path)?;
         crate::persist::setup_colony_db(&writer_conn)?;
@@ -140,10 +140,10 @@ impl ColonyDb {
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
-        // Phase 12-Pre: bounded tokio::sync::mpsc(1000). Hartes Cap, kein
-        // Config-Knopf (CLAUDE.md Regel 1+7). Begründung: HTTP-Last ist die
-        // Phase-12-Risikofläche; ~1s Burst-Headroom bei realistischem Routing-
-        // Durchsatz. NICHT von Mailbox-Default abgeleitet.
+        // Phase 12-Pre: bounded tokio::sync::mpsc(1000). A hard cap, no config
+        // knob (CLAUDE.md rules 1+7). Rationale: HTTP load is the phase-12 risk
+        // surface; ~1s of burst headroom at realistic routing throughput. NOT
+        // derived from the mailbox default.
         let (writer_tx, writer_rx) = tokio::sync::mpsc::channel::<ColonyWriteOp>(1000);
         let queue_depth = Arc::new(AtomicI64::new(0));
         let qd_writer = queue_depth.clone();
@@ -171,13 +171,13 @@ impl ColonyDb {
         &self.db_path
     }
 
-    /// Sendet einen Op zum Writer. Inkrementiert queue_depth atomic.
-    /// Bei depth > 1000 → tracing::warn (Phase-6 hardening hook).
+    /// Sends an op to the writer. Increments queue_depth atomically.
+    /// At depth > 1000 → tracing::warn (phase-6 hardening hook).
     ///
-    /// Bounded-Backpressure: bei vollem Channel blockt der Producer kooperativ
-    /// via `.send().await` (kein Drop, Message-Log ist Audit-Trail — siehe
-    /// `docs/meclaw-overview.md` Z.1473 + Z.919). Panic-Verhalten
-    /// (writer-thread-dead) byte-identisch zum sync-Vorgänger.
+    /// Bounded backpressure: on a full channel the producer blocks cooperatively
+    /// via `.send().await` (no drop, the message log is an audit trail — see
+    /// `docs/meclaw-overview.md` Z.1473 + Z.919). Panic behaviour
+    /// (writer-thread-dead) byte-identical to the sync predecessor.
     pub async fn send_op(&self, op: ColonyWriteOp) {
         self.queue_depth.fetch_add(1, Ordering::Relaxed);
         let depth = self.queue_depth.load(Ordering::Relaxed);
@@ -233,7 +233,7 @@ impl ColonyDb {
         rx.await
     }
 
-    /// Klassifiziere Boot-State via `read_conn` (statt separater db-path-Probe).
+    /// Classifies the boot state via `read_conn` (instead of a separate db-path probe).
     pub fn boot_state(
         &self,
     ) -> Result<crate::bootstrap::BootState, crate::bootstrap::BootstrapError> {
@@ -275,7 +275,7 @@ impl ColonyDb {
         }
     }
 
-    /// Lese alle persistierten Edges aus colony.db (für Re-Boot-Hydration).
+    /// Reads all persisted edges from colony.db (for reboot hydration).
     ///
     /// Phase-13.5-Durable-Edges: re-parses CEL condition and modifier from
     /// persisted source strings. Hard-fails on corrupt data so routing state
@@ -349,7 +349,7 @@ impl ColonyDb {
         Ok(out)
     }
 
-    /// Lese alle persistierten Templates aus colony.db (für In-Memory-Registry-Hydration).
+    /// Reads all persisted templates from colony.db (for in-memory registry hydration).
     pub fn read_templates(&self) -> rusqlite::Result<Vec<TemplateRow>> {
         let mut stmt = self.read_conn.prepare(
             "SELECT template_id, name, version, filesystem_path,
@@ -371,10 +371,10 @@ impl ColonyDb {
         rows.collect()
     }
 
-    /// Lese `mutation_log`-Rows mit optionalem since-Filter + Cap (Phase 12-B step-7.4).
+    /// Reads `mutation_log` rows with an optional since filter + cap (phase 12-B step-7.4).
     ///
-    /// `since`: Unix-Sekunden, nur Rows mit `created_at >= since` werden zurückgegeben.
-    /// `limit` ist ein hartes Cap; Caller sollten vorher clampen.
+    /// `since`: unix seconds, only rows with `created_at >= since` are returned.
+    /// `limit` is a hard cap; callers should clamp beforehand.
     pub fn read_mutation_log(
         &self,
         since: Option<i64>,
@@ -410,14 +410,14 @@ impl ColonyDb {
         rows.collect()
     }
 
-    /// Lese persistierte `dead_letters`-Rows mit optionalem `since`/`error_code`-
-    /// Filter + Cap (Phase-16 W6d / A6). DB ist die DLQ-Source-of-Truth — der
-    /// `/colony/dead_letters`-Read query't hierüber, nicht mehr einen In-Memory-
-    /// `VecDeque`. Reihenfolge ist die Einfüge-Reihenfolge (`id` = rowid).
+    /// Reads persisted `dead_letters` rows with an optional `since`/`error_code`
+    /// filter + cap (phase-16 W6d / A6). The DB is the DLQ source of truth — the
+    /// `/colony/dead_letters` read queries against it, no longer against an
+    /// in-memory `VecDeque`. The order is the insert order (`id` = rowid).
     ///
-    /// `since`: Unix-Sekunden, nur Rows mit `created_at >= since`.
-    /// `error_code`: exakter Match auf den kanonischen `error_code`-String.
-    /// `limit`: hartes Cap; Caller clampen vorher (Default 100, Hard-Cap 1000).
+    /// `since`: unix seconds, only rows with `created_at >= since`.
+    /// `error_code`: exact match on the canonical `error_code` string.
+    /// `limit`: hard cap; callers clamp beforehand (default 100, hard cap 1000).
     pub fn read_dead_letters(
         &self,
         since: Option<i64>,
@@ -489,7 +489,7 @@ impl ColonyDb {
         rows.collect()
     }
 
-    /// Lese alle persistierten Hive-Scope-Pfade aus colony.db (für Re-Boot-Hydration).
+    /// Reads all persisted hive-scope paths from colony.db (for reboot hydration).
     pub fn read_hive_scopes(&self) -> rusqlite::Result<Vec<meclaw_core::Path>> {
         let mut stmt = self
             .read_conn
@@ -535,29 +535,30 @@ impl ColonyDb {
         rows.collect()
     }
 
-    /// Graceful Shutdown: explizites `ColonyWriteOp::Shutdown { ack }`-Signal +
-    /// `ack.blocking_recv()` + dann `drop(writer_tx)` + `JoinHandle::join()`.
+    /// Graceful shutdown: an explicit `ColonyWriteOp::Shutdown { ack }` signal +
+    /// `ack.blocking_recv()` + then `drop(writer_tx)` + `JoinHandle::join()`.
     ///
-    /// **Phase-13.5-A6-followup**: Vorgänger-Impl drop'te nur den Sender und
-    /// verließ sich auf `rx.blocking_recv() == None` im Writer-Loop. Das ist
-    /// race-prone unter Workspace-Last — Tokio mpsc kann das channel-close-
-    /// notify in einem atomaren state-transition-Fenster verlieren, was den
-    /// Writer-Thread im park belässt → `writer_join.join()` hängt forever
-    /// → Production-Liveness-Hazard (siehe `shutdown_persists_all_prior_writes_*`-
-    /// Regression-Test in `writer.rs`).
+    /// **Phase-13.5-A6 follow-up**: the predecessor impl only dropped the sender
+    /// and relied on `rx.blocking_recv() == None` in the writer loop. That is
+    /// race-prone under workspace load — Tokio mpsc can lose the channel-close
+    /// notify inside an atomic state-transition window, which leaves the writer
+    /// thread parked → `writer_join.join()` hangs forever → a production
+    /// liveness hazard (see the `shutdown_persists_all_prior_writes_*`
+    /// regression test in `writer.rs`).
     ///
-    /// Neue Mechanik: explizite Shutdown-Op + oneshot-ack. Writer drained den
-    /// aktuellen Batch (FIFO sichert: alle vor Shutdown enqueued'en Ops landen
-    /// in derselben oder einer früheren Transaktion), feuert ack, returnt
-    /// explizit. `try_send` Fallback bei voll-Channel (bounded 1000, in der
-    /// Praxis nie erreicht — Shutdown ist Singleton, max BATCH_MAX=64 backlog
-    /// vom drain übrig).
+    /// New mechanics: an explicit shutdown op + oneshot ack. The writer drains
+    /// the current batch (FIFO guarantees: every op enqueued before shutdown
+    /// lands in the same or an earlier transaction), fires the ack, and returns
+    /// explicitly. `try_send` fallback on a full channel (bounded 1000, never
+    /// reached in practice — shutdown is a singleton, at most BATCH_MAX=64
+    /// backlog left over from the drain).
     ///
-    /// Self-Destructuring lässt `writer_tx` als Plain-Sender im Struct
-    /// (kein Option<>-Hack); das `Self { ... }`-Pattern moved jedes Feld
-    /// einzeln. Producer-Single-Owner-Drain-Disziplin in `colony.rs::colony_task`
-    /// (ColonyMsg::Shutdown-Arm) sichert, dass `colony_db.shutdown()` ERST
-    /// gerufen wird, nachdem alle pending inbox-Items synchron verarbeitet sind.
+    /// Self-destructuring leaves `writer_tx` as a plain sender in the struct
+    /// (no `Option<>` hack); the `Self { ... }` pattern moves every field
+    /// individually. The producer single-owner drain discipline in
+    /// `colony.rs::colony_task` (ColonyMsg::Shutdown arm) guarantees that
+    /// `colony_db.shutdown()` is only called after all pending inbox items have
+    /// been processed synchronously.
     pub fn shutdown(self) {
         let Self {
             writer_tx,
@@ -572,16 +573,16 @@ impl ColonyDb {
         }
     }
 
-    /// Async-Variante von `shutdown()` für Tokio-async-Caller (`colony_task`).
+    /// Async variant of `shutdown()` for Tokio async callers (`colony_task`).
     ///
-    /// `tokio::sync::oneshot::Receiver::blocking_recv()` panickt in einem
-    /// async-Context — `shutdown()` (sync) darf NUR aus sync-Callers (Tests,
-    /// sync main) gerufen werden. `shutdown_async()` ist die korrekte Wahl
-    /// für `colony_task::ColonyMsg::Shutdown`-Arm.
+    /// `tokio::sync::oneshot::Receiver::blocking_recv()` panics inside an async
+    /// context — `shutdown()` (sync) may ONLY be called from sync callers (tests,
+    /// a sync main). `shutdown_async()` is the correct choice for the
+    /// `colony_task::ColonyMsg::Shutdown` arm.
     ///
-    /// Mechanik identisch zu `shutdown()`, nur mit `.await` statt
-    /// `blocking_recv()`. `writer_join.join()` (sync) bleibt — der Writer-
-    /// Thread sollte nach ack-send sofort `return`'en, join ist instant.
+    /// Mechanics identical to `shutdown()`, just with `.await` instead of
+    /// `blocking_recv()`. `writer_join.join()` (sync) stays — the writer thread
+    /// should `return` immediately after the ack send, so the join is instant.
     pub async fn shutdown_async(self) {
         let Self {
             writer_tx,
@@ -605,15 +606,15 @@ impl ColonyDb {
         match writer_tx.try_send(crate::persist::writer::ColonyWriteOp::Shutdown { ack: tx }) {
             Ok(()) => {
                 drop(writer_tx);
-                // Synchron auf Writer-Ack warten — parking_lot block_on,
-                // runtime-unabhängig. Panickt wenn im Tokio-async-context.
+                // Wait synchronously for the writer ack — parking_lot block_on,
+                // runtime-independent. Panics inside a Tokio async context.
                 let _ = rx.blocking_recv();
             }
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
-                    "ColonyDb::shutdown: Shutdown-Op konnte nicht eingestellt werden, \
-                     Fallback auf drop-only (race-prone close-detection)"
+                    "ColonyDb::shutdown: could not enqueue the shutdown op, \
+                     falling back to drop-only (race-prone close detection)"
                 );
                 drop(writer_tx);
             }
@@ -634,8 +635,8 @@ impl ColonyDb {
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
-                    "ColonyDb::shutdown_async: Shutdown-Op konnte nicht eingestellt werden, \
-                     Fallback auf drop-only (race-prone close-detection)"
+                    "ColonyDb::shutdown_async: could not enqueue the shutdown op, \
+                     falling back to drop-only (race-prone close detection)"
                 );
                 drop(writer_tx);
             }
@@ -687,8 +688,8 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: meta-Tabelle hat schema_version='4' (Phase-16 W6d / A6:
-        // persistente dead_letters-Tabelle).
+        // Schema check: the meta table has schema_version='4' (phase-16 W6d / A6:
+        // persistent dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -698,7 +699,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, "4");
-        // Single-Owner-Invariante: writer_tx ist vorhanden (nicht konsumiert)
+        // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);
     }
@@ -709,7 +710,7 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db1 = ColonyDb::open(&db_path).unwrap();
         drop(db1);
-        // Re-open derselben Datei — Setup ist idempotent (CREATE TABLE IF NOT EXISTS).
+        // Re-open the same file — setup is idempotent (CREATE TABLE IF NOT EXISTS).
         let db2 = ColonyDb::open(&db_path).unwrap();
         drop(db2);
     }
@@ -733,16 +734,16 @@ mod tests {
             })
             .await
             .unwrap();
-        // Drop the ColonyDb — writer-Sender wird gedroppt (Single-Owner-Pfad). Writer
-        // verarbeitet den letzten Item, committet, beendet sich.
+        // Drop the ColonyDb — the writer sender is dropped (single-owner path). The
+        // writer processes the last item, commits, and terminates.
         drop(db);
-        // T13 ersetzt den sleep durch shutdown-Barrier.
+        // T13 replaces the sleep with a shutdown barrier.
         std::thread::sleep(std::time::Duration::from_millis(200));
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM hive_scopes", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(cnt, 3, "InitialApply atomic — alle 3 scopes persistiert");
+        assert_eq!(cnt, 3, "InitialApply atomic — all 3 scopes persisted");
     }
 
     #[test]
@@ -763,7 +764,7 @@ mod tests {
             hive_scopes: vec![],
         })
         .await;
-        // depth >= before+1 unmittelbar nach send (Writer kann das schon verarbeitet haben)
+        // depth >= before+1 immediately after the send (the writer may already have processed it)
         assert!(
             db.queue_depth() >= before,
             "queue_depth must not go negative"
@@ -775,7 +776,7 @@ mod tests {
         use std::sync::mpsc::{RecvTimeoutError, channel};
         let td = tempfile::TempDir::new().unwrap();
         let db = ColonyDb::open(&td.path().join("c.db")).unwrap();
-        // shutdown läuft in separater std::thread; Test-seitiger Timeout via channel.
+        // shutdown runs in a separate std::thread; test-side timeout via channel.
         let (done_tx, done_rx) = channel();
         std::thread::spawn(move || {
             db.shutdown();
@@ -906,7 +907,7 @@ mod tests {
         db.insert_mutation_log_durable("mid-42".into(), "/main".into(), r#"{"x":1}"#.into(), 100)
             .await
             .expect("ack");
-        // Direkt aus DB lesen — Ack-Garantie heißt: Row committed.
+        // Read directly from the DB — the ack guarantee means: the row is committed.
         let conn = rusqlite::Connection::open_with_flags(
             &db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -932,7 +933,7 @@ mod tests {
         let db_path = td.path().join("c.db");
         let db = ColonyDb::open(&db_path).unwrap();
 
-        // 100 distinkte hive_scopes — eine pro Op (zählbares Payload).
+        // 100 distinct hive_scopes — one per op (countable payload).
         for i in 0..100 {
             db.send_op(ColonyWriteOp::InitialApply {
                 edges: vec![],
@@ -953,7 +954,7 @@ mod tests {
             Err(e) => panic!("unexpected: {e:?}"),
         }
 
-        // Flush-Beweis: fresh-reopen sieht alle 100 distinkten scopes.
+        // Flush proof: a fresh reopen sees all 100 distinct scopes.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM hive_scopes", [], |r| r.get(0))

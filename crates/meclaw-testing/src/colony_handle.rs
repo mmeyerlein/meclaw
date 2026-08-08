@@ -6,7 +6,7 @@
 //!   - `shutdown`: terminate Colony and wait for it
 //!
 //! The wrapper uses `multi_thread` Tokio runtime in tests — never `current_thread`,
-//! per CLAUDE.md Rule 11 + Test-Infrastruktur-Section.
+//! per CLAUDE.md rule 11 + the test-infrastructure section.
 
 use meclaw_colony::{
     CellFactoryRegistry, ColonyDb, ColonyMsg, DeadLetter, RespawnFn, SpawnedCellKind, cell_task,
@@ -413,8 +413,8 @@ impl ColonyHandle {
         self.outputs_tx.clone()
     }
 
-    /// Return a `ColonyRuntime` snapshot — minimal-Primitives für apply-Pfad.
-    /// Klont die beiden Sender; jeder Aufruf liefert eine frische `ColonyRuntime`-Instanz.
+    /// Return a `ColonyRuntime` snapshot — the minimal primitives for the apply
+    /// path. Clones both senders; every call yields a fresh `ColonyRuntime`.
     pub fn runtime(&self) -> meclaw_colony::ColonyRuntime {
         meclaw_colony::ColonyRuntime {
             inbox_tx: self.inbox_tx.clone(),
@@ -428,8 +428,8 @@ impl ColonyHandle {
     /// like `spawn` does but for a pre-spawned cell. Phase-13-K-2: both
     /// `Active` and `Dormant` are supported — `Active` sends
     /// `ColonyMsg::Register` (status Awake), `Dormant` sends
-    /// `ColonyMsg::RegisterDormant` (status NotYetSpawned, cell-task wird beim
-    /// ersten Wake-Pre-Send gespawnt).
+    /// `ColonyMsg::RegisterDormant` (status NotYetSpawned, the cell task is
+    /// spawned on the first wake-pre-send).
     pub async fn register_spawned(&self, path: meclaw_core::Path, sp: SpawnedCellKind) {
         self.register_spawned_typed(path, sp, "test-mock").await;
     }
@@ -634,7 +634,7 @@ mod tests {
         let path = h.tempdir_path();
         assert!(path.exists());
         h.shutdown().await;
-        // with_db_path öffnet bestehende DB ohne neue TempDir
+        // with_db_path opens the existing DB without a new TempDir
         let h2 = ColonyHandle::with_db_path(&path.join("colony.db"));
         h2.shutdown().await;
     }
@@ -689,14 +689,14 @@ mod tests {
         })
         .await;
         let db_path = h.tempdir_path().join("colony.db");
-        h.shutdown().await; // BARRIER — UPSERT-Op wurde vor ack enqueued, jetzt geflusht.
+        h.shutdown().await; // BARRIER — the UPSERT op was enqueued before the ack, now flushed.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM registry WHERE path='/x'", [], |r| {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(cnt, 1, "Register persistiert genau eine registry-Row");
+        assert_eq!(cnt, 1, "register persists exactly one registry row");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

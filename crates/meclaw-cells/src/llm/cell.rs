@@ -14,7 +14,7 @@ use meclaw_core::{Body, Message, OutputSink};
 /// Connection-Ownership-Modell — NOT a field on LlmCell.
 ///
 /// T17: struct + no-op handle (boilerplate). T18 grows handle() with Plan § 9
-/// Schritt 1 (parse input body) + Schritt 2 (system.* UPSERT). T19-T22 grow
+/// Step 1 (parse input body) + step 2 (system.* UPSERT). T19-T22 grow
 /// it further (messages-write, translate, wire, emit).
 pub struct LlmCell {
     /// Pre-validated and parsed params from `LlmParams::parse(raw)`.
@@ -102,7 +102,7 @@ impl StatefulCell for LlmCell {
             let started_at_unix_ms = unix_ms_now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
-            // Schritt 1: Parse input body. Validation failures → emit_error
+            // Step 1: parse the input body. Validation failures → emit_error
             // with source="parse", input_messages=[], NO DB write.
             let content = match &msg.body {
                 Body::Inline(v) => v.clone(),
@@ -142,7 +142,7 @@ impl StatefulCell for LlmCell {
                     return;
                 }
             };
-            // Schritt 1b (W4b): params-update slot (config.md § Zugriff Z.20).
+            // Step 1b (W4b): params-update slot (config.md § Access l.20).
             // Handled FIRST and strictly: the `params` block is merged into
             // self.params + persisted to cell.db, THEN any system/messages run
             // with the updated params (this call already uses the new model).
@@ -239,7 +239,7 @@ impl StatefulCell for LlmCell {
                 return;
             }
 
-            // Schritt 3 (prep): Validate messages-slot shape. If present but
+            // Step 3 (prep): validate the messages-slot shape. If present but
             // NOT a JSON array → parse-error (same code path as other parse
             // failures, no DB write).
             let messages_array: Option<Vec<meclaw_core::serde_json::Value>> = match messages {
@@ -265,7 +265,7 @@ impl StatefulCell for LlmCell {
                 None => None,
             };
 
-            // Schritt 2+3: Flatten system.* into leaves and persist BOTH
+            // Steps 2+3: flatten system.* into leaves and persist BOTH
             // system + optional messages atomically in one transaction via
             // `system_first_persist`. Q2 system-first order.
             let system_leaves: Vec<(String, meclaw_core::serde_json::Value)> = match system {
@@ -301,14 +301,14 @@ impl StatefulCell for LlmCell {
                 return;
             }
 
-            // Schritt 4: Q3 system-only-Schweigen. If no messages slot, the
+            // Step 4: Q3 system-only silence. If no messages slot, the
             // persist above already happened — return without emit/inference.
             let input_messages = match messages_array {
                 Some(m) => m,
                 None => return,
             };
 
-            // Schritt 5: Build-Translate (sync, pure).
+            // Step 5: build-translate (sync, pure).
             // 5a: read full system-tree from cell.db.
             let system_tree = match db.call(|conn| state::read_system_tree(conn)).await {
                 Ok(t) => t,
@@ -399,7 +399,7 @@ impl StatefulCell for LlmCell {
                 }
             };
 
-            // Schritt 6: HTTP-Call (async, A-Timeout via call_openai's
+            // Step 6: HTTP call (async, A timeout via call_openai's
             // internal tokio::time::timeout wrapper).
             let url = format!(
                 "{}{}",
@@ -444,7 +444,7 @@ impl StatefulCell for LlmCell {
                 }
             };
 
-            // Schritt 7: Parse-Translate-Response (sync, pure). On parse fail
+            // Step 7: parse-translate the response (sync, pure). On parse fail
             // we still defensively try to surface model/response_id from the
             // raw response so the error-meta carries them when available.
             let translated = match translate::parse_openai_response(&response_json) {
@@ -469,7 +469,7 @@ impl StatefulCell for LlmCell {
                 }
             };
 
-            // Schritt 8: Emit assistant-Turn as atomares UBF (Ende).
+            // Step 8: emit the assistant turn as an atomic UBF body (end).
             let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
             output::emit_assistant_turn(
                 sink,
@@ -677,10 +677,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn handle_messages_only_writes_last_input_then_wire_error_to_unbound_port() {
         // T20 rewrite of the T19 placeholder: messages-only input now flows
-        // through Schritt 5+6 and hits the wire. `mk_cell` points at an
+        // through steps 5+6 and hits the wire. `mk_cell` points at an
         // unbound loopback port with a 100ms A-timeout → WireError::Network
         // → emit_error(provider_error, source="wire"). The cell.db write
-        // from Schritt 3 must still be visible afterwards.
+        // from step 3 must still be visible afterwards.
         let td = TempDir::new().unwrap();
         let conn =
             meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
@@ -693,7 +693,7 @@ mod tests {
             .body(Body::Inline(json!({"messages": msgs.clone()})))
             .build();
         cell.handle(msg, &sink, &mut db).await;
-        // cell.db.last_input written (Schritt 3 persisted before wire call).
+        // cell.db.last_input written (step 3 persisted before the wire call).
         let stored: String = db
             .call(|conn| {
                 conn.query_row("SELECT message_json FROM last_input WHERE id=1", [], |r| {

@@ -4,14 +4,14 @@
 //! Two configurable behaviours via `params`:
 //! - `hang_forever: true` → `handle()` does `std::future::pending().await`
 //!   (never returns) — only the substrate B-backstop can end it. Used to
-//!   prove the backstop FIRES (demo-pflicht #2).
+//!   prove the backstop FIRES (demo requirement #2).
 //! - `sleep_ms: <n>` → `handle()` sleeps `n` ms, then emits one UBF body to
 //!   `echo_to` (or `msg.target` if absent). A measurable-but-finite handle —
 //!   used to prove that `cell.message_timeout: 0`/`-1` DISABLES the backstop
-//!   (demo-pflicht #3): with the backstop off, a 300ms handle completes
+//!   (demo requirement #3): with the backstop off, a 300ms handle completes
 //!   normally even though a small backstop would have killed it.
 //!
-//! Phase-6.5 Connection-Ownership: the cell holds NO `conn` field — the
+//! Phase-6.5 connection ownership: the cell holds NO `conn` field — the
 //! `cell.db` `DbConn` arrives as `&mut DbConn` in `handle()`. This cell does
 //! not touch `cell.db` at all (it is a pure timing fixture); the parameter is
 //! present only to satisfy the `StatefulCell` trait.

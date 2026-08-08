@@ -1,7 +1,7 @@
-//! Phase 12-D T23: Integration-Tests fuer `/ui/graph`.
+//! Phase 12-D T23: integration tests for `/ui/graph`.
 //!
-//! Server-rendered Graph-Snapshot: Nodes als `<ul>`, Edges als `<table>`.
-//! Wrappt `ColonyMsg::ReadGraph` mit `?scope=<path>` (default `/`).
+//! Server-rendered graph snapshot: nodes as a `<ul>`, edges as a `<table>`.
+//! Wraps `ColonyMsg::ReadGraph` with `?scope=<path>` (default `/`).
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -41,7 +41,7 @@ async fn ui_graph_default_scope_renders_html_sections() {
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(body.contains("Nodes"));
     assert!(body.contains("Edges"));
-    // Default-Scope `/` erscheint im Form.
+    // The default scope `/` appears in the form.
     assert!(body.contains("value=\"/\""));
 }
 

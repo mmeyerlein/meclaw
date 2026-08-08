@@ -1,6 +1,6 @@
-//! Phase-14-B Shared Test-Support: Tree-Copy+base_url-Patch, Boot mit llm+code+store,
+//! Phase-14-B shared test support: tree copy + base_url patch, boot with llm+code+store,
 //! Live-Graph-Query (ColonyMsg::ReadGraph), zero-dep .dot-Emit, message_log-body_kind-Probe.
-//! `#[path = "support_14b.rs"] mod support;` aus beiden 14-B-Testfiles.
+//! `#[path = "support_14b.rs"] mod support;` from both 14-B test files.
 #![allow(dead_code)]
 
 #[path = "topology_svg.rs"]
@@ -19,15 +19,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-/// Repo-root-relativer Pfad zu einem eingecheckten Beispiel-Baum.
+/// Repo-root-relative path to a checked-in example tree.
 pub fn example_dir(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(name)
 }
 
-/// Kopiert `src` rekursiv nach `dst` (nur Dateien/Verzeichnisse; keine Laufzeit-Artefakte
-/// im Quellbaum), patcht danach in JEDER `llm`-config die `params.base_url` auf `base_url`.
+/// Copies `src` recursively to `dst` (files/directories only; no runtime artefacts
+/// in the source tree), then patches `params.base_url` to `base_url` in EVERY `llm`
+/// config.
 pub fn copy_tree_patch_base_url(src: &std::path::Path, dst: &std::path::Path, base_url: &str) {
     copy_dir_recursive(src, dst);
     patch_llm_base_url(dst, base_url);
@@ -41,7 +42,7 @@ pub fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
         let entry = entry.unwrap();
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        // Nur den Topologie-Baum kopieren; SVG/DOT sind Artefakte, nicht Boot-Input.
+        // Copy the topology tree only; SVG/DOT are artefacts, not boot input.
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.ends_with(".dot") || name.ends_with(".svg") {
@@ -71,12 +72,12 @@ fn patch_llm_base_url(dir: &std::path::Path, base_url: &str) {
     }
 }
 
-/// Geteilte Boot-Boilerplate hinter [`boot`] und [`boot_with_blobs`]: nimmt den
-/// BEREITS konstruierten `ColonyHandle` (der Unterschied der beiden Boots ist genau
-/// dessen Konstruktion — `new_with_factories_at` vs. `new_with_blobs_at`), spawnt
-/// /sink + /park CaptureCells VOR Bootstrap, füllt die Registry (llm+code+store) und
-/// läuft `bootstrap_from_filesystem` über den (bereits gepatchten) TempDir-Baum.
-/// Gibt (ColonyHandle, sink_rx, park_rx) zurück.
+/// Shared boot boilerplate behind [`boot`] and [`boot_with_blobs`]: takes the
+/// ALREADY constructed `ColonyHandle` (the difference between the two boots is
+/// exactly its construction — `new_with_factories_at` vs. `new_with_blobs_at`),
+/// spawns the /sink + /park CaptureCells BEFORE bootstrap, fills the registry
+/// (llm+code+store) and runs `bootstrap_from_filesystem` over the (already patched)
+/// TempDir tree. Returns (ColonyHandle, sink_rx, park_rx).
 async fn boot_inner(
     td: &tempfile::TempDir,
     h: ColonyHandle,
@@ -109,8 +110,8 @@ async fn boot_inner(
 }
 
 /// Boot-Boilerplate: Factories (llm+code+store), /sink + /park CaptureCells VOR Bootstrap,
-/// bootstrap_from_filesystem über den (bereits gepatchten) TempDir-Baum.
-/// Gibt (ColonyHandle, sink_rx, park_rx) zurück.
+/// bootstrap_from_filesystem over the (already patched) TempDir tree.
+/// Returns (ColonyHandle, sink_rx, park_rx).
 pub async fn boot(
     td: &tempfile::TempDir,
 ) -> (
@@ -132,10 +133,10 @@ pub async fn boot(
     boot_inner(td, h).await
 }
 
-/// Wie [`boot`], aber wired einen echten `DiskBlobStore` unter `<td>/blobs` ein
-/// (`new_with_blobs_at`), sodass der A8-Auto-Offload-Producer-Hook
-/// (`offload_oversized`) live ist. Nötig für Ganzkörper-Blob-Offload-Tests; der
-/// no-blob-`boot`-Pfad würde nie eine `Body::Blob` erzeugen.
+/// Like [`boot`], but wires a real `DiskBlobStore` at `<td>/blobs`
+/// (`new_with_blobs_at`) so the A8 auto-offload producer hook
+/// (`offload_oversized`) is live. Needed for whole-body blob offload tests; the
+/// no-blob `boot` path would never produce a `Body::Blob`.
 pub async fn boot_with_blobs(
     td: &tempfile::TempDir,
 ) -> (
@@ -182,7 +183,7 @@ pub async fn boot_code_only(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Rece
     (h, sink_rx)
 }
 
-/// Bounded Receipt (30 s, robust gegen cargo-parallel-Last).
+/// Bounded receipt (30 s, robust against cargo's parallel load).
 pub async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
     tokio::time::timeout(Duration::from_secs(30), rx.recv())
         .await
@@ -223,17 +224,17 @@ pub async fn live_graph(
 }
 
 /// Konvertiert die Live-Graph-DTOs (`/colony/graph`-Read) in die `LiveGraph`-Form
-/// des shared zero-dep Renderers (`topology_svg`). Cells = Registry-Nodes;
-/// Hives = Edge-Endpunkte ohne Registry-Node (Scope-Marker, kein Aktor). Reiner
-/// Daten-Mapping-Schritt, keine Render-Logik (die lebt im Renderer).
+/// of the shared zero-dep renderer (`topology_svg`). Cells = registry nodes;
+/// hives = edge endpoints without a registry node (scope markers, not actors). A
+/// pure data-mapping step, no render logic (that lives in the renderer).
 fn live_graph_from_dtos(nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) -> topology_svg::LiveGraph {
     let cells: std::collections::BTreeSet<String> = nodes.iter().map(|n| n.path.clone()).collect();
     // Die `/colony/graph`-Read-Replies liefern Edges in Registry-Iterations-
-    // Reihenfolge (nicht deterministisch über Prozesse). Der Renderer leitet die
-    // Knoten-Anordnung aus der Edge-Auftauch-Reihenfolge ab → ohne Sortierung
-    // wäre die committete SVG lauf-abhängig. Hier deterministisch nach
-    // (from, to, condition) sortieren — reiner Test-Helper-Schritt, der Renderer
-    // bleibt unberührt. Macht die committete `graph.svg` byte-stabil.
+    // order (not deterministic across processes). The renderer derives the node
+    // arrangement from the order in which edges appear → without sorting, the
+    // committed SVG would be run-dependent. Sort deterministically by
+    // (from, to, condition) here — a pure test-helper step, the renderer stays
+    // untouched. This makes the committed `graph.svg` byte-stable.
     let mut render_edges: Vec<topology_svg::LiveEdge> = edges
         .iter()
         .map(|e| topology_svg::LiveEdge {
@@ -259,11 +260,11 @@ fn live_graph_from_dtos(nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) -> topol
     }
 }
 
-/// Schreibt `graph.svg` + `graph.dot` in den eingecheckten Beispiel-Ordner, beide
-/// aus dem LIVE gebooteten Graph via den shared zero-dep Renderer
-/// (`render_topology_svg`/`render_topology_dot`) — identischer Mechanismus wie
-/// `tests/fixtures/14a-tool-loop/topology.svg`. NUR unter Env-Gate `MECLAW_EMIT_DOT=1`
-/// (sonst no-op, CI/normale Läufe sind read-only).
+/// Writes `graph.svg` + `graph.dot` into the checked-in example folder, both from
+/// the LIVE booted graph via the shared zero-dep renderer
+/// (`render_topology_svg`/`render_topology_dot`) — the same mechanism as
+/// `tests/fixtures/14a-tool-loop/topology.svg`. ONLY under the env gate
+/// `MECLAW_EMIT_DOT=1` (otherwise a no-op; CI and normal runs are read-only).
 pub fn emit_dot_if_requested(example_name: &str, nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) {
     if std::env::var("MECLAW_EMIT_DOT").as_deref() == Ok("1") {
         let g = live_graph_from_dtos(nodes, edges);
@@ -273,28 +274,28 @@ pub fn emit_dot_if_requested(example_name: &str, nodes: &[GraphNodeDto], edges: 
     }
 }
 
-/// Rendert einen DOT-String aus Live-Graph-DTOs (zero-dep, identisch zu `emit_dot_if_requested`).
-/// Für Tests, die den generierten DOT direkt assertieren wollen.
+/// Renders a DOT string from live-graph DTOs (zero-dep, identical to
+/// `emit_dot_if_requested`). For tests that want to assert on the generated DOT.
 pub fn render_dot(nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) -> String {
     topology_svg::render_topology_dot(&live_graph_from_dtos(nodes, edges))
 }
 
-/// Rendert einen SVG-String aus Live-Graph-DTOs (zero-dep, identisch zu `emit_dot_if_requested`).
-/// Für Tests, die das generierte SVG direkt assertieren wollen.
+/// Renders an SVG string from live-graph DTOs (zero-dep, identical to
+/// `emit_dot_if_requested`). For tests that want to assert on the generated SVG.
 pub fn render_svg(nodes: &[GraphNodeDto], edges: &[GraphEdgeDto]) -> String {
     topology_svg::render_topology_svg(&live_graph_from_dtos(nodes, edges))
 }
 
-/// Poll message_log, bis eine Row für `to_path` existiert; gib deren `body_kind`
-/// ("inline"|"blob") zurück. Muster: pre14_a1_per_form_blob_resolution.rs::await_body_kind.
+/// Polls message_log until a row for `to_path` exists; returns its `body_kind`
+/// ("inline"|"blob"). Pattern: pre14_a1_per_form_blob_resolution.rs::await_body_kind.
 pub async fn await_body_kind(db_dir: &std::path::Path, to_path: &str) -> String {
     let db = db_dir.join("colony.db");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(conn) = rusqlite::Connection::open(&db) {
-            // Direkt auf die offloadende Row zielen: über ≥2 Iterationen gibt es mehrere
-            // `to_path`=/llm-Rows; die letzte (stop-Final) ist klein/inline. Wir wollen die
-            // offloadende Row → AND body_kind='blob'. Existiert sie, ist A8 bewiesen.
+            // Target the offloading row directly: across ≥2 iterations there are several
+            // `to_path`=/llm rows; the last one (the stop final) is small/inline. We want
+            // the offloading row → AND body_kind='blob'. If it exists, A8 is proven.
             // message_log's destination column is `to_path` (schema.rs), not `target`.
             let row: Result<String, _> = conn.query_row(
                 "SELECT body_kind FROM message_log WHERE to_path = ?1 AND body_kind = 'blob' LIMIT 1",
@@ -312,10 +313,10 @@ pub async fn await_body_kind(db_dir: &std::path::Path, to_path: &str) -> String 
     }
 }
 
-/// Liefert alle Blob-BODY-Inhalte (geparst) aus `<td>/blobs/` (rekursiv, nur `*.json`).
-/// Der A8-Offload schreibt pro Blob `<uuid>.json` (Body) UND `<uuid>.json.meta.json`
-/// (Sidecar) — beide matchen den `*.json`-Glob. Sidecars (`*.meta.json`) werden
-/// herausgefiltert, sodass nur echte Blob-Bodies zurückkommen.
+/// Returns all blob BODY contents (parsed) from `<td>/blobs/` (recursively, only
+/// `*.json`). The A8 offload writes `<uuid>.json` (body) AND `<uuid>.json.meta.json`
+/// (sidecar) per blob — both match the `*.json` glob. Sidecars (`*.meta.json`) are
+/// filtered out so that only real blob bodies come back.
 pub fn read_blob_bodies(td: &std::path::Path) -> Vec<Value> {
     let mut out = Vec::new();
     let dir = td.join("blobs");
@@ -338,7 +339,7 @@ pub fn read_blob_bodies(td: &std::path::Path) -> Vec<Value> {
     out
 }
 
-/// Quell-Probe: ein user-Turn + tool-Schema unter system.tools.*, header.turn_id gesetzt.
+/// Source probe: one user turn + a tool schema under system.tools.*, with header.turn_id set.
 pub fn user_probe(turn_id: &str) -> Message {
     let tool_schema = json!({
         "type": "function",

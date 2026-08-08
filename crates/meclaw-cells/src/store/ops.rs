@@ -1033,7 +1033,7 @@ mod tests {
             .unwrap();
         conn.execute(
             "INSERT INTO facts VALUES ('f1','keto keto keto','user:m'),\
-             ('f2','keto einmal','user:m'),('f3','nichts davon','user:x')",
+             ('f2','keto once','user:m'),('f3','none of that','user:x')",
             [],
         )
         .unwrap();

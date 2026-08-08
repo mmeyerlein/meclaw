@@ -1,6 +1,6 @@
-//! axum-Router für die meclaw-HTTP-API. Phase 12-A: nur /health.
-//! Phase 12-B fügt /colony/* hinzu, Phase 12-X den /messages-multipart-Pfad,
-//! Phase 12-D die /ui/*-HTML-Handler.
+//! axum router for the meclaw HTTP API. Phase 12-A: /health only.
+//! Phase 12-B adds /colony/*, phase 12-X the /messages multipart path,
+//! phase 12-D the /ui/* HTML handlers.
 
 use crate::ColonyHandle;
 use crate::handlers::{
@@ -42,18 +42,18 @@ impl FromRef<AppState> for Arc<DiskBlobStore> {
     }
 }
 
-/// Baut den axum-Router mit allen aktivierten Routes für die jeweilige Phase.
-/// Phase 12-A: GET /health → 200 (kein Colony-Routing). Alle anderen Pfade
-/// fallen auf axum-Default-404. /colony/events-501 ist Phase 14 (U4).
+/// Builds the axum router with all routes enabled for the respective phase.
+/// Phase 12-A: GET /health → 200 (no colony routing). Every other path falls
+/// through to axum's default 404. The /colony/events 501 is phase 14 (U4).
 ///
-/// Phase 12-B T8.1+: `/colony/*`-Read-Handler wandern hier nacheinander rein.
+/// Phase 12-B T8.1+: the `/colony/*` read handlers move in here one by one.
 ///
-/// Phase 12-X T17: zweiter Param `blob_store` für den multipart-Upload-Pfad
-/// in `POST /messages` (T18). Beide State-Slots leben in `AppState`; via
-/// `FromRef` bleiben bestehende Handler unverändert auf `Arc<ColonyHandle>`.
+/// Phase 12-X T17: a second param `blob_store` for the multipart upload path in
+/// `POST /messages` (T18). Both state slots live in `AppState`; via `FromRef`
+/// existing handlers stay unchanged on `Arc<ColonyHandle>`.
 ///
-/// TTL slice (2026-06-11): dritter Param `message_default_ttl` — der
-/// colony.json-Default für Initial-Messages ohne explizites `ttl`-Request-Feld.
+/// TTL slice (2026-06-11): a third param `message_default_ttl` — the colony.json
+/// default for initial messages without an explicit `ttl` request field.
 pub fn build_router(
     colony: Arc<ColonyHandle>,
     blob_store: Arc<DiskBlobStore>,
@@ -83,9 +83,9 @@ pub fn build_router(
             get(mutations::get_mutations_audit).post(mutations::post_mutation),
         )
         .route("/messages", post(messages::post_messages))
-        // Phase 12-D: Operator-UI (server-rendered HTML, kein JS, kein
-        // Auto-Refresh, kein Mutations-Pfad). `/` redirected auf das
-        // Dashboard, damit der Operator nicht auswendig "/ui/" tippen muss.
+        // Phase 12-D: operator UI (server-rendered HTML, no JS, no auto-refresh,
+        // no mutation path). `/` redirects to the dashboard so the operator does
+        // not have to type "/ui/" from memory.
         .route("/", get(|| async { Redirect::temporary("/ui/") }))
         .route("/ui/", get(ui::dashboard::get_dashboard))
         .route("/ui/registry", get(ui::registry::get_registry_ui))

@@ -1,23 +1,22 @@
 //! Phase-9 End-to-End-Demo.
 //!
-//! Zwei statische Ketten, harness-sequenziert (cell-types.md § store +
-//! § code via Multi-Send):
+//! Two static chains, harness-sequenced (cell-types.md § store +
+//! § code via multi-send):
 //!
-//!   /sink              (CaptureCell -- sammelt alle tool_result-Receipts)
+//!   /sink              (CaptureCell -- collects all tool_result receipts)
 //!   /store             (StoreCell, params.schema.items = {id, name})
 //!   /code/transform    (CodeCell, transform.py, multi_send_capable=true)
 //!   /code/query        (CodeCell, query.py)
 //!
-//! Static edges (alle conditionless):
-//!   /code/transform -> /store     (jede Multi-Send-Emission landet hier)
+//! Static edges (all conditionless):
+//!   /code/transform -> /store     (every multi-send emission lands here)
 //!   /code/query     -> /store
 //!   /store          -> /sink
 //!
-//! Anti-Cascade-Disziplin: /sink VOR bootstrap_from_filesystem
-//! registrieren (Phase-6.5-Lesson).
-//! Harness-Sequenzierung: warte auf 2 Insert-Receipts BEVOR Probe 2
-//! gesendet wird.
-//! Asserts positiv und tief: zusaetzlich fresh-Connection-DB-Probe.
+//! Anti-cascade discipline: register /sink BEFORE bootstrap_from_filesystem
+//! (phase-6.5 lesson).
+//! Harness sequencing: wait for 2 insert receipts BEFORE probe 2 is sent.
+//! Asserts positive and deep: plus a fresh-connection DB probe.
 
 use meclaw_cli::factories::built_in_factories;
 use meclaw_colony::bootstrap_from_filesystem;
@@ -91,7 +90,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
     );
     write(td.path(), "main/code/query/config.json", &query_config);
 
-    // Colony hochfahren mit built_in_factories (enthaelt store + code).
+    // Boot the colony with built_in_factories (contains store + code).
     let factories = built_in_factories();
     let factory_vec: Vec<(String, Arc<dyn meclaw_colony::CellFactory>)> = factories
         .iter()
@@ -121,8 +120,8 @@ async fn phase_9_demo_code_to_store_round_trip() {
         .build();
     h.send(probe1).await;
 
-    // Warte auf 2 Insert-Receipts BEVOR Probe 2 gesendet wird
-    // (sonst sieht select evtl. weniger Rows).
+    // Wait for 2 insert receipts BEFORE probe 2 is sent
+    // (otherwise select may see fewer rows).
     let mut inserts: Vec<meclaw_core::Message> = Vec::new();
     for i in 0..2 {
         let m = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
@@ -131,7 +130,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
             .expect("sink closed before 2 receipts");
         inserts.push(m);
     }
-    // Verifiziere beide Insert-Receipts.
+    // Verify both insert receipts.
     for (i, m) in inserts.iter().enumerate() {
         assert_eq!(m.headers.hop["operation"], "insert", "insert receipt #{i}");
         assert_eq!(m.headers.hop["rows_affected"], 1, "insert receipt #{i}");
@@ -142,8 +141,8 @@ async fn phase_9_demo_code_to_store_round_trip() {
     }
 
     // === Kette 2 (Select) ===
-    // Probe an /code/query: ignoriert Input, baut 1 select-tool_call
-    // -> /store antwortet mit allen Rows.
+    // Probe to /code/query: ignores the input, builds 1 select tool_call
+    // -> /store answers with all rows.
     let probe2 = MessageBuilder::new(Path::new("/code/query"))
         .body(Body::Inline(meclaw_core::serde_json::json!({})))
         .build();
@@ -156,7 +155,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
     assert_eq!(select_receipt.headers.hop["operation"], "select");
     assert_eq!(select_receipt.headers.hop["rows_affected"], 2);
 
-    // Select-Payload: text-Slot = JSON-Array mit beiden Items.
+    // Select payload: the text slot = a JSON array with both items.
     let body_v = match &select_receipt.body {
         Body::Inline(v) => v,
         Body::Blob(_) => panic!("body must be Inline"),
@@ -168,7 +167,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
     let rows = payload.as_array().expect("payload is array");
     assert_eq!(rows.len(), 2, "select payload must have 2 rows");
 
-    // Sortiere fuer deterministischen Vergleich.
+    // Sort for a deterministic comparison.
     let mut row_ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
     row_ids.sort();
     assert_eq!(row_ids, vec![1, 2]);
@@ -176,8 +175,8 @@ async fn phase_9_demo_code_to_store_round_trip() {
     row_names.sort();
     assert_eq!(row_names, vec!["a", "b"]);
 
-    // === DB-Wahrheits-Probe (positiv und tief) ===
-    // Fresh Connection auf store/cell.db -- unabhaengig von Receipts.
+    // === DB truth probe (positive and deep) ===
+    // A fresh connection on store/cell.db -- independent of the receipts.
     let store_db = td.path().join("main").join("store").join("cell.db");
     assert!(store_db.exists(), "store cell.db at {}", store_db.display());
     let conn = rusqlite::Connection::open(&store_db).unwrap();
@@ -195,7 +194,7 @@ async fn phase_9_demo_code_to_store_round_trip() {
         "DB wahrheit confirms exactly the 2 reported rows"
     );
 
-    // Total: 3 Sink-Receipts gesehen, nichts darueber.
+    // Total: 3 sink receipts seen, nothing beyond that.
     let mut extra = 0;
     while sink_rx.try_recv().is_ok() {
         extra += 1;

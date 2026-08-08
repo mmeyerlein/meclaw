@@ -1,6 +1,6 @@
 //! Phase-16 β — generic runtime params-overlay core (W4b model, type-agnostic).
 //!
-//! W4b (`config.md` § Zugriff Z.20) built the params-update-per-message model
+//! W4b (`config.md` § Access l.20) built the params-update-per-message model
 //! for the `llm` cell only. β extracts the mechanics into this type-generic
 //! core so the other stateful/long-running cell types (`store`, `timer`, `mcp`,
 //! `proxy`) reuse it:
@@ -80,7 +80,7 @@ pub fn now_unix_seconds() -> i64 {
 /// Apply a runtime params-update (W4b). Pure — no IO.
 ///
 /// `update` is the top-level `params` body-slot of a params-update message
-/// (config.md § Zugriff Z.20): a partial map of param keys to new values,
+/// (config.md § Access l.20): a partial map of param keys to new values,
 /// last-write-wins. Returns the merged params plus the overlay pairs to persist
 /// in `cell.db` ([`persist_params_overlay`]). The caller applies neither on
 /// `Err` — all-or-nothing, no partial apply.
@@ -123,7 +123,7 @@ pub fn apply_update<P: OverlayParams>(
 /// Reads the runtime-param overlay from `cell.db` and replays it over the
 /// birth-params (`config.json` `params`, already `${VAR}`-substituted by the
 /// bootstrap), then re-parses. `config.json` is never written; a `cell.db`-wipe
-/// (empty overlay) restores the Bootstrap-Stand (config.md § Zugriff Z.20).
+/// (empty overlay) restores the bootstrap state (config.md § Access l.20).
 pub fn restore<P: OverlayParams>(conn: &rusqlite::Connection, birth: &Value) -> Result<P, String> {
     let overlay = read_params_overlay(conn).map_err(|e| format!("read params overlay: {e}"))?;
     let merged = merge_params_overlay(birth, &overlay);
@@ -135,7 +135,7 @@ pub fn restore<P: OverlayParams>(conn: &rusqlite::Connection, birth: &Value) -> 
 /// W4b: a params-update message persists each changed top-level param key here
 /// (last-write-wins). `value_json` is the param value serialized to JSON text.
 /// The overlay is replayed over the birth-params (`config.json`) on wake/respawn
-/// — `config.json` itself stays untouched (config.md § Zugriff Z.20).
+/// — `config.json` itself stays untouched (config.md § Access l.20).
 pub(crate) fn upsert_param_overlay(
     conn: &rusqlite::Connection,
     key: &str,
@@ -195,7 +195,7 @@ pub(crate) fn persist_params_overlay(
 /// is merged over the birth-params Value (the `config.json` `params` block,
 /// already `${VAR}`-substituted by the bootstrap) — last-write-wins per key. The
 /// result is re-parsed by the caller. `config.json` itself is never written.
-/// Empty overlay → birth unchanged (= Reset / `cell.db`-wipe = Bootstrap-Stand).
+/// Empty overlay → birth unchanged (= reset / `cell.db` wipe = bootstrap state).
 ///
 /// `birth` is expected to be a JSON object (a valid `params` block); a non-object
 /// birth is returned unchanged (let the downstream `parse` reject it).

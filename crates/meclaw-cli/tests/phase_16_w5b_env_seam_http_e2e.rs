@@ -1,28 +1,29 @@
-//! W5b (Kurz-Takt, baut auf W5/5534862): Produktions-Naht-Pin für die in W5
-//! verdrahtete Env-Quellen-Konsistenz (`cli.env → Boot + colony_task →
-//! handle_mutation`). W5 hat das Substitutions-VERHALTEN auf colony-Ebene
-//! gepinnt (ColonyHandle-intern), die CLI-HTTP-Naht selbst nur compile-/gate-
-//! geprüft. Dieser Test fährt die ECHTE CLI-Lifecycle (`run_with_hooks` =
-//! Produktions-`run()`-Pfad, NICHT der colony-interne ColonyHandle-Harness) mit
-//! echtem HTTP und beweist end-to-end, dass die Naht durchzieht.
+//! W5b (short cycle, builds on W5/5534862): a production-seam pin for the env
+//! source consistency wired in W5 (`cli.env → boot + colony_task →
+//! handle_mutation`). W5 pinned the substitution BEHAVIOUR at colony level
+//! (ColonyHandle-internal), the CLI/HTTP seam itself only compile-/gate-checked.
+//! This test drives the REAL CLI lifecycle (`run_with_hooks` = the production
+//! `run()` path, NOT the colony-internal ColonyHandle harness) with real HTTP
+//! and proves end-to-end that the seam carries through.
 //!
-//! Diskriminator: eine Env-Datei AUSSERHALB root, via `--env` gepinnt, gegen
-//! eine Default-`<root>/.env`, die einen Schlüssel mit ANDEREM Wert trägt:
+//! Discriminator: an env file OUTSIDE root, pinned via `--env`, against a
+//! default `<root>/.env` that carries a key with a DIFFERENT value:
 //!   - alt.env:            `BOOT_VAR=alt_boot`, `MUT_VAR=alt_value`
-//!   - default <root>/.env: `MUT_VAR=default_value` (anders!), KEIN `BOOT_VAR`
+//!   - default <root>/.env: `MUT_VAR=default_value` (different!), NO `BOOT_VAR`
 //!
-//! Drei Pfade, EIN CLI-Prozess:
-//!  (a) Boot-Substitution: die Boot-Cell nutzt `${BOOT_VAR}` (nur in alt.env).
-//!      Bootet die Colony durch (HTTP kommt hoch, Registry zeigt die Cell), dann
-//!      hat der Boot die gepinnte Quelle gelesen — läse er `<root>/.env`, fehlte
-//!      `BOOT_VAR` und `bootstrap_from_filesystem` schlüge fehl (kein HTTP).
-//!  (b) HTTP-Mutation (Template-Instanziierung) mit `${MUT_VAR}`: committed +
-//!      die geschriebene config.json trägt `alt_value` (NICHT `default_value`).
-//!  (c) 2b-Adoption über denselben Prozess mit `${MUT_VAR}`: committed + die
-//!      config.json des adoptierten Knotens trägt `alt_value`.
+//! Three paths, ONE CLI process:
+//!  (a) Boot substitution: the boot cell uses `${BOOT_VAR}` (only in alt.env).
+//!      If the colony boots through (HTTP comes up, the registry shows the
+//!      cell), the boot read the pinned source — had it read `<root>/.env`,
+//!      `BOOT_VAR` would be missing and `bootstrap_from_filesystem` would fail
+//!      (no HTTP).
+//!  (b) HTTP mutation (template instantiation) with `${MUT_VAR}`: committed +
+//!      the written config.json carries `alt_value` (NOT `default_value`).
+//!  (c) 2b adoption in the same process with `${MUT_VAR}`: committed + the
+//!      config.json of the adopted node carries `alt_value`.
 //!
-//! Erwartung GRÜN ⇒ die Naht zieht durch, Pin ist der Beweis. RED ⇒ echter
-//! Befund (Naht unvollständig) ⇒ STOPP + Eskalation.
+//! Expectation GREEN ⇒ the seam carries through, the pin is the proof. RED ⇒ a
+//! genuine finding (incomplete seam) ⇒ STOP + escalate.
 
 use meclaw_cli::{Cli, run_with_hooks};
 use std::net::SocketAddr;

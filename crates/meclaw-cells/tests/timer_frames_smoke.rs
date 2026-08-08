@@ -1,6 +1,6 @@
-//! Phase-10-B T6: Smoke-Test fuer die `TimerEvent::Fire` + `TimerReconfig::SetActive`
-//! Frame-Typen. Compile-only — beweist, dass die Typen oeffentlich sichtbar
-//! sind und die Konstruktoren stimmen.
+//! Phase-10-B T6: smoke test for the `TimerEvent::Fire` + `TimerReconfig::SetActive`
+//! frame types. Compile-only — proves that the types are publicly visible and the
+//! constructors are right.
 
 use chrono::Utc;
 use meclaw_cells::timer::io::{TimerEvent, TimerReconfig};

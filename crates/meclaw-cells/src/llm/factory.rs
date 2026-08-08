@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 /// Reads the runtime-param overlay from `cell.db` and replays it over the
 /// birth-params (`config.json` `params`, already `${VAR}`-substituted by the
 /// bootstrap), then re-parses. `config.json` is never written; a `cell.db`-wipe
-/// (empty overlay) restores the Bootstrap-Stand (config.md § Zugriff Z.20).
+/// (empty overlay) restores the bootstrap state (config.md § Access l.20).
 /// Used by both the WakeFn and RespawnFn closures.
 fn restore_params(conn: &rusqlite::Connection, birth: &JsonValue) -> Result<LlmParams, String> {
     // β: delegate to the generic params-overlay core (read overlay → merge over
@@ -79,17 +79,17 @@ impl CellFactory for LlmCellFactory {
 
         // Build reqwest client ONCE (Phase-7-Pattern, see web_fetch.rs:229-265).
         // Build-Failure → spawn_cell-Err → Mutation-Reject. Clone into the
-        // Wake/Respawn closures — kein Rebuild = kein Failure-Pfad, der nur
-        // panicken könnte.
+        // Wake/respawn closures — no rebuild means no failure path that could
+        // only panic.
         let client = reqwest::Client::builder()
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
 
-        // Phase-13-K-2: KEIN initialer cell-task-Spawn. Initial-Open des cell.db
-        // ist trotzdem nötig — `check_schema_version` ist die EINZIGE Check-Site
-        // (WakeFn/RespawnFn sind sync und skippen schema-Check intentional: db:own
-        // → schema_version driftet nicht über die Cell-Lifetime). Connection wird
-        // sofort wieder geschlossen; WakeFn öffnet beim ersten Wake frisch.
+        // Phase-13-K-2: NO initial cell-task spawn. The initial open of cell.db is
+        // still needed — `check_schema_version` is the ONLY check site (WakeFn and
+        // RespawnFn are sync and skip the schema check intentionally: db:own →
+        // schema_version does not drift over the cell's lifetime). The connection
+        // is closed again immediately; WakeFn opens fresh on the first wake.
         let init_conn = open_or_create_cell_db(&cell_dir.join("cell.db"))
             .map_err(|e| format!("open cell.db: {e}"))?;
         check_schema_version(&init_conn)?;
@@ -97,7 +97,7 @@ impl CellFactory for LlmCellFactory {
 
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
-        // RespawnFn — Crash-Restart-Pfad, frischer Channel + frische Connection.
+        // RespawnFn — crash-restart path, fresh channel + fresh connection.
         let respawn_mailbox_capacity = mailbox_capacity;
         let respawn_path = path.clone();
         let respawn_birth = birth_params.clone();
@@ -152,7 +152,7 @@ impl CellFactory for LlmCellFactory {
 
         // WakeFn — NotYetSpawned/Asleep → Awake (Phase-13-K-2 NEU). Opens cell.db
         // fresh (db:own → no schema drift, no re-check needed), builds LlmCell +
-        // task via shared helper, registers watcher analog zum Bootstrap-Register.
+        // task via the shared helper, registers the watcher like the bootstrap register.
         let wake_path = path.clone();
         let wake_birth = birth_params.clone();
         let wake_outputs = outputs_tx.clone();
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn restore_params_empty_overlay_is_birth() {
-        // W4b (g-core): Reset = cell.db-wipe = empty overlay ⇒ Bootstrap-Stand.
+        // W4b (g-core): reset = cell.db wipe = empty overlay ⇒ bootstrap state.
         use meclaw_colony::persist::open_or_create_cell_db;
         let td = tempfile::TempDir::new().unwrap();
         let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();

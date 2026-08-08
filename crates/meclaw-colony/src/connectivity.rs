@@ -2,13 +2,13 @@
 //!
 //! The activity of every graph node (cell or hive) is **fully derived from the
 //! edge table** — there is no explicit activate/deactivate mutation op (spec:
-//! `docs/meclaw-overview.md` § Konnektivität & Aktivität). This module holds the
+//! `docs/meclaw-overview.md` § Connectivity and activity). This module holds the
 //! pure functions that recompute that state; wiring into `handle_mutation` is a
 //! separate step (Task 4). Every function here takes references and returns
 //! values — no side effects, no `.await`.
 //!
-//! Rules (spec § Konnektivität & Aktivität, `docs/cell-types.md` § hive
-//! Konnektivität):
+//! Rules (spec § Connectivity and activity, `docs/cell-types.md` § Connectivity
+//! of the hive):
 //! - **connected**: a node participates in ≥1 edge (as `from` **or** `to`) at
 //!   its scope level. A hive's *internal* wiring does not count for its own
 //!   connectivity — only edges of the parent level that reference the hive path.
@@ -28,7 +28,7 @@ use std::collections::HashSet;
 /// **or** as `to`.
 ///
 /// This is the spec's connectivity predicate (`docs/meclaw-overview.md`
-/// § Konnektivität & Aktivität): a single in- or out-edge suffices. For a hive
+/// § Connectivity and activity): a single in- or out-edge suffices. For a hive
 /// path this captures exactly the parent-level edges that reference the hive
 /// (internal wiring uses descendant paths as endpoints, not the hive path).
 pub fn is_connected(path: &Path, edges: &EdgeTable) -> bool {
@@ -39,7 +39,7 @@ pub fn is_connected(path: &Path, edges: &EdgeTable) -> bool {
 /// exactly one endpoint lies strictly inside the subtree under `path`
 /// (`<path>/...`), the other outside it. A depth-port edge
 /// (`/anchor → /h/dispatch`) wires the unit to the world without naming the
-/// hive path itself, so it must connect the hive (spec § Konnektivität:
+/// hive path itself, so it must connect the hive (spec § Connectivity:
 /// edge paths are scope-relative without depth restriction — the companion
 /// rule to the R12 `add_edges` depth resolution). Purely INTERNAL wiring
 /// (both endpoints inside) still does not count.
@@ -68,7 +68,7 @@ fn is_strict_descendant(candidate: &str, ancestor: &str) -> bool {
 
 /// Recursively computes whether the node at `path` is **active**.
 ///
-/// Spec rule (`docs/meclaw-overview.md` § Konnektivität & Aktivität): a node is
+/// Spec rule (`docs/meclaw-overview.md` § Connectivity and activity): a node is
 /// active iff it is itself [`is_connected`] **and** its parent-hive is active;
 /// the root (`/`) is always active. This is the path-segment parent chain walked
 /// upward — no root-to-leaf traversal — so the cost is O(edges) local plus
@@ -118,7 +118,7 @@ fn parent_hive_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTab
 /// mutation, given the paths directly involved in the mutation (`add_edges` /
 /// `remove_edges` `from`/`to` endpoints and `remove_nodes` paths).
 ///
-/// Spec F1 (`docs/meclaw-overview.md` § Konnektivität & Aktivität): the affected
+/// Spec F1 (`docs/meclaw-overview.md` § Connectivity and activity): the affected
 /// scope is the **local edge participation plus the parent chain** — no
 /// root-to-leaf walk. Because removing the last edge of a hive deactivates its
 /// **entire subtree** (internal wiring notwithstanding), each involved path also
@@ -203,15 +203,15 @@ pub(crate) fn is_self_or_descendant(candidate: &Path, ancestor: &Path) -> bool {
 }
 
 /// Builds the **post-state** edge view a mutation's connectivity-recompute
-/// (Apply-Schritt 10b) will see, computed at Apply-Schritt 9 (the eager-spawn
+/// (apply step 10b) will see, computed at apply step 9 (the eager-spawn
 /// loop) — BEFORE the diff's edges have been applied to the live `edges` table.
 ///
 /// Paket-3 P3-C1 (Reviewer-Auflage A3): the C1 activity gate must derive a
 /// would-be-inactive cell's activity against the edges as they WILL be after
 /// the diff applies, NOT the current committed `edges` (a fresh cell would
 /// always look inactive there). The view is
-/// `current ∪ adds − removes`, mirroring exactly what Schritt 10b recomputes
-/// against: Schritt 10b runs after `add_edges` (insert), `remove_edges` /
+/// `current ∪ adds − removes`, mirroring exactly what step 10b recomputes
+/// against: step 10b runs after `add_edges` (insert), `remove_edges` /
 /// `remove_nodes` (remove) have mutated `edges` in place, so this pure helper
 /// reconstructs the same set on a clone.
 ///
@@ -219,12 +219,12 @@ pub(crate) fn is_self_or_descendant(candidate: &Path, ancestor: &Path) -> bool {
 /// `remove_pairs` are `(from, to)` pairs (scope-resolved `remove_edges`);
 /// `remove_node_paths` are node paths (scope-resolved `remove_nodes`) whose
 /// EVERY edge (`from == p` OR `to == p`) is dropped — the disconnect semantics
-/// of Apply-Schritt 10. Only endpoints matter to [`compute_active`] (it
+/// of apply step 10. Only endpoints matter to [`compute_active`] (it
 /// consults `edges_from`/`edges_to`), so synthesized edges carry no condition /
 /// modifier and a throwaway UUID.
 ///
 /// NOTE (minimal cut): `swap_nodes`-swing and subtree-internal edges are NOT
-/// folded in here. They run in Apply-Schritte 9b/9c (after the single-cell
+/// folded in here. They run in apply steps 9b/9c (after the single-cell
 /// spawn loop) and cannot change the activity of a single-cell `add_nodes`
 /// staged cell — `swap` produces no `staged` single cell whose activity hinges
 /// on the swing, and subtree cells live in `staged_subtrees`, not `staged`.
@@ -239,7 +239,7 @@ pub fn post_state_edges(
     // Rebuild the view from the current edges (EdgeTable is not Clone — Edge is),
     // dropping every removed edge as we go. `remove_edges`: exact (from, to)
     // match. `remove_nodes`: every edge touching the node path (from OR to).
-    // Mirrors Schritt 10's remove-before-add ordering for the recompute view.
+    // Mirrors step 10's remove-before-add ordering for the recompute view.
     let mut view = EdgeTable::new();
     for e in current.iter() {
         let removed = remove_pairs.iter().any(|(f, t)| &e.from == f && &e.to == t)
@@ -516,7 +516,7 @@ mod tests {
     }
 
     /// Paket-3 P3-C1: a `remove_edges` (from, to) pair drops the exact matching
-    /// edge in the post-state view (mirrors Schritt 10's exact-pair match).
+    /// edge in the post-state view (mirrors step 10's exact-pair match).
     #[test]
     fn post_state_view_remove_edge_drops_exact_pair() {
         let mut current = EdgeTable::new();

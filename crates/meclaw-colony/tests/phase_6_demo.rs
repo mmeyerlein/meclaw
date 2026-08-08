@@ -9,15 +9,15 @@
 //!    row count, verify reply_to received the error message (cascaded into the
 //!    DLQ via the observer echo cell).
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor jeder Mutation
-//! wird ein Template-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before each
+//! mutation a template directory is created and loaded via RescanTemplates.
 
 use meclaw_colony::{ColonyMsg, MutationOutcome};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 
-/// Phase-11 T16: Legt ein Template-Verzeichnis für `name`/`cell_type` an und lädt es.
+/// Phase-11 T16: creates a template directory for `name`/`cell_type` and loads it.
 async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
     let root = h.tempdir_path();
     let templates_root = root.join("templates");
@@ -65,20 +65,20 @@ async fn send_mutation(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
     let h = ColonyHandle::new_with_echo();
-    // Phase-11 T16: echo-Template-Verzeichnis anlegen und laden.
+    // Phase-11 T16: create and load the echo template directory.
     setup_template(&h, "echo", "echo").await;
 
-    // Topologie für positives Receipt:
-    //   /observer = CaptureCell mit mpsc-tap (direkt via ColonyHandle::spawn,
-    //               nicht via Mutation — wir wollen die Observer-Reception
-    //               unzweideutig in einem Test-Channel beobachten).
-    //   /demo     = Echo-Cell via Mutation (das ist die Cell, deren
-    //               Adressierbarkeit der Test beweisen soll).
-    //   Probe → /demo → /demo emit → /observer.recv() in unserem Channel.
+    // Topology for a positive receipt:
+    //   /observer = CaptureCell with an mpsc tap (directly via
+    //               ColonyHandle::spawn, not via a mutation — we want to observe
+    //               the observer's reception unambiguously in a test channel).
+    //   /demo     = echo cell via mutation (this is the cell whose
+    //               addressability the test is meant to prove).
+    //   Probe → /demo → /demo emits → /observer.recv() in our channel.
     //
-    // Wenn /demo NICHT adressierbar wäre: receiver_rx blockiert auf timeout,
-    // assert fails. Wenn /demo lebt + die Probe empfängt + zu /observer
-    // weiterleitet: receiver_rx erhält die emit-Message. Eindeutig positiv.
+    // If /demo were NOT addressable: receiver_rx blocks until the timeout and the
+    // assert fails. If /demo is alive + receives the probe + forwards to
+    // /observer: receiver_rx gets the emitted message. Unambiguously positive.
     let (recv_tx, mut receiver_rx) = tokio::sync::mpsc::channel::<Message>(8);
     h.spawn(Path::new("/observer"), move || {
         CaptureCell::new(recv_tx.clone())
@@ -109,9 +109,9 @@ async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
     h.add_edge(Uuid::now_v7(), Path::new("/demo"), Path::new("/observer"))
         .await;
 
-    // Probe an /demo. UBF-konformer Body ({"origin": "user", ...}) damit die
-    // /demo-Emission ebenfalls valides UBF ist und nicht im InvalidUbfBody-
-    // Pfad landet, sondern korrekt zu /observer weitergeleitet wird.
+    // Probe to /demo. A UBF-conformant body ({"origin": "user", ...}) so that the
+    // /demo emission is valid UBF too and does not land on the InvalidUbfBody
+    // path but is correctly forwarded to /observer.
     let probe = MessageBuilder::new(Path::new("/demo"))
         .trace_id(Uuid::now_v7())
         .body(Body::Inline(meclaw_core::serde_json::json!({
@@ -126,7 +126,7 @@ async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
         .await
         .unwrap();
 
-    // Positiver Beweis: /observer erhält die Message via CaptureCell-tap.
+    // Positive proof: /observer receives the message via the CaptureCell tap.
     let received = tokio::time::timeout(std::time::Duration::from_secs(30), receiver_rx.recv())
         .await
         .expect("/observer must receive a message within 30s — proves /demo is addressable")
@@ -155,7 +155,7 @@ async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_reply_to() {
     let h = ColonyHandle::new_with_echo();
-    // Phase-11 T16: echo-Template-Verzeichnis anlegen und laden.
+    // Phase-11 T16: create and load the echo template directory.
     setup_template(&h, "echo", "echo").await;
 
     // Pre-spawn a reply-observer at /observer (echo cell, echo_to=/observer_echo_target).
@@ -197,16 +197,17 @@ async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_rep
     // Give the routed error-reply a tick to traverse /observer → emit → cascade.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // Drain DLQ — beweis dass die error-reply tatsächlich an /observer
-    // zugestellt wurde. Differenzierung:
-    //   - /observer absent → error-reply (reply_to=None) → direct DLQ mit
-    //     sender_path=/colony (von send_eda_reject's route-call).
-    //   - /observer live → empfängt error-reply, emit zu /observer_echo_target
-    //     → DLQ-Entry mit sender_path=/observer (die emittierende Cell).
-    // Wir asserten sender_path=/observer = eindeutiger Beweis, dass die Cell
-    // die Nachricht verarbeitet UND emittiert hat (reason ist hier egal —
-    // InvalidUbfBody oder UnresolvedPath/TtlExpired sind alle valide
-    // Cascade-Endpunkte für eine live-emittierende Cell).
+    // Drain the DLQ — proof that the error reply was actually delivered to
+    // /observer. Differentiation:
+    //   - /observer absent → error reply (reply_to=None) → direct DLQ with
+    //     sender_path=/colony (from send_eda_reject's route call).
+    //   - /observer live → receives the error reply, emits to
+    //     /observer_echo_target → DLQ entry with sender_path=/observer (the
+    //     emitting cell).
+    // We assert sender_path=/observer = unambiguous proof that the cell
+    // processed AND emitted the message (the reason does not matter here —
+    // InvalidUbfBody or UnresolvedPath/TtlExpired are all valid cascade
+    // endpoints for a live-emitting cell).
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
         .send(ColonyMsg::DrainDeadLetters { ack: drain_tx })
@@ -251,7 +252,7 @@ async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_rep
     );
 }
 
-// Phase-6 T26 (crash-recovery) lebt in eigener Test-Binary
-// `tests/phase_6_crash_recovery.rs` — der `AFTER_RENAME`-Static aus
-// `mutation::hook` ist binary-lokal, und das Hook-Set würde parallele
-// Tests in derselben Binary blockieren. Eigene Binary = eigener Static.
+// Phase-6 T26 (crash recovery) lives in its own test binary
+// `tests/phase_6_crash_recovery.rs` — the `AFTER_RENAME` static from
+// `mutation::hook` is binary-local, and setting the hook would block parallel
+// tests in the same binary. Own binary = own static.

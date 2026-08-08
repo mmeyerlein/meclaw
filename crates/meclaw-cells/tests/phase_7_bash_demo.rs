@@ -1,11 +1,11 @@
 //! Phase-7 Slice-2 bash-Demo.
 //!
 //! Topologie: /bash (BashCell) + /sink (terminale CaptureCell). Probe an
-//! /bash mit reply_to=/sink (Decision 7.1). CaptureCell ist terminal (kein
-//! Re-Emit) → kein Cascade-Loop (Phase-6.5-Lesson).
+//! /bash with reply_to=/sink (decision 7.1). The CaptureCell is terminal (no
+//! re-emit) → no cascade loop (phase-6.5 lesson).
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/bash/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/bash/` directory is created and loaded via RescanTemplates.
 
 use meclaw_cells::BashCellFactory;
 use meclaw_colony::CellFactory;
@@ -27,7 +27,7 @@ fn make_tool_call_probe(args: &str, id: &str, reply_to: Path) -> meclaw_core::Me
 }
 
 /// Phase-11 T16: Legt ein minimales `bash`-Template-Verzeichnis in `root/templates/bash/`
-/// an und lädt es via `RescanTemplates` in die Colony-Registry.
+/// and loads it into the colony registry via `RescanTemplates`.
 async fn setup_bash_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");
     let bash_tpl = templates_root.join("bash");

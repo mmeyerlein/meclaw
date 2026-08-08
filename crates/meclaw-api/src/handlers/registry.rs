@@ -1,9 +1,9 @@
 //! GET /colony/registry — Phase 12-B T8.1.
 //!
-//! Liest die in-memory Registry der Colony via `ColonyMsg::ReadRegistry` und
-//! liefert eine JSON-Antwort `{"registry": [...]}`. Filter werden 1:1 aus dem
-//! Query-String in die Read-Variante uebersetzt; `limit` wird via `clamp_limit`
-//! (Default 100, Cap 1000) eingegrenzt.
+//! Reads the colony's in-memory registry via `ColonyMsg::ReadRegistry` and
+//! returns a JSON response `{"registry": [...]}`. Filters are translated 1:1 from
+//! the query string into the read variant; `limit` is bounded via `clamp_limit`
+//! (default 100, cap 1000).
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -18,28 +18,28 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-String-Params fuer `GET /colony/registry`.
+/// Query-string params for `GET /colony/registry`.
 ///
-/// `type` ist ein reserviertes Wort in Rust; via `#[serde(rename)]` mappen.
+/// `type` is a reserved word in Rust; mapped via `#[serde(rename)]`.
 #[derive(Debug, Deserialize)]
 pub struct RegistryQuery {
-    /// Exakter Pfad-Match (z.B. `?path=/main/llm`).
+    /// Exact path match (e.g. `?path=/main/llm`).
     pub path: Option<String>,
-    /// Prefix-Match auf den Pfad-String (z.B. `?path_prefix=/main`).
+    /// Prefix match on the path string (e.g. `?path_prefix=/main`).
     pub path_prefix: Option<String>,
-    /// Cell-Type-Filter (z.B. `?type=llm`).
+    /// Cell-type filter (e.g. `?type=llm`).
     #[serde(rename = "type")]
     pub cell_type: Option<String>,
-    /// Phase-13.5 Lifecycle-3b T8 (F7): active-Filter (z.B. `?active=true`).
-    /// `Some(true)` → nur aktive, `Some(false)` → nur inaktive, `None` → alle.
+    /// Phase-13.5 lifecycle-3b T8 (F7): active filter (e.g. `?active=true`).
+    /// `Some(true)` → active only, `Some(false)` → inactive only, `None` → all.
     pub active: Option<bool>,
-    /// Hard cap auf zurueckgegebene Eintraege (default 100, max 1000).
+    /// Hard cap on returned entries (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
-/// Handler fuer `GET /colony/registry`.
+/// Handler for `GET /colony/registry`.
 ///
-/// 503 wenn `colony.inbox.send` oder `ack_rx.await` failed (Colony down).
+/// 503 when `colony.inbox.send` or `ack_rx.await` fails (colony down).
 pub async fn get_registry(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<RegistryQuery>,

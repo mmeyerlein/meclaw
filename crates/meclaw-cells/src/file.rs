@@ -98,7 +98,7 @@ impl meclaw_colony::StatelessCell for FileCell {
     #[allow(clippy::manual_async_fn)]
     /// Handle one tool_call message: parse args, dispatch the file op
     /// (read/write/list/stat) via `spawn_blocking`, emit a `tool_result`
-    /// or error message to `msg.reply_to` (fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint)).
+    /// or error message to `msg.reply_to` (fallback `msg.target` (W2d: its own path, not the READ endpoint)).
     fn handle<'a>(
         &'a self,
         msg: Message,
@@ -349,8 +349,8 @@ fn list_dir(p: &StdPath) -> OpOutcome {
 }
 
 fn stat_path(p: &StdPath) -> OpOutcome {
-    // symlink_metadata: für Symlinks reporten wir den Link selbst (kind=symlink),
-    // nicht das Target (Brainstorm § 1.3).
+    // symlink_metadata: for symlinks we report the link itself (kind=symlink),
+    // not the target (brainstorm § 1.3).
     let meta = match std::fs::symlink_metadata(p) {
         Err(e) => return map_io_to_outcome(e),
         Ok(m) => m,
@@ -500,7 +500,7 @@ impl CellFactory for FileCellFactory {
             contract.consumes.clone(),
         );
 
-        // RespawnFn: baut FileCell + Dispatcher frisch (stateless, kein State).
+        // RespawnFn: builds FileCell + dispatcher fresh (stateless, no state).
         let respawn_path = path.clone();
         let respawn_canon = canon.clone();
         let respawn_outputs_tx = outputs_tx.clone();
@@ -641,7 +641,7 @@ mod tests {
         );
     }
 
-    // ---- U11: validate ≡ spawn parse path (Existenz/is_dir auch in validate) ----
+    // ---- U11: validate ≡ spawn parse path (existence/is_dir checked in validate too) ----
 
     #[test]
     fn factory_validate_params_rejects_nonexistent_base_path() {
@@ -714,10 +714,10 @@ mod tests {
         };
         sender.send(msg).await.unwrap();
 
-        // Deterministisches Rendezvous: recv().await returnt sobald der Worker
-        // die Emission in out_tx schreibt. Kein zeitbasierter Failure-Marker —
-        // Channel-Close (None) würde den Test mit unwrap() explodieren lassen,
-        // was ein echter Failure wäre, kein Flake.
+        // Deterministic rendezvous: recv().await returns as soon as the worker
+        // writes the emission into out_tx. No time-based failure marker — a
+        // channel close (None) would blow the test up on unwrap(), which would be
+        // a real failure, not a flake.
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.target, Path::new("/caller"));
         assert_eq!(em.content["messages"][0]["text"], "world");
@@ -812,7 +812,7 @@ mod tests {
         let written = std::fs::read_to_string(td.path().join("out.txt")).unwrap();
         assert_eq!(written, "hello");
 
-        // WRITE in nicht-existierendem Parent → io_error (Entscheidung 1.1)
+        // WRITE into a non-existent parent → io_error (decision 1.1)
         let em = invoke(
             &cell,
             json!({"op":"write","path":"subdir/x.txt","content":"y"}),

@@ -6,7 +6,7 @@
 //! endpoint and TTL > 0), the message is dead-lettered as `cell_inactive` and
 //! routing stops — the inactive cell is NEVER woken and NEVER sent to.
 //!
-//! Trennschärfe (demo (c)): in ONE test we prove three DISTINCT DLQ reasons:
+//! Discriminating power (demo (c)): in ONE test we prove three DISTINCT DLQ reasons:
 //!   - inactive cell        → `cell_inactive`
 //!   - unknown path         → `unresolved_path`   (no cell, no hive)
 //!   - hive, no out-edge    → `hive_no_route`     (reachable hive, graph silent)
@@ -185,7 +185,7 @@ async fn inactive_cell_dead_letters_distinct_from_unresolved_and_hive_no_route()
         dl_h.reason
     );
 
-    // Trennschärfe: the three reasons are pairwise distinct.
+    // Discriminating power: the three reasons are pairwise distinct.
     assert_ne!(dl_a.reason.as_code(), dl_n.reason.as_code());
     assert_ne!(dl_a.reason.as_code(), dl_h.reason.as_code());
     assert_ne!(dl_n.reason.as_code(), dl_h.reason.as_code());

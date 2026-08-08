@@ -14,8 +14,8 @@ pub(crate) struct BashArgs {
 
 use meclaw_core::JsonValue;
 
-/// Parses tool_call args for BashCell. Returns `Err(human-readable)` mit
-/// `ERR_INVALID_INPUT`-Semantik (Caller baut Error-Body).
+/// Parses tool_call args for BashCell. Returns `Err(human-readable)` with
+/// `ERR_INVALID_INPUT` semantics (the caller builds the error body).
 pub(crate) fn parse_bash_args(args: &JsonValue) -> Result<BashArgs, String> {
     let command = args
         .get("command")
@@ -589,7 +589,7 @@ mod tests {
         cell.handle(msg, &sink).await;
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.content["header"]["exit_code"], 3);
-        // KEIN finish_reason: "error" — exit≠0 ist NORMAL (Decision 1.1).
+        // NO finish_reason: "error" — a non-zero exit is NORMAL (decision 1.1).
         assert!(
             em.content["header"].get("finish_reason").is_none()
                 || em.content["header"]["finish_reason"] != "error"
@@ -715,10 +715,10 @@ mod tests {
         };
         sender.send(msg).await.unwrap();
 
-        // Deterministisches Rendezvous: recv().await returnt sobald der Worker
-        // die Emission in out_tx schreibt. Kein zeitbasierter Failure-Marker —
-        // Channel-Close (None) würde den Test mit unwrap() explodieren lassen,
-        // was ein echter Failure wäre, kein Flake.
+        // Deterministic rendezvous: recv().await returns as soon as the worker
+        // writes the emission into out_tx. No time-based failure marker — a
+        // channel close (None) would blow the test up on unwrap(), which would be
+        // a real failure, not a flake.
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.target, Path::new("/caller"));
         assert_eq!(em.content["messages"][0]["text"], "factory\n");

@@ -1,10 +1,10 @@
 //! Phase-7 Slice-3 web_fetch-Demo.
 //!
 //! Topologie: /web (WebFetchCell) + /sink (terminale CaptureCell). HTTP-Endpoint
-//! via Mock-HTTP-Server (127.0.0.1:0, kein Egress).
+//! via a mock HTTP server (127.0.0.1:0, no egress).
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/web_fetch/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/web_fetch/` directory is created and loaded via RescanTemplates.
 
 use meclaw_cells::WebFetchCellFactory;
 use meclaw_colony::CellFactory;
@@ -26,7 +26,7 @@ fn make_tool_call_probe(args: &str, id: &str, reply_to: Path) -> meclaw_core::Me
         .build()
 }
 
-/// Phase-11 T16: Legt ein minimales `web_fetch`-Template-Verzeichnis an und lädt es
+/// Phase-11 T16: creates a minimal `web_fetch` template directory and loads it
 /// via `RescanTemplates` in die Colony-Registry.
 async fn setup_web_fetch_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");
@@ -185,7 +185,7 @@ async fn phase_7_web_fetch_demo_404_is_normal_not_error() {
     };
     validate_ubf_body(&body).expect("valid UBF");
     assert_eq!(m.headers.hop["http_status"], 404);
-    // NORMAL — kein finish_reason=error
+    // NORMAL — no finish_reason=error
     assert!(
         m.headers.hop.get("finish_reason").is_none() || m.headers.hop["finish_reason"] != "error"
     );

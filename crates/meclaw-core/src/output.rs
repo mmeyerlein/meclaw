@@ -1,11 +1,11 @@
-//! Output-Pfad per spec § Output-Pfad.
+//! Output path per spec § Output path.
 //!
-//! - `CellOutput { target, content }` ist, was eine Cell emittiert.
-//! - `CellEmission` ist das angereicherte Paket, das `cell_task` an Colony's
-//!   outputs-Mailbox schickt — Cell-Output + Parent-Kontext.
-//! - `OutputSink` ist der pro-Message-lokale Wrapper, den `cell_task`
-//!   konstruiert und der Cell per `&`-Referenz übergibt. `push(CellOutput)`
-//!   reichert mit `sender_path`/`parent_message_id`/`trace_id`/`input_ttl`/`input_headers` an und sendet.
+//! - `CellOutput { target, content }` is what a cell emits.
+//! - `CellEmission` is the enriched package that `cell_task` sends to colony's
+//!   outputs mailbox: cell output plus parent context.
+//! - `OutputSink` is the per-message-local wrapper that `cell_task` constructs
+//!   and hands to the cell by `&` reference. `push(CellOutput)` enriches it with
+//!   `sender_path`/`parent_message_id`/`trace_id`/`input_ttl`/`input_headers` and sends.
 
 use crate::headers::Headers;
 use crate::path::Path;
@@ -13,44 +13,44 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-/// Was eine Cell emittiert. Pure Cell-Sicht: kein Envelope-Wissen.
+/// What a cell emits. Pure cell view: no envelope knowledge.
 #[derive(Debug, Clone)]
 pub struct CellOutput {
-    /// In 3a von der Cell direkt gesetzt; ab Phase 4 typischerweise via Edge.
+    /// Set directly by the cell in 3a; from phase 4 on typically via an edge.
     pub target: Path,
-    /// JSON-Content mit optionaler `"header"`-Sektion (Extraktion in 3b).
+    /// JSON content with an optional `"header"` section (extracted in 3b).
     pub content: Value,
 }
 
-/// Angereichertes Paket, das `cell_task` an Colony's outputs-Mailbox sendet.
-/// Trägt den Parent-Kontext, den nur `cell_task` kennt (lokaler Stack-State).
+/// Enriched package that `cell_task` sends to colony's outputs mailbox.
+/// Carries the parent context that only `cell_task` knows (local stack state).
 #[derive(Debug, Clone)]
 pub struct CellEmission {
-    /// Absoluter Pfad der emittierenden Cell (von Colony als `reply_to` gesetzt).
+    /// Absolute path of the emitting cell (set by colony as `reply_to`).
     pub sender_path: Path,
-    /// ID der konsumierten Eingangs-Message; wird Folge-Message-`parent_message_id`.
-    /// `None` bei Source-Messages (z.B. event-originated emissions aus
-    /// `OriginSink`-nutzenden Long-Running-Cells). Per overview Z.852.
+    /// ID of the consumed inbound message; becomes the follow-up message's
+    /// `parent_message_id`. `None` on source messages (e.g. event-originated
+    /// emissions from long-running cells using `OriginSink`). Per overview l.852.
     pub parent_message_id: Option<Uuid>,
-    /// Trace-ID der konsumierten Message; wird kopiert in Folge-Message.
+    /// Trace ID of the consumed message; copied into the follow-up message.
     pub trace_id: Uuid,
-    /// TTL der konsumierten Message (bereits einmal von `route()` dekrementiert,
-    /// als die Cell sie empfing). Wird als Start-TTL der Folge-Message übernommen;
-    /// `route()` dekrementiert beim nächsten Hop erneut. Spec § TTL-Semantik:
-    /// „Colony dekrementiert bei jeder Routing-Entscheidung" — eine Dekrement-Operation
-    /// pro Cell-zu-Cell-Hop, nicht pro Message-Konstruktion.
+    /// TTL of the consumed message (already decremented once by `route()` when
+    /// the cell received it). It is carried over as the follow-up message's start
+    /// TTL; `route()` decrements again on the next hop. Spec § TTL semantics:
+    /// "colony decrements on every routing decision", one decrement operation
+    /// per cell-to-cell hop, not per message construction.
     pub input_ttl: u32,
-    /// Headers from the consumed input message (Spec § 822 — Colony
+    /// Headers from the consumed input message (spec § 822: colony
     /// propagates input-headers into the output; cell-emitted
     /// content.header overlays the `hop` compartment via the outputs-arm).
     pub input_headers: Headers,
-    /// `reply_to` of the consumed input message — target for substrate-side
+    /// `reply_to` of the consumed input message: target for substrate-side
     /// `contract_violation` error replies at the central emits check (Slice 3).
     /// `None` for source emissions (OriginSink) and inputs without reply_to.
     pub input_reply_to: Option<Path>,
-    /// Cell-emittiertes Target.
+    /// Cell-emitted target.
     pub target: Path,
-    /// Cell-emittierter Content (Body-Bau in Colony).
+    /// Cell-emitted content (the body is built in colony).
     pub content: Value,
     /// W2b (Ruling A1, ruling 2026-06-12): when `true`, this emission is a
     /// substrate-generated **error reply** addressed to a known sender
@@ -58,15 +58,15 @@ pub struct CellEmission {
     /// `message_timeout` backstop. The outputs-arm delivers it DIRECTLY to
     /// `target` via `route_with_log` (registry lookup, the `contract_violation`
     /// pattern), NOT through the sender's out-edges. It is feedback to a known
-    /// absender, not a routing emission — so the A1 no_route rule does not apply.
+    /// sender, not a routing emission, so the A1 no_route rule does not apply.
     /// Normal emissions leave this `false`.
     pub direct_reply: bool,
 }
 
-/// Pro-Message-Lebensdauer; existiert nur während eines `cell.handle()`-Calls.
-/// `cell_task` konstruiert den Sink mit Parent-Kontext, übergibt ihn per `&`
-/// an `cell.handle()`, droppt ihn danach. Push ist mehrfach erlaubt
-/// (Multi-Send: spec § Output-Pfad „Emit-Frequenz pro handle()-Call").
+/// Per-message lifetime; exists only for the duration of one `cell.handle()`
+/// call. `cell_task` constructs the sink with the parent context, hands it to
+/// `cell.handle()` by `&`, and drops it afterwards. Pushing more than once is
+/// allowed (multi-send: spec § Output path, "emit frequency per handle() call").
 #[derive(Clone)]
 pub struct OutputSink {
     tx: mpsc::Sender<CellEmission>,
@@ -101,8 +101,8 @@ impl OutputSink {
         }
     }
 
-    /// Push einen `CellOutput` an Colony's outputs-Mailbox; reichert mit
-    /// Parent-Kontext an. Backpressure greift via `mpsc::Sender::send`.
+    /// Push a `CellOutput` to colony's outputs mailbox, enriched with the parent
+    /// context. Backpressure applies via `mpsc::Sender::send`.
     pub async fn push(&self, out: CellOutput) -> Result<(), mpsc::error::SendError<CellEmission>> {
         self.tx.send(self.enrich(out, false)).await
     }

@@ -1,24 +1,25 @@
-//! Live-fähige Colony-Primitives für apply-Phase (ohne Test-Wrapper).
+//! Live-capable colony primitives for the apply phase (without a test wrapper).
 //!
-//! `ColonyRuntime` ist ein minimaler Plain-Struct, der die zwei Sender hält,
-//! die `apply_bootstrap_plan` braucht: Inbox-Sender (für ColonyMsg) und
-//! Outputs-Sender (für CellEmission). Test-Wrapper wie `ColonyHandle` in
-//! `meclaw-testing` exposieren diese via `runtime()`-Methode.
+//! `ColonyRuntime` is a minimal plain struct holding the two senders that
+//! `apply_bootstrap_plan` needs: the inbox sender (for ColonyMsg) and the outputs
+//! sender (for CellEmission). Test wrappers such as `ColonyHandle` in
+//! `meclaw-testing` expose them via a `runtime()` method.
 
 use crate::{ColonyConfig, ColonyMsg};
 use meclaw_core::CellEmission;
 use tokio::sync::mpsc;
 
-/// Minimal-Primitives einer laufenden Colony-Task. Ohne Drop, ohne JoinHandle —
-/// reine Sender-Klone für den apply-Pfad.
+/// The minimal primitives of a running colony task. No Drop, no JoinHandle —
+/// pure sender clones for the apply path.
 #[derive(Clone)]
 pub struct ColonyRuntime {
-    /// Sender in die Colony-Inbox (für `ColonyMsg::*`-Sends).
+    /// Sender into the colony inbox (for `ColonyMsg::*` sends).
     pub inbox_tx: mpsc::Sender<ColonyMsg>,
-    /// Sender in den Outputs-Channel (für `CellEmission`-Forwards).
+    /// Sender into the outputs channel (for `CellEmission` forwards).
     pub outputs_tx: mpsc::Sender<CellEmission>,
-    /// Colony-weite Verhaltens-Defaults aus `colony.json` (Phase-13.5 A7). Der
-    /// Bootstrap-apply-Pfad liest `idle_timeout_default_ms` hieraus statt aus der
+    /// Colony-wide behaviour defaults from `colony.json` (phase-13.5 A7). The
+    /// bootstrap-apply path reads `idle_timeout_default_ms` from here rather than
+    /// from the
     /// `DEFAULT_IDLE_TIMEOUT_MS`-Konstante.
     pub colony_config: ColonyConfig,
     /// Per-colony blob store (Phase-13.5 A8). Passed to `spawn_cell` at the

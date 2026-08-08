@@ -1,26 +1,26 @@
 //! Phase-13.5-A6 T6 Regressions-Test (T6 requirement 2):
 //!
-//! Pinnt das `send_eda_reject`-Verhalten, wenn eine rejected Mutation
-//! `reply_to = /colony/<endpoint>` hat. Der Reply-Pfad ist die 4. callsite
-//! des `RouteAction::ColonyDispatch`-handlings (außerhalb von outputs-arm
-//! und den 2 inbox-routing-stellen), und wird in T3 DURCH INLINE DLQ-PUSH
-//! gelöst — KEIN dispatch_colony_endpoint-Reentry (würde infinite-recursion
-//! bei /colony/mutations riskieren, plus send_eda_reject hat keinen vollen
-//! colony_task-State).
+//! Pins the `send_eda_reject` behaviour when a rejected mutation has
+//! `reply_to = /colony/<endpoint>`. The reply path is the 4th call site of the
+//! `RouteAction::ColonyDispatch` handling (outside the outputs arm and the 2
+//! inbox routing sites), and is solved in T3 BY AN INLINE DLQ PUSH — NO
+//! dispatch_colony_endpoint re-entry (that would risk infinite recursion on
+//! /colony/mutations, plus send_eda_reject has no full colony_task state).
 //!
-//! Beweis:
+//! Proof:
 //!
-//! - Mutation wird via ColonyMsg::Mutation mit reply_to=Some(/colony/mutations)
-//!   eingereicht und scheitert deterministisch (template_missing).
-//! - send_eda_reject baut error-reply mit target=/colony/mutations und routet
-//!   sie via route_with_log.
-//! - route() returnt RouteAction::ColonyDispatch mit endpoint=/colony/mutations,
+//! - The mutation is submitted via ColonyMsg::Mutation with
+//!   reply_to=Some(/colony/mutations) and fails deterministically
+//!   (template_missing).
+//! - send_eda_reject builds an error reply with target=/colony/mutations and
+//!   routes it via route_with_log.
+//! - route() returns RouteAction::ColonyDispatch with endpoint=/colony/mutations,
 //!   sender=/colony.
-//! - send_eda_reject's loop fängt ColonyDispatch und macht inline DLQ-Push
+//! - send_eda_reject's loop catches ColonyDispatch and does an inline DLQ push
 //!   (reason=ColonyEndpointUnimplemented, resolved_target=/colony/mutations,
-//!   sender_path=/colony — = sender aus RouteAction, von route()'s initialem
+//!   sender_path=/colony — = the sender from RouteAction, from route()'s initial
 //!   sender_path="/colony").
-//! - KEINE infinite-recursion: Test terminiert in deutlich unter 3s.
+//! - NO infinite recursion: the test terminates well under 3s.
 
 #![allow(clippy::expect_fun_call)]
 
@@ -34,8 +34,8 @@ use std::time::Duration;
 async fn send_eda_reject_to_colony_endpoint_lands_in_dlq_no_recursion() {
     let h = ColonyHandle::new();
 
-    // Invalide Mutation: nicht-existierendes Template → template_missing reject.
-    // reply_to = Some(/colony/mutations) — der pathologische Cell→/colony-loop-fall.
+    // Invalid mutation: non-existent template → template_missing reject.
+    // reply_to = Some(/colony/mutations) — the pathological cell→/colony loop case.
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
         .send(ColonyMsg::Mutation {
@@ -51,7 +51,7 @@ async fn send_eda_reject_to_colony_endpoint_lands_in_dlq_no_recursion() {
         .await
         .unwrap();
 
-    // Outcome muss Rejected sein — sonst kein send_eda_reject-Pfad.
+    // The outcome must be Rejected — otherwise there is no send_eda_reject path.
     let outcome = ack_rx.await.unwrap();
     match outcome {
         MutationOutcome::Rejected { error_code, .. } => {
@@ -63,9 +63,9 @@ async fn send_eda_reject_to_colony_endpoint_lands_in_dlq_no_recursion() {
         _ => panic!("expected Rejected, got {outcome:?}"),
     }
 
-    // Poll DLQ deterministisch (kein fixed sleep — analog T5-Hygiene-Pattern).
-    // Test terminiert in <3s, KEINE infinite-recursion durch /colony/mutations→
-    // /colony/mutations-Dispatch-loop.
+    // Poll the DLQ deterministically (no fixed sleep — same as the T5 hygiene
+    // pattern). The test terminates in <3s, NO infinite recursion through a
+    // /colony/mutations→/colony/mutations dispatch loop.
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     let matched: Vec<meclaw_colony::DeadLetter> = loop {
         let snapshot = h.drain_dead_letters().await;

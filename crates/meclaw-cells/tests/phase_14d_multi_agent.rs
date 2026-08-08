@@ -14,7 +14,7 @@
 //!   `final_answer_coupled_to_turn` — capture Receipt carries "BILLING_ANSWER" +
 //!   context.turn_id=="t1"; billing mock recorded request equals the user turn
 //!   text; tech mock receives 0 requests; DLQ empty.
-//! Task 5: Mutations-Validator bestätigt build-time-clean (+ Negativ).
+//! Task 5: the mutation validator confirms build-time-clean (+ a negative case).
 //!   `validator_accepts_multi_agent_topology` — plan_bootstrap on the committed
 //!   tree returns Ok (turn_id reachable via ingress root, no hop locality violation).
 //!   `validator_rejects_unreachable_turn_id` — after injecting delete_context:
@@ -520,7 +520,7 @@ async fn agent_target_decays_turn_id_couples() {
 // Task 4 — finale Antwort gekoppelt, end-to-end + Receipt
 // ---------------------------------------------------------------------------
 
-/// **14-D-4 — Finale Antwort des gewählten Agenten an turn_id gekoppelt.**
+/// **14-D-4 — the chosen agent's final answer is coupled to turn_id.**
 ///
 /// Full topology `router → billing|tech → capture → /sink`.  Billing question
 /// `"I need a refund for my invoice"` → billing agent fires.
@@ -649,7 +649,7 @@ async fn final_answer_coupled_to_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 5 — Mutations-Validator bestätigt build-time-clean (+ Negativ)
+// Task 5 — the mutation validator confirms build-time-clean (+ a negative case)
 // ---------------------------------------------------------------------------
 
 /// **14-D-5 Positiv — Validator akzeptiert die committete Multi-Agent-Topologie.**
@@ -684,7 +684,7 @@ fn validator_accepts_multi_agent_topology() {
     );
 }
 
-/// **14-D-5 Negativ — Validator rejectet `turn_id` unreachable nach delete_context.**
+/// **14-D-5 negative — the validator rejects `turn_id` as unreachable after delete_context.**
 ///
 /// Copies the 14-D tree and mutates `main/config.json`: adds
 /// `"modifier": {"delete_context": ["turn_id"]}` to the `router→billing` edge.
@@ -694,8 +694,8 @@ fn validator_accepts_multi_agent_topology() {
 ///
 /// Assertion: `plan_bootstrap` returns `Err` with a `HeaderContractViolation`
 /// whose `reason` mentions both `"turn_id"` and `"context presence not reachable"`.
-/// Beweist: die Korrelations-Kette ist nicht optional — der Validator erzwingt sie
-/// zur Bauzeit.
+/// Proves: the correlation chain is not optional — the validator enforces it at
+/// build time.
 #[test]
 fn validator_rejects_unreachable_turn_id() {
     let td = TempDir::new().unwrap();
@@ -747,45 +747,45 @@ fn validator_rejects_unreachable_turn_id() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6 — Live-Graph-SVG/DOT aus gebooteter Multi-Agent-Topologie
+// Task 6 — live-graph SVG/DOT from the booted multi-agent topology
 // ---------------------------------------------------------------------------
 
-/// **14-D-6 — Live-Graph-SVG/DOT aus gebooteter Multi-Agent-Topologie.**
+/// **14-D-6 — live-graph SVG/DOT from the booted multi-agent topology.**
 ///
-/// Bootet den vollständigen `tests/fixtures/14d-multi-agent/`-Baum (TempDir-Kopie,
-/// beide llm-Cells gegen Mocks), liest den Live-Graph via
-/// `ColonyMsg::ReadGraph` für den Scope `/`, rendert `graph.dot` + `graph.svg`
-/// mit dem zero-dep-Generator (identisch zu 14c) und schreibt sie nach
-/// `tests/fixtures/14d-multi-agent/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
+/// Boots the complete `tests/fixtures/14d-multi-agent/` tree (a TempDir copy,
+/// both llm cells against mocks), reads the live graph via `ColonyMsg::ReadGraph`
+/// for the scope `/`, renders `graph.dot` + `graph.svg` with the zero-dep
+/// generator (identical to 14c) and writes them to
+/// `tests/fixtures/14d-multi-agent/` (under the env gate `MECLAW_EMIT_DOT=1`).
 ///
 /// Assertions:
-/// - Alle 4 Topology-Knoten (`/router`, `/billing`, `/tech`, `/capture`)
+/// - All 4 topology nodes (`/router`, `/billing`, `/tech`, `/capture`)
 ///   erscheinen im DOT.
-/// - Beide CEL-Conditions (`agent_target == 'billing'`, `agent_target == 'tech'`)
+/// - Both CEL conditions (`agent_target == 'billing'`, `agent_target == 'tech'`)
 ///   erscheinen im DOT als Edge-Labels.
-/// - Das generierte SVG ist ein gültiges SVG-Dokument (`<svg`).
+/// - The generated SVG is a valid SVG document (`<svg`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn topology_svg_from_live_graph() {
     let (h, _mock_billing, _mock_tech, mut sink_rx, _td) = boot_full_topology().await;
     send_routed_question(&h, "I need a refund for my invoice").await;
 
-    // Positiver Receipt: volle Kette router→billing→capture→/sink läuft vollständig,
-    // damit alle Knoten im Live-Graph registriert sind.
+    // Positive receipt: the full chain router→billing→capture→/sink runs completely,
+    // so that all nodes are registered in the live graph.
     let _msg = support::recv_bounded(&mut sink_rx)
         .await
         .expect("billing path must deliver a message to /sink via capture");
 
-    // Live-Graph lesen: Scope "/" liefert alle Topology-Knoten + Edges.
+    // Read the live graph: scope "/" returns all topology nodes + edges.
     let (nodes, edges) = support::live_graph(&h, &["/"]).await;
 
-    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach tests/fixtures/14d-multi-agent/ schreiben.
+    // Write SVG/DOT to tests/fixtures/14d-multi-agent/ under the env gate `MECLAW_EMIT_DOT=1`.
     support::emit_dot_if_requested("14d-multi-agent", &nodes, &edges);
 
-    // --- DOT/SVG für Assertions lokal rendern (unabhängig von MECLAW_EMIT_DOT) ---
+    // --- Render DOT/SVG locally for the assertions (independent of MECLAW_EMIT_DOT) ---
     let dot = support::render_dot(&nodes, &edges);
     let svg = support::render_svg(&nodes, &edges);
 
-    // Alle 4 Topology-Knoten müssen im DOT erscheinen.
+    // All 4 topology nodes must appear in the DOT.
     for node in &["/router", "/billing", "/tech", "/capture"] {
         assert!(
             dot.contains(node),
@@ -793,7 +793,7 @@ async fn topology_svg_from_live_graph() {
         );
     }
 
-    // Beide CEL-Conditions müssen als vollständige Edge-Labels im DOT erscheinen.
+    // Both CEL conditions must appear as complete edge labels in the DOT.
     assert!(
         dot.contains("hop.agent_target == 'billing'"),
         "DOT must contain full billing edge label; dot = {dot:?}"
@@ -803,7 +803,7 @@ async fn topology_svg_from_live_graph() {
         "DOT must contain full tech edge label; dot = {dot:?}"
     );
 
-    // SVG muss ein gültiges SVG-Dokument sein und alle 4 Topology-Knoten enthalten.
+    // The SVG must be a valid SVG document and contain all 4 topology nodes.
     assert!(
         svg.contains("<svg"),
         "rendered output must be an SVG document; got = {svg:.200?}"

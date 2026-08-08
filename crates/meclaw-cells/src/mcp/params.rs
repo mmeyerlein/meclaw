@@ -1,21 +1,21 @@
-//! Phase-10-D: `McpParams`. POC-Schnitt — vier Felder.
-//! `endpoint` Pflicht; alles andere mit Defaults.
+//! Phase-10-D: `McpParams`. POC cut — four fields.
+//! `endpoint` is mandatory; everything else has defaults.
 
 use serde_json::Value as JsonValue;
 
 /// Parsed mcp params after validation. All fields owned.
 #[derive(Debug, Clone)]
 pub struct McpParams {
-    /// HTTP+JSON-RPC endpoint (POC: kein stdio, kein SSE-Stream).
-    /// `${VAR}`-Substitution macht die Colony vor dem Hand-off.
+    /// HTTP+JSON-RPC endpoint (POC: no stdio, no SSE stream).
+    /// `${VAR}` substitution is done by colony before the hand-off.
     pub endpoint: String,
-    /// Optional bearer token (resolved via `${VAR}`). `None` = kein
-    /// Authorization-Header.
+    /// Optional bearer token (resolved via `${VAR}`). `None` = no Authorization
+    /// header.
     pub bearer: Option<String>,
-    /// A-Timeout (`tokio::time::timeout`) um jede HTTP-Op
+    /// A timeout (`tokio::time::timeout`) around every HTTP op
     /// (initialize, tools/list, tools/call). Default 30000.
     pub external_timeout_ms: u64,
-    /// A-Timeout für `cell.db`-Calls via `DbConn`. Default 5000.
+    /// A timeout for `cell.db` calls via `DbConn`. Default 5000.
     pub query_timeout_ms: u64,
 }
 
@@ -30,9 +30,9 @@ pub struct McpParams {
 /// reject (not a vaguer `Unknown`).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct McpOverlay {
-    /// A-Timeout per HTTP-Op (tool-call). Mutable, Weg A (handle-side, live).
+    /// A timeout per HTTP op (tool call). Mutable, path A (handle side, live).
     pub external_timeout_ms: u64,
-    /// A-Timeout for cell.db ops. Mutable, Weg C (DbConn, live).
+    /// A timeout for cell.db ops. Mutable, path C (DbConn, live).
     pub query_timeout_ms: u64,
 }
 

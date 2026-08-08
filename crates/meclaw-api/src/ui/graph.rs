@@ -1,9 +1,9 @@
 //! GET /ui/graph — Phase 12-D T23.
 //!
-//! Scope-gefilterte Nodes+Edges-Sicht. Wrappt `ColonyMsg::ReadGraph`
-//! analog zum 12-B-JSON-Handler. `?scope=<path>` (default `/`).
+//! Scope-filtered nodes+edges view. Wraps `ColonyMsg::ReadGraph` analogously to
+//! the 12-B JSON handler. `?scope=<path>` (default `/`).
 //!
-//! Nodes als `<ul>`, Edges als `<table>` (from / to / id).
+//! Nodes as a `<ul>`, edges as a `<table>` (from / to / id).
 
 use crate::ColonyHandle;
 use crate::ui::layout;
@@ -18,10 +18,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `/ui/graph`.
+/// Query params for `/ui/graph`.
 #[derive(Debug, Deserialize, Default)]
 pub struct GraphUiQuery {
-    /// Scope-Prefix; default `/`.
+    /// Scope prefix; default `/`.
     pub scope: Option<String>,
 }
 

@@ -1,28 +1,28 @@
 //! Post-Phase-14-Audit (#8): `tests/fixtures/demo-colony` als gebauter E2E-Test.
 //!
-//! Die manuelle 8-Punkte-Demo aus `examples/README.md` hatte bis hier null
-//! automatisierte Abdeckung — Bootstrap-Aenderungen konnten die committeten
-//! Demo-Fixtures still rot machen. Dieser Test bootet den COMMITTETEN
-//! Beispiel-Baum (Kopie in ein TempDir — examples/ bleibt read-only,
-//! No-Delete-Policy), wendet `tests/fixtures/demo-mutation.json` wortgleich via
-//! `POST /colony/mutations` an und beweist `/echo` ueber positive Receipts:
-//! Registry-Eintrag (bash-Cell) + Message-Log-Row mit `to_path == "/echo"`.
+//! The manual 8-point demo from `examples/README.md` had zero automated
+//! coverage until now — bootstrap changes could silently turn the committed
+//! demo fixtures red. This test boots the COMMITTED example tree (copied into a
+//! TempDir — examples/ stays read-only, no-delete policy), applies
+//! `tests/fixtures/demo-mutation.json` verbatim via `POST /colony/mutations`
+//! and proves `/echo` through positive receipts: a registry entry (bash cell) +
+//! a message-log row with `to_path == "/echo"`.
 //!
-//! Harness-Form 1:1 wie `phase_12_b_demo.rs` (production `run_with_hooks`,
-//! kein Test-`ColonyHandle`-Wrapper).
+//! Harness form 1:1 as in `phase_12_b_demo.rs` (production `run_with_hooks`, no
+//! test `ColonyHandle` wrapper).
 
 use meclaw_cli::{Cli, run_with_hooks};
 use std::net::SocketAddr;
 
-/// Repo-relativer Pfad zu `examples/<name>` (Crate liegt zwei Ebenen tiefer).
+/// Repo-relative path to `examples/<name>` (the crate sits two levels deeper).
 fn examples_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(name)
 }
 
-/// Kopiert den committeten Beispiel-Baum rekursiv ins TempDir-Root —
-/// nie in-place booten (`colony.db`/`cell.db` entstehen zur Laufzeit).
+/// Copies the committed example tree recursively into the TempDir root —
+/// never boot in place (`colony.db`/`cell.db` are created at runtime).
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -65,7 +65,7 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
     let addr = addr_rx.await.unwrap();
     let client = reqwest::Client::new();
 
-    // Step 1: Boot-Receipt — /health antwortet, der Beispiel-Baum ist geladen.
+    // Step 1: boot receipt — /health answers, the example tree is loaded.
     let resp = client
         .get(format!("http://{addr}/health"))
         .send()
@@ -73,8 +73,8 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
-    // Step 2: committete Mutation-Datei WORTGLEICH anwenden (kein Inline-JSON —
-    // genau die Datei, die die README-Demo postet, ist der Pruefling).
+    // Step 2: apply the committed mutation file VERBATIM (no inline JSON —
+    // exactly the file the README demo posts is the subject under test).
     let mutation: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(examples_path("demo-mutation.json")).unwrap(),
     )
@@ -92,8 +92,8 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         "demo-mutation.json must commit against the committed template tree: {json}"
     );
 
-    // Step 3: positiver Mutation-Receipt — Registry fuehrt /echo als bash-Cell
-    // (Template `echo` ist eine bash-Cell, siehe examples/README.md § Layout).
+    // Step 3: positive mutation receipt — the registry lists /echo as a bash
+    // cell (the `echo` template is a bash cell, see examples/README.md § Layout).
     let resp = client
         .get(format!("http://{addr}/colony/registry"))
         .send()
@@ -108,8 +108,8 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         .unwrap_or_else(|| panic!("mutation must register /echo, registry: {entries:?}"));
     assert_eq!(echo["cell_type"], "bash");
 
-    // Step 4: /echo ist erreichbar — fire-and-forget 202, dann positiver
-    // Routing-Receipt: Message-Log-Row mit to_path == "/echo" via /colony/trace.
+    // Step 4: /echo is reachable — fire-and-forget 202, then a positive routing
+    // receipt: a message-log row with to_path == "/echo" via /colony/trace.
     let body = serde_json::json!({
         "target": "/echo",
         "body": {
@@ -132,18 +132,18 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         "POST /messages target=/echo must surface as message-log row (to_path=/echo) within 2s"
     );
 
-    // Sekundaer-Check (laut, kein Beweis): /echo darf nicht als UNERREICHBARES
-    // Ziel im DLQ landen — wuerde z.B. eine CellInactive-Regression beim
-    // Mutations-Spawn aufdecken (externer Sender → /echo dead-lettered).
+    // Secondary check (loud, not a proof): /echo must not land in the DLQ as an
+    // UNREACHABLE target — that would reveal e.g. a CellInactive regression at
+    // the mutation spawn (external sender → /echo dead-lettered).
     //
-    // W2d (Substrat, ruling 2026-06-12): die bash-Cell antwortet auf das
-    // „demo ping" (KEIN tool_call) mit einer Op-Error-Reply. Ohne `reply_to`
-    // emittiert sie diese seit W2d an ihren EIGENEN Pfad (`msg.target` = /echo),
-    // nicht mehr an den `/colony/dead_letters`-READ-Endpoint; matcht keine
-    // Out-Edge ⇒ sie dead-lettert (sender_path == /echo). Das ist die
-    // angekuendigte W2-Regression (Op-Echos erreichen den Sender nicht mehr),
-    // KEIN Spawn-Defekt — daher wird die cell-eigene Emission (sender_path ==
-    // /echo) hier toleriert; der Guard schaerft auf EXTERNE Sender.
+    // W2d (substrate, ruling 2026-06-12): the bash cell answers the "demo ping"
+    // (NO tool_call) with an op error reply. Without `reply_to` it has, since
+    // W2d, emitted that to its OWN path (`msg.target` = /echo) instead of the
+    // `/colony/dead_letters` READ endpoint; it matches no out-edge ⇒ it
+    // dead-letters (sender_path == /echo). That is the announced W2 regression
+    // (op echoes no longer reach the sender), NOT a spawn defect — the cell's
+    // own emission (sender_path == /echo) is therefore tolerated here; the guard
+    // sharpens on EXTERNAL senders.
     let resp = client
         .get(format!("http://{addr}/colony/dead_letters"))
         .send()
@@ -161,7 +161,7 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         "message to /echo must not dead-letter as unreachable target: {json}"
     );
 
-    // Step 5: Shutdown-Kette wie in phase_12_b_demo (T12-Timeout-Form).
+    // Step 5: shutdown chain as in phase_12_b_demo (T12 timeout form).
     shutdown_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(30), join)
         .await
@@ -170,8 +170,8 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         .expect("run_with_hooks must return Ok");
 }
 
-/// Pollt `GET /colony/trace` bis eine Row mit `to_path == expected` auftaucht
-/// (Writer-Task schreibt async). Cap ~2s, 50-ms-Schritte — gleiche Form wie
+/// Polls `GET /colony/trace` until a row with `to_path == expected` appears
+/// (the writer task writes asynchronously). Cap ~2s, 50-ms steps — same form as
 /// `poll_for_dead_letter` in `phase_12_b_demo.rs`.
 async fn poll_for_trace_to_path(
     client: &reqwest::Client,

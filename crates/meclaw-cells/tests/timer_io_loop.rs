@@ -1,7 +1,8 @@
-//! Phase-10-B T8/T9: `run_io`-Loop. T8: Skelett — bei leerer Active-Menge
-//! bleibt `sleep_until_optional` `pending`; SetActive mit future-`at` weckt
-//! nicht; Reconfig-Channel-Close terminiert. T9: cron-`*/1`-Fire kommt
-//! innerhalb 2.5 s; once feuert genau einmal, dann ist `active` lokal leer.
+//! Phase-10-B T8/T9: the `run_io` loop. T8: skeleton — with an empty active set
+//! `sleep_until_optional` stays `pending`; a SetActive with a future `at` does not
+//! wake it; a reconfig channel close terminates it. T9: a cron `*/1` fire arrives
+//! within 2.5 s; a one-shot fires exactly once, after which `active` is locally
+//! empty.
 
 use chrono::{Duration as ChDur, TimeZone, Utc};
 use meclaw_cells::timer::cell::TimerIo;
@@ -18,14 +19,14 @@ async fn run_io_on_empty_active_stays_pending_then_reacts_to_setactive_with_futu
     let io = TimerIo { active: vec![] };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
-    // Innerhalb 100 ms KEIN Event (active leer → sleep_until = pending).
+    // NO event within 100 ms (active empty → sleep_until = pending).
     assert!(
         tokio::time::timeout(Duration::from_millis(100), events_rx.recv())
             .await
             .is_err()
     );
 
-    // SetActive mit once weit in der Zukunft — immer noch kein Event.
+    // SetActive with a one-shot far in the future — still no event.
     let future_at = Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
     rc_tx
         .send(TimerReconfig::SetActive(vec![ActiveSchedule {
@@ -64,7 +65,7 @@ async fn run_io_emits_fire_for_every_second_cron_and_keeps_active() {
 
     let ev = tokio::time::timeout(Duration::from_millis(2500), events_rx.recv())
         .await
-        .expect("kein Fire innerhalb 2.5s")
+        .expect("no fire within 2.5s")
         .unwrap();
     let TimerEvent::Fire { schedule_id, .. } = ev;
     assert_eq!(schedule_id, id, "Fire trug fremde schedule_id");
@@ -78,8 +79,8 @@ async fn run_io_emits_fire_for_every_second_cron_and_keeps_active() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn run_io_drops_once_locally_after_fire() {
-    // once auf jetzt+200ms → Fire kommt → active sollte danach leer sein
-    // (run_io feuert NICHT erneut innerhalb 800 ms Window).
+    // A one-shot at now+200ms → the fire arrives → active should be empty
+    // afterwards (run_io does NOT fire again within the 800 ms window).
     let (events_tx, mut events_rx) = mpsc::channel::<TimerEvent>(64);
     let (rc_tx, rc_rx) = mpsc::channel::<TimerReconfig>(8);
     let id = Uuid::now_v7();
@@ -94,9 +95,9 @@ async fn run_io_drops_once_locally_after_fire() {
 
     let _ev = tokio::time::timeout(Duration::from_millis(800), events_rx.recv())
         .await
-        .expect("once-Fire fehlt")
+        .expect("once fire missing")
         .unwrap();
-    // Kein zweiter Fire innerhalb der naechsten 800 ms.
+    // No second fire within the next 800 ms.
     assert!(
         tokio::time::timeout(Duration::from_millis(800), events_rx.recv())
             .await
@@ -113,8 +114,8 @@ async fn run_io_drops_once_locally_after_fire() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn run_io_terminates_when_events_channel_consumer_drops() {
-    // Defensive: wenn events_rx droppt (Handler tot), terminiert run_io
-    // beim naechsten Fire-Send-Failure. Hier *2 s* Window mit cron-*/1*.
+    // Defensive: if events_rx drops (handler dead), run_io terminates on the next
+    // fire-send failure. A *2 s* window with cron */1* here.
     let (events_tx, events_rx) = mpsc::channel::<TimerEvent>(64);
     let (rc_tx, rc_rx) = mpsc::channel::<TimerReconfig>(8);
     let io = TimerIo {

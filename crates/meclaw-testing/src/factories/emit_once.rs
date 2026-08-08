@@ -1,11 +1,11 @@
-//! Phase-13.5-A6 Factory for `EmitOnceMockCell`. Stateful spawn-pattern
-//! analog `PersistCellFactory` und `MultiUpdateMockCellFactory`, aber ohne
-//! `cell.db` (in-memory only; rusqlite-Connection wird aus Substrat-Konvenienz
-//! geöffnet, aber von der Cell ignoriert).
+//! Phase-13.5-A6 factory for `EmitOnceMockCell`. Stateful spawn pattern
+//! analogous to `PersistCellFactory` and `MultiUpdateMockCellFactory`, but
+//! without a `cell.db` (in-memory only; the rusqlite connection is opened out of
+//! substrate convenience but ignored by the cell).
 //!
-//! Config wird beim Construct gesetzt (`initial_target`, `initial_content`,
-//! `capture_tx`) — `validate_params` und `spawn_cell` ignorieren `raw` JSON.
-//! Factory ist `pub` für A6-Demo-Tests.
+//! The config is set at construction time (`initial_target`, `initial_content`,
+//! `capture_tx`) — `validate_params` and `spawn_cell` ignore the `raw` JSON.
+//! The factory is `pub` for the A6 demo tests.
 
 use crate::mocks::EmitOnceMockCell;
 use meclaw_colony::{
@@ -48,7 +48,7 @@ impl CellFactory for EmitOnceMockCellFactory {
     }
 
     fn validate_params(&self, _raw: &JsonValue) -> Result<(), String> {
-        // A6-Mock ignoriert params — die Config lebt im Factory-Field.
+        // The A6 mock ignores params — the config lives in the factory field.
         Ok(())
     }
 
@@ -66,11 +66,11 @@ impl CellFactory for EmitOnceMockCellFactory {
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
-        // Phase-13-K-2: KEIN initialer Spawn — Mailbox-Paar geht an
-        // RegisterDormant; WakeFn/RespawnFn bauen Cell + Task on demand.
+        // Phase-13-K-2: NO initial spawn — the mailbox pair goes to
+        // RegisterDormant; WakeFn/RespawnFn build cell + task on demand.
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
-        // Shared build-from-receiver closure: open cell.db (Substrat-Konvenienz),
+        // Shared build-from-receiver closure: open cell.db (substrate convenience),
         // construct cell + DbConn::wrap + build_stateful_task_with_peace.
         let path_for_build = path.clone();
         let initial_target = self.initial_target.clone();

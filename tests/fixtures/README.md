@@ -1,7 +1,7 @@
 # meclaw demo fixtures
 
-Bootstrap-valide Fixtures fuer die Phase-12-Demo (HTTP-API + Web-UI +
-Blob-Storage). Form ist 1:1 die aus den gruenen E2E-Tests
+Bootstrap-valid fixtures for the phase-12 demo (HTTP API + web UI +
+blob storage). The shape is 1:1 the one from the green E2E tests
 (`phase_12_b_demo.rs`, `phase_12_x_e2e_attachment_in_trace.rs`,
 `phase_12_b_mutations_post.rs`).
 
@@ -10,66 +10,66 @@ Blob-Storage). Form ist 1:1 die aus den gruenen E2E-Tests
 ```
 tests/fixtures/
   demo-colony/
-    demo/                    # hive-marker (FS-Name wird beim Bootstrap zu meclaw /)
+    demo/                    # hive marker (the FS name becomes meclaw / at bootstrap)
       config.json            # {"cell":{"type":"hive"}}
-    templates/               # Templates-Registry (vom Boot-Scan geladen)
+    templates/               # templates registry (loaded by the boot scan)
       echo/
-        template.json        # Template-Index ({"name":"echo"})
-        config.json          # Template-Body (bash-Cell, leere params)
+        template.json        # template index ({"name":"echo"})
+        config.json          # template body (bash cell, empty params)
   demo-mutation.json         # add_nodes scope=/ name=echo template=echo
 ```
 
-## Pfad-Mapping (wichtig)
+## Path mapping (important)
 
-`assert_single_root_dir` strippt den FS-root-name: das einzige nicht-blacklisted
-Top-Level-Verzeichnis im `--root` wird zu meclaw `/`. Bei `<root>/demo/` heisst
-das: das hive `demo` ist im meclaw-Namespace `/`, eine cell darunter z.B.
-`/echo`. Die Mutation referenziert daher `"scope": "/"` (nicht `/demo`).
+`assert_single_root_dir` strips the FS root name: the only non-blacklisted
+top-level directory inside `--root` becomes meclaw `/`. For `<root>/demo/` that
+means: the hive `demo` is `/` in the meclaw namespace, a cell below it is e.g.
+`/echo`. The mutation therefore references `"scope": "/"` (not `/demo`).
 
-`config.json` benutzt **immer** den `cell`-Block (`{"cell":{"type":"hive"}}`),
-nie `{"type":"hive"}` direkt — `plan_bootstrap` parsed sonst nichts.
+`config.json` **always** uses the `cell` block (`{"cell":{"type":"hive"}}`),
+never `{"type":"hive"}` directly — otherwise `plan_bootstrap` parses nothing.
 
-## Demo-Lauf
+## Demo run
 
 ```bash
 # 1. Build
 cargo build --workspace --release
 
-# 2. Fixtures nach /tmp kopieren (No-Delete-Policy: kein in-place-Schreiben in examples/)
+# 2. Copy the fixtures to /tmp (no-delete policy: never write in place in examples/)
 cp -r tests/fixtures/demo-colony /tmp/demo-colony
 
-# 3. meclaw mit --api + --blobs starten
+# 3. Start meclaw with --api + --blobs
 ./target/release/meclaw \
   --root /tmp/demo-colony \
   --api 127.0.0.1:7777 \
   --blobs /tmp/demo-colony/blobs
 
-# 4. In zweitem Terminal: 8-Punkte-Demo
+# 4. In a second terminal: the 8-point demo
 curl http://127.0.0.1:7777/health                                   # 200 "ok"
-curl http://127.0.0.1:7777/ui/                                      # Dashboard
+curl http://127.0.0.1:7777/ui/                                      # dashboard
 curl -X POST http://127.0.0.1:7777/colony/mutations \
   -H 'Content-Type: application/json' \
   -d @tests/fixtures/demo-mutation.json                                   # 200 Committed
-curl http://127.0.0.1:7777/ui/registry                              # /echo sichtbar
+curl http://127.0.0.1:7777/ui/registry                              # /echo visible
 curl -X POST http://127.0.0.1:7777/messages \
   -F target=/echo \
   -F attachment=@tests/fixtures/demo-mutation.json                        # 202 + attachments[]
-# Trace-View ist search-by-trace_id (siehe Phase-12-Limitations
-# "/ui/trace ist search-by-trace_id"). Hop-Baum mit attachments[] sichtbar
-# machen: jüngste trace_id aus der JSON-Sicht ziehen, dann UI ansteuern.
+# The trace view is search-by-trace_id (see the phase-12 limitations
+# "/ui/trace is search-by-trace_id"). To make the hop tree with attachments[]
+# visible: pull the newest trace_id from the JSON view, then open the UI.
 TID=$(curl -s 'http://127.0.0.1:7777/colony/trace?limit=1' | jq -r '.trace[0].trace_id')
-curl "http://127.0.0.1:7777/ui/trace?trace_id=$TID"                 # Hop-Baum mit attachments[]
-# Listen-/Recent-Sicht via JSON: /colony/trace?limit=N. Die /ui/trace-HTML
-# ist eine Such-Ansicht (trace_id eingeben).
-curl 'http://127.0.0.1:7777/ui/dead_letters'                        # leer (alles routed)
-curl 'http://127.0.0.1:7777/colony/events'                          # 501 (Phase-14-Defer)
+curl "http://127.0.0.1:7777/ui/trace?trace_id=$TID"                 # hop tree with attachments[]
+# List/recent view via JSON: /colony/trace?limit=N. The /ui/trace HTML page
+# is a search view (enter a trace_id).
+curl 'http://127.0.0.1:7777/ui/dead_letters'                        # empty (everything routed)
+curl 'http://127.0.0.1:7777/colony/events'                          # 501 (phase-14 defer)
 # Ctrl-C -> graceful shutdown (axum drain -> ColonyMsg::Shutdown -> colony_join)
 ```
 
-## JSON-`POST /messages`
+## JSON `POST /messages`
 
-Der Smoke oben nutzt die multipart-Form. Aequivalent als klassischer JSON-POST
-(`{target, body, headers?, ttl?}`), hier mit explizitem `ttl`-Override:
+The smoke test above uses the multipart form. Equivalent as a classic JSON POST
+(`{target, body, headers?, ttl?}`), here with an explicit `ttl` override:
 
 ```bash
 curl -X POST http://127.0.0.1:7777/messages \
@@ -86,27 +86,27 @@ curl -X POST http://127.0.0.1:7777/messages \
   }'                                                                # 202 + {message_id}
 ```
 
-- `ttl` ist optional: positiver Integer; absent/`null` → `colony.json`
-  `message_default_ttl`; alles andere → `422 invalid_ttl`.
-- `headers` ist optional und geht ins persistente `context`-Fach.
-- Fire-and-forget: Response ist `202 {message_id}`. Das Tool-Result der
-  `/echo`-Cell laeuft ohne `reply_to` (der JSON-Ingress setzt keins) in die
-  Terminal-Kette aus `docs/meclaw-overview.md` § Envelope-Setter-Authority
-  (`reply_to`-Spezialfall) — danach ist die DLQ **nicht mehr leer**; der
-  „leer"-Check der 8-Punkte-Demo gehoert deshalb VOR diesen POST.
+- `ttl` is optional: a positive integer; absent/`null` → `colony.json`
+  `message_default_ttl`; anything else → `422 invalid_ttl`.
+- `headers` is optional and goes into the persistent `context` compartment.
+- Fire-and-forget: the response is `202 {message_id}`. The tool result of the
+  `/echo` cell runs without `reply_to` (the JSON ingress sets none) into the
+  terminal chain from `docs/meclaw-overview.md` § Envelope setter authority
+  (the `reply_to` special case) — after that the DLQ is **no longer empty**; the
+  "empty" check of the 8-point demo therefore belongs BEFORE this POST.
 
-## Was die Mutation tut
+## What the mutation does
 
-`demo-mutation.json` instanziert eine `bash`-Cell unter `/echo`. Das
-Template `echo` ist ein Name-Wrapper — das tatsaechliche Verhalten kommt
-aus dem `bash`-Built-in (Phase 7 stateless tool-cell). Die Cell akzeptiert
-default-`params` (leeres Object) und ist sofort routable.
+`demo-mutation.json` instantiates a `bash` cell at `/echo`. The template `echo`
+is a name wrapper — the actual behaviour comes from the `bash` built-in (phase 7
+stateless tool cell). The cell accepts default `params` (an empty object) and is
+routable immediately.
 
-## Anti-Vorgriff
+## Deliberately not anticipated
 
-- KEIN Body::Blob-Auto-Offload — multipart-Files landen ausschliesslich im
-  `attachments[]`-Slot der UBF-Message.
-- KEIN `blob_inline_max_bytes`-Read (Phase 13).
-- KEINE Auth-Middleware (Hardening = Post-Roadmap; lokale Disziplin
+- NO Body::Blob auto-offload — multipart files land exclusively in the
+  `attachments[]` slot of the UBF message.
+- NO `blob_inline_max_bytes` read (phase 13).
+- NO auth middleware (hardening = post-roadmap; local discipline
   `--api 127.0.0.1:7777`).
-- `/colony/events` antwortet 501 (Phase-14-Defer, kein WebSocket).
+- `/colony/events` answers 501 (phase-14 defer, no WebSocket).

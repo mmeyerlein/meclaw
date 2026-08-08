@@ -1,4 +1,4 @@
-//! W4b: params-update messages to the `llm` cell (config.md § Zugriff Z.20).
+//! W4b: params-update messages to the `llm` cell (config.md § Access l.20).
 //!
 //! A params-update is a normal message carrying a top-level `params` body-slot
 //! (1:1 the config.json `params` block). The cell merges it into its live params

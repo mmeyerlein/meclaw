@@ -1,15 +1,16 @@
 //! Phase-6.5 demo gate.
 //!
-//! Beweist Authority-Trennung: cell_task_stateful hält die cell.db-Connection
-//! über `.await` hinweg, Per-Output-State trägt interleaved emit+write.
+//! Proves the authority separation: cell_task_stateful holds the cell.db
+//! connection across `.await`, per-output state carries interleaved emit+write.
 //!
-//! Sink-Topologie: /sink ist eine echte terminale CaptureCell (Phase-3a-
-//! Pattern), direkt via ColonyHandle::spawn registriert. Kein Re-Emit,
-//! kein Cascade-Loop. Append-Log-Tabelle (step=1, step=2) beweist beide
-//! Writes über die await-Boundary.
+//! Sink topology: /sink is a real terminal CaptureCell (phase-3a pattern),
+//! registered directly via ColonyHandle::spawn. No re-emit, no cascade loop.
+//! The append-log table (step=1, step=2) proves both writes across the await
+//! boundary.
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/multi_update/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/multi_update/` directory is created and loaded via
+//! RescanTemplates.
 
 use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
@@ -26,7 +27,7 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
         vec![("multi_update".to_string(), factory)],
     );
 
-    // Phase-11 T16: Template-Verzeichnis für multi_update anlegen und laden.
+    // Phase-11 T16: create and load a template directory for multi_update.
     {
         let templates_root = td.path().join("templates");
         let tpl = templates_root.join("multi_update");
@@ -48,8 +49,8 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
         ack_rx.await.unwrap();
     }
 
-    // /sink = terminal CaptureCell, direkt registriert (kein Mutation-Pfad,
-    // kein Re-Emit → kein Cascade-Loop).
+    // /sink = terminal CaptureCell, registered directly (no mutation path,
+    // no re-emit → no cascade loop).
     let (sink_tx, mut sink_rx) = tokio::sync::mpsc::channel::<Message>(8);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
@@ -100,14 +101,14 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
         .await
         .unwrap();
 
-    // Phase-13.5-A6-followup Test-Hygiene: poll-based-Sync bis sink_count==2
-    // ODER 2s-Timeout, DANN shutdown + assert. Vor dem deterministic-shutdown-
-    // Fix verließ sich der Test auf einen sleep(200ms) + den race-induzierten
-    // slow-shutdown-Delay als implizite Wartezeit für outputs_rx-Drain.
-    // Mit dem deterministischen schnellen shutdown ist die Pre-Shutdown-
-    // Wartezeit zu knapp; poll-based Sync ist die saubere Form (verspätet-
-    // geliefert beobachtet via Diagnostik 10/10 grün). Diagnostik-Befund:
-    // beide Emissions kommen an, nur außerhalb der 200ms-sleep-Window.
+    // Phase-13.5-A6 follow-up test hygiene: poll-based sync until sink_count==2
+    // OR a 2s timeout, THEN shutdown + assert. Before the deterministic-shutdown
+    // fix the test relied on a sleep(200ms) + the race-induced slow-shutdown
+    // delay as an implicit wait for the outputs_rx drain. With the deterministic
+    // fast shutdown the pre-shutdown wait is too tight; poll-based sync is the
+    // clean form (late delivery observed via diagnostics, 10/10 green).
+    // Diagnostic finding: both emissions arrive, just outside the 200ms sleep
+    // window.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut sink_count = 0;
     while sink_count < 2 && std::time::Instant::now() < deadline {
@@ -123,7 +124,7 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
         "CaptureCell at /sink must receive 2 emits (after 2s poll)"
     );
 
-    // Hauptbeweis: cell.db direkt lesen — beide Append-Log-Zeilen
+    // Main proof: read cell.db directly — both append-log rows
     let cell_db_path = td.path().join("multi").join("cell.db");
     let conn = rusqlite::Connection::open_with_flags(
         &cell_db_path,

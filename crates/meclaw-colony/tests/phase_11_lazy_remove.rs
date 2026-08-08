@@ -1,12 +1,12 @@
-//! Slice 11-F T18: Lazy-Check + Auto-Remove (overview Z.1163 Pfad-2).
+//! Slice 11-F T18: lazy check + auto-remove (overview Z.1163 path 2).
 //!
-//! Registry-Eintrag ohne Verzeichnis → Fehler + Auto-Remove.
+//! A registry entry without a directory → error + auto-remove.
 //!
-//! Setup: ColonyDb mit `UpsertTemplate`-Op für Template, dessen
-//! `filesystem_path` nicht existiert (z.B. `/nonexistent/path`).
-//! Colony hochfahren, Mutation add_nodes(template="ghost") senden.
-//! Outcome muss Rejected sein, error_code "template_missing".
-//! Nach Rejection: db.read_templates() darf den Eintrag nicht mehr enthalten.
+//! Setup: a ColonyDb with an `UpsertTemplate` op for a template whose
+//! `filesystem_path` does not exist (e.g. `/nonexistent/path`).
+//! Boot the colony, send a mutation add_nodes(template="ghost").
+//! The outcome must be Rejected with error_code "template_missing".
+//! After the rejection: db.read_templates() must no longer contain the entry.
 
 use meclaw_colony::persist::writer::ColonyWriteOp;
 use meclaw_colony::{ColonyDb, ColonyMsg, MutationOutcome};

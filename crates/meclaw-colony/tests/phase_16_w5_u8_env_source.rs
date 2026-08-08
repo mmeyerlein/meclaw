@@ -1,15 +1,16 @@
-//! U8 (roadmap 2026-06-11; RULED A8 2026-06-12, hochgestuft + gefixt):
-//! Env-Quellen-Konsistenz. Die Colony merkt sich ihre Env-Quelle vom Start;
-//! ALLE Substitutions-Pfade (Boot, Mutation/Instanziierung, 2b-Adoption) lesen
-//! aus DERSELBEN Quelle. Vorher: `--env <datei>` galt nur im Boot-Pfad; die
-//! `${VAR}`-Substitution zur Mutations-Zeit las weiter die Default-Quelle
-//! `<root>/.env` und ignorierte den Operator-Override still.
+//! U8 (roadmap 2026-06-11; RULED A8 2026-06-12, escalated + fixed):
+//! env source consistency. The colony remembers its env source from startup;
+//! ALL substitution paths (boot, mutation/instantiation, 2b adoption) read from
+//! the SAME source. Before: `--env <file>` only applied on the boot path; the
+//! `${VAR}` substitution at mutation time still read the default source
+//! `<root>/.env` and silently ignored the operator override.
 //!
-//! Diskriminator: die Env-Datei liegt AUSSERHALB von `root` (nur über die
-//! gemerkte Quelle erreichbar). `<root>/.env` ist absent. Ohne den Fix liest
-//! `handle_mutation` `<root>/.env` → `${U8_VAR}` fehlt → `env_var_missing`
-//! reject. Mit dem Fix liest es die gemerkte Quelle → resolved → committed, und
-//! der substituierte Wert landet als positives Receipt in `params`.
+//! Discriminator: the env file lies OUTSIDE `root` (reachable only via the
+//! remembered source). `<root>/.env` is absent. Without the fix,
+//! `handle_mutation` reads `<root>/.env` → `${U8_VAR}` is missing →
+//! `env_var_missing` reject. With the fix it reads the remembered source →
+//! resolved → committed, and the substituted value lands as a positive receipt
+//! in `params`.
 
 use meclaw_colony::{
     CellFactory, ColonyMsg, ContractView, DbConn, MutationOutcome, RespawnFn, SpawnedCellKind,

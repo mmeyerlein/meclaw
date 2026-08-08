@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// Phase-9 `store`-Cell factory. Unit-struct (no fields) — all
+/// Phase-9 `store` cell factory. Unit struct (no fields) — all
 /// per-instance config lives in `params`.
 pub struct StoreCellFactory;
 
@@ -28,14 +28,14 @@ impl CellFactory for StoreCellFactory {
         StoreParams::parse(raw).map(|_| ())
     }
 
-    /// Spawn a `store`-Cell instance.
+    /// Spawn a `store` cell instance.
     ///
-    /// Sequence (per Brainstorm E1+E3+E4):
+    /// Sequence (per brainstorm E1+E3+E4):
     /// 1. Parse params (`StoreParams::parse`).
     /// 2. `open_or_create_cell_db_with_status` → `(Connection, OpenStatus)`,
     ///    then `hamming::register` (P4: the scalar function is per connection,
     ///    so both the wake and the respawn path install it).
-    /// 3. `apply_schema_ddl` (Ad-hoc-DDL from `params.schema`, sync), then
+    /// 3. `apply_schema_ddl` (ad-hoc DDL from `params.schema`, sync), then
     ///    `apply_fts_ddl` (P3: FTS5 index + triggers from `params.fts`, idempotent).
     /// 4. If `OpenStatus::Created` → `load_seed_if_present` (sync, fresh-only).
     /// 5. `DbConn::wrap` (with optional `query_timeout` from params).
@@ -62,14 +62,15 @@ impl CellFactory for StoreCellFactory {
         // the closures capture the BIRTH params Value (config.json snapshot).
         let _params = StoreParams::parse(&raw_params)?;
 
-        // Phase-13-K-2: KEIN initialer cell-task-Spawn — Mailbox-Paar an Dormant.
-        // Seed-on-Created bleibt korrekt: WakeFn ruft `open_or_create_cell_db_with_status`,
-        // erster Wake gegen leeres `cell.db` → `OpenStatus::Created` → seed läuft;
-        // jeder spätere Wake → `Resumed` → kein Re-Seed. RespawnFn skipt Seed
-        // intentional (Restart ≠ fresh, sonst M1-Spec-Verstoß).
+        // Phase-13-K-2: NO initial cell-task spawn — the mailbox pair goes to
+        // Dormant. Seed-on-Created stays correct: WakeFn calls
+        // `open_or_create_cell_db_with_status`, the first wake against an empty
+        // `cell.db` gives `OpenStatus::Created` → the seed runs; every later wake
+        // gives `Resumed` → no re-seed. RespawnFn skips the seed intentionally
+        // (a restart is not fresh; doing otherwise would violate the M1 spec).
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
-        // RespawnFn — Crash-Restart-Pfad. Connection re-open, DDL reapply
+        // RespawnFn — crash-restart path. Connection re-open, DDL reapply
         // (idempotent), Seed-Skip (Resume ≠ fresh).
         let respawn_mailbox_capacity = mailbox_capacity;
         let respawn_cell_dir = cell_dir.clone();

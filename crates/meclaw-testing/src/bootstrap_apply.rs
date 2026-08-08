@@ -89,8 +89,8 @@ mod tests {
         let scope_cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM hive_scopes", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(edge_cnt, 1, "1 edge persisted (atomar mit hive_scopes)");
-        assert_eq!(scope_cnt, 1, "1 hive_scope persisted (atomar mit edges)");
+        assert_eq!(edge_cnt, 1, "1 edge persisted (atomic with hive_scopes)");
+        assert_eq!(scope_cnt, 1, "1 hive_scope persisted (atomic with edges)");
         // Suppress unused-import warning when Path isn't used further.
         let _ = Path::new("/");
     }
@@ -99,7 +99,7 @@ mod tests {
     async fn reboot_hydrates_edges_from_colony_db_and_ignores_hints() {
         use meclaw_core::Path;
         let td = TempDir::new().unwrap();
-        // FirstBoot mit a→b
+        // FirstBoot with a→b
         write(
             td.path(),
             "main/config.json",
@@ -122,7 +122,7 @@ mod tests {
         let db_path = h1.tempdir_path().join("colony.db");
         h1.shutdown().await;
 
-        // Reboot mit anderen Hints (c→d) — config.json wird modifiziert.
+        // Reboot with different hints (c→d): config.json is modified.
         write(
             td.path(),
             "main/config.json",
@@ -144,7 +144,7 @@ mod tests {
             .unwrap();
         h2.shutdown().await;
 
-        // edges-Tabelle nach Re-Boot: UNVERÄNDERT (a→b, NICHT c→d).
+        // edges table after re-boot: UNCHANGED (a→b, NOT c→d).
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let rows: Vec<(String, String)> = conn
             .prepare("SELECT from_path, to_path FROM edges")

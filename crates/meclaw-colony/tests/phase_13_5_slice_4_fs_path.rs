@@ -1,7 +1,7 @@
-//! Phase-13.5 Slice 4 T3 (F3): FS-Pfad-Wahrheit — bootstrap and mutation must
+//! Phase-13.5 slice 4 T3 (F3): FS path truth — bootstrap and mutation must
 //! agree on the `logical_path → fs_path` mapping.
 //!
-//! Spec § Authority „Instanziierung & cell_id-Stabilität" (overview Z.170-180):
+//! Spec § Authority "Instantiation and cell_id stability" (overview Z.170-180):
 //! instantiation happens **iff** no cell-directory exists at the target path
 //! (fresh cell_id). If the directory exists → Reconnect/Resume: NO new cell_id,
 //! `cell.db` resumed (M1). `cell_id` is assigned exactly once for a path.

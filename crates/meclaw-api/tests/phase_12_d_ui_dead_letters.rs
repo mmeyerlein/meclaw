@@ -1,7 +1,7 @@
-//! Phase 12-D T24: Integration-Tests fuer `/ui/dead_letters`.
+//! Phase 12-D T24: integration tests for `/ui/dead_letters`.
 //!
-//! Pure-Read der in-memory DL-Queue (`drain=false`). Render als HTML-Liste
-//! mit `error_code` + Pfad + Body-Preview (truncated).
+//! Pure read of the in-memory DL queue (`drain=false`). Rendered as an HTML list
+//! with `error_code` + path + body preview (truncated).
 
 use axum::Router;
 use axum::body::{Body, to_bytes};

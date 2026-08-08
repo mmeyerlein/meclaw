@@ -251,9 +251,9 @@ impl StatelessCell for CodeCell {
                 }
             };
 
-            // Stdin-Write nebenläufig: vermeidet Pipe-Deadlock bei
-            // großem stdin/stdout — stdin-Pipe-Puffer voll, Skript wartet
-            // auf stdout-Reader, der erst in with_killing_timeout startet.
+            // Concurrent stdin write: avoids a pipe deadlock with large
+            // stdin/stdout — the stdin pipe buffer fills up and the script waits
+            // on the stdout reader, which only starts in with_killing_timeout.
             let stdin_opt = child.stdin.take();
             let stdin_bytes = stdin_json.into_bytes();
             let _write_task = tokio::spawn(async move {
@@ -265,7 +265,7 @@ impl StatelessCell for CodeCell {
                     // parse (surfaces as `invalid_json`/`script_failed`), so the
                     // write error needs no separate diagnostic here.
                     let _ = s.write_all(&stdin_bytes).await;
-                    // Drop schließt die Pipe → Skript sieht EOF.
+                    // Dropping closes the pipe → the script sees EOF.
                 }
             });
 

@@ -1,11 +1,11 @@
-//! Phase 12-D T27: Error-Pages 400/500 für `/ui/*` — KEIN 422 bei Reads.
+//! Phase 12-D T27: error pages 400/500 for `/ui/*` — NO 422 on reads.
 //!
-//! Spec-Klarstellung: `422 Unprocessable Entity` ist POST-Mutation-only.
-//! UI-Reads, die invalide Query-Werte bekommen (z.B. UUID-Parse-Fail),
-//! antworten mit 400-HTML — niemals 422.
+//! Spec clarification: `422 Unprocessable Entity` is POST-mutation-only.
+//! UI reads that receive invalid query values (e.g. a UUID parse failure) answer
+//! with 400 HTML — never 422.
 //!
-//! 500 ist die generische Fallback-Page, wenn die Colony-Inbox down
-//! ist oder der ack-Receiver droppen.
+//! 500 is the generic fallback page for when the colony inbox is down or the ack
+//! receiver is dropped.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -55,7 +55,7 @@ async fn ui_trace_invalid_uuid_returns_400_html() {
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(body.contains("400 Bad Request"));
     assert!(body.contains("trace_id"));
-    // Stelle sicher, dass es KEIN JSON ist (kein leading `{`).
+    // Make sure it is NOT JSON (no leading `{`).
     assert!(
         !body.trim_start().starts_with('{'),
         "must be HTML, not JSON"
@@ -64,7 +64,7 @@ async fn ui_trace_invalid_uuid_returns_400_html() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ui_trace_invalid_uuid_is_400_not_422() {
-    // Z.412 / Spec: 422 ist POST-Mutation-only. Reads geben 400, nie 422.
+    // l.412 / spec: 422 is POST-mutation-only. Reads return 400, never 422.
     let test_h = meclaw_testing::ColonyHandle::new();
     let (app, _blob_td) = app_from(&test_h);
 

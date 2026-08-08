@@ -63,7 +63,7 @@ async fn demo_e2e_text_completion() {
     .unwrap();
 
     // 3. ColonyHandle with LlmCellFactory under name "llm". The Arc is shared
-    //    between Colony's runtime (for the Respawn-Pfad) and the registry
+    //    between colony's runtime (for the respawn path) and the registry
     //    passed to `bootstrap_from_filesystem` (for the initial spawn).
     let factory: Arc<dyn CellFactory> = Arc::new(LlmCellFactory);
     let h = ColonyHandle::new_with_factories_at(&td, vec![("llm".to_string(), factory.clone())]);
@@ -259,7 +259,7 @@ async fn demo_e2e_tool_call() {
         .reply_to(Path::new("/sink"))
         .body(Body::Inline(json!({
             "system": {"tools": {"calculator": {"text": tool_schema_str}}},
-            "messages": [{"origin":"user","type":"text","text":"Was ist 2+3?"}]
+            "messages": [{"origin":"user","type":"text","text":"What is 2+3?"}]
         })))
         .build();
     h.send(probe).await;
@@ -288,7 +288,7 @@ async fn demo_e2e_tool_call() {
         req_messages[0]["role"], "user",
         "no leading system-message when system has only tools (concat_system_prompt skips tools sub-slot)"
     );
-    assert_eq!(req_messages[0]["content"], "Was ist 2+3?");
+    assert_eq!(req_messages[0]["content"], "What is 2+3?");
 
     // 9. ASSERT 2: cell emits UBF tool_call turn with id pass-through.
     assert_eq!(em.target, Path::new("/sink"));
@@ -484,7 +484,7 @@ async fn demo_error_rate_limit() {
 /// ONLY `system.*` and NO `messages` slot.
 ///
 /// Proves three things end-to-end:
-///   1. **Q3 system-only-Schweigen** (handle() Schritt-4 early-return):
+///   1. **Q3 system-only silence** (handle() step-4 early return):
 ///      `/sink` receives NOTHING within 500ms. No assistant-turn, no
 ///      inference, no Provider-call. Verified via `tokio::time::timeout`
 ///      on `sink_rx.recv()` returning `Err`.
@@ -496,7 +496,7 @@ async fn demo_error_rate_limit() {
 ///      for messages skips the last_input INSERT entirely → COUNT == 0.
 ///
 /// **Defense-in-depth**: `base_url = "http://127.0.0.1:1/v1"` is a sentinel
-/// unreachable URL. If `handle()` accidentally reached Schritt-5/6 (i.e. Q3
+/// unreachable URL. If `handle()` accidentally reached step 5/6 (i.e. Q3
 /// regression), the wire call would either timeout or emit a wire-error;
 /// both fail the silence-assert below. So this test also proves "system-only
 /// MUST NOT call the Provider".
@@ -555,7 +555,7 @@ async fn demo_system_only_no_emit() {
     .await;
 
     // 5. Probe: system-only, NO messages slot. Q3 → cell persists + returns
-    //    silently (handle() Schritt-4 early-return).
+    //    silently (handle() step-4 early return).
     let probe = MessageBuilder::new(Path::new("/llm"))
         .reply_to(Path::new("/sink"))
         .body(Body::Inline(json!({
@@ -566,7 +566,7 @@ async fn demo_system_only_no_emit() {
     h.send(probe).await;
 
     // ─── ASSERT 1 (deep-watch requirement): Sink receives NOTHING within 500ms ───
-    // Q3 silence: handle() returns after Schritt-2 persist, no inference,
+    // Q3 silence: handle() returns after the step-2 persist, no inference,
     // no emit. `tokio::time::timeout(...)` returns `Err` on timeout —
     // exactly what we want (no message arrived).
     let sink_result = tokio::time::timeout(Duration::from_millis(500), sink_rx.recv()).await;
@@ -633,7 +633,7 @@ async fn demo_system_only_no_emit() {
 ///      the mock's 5s delay — is the externally observable proof: the mock
 ///      cannot answer before 5s regardless of load, so anything arriving sooner
 ///      can only be the A-Timeout error-path (no load-sensitive wallclock
-///      threshold needed — Test-Hygiene 2026-06-04, Präzedenz e17803a).
+///      threshold needed — test hygiene 2026-06-04, precedent e17803a).
 ///   2. **Wire-error mapping**: `WireError::Timeout → "timeout"` (via
 ///      `wire_error_to_code`, T8) propagates through `handle()`'s error-branch
 ///      (T22's mapping verified end-to-end on a fresh error path).
@@ -730,7 +730,7 @@ async fn demo_a_timeout() {
     //    recv-timeout placed BETWEEN the A-Timeout (200ms) and the mock's 5s
     //    delay. The old test added a separate `elapsed < 1s` wallclock assert,
     //    which flaked under Workspace-Last (cross-process Tokio-Scheduler-Druck
-    //    schob den ~200ms-Pfad über 1s, ohne dass die A-Timeout-Semantik verletzt
+    //    pushed the ~200ms path past 1s without violating the A-timeout semantics
     //    war). Dropped: `error_code=="timeout"` below + the sub-5s recv-timeout
     //    already prove the A-Timeout-path airtight without a tight threshold.
     h.send(probe).await;

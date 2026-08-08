@@ -1,6 +1,6 @@
 //! Phase-16 β3: `timer` runtime params-overlay.
 //!
-//! The timer's only overlay field is `query_timeout_ms` (Weg C, sofort-live).
+//! The timer's only overlay field is `query_timeout_ms` (path C, immediately live).
 //! `schedules` are ops-managed, NOT overlay-managed (a params-update touching
 //! `schedules` is an Unknown reject). Immutable set is empty.
 //!
@@ -57,7 +57,7 @@ async fn params_update_query_timeout_persisted_and_live() {
 
     cell.handle(msg, &sink, &mut db, &rc_tx).await;
 
-    // Weg C sofort-live: the running DbConn carries the new timeout immediately.
+    // Path C, immediately live: the running DbConn carries the new timeout immediately.
     assert_eq!(
         db.query_timeout(),
         Some(std::time::Duration::from_millis(1234)),

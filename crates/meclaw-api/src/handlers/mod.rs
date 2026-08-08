@@ -1,13 +1,13 @@
-//! HTTP-Handler für `/colony/*` — Phase 12-B Task 8.
+//! HTTP handlers for `/colony/*` — phase 12-B task 8.
 //!
-//! Jeder Handler folgt dem gleichen Pattern:
+//! Every handler follows the same pattern:
 //! 1. axum extracts `State(Arc<ColonyHandle>)` + `Query<EndpointParams>`.
-//! 2. Maps Query → `ColonyMsg::Read*` Variante mit `oneshot::channel()` für ack.
-//! 3. `colony.inbox.send(msg).await` → bei Fehler: 503 `{error: "colony unavailable"}`.
-//! 4. `ack_rx.await` → bei Fehler: 503 dito.
-//! 5. Returnt `(StatusCode::OK, Json({"<slot>": reply.entries}))`.
+//! 2. Maps the query to a `ColonyMsg::Read*` variant with a `oneshot::channel()` for the ack.
+//! 3. `colony.inbox.send(msg).await` → on error: 503 `{error: "colony unavailable"}`.
+//! 4. `ack_rx.await` → on error: 503 likewise.
+//! 5. Returns `(StatusCode::OK, Json({"<slot>": reply.entries}))`.
 //!
-//! Slot-Namen pro Endpoint (Spec Z.410): `registry`, `dead_letters`, `templates`,
+//! Slot names per endpoint (spec l.410): `registry`, `dead_letters`, `templates`,
 //! `trace`, `graph`, `mutations`, `rescan`.
 
 pub mod dead_letters;
@@ -20,10 +20,9 @@ pub mod registry;
 pub mod templates;
 pub mod trace;
 
-/// Read-Limit-Clamp gemäß Spec Z.412: Default 100, Hard-Cap 1000.
-/// Wird in jedem GET-Read-Handler angewendet bevor der `ColonyMsg::Read*`
-/// abgesetzt wird. Die Inbox-Arms clampen zusätzlich `1..=1000` als Defense-
-/// in-Depth.
+/// Read-limit clamp per spec l.412: default 100, hard cap 1000.
+/// Applied in every GET read handler before the `ColonyMsg::Read*` is issued.
+/// The inbox arms additionally clamp to `1..=1000` as defense in depth.
 pub(crate) fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(100).clamp(1, 1000)
 }

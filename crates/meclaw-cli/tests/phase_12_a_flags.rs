@@ -1,6 +1,6 @@
-//! Phase-12-A TDD-Anker: Top-Level-Flags (CLAUDE.md R9 — keine Subcommands).
-//! --validate hat Vorrang, einzeilige stderr-Notiz wenn --api/--daemon
-//! danebenstehen (kein Error). --daemon ohne --api ist erlaubt.
+//! Phase-12-A TDD anchor: top-level flags (CLAUDE.md R9 — no subcommands).
+//! --validate takes precedence, with a one-line stderr note when --api/--daemon
+//! stand alongside it (no error). --daemon without --api is allowed.
 
 use clap::Parser;
 use meclaw_cli::Cli;

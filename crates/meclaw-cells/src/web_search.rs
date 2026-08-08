@@ -4,7 +4,7 @@ use std::time::Duration;
 
 /// Stateless HTTP search-proxy cell (generic JSON wrapper).
 pub struct WebSearchCell {
-    /// reqwest Client (Arc-intern, kein Mutex nötig).
+    /// reqwest client (Arc internally, no mutex needed).
     pub client: reqwest::Client,
     /// Search-endpoint URL (e.g. `https://api.search.example/search`).
     pub endpoint: String,
@@ -12,7 +12,7 @@ pub struct WebSearchCell {
     pub api_key: Option<String>,
     /// External-timeout pro Roundtrip (send + bytes).
     pub external_timeout: Duration,
-    /// Max. Anzahl parallel laufender Workers für diese Cell.
+    /// Max number of workers running in parallel for this cell.
     pub max_concurrency: usize,
 }
 
@@ -94,7 +94,7 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                 Ok(Ok(body)) => {
                     let text = String::from_utf8_lossy(&body).into_owned();
                     let bytes_len = text.len() as u64;
-                    // Graceful: result_count aus results-Array ableiten, sonst 0.
+                    // Graceful: derive result_count from the results array, otherwise 0.
                     let result_count = serde_json::from_slice::<Value>(&body)
                         .ok()
                         .and_then(|v| {
@@ -296,7 +296,7 @@ impl CellFactory for WebSearchCellFactory {
         let respawn_outputs_tx = outputs_tx.clone();
         let respawn_endpoint = endpoint.clone();
         let respawn_api_key = api_key.clone();
-        let respawn_client = client.clone(); // Arc-clone — kein Rebuild, kein .expect()
+        let respawn_client = client.clone(); // Arc clone — no rebuild, no .expect()
         let respawn_blob = blob_store.clone();
         let respawn_mailbox_capacity = mailbox_capacity;
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
@@ -469,7 +469,7 @@ mod tests {
         use meclaw_testing::mock_http::{MockResponse, start_mock_server};
         use tokio::sync::mpsc;
 
-        // Nicht-konformes JSON: hat kein "results"-Array.
+        // Non-conforming JSON: has no "results" array.
         let (addr, _join) = start_mock_server(MockResponse::ok_json(br#"{"hits":[1,2,3]}"#)).await;
         let cell = WebSearchCell {
             client: reqwest::Client::builder().build().unwrap(),
@@ -499,7 +499,7 @@ mod tests {
             .build();
         cell.handle(msg, &sink).await;
         let em = out_rx.recv().await.unwrap();
-        // GRACEFUL: result_count=0, KEIN Error. Body durchgereicht im text.
+        // GRACEFUL: result_count=0, NO error. The body is passed through in text.
         assert_eq!(em.content["header"]["result_count"], 0);
         assert!(
             em.content["header"].get("finish_reason").is_none()
@@ -644,10 +644,10 @@ mod tests {
         };
         sender.send(msg).await.unwrap();
 
-        // Deterministisches Rendezvous: recv().await returnt sobald der Worker
-        // die Emission in out_tx schreibt. Kein zeitbasierter Failure-Marker —
-        // Channel-Close (None) würde den Test mit unwrap() explodieren lassen,
-        // was ein echter Failure wäre, kein Flake.
+        // Deterministic rendezvous: recv().await returns as soon as the worker
+        // writes the emission into out_tx. No time-based failure marker — a
+        // channel close (None) would blow the test up on unwrap(), which would be
+        // a real failure, not a flake.
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.target, Path::new("/caller"));
         assert_eq!(em.content["header"]["operation"], "web_search");

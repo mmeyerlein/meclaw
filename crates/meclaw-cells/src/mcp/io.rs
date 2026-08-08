@@ -1,10 +1,10 @@
 //! Phase-10-D: I/O-Sub-Task frames + `run_io`. POC-Shape:
-//! - Handler← I/O: `McpEvent::DiscoveryReady` (einmalig nach
+//! - Handler ← I/O: `McpEvent::DiscoveryReady` (once, after
 //!   `initialize`+`tools/list`).
-//! - Handler→ I/O: `McpReconfig` ist im POC ein leeres Enum — kein
-//!   Reconfig-Pfad nötig (Tool-Calls laufen synchron in `handle()`).
-//!   `reconfig_rx` MUSS im `run_io`-`async move`-Scope trotzdem
-//!   explizit gebunden werden (Phase-10-A-Lesson Second-Order-Trap).
+//! - Handler → I/O: in the POC `McpReconfig` is an empty enum — no reconfig
+//!   path is needed (tool calls run synchronously in `handle()`). `reconfig_rx`
+//!   MUST still be bound explicitly inside the `run_io` `async move` scope
+//!   (phase-10-A lesson, the second-order trap).
 
 use crate::mcp::db::DiscoveredTool;
 use crate::mcp::wire::McpClient;
@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 /// die Tools in `cell.db.mcp_discovery_cache` via `handle_event`.
 #[derive(Debug, Clone)]
 pub enum McpEvent {
-    /// Tools-Liste vom Provider, frisch nach `initialize`+`tools/list`.
+    /// Tool list from the provider, fresh after `initialize`+`tools/list`.
     DiscoveryReady {
         /// Tools-Snapshot (Name + JSON-Schema als String).
         tools: Vec<DiscoveredTool>,
@@ -24,16 +24,16 @@ pub enum McpEvent {
 }
 
 /// Handler → I/O: unused in 10-D. `LongRunningCell` verlangt die
-/// assoziierte Type — leeres Enum erfüllt sie ohne Funktionalität.
+/// associated type — an empty enum satisfies it without adding functionality.
 #[derive(Debug, Clone)]
 pub enum McpReconfig {}
 
-/// Konfiguration für die I/O-Sub-Task. `split_io` von `McpCell` baut
-/// dies aus dem Cell-State.
+/// Configuration for the I/O sub-task. `McpCell`'s `split_io` builds it from the
+/// cell state.
 pub struct RunIoConfig {
-    /// Cloned client (Arc-internal über reqwest::Client).
+    /// Cloned client (Arc internally via reqwest::Client).
     pub client: McpClient,
-    /// A-Timeout pro HTTP-Op (initialize, tools/list). Aus
+    /// A timeout per HTTP op (initialize, tools/list). From
     /// `params.external_timeout_ms`.
     pub external_timeout_ms: u64,
 }
@@ -47,7 +47,7 @@ pub struct RunIoConfig {
 /// 2. Calls `initialize` + `tools/list` ONCE, each wrapped in the
 ///    A-Timeout from `RunIoConfig::external_timeout_ms`. On any error:
 ///    `panic!` — this is a cell-init follow-up failure (overview
-///    § Fehler-Verhalten Z.1369, e.g. unreachable `endpoint`), and the panic
+///    § Behavior on errors l.1369, e.g. an unreachable `endpoint`), and the panic
 ///    is the substrate's supervision signal: the watcher classifies
 ///    `DeathKind::Panic` → `one_for_one` restart, after N retries the registry
 ///    entry is RETAINED as `failed`. A graceful return here would classify as
@@ -79,7 +79,7 @@ pub fn run_io(
 
         // Init errors must NOT end this task gracefully: a clean return reads
         // as DeathKind::Normal and removes the registry entry. The panic is
-        // the supervision signal for "Cell-Init nach Commit" (Z.1369).
+        // the supervision signal for "cell init after commit" (l.1369).
         if let Err(e) = client.initialize(timeout).await {
             panic!("mcp init failed (initialize): {e:?}");
         }
@@ -96,8 +96,8 @@ pub fn run_io(
         }
         // β (mcp structural subtlety): the I/O-task has NO live-rereadable value
         // post-discovery — the only live overlay fields are external_timeout_ms
-        // (Weg A, consumed handle-side on the next `call_tool`) and query_timeout_ms
-        // (Weg C, applied to the handler's DbConn). So there is nothing to
+        // (path A, consumed handle-side on the next `call_tool`) and query_timeout_ms
+        // (path C, applied to the handler's DbConn). So there is nothing to
         // propagate here and NO reconfig-driven `select!` is added: converting
         // this `pending()` into a `select!` that returns on `reconfig_rx` close
         // would make a graceful return read as `DeathKind::Normal` → registry

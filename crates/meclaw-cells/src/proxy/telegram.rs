@@ -1,16 +1,16 @@
 //! Phase-10-C: `TelegramClient`. Reqwest-basierter Bot-API-Wrapper (W1:
-//! reqwest-only, kein Telegram-SDK). `get_updates` ist der Long-Poll
-//! (W2); `send_message` der Inbound-Sink-Call (T6). A-Timeouts pro Op
-//! via `tokio::time::timeout` (W7). TLS-Gate: reqwest mit `rustls-tls`
+//! reqwest only, no Telegram SDK). `get_updates` is the long poll (W2);
+//! `send_message` the inbound sink call (T6). A timeouts per op via
+//! `tokio::time::timeout` (W7). TLS gate: reqwest with `rustls-tls`
 //! + `default-features = false` (Phase-7-TLS-Gate, archive/CLAUDE-phase-lessons.md § Phase 7).
 
 use crate::proxy::io::ProxyEvent;
 use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 
-/// Fehler-Klassifikation fuer Backoff-Entscheidung (W8). `Transient` →
-/// expo Backoff (1s → 60s); `Permanent` → konstant 5min (kein busy-spin
-/// gegen ein totes Token).
+/// Error classification for the backoff decision (W8). `Transient` →
+/// exponential backoff (1s → 60s); `Permanent` → a constant 5 min (no busy spin
+/// against a dead token).
 #[derive(Debug)]
 pub enum TelegramError {
     /// 5xx, Timeout, Network, ungueltiges JSON, fehlendes `ok=true`.
@@ -21,9 +21,9 @@ pub enum TelegramError {
 
 /// Telegram-Bot-API-Client.
 ///
-/// Haelt `reqwest::Client` (intern Arc) + Bot-Token + `base_url`. `Clone` ist
-/// guenstig (Arc-internal). Pro Cell-Instanz ein Client in der Factory gebaut;
-/// `ProxyCell` + `ProxyIo` halten je einen Clone.
+/// Holds a `reqwest::Client` (Arc internally) + bot token + `base_url`. `Clone`
+/// is cheap (Arc internally). One client is built per cell instance in the
+/// factory; `ProxyCell` and `ProxyIo` each hold a clone.
 #[derive(Clone)]
 pub struct TelegramClient {
     inner: reqwest::Client,
@@ -32,8 +32,8 @@ pub struct TelegramClient {
 }
 
 impl TelegramClient {
-    /// Baut den Client. Fehler beim Build (z.B. TLS-Init) → String-Error
-    /// fuer den Factory-Spawn-Pfad.
+    /// Builds the client. A build failure (e.g. TLS init) yields a string error
+    /// for the factory spawn path.
     pub fn new(base_url: &str, bot_token: &str) -> Result<Self, String> {
         let inner = reqwest::Client::builder()
             .build()
@@ -45,7 +45,7 @@ impl TelegramClient {
         })
     }
 
-    /// β (Weg B): rebuild with a new `base_url`, keeping the **immutable**
+    /// β (path B): rebuild with a new `base_url`, keeping the **immutable**
     /// `bot_token` + the (Arc-internal) reqwest client. Used when a runtime
     /// params-update changes `base_url` — the I/O-task and the handler swap their
     /// client live. The `bot_token` is rehold from THIS client's internal state,
@@ -60,8 +60,8 @@ impl TelegramClient {
     }
 
     /// Long-Poll `getUpdates`. A-Timeout via `tokio::time::timeout`. Telegram-
-    /// side timeout via Query-Param `timeout=<sec>`. W7-Tripwire ist in
-    /// `ProxyParams::parse` validiert — hier wird's nur respektiert.
+    /// side timeout via the query param `timeout=<sec>`. The W7 tripwire is
+    /// validated in `ProxyParams::parse` — here it is only respected.
     pub async fn get_updates(
         &self,
         offset: i64,
@@ -99,9 +99,9 @@ impl TelegramClient {
     }
 
     /// POST `sendMessage`. A-Timeout via `tokio::time::timeout`. 401/403 →
-    /// `Permanent` (Inbound-Sink-Caller W6 mappt das auf `send_failed`-
-    /// Error-Reply unabhaengig der Klassifikation — Backoff-Klassifikation
-    /// ist Long-Poll-Sache, nicht Inbound-Sache).
+    /// `Permanent` (the inbound sink caller W6 maps this onto a `send_failed`
+    /// error reply regardless of the classification — backoff classification is a
+    /// long-poll concern, not an inbound one).
     pub async fn send_message(
         &self,
         chat_id: i64,
@@ -126,8 +126,8 @@ impl TelegramClient {
     }
 }
 
-/// Extrahiert nur `message.text`-Updates. `edited_message`, `callback_query`,
-/// etc. werden ignoriert (10-C-Scope).
+/// Extracts `message.text` updates only. `edited_message`, `callback_query` etc.
+/// are ignored (10-C scope).
 fn parse_update_text_only(v: &JsonValue) -> Option<ProxyEvent> {
     let update_id = v.get("update_id")?.as_i64()?;
     let m = v.get("message")?;

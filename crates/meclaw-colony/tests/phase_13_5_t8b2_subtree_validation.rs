@@ -244,8 +244,8 @@ async fn add_nodes_subtree_at_existing_root_path_resumes_per_node() {
     h.shutdown().await;
 }
 
-/// Substrat-Fix Befund 2 — a subtree whose internal edges form a cycle
-/// (`./inner_a ⇄ ./inner_b`) COMMITS: spec overview § Validierung says
+/// Substrate-fix finding 2 — a subtree whose internal edges form a cycle
+/// (`./inner_a ⇄ ./inner_b`) COMMITS: spec overview § Validation says
 /// meclaw-Core does not reject cycles generally, and the identical shape boots
 /// fine from the filesystem. Both nested cells register; the runtime TTL
 /// loop-guard bounds the cycle. (Endpoint-existence + containment checks still

@@ -1,9 +1,10 @@
-//! Slice 11-F T17: Validate additiv. Beide Ebenen werden via echtem
-//! Mutation-Roundtrip beobachtbar.
+//! Slice 11-F T17: validate is additive. Both levels become observable via a
+//! real mutation round-trip.
 //!
-//! Test 1: Template fehlt in Registry → Rejected mit error_code "template_missing".
-//! Test 2: Template existiert, aber cell.type aus dessen config.json hat keine
-//!         registrierte CellFactory → Rejected mit error_code "unknown_cell_type".
+//! Test 1: the template is missing from the registry → Rejected with error_code
+//!         "template_missing".
+//! Test 2: the template exists, but the cell.type from its config.json has no
+//!         registered CellFactory → Rejected with error_code "unknown_cell_type".
 
 use meclaw_colony::{ColonyMsg, MutationOutcome};
 use meclaw_core::Uuid;
@@ -41,11 +42,11 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
     ack_rx.await.unwrap();
 }
 
-/// Test 1: Template-Name ist nicht in der Registry → error_code "template_missing".
+/// Test 1: the template name is not in the registry → error_code "template_missing".
 ///
-/// Die Colony startet mit leerer Templates-Registry (kein rescan).
-/// Eine Mutation add_nodes mit template="ghost" wird gesendet.
-/// Erwartung: Rejected { error_code: "template_missing" }.
+/// The colony starts with an empty templates registry (no rescan).
+/// A mutation add_nodes with template="ghost" is sent.
+/// Expectation: Rejected { error_code: "template_missing" }.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_with_missing_template_is_rejected_with_template_missing() {
     let h = ColonyHandle::new_with_echo();
@@ -72,15 +73,15 @@ async fn mutation_with_missing_template_is_rejected_with_template_missing() {
     }
 }
 
-/// Test 2: Template existiert in der Registry, aber cell.type aus dessen
-/// config.json hat keine registrierte CellFactory → error_code "unknown_cell_type".
+/// Test 2: the template exists in the registry, but the cell.type from its
+/// config.json has no registered CellFactory → error_code "unknown_cell_type".
 ///
 /// Setup:
-///   - Templates-Verzeichnis mit `mystery/template.json` + `mystery/config.json`
-///     (cell.type = "totally_unknown_type", was keine Factory hat).
-///   - RescanTemplates lädt das Template in die Registry.
-///   - Mutation add_nodes mit template="mystery".
-/// Erwartung: Rejected { error_code: "unknown_cell_type" }.
+///   - A templates directory with `mystery/template.json` + `mystery/config.json`
+///     (cell.type = "totally_unknown_type", which has no factory).
+///   - RescanTemplates loads the template into the registry.
+///   - A mutation add_nodes with template="mystery".
+/// Expectation: Rejected { error_code: "unknown_cell_type" }.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_with_unregistered_cell_type_is_rejected_with_unknown_cell_type() {
     let h = ColonyHandle::new_with_echo();

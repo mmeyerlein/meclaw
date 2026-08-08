@@ -2,8 +2,8 @@
 //!
 //! Topologie: /edit (EditCell) + /sink (terminale CaptureCell).
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! wird ein `templates/edit/`-Verzeichnis angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation a `templates/edit/` directory is created and loaded via RescanTemplates.
 
 use meclaw_cells::EditCellFactory;
 use meclaw_colony::CellFactory;
@@ -24,7 +24,7 @@ fn make_tool_call_probe(args: &str, id: &str, reply_to: Path) -> meclaw_core::Me
         .build()
 }
 
-/// Phase-11 T16: Legt ein minimales `edit`-Template-Verzeichnis an und lädt es
+/// Phase-11 T16: creates a minimal `edit` template directory and loads it
 /// via `RescanTemplates` in die Colony-Registry.
 async fn setup_edit_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");

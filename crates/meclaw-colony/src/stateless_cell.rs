@@ -1,20 +1,20 @@
-//! Phase-7 StatelessCell — Cell-Variante ohne State und ohne cell.db.
+//! Phase-7 StatelessCell — the cell variant without state and without a cell.db.
 //!
-//! `handle(&self, msg, sink)` ist reentrant: der Dispatcher
-//! (`cell_task::stateless_dispatcher`) spawnt pro Message einen kurzlebigen
-//! Worker, der `cell.clone()` (Arc) plus per-Message `OutputSink` hält.
-//! Implementoren halten **keinen mutbaren State** im Cell-Struct — alle
-//! Cell-Felder sind read-only Konfiguration (z.B. `base_path` für FileCell).
+//! `handle(&self, msg, sink)` is reentrant: the dispatcher
+//! (`cell_task::stateless_dispatcher`) spawns a short-lived worker per message
+//! that holds `cell.clone()` (an Arc) plus a per-message `OutputSink`.
+//! Implementors hold **no mutable state** in the cell struct — every cell field is
+//! read-only configuration (e.g. `base_path` for FileCell).
 //!
-//! `+ '_` setzt explizit die `&self`-/`&sink`-Capture-Lifetime der Future
-//! (Edition 2024 macht das per Default; expliziter Marker für Disziplin-
-//! Klarheit, analog zu `Cell`/`StatefulCell`).
+//! `+ '_` explicitly sets the future's `&self` / `&sink` capture lifetime
+//! (edition 2024 does this by default; the explicit marker is there for clarity,
+//! analogous to `Cell`/`StatefulCell`).
 //!
-//! Lebt in `meclaw-colony`, nicht `meclaw-core` — gleiche Schicht-Logik
-//! wie `CellFactory` und `StatefulCell`. `meclaw-core` bleibt I/O-agnostisch.
+//! Lives in `meclaw-colony`, not `meclaw-core` — the same layering logic
+//! as `CellFactory` and `StatefulCell`. `meclaw-core` stays I/O-agnostic.
 //!
-//! Object-Safety: nicht object-safe (RPITIT). Der Dispatcher ist generisch
-//! `<F: StatelessCell + 'static>`, monomorphisiert pro Cell-Type.
+//! Object safety: not object-safe (RPITIT). The dispatcher is generic over
+//! `<F: StatelessCell + 'static>`, monomorphized per cell type.
 
 #[allow(clippy::manual_async_fn)]
 pub trait StatelessCell: Send + Sync {

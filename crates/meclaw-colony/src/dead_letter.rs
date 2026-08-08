@@ -14,11 +14,11 @@ pub enum DeadLetterReason {
     /// The Hive path was reachable and resolved, but no out-edge of the Hive
     /// matched the message. Deliberately distinct from `UnresolvedPath` (the
     /// Hive itself was found; the graph simply had no onward route).
-    /// Spec ref: docs/meclaw-overview.md Z.553 — Sonderfall keine Out-Edge →
+    /// Spec ref: docs/meclaw-overview.md l.553 — special case, no out-edge →
     /// `DeadLetterReason::HiveNoRoute`, canonical string `hive_no_route`.
     HiveNoRoute,
     /// TTL hit zero before a registered target accepted the message.
-    /// Per spec § Verhalten bei Routing-Fehlern.
+    /// Per spec § Behavior on routing errors.
     TtlExpired,
     /// Target is a `/colony/<x>` endpoint that exists in the spec but is not
     /// yet implemented in the current phase (e.g., `/colony/templates` in Phase 2).
@@ -60,12 +60,12 @@ pub enum DeadLetterReason {
     /// The implicit identity-decision (deliver to the cell's own emission
     /// target when no edge matched) is removed; default routing is a settable
     /// catch-all out-edge. Canonical string `no_route` — a new entry on the
-    /// stable error_code list (spec § Verhalten bei Routing-Fehlern).
+    /// stable error_code list (spec § Behavior on routing errors).
     NoRoute,
 }
 
 impl DeadLetterReason {
-    /// Canonical string per spec § Verhalten bei Routing-Fehlern (Cascade),
+    /// Canonical string per spec § Behavior on routing errors (Cascade),
     /// Absatz "Kanonische error_code-Strings". Stable API contract — new
     /// reasons may be added, existing strings must not change.
     pub fn as_code(&self) -> &'static str {

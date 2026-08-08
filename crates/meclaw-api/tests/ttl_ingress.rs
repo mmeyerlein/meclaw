@@ -1,6 +1,6 @@
 //! TTL slice (2026-06-11): `POST /messages` TTL wiring — spec
-//! `docs/meclaw-overview.md` § Message-Modell (TTL-Semantik) + § Envelope-Setter-
-//! Authority. Hierarchy under test: explicit request `ttl` field beats
+//! `docs/meclaw-overview.md` § Message model (TTL semantics) + § Envelope setter
+//! authority. Hierarchy under test: explicit request `ttl` field beats
 //! `colony.json::message_default_ttl` (the `build_router` param) beats the
 //! constant seed (64).
 //!

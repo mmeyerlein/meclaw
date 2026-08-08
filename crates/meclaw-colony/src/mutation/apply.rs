@@ -1,10 +1,10 @@
-//! `apply_mutation` — Phase-6 Apply-Sequenz Schritte 6 + 7 zusammengefasst:
-//! stage → rename. Substitute + Validate sind im colony_task::handle_mutation
-//! VOR dem durable in_flight-Insert (T13). Spawn + Edges kommen NACH dieser fn
+//! `apply_mutation` — phase-6 apply sequence steps 6 + 7 combined:
+//! stage → rename. Substitute + validate live in colony_task::handle_mutation
+//! BEFORE the durable in_flight insert (T13). Spawn + edges come AFTER this fn
 //! (T18 + T21).
 //!
-//! Phase 11 T16: Signatur erweitert um `templates`, `env`, `ctx`. Ruft
-//! `build_staging_tree_from_templates` statt des alten `build_staging_tree`.
+//! Phase 11 T16: signature extended by `templates`, `env`, `ctx`. Calls
+//! `build_staging_tree_from_templates` instead of the former `build_staging_tree`.
 
 use super::{
     MutationError,
@@ -15,17 +15,17 @@ use super::{
 use meclaw_core::JsonValue;
 use std::collections::HashMap;
 
-/// Apply-Phase NACH validate + in_flight-Insert.
+/// Apply phase AFTER validate + in_flight insert.
 ///
-/// Macht NUR `build_staging_tree_from_templates` + `atomic_rename_all`. Returnt
-/// die `StagedDir`s (single-cell) UND `StagedSubtree`s (Phase-13.5 a5-subtree
-/// T8b-1), damit der Mutation-Arm anschließend Cell-Spawn + Subtree-Registrierung
-/// machen kann (T18 — Apply-Sequenz Schritt 9).
+/// Does ONLY `build_staging_tree_from_templates` + `atomic_rename_all`. Returns
+/// the `StagedDir`s (single-cell) AND `StagedSubtree`s (phase-13.5 a5-subtree
+/// T8b-1) so that the mutation arm can then do the cell spawn + subtree
+/// registration (T18 — apply sequence step 9).
 ///
-/// Phase 11 T16: drei neue Parameter:
-/// - `templates`: Templates-Registry-Snapshot (aus `colony_db.read_templates()`).
-/// - `env`: Root-`.env`-Map (schon in `handle_mutation` geladen via `load_env`).
-/// - `ctx`: Mutation-Ctx-Map (aus `payload.ctx`).
+/// Phase 11 T16: three new parameters:
+/// - `templates`: templates registry snapshot (from `colony_db.read_templates()`).
+/// - `env`: root `.env` map (already loaded in `handle_mutation` via `load_env`).
+/// - `ctx`: mutation ctx map (from `payload.ctx`).
 ///
 /// Paket-5 T12 (P9 per-node subtree resume): each [`StagedSubtreeMerge`] carries
 /// the MISSING rename-roots staged into `.staging`; [`rename_subtree_roots`]

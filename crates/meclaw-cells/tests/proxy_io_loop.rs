@@ -45,7 +45,7 @@ async fn run_io_pushes_first_update_then_loops() {
 
     let ev = tokio::time::timeout(Duration::from_millis(2000), events_rx.recv())
         .await
-        .expect("kein Event")
+        .expect("no event")
         .unwrap();
     match ev {
         ProxyEvent::UserMessage {
@@ -99,7 +99,7 @@ async fn run_io_backoff_recovers_after_transient_failures_no_livelock() {
     // generous.
     let ev = tokio::time::timeout(Duration::from_secs(12), events_rx.recv())
         .await
-        .expect("Recovery-Event fehlt - Livelock?")
+        .expect("recovery event missing - livelock?")
         .unwrap();
     match ev {
         ProxyEvent::UserMessage {
@@ -187,17 +187,17 @@ async fn run_io_handles_multiple_updates_in_single_response() {
 
     let ev1 = tokio::time::timeout(Duration::from_millis(2000), events_rx.recv())
         .await
-        .expect("kein 1. Event")
+        .expect("no 1st event")
         .unwrap();
     let ev2 = tokio::time::timeout(Duration::from_millis(2000), events_rx.recv())
         .await
-        .expect("kein 2. Event")
+        .expect("no 2nd event")
         .unwrap();
     let ProxyEvent::UserMessage { update_id: id1, .. } = ev1;
     let ProxyEvent::UserMessage { update_id: id2, .. } = ev2;
     assert_eq!((id1, id2), (10, 11));
 
-    // Warte auf den zweiten Request, dann pruefe offset=12 (= max(10,11)+1).
+    // Wait for the second request, then check offset=12 (= max(10,11)+1).
     while cap.lock().await.len() < 2 {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -233,6 +233,6 @@ async fn run_io_abort_during_backoff_sleep_terminates_promptly() {
     drop(rc_tx);
     tokio::time::timeout(Duration::from_secs(30), join)
         .await
-        .expect("Abort waehrend Backoff-Sleep griff nicht prompt")
+        .expect("abort during the backoff sleep did not take effect promptly")
         .unwrap();
 }

@@ -1,14 +1,14 @@
-//! Message body. Inline-Variante trägt JSON in 3a; Blob-Variante reserviert
-//! für Phase 12 (Blob-Storage), in 3a nie konstruiert.
+//! Message body. The inline variant carries JSON in 3a; the blob variant is
+//! reserved for phase 12 (blob storage) and never constructed in 3a.
 
 use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
-    /// Inline JSON, < `blob_inline_max_bytes` (Default 64 KB ab Phase 4).
+    /// Inline JSON, < `blob_inline_max_bytes` (default 64 KB from phase 4 on).
     Inline(Value),
-    /// Blob-Referenz; aufgelöst ab Phase 12. In 3a unreachable.
+    /// Blob reference; resolved from phase 12 on. Unreachable in 3a.
     Blob(Uuid),
 }
 

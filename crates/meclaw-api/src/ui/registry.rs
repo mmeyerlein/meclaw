@@ -1,10 +1,10 @@
 //! GET /ui/registry — Phase 12-D T22.
 //!
-//! Server-rendered Registry-Tabelle mit GET-Filter-Form. Wrappt
-//! `ColonyMsg::ReadRegistry` (gleich wie Phase-12-B JSON-Handler).
+//! Server-rendered registry table with a GET filter form. Wraps
+//! `ColonyMsg::ReadRegistry` (the same as the phase-12-B JSON handler).
 //!
-//! Filter im Form: `path_prefix`, `type`, `limit`. Eingegebene Werte
-//! erscheinen als `value=`-Defaults wieder im Form (Round-Trip).
+//! Filters in the form: `path_prefix`, `type`, `limit`. Submitted values come
+//! back as `value=` defaults in the form (round trip).
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -20,15 +20,15 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `/ui/registry`. Spiegelt 1:1 die JSON-Variante.
+/// Query params for `/ui/registry`. Mirrors the JSON variant 1:1.
 #[derive(Debug, Deserialize, Default)]
 pub struct RegistryUiQuery {
-    /// Prefix-Match auf den Pfad.
+    /// Prefix match on the path.
     pub path_prefix: Option<String>,
-    /// Cell-Type-Filter; `type` ist Rust-Keyword, daher `rename`.
+    /// Cell-type filter; `type` is a Rust keyword, hence the `rename`.
     #[serde(rename = "type")]
     pub cell_type: Option<String>,
-    /// Hard-Cap (Default 100, Max 1000).
+    /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 

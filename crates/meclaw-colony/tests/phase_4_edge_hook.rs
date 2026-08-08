@@ -1,4 +1,4 @@
-//! Phase-4 Edge-Hook: Cell-target wird von Edge überschrieben.
+//! Phase-4 edge hook: the cell target is overridden by the edge.
 
 use meclaw_core::{Path, Uuid, serde_json::json};
 use meclaw_testing::ColonyHandle;

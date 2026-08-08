@@ -1,9 +1,9 @@
-//! GET /colony/templates — Phase 12-B T8.4 (Pure-Read).
-//! POST /colony/templates/rescan — Phase 12-B T8.5 (Rescan-Trigger).
+//! GET /colony/templates — phase 12-B T8.4 (pure read).
+//! POST /colony/templates/rescan — phase 12-B T8.5 (rescan trigger).
 //!
-//! Read nutzt `ColonyMsg::ReadTemplates`. Rescan reicht den `templates_root`
-//! aus `ColonyHandle` an `ColonyMsg::RescanTemplates` weiter — der Pfad ist
-//! beim CLI-Start fixiert, kein Request-Body noetig.
+//! The read uses `ColonyMsg::ReadTemplates`. The rescan forwards the
+//! `templates_root` from `ColonyHandle` to `ColonyMsg::RescanTemplates` — the
+//! path is fixed at CLI start, so no request body is needed.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -17,20 +17,20 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `GET /colony/templates`.
+/// Query params for `GET /colony/templates`.
 #[derive(Debug, Deserialize)]
 pub struct TemplatesQuery {
-    /// Optional: Filter auf Cell-Type aus `config.json`. Aktuell no-op
-    /// (Phase-14-Backlog, siehe `TemplateEntryDto`-Doc).
+    /// Optional: filter on the cell type from `config.json`. Currently a no-op
+    /// (phase-14 backlog, see the `TemplateEntryDto` docs).
     #[serde(rename = "type")]
     pub cell_type: Option<String>,
-    /// Optional: exakter Match auf `template.json::name`.
+    /// Optional: exact match on `template.json::name`.
     pub name: Option<String>,
     /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
-/// Handler fuer `GET /colony/templates`.
+/// Handler for `GET /colony/templates`.
 pub async fn get_templates(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<TemplatesQuery>,
@@ -60,12 +60,11 @@ pub async fn get_templates(
     (StatusCode::OK, Json(json!({ "templates": reply.entries })))
 }
 
-/// Handler fuer `POST /colony/templates/rescan` — Phase 12-B T8.5.
+/// Handler for `POST /colony/templates/rescan` — phase 12-B T8.5.
 ///
-/// Wrappt `ColonyMsg::RescanTemplates`. Der `templates_root` kommt aus
-/// `ColonyHandle.templates_root` (vom CLI-Start fixiert). Antwort:
-/// `{"rescan": {"status": "ok"}}` — RescanTemplates ack ist `()`,
-/// kein Body.
+/// Wraps `ColonyMsg::RescanTemplates`. The `templates_root` comes from
+/// `ColonyHandle.templates_root` (fixed at CLI start). Response:
+/// `{"rescan": {"status": "ok"}}` — the RescanTemplates ack is `()`, no body.
 pub async fn post_rescan(State(colony): State<Arc<ColonyHandle>>) -> impl IntoResponse {
     let (ack_tx, ack_rx) = oneshot::channel();
     let msg = ColonyMsg::RescanTemplates {

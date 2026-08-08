@@ -1,5 +1,5 @@
-//! Slice 11-D: Boot-Wiring. Leere Templates-Registry → auto-scan.
-//! Populiertes templates/-Verzeichnis → Einträge nach Boot in DB.
+//! Slice 11-D: boot wiring. An empty templates registry → auto-scan.
+//! A populated templates/ directory → entries in the DB after boot.
 
 use meclaw_colony::ColonyDb;
 use tempfile::TempDir;
@@ -17,7 +17,7 @@ async fn auto_scan_on_empty_registry() {
     let db = ColonyDb::open(&td.path().join("c.db")).unwrap();
     assert!(
         db.read_templates().unwrap().is_empty(),
-        "Vorbedingung: leer"
+        "precondition: empty"
     );
     // Boot-Wiring-Funktion.
     meclaw_colony::templates::boot_load_or_scan(
@@ -40,13 +40,13 @@ async fn populated_registry_is_not_re_scanned_unless_forced() {
     meclaw_colony::templates::boot_load_or_scan(&td.path().join("templates"), &db, false, 100)
         .await
         .unwrap();
-    // Filesystem ändert sich nicht — zweiter Boot ohne force darf NICHT scannen
-    // (Beweis indirekt: scanned_at bleibt 100).
+    // The filesystem does not change — a second boot without force must NOT scan
+    // (indirect proof: scanned_at stays 100).
     meclaw_colony::templates::boot_load_or_scan(&td.path().join("templates"), &db, false, 200)
         .await
         .unwrap();
     assert_eq!(db.read_templates().unwrap()[0].scanned_at, 100);
-    // Force-Rescan überschreibt scanned_at auf 300.
+    // A forced rescan overwrites scanned_at with 300.
     meclaw_colony::templates::boot_load_or_scan(&td.path().join("templates"), &db, true, 300)
         .await
         .unwrap();

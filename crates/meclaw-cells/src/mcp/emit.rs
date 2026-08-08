@@ -1,12 +1,14 @@
-//! Phase-10-D T13: Emit-Helpers für `McpCell`. Baut UBF-valide `tool_result`-Bodies
-//! und pusht sie via `OutputSink`. Target = `msg.reply_to`, fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint).
+//! Phase-10-D T13: emit helpers for `McpCell`. Builds UBF-valid `tool_result`
+//! bodies and pushes them via `OutputSink`. Target = `msg.reply_to`, fallback
+//! `msg.target` (W2d: its own path, not the READ endpoint).
 //!
 //! Body-Shape (Phase-9-store-Pattern + UBF-Schema):
-//! - `header` ist Top-Level-Slot (NICHT `content.header`).
-//! - `messages[]` enthält genau einen Turn mit `origin:"tool"`, `type:"tool_result"`,
-//!   Pflicht-`id` (UBF-Schema-Constraint für `tool_result`).
+//! - `header` is a top-level slot (NOT `content.header`).
+//! - `messages[]` holds exactly one turn with `origin:"tool"`,
+//!   `type:"tool_result"` and a mandatory `id` (UBF schema constraint for
+//!   `tool_result`).
 //!
-//! Spec-Anker: `docs/cell-types.md` § `mcp` Z.474–478.
+//! Spec anchor: `docs/cell-types.md` § `mcp` l.474-478.
 
 use meclaw_core::{
     CellOutput, Message, OutputSink,
@@ -15,7 +17,7 @@ use meclaw_core::{
 
 /// Emit a successful `tool_result`-Turn. `tool_call_id` is echoed into
 /// the turn's `id` (UBF-required for `tool_result`). Target = `msg.reply_to`,
-/// fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint). Header carries `mcp_tool` + `duration_ms`
+/// fallback `msg.target` (W2d: its own path, not the READ endpoint). Header carries `mcp_tool` + `duration_ms`
 /// (no `error_code`). Payload is JSON-serialized into the turn's `text`.
 pub async fn emit_tool_result_success(
     sink: &OutputSink,
@@ -46,7 +48,7 @@ pub async fn emit_tool_result_success(
 /// Emit a failed `tool_result`-Turn. `error_code` ∈ {`"provider_timeout"`,
 /// `"mcp_error"`} (POC error-code-set per plan § Error-Code-Set). `detail`
 /// lands in the turn's `text`. `tool_call_id` is echoed into `id`.
-/// Target = `msg.reply_to`, fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint).
+/// Target = `msg.reply_to`, fallback `msg.target` (W2d: its own path, not the READ endpoint).
 pub async fn emit_tool_result_error(
     sink: &OutputSink,
     msg: &Message,
@@ -79,12 +81,12 @@ pub async fn emit_tool_result_error(
 }
 
 /// Emit a UBF message populating `system.tools.<provider_key>.<tool_name> = <schema>`
-/// for every cached tool. Target = `msg.reply_to`, fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint).
+/// for every cached tool. Target = `msg.reply_to`, fallback `msg.target` (W2d: its own path, not the READ endpoint).
 /// Header carries `mcp_tool = "__list_tools__"` + `duration_ms` (required).
 /// Body has `messages: []` (UBF-valid) + populated `system.tools.<provider>` map.
 ///
 /// `provider_key` is the cell-path-derived identifier (e.g. `main_mcp` for `/main/mcp`).
-/// Spec-Anker: `docs/cell-types.md` § `mcp` Z.478 (`mcp_tool` + `duration_ms` in Header).
+/// Spec anchor: `docs/cell-types.md` § `mcp` l.478 (`mcp_tool` + `duration_ms` in the header).
 pub async fn emit_system_tools_listing(
     sink: &OutputSink,
     msg: &Message,

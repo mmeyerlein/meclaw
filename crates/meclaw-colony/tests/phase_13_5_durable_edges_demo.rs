@@ -133,8 +133,8 @@ async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
 
 /// Build a probe to /a carrying the given headers in `context`. The probe is a
 /// Source — it establishes the survive-keys in `context` (Ingress-at-birth) so
-/// they survive the /a Echo-Cell hop (input.hop verfaellt bei Cell-Emission,
-/// nur context reist durch — `carry_context_with_hop`). The edge condition /
+/// they survive the /a echo-cell hop (input.hop decays on cell emission, only
+/// context travels through — `carry_context_with_hop`). The edge condition /
 /// modifier — evaluated at /a's emit — then reads/writes `context.*`. Low ttl
 /// bounds the no-match self-loop so a "not received" case dies in the DLQ within
 /// a couple of hops.

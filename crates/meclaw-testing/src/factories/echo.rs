@@ -1,14 +1,14 @@
-//! `EchoCellFactory` — Phase-4-Test-Factory. Wraps `EchoMockCell` so the
-//! Filesystem-Bootstrap can spawn echo cells from `config.json` params.
+//! `EchoCellFactory` — phase-4 test factory. Wraps `EchoMockCell` so the
+//! filesystem bootstrap can spawn echo cells from `config.json` params.
 //!
-//! Parser-Invariante (siehe `meclaw_colony::CellFactory`-Doc): `validate_params`
-//! und `spawn_cell` teilen sich `parse_params_internal`.
+//! Parser invariant (see the `meclaw_colony::CellFactory` docs): `validate_params`
+//! and `spawn_cell` share `parse_params_internal`.
 
 use meclaw_colony::{CellFactory, RespawnFn, SpawnedCellKind};
 use meclaw_core::{JsonValue, Path};
 use std::sync::Arc;
 
-/// Factory for Phase-4 test cells (`EchoMockCell`-Wrapper).
+/// Factory for phase-4 test cells (`EchoMockCell` wrapper).
 pub struct EchoCellFactory;
 
 /// Parsed Echo cell parameters (typed form of `params` block).
@@ -20,7 +20,7 @@ pub(crate) struct EchoParams {
 
 impl EchoCellFactory {
     /// Shared parse path for `validate_params` and `spawn_cell` (see
-    /// `meclaw_colony::CellFactory`-Doc — Parser-Invariante).
+    /// the `meclaw_colony::CellFactory` docs — parser invariant).
     pub(crate) fn parse_params_internal(raw: &JsonValue) -> Result<EchoParams, String> {
         let echo_to_str = raw
             .get("echo_to")

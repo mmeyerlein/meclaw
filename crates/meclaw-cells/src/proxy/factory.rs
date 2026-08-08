@@ -1,11 +1,11 @@
-//! Phase-10-C: Factory fuer die `proxy`-Cell.
+//! Phase-10-C: the factory for the `proxy` cell.
 //!
-//! Oeffnet `cell.db` sync, ruft `setup_proxy_schema` (idempotent), laedt
-//! `load_offset` (W9: Resume-Pfad — bei `OpenStatus::Resumed` liefert
-//! `load_offset` den persistierten Wert; bei `Created` liefert er 0).
-//! Baut `TelegramClient`. `make_build`-Closure ist sync + await-frei
-//! zwischen DB-Open und dem LR-Spawn via `build_long_running_task` —
-//! Phase-5-Tripwire-konform (vgl. `crates/meclaw-cells/src/timer/factory.rs`).
+//! Opens `cell.db` synchronously, calls `setup_proxy_schema` (idempotent), loads
+//! `load_offset` (W9 resume path — on `OpenStatus::Resumed` `load_offset` returns
+//! the persisted value, on `Created` it returns 0). Builds the `TelegramClient`.
+//! The `make_build` closure is sync and await-free between the DB open and the LR
+//! spawn via `build_long_running_task` — conformant with the phase-5 tripwire
+//! (cf. `crates/meclaw-cells/src/timer/factory.rs`).
 
 use crate::proxy::cell::ProxyCell;
 use crate::proxy::db::{load_offset, setup_proxy_schema};
@@ -20,26 +20,26 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// `proxy`-Cell-Factory. Production-Wiring (`built_in_factories` in
-/// `meclaw-cli`) deferred bis erste `examples/`-Topologie mit `proxy`,
-/// analog Phase-10-B-Limitation (PROGRESS.md Z.371–390). 10-C-Demo nutzt
-/// die Factory direkt via `ColonyHandle::register_spawned`.
+/// The `proxy` cell factory. Production wiring (`built_in_factories` in
+/// `meclaw-cli`) is deferred until the first `examples/` topology using `proxy`,
+/// analogous to the phase-10-B limitation (PROGRESS.md l.371-390). The 10-C demo
+/// uses the factory directly via `ColonyHandle::register_spawned`.
 pub struct ProxyCellFactory;
 
 impl CellFactory for ProxyCellFactory {
-    /// Pre-Spawn-Validierung. Routet ueber denselben Parse-Pfad wie
-    /// `spawn_cell` (Parser-Invariante per `meclaw_colony::CellFactory`-Doc).
+    /// Pre-spawn validation. Routes through the same parse path as `spawn_cell`
+    /// (parser invariant per the `meclaw_colony::CellFactory` docs).
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
         ProxyParams::parse(params).map(|_| ())
     }
 
-    /// Spawn eine `proxy`-Cell-Instanz.
+    /// Spawn a `proxy` cell instance.
     ///
-    /// **Korridor-Pflicht (Phase-5-Tripwire)**: Der `make_build`-Closure laeuft
-    /// initial UND beim Respawn (`RespawnFn` ist `Fn`, nicht `FnOnce`).
-    /// Zwischen dem LR-Spawn via `build_long_running_task` und der
-    /// `RegistryEntry.handle`-Setzung in `colony::handle_cell_died` DARF KEIN
-    /// `.await` liegen. Alle vorgelagerten Ops sind sync
+    /// **Corridor duty (phase-5 tripwire)**: the `make_build` closure runs on the
+    /// initial spawn AND on the respawn (`RespawnFn` is `Fn`, not `FnOnce`).
+    /// Between the LR spawn via `build_long_running_task` and setting
+    /// `RegistryEntry.handle` in `colony::handle_cell_died` there must be NO
+    /// `.await`. All preceding ops are sync
     /// (`open_or_create_cell_db_with_status`, `setup_proxy_schema`,
     /// `load_offset`, `TelegramClient::new`, `ProxyCell::new`, `DbConn::wrap`,
     /// `mpsc::channel`, `tokio::spawn`).
@@ -109,8 +109,8 @@ impl CellFactory for ProxyCellFactory {
     /// preserved — no I/O loop runs until reconnect). The returned closure is
     /// the SAME construction as `spawn_cell`'s `respawn` (built via the shared
     /// `make_build` helper); an `add_edges` reconnect calls it and the
-    /// Long-Running task starts IMMEDIATELY (spec § Konnektivität & Aktivität:
-    /// reactivated Long-Running cells start "sofort"). Restart-inert
+    /// long-running task starts IMMEDIATELY (spec § Connectivity and activity:
+    /// reactivated long-running cells start "immediately"). Restart-inert
     /// (`build()`) like the normal respawn.
     fn build_boot_inactive_respawn(
         self: Arc<Self>,
@@ -161,7 +161,7 @@ impl CellFactory for ProxyCellFactory {
 /// (boot-inactive: respawn only, no initial spawn) so the `RespawnFn`
 /// construction has ONE definition. The closure is `Fn` (not `FnOnce` —
 /// `RespawnFn` may fire twice) and stays sync + await-free between DB-open and
-/// `tokio::spawn` (Phase-5-Tripwire).
+/// `tokio::spawn` (phase-5 tripwire).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn make_build(
     params: JsonValue,
@@ -212,17 +212,17 @@ fn make_build(
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Receiver<()>,
     ) {
-        // 1. Open cell.db (sync). OpenStatus wird nicht ausgewertet —
-        //    `load_offset` liefert fuer Created automatisch 0 (W9).
+        // 1. Open cell.db (sync). OpenStatus is not evaluated — `load_offset`
+        //    automatically returns 0 for Created (W9).
         let (conn, _status) =
             open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db")).expect("open cell.db");
-        // 2. Idempotente DDL (sync, korridor-frei).
+        // 2. Idempotent DDL (sync, outside the corridor).
         setup_proxy_schema(&conn).expect("setup_proxy_schema");
-        // 3. Cursor laden (sync). Resume liefert persistierten Wert;
-        //    Created liefert 0.
+        // 3. Load the cursor (sync). Resume returns the persisted value, Created
+        //    returns 0.
         let initial_offset = load_offset(&conn).expect("load_offset");
-        // 3b. β restore: effective mutable params = birth ⊕ cell.db-Overlay
-        //     (incl. base_url — mutable, Weg B).
+        // 3b. β restore: effective mutable params = birth ⊕ cell.db overlay
+        //     (incl. base_url — mutable, path B).
         let crate::proxy::params::ProxyOverlay {
             base_url,
             long_poll_timeout_ms,
@@ -231,10 +231,10 @@ fn make_build(
             query_timeout_ms,
         } = crate::params_overlay::restore::<crate::proxy::params::ProxyOverlay>(&conn, &birth_cap)
             .expect("restore proxy overlay");
-        // 4. TelegramClient bauen (sync) mit effektiver base_url + immutable bot_token.
+        // 4. Build the TelegramClient (sync) with the effective base_url + the immutable bot_token.
         let client =
             TelegramClient::new(&base_url, &bot_token_cap).expect("TelegramClient::new");
-        // 5. ProxyCell + DbConn bauen (sync), create the mailbox, then funnel the
+        // 5. Build ProxyCell + DbConn (sync), create the mailbox, then funnel the
         //    LR spawn through `build_long_running_task` — the single LR-spawn
         //    site. The helper mints the peace/stop/death_ack oneshot pairs
         //    internally and returns `(join, peace_rx, stop_tx, death_ack_rx)`. No

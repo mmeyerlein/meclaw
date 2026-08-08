@@ -1,11 +1,11 @@
-//! Phase 12-D T25: Integration-Tests fuer `/ui/trace` + Tree-Render.
+//! Phase 12-D T25: integration tests for `/ui/trace` + the tree render.
 //!
-//! Drei Test-Bündel:
-//!   * `ui_trace_no_query_renders_empty_form` — ohne `trace_id` nur Form.
-//!   * `ui_trace_unknown_trace_id_shows_empty_hint` — kein Match -> Empty-Hint.
-//!   * `ui_trace_renders_nested_tree_for_two_hop_chain` — POST /messages an
-//!     unresolved Target erzeugt source + error-reply (parent_message_id),
-//!     `/ui/trace?trace_id=<id>` rendert nested `<ul>`/`<li>`-Struktur.
+//! Three test bundles:
+//!   * `ui_trace_no_query_renders_empty_form` — without `trace_id`, form only.
+//!   * `ui_trace_unknown_trace_id_shows_empty_hint` — no match -> empty hint.
+//!   * `ui_trace_renders_nested_tree_for_two_hop_chain` — POST /messages to an
+//!     unresolved target produces source + error reply (parent_message_id), and
+//!     `/ui/trace?trace_id=<id>` renders the nested `<ul>`/`<li>` structure.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -70,15 +70,15 @@ async fn ui_trace_unknown_trace_id_shows_empty_hint() {
         body.contains("Kein Trace gefunden"),
         "expected empty-trace hint"
     );
-    // Trace-ID round-trips zurück ins Form.
+    // The trace id round-trips back into the form.
     assert!(body.contains(nope));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ui_trace_renders_tree_for_logged_hop() {
-    // Spawn EchoMockCell (terminal, ohne echo_to) unter /echo. POST /messages
-    // an /echo erzeugt einen routable Hop, der ins message_log wandert.
-    // /ui/trace?trace_id=<id> rendert das als ul.tree mit dem Ziel-Pfad.
+    // Spawn EchoMockCell (terminal, without echo_to) at /echo. POST /messages to
+    // /echo produces a routable hop that lands in the message_log.
+    // /ui/trace?trace_id=<id> renders it as a ul.tree with the target path.
     let test_h = meclaw_testing::ColonyHandle::new();
     test_h
         .spawn(meclaw_core::Path::new("/echo"), || {
@@ -108,8 +108,8 @@ async fn ui_trace_renders_tree_for_logged_hop() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let trace_id = json["message_id"].as_str().unwrap().to_string();
 
-    // Routing + Persistenz sind async fire-and-forget; kurz pollen bis das
-    // /colony/trace mind. 1 Eintrag mit dieser trace_id zeigt.
+    // Routing + persistence are async fire-and-forget; poll briefly until
+    // /colony/trace shows at least 1 entry with this trace_id.
     let mut attempts = 0;
     let trace_uri = format!("/colony/trace?trace_id={trace_id}");
     loop {
@@ -136,7 +136,7 @@ async fn ui_trace_renders_tree_for_logged_hop() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // Jetzt /ui/trace?trace_id=…
+    // Now /ui/trace?trace_id=…
     let ui_uri = format!("/ui/trace?trace_id={trace_id}");
     let resp = app
         .oneshot(Request::builder().uri(&ui_uri).body(Body::empty()).unwrap())
@@ -145,8 +145,8 @@ async fn ui_trace_renders_tree_for_logged_hop() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
-    // Tree muss als ul.tree gerendert sein und mindestens einen <li>-Eintrag
-    // mit dem Ziel-Pfad enthalten.
+    // The tree must be rendered as ul.tree and contain at least one <li> entry
+    // with the target path.
     assert!(
         body.contains("ul class=\"tree\"") || body.contains("class=\"tree\""),
         "expected ul.tree wrapper"

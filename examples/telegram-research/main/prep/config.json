@@ -60,7 +60,7 @@
     "emits_meaning": "route ustore: thread insert for the user turn (memory store). route ullm: system (persona incl. citation duty + tools as full OpenAI tool objects per extract_tools) + messages for the planner; hop.question/turn_id are promoted to context on the out-edge.",
     "consumes_meaning": "messages[]: a user text turn starts a round. Anything without a user turn (e.g. the store's insert reply echoing back via reply_to fallback) is swallowed (empty multi-send).",
     "examples": [
-      "user 'Wie warm...?' -> [thread row 0 insert -> /memory] + [persona+tools+turn -> /planner]"
+      "user 'How warm...?' -> [thread row 0 insert -> /memory] + [persona+tools+turn -> /planner]"
     ]
   }
 }

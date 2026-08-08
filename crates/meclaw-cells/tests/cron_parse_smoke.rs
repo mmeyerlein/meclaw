@@ -1,7 +1,7 @@
-//! Smoke-Test: beweist, dass `croner` 3.x mit `chrono` UTC + 6-Feld-Quartz
-//! + Sekunden-Granularität funktioniert. Vorläufer für Slice 10-B (`timer`).
+//! Smoke test: proves that `croner` 3.x works with `chrono` UTC + 6-field Quartz
+//! + second granularity. A precursor for slice 10-B (`timer`).
 //!
-//! Fixer `DateTime<Utc>` — KEIN `Utc::now()`, sonst zeit-flaky.
+//! A fixed `DateTime<Utc>` — NO `Utc::now()`, which would be time-flaky.
 
 use chrono::{TimeZone, Utc};
 use croner::parser::{CronParser, Seconds};

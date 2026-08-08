@@ -1,5 +1,5 @@
 //! Phase-10-B T14: `handle` modify/remove. Unknown → `schedule_not_found`;
-//! modify mit cron-Update auf at-Row (oder umgekehrt) → `kind_mismatch`;
+//! a modify with a cron update on an at row (or vice versa) → `kind_mismatch`;
 //! erfolgreiches modify/remove → SetActive-Snapshot.
 
 use chrono::{TimeZone, Utc};
@@ -79,7 +79,7 @@ async fn handle_modify_unknown_id_emits_schedule_not_found() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.target, Path::new("/reply"));
     assert_eq!(em.content["header"]["error_code"], "schedule_not_found");
@@ -107,7 +107,7 @@ async fn handle_modify_cron_on_at_row_emits_kind_mismatch() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.content["header"]["error_code"], "kind_mismatch");
 }
@@ -134,7 +134,7 @@ async fn handle_modify_at_on_cron_row_emits_kind_mismatch() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.content["header"]["error_code"], "kind_mismatch");
 }
@@ -162,7 +162,7 @@ async fn handle_modify_success_sends_setactive() {
 
     let rc = tokio::time::timeout(Duration::from_secs(1), rc_rx.recv())
         .await
-        .expect("kein SetActive")
+        .expect("no SetActive")
         .unwrap();
     let TimerReconfig::SetActive(snap) = rc;
     assert!(snap.iter().any(|s| s.schedule_id == id));
@@ -196,7 +196,7 @@ async fn handle_remove_unknown_id_emits_schedule_not_found() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.content["header"]["error_code"], "schedule_not_found");
 }
@@ -222,12 +222,12 @@ async fn handle_remove_success_marks_status_and_sends_setactive() {
 
     let rc = tokio::time::timeout(Duration::from_secs(1), rc_rx.recv())
         .await
-        .expect("kein SetActive")
+        .expect("no SetActive")
         .unwrap();
     let TimerReconfig::SetActive(snap) = rc;
     assert!(
         snap.iter().all(|s| s.schedule_id != id),
-        "removed-id darf NICHT in SetActive auftauchen"
+        "the removed id must NOT show up in SetActive"
     );
 
     let row = db

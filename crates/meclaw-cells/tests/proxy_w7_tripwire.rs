@@ -1,9 +1,9 @@
 //! Phase-10-C T15 / W7-Tripwire (ruling 2026-05-24):
-//! „Das Client-timeout für den Long-Poll MUSS größer sein als der an
-//!  Telegram gesendete getUpdates?timeout=<sek>-Wert, sonst kappt der
-//!  Client seinen eigenen gültigen Poll."
+//! "The client timeout for the long poll MUST be greater than the
+//!  getUpdates?timeout=<sec> value sent to Telegram, otherwise the client cuts
+//!  off its own valid poll."
 //!
-//! Diese Datei ist die EXPLIZITE Tripwire-Demonstration. Strikt >, nicht >=.
+//! This file is the EXPLICIT tripwire demonstration. Strictly >, not >=.
 
 use meclaw_cells::proxy::params::ProxyParams;
 use serde_json::json;
@@ -17,7 +17,7 @@ fn w7_tripwire_strict_greater_than_holds() {
     }));
     assert!(ok.is_ok(), "30001ms > 30s*1000 must be accepted");
 
-    // 30000 == 30000 → REJECT (strikt >, nicht >=)
+    // 30000 == 30000 → REJECT (strictly >, not >=)
     let eq = ProxyParams::parse(&json!({
         "bot_token": "t", "emit_to": "/x",
         "long_poll_timeout_ms": 30000, "long_poll_request_secs": 30,

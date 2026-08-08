@@ -43,8 +43,9 @@ pub fn setup_subscriber(
         None => EnvFilter::try_new(level)?,
     };
 
-    // U10: Layer nur bei Opt-in bauen; Port vorab prüfen (klare Fehlermeldung
-    // statt Panic bei belegtem Port). `None` ⇒ `Option<Layer>`-No-op.
+    // U10: build the layer only on opt-in; check the port up front (a clear
+    // error message instead of a panic on an occupied port). `None` ⇒ an
+    // `Option<Layer>` no-op.
     let console_layer = check_tokio_console(tokio_console, tokio_console_port)?.map(|addr| {
         console_subscriber::ConsoleLayer::builder()
             .with_default_env()
@@ -66,16 +67,16 @@ pub fn setup_subscriber(
     Ok(guard)
 }
 
-/// U10 (RULED A8, 2026-06-12): tokio-console ist Opt-in. Entscheidet, ob der
-/// Debug-Layer aktiv wird, und PRÜFT den Port per Pre-Bind, damit ein belegter
-/// Port eine KLARE Fehlermeldung liefert statt `console_subscriber` intern mit
-/// `AddrInUse` panicken zu lassen (das alte Symptom beim Parallel-Start).
+/// U10 (RULED A8, 2026-06-12): tokio-console is opt-in. Decides whether the
+/// debug layer becomes active, and CHECKS the port via a pre-bind so that an
+/// occupied port yields a CLEAR error message instead of letting
+/// `console_subscriber` panic internally with `AddrInUse` (the old symptom on a
+/// parallel start).
 ///
-/// - `tokio_console == false` ⇒ `Ok(None)` — kein Bind, Layer aus.
-/// - aktiviert + Port frei ⇒ `Ok(Some(addr))` (der Probe-Listener wird sofort
-///   wieder freigegeben; das verbleibende TOCTOU-Fenster ist für den POC
-///   akzeptiert).
-/// - aktiviert + Port belegt ⇒ `Err` mit dem Port in der Meldung, kein Panic.
+/// - `tokio_console == false` ⇒ `Ok(None)` — no bind, layer off.
+/// - enabled + port free ⇒ `Ok(Some(addr))` (the probe listener is released
+///   again immediately; the remaining TOCTOU window is accepted for the POC).
+/// - enabled + port occupied ⇒ `Err` with the port in the message, no panic.
 pub fn check_tokio_console(
     tokio_console: bool,
     port: u16,
@@ -86,8 +87,8 @@ pub fn check_tokio_console(
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let probe = std::net::TcpListener::bind(addr).map_err(|e| {
         anyhow::anyhow!(
-            "tokio-console: Port {port} ist belegt ({e}) — anderen --tokio-console-port \
-             wählen oder den blockierenden Prozess beenden"
+            "tokio-console: port {port} is already in use ({e}) — choose a different \
+             --tokio-console-port or stop the blocking process"
         )
     })?;
     drop(probe);
@@ -180,26 +181,26 @@ pub type Args = Cli;
 /// Run the CLI. Phase 0 reaches this only via `--version`/`--help`,
 /// which clap handles before this is called.
 ///
-/// Phase-12-A: `async fn` — `boot_load_or_scan` ist seit Phase-12-A async
-/// (δ-Bridge `send_op_try` entfernt). `main.rs` läuft unter `#[tokio::main]`
-/// (multi_thread, `worker_threads = 4`).
+/// Phase-12-A: `async fn` — `boot_load_or_scan` has been async since phase 12-A
+/// (the δ bridge `send_op_try` was removed). `main.rs` runs under
+/// `#[tokio::main]` (multi_thread, `worker_threads = 4`).
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     run_with_hooks(cli, None, None).await
 }
 
-/// Lifecycle-Implementierung: bind → serve → graceful-shutdown.
+/// Lifecycle implementation: bind → serve → graceful shutdown.
 ///
-/// `addr_hook`: optional oneshot, gefüllt mit der von `0.0.0.0:0` aufgelösten
-/// echten `SocketAddr` nach erfolgreichem bind (für Tests).
-/// `shutdown_hook`: optional oneshot-Receiver — wenn `Some`, wird er zusätzlich
-/// zu `ctrl_c`/`SIGTERM` als Shutdown-Trigger genutzt.
+/// `addr_hook`: an optional oneshot, filled with the real `SocketAddr` resolved
+/// from `0.0.0.0:0` after a successful bind (for tests).
+/// `shutdown_hook`: an optional oneshot receiver — when `Some`, it is used as a
+/// shutdown trigger in addition to `ctrl_c`/`SIGTERM`.
 ///
-/// Production-Pfad in `run()` ruft `run_with_hooks(cli, None, None)`.
-/// Seit T12 (Slice 12-B): echtes `colony_task` wird gespawnt, Inbox-Sender
-/// wandert in den `ColonyHandle`, `bootstrap_from_filesystem` reicht den
-/// Filesystem-Plan an die laufende Colony. Shutdown-Reihenfolge:
-/// axum drain → `ColonyMsg::Shutdown` + ack → `colony_join.await` (mit
-/// Timeouts gegen Hang).
+/// The production path in `run()` calls `run_with_hooks(cli, None, None)`.
+/// Since T12 (slice 12-B): a real `colony_task` is spawned, the inbox sender
+/// moves into the `ColonyHandle`, and `bootstrap_from_filesystem` hands the
+/// filesystem plan to the running colony. Shutdown order:
+/// axum drain → `ColonyMsg::Shutdown` + ack → `colony_join.await` (with
+/// timeouts against a hang).
 pub async fn run_with_hooks(
     cli: Cli,
     addr_hook: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
@@ -234,24 +235,23 @@ pub async fn run_with_hooks(
 
     // --validate: Dry-Run-Vorrang (Spec Z.430).
     //
-    // Phase-12-Close-Härtung (T28): additiv zum bestehenden Templates-Scan
-    // werden zwei weitere Checks ausgeführt, **ohne** Colony/axum zu spawnen
-    // (--validate returnt vor dem `colony_task::spawn` an Z.~210):
-    //   1. `plan_bootstrap` — Filesystem-Bootstrap-Plan (MultipleRootDirs /
+    // Phase-12-close hardening (T28): in addition to the existing templates
+    // scan, two further checks run **without** spawning colony/axum
+    // (--validate returns before the `colony_task::spawn` at Z.~210):
+    //   1. `plan_bootstrap` — the filesystem bootstrap plan (MultipleRootDirs /
     //      NoRootDir / InvalidParams / CorruptCellDb).
-    //   2. `probe_boot_state` — colony.db-Consistency (registry/edges/
-    //      hive_scopes-mixed-counts → `BootState::Inconsistent`).
-    //      DIREKT aufgerufen (Read-Only-Connection-Probe, kein Panic),
-    //      NICHT über den `colony_task`-Panic-Pfad in `colony.rs:386`
-    //      (Phase-5-Bestand, eigener Robustheits-Pass nach Phase 13/14).
+    //   2. `probe_boot_state` — colony.db consistency (registry/edges/
+    //      hive_scopes mixed counts → `BootState::Inconsistent`).
+    //      Called DIRECTLY (a read-only connection probe, no panic),
+    //      NOT via the `colony_task` panic path in `colony.rs:386`
+    //      (phase-5 legacy, its own robustness pass after phase 13/14).
     //
-    // Aggregation: jeder Fehler eprintln, am Ende `Err(...)` wenn IRGENDEIN
-    // Check failt — Prozess-Exit != 0. exit 0 nur wenn alle drei clean.
+    // Aggregation: eprintln every error, then `Err(...)` at the end if ANY check
+    // fails — process exit != 0. exit 0 only when all three are clean.
     //
-    // Spec-Aspirations-Lücke: Schema-Checks (validate_params), Template-
-    // Auflösung (add_nodes-Replay) und Mutations-Replay aus `mutation_log`
-    // bleiben deferred (eigener Robustheits-Pass). Siehe PROGRESS
-    // § Phase-12-Limitations.
+    // Spec aspiration gap: schema checks (validate_params), template resolution
+    // (add_nodes replay) and mutation replay from `mutation_log` stay deferred
+    // (their own robustness pass). See PROGRESS § phase-12 limitations.
     if cli.validate {
         if cli.api.is_some() || cli.daemon {
             eprintln!("note: --validate has precedence; --api/--daemon ignored");
@@ -324,7 +324,7 @@ pub async fn run_with_hooks(
             }
         }
 
-        // 2. colony.db-Consistency (additiv, direkt aufgerufen — kein Panic).
+        // 2. colony.db consistency (additive, called directly — no panic).
         match meclaw_colony::probe_boot_state(&db_path) {
             Ok(meclaw_colony::BootState::FirstBoot) | Ok(meclaw_colony::BootState::Reboot) => {}
             Ok(meclaw_colony::BootState::Inconsistent { reason }) => {
@@ -352,16 +352,16 @@ pub async fn run_with_hooks(
         return Ok(());
     }
 
-    // U9 (RULED A8, 2026-06-12): Headless-Modus ist legitim. Die Flags sind
-    // operator-unabhängig — `--daemon` = der Prozess läuft (als Daemon),
-    // `--api` = HTTP-Server an; jede Kombination ist gültig. `--daemon` ohne
-    // `--api` bootet die volle Colony headless (Timer-/Proxy-getriebene
-    // Topologien laufen ohne HTTP); der Spawn + Bootstrap unten läuft für alle
-    // Modi. Direct-Mode (kein Flag) braucht zusätzlich den Root-Hive-Guard.
+    // U9 (RULED A8, 2026-06-12): headless mode is legitimate. The flags are
+    // independent of each other — `--daemon` = the process runs (as a daemon),
+    // `--api` = HTTP server on; every combination is valid. `--daemon` without
+    // `--api` boots the full colony headless (timer-/proxy-driven topologies run
+    // without HTTP); the spawn + bootstrap below runs for all modes. Direct mode
+    // (no flag) additionally needs the root-hive guard.
     let is_direct_mode = cli.api.is_none() && !cli.daemon;
 
-    // Step 5.1 — Root-Hive-Guard: Direct-Mode erfordert `/` als Hive-Scope.
-    // Prüfung via Bootstrap-Plan (kein Side-Effect, identisch zu --validate).
+    // Step 5.1 — root-hive guard: direct mode requires `/` as a hive scope.
+    // Checked via the bootstrap plan (no side effect, identical to --validate).
     if is_direct_mode {
         let factories = built_in_factories();
         let plan_overlay = meclaw_colony::read_registry_overlay(&db_path)
@@ -406,10 +406,11 @@ pub async fn run_with_hooks(
     let colony_config = meclaw_colony::colony_config::read_colony_config(&cli.root)
         .map_err(|e| anyhow::anyhow!("colony.json: {e}"))?;
 
-    // Phase-12-X T17 / Phase-13.5 A8: Blob-Store wird hier instanziert. Default-Pfad
-    // `<root>/blobs`; --blobs überschreibt. Er fließt sowohl an `colony_task`/`runtime`
-    // (A8 — Cell-Delivery-Boundary-Resolution + Auto-Offload) als auch an den Router
-    // (T18 — multipart-Pfad von POST /messages).
+    // Phase-12-X T17 / phase-13.5 A8: the blob store is instantiated here.
+    // Default path `<root>/blobs`; --blobs overrides it. It flows both into
+    // `colony_task`/`runtime` (A8 — cell delivery-boundary resolution +
+    // auto-offload) and into the router (T18 — the multipart path of
+    // POST /messages).
     let blob_root = cli.blobs.clone().unwrap_or_else(|| cli.root.join("blobs"));
     let blob_store = std::sync::Arc::new(
         meclaw_colony::blob::DiskBlobStore::new(&blob_root)
@@ -441,7 +442,7 @@ pub async fn run_with_hooks(
         root_path.clone(),
         colony_config.clone(),
         Some(blob_store.clone()),
-        cli.env.clone(), // U8 (RULED A8): die Colony merkt sich ihre Env-Quelle vom Start — dieselbe Quelle wie der Boot-Substitutions-Pfad (bootstrap_from_filesystem_with_env unten)
+        cli.env.clone(), // U8 (RULED A8): the colony remembers its env source from startup — the same source as the boot substitution path (bootstrap_from_filesystem_with_env below)
     )
     .with_heartbeat(heartbeat_tx);
     if let Some(egress_tx) = egress_tx_opt {
@@ -555,8 +556,8 @@ pub async fn run_with_hooks(
         (None, None, None)
     };
 
-    // U9 (RULED A8): Shutdown-Trigger, gemeinsam für alle Pfade — HTTP-serve
-    // (`with_graceful_shutdown`) und headless (`.await`).
+    // U9 (RULED A8): the shutdown trigger, shared across all paths — HTTP serve
+    // (`with_graceful_shutdown`) and headless (`.await`).
     // Step 5.6 — Direct-Mode EOF arm: stdin-EOF triggers the same graceful
     // shutdown as a signal. `--daemon` never reaches here (eof_rx is None →
     // the arm pends forever = EOF is ignored).
@@ -604,16 +605,16 @@ pub async fn run_with_hooks(
         }
     };
 
-    // U9: --api → HTTP-Server binden + serve; ohne --api (headless `--daemon`) →
-    // kein Bind, nur auf das Shutdown-Signal warten. Die Colony läuft in beiden
-    // Fällen bereits (Spawn + Bootstrap oben).
+    // U9: --api → bind + serve the HTTP server; without --api (headless
+    // `--daemon`) → no bind, just wait for the shutdown signal. The colony is
+    // already running in both cases (spawn + bootstrap above).
     if let Some(bind_addr) = cli.api {
         let colony = std::sync::Arc::new(meclaw_api::ColonyHandle {
             inbox: inbox_tx.clone(),
             templates_root: templates_root.clone(),
         });
-        // Phase-12-X T18: derselbe Blob-Store (oben instanziert) geht an den Router
-        // für den multipart-Pfad von POST /messages.
+        // Phase-12-X T18: the same blob store (instantiated above) goes to the
+        // router for the multipart path of POST /messages.
         let router = meclaw_api::router::build_router(colony, blob_store, message_default_ttl);
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -626,7 +627,7 @@ pub async fn run_with_hooks(
             .with_graceful_shutdown(signal_future)
             .await?;
     } else {
-        // Headless (kein --api): kein HTTP-Listener. Warte auf ctrl_c/SIGTERM/Hook.
+        // Headless (no --api): no HTTP listener. Wait for ctrl_c/SIGTERM/hook.
         signal_future.await;
     }
 
@@ -713,8 +714,8 @@ mod tests {
 
     #[test]
     fn tokio_console_flags_default_off_and_6669() {
-        // Default: Opt-out — der Debug-Port bindet NICHT (vorher: fest 6669,
-        // band immer). Default-Port bleibt 6669, falls aktiviert.
+        // Default: opt-out — the debug port does NOT bind (before: hardwired
+        // 6669, always bound). The default port stays 6669 when enabled.
         let cli = Cli::parse_from(["meclaw"]);
         assert!(!cli.tokio_console);
         assert_eq!(cli.tokio_console_port, 6669);
@@ -729,14 +730,14 @@ mod tests {
 
     #[test]
     fn check_tokio_console_disabled_yields_none_no_bind() {
-        // U10-a: ohne Flag ⇒ kein Bind. None signalisiert „Layer aus".
+        // U10-a: without the flag ⇒ no bind. None signals "layer off".
         assert!(check_tokio_console(false, 6669).unwrap().is_none());
     }
 
     #[test]
     fn check_tokio_console_enabled_reserves_configured_port() {
-        // U10-b: aktiviert ⇒ Some(addr) mit dem konfigurierten Port.
-        // Freien Port via Ephemeral-Bind ermitteln (TOCTOU akzeptiert, POC).
+        // U10-b: enabled ⇒ Some(addr) with the configured port.
+        // Determine a free port via an ephemeral bind (TOCTOU accepted, POC).
         let port = {
             let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
             l.local_addr().unwrap().port()
@@ -749,15 +750,15 @@ mod tests {
 
     #[test]
     fn check_tokio_console_occupied_port_errors_no_panic() {
-        // U10-c: belegter Port ⇒ klare Fehlermeldung, KEIN Panic (kein stiller
-        // Fail beim Parallel-Start).
+        // U10-c: an occupied port ⇒ a clear error message, NO panic (no silent
+        // failure on a parallel start).
         let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = held.local_addr().unwrap().port();
         let err = check_tokio_console(true, port).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains(&port.to_string()) && msg.to_lowercase().contains("port"),
-            "Fehlermeldung muss Port nennen, war: {msg}"
+            "the error message must name the port, was: {msg}"
         );
     }
 }

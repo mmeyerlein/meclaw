@@ -1,7 +1,7 @@
-//! `.staging/<mutation_id>/`-Tree-Bau für add_nodes (Phase 6 Apply-Sequenz Schritt 6).
+//! `.staging/<mutation_id>/` tree construction for add_nodes (phase 6 apply sequence step 6).
 //!
-//! Per Cell ein Verzeichnis mit `config.json`; bereit zum atomic rename(2) in T16.
-//! Phase 11 ergänzt `build_staging_tree_from_templates` (Template-Copy + Patch + Substitution + Seed).
+//! One directory with a `config.json` per cell; ready for the atomic rename(2) in T16.
+//! Phase 11 adds `build_staging_tree_from_templates` (template copy + patch + substitution + seed).
 
 use super::MutationError;
 use crate::templates::TemplatesRegistry;
@@ -9,11 +9,11 @@ use meclaw_core::JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Eine in `.staging/<mutation_id>/` aufgebaute Cell, bereit zum rename(2).
+/// A cell built inside `.staging/<mutation_id>/`, ready for the rename(2).
 ///
-/// `template` und `params` werden für den Cell-Spawn nach dem Rename gebraucht
-/// (T18 — Apply-Sequenz Schritt 9). `contract_view` trägt die aus
-/// `config.json::contract` extrahierte Sicht für den Spawn-Call (T23).
+/// `template` and `params` are needed for the cell spawn after the rename
+/// (T18 — apply sequence step 9). `contract_view` carries the view extracted
+/// from `config.json::contract` for the spawn call (T23).
 #[derive(Debug, Clone)]
 pub struct StagedDir {
     pub staging_path: PathBuf,
@@ -795,15 +795,9 @@ mod tests {
         .unwrap();
         assert_eq!(staged.len(), 1);
         let cfg_raw = std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap();
-        assert!(
-            cfg_raw.contains("\"hi\""),
-            "${{GREET}} muss substituiert sein"
-        );
-        assert!(
-            cfg_raw.contains("\"id\""),
-            "cell.id (UUID v7) muss gesetzt sein"
-        );
-        assert!(!cfg_raw.contains("${GREET}"), "kein Token darf übrig sein");
+        assert!(cfg_raw.contains("\"hi\""), "${{GREET}} must be substituted");
+        assert!(cfg_raw.contains("\"id\""), "cell.id (UUID v7) must be set");
+        assert!(!cfg_raw.contains("${GREET}"), "no token may be left over");
     }
 
     #[test]
@@ -868,12 +862,12 @@ mod tests {
         )
         .unwrap();
         let cell_db = staged[0].staging_path.join("cell.db");
-        assert!(cell_db.exists(), "cell.db muss existieren");
+        assert!(cell_db.exists(), "cell.db must exist");
         let conn = rusqlite::Connection::open(&cell_db).unwrap();
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(cnt, 2, "geseedete Rows müssen lesbar sein");
+        assert_eq!(cnt, 2, "seeded rows must be readable");
         let names: Vec<String> = conn
             .prepare("SELECT name FROM items ORDER BY id")
             .unwrap()

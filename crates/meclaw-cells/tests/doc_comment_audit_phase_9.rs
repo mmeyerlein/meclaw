@@ -1,6 +1,6 @@
 //! Phase-9-Close: verifies that StoreCell::handle and CodeCell::handle
 //! both have non-empty doc-comments above them — analog Phase-7
-//! doc_comment_audit (siehe crates/meclaw-cells/tests/doc_comment_audit.rs).
+//! doc_comment_audit (see crates/meclaw-cells/tests/doc_comment_audit.rs).
 
 use std::path::PathBuf;
 

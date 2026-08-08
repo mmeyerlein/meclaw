@@ -1,6 +1,6 @@
-//! Filesystem-Bootstrap. Zwei-Phasen-Disziplin (validate-dann-apply):
-//! `plan_bootstrap` validiert das gesamte Tree, `apply_bootstrap_plan`
-//! führt einen vollvalidierten Plan aus. Schlägt 15a fehl, wurde nichts
+//! Filesystem bootstrap. Two-phase discipline (validate then apply):
+//! `plan_bootstrap` validates the entire tree, `apply_bootstrap_plan` executes a
+//! fully validated plan. If 15a fails, nothing was
 //! gespawnt.
 
 use std::path::PathBuf;
@@ -242,12 +242,12 @@ pub struct PlannedCell {
     /// Contract extracted from `config.json::contract`; passed to `CellFactory::spawn_cell`
     /// at apply-phase. Defaults to all-false if the `contract` block is absent.
     pub contract_view: ContractView,
-    /// Phase-13: `cell.timeout` aus `CellHeader`. 0/>0/-1-Semantik siehe Spec
-    /// (`docs/config.md` Z.42). Wird in 13-K/13-L in `cell_task_stateful`
-    /// verdrahtet — heute verhaltens-neutral propagiert.
+    /// Phase-13: `cell.timeout` from `CellHeader`. For the 0/>0/-1 semantics see
+    /// the spec (`docs/config.md` l.42). Wired into `cell_task_stateful` in
+    /// 13-K/13-L — today it is propagated behaviour-neutrally.
     pub cell_timeout: i64,
-    /// Phase-13: Optionales pro-Cell-Override für die Idle-Dauer. Fallback in
-    /// `bootstrap_apply` ist `DEFAULT_IDLE_TIMEOUT_MS` (Phase-13-Limitation:
+    /// Phase-13: an optional per-cell override for the idle duration. The fallback
+    /// in `bootstrap_apply` is `DEFAULT_IDLE_TIMEOUT_MS` (phase-13 limitation:
     /// volles colony.json-Parsing deferred). Spec: docs/config.md Z.42-43.
     pub idle_timeout_ms: Option<u64>,
     /// P3-B-plumb-2: optional per-cell `cell.message_timeout` override (B-backstop)
@@ -314,8 +314,8 @@ pub struct BootstrapPlan {
     pub unregistered_nodes: Vec<McPath>,
 }
 
-/// Probe für cell.db-Integrität. Returns `Ok(())` für absent oder healthy DBs,
-/// `Err(reason)` bei quick_check ≠ "ok" oder schema_version-Mismatch.
+/// Probe for cell.db integrity. Returns `Ok(())` for absent or healthy DBs and
+/// `Err(reason)` on quick_check ≠ "ok" or a schema_version mismatch.
 fn probe_cell_db(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(()); // absent = first-boot, OK
@@ -453,8 +453,8 @@ pub fn plan_bootstrap_with_env(
     dirs.extend(walk_cell_directories(&root_dir));
 
     // Befund 4: boot-time `${ENV_VAR}` substitution shares the mutation path's
-    // model (spec § Variablen-Substitution: substituted "beim Lesen von
-    // config.json"; § Fehler-Verhalten Z.1366: missing plain `${VAR}` at the
+    // model (spec § Variable substitution: substituted "when reading
+    // config.json"; § Behavior on errors l.1366: missing plain `${VAR}` at the
     // initial bootstrap ⇒ daemon failed-to-start). `{root}/.env` absent ⇒ empty
     // map (only configs that actually use `${VAR}` then fail); malformed ⇒
     // loud plan error.
@@ -504,7 +504,7 @@ pub fn plan_bootstrap_with_env(
         // config.json is NEVER rewritten at boot (Authority-Modell:
         // `config.json`-Writes only at instantiation). Env-only token set:
         // `${ctx.*}` / `${uuid7:*}` are mutation-side substitutions and have no
-        // filesystem-side producer (spec § Variablen-Substitution).
+        // filesystem-side producer (spec § Variable substitution).
         let substituted = match crate::mutation::substitute::substitute_env_only(&raw_parsed, &env)
         {
             Ok(v) => v,
@@ -633,8 +633,8 @@ pub fn plan_bootstrap_with_env(
                 plan.unregistered_nodes.push(mc_path.clone());
                 continue;
             }
-            // Strict-Unknown-Field-Coverage für `cell.*`: alles, was nicht in der
-            // kuratierten Allow-List steht, wird hier rejected. Allow-List wächst
+            // Strict unknown-field coverage for `cell.*`: anything not on the curated
+            // allow-list is rejected here. The allow-list grows
             // pro Phase (z.B. `cell.timeout` ab Phase 13-B-0, `cell.id` ab
             // Phase 13.5 Slice 4 — swap_nodes writes the preserved cell_id into
             // config.json so that it survives a reboot).
@@ -875,16 +875,16 @@ pub fn plan_bootstrap_with_env(
     errors.into_result(plan)
 }
 
-/// Boot-State-Klassifizierung für colony.db (T20, E9).
+/// Boot-state classification for colony.db (T20, E9).
 ///
-/// - `FirstBoot`: alle Persistenz-Tabellen leer (oder Datei absent).
-/// - `Reboot`: alle Persistenz-Tabellen non-empty — Re-Boot, hydratisieren statt InitialApply.
+/// - `FirstBoot`: all persistence tables empty (or the file absent).
+/// - `Reboot`: all persistence tables non-empty — a re-boot, hydrate instead of InitialApply.
 /// - `Inconsistent`: mixed state — STRICT-FAIL, externe Korruption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootState {
-    /// Alle Tabellen leer oder Datei absent.
+    /// All tables empty or the file absent.
     FirstBoot,
-    /// Alle Tabellen non-empty.
+    /// All tables non-empty.
     Reboot,
     /// Mischzustand — externe Korruption.
     Inconsistent {
@@ -893,9 +893,9 @@ pub enum BootState {
     },
 }
 
-/// Inspiziert die drei Persistenz-Tabellen (registry/edges/hive_scopes) und klassifiziert.
+/// Inspects the three persistence tables (registry/edges/hive_scopes) and classifies.
 ///
-/// Read-only-Connection-Probe; macht keinen Write.
+/// A read-only connection probe; performs no write.
 ///
 /// **Bootstrap-Recovery (Run-5/5b-Befund)**: a durable `bootstrap_in_flight`
 /// marker in the `meta` table means the last FIRST apply was interrupted
@@ -1012,24 +1012,25 @@ pub enum BootstrapError {
     NoRootDir,
     /// Filesystem path could not be mapped to a meclaw path.
     InvalidPath { reason: String },
-    /// cell.db existiert, ist aber korrupt (quick_check failed oder schema_version mismatch).
-    /// Probe in plan_bootstrap (T19); apply schlägt nie an dieser Stelle fehl.
+    /// cell.db exists but is corrupt (quick_check failed or a schema_version
+    /// mismatch). Probed in plan_bootstrap (T19); apply never fails at this point.
     CorruptCellDb {
-        /// Pfad zur kaputten cell.db.
+        /// Path to the broken cell.db.
         path: PathBuf,
-        /// Diagnose-String (quick_check-Result oder schema_version-Wert).
+        /// Diagnostic string (the quick_check result or the schema_version value).
         reason: String,
     },
-    /// colony.db hat Mischzustand zwischen Persistenz-Tabellen (registry/edges/hive_scopes).
-    /// Erkennung via probe_boot_state (T20). STRICT-FAIL gegen externe Korruption.
+    /// colony.db is in a mixed state across the persistence tables
+    /// (registry/edges/hive_scopes). Detected via probe_boot_state (T20). A STRICT
+    /// FAIL against external corruption.
     InconsistentColonyDb {
-        /// Diagnose-String (welche Tabellen leer vs. nicht-leer).
+        /// Diagnostic string (which tables are empty vs. non-empty).
         reason: String,
     },
-    /// config.json enthält ein nicht in Phase 5 unterstütztes cell.*-Feld
-    /// (z.B. cell.timeout — kommt erst in Phase 10/13).
+    /// config.json contains a `cell.*` field not supported in phase 5
+    /// (e.g. cell.timeout — that only arrives in phase 10/13).
     UnknownCellField {
-        /// Pfad zur config.json.
+        /// Path to the config.json.
         path: PathBuf,
         /// Feld-Name (z.B. "cell.timeout").
         field: String,
@@ -1073,7 +1074,7 @@ pub enum BootstrapError {
     },
     /// Substrat-Fix Befund 4 — `${ENV_VAR}` substitution over a boot
     /// `config.json` failed: a plain `${VAR}` without default has no value in
-    /// `{root}/.env` (spec § Fehler-Verhalten Z.1366: daemon failed-to-start,
+    /// `{root}/.env` (spec § Behavior on errors l.1366: daemon failed-to-start,
     /// Exit≠0), or the token uses an unsupported operator form. Boot and
     /// mutation share one substitution model (overview Z.1366/1367); `reason`
     /// carries the mutation-path token verbatim (`env_var_missing: ...` /
@@ -1291,7 +1292,7 @@ mod plan_tests {
         assert_eq!(plan.edges.len(), 2);
     }
 
-    /// F1 fix, Pflicht-Punkt 2 (loop shape): a 14a-style tool loop — the
+    /// F1 fix, mandatory point 2 (loop shape): a 14a-style tool loop — the
     /// worker loops back INTO its own hive — with an honest required key
     /// keeps booting. The transit walk must terminate (proven by returning)
     /// and must not falsely empty the intersection at the loop edge: the
@@ -2170,7 +2171,7 @@ mod plan_tests {
             "main/a/config.json",
             r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
-        // Präparierte kaputte cell.db
+        // A deliberately broken cell.db
         std::fs::write(td.path().join("main/a/cell.db"), b"not a sqlite file").unwrap();
         let err = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay()).unwrap_err();
         assert!(
@@ -2214,7 +2215,7 @@ mod plan_tests {
 
     #[test]
     fn malformed_emits_is_a_boot_error_not_silent() {
-        // Plan-Phase muss ein kaputtes emits-Schema als BootstrapError melden
+        // The plan phase must report a broken emits schema as a BootstrapError
         // (analog UnknownCellField — Boot-Strict-Kultur, config.md Z.37).
         let cfg_json = r#"{"cell":{"type":"code"},"params":{"runner":"python3"},
           "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"body":{"x":{"type":"stringg"}},"hop":{}}}}"#;
@@ -2262,7 +2263,7 @@ mod plan_tests {
     }
 
     /// Substrat-Fix Befund 4 — boot-time `${ENV_VAR}` substitution. Spec
-    /// § Variablen-Substitution: substituted "beim Lesen von config.json"; the
+    /// § Variable substitution: substituted "when reading config.json"; the
     /// mutation path and the boot path share the same substitution model
     /// (overview Z.1366/1367, same error table). The plan reads `{root}/.env`
     /// and substitutes every config.json value, so the cell (and
@@ -2290,7 +2291,7 @@ mod plan_tests {
     }
 
     /// Befund 4 — missing plain `${VAR}` without default at boot → plan error
-    /// (spec § Fehler-Verhalten Z.1366: daemon failed-to-start; the error text
+    /// (spec § Behavior on errors l.1366: daemon failed-to-start; the error text
     /// carries the `env_var_missing` token so `--validate` stderr matches).
     #[test]
     fn plan_missing_env_var_without_default_fails_to_start() {
@@ -2438,7 +2439,7 @@ mod boot_state_tests {
     fn boot_state_absent_db_returns_first_boot() {
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("colony.db");
-        // Datei existiert NICHT
+        // The file does NOT exist
         let bs = probe_boot_state(&db_path).unwrap();
         assert!(matches!(bs, BootState::FirstBoot));
     }
@@ -2489,7 +2490,7 @@ mod boot_state_tests {
         let db_path = td.path().join("colony.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         crate::persist::setup_colony_db(&conn).unwrap();
-        // Nur edges hat Daten — Mischzustand.
+        // Only edges has data — a mixed state.
         conn.execute(
             "INSERT INTO edges (id, from_path, to_path, created_at) VALUES ('id1', '/a', '/b', 0)",
             [],

@@ -1,4 +1,4 @@
-//! Phase 12-B step-7.1: ColonyMsg::ReadRegistry — Inbox-typed-Read mit oneshot-ack.
+//! Phase 12-B step-7.1: ColonyMsg::ReadRegistry — inbox typed read with a oneshot ack.
 //!
 //! Verifies the new Read*-arm via `ColonyHandle::new()`: fresh colony, registry empty,
 //! ReadRegistry returns an empty snapshot. After spawning a cell, ReadRegistry returns

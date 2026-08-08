@@ -468,7 +468,7 @@ async fn failed_cell_routing_dead_letters_cell_inactive_distinct() {
         "message to live failed /hang → cell_inactive; got {dl_failed:?}"
     );
 
-    // (2) Trennschärfe: a probe at a NON-EXISTENT path /nope (no cell, no hive)
+    // (2) Discriminating power: a probe at a NON-EXISTENT path /nope (no cell, no hive)
     //     → unresolved_path, NOT cell_inactive.
     h.send(MessageBuilder::new(Path::new("/nope")).build())
         .await;

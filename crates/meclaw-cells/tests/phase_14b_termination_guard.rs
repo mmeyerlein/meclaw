@@ -1,8 +1,8 @@
 //! Phase-14-B Task 1 — Terminierungs-Guard (store-frei). Positiv-Test: korrekt
 //! verdrahtete Loop-Kette terminiert sauber via finish_reason-Edge (exakt 2 Calls,
-//! /sink-Final). Der Loop-Back-Mechanismus ist kanonisch gepinnt im 14-A-Nachtrag
+//! /sink final). The loop-back mechanism is canonically pinned in the 14-A addendum
 //! (loop_back_mechanism_trace, Identity-Fallback em.target=reply_to=/llm, TTL-Deckel;
-//! Observability-Gap roadmap U5) — HIER nicht neu hergeleitet, nicht reproduziert.
+//! observability gap, roadmap U5) — NOT re-derived or reproduced here.
 #[path = "mock_openai.rs"]
 mod mock_openai;
 
@@ -19,9 +19,9 @@ use tokio::sync::mpsc;
 
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
 
-/// Dispatcher: liest die llm-Output-Turns; je `tool_call`-Turn eine Message
-/// mit `route=tool` an die Tool-Cell. (Store-frei: kein c_asst/store-Pfad —
-/// der ist Tasks 4+. Diese Topologie isoliert NUR die Terminierung.)
+/// Dispatcher: reads the llm output turns; one message with `route=tool` to the
+/// tool cell per `tool_call` turn. (Store-free: no c_asst/store path — that is
+/// tasks 4+. This topology isolates ONLY the termination.)
 const DISPATCHER_PY: &str = r#"
 import sys, json
 d = json.load(sys.stdin)
@@ -33,7 +33,7 @@ for c in calls:
 sys.stdout.write(json.dumps(out))
 "#;
 
-/// Tool-A: deterministisches `tool_result` (text "42"), route=c_res frisch gesetzt.
+/// Tool A: a deterministic `tool_result` (text "42"), route=c_res set fresh.
 const TOOL_A_PY: &str = r#"
 import sys, json
 d = json.load(sys.stdin)
@@ -45,8 +45,8 @@ out = {"header":{"route":"c_res"},
 sys.stdout.write(json.dumps(out))
 "#;
 
-/// Collector (store-frei): reicht den eingehenden tool_result-Turn weiter an /llm,
-/// route=back. Kein store, kein Thread-Rebuild — nur Loop-Schluss.
+/// Collector (store-free): forwards the incoming tool_result turn on to /llm with
+/// route=back. No store, no thread rebuild — just closing the loop.
 const COLLECTOR_PY: &str = r#"
 import sys, json
 d = json.load(sys.stdin)
@@ -55,7 +55,7 @@ out = {"header":{"route":"back"}, "messages": msgs}
 sys.stdout.write(json.dumps(out))
 "#;
 
-/// Eine code-Cell-config.json mit inline-python und optionalem multi_send.
+/// One code-cell config.json with inline python and an optional multi_send.
 fn code_config(script: &str, multi_send: bool) -> String {
     to_string_pretty(&json!({
         "cell": {"type": "code"},
@@ -69,7 +69,7 @@ fn code_config(script: &str, multi_send: bool) -> String {
     .unwrap()
 }
 
-/// llm-config.json gegen den Mock.
+/// llm config.json pointed at the mock.
 fn llm_config(base_url: &str) -> String {
     to_string_pretty(&json!({
         "cell": {"type": "llm"},
@@ -79,7 +79,7 @@ fn llm_config(base_url: &str) -> String {
     .unwrap()
 }
 
-/// Schreibt den korrekt verdrahteten store-freien Loop-Baum:
+/// Writes the correctly wired store-free loop tree:
 /// `/llm → /tool-loop (Transit) → dispatcher → tool-a → collector → /llm` (Loop),
 /// plus `/llm --(finish_reason != 'tool_calls')--> /sink` (Terminierung).
 fn write_terminating_loop_tree(td: &std::path::Path, base_url: &str) {
@@ -89,7 +89,7 @@ fn write_terminating_loop_tree(td: &std::path::Path, base_url: &str) {
     std::fs::create_dir_all(tl.join("tool-a")).unwrap();
     std::fs::create_dir_all(tl.join("collector")).unwrap();
 
-    // Root-Hive /: /llm → /tool-loop (Transit) bei tool_calls; /llm → /sink bei stop.
+    // Root hive /: /llm → /tool-loop (transit) on tool_calls; /llm → /sink on stop.
     std::fs::write(
         td.join("main/config.json"),
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
@@ -125,7 +125,7 @@ fn write_terminating_loop_tree(td: &std::path::Path, base_url: &str) {
     .unwrap();
 }
 
-/// Boot ohne store: llm+code-Factories, /sink-CaptureCell vor Bootstrap. (Muster: support::boot.)
+/// Boot without store: llm+code factories, the /sink CaptureCell before bootstrap. (Pattern: support::boot.)
 async fn boot_loopback(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let llm_f: Arc<dyn CellFactory> = Arc::new(LlmCellFactory);
     let code_f: Arc<dyn CellFactory> = Arc::new(CodeCellFactory);
@@ -150,7 +150,7 @@ async fn boot_loopback(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<
     (h, sink_rx)
 }
 
-/// user-Probe direkt an /llm (kein Capture in dieser store-freien Topologie), TTL explizit.
+/// User probe straight to /llm (no capture in this store-free topology), TTL explicit.
 fn user_probe_llm(turn_id: &str, ttl: u32) -> Message {
     let tool_schema = meclaw_core::serde_json::to_string(&json!({
         "type":"function","function":{"name":"calc","description":"calc",
@@ -167,7 +167,7 @@ fn user_probe_llm(turn_id: &str, ttl: u32) -> Message {
         .build()
 }
 
-/// Bounded Receipt (30 s, robust gegen cargo-parallel-Last).
+/// Bounded receipt (30 s, robust against cargo's parallel load).
 async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
     tokio::time::timeout(Duration::from_secs(30), rx.recv())
         .await
@@ -190,16 +190,12 @@ async fn terminating_edge_stops_loop_exactly_at_finish_reason() {
     h.send(user_probe_llm("t1", 16)).await;
     let fin = recv_bounded(&mut sink_rx)
         .await
-        .expect("/sink MUSS die Final-Message empfangen");
+        .expect("/sink MUST receive the final message");
     assert_eq!(
         fin.headers.hop["finish_reason"], "stop",
-        "Terminierung über finish_reason-Edge"
+        "termination via the finish_reason edge"
     );
     let snaps = mock.recorded_requests().await;
-    assert_eq!(
-        snaps.len(),
-        2,
-        "exakt 2 Calls — kein unbeabsichtigter Re-Trigger"
-    );
+    assert_eq!(snaps.len(), 2, "exactly 2 calls — no unintended re-trigger");
     h.shutdown().await;
 }

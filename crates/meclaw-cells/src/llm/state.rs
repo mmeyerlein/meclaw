@@ -7,9 +7,9 @@
 //! - `replace_last_input` — SQL op against the Phase-6.5 `last_input`
 //!   single-row table (forensic-only, never read back — cell-types.md Z.74).
 //! - `EXPECTED_SCHEMA_VERSION` + `check_schema_version` — cell.db
-//!   schema-Version-Check für LlmCellFactory.
+//!   schema version check for LlmCellFactory.
 //! - `system_first_persist` — atomic transaction wrapper that drives the
-//!   writers in Q2-system-first order (consumed by `handle()` Schritt 2/3).
+//!   writers in Q2 system-first order (consumed by `handle()` steps 2/3).
 
 use meclaw_core::serde_json::{self, Value};
 

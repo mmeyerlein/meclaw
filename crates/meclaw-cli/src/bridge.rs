@@ -69,7 +69,7 @@ mod tests {
         assert_eq!(turn["origin"], "user");
         assert_eq!(turn["type"], "text");
         assert_eq!(turn["text"], "hallo welt");
-        // context-Trias gesetzt:
+        // context triad set:
         assert_eq!(
             msg.headers.context["user_id"],
             serde_json::json!(STDIO_USER_ID.to_string())
@@ -119,16 +119,13 @@ mod tests {
     #[test]
     fn extracts_last_of_multiple_assistant_turns() {
         let body = serde_json::json!({ "messages": [
-            { "origin": "assistant", "type": "text", "text": "erste antwort" },
-            { "origin": "assistant", "type": "text", "text": "letzte antwort" }
+            { "origin": "assistant", "type": "text", "text": "first answer" },
+            { "origin": "assistant", "type": "text", "text": "last answer" }
         ]});
         let msg = MessageBuilder::new(Path::new("/"))
             .body(Body::Inline(body))
             .build();
-        assert_eq!(
-            message_to_stdout_line(&msg).as_deref(),
-            Some("letzte antwort")
-        );
+        assert_eq!(message_to_stdout_line(&msg).as_deref(), Some("last answer"));
     }
 
     #[test]

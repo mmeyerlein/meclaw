@@ -1,6 +1,6 @@
 //! Paket-2 T11 — Demos (d), (e), (f) + C1 stop-wiring invariant:
 //!
-//! Demo (d) — Vollständigkeit: multiple in/out edges, condition + modifier preserved verbatim.
+//! Demo (d) — completeness: multiple in/out edges, condition + modifier preserved verbatim.
 //! Demo (e) — Reject vor-destruktiv: invalid swap rejected atomically, no partial state.
 //! Demo (f) — Reboot durability: swung edges + inactive t2 survive colony reboot.
 //! C1       — stop_wiring_unavailable: swap of Awake cell with no stop_tx atomically rejected.
@@ -869,7 +869,7 @@ fn bump_spawn_counter_c1(cell_dir: &std::path::Path) -> i64 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Demo (d) — Vollständigkeit
+// Demo (d) — completeness
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Paket-2 T11 Demo (d) — completeness: multiple in/out edges + condition/modifier.

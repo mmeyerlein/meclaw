@@ -1,10 +1,10 @@
-//! Phase-10-B: Factory fuer die `timer`-Cell.
+//! Phase-10-B: the factory for the `timer` cell.
 //!
-//! Oeffnet `cell.db` sync, ruft `setup_timer_schema` (idempotent), seedet bei
-//! `OpenStatus::Created` (Phase-9-Pattern, cell-types.md Z.452). Resume-Pfad
-//! re-seedet NIE. `make_build`-Closure ist sync + await-frei zwischen DB-Open
-//! und dem LR-Spawn via `build_long_running_task` — Phase-5-Tripwire-konform
-//! (vgl. `crates/meclaw-cells/src/llm/factory.rs`).
+//! Opens `cell.db` synchronously, calls `setup_timer_schema` (idempotent), seeds
+//! on `OpenStatus::Created` (phase-9 pattern, cell-types.md l.452). The resume
+//! path NEVER re-seeds. The `make_build` closure is sync and await-free between
+//! the DB open and the LR spawn via `build_long_running_task` — conformant with
+//! the phase-5 tripwire (cf. `crates/meclaw-cells/src/llm/factory.rs`).
 
 use crate::timer::cell::TimerCell;
 use crate::timer::db::{insert_schedule, load_active_filter_past, setup_timer_schema};
@@ -20,26 +20,26 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// `timer`-Cell-Factory. Production-Wiring lebt in
-/// `crates/meclaw-cli/src/factories.rs` (folgt mit den 10-B-`examples/`-
-/// Topologien); 10-B-Demo nutzt diese Factory direkt via
+/// The `timer` cell factory. Production wiring lives in
+/// `crates/meclaw-cli/src/factories.rs` (arriving with the 10-B `examples/`
+/// topologies); the 10-B demo uses this factory directly via
 /// `ColonyHandle::register_spawned`.
 pub struct TimerCellFactory;
 
 impl CellFactory for TimerCellFactory {
-    /// Pre-Spawn-Validierung. Routet ueber denselben Parse-Pfad wie
-    /// `spawn_cell` (Parser-Invariante per `meclaw_colony::CellFactory`-Doc).
+    /// Pre-spawn validation. Routes through the same parse path as `spawn_cell`
+    /// (parser invariant per the `meclaw_colony::CellFactory` docs).
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
         TimerParams::parse(params).map(|_| ())
     }
 
-    /// Spawn eine `timer`-Cell-Instanz. Parser-Invariante via `TimerParams::parse`.
+    /// Spawn a `timer` cell instance. Parser invariant via `TimerParams::parse`.
     ///
-    /// **Korridor-Pflicht (Phase-5-Tripwire)**: Der `make_build`-Closure laeuft
-    /// initial UND beim Respawn nach Panic. Zwischen dem LR-Spawn via
-    /// `build_long_running_task` und der `RegistryEntry.handle`-Setzung in
-    /// `colony::handle_cell_died` DARF KEIN `.await` liegen. Alle vorgelagerten
-    /// Ops sind sync (`open_or_create_cell_db_with_status`, `setup_timer_schema`,
+    /// **Corridor duty (phase-5 tripwire)**: the `make_build` closure runs on the
+    /// initial spawn AND on the respawn after a panic. Between the LR spawn via
+    /// `build_long_running_task` and setting `RegistryEntry.handle` in
+    /// `colony::handle_cell_died` there must be NO `.await`. All preceding ops
+    /// are sync (`open_or_create_cell_db_with_status`, `setup_timer_schema`,
     /// `insert_schedule`, `load_active_filter_past`, `DbConn::wrap`,
     /// `mpsc::channel`, `tokio::spawn`).
     fn spawn_cell(
@@ -108,8 +108,8 @@ impl CellFactory for TimerCellFactory {
     /// preserved — no schedule-tick loop runs until reconnect). The returned
     /// closure is the SAME construction as `spawn_cell`'s `respawn` (built via
     /// the shared `make_build` helper); an `add_edges` reconnect calls it and
-    /// the Long-Running task starts IMMEDIATELY (spec § Konnektivität &
-    /// Aktivität: reactivated Long-Running cells start "sofort").
+    /// the long-running task starts IMMEDIATELY (spec § Connectivity and activity:
+    /// reactivated long-running cells start "immediately").
     /// Restart-inert (`build()`) like the normal respawn.
     fn build_boot_inactive_respawn(
         self: Arc<Self>,
@@ -161,7 +161,7 @@ impl CellFactory for TimerCellFactory {
 /// construction has ONE definition. The closure is `Fn` (not `FnOnce` —
 /// `RespawnFn` may fire twice) and stays sync + await-free between DB-open and
 /// `tokio::spawn` (Phase-5-Tripwire). Seed runs only on `OpenStatus::Created`
-/// (Phase-9-Pattern, cell-types.md Z.452); Resume never re-seeds.
+/// (phase-9 pattern, cell-types.md l.452); resume never re-seeds.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn make_build(
     params: JsonValue,
@@ -186,7 +186,7 @@ fn make_build(
     let parsed = TimerParams::parse(&params)?;
     let seed_cap: Arc<Vec<ScheduleRow>> = Arc::new(parsed.schedules);
     // β: birth params Value, captured for the per-(re)spawn overlay restore of
-    // `query_timeout_ms` (Weg C). Schedules are NOT overlay-managed (ops-driven).
+    // `query_timeout_ms` (path C). Schedules are NOT overlay-managed (ops-driven).
     let birth_cap = params;
 
     // Owned clones moved into the multi-call closure.
@@ -210,21 +210,21 @@ fn make_build(
         // 1. Open cell.db + OpenStatus (sync).
         let (conn, status) =
             open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db")).expect("open cell.db");
-        // 2. Idempotente DDL (sync, korridor-frei).
+        // 2. Idempotent DDL (sync, outside the corridor).
         setup_timer_schema(&conn).expect("setup_timer_schema");
-        // 3. Seed NUR bei Created (Phase-9-Pattern, cell-types.md Z.452).
+        // 3. Seed ONLY on Created (phase-9 pattern, cell-types.md l.452).
         if matches!(status, OpenStatus::Created) {
             for row in seed_cap.iter() {
                 insert_schedule(&conn, row).expect("seed insert");
             }
         }
-        // 3b. β restore: effective query_timeout_ms = birth ⊕ cell.db-Overlay.
+        // 3b. β restore: effective query_timeout_ms = birth ⊕ cell.db overlay.
         let query_timeout_ms = crate::params_overlay::restore::<crate::timer::params::TimerOverlay>(
             &conn, &birth_cap,
         )
         .expect("restore timer query_timeout overlay")
         .query_timeout_ms;
-        // 4. Active-Set laden + past-onces rausfiltern (sync).
+        // 4. Load the active set + filter out past one-shots (sync).
         let active = load_active_filter_past(&conn, Utc::now()).expect("load_active_filter_past");
         // 5. Build TimerCell + DbConn (sync), create the mailbox, then funnel the
         //    LR spawn through `build_long_running_task` — the single LR-spawn
@@ -268,9 +268,10 @@ mod tests {
         assert!(err.contains("cron") && err.contains("at"));
     }
 
-    /// T17 — Resume-Pfad: Spawn-Drop-Spawn auf derselben `cell_dir` mit
-    /// Seed → genau 1 Row. Beweist: Resumed re-seedet NICHT (Phase-9-Pattern,
-    /// cell-types.md Z.452). Sonst lägen nach zweitem Spawn 2 Rows in der DB.
+    /// T17 — resume path: spawn-drop-spawn on the same `cell_dir` with a seed
+    /// yields exactly 1 row. Proves that a resume does NOT re-seed (phase-9
+    /// pattern, cell-types.md l.452). Otherwise the DB would hold 2 rows after the
+    /// second spawn.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn factory_seeds_only_on_first_spawn_resume_keeps_existing_rows() {
         let td = tempfile::TempDir::new().unwrap();
@@ -284,7 +285,7 @@ mod tests {
         ]});
         let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
 
-        // Spawn 1: Created → Seed läuft.
+        // Spawn 1: Created → the seed runs.
         let f = Arc::new(TimerCellFactory);
         let (inbox_tx, _inbox_rx) = mpsc::channel(8);
         let s1 = f
@@ -307,13 +308,13 @@ mod tests {
             SpawnedCellKind::Active { sender, join, .. } => (sender, join),
             SpawnedCellKind::Dormant { .. } => unreachable!("Phase-13-G-2: only Active"),
         };
-        drop(sender1); // Mailbox-Close → Shutdown.
+        drop(sender1); // mailbox close → shutdown.
         tokio::time::timeout(Duration::from_secs(30), join1)
             .await
             .unwrap()
             .unwrap();
 
-        // Spawn 2: Resumed → KEIN Re-Seed (sonst doppelt).
+        // Spawn 2: Resumed → NO re-seed (otherwise it would double up).
         let s2 = f
             .spawn_cell(
                 Path::new("/t"),
@@ -339,11 +340,11 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // Probe direkt mit fresh-Connection: genau 1 Row.
+        // Probe directly with a fresh connection: exactly 1 row.
         let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM schedules", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 1, "Resumed darf NICHT re-seeden");
+        assert_eq!(n, 1, "Resumed must NOT re-seed");
     }
 }

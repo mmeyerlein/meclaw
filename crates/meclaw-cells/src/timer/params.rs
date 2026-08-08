@@ -1,7 +1,7 @@
 //! Phase-10-B: `TimerParams::parse`.
 //!
-//! Validierung von `params.schedules`-Seed + `query_timeout_ms`.
-//! Cron XOR at strikt (cell-types.md Z.425–429).
+//! Validates the `params.schedules` seed + `query_timeout_ms`.
+//! Cron XOR at, strictly (cell-types.md l.425-429).
 //! Default `query_timeout_ms` = 5000 (GIVENs).
 
 use crate::timer::schedule::{ScheduleKind, ScheduleRow};
@@ -10,12 +10,12 @@ use croner::parser::{CronParser, Seconds};
 use meclaw_core::{Path, Uuid};
 use serde_json::Value as JsonValue;
 
-/// Geparste Timer-Params nach Validierung.
+/// Parsed timer params after validation.
 #[derive(Debug)]
 pub struct TimerParams {
-    /// Seed-Rows fuer `params.schedules` (leer wenn nicht im Input).
+    /// Seed rows for `params.schedules` (empty when absent from the input).
     pub schedules: Vec<ScheduleRow>,
-    /// Operation-Timeout (A) fuer DB-Calls. Default 5000 ms.
+    /// Operation timeout (A) for DB calls. Default 5000 ms.
     pub query_timeout_ms: u64,
 }
 
@@ -29,7 +29,7 @@ pub struct TimerParams {
 /// is an `Unknown` reject. Immutable set is empty (Ruling).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerOverlay {
-    /// Operation-Timeout (A) for cell.db ops. Mutable, Weg C (sofort-live).
+    /// Operation timeout (A) for cell.db ops. Mutable, path C (immediately live).
     pub query_timeout_ms: u64,
 }
 
@@ -47,8 +47,8 @@ impl crate::params_overlay::OverlayParams for TimerOverlay {
 }
 
 impl TimerParams {
-    /// Parse + Validate. Cron XOR at strikt; `emit_to` + `emit_body` Pflicht.
-    /// Default-`query_timeout_ms` = 5000.
+    /// Parse + validate. Cron XOR at strictly; `emit_to` + `emit_body` mandatory.
+    /// Default `query_timeout_ms` = 5000.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("params: must be object")?;
         let query_timeout_ms = obj
@@ -72,9 +72,9 @@ impl TimerParams {
     }
 }
 
-/// Parsen + Validieren eines einzelnen `schedules[]`-Eintrags. Cron-Format
-/// wird per `CronParser` validiert (Korrektur A) — ungueltiges Muster fuehrt
-/// zu Seed-Reject (Factory rejected `validate_params` → Spawn-Fehler).
+/// Parse + validate a single `schedules[]` entry. The cron format is validated
+/// via `CronParser` (correction A) — an invalid pattern leads to a seed reject
+/// (the factory rejects `validate_params` → spawn error).
 fn parse_seed_entry(v: &JsonValue) -> Result<ScheduleRow, String> {
     let obj = v.as_object().ok_or("entry: must be object")?;
     let id_s = obj

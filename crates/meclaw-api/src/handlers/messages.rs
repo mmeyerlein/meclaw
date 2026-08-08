@@ -1,22 +1,22 @@
-//! POST /messages — fire-and-forget message injection. Spec Z.1644/Z.1656/Z.1658.
+//! POST /messages — fire-and-forget message injection. Spec l.1644/l.1656/l.1658.
 //!
 //! Dual content-type handling (Phase 12-X T18):
 //!   * `application/json`: classic JSON `{target, body, headers?}` -> inline UBF body.
 //!   * `multipart/form-data`: `target` text field + 1..n file fields; each file
 //!     streams into `DiskBlobStore`, the resulting `BlobRef`s land in the
-//!     `attachments[]` slot of the synthesized UBF body. JSON-Pfad bleibt
-//!     anti-Vorgriff-konform unangetastet (kein Body::Blob, kein Inline-Cap).
+//!     `attachments[]` slot of the synthesized UBF body. The JSON path stays
+//!     untouched, no phase jumping (no Body::Blob, no inline cap).
 //!
-//! HTTP-Layer baut eine `Message` mit beliebigem `target` und schickt sie via
-//! `ColonyMsg::Route` durch denselben Routing-Pfad wie eine interne Message.
-//! Antwort 202 + `{message_id}` (multipart zusaetzlich `attachments: [BlobRef]`);
-//! eine etwaige Cell-Antwort laeuft ueber die Routing-Cascade, NICHT ueber HTTP
-//! zurueck. `sender_path` ist `/` (Root) analog zu externen/Test-Sendern (siehe
-//! `ColonyMsg::Route` Doc-Comment).
+//! The HTTP layer builds a `Message` with an arbitrary `target` and sends it via
+//! `ColonyMsg::Route` through the same routing path as an internal message.
+//! Response 202 + `{message_id}` (multipart additionally `attachments: [BlobRef]`);
+//! any cell reply travels through the routing cascade, NOT back over HTTP.
+//! `sender_path` is `/` (root), analogous to external/test senders (see the
+//! `ColonyMsg::Route` doc comment).
 //!
-//! `trace_id` und `message_id` sind identisch zur generierten `Uuid::now_v7`;
-//! Source-Messages haben `parent_message_id = None` und `reply_to = None`
-//! (Spec § Message-Modell).
+//! `trace_id` and `message_id` are identical to the generated `Uuid::now_v7`;
+//! source messages have `parent_message_id = None` and `reply_to = None`
+//! (spec § Message model).
 
 use crate::AppState;
 use axum::Json;
@@ -27,15 +27,15 @@ use meclaw_core::{BlobRef, Body, MessageBuilder, Path, Uuid};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-/// Request-Body fuer JSON-`POST /messages`. `target` ist Pflicht, `body` ist
-/// arbitraerer JSON-Wert (UBF-Validierung passiert downstream im Routing),
-/// `headers` ist optional und defaultet auf leeres Objekt.
+/// Request body for the JSON `POST /messages`. `target` is mandatory, `body` is
+/// an arbitrary JSON value (UBF validation happens downstream in routing),
+/// `headers` is optional and defaults to an empty object.
 ///
-/// TTL slice (2026-06-11): `ttl` ist das optionale per-Initial-Message-Override
-/// (spec § Message-Modell, TTL-Semantik). Absent/`null` → colony.json
-/// `message_default_ttl` (AppState). Als `Value` deklariert, damit JEDER
-/// Nicht-positive-Integer-Wert (0, negativ, float, string, > u32::MAX) als 422
-/// `invalid_ttl` beantwortet wird statt als generischer 400-Typ-Fehler.
+/// TTL slice (2026-06-11): `ttl` is the optional per-initial-message override
+/// (spec § Message model, TTL semantics). Absent/`null` → colony.json
+/// `message_default_ttl` (AppState). Declared as a `Value` so that EVERY
+/// non-positive-integer value (0, negative, float, string, > u32::MAX) is
+/// answered with 422 `invalid_ttl` instead of a generic 400 type error.
 #[derive(Debug, Deserialize)]
 pub struct MessageRequest {
     pub target: String,
@@ -63,16 +63,16 @@ fn validate_request_ttl(ttl: &Option<Value>) -> Result<Option<u32>, String> {
     }
 }
 
-/// `POST /messages` — fire-and-forget. Returnt 202 + `{message_id}`
-/// (JSON-Pfad) oder 202 + `{message_id, attachments}` (multipart-Pfad).
+/// `POST /messages` — fire-and-forget. Returns 202 + `{message_id}` (JSON path)
+/// or 202 + `{message_id, attachments}` (multipart path).
 ///
-/// Bei Inbox-Down: 503 mit `{error}`. Alle anderen Failure-Modes (unresolved
-/// Target, TTL-Expired, InvalidUbfBody) landen im DLQ und sind aus HTTP-Sicht
-/// per Definition unsichtbar — die fire-and-forget-Semantik garantiert nur
-/// "Message wurde in die Routing-Queue eingereicht".
+/// When the inbox is down: 503 with `{error}`. Every other failure mode
+/// (unresolved target, TTL expired, InvalidUbfBody) lands in the DLQ and is by
+/// definition invisible from the HTTP side — the fire-and-forget semantics only
+/// guarantee "the message was submitted to the routing queue".
 ///
-/// Branching auf `Content-Type` passiert hier oben statt im Router, weil axum
-/// keine native Content-Type-basierte Dispatch hat.
+/// Branching on `Content-Type` happens up here rather than in the router,
+/// because axum has no native content-type-based dispatch.
 pub async fn post_messages(
     State(state): State<AppState>,
     req: axum::extract::Request,
@@ -121,7 +121,7 @@ pub async fn post_messages(
     }
 }
 
-/// JSON-Pfad: parse `MessageRequest`, build inline-body Message, fire+forget.
+/// JSON path: parse `MessageRequest`, build an inline-body message, fire and forget.
 async fn post_messages_json(
     state: AppState,
     headers: HeaderMap,
@@ -157,7 +157,7 @@ async fn post_messages_json(
     // Edge validation (always-on, release too): the HTTP ingress is a trust
     // boundary, so every source body is validated against the UBF schema BEFORE
     // it enters the routing path. Reject with 422 rather than letting a
-    // malformed body reach a cell. Spec § Schema-Validierung (Rand-Validierung
+    // malformed body reach a cell. Spec § Schema validation (edge validation
     // always-on).
     if let Err(reason) = meclaw_core::validate_ubf_body(&req.body) {
         return (
@@ -188,9 +188,9 @@ async fn post_messages_json(
         Value::Null => Map::new(),
         _ => Map::new(),
     };
-    // Source-Message vom HTTP-Ingress: kein vorheriger Hop. Die eingehenden
-    // Header gehen ins persistente `context`-Fach (Korrelation/Langlebiges);
-    // `hop` startet leer (Slice 2 Zwei-Fächer-Modell).
+    // Source message from the HTTP ingress: no previous hop. The inbound headers
+    // go into the persistent `context` compartment (correlation / long-lived);
+    // `hop` starts empty (slice 2, two-compartment model).
     let msg = MessageBuilder::new(target)
         .context(req_headers)
         .ttl(ttl)
@@ -216,12 +216,12 @@ async fn post_messages_json(
     )
 }
 
-/// Multipart-Pfad: stream each file field into DiskBlobStore, collect BlobRefs,
-/// build UBF body with `attachments[]` slot.
+/// Multipart path: stream each file field into DiskBlobStore, collect BlobRefs,
+/// build the UBF body with an `attachments[]` slot.
 ///
-/// Anti-Vorgriff: keine Inline-Cap-Logik (Phase 13), kein Body::Blob (T18 scope).
-/// Files werden via `Field::bytes()` voll in den RAM gezogen — fuer Phase 12
-/// akzeptabel; Phase-13+ Streaming-Pfad braucht `tokio_util::StreamReader`.
+/// No phase jumping: no inline-cap logic (phase 13), no Body::Blob (T18 scope).
+/// Files are pulled fully into RAM via `Field::bytes()` — acceptable for phase
+/// 12; a phase-13+ streaming path needs `tokio_util::StreamReader`.
 async fn post_messages_multipart(
     state: AppState,
     mut multipart: Multipart,
@@ -309,7 +309,7 @@ async fn post_messages_multipart(
         }
     };
 
-    // Build the UBF body with `attachments[]` slot only. Per Anti-Vorgriff:
+    // Build the UBF body with the `attachments[]` slot only. Per no-phase-jumping:
     // attachments[] lives alongside whatever the downstream cell expects;
     // we do NOT synthesize a `messages[]` slot here (the client owns that
     // for JSON; multipart is for uploads, not conversation turns).
@@ -322,9 +322,9 @@ async fn post_messages_multipart(
     // Edge validation (always-on, release too): same trust-boundary discipline
     // as the JSON path. The synthesized attachments-only body is a valid UBF
     // shape (anyOf attachments-branch). Reject with 422 on any violation BEFORE
-    // routing. Spec § Schema-Validierung (Rand-Validierung always-on).
+    // routing. Spec § Schema validation (edge validation always-on).
     //
-    // Defense-in-depth, constructionally unreachable (DECISION A / Befund-2):
+    // Defense in depth, constructionally unreachable (DECISION A / finding 2):
     // there is NO client-authored body on this path — the client uploads files
     // and the substrate SYNTHESIZES `body_json` from `BlobRef`s above, each of
     // which serializes to a schema-valid `Attachment` (and the file-less case is
@@ -332,7 +332,7 @@ async fn post_messages_multipart(
     // cannot fire from any real multipart request; it is kept as a guard so a
     // future change to the synthesis cannot silently emit an invalid body. A
     // client-reachable 422 only arises on the JSON path. NOT dead code / NOT a
-    // missing validation — see docs/meclaw-overview.md § Schema-Validierung.
+    // missing validation — see docs/meclaw-overview.md § Schema validation.
     if let Err(reason) = meclaw_core::validate_ubf_body(&body_json) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,

@@ -1,11 +1,11 @@
 //! GET /ui/templates — Phase 12-D T26.
 //!
-//! Server-rendered Templates-Tabelle (template_id, name, version,
-//! filesystem_path). Filter-Form fuer name + type. Wrappt
-//! `ColonyMsg::ReadTemplates` analog zum 12-B-JSON-Handler. Der
-//! `type`-Filter ist heute no-op (Phase-14-Backlog, siehe
-//! `TemplateEntryDto`-Doc) — UI exponiert ihn trotzdem, damit der
-//! Operator nicht überrascht wird, wenn er später wirkt.
+//! Server-rendered templates table (template_id, name, version,
+//! filesystem_path). Filter form for name + type. Wraps
+//! `ColonyMsg::ReadTemplates` analogously to the 12-B JSON handler. The `type`
+//! filter is a no-op today (phase-14 backlog, see the `TemplateEntryDto` docs) —
+//! the UI exposes it anyway so the operator is not surprised once it takes
+//! effect.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -20,15 +20,15 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `/ui/templates`.
+/// Query params for `/ui/templates`.
 #[derive(Debug, Deserialize, Default)]
 pub struct TemplatesUiQuery {
-    /// Exakter Match auf `template.json::name`.
+    /// Exact match on `template.json::name`.
     pub name: Option<String>,
-    /// Cell-Type-Filter (heute no-op, siehe Modul-Doc).
+    /// Cell-type filter (a no-op today, see the module docs).
     #[serde(rename = "type")]
     pub cell_type: Option<String>,
-    /// Hard-Cap (Default 100, Max 1000).
+    /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 

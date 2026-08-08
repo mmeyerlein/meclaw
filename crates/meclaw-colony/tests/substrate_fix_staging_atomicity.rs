@@ -1,8 +1,7 @@
-//! Substrat-Fix Befund 7+8 — staging atomicity / spurless reject.
+//! Substrate-fix findings 7+8 — staging atomicity / spurless reject.
 //!
-//! Spec § Validierung (overview Z.279): "Bei Fehler in irgendeinem dieser
-//! Schritte: gesamter Diff rejected, kein Teilcommit." A reject must leave NO
-//! filesystem residue.
+//! Spec § Validation (overview Z.279): "the entire diff is rejected, no partial
+//! commit, the live tree untouched". A reject must leave NO filesystem residue.
 //!
 //! Befund 7: two `add_nodes` with the SAME name in one diff used to die as a
 //! `schema` (rename-IO) token AND strand the first node's directory — now it

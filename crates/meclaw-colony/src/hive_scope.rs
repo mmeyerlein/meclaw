@@ -1,9 +1,8 @@
 //! Hive-Scope-Tabelle.
 //!
-//! Hives sind **keine** Aktoren — keine Task, keine Mailbox, keine `cell.db`,
-//! kein `ActorHandle`-Eintrag. Diese Struct ist reine Daten. Wer hier eine
-//! Sender-/Task-Referenz dranschrauben will, hat das Anti-Pattern Nr. 1
-//! (siehe CLAUDE.md) getroffen.
+//! Hives are **not** actors — no task, no mailbox, no `cell.db`, no
+//! `ActorHandle` entry. This struct is pure data. Anyone about to bolt a sender or
+//! task reference onto it has walked into anti-pattern no. 1 (see CLAUDE.md).
 
 use meclaw_core::Path;
 use std::collections::HashMap;

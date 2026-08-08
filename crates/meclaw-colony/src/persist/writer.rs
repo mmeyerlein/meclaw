@@ -1,41 +1,41 @@
-//! Schreib-Ops für `colony.db`-Writer-Thread.
+//! Write ops for the `colony.db` writer thread.
 //!
-//! Drei Operation-Varianten:
-//! - `InitialApply` — atomarer Bundle für Erst-Boot (FIX 3, review 2026-05-20):
-//!   Edges + Hive-Scopes in EINER Transaktion. Schützt vor Mischzustand bei
-//!   Crash-mid-first-boot.
-//! - `UpsertRegistry` — pro `ColonyMsg::Register`, op-before-ack-Invariante (T22).
-//! - `InsertMessageLog` — pro erfolgreichem Routing-Hop (T32 füllt das Schema mit FIX 1).
+//! Three operation variants:
+//! - `InitialApply` — atomic bundle for the first boot (FIX 3, review 2026-05-20):
+//!   edges + hive scopes in ONE transaction. Guards against a mixed state on a
+//!   crash mid-first-boot.
+//! - `UpsertRegistry` — per `ColonyMsg::Register`, op-before-ack invariant (T22).
+//! - `InsertMessageLog` — per successful routing hop (T32 fills the schema with FIX 1).
 //!
-//! **Phase-6-Erweiterung**: `apply_op` sammelt optionale `oneshot::Sender<()>`-Acks
-//! pro Op; `run_writer` feuert sie NACH `tx.commit()` — siehe Phase-6-Plan T2.
-//! `send_op` (fire-and-forget) bleibt der Default; durable Writes laufen über
-//! `ColonyDb::insert_mutation_log_durable`/`update_mutation_log_durable`, die
-//! eine Op mit `ack: Some(tx)` enqueuen und `rx.await` machen.
+//! **Phase-6 extension**: `apply_op` collects optional `oneshot::Sender<()>` acks
+//! per op; `run_writer` fires them AFTER `tx.commit()` — see phase-6 plan T2.
+//! `send_op` (fire-and-forget) stays the default; durable writes go through
+//! `ColonyDb::insert_mutation_log_durable`/`update_mutation_log_durable`, which
+//! enqueue an op with `ack: Some(tx)` and then `rx.await`.
 
 use crate::bootstrap::PlannedEdge;
 use meclaw_core::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-// Phase 12-Pre: Main-Channel ist tokio::sync::mpsc::Receiver; Writer-Thread
-// drained via blocking_recv() (kanonische Bridge für async-Sender +
-// sync-Receiver in std::thread). std::sync::mpsc bleibt nur für die
-// Phase-11-Template-Ack-Channels (mpsc_acks: Vec<std::sync::mpsc::Sender<()>>).
+// Phase 12-Pre: the main channel is a tokio::sync::mpsc::Receiver; the writer
+// thread drains it via blocking_recv() (the canonical bridge for an async sender
+// + a sync receiver in a std::thread). std::sync::mpsc remains only for the
+// phase-11 template ack channels (mpsc_acks: Vec<std::sync::mpsc::Sender<()>>).
 
-/// Maximale Batch-Größe pro Transaktion.
+/// Maximum batch size per transaction.
 const BATCH_MAX: usize = 64;
 
-/// Operations für den `colony.db`-Writer-Thread.
+/// Operations for the `colony.db` writer thread.
 pub enum ColonyWriteOp {
-    /// Atomic First-Boot bundle (FIX 3): edges + hive_scopes in einer Transaktion.
+    /// Atomic first-boot bundle (FIX 3): edges + hive_scopes in one transaction.
     InitialApply {
-        /// Edges aus dem Bootstrap-Plan.
+        /// Edges from the bootstrap plan.
         edges: Vec<PlannedEdge>,
-        /// Hive-Scope-Pfade aus dem Bootstrap-Plan.
+        /// Hive-scope paths from the bootstrap plan.
         hive_scopes: Vec<Path>,
     },
-    /// Registry-Upsert mit cell_id-stabiler Semantik.
+    /// Registry upsert with cell_id-stable semantics.
     ///
     /// **Phase-13.5 Lifecycle-3b: does NOT manage the `status` column on conflict.**
     /// The first INSERT seeds `status = 'active'` (a fresh node is active), but the
@@ -43,15 +43,15 @@ pub enum ColonyWriteOp {
     /// `SetRegistryStatus` is the sole write-authority for `status` — re-registration
     /// or reboot must NOT clobber an `'inactive'` previously written by it.
     UpsertRegistry {
-        /// Cell-Pfad (Primary Key).
+        /// Cell path (primary key).
         path: Path,
-        /// UUID v7, einmal vergeben, nie überschrieben.
+        /// UUID v7, assigned once, never overwritten.
         cell_id: String,
-        /// Cell-Type-String.
+        /// Cell-type string.
         cell_type: String,
-        /// Unix-Sekunden, einmal beim Erst-Insert.
+        /// Unix seconds, set once on the first insert.
         created_at: i64,
-        /// Unix-Sekunden, bumpt pro Re-Boot/Status-Touch.
+        /// Unix seconds, bumped per reboot/status touch.
         updated_at: i64,
     },
     /// Phase-13.5 Lifecycle-3b: UPDATE-only of the `registry.status` column for an
@@ -60,52 +60,52 @@ pub enum ColonyWriteOp {
     /// No-Delete, and `cell_id`/`cell_type`/`created_at` stay untouched. Carries
     /// the edge-derived activity (`"active"`/`"inactive"`) into persistence.
     SetRegistryStatus {
-        /// Cell-Pfad (Primary Key of the row to update).
+        /// Cell path (primary key of the row to update).
         path: Path,
         /// New status string, e.g. `"active"` or `"inactive"`.
         status: String,
-        /// Unix-Sekunden des Status-Wechsels.
+        /// Unix seconds of the status change.
         updated_at: i64,
     },
-    /// Message-Log-Insert (FIX-1-Felder in T32 verankert).
+    /// Message-log insert (FIX-1 fields anchored in T32).
     InsertMessageLog(MessageLogRow),
     /// Phase 6: insert in_flight row into mutation_log; ack fires after tx.commit().
     MutationLogInsert {
-        /// Mutation-ID (UUID v7).
+        /// Mutation ID (UUID v7).
         id: String,
-        /// Mutation-Scope (Pfad-Präfix).
+        /// Mutation scope (path prefix).
         scope: String,
-        /// Mutation-Payload als JSON-Blob.
+        /// Mutation payload as a JSON blob.
         payload_json: String,
-        /// Unix-Sekunden bei Anlage.
+        /// Unix seconds at creation time.
         created_at: i64,
-        /// Optionaler Ack-Sender; feuert nach `tx.commit()`.
+        /// Optional ack sender; fires after `tx.commit()`.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
-    /// Phase-16 W3 (A6): insert a `status='rejected'` row for a Validate-Stage
+    /// Phase-16 W3 (A6): insert a `status='rejected'` row for a validate-stage
     /// reject (fire-and-forget). Unlike `MutationLogInsert` (`in_flight`, later
     /// updated to `committed`/`failed`), a reject is a single terminal INSERT:
-    /// the mutation never reached Apply, so `committed_at` stays NULL. Carries
+    /// the mutation never reached apply, so `committed_at` stays NULL. Carries
     /// the two v3 columns `error_code` + `trace_id` plus the human `reason` in
     /// `failure_reason`. Makes schema/scope/naming rejects visible in the
     /// `/colony/mutations` audit (K-H2: previously invisible).
     MutationLogRejectInsert {
-        /// Mutation-ID (UUID v7).
+        /// Mutation ID (UUID v7).
         id: String,
-        /// Mutation-Scope (Pfad-Präfix).
+        /// Mutation scope (path prefix).
         scope: String,
-        /// Mutation-Payload als JSON-Blob (Diagnose-Erhalt des abgelehnten Antrags).
+        /// Mutation payload as a JSON blob (diagnostic preservation of the rejected request).
         payload_json: String,
-        /// `error_code` der Reject-Reply (z.B. `scope_out_of_bounds`).
+        /// `error_code` of the reject reply (e.g. `scope_out_of_bounds`).
         error_code: String,
-        /// Human-readable Reason (`format!("{err:?}")`), abgelegt in `failure_reason`.
+        /// Human-readable reason (`format!("{err:?}")`), stored in `failure_reason`.
         reason: String,
-        /// Trace-ID des Mutations-Antrags.
+        /// Trace ID of the mutation request.
         trace_id: String,
-        /// Unix-Sekunden bei Ablehnung.
+        /// Unix seconds at rejection time.
         created_at: i64,
-        /// Optionaler Ack-Sender; feuert nach `tx.commit()` — der Antragsteller-
-        /// Reject-Pfad wartet darauf, damit die Audit-Row vor dem Return durable ist.
+        /// Optional ack sender; fires after `tx.commit()` — the requester's reject
+        /// path waits on it so the audit row is durable before the return.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// Phase 6 T21: insert an edge row (fire-and-forget; durable via FIFO ordering
@@ -117,13 +117,13 @@ pub enum ColonyWriteOp {
         from: String,
         /// Target path (absolute).
         to: String,
-        /// Unix-Sekunden bei Anlage.
+        /// Unix seconds at creation time.
         created_at: i64,
-        /// Phase-13.5-Durable-Edges: CEL-condition als Source-String.
-        /// `None` = Edge hat keine Condition (unbedingtes Routing).
+        /// Phase-13.5 durable edges: CEL condition as a source string.
+        /// `None` = the edge has no condition (unconditional routing).
         condition: Option<String>,
-        /// Phase-13.5-Durable-Edges: ModifierSpec als JSON-String (set+delete).
-        /// `None` = Edge hat keinen Modifier (Identity-Headers).
+        /// Phase-13.5 durable edges: ModifierSpec as a JSON string (set+delete).
+        /// `None` = the edge has no modifier (identity headers).
         modifier: Option<String>,
     },
     /// Phase 6 T21: delete an edge row by id (fire-and-forget; durable via FIFO).
@@ -133,43 +133,43 @@ pub enum ColonyWriteOp {
     },
     /// Phase 6: update mutation_log status (committed | failed); ack fires after tx.commit().
     MutationLogUpdate {
-        /// Mutation-ID (Primary Key).
+        /// Mutation ID (primary key).
         id: String,
-        /// Neuer Status: "committed" oder "failed".
+        /// New status: "committed" or "failed".
         status: String,
-        /// Unix-Sekunden bei Commit/Failure.
+        /// Unix seconds at commit/failure time.
         committed_at: i64,
-        /// Optional: Fehlergrund bei status="failed".
+        /// Optional: failure reason when status="failed".
         failure_reason: Option<String>,
-        /// Optionaler Ack-Sender; feuert nach `tx.commit()`.
+        /// Optional ack sender; fires after `tx.commit()`.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// Phase 11 11-A: insert or update a template row; ack fires synchronously (mpsc).
     UpsertTemplate {
-        /// Template-ID (UUID v7).
+        /// Template ID (UUID v7).
         template_id: String,
-        /// Template-Name (aus `template.json`).
+        /// Template name (from `template.json`).
         name: String,
-        /// Optional: Semantic-Version-String.
+        /// Optional: semantic-version string.
         version: Option<String>,
-        /// Absoluter Pfad zum Template-Verzeichnis.
+        /// Absolute path to the template directory.
         filesystem_path: String,
-        /// `description`-Feld als JSON-Blob.
+        /// `description` field as a JSON blob.
         description_json: String,
-        /// `tags`-Feld als JSON-Array-String.
+        /// `tags` field as a JSON array string.
         tags_json: String,
-        /// Optional: Autor-String.
+        /// Optional: author string.
         author: Option<String>,
-        /// Unix-Sekunden beim letzten Scan.
+        /// Unix seconds of the last scan.
         scanned_at: i64,
-        /// Optionaler Ack-Sender; feuert synchron nach dem SQL-Execute.
+        /// Optional ack sender; fires synchronously after the SQL execute.
         ack: Option<std::sync::mpsc::Sender<()>>,
     },
     /// Phase 11 11-A: delete a template row by template_id; ack fires synchronously.
     RemoveTemplate {
-        /// Template-ID (UUID v7).
+        /// Template ID (UUID v7).
         template_id: String,
-        /// Optionaler Ack-Sender; feuert synchron nach dem SQL-Execute.
+        /// Optional ack sender; fires synchronously after the SQL execute.
         ack: Option<std::sync::mpsc::Sender<()>>,
     },
     /// Insert a single hive-scope row into `hive_scopes`.
@@ -184,16 +184,16 @@ pub enum ColonyWriteOp {
         /// Unix-seconds at creation time.
         created_at: i64,
     },
-    /// Bootstrap-Recovery (Run-5/5b-Befund): durable `bootstrap_in_flight`
+    /// Bootstrap recovery (run-5/5b finding): durable `bootstrap_in_flight`
     /// marker into the `meta` table, written BEFORE the first-apply cell loop
     /// starts. The matching clear runs inside the `InitialApply` arm — same
     /// transaction as the edges/hive_scopes bundle, so a crash anywhere
     /// mid-apply leaves the marker behind and `probe_boot_state` classifies the
     /// next boot as a resumable `FirstBoot` instead of `Inconsistent`.
     SetBootstrapInFlight {
-        /// Unix-Sekunden beim Apply-Start (Forensik-Wert des Markers).
+        /// Unix seconds at apply start (forensic value of the marker).
         created_at: i64,
-        /// Optionaler Ack-Sender; feuert nach `tx.commit()` (durable —
+        /// Optional ack sender; fires after `tx.commit()` (durable —
         /// the apply must not spawn before the marker is on disk).
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
@@ -252,50 +252,50 @@ pub enum ColonyWriteOp {
     },
 }
 
-/// Message-Log-Row mit allen Phase-5-Feldern (FIX 1 — correlation_id, ttl, reply_to mit).
+/// Message-log row with all phase-5 fields (FIX 1 — correlation_id, ttl, reply_to included).
 ///
-/// 12 Spalten entsprechen dem colony.db `message_log`-Schema (T6).
+/// The 12 columns correspond to the colony.db `message_log` schema (T6).
 pub struct MessageLogRow {
-    /// Message-ID (UUID v7).
+    /// Message ID (UUID v7).
     pub id: String,
-    /// Trace-Root-ID (konstant über die Trace-Chain).
+    /// Trace root ID (constant across the trace chain).
     pub trace_id: String,
-    /// Parent-Message-ID; None bei Source-Messages.
+    /// Parent message ID; None for source messages.
     pub parent_message_id: Option<String>,
-    /// Correlation-ID für Request/Response-Paarung (Phase 8/10 — FIX 1).
+    /// Correlation ID for request/response pairing (phase 8/10 — FIX 1).
     pub correlation_id: Option<String>,
-    /// Post-Dekrement-TTL am Hop (FIX 1).
+    /// Post-decrement TTL at the hop (FIX 1).
     pub ttl: i64,
-    /// Sender-Pfad; "@external"-Sentinel für Source-Messages.
+    /// Sender path; "@external" sentinel for source messages.
     pub from_path: String,
-    /// Resolved Empfänger-Pfad.
+    /// Resolved recipient path.
     pub to_path: String,
-    /// Reply-Target (Cell-Adresse für Error-Replies) (FIX 1).
+    /// Reply target (cell address for error replies) (FIX 1).
     pub reply_to: Option<String>,
-    /// Headers als JSON.
+    /// Headers as JSON.
     pub headers_json: String,
-    /// Body-Variante: "inline" oder "blob".
+    /// Body variant: "inline" or "blob".
     pub body_kind: String,
-    /// Body-Payload: JSON wenn inline, UUID-String wenn blob.
+    /// Body payload: JSON when inline, UUID string when blob.
     pub body_payload: Option<String>,
-    /// Unix-Sekunden bei Anlage.
+    /// Unix seconds at creation time.
     pub created_at: i64,
 }
 
-/// Writer-Thread-Loop: blockierendes `recv()` auf das erste Item,
-/// dann `try_recv()`-Drain bis `BATCH_MAX` oder Empty, eine Transaktion.
+/// Writer thread loop: blocking `recv()` for the first item,
+/// then a `try_recv()` drain up to `BATCH_MAX` or empty, one transaction.
 ///
-/// **FIX 3 — `InitialApply` ist immer atomar**: das gesamte Bundle (edges + hive_scopes)
-/// wird in derselben Transaktion verarbeitet. Bei Crash mid-batch rollbackt SQLite.
+/// **FIX 3 — `InitialApply` is always atomic**: the entire bundle (edges + hive_scopes)
+/// is processed in the same transaction. On a crash mid-batch SQLite rolls back.
 ///
-/// **Phase-13.5-A6-followup — deterministic shutdown via `ColonyWriteOp::Shutdown`**:
-/// statt sich auf `blocking_recv() == None` (race-prone unter Last) zu verlassen,
-/// signalisiert `ColonyDb::shutdown` über eine explizite `Shutdown { ack }`-Op.
-/// Der Writer drained den aktuellen Batch (incl. ggf. weitere Ops nach Shutdown),
-/// committet, feuert ack + alle Op-Acks, returnt explizit. FIFO-Reihenfolge stellt
-/// sicher, dass alle vor Shutdown enqueued'en Ops persistiert sind.
+/// **Phase-13.5-A6 follow-up — deterministic shutdown via `ColonyWriteOp::Shutdown`**:
+/// instead of relying on `blocking_recv() == None` (race-prone under load),
+/// `ColonyDb::shutdown` signals through an explicit `Shutdown { ack }` op.
+/// The writer drains the current batch (including any further ops after shutdown),
+/// commits, fires the ack + all op acks, and returns explicitly. FIFO ordering
+/// guarantees that every op enqueued before shutdown is persisted.
 ///
-/// Write-Fehler: `tracing::error!` + `panic!`. JoinHandle propagiert, Tests fangen's.
+/// Write errors: `tracing::error!` + `panic!`. The JoinHandle propagates, tests catch it.
 pub(crate) fn run_writer(
     mut rx: tokio::sync::mpsc::Receiver<ColonyWriteOp>,
     mut conn: rusqlite::Connection,
@@ -308,7 +308,7 @@ pub(crate) fn run_writer(
         let mut shutdown_ack: Option<tokio::sync::oneshot::Sender<()>> = None;
         let mut count = 0usize;
 
-        // First op: Shutdown-Signal abfangen, sonst apply.
+        // First op: catch the shutdown signal, otherwise apply.
         match first {
             ColonyWriteOp::Shutdown { ack } => {
                 shutdown_ack = Some(ack);
@@ -319,9 +319,9 @@ pub(crate) fn run_writer(
             }
         }
 
-        // Batch-Drain: alle weiteren Ops bis BATCH_MAX oder Channel empty.
-        // Shutdown im Batch wird gefangen, aber wir verarbeiten alle vorherigen
-        // Ops in DIESEM Batch trotzdem (FIFO-Durability).
+        // Batch drain: every further op up to BATCH_MAX or an empty channel.
+        // A shutdown inside the batch is caught, but we still process all
+        // preceding ops in THIS batch (FIFO durability).
         while count < BATCH_MAX && shutdown_ack.is_none() {
             match rx.try_recv() {
                 Ok(ColonyWriteOp::Shutdown { ack }) => {
@@ -339,19 +339,19 @@ pub(crate) fn run_writer(
             tracing::error!(error = %e, "colony.db writer commit failed");
             panic!("colony.db writer commit failed: {e}");
         }
-        // Fire acks AFTER tx.commit() returned — durable Ack-Garantie.
+        // Fire acks AFTER tx.commit() returned — durable ack guarantee.
         for a in acks {
             let _ = a.send(());
         }
         for a in mpsc_acks {
             let _ = a.send(());
         }
-        // Decrement queue_depth um den verarbeiteten Batch.
+        // Decrement queue_depth by the processed batch.
         queue_depth.fetch_sub(count as i64, Ordering::Relaxed);
 
-        // Shutdown-Op gesehen: ack fire NACH allen Op-Acks (deterministische
-        // Reihenfolge — durable acks der vorherigen Ops sind producer-sichtbar,
-        // bevor Shutdown-Caller den join unblockt), Loop explicit verlassen.
+        // Shutdown op seen: fire its ack AFTER all op acks (deterministic
+        // ordering — the durable acks of the preceding ops are producer-visible
+        // before the shutdown caller unblocks the join), then leave the loop.
         if let Some(ack) = shutdown_ack {
             let _ = ack.send(());
             return;
@@ -1217,15 +1217,15 @@ mod tests {
         assert_eq!(scopes, 1, "the bundle rows commit together with the clear");
     }
 
-    /// Phase-13.5-A6 follow-up — Durability-Regression-Gate.
+    /// Phase-13.5-A6 follow-up — durability regression gate.
     ///
-    /// Beweis: 100 fire-and-forget Writes vor `shutdown()` landen ALLE in
-    /// der DB, von einer frischen Connection lesbar nach `shutdown()`.
-    /// Schließt den potentiellen Durability-Bug einer naiven Shutdown-Op-
-    /// Implementation, die den letzten Batch vorzeitig schneiden würde.
+    /// Proof: 100 fire-and-forget writes before `shutdown()` ALL land in
+    /// the DB, readable from a fresh connection after `shutdown()`.
+    /// Closes the potential durability bug of a naive shutdown-op
+    /// implementation that would cut the final batch short.
     ///
-    /// Plus: Liveness-Gate — `shutdown()` returnt innerhalb 2s ohne Hang,
-    /// auch unter Workspace-Last (Race-Schließung für insert_message_log_writes_all_fields).
+    /// Plus: liveness gate — `shutdown()` returns within 2s without hanging,
+    /// even under workspace load (race closure for insert_message_log_writes_all_fields).
     #[tokio::test]
     async fn shutdown_persists_all_prior_writes_and_returns_within_timeout() {
         use crate::persist::ColonyDb;
@@ -1235,9 +1235,9 @@ mod tests {
         let db_path = td.path().join("c.db");
         let db = ColonyDb::open(&db_path).unwrap();
 
-        // 100 Writes fire-and-forget, fluten den bounded(1000)-Channel + zwingen
-        // den Writer zu mehreren Batch-Iterationen (BATCH_MAX=64). Maximaler
-        // Race-Druck zwischen "letzter Send" und "drop(writer_tx)".
+        // 100 fire-and-forget writes, flooding the bounded(1000) channel + forcing
+        // the writer through several batch iterations (BATCH_MAX=64). Maximum race
+        // pressure between "last send" and "drop(writer_tx)".
         for i in 0..100 {
             db.send_op(ColonyWriteOp::InsertMessageLog(MessageLogRow {
                 id: format!("msg-{i}"),
@@ -1256,7 +1256,7 @@ mod tests {
             .await;
         }
 
-        // Liveness-Gate: shutdown in separater std::thread; recv_timeout 30s.
+        // Liveness gate: shutdown in a separate std::thread; recv_timeout 30s.
         let (done_tx, done_rx) = channel();
         std::thread::spawn(move || {
             db.shutdown();
@@ -1268,7 +1268,7 @@ mod tests {
             Err(e) => panic!("{e:?}"),
         }
 
-        // Durability-Gate: ALLE 100 Rows lesbar von fresh Connection.
+        // Durability gate: ALL 100 rows readable from a fresh connection.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM message_log", [], |r| r.get(0))
@@ -1277,7 +1277,7 @@ mod tests {
             count, 100,
             "all 100 writes must persist; shutdown-op must not truncate the final batch"
         );
-        // Spot-check first + last für Reihenfolge-Integrität (id-pattern).
+        // Spot-check first + last for ordering integrity (id pattern).
         for i in [0, 50, 99] {
             let id: String = conn
                 .query_row(

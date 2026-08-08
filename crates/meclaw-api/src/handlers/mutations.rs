@@ -1,11 +1,11 @@
-//! GET /colony/mutations — Phase 12-B T8.8 (Audit-Read).
-//! POST /colony/mutations — Phase 12-B T9 (Submission, 200/422 mapping).
+//! GET /colony/mutations — phase 12-B T8.8 (audit read).
+//! POST /colony/mutations — phase 12-B T9 (submission, 200/422 mapping).
 //!
-//! GET ist ein pure read-only Audit-View auf colony.db::mutation_log via
-//! `ColonyMsg::ReadMutationsAudit`. POST reicht den Mutation-Diff-Body in
-//! `ColonyMsg::Mutation` durch und mapt die `MutationOutcome`-Antwort auf
-//! HTTP-Status: 200 bei Committed, 422 bei Rejected. Spec Z.1660: die volle
-//! `Rejected`-Detail bleibt im `mutation`-Slot des Bodies erhalten.
+//! GET is a pure read-only audit view on colony.db::mutation_log via
+//! `ColonyMsg::ReadMutationsAudit`. POST passes the mutation diff body through as
+//! `ColonyMsg::Mutation` and maps the `MutationOutcome` reply onto the HTTP
+//! status: 200 on Committed, 422 on Rejected. Spec l.1660: the full `Rejected`
+//! detail is preserved in the body's `mutation` slot.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -19,16 +19,16 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `GET /colony/mutations`.
+/// Query params for `GET /colony/mutations`.
 #[derive(Debug, Deserialize)]
 pub struct MutationsQuery {
-    /// Optional: nur Rows mit `created_at >= since` (Unix-Sek).
+    /// Optional: only rows with `created_at >= since` (Unix seconds).
     pub since: Option<i64>,
     /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
-/// Handler fuer `GET /colony/mutations` — Audit-Read.
+/// Handler for `GET /colony/mutations` — audit read.
 pub async fn get_mutations_audit(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<MutationsQuery>,
@@ -57,18 +57,17 @@ pub async fn get_mutations_audit(
     (StatusCode::OK, Json(json!({ "mutations": reply.entries })))
 }
 
-/// Handler fuer `POST /colony/mutations` — Submission.
+/// Handler for `POST /colony/mutations` — submission.
 ///
-/// Nimmt einen Mutation-Diff im JSON-Body entgegen, leitet ihn als
-/// `ColonyMsg::Mutation` an die Colony-Inbox weiter und mapt die
-/// `MutationOutcome`-Antwort auf HTTP-Status:
-/// - `Committed` → 200 mit `{"mutation": {"outcome": "committed", "id": ...}}`.
-/// - `Rejected`  → 422 mit voller Detail (outcome/id/error_code/details) im
-///   `mutation`-Slot. Spec Z.1660.
+/// Takes a mutation diff in the JSON body, forwards it as `ColonyMsg::Mutation`
+/// to the colony inbox and maps the `MutationOutcome` reply onto the HTTP status:
+/// - `Committed` → 200 with `{"mutation": {"outcome": "committed", "id": ...}}`.
+/// - `Rejected`  → 422 with the full detail (outcome/id/error_code/details) in
+///   the `mutation` slot. Spec l.1660.
 ///
-/// `trace_id` wird hier frisch via `Uuid::now_v7` erzeugt (HTTP startet einen
-/// neuen Trace); `parent_message_id` ist `Uuid::nil()` (kein Parent — der
-/// POST ist der Root des Traces).
+/// `trace_id` is minted fresh here via `Uuid::now_v7` (HTTP starts a new trace);
+/// `parent_message_id` is `Uuid::nil()` (no parent — the POST is the root of the
+/// trace).
 pub async fn post_mutation(
     State(colony): State<Arc<ColonyHandle>>,
     Json(payload): Json<serde_json::Value>,

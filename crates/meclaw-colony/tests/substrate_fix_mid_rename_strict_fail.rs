@@ -8,10 +8,10 @@
 //! lying — the half-state surfaces on the next boot as orphan dirs (see
 //! `substrate_fix_mid_rename_boot_orphan.rs`), never silently adopted.
 //!
-//! Isoliert in eigener Test-Binary: der `FAIL_RENAME_AT`-Static aus
-//! `mutation::hook` ist binary-lokal — ein hook-set in dieser Binary darf keine
-//! fremden `handle_mutation`-Aufrufe treffen (gleiches Argument wie
-//! `phase_6_crash_recovery.rs`). Nur unter `feature = "test-hooks"` aktiv.
+//! Isolated in its own test binary: the `FAIL_RENAME_AT` static from
+//! `mutation::hook` is binary-local — a hook set in this binary must not hit
+//! foreign `handle_mutation` calls (same argument as
+//! `phase_6_crash_recovery.rs`). Only active under `feature = "test-hooks"`.
 
 #![cfg(feature = "test-hooks")]
 

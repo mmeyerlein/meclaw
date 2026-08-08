@@ -1,9 +1,9 @@
 //! Factory for `PersistMockCell` — Phase-5 persist test topologies.
 //!
-//! Phase-6.5: `cell.db` Connection-Ownership lebt im `cell_task_stateful`-
-//! Stack-Frame. Die Factory öffnet die Connection per Spawn (initial + jeder
-//! Restart) via `open_or_create_cell_db` (M1 Resume-mit-State) und übergibt
-//! sie owned an `cell_task_stateful`. Die Cell hat KEIN `conn`-Field mehr.
+//! Phase-6.5: `cell.db` connection ownership lives in the `cell_task_stateful`
+//! stack frame. The factory opens the connection per spawn (initial + every
+//! restart) via `open_or_create_cell_db` (M1 resume-with-state) and hands it
+//! owned to `cell_task_stateful`. The cell no longer has a `conn` field.
 //!
 //! Single-open path `build_cell_with_open_db`: called both by `spawn_cell`
 //! (init) and the `RespawnFn` closure (post-panic). Guarantees that the cell
@@ -79,13 +79,13 @@ impl CellFactory for PersistCellFactory {
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
-        // Phase-13-K-2: KEIN initialer Spawn mehr — Mailbox-Paar wird an
-        // RegisterDormant zurückgereicht; Status startet als NotYetSpawned.
-        // Wake-Pre-Send öffnet cell.db + spawned cell_task_stateful via WakeFn.
+        // Phase-13-K-2: NO initial spawn any more — the mailbox pair is handed
+        // back to RegisterDormant; status starts as NotYetSpawned.
+        // The wake-pre-send opens cell.db + spawns cell_task_stateful via WakeFn.
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
-        // RespawnFn — Crash-Restart-Pfad (unverändert seit 13-E-1, allokiert
-        // frischen Channel + frische Connection via build_cell_with_open_db).
+        // RespawnFn — crash-restart path (unchanged since 13-E-1, allocates a
+        // fresh channel + a fresh connection via build_cell_with_open_db).
         let factory = self.clone();
         let respawn_path = path.clone();
         let respawn_params = params.clone();
@@ -137,11 +137,11 @@ impl CellFactory for PersistCellFactory {
             },
         );
 
-        // WakeFn — NotYetSpawned/Asleep → Awake (Phase-13-K-2 NEU).
-        // Opens cell.db fresh via build_cell_with_open_db (M1 Resume via
-        // overlay_from_db) + spawns cell_task_stateful via shared helper +
-        // registers the watcher so handle_cell_died sieht das gleiche Pattern
-        // wie ein RespawnFn-Lauf.
+        // WakeFn — NotYetSpawned/Asleep → Awake (NEW in phase-13-K-2).
+        // Opens cell.db fresh via build_cell_with_open_db (M1 resume via
+        // overlay_from_db) + spawns cell_task_stateful via the shared helper +
+        // registers the watcher, so handle_cell_died sees the same pattern as a
+        // RespawnFn run.
         let wake_factory = self.clone();
         let wake_path = path.clone();
         let wake_params = params.clone();
@@ -302,15 +302,15 @@ mod tests {
             spawn_count: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
 
-        // 1. Call: cell.db wird angelegt (counter=0 default).
+        // 1st call: cell.db is created (counter=0 default).
         let (cell1, conn1) = factory
             .build_cell_with_open_db(&cell_dir, &json!({}))
             .unwrap();
         assert_eq!(cell1.counter, 0);
         drop(cell1);
-        drop(conn1); // Connection geschlossen → WAL-Lock frei.
+        drop(conn1); // connection closed → WAL lock released.
 
-        // 2. Extern: counter=99 in cell.db schreiben (simulated Snapshot von vorigem Cell-Run).
+        // 2. Externally: write counter=99 into cell.db (simulated snapshot from a previous cell run).
         {
             let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
             conn.execute(
@@ -320,13 +320,13 @@ mod tests {
             .unwrap();
         }
 
-        // 3. 2. Call: build_cell_with_open_db lädt overlay NEU — counter=99.
+        // 3. 2nd call: build_cell_with_open_db loads the overlay AFRESH — counter=99.
         let (cell2, _conn2) = factory
             .build_cell_with_open_db(&cell_dir, &json!({}))
             .unwrap();
         assert_eq!(
             cell2.counter, 99,
-            "RespawnFn-Pfad lädt cell.db jedes Mal, nicht captured-once"
+            "the RespawnFn path loads cell.db every time, not captured-once"
         );
     }
 }

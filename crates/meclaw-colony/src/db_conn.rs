@@ -22,7 +22,7 @@ impl DbConn {
         }
     }
 
-    /// Update the query-timeout live (β, Weg C). `DbConn` is single-owned by
+    /// Update the query timeout live (β, path C). `DbConn` is single-owned by
     /// its cell's handler task (no Arc/Mutex), so a `&mut self` setter is
     /// concurrency-safe — the new value is consulted by the NEXT
     /// `call_with_timeout`. A runtime params-update (`query_timeout_ms`) calls
@@ -157,7 +157,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_query_timeout_takes_effect_on_next_call() {
-        // β (Weg C, sofort-live): a runtime params-update lowers query_timeout_ms
+        // β (path C, immediately live): a runtime params update lowers query_timeout_ms
         // live via `set_query_timeout`; the NEXT `call_with_timeout` enforces it
         // (no respawn needed). Positive live receipt.
         let conn = rusqlite::Connection::open_in_memory().unwrap();

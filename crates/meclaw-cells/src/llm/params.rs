@@ -89,7 +89,7 @@ impl LlmParams {
     /// Apply a runtime params-update (W4b). Pure — no IO.
     ///
     /// `update` is the top-level `params` body-slot of a params-update message
-    /// (config.md § Zugriff Z.20): a partial map of param keys to new values,
+    /// (config.md § Access l.20): a partial map of param keys to new values,
     /// last-write-wins. Returns the merged `LlmParams` plus the overlay pairs to
     /// persist in `cell.db` (`state::persist_params_overlay`). The caller applies
     /// neither on `Err` — all-or-nothing, no partial apply.

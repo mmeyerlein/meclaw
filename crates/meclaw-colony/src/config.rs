@@ -88,13 +88,13 @@ pub struct CellHeader {
     #[serde(default)]
     pub restart_limit: Option<u32>,
     /// Phase-13: Hot/Cold-Modus. `0` = Idle-Modell (default), `>0` = One-Shot,
-    /// `-1` = persistent. Spec: `docs/config.md` Z.42. Wird in Phase 13
+    /// `-1` = persistent. Spec: `docs/config.md` l.42. Wired up in phase 13
     /// in `cell_task_stateful` verdrahtet (Slices 13-K/13-L).
     #[serde(default)]
     pub timeout: i64,
-    /// Phase-13: optionaler Idle-Timeout in Millisekunden. `None` heißt
-    /// "Colony-Default verwenden" (`DEFAULT_IDLE_TIMEOUT_MS`). Wird in
-    /// Slice 13-B-3 in `PlannedCell` propagiert und ab Slice 13-K im
+    /// Phase-13: optional idle timeout in milliseconds. `None` means "use the
+    /// colony default" (`DEFAULT_IDLE_TIMEOUT_MS`). Propagated into `PlannedCell`
+    /// in slice 13-B-3 and, from slice 13-K on, in the
     /// Idle-Watchdog ausgewertet.
     #[serde(default)]
     pub idle_timeout_ms: Option<u64>,

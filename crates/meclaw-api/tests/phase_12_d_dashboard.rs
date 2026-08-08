@@ -1,9 +1,9 @@
-//! Phase 12-D T21: Integration-Tests fuer `/ui/` Dashboard + Root-Redirect.
+//! Phase 12-D T21: integration tests for the `/ui/` dashboard + root redirect.
 //!
-//! Dashboard aggregiert 3 Reads (Registry + DeadLetters + Trace?error=true) als
-//! server-rendered HTML — **explizit kein konsistenter Snapshot** (Spec Z.468):
-//! die drei Reads sind sequentielle ColonyMsg::Read*-Calls, zwischen denen
-//! der Colony-State weiterlaufen darf.
+//! The dashboard aggregates 3 reads (registry + dead letters + trace?error=true)
+//! as server-rendered HTML — **explicitly not a consistent snapshot** (spec
+//! l.468): the three reads are sequential ColonyMsg::Read* calls, and colony
+//! state may move on between them.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};

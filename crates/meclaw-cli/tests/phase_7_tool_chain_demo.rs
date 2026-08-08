@@ -1,15 +1,15 @@
 //! Phase-7-Close Tool-Chain-Demo.
 //!
-//! Beweist Content-Fluss web_fetch → file → bash über orchestrierte
-//! Message-Routings. Der Orchestrator-Loop (Hop-N tool_result → Hop-(N+1)
-//! tool_call) lebt IM TEST — Platzhalter für die spätere llm-Cell
-//! (Phase 8). Anti-Vorgriff bewusst.
+//! Proves the content flow web_fetch → file → bash across orchestrated message
+//! routings. The orchestrator loop (hop-N tool_result → hop-(N+1) tool_call)
+//! lives IN THE TEST — a placeholder for the later llm cell (phase 8).
+//! Deliberately no anticipation of later phases.
 //!
-//! Topologie (hermetisch, kein Egress):
+//! Topology (hermetic, no egress):
 //!   [mock_http] ──"hello chain"──> /web (web_fetch)
 //!                                    │
 //!                                    ▼ test orchestrator
-//!                                  /file (write out.txt mit fetched text)
+//!                                  /file (write out.txt with fetched text)
 //!                                    │
 //!                                    ▼ test orchestrator
 //!                                  /bash (cat <base_path>/out.txt)
@@ -17,8 +17,9 @@
 //!                                    ▼ tool_result.text == "hello chain"
 //!                                  /sink (CaptureCell)
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Vor der Mutation
-//! werden Templates für web_fetch, file und bash angelegt und via RescanTemplates geladen.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Before the
+//! mutation, templates for web_fetch, file and bash are created and loaded via
+//! RescanTemplates.
 
 use meclaw_cli::built_in_factories;
 use meclaw_colony::{ColonyMsg, MutationOutcome};
@@ -26,8 +27,8 @@ use meclaw_core::{Body, MessageBuilder, Path, Uuid, serde_json::json, validate_u
 use meclaw_testing::mock_http::{MockResponse, start_mock_server};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 
-/// Phase-11 T16: Legt minimale Templates für die Tool-Chain-Cells an und lädt sie
-/// via `RescanTemplates` in die Colony-Registry.
+/// Phase-11 T16: creates minimal templates for the tool-chain cells and loads
+/// them into the colony registry via `RescanTemplates`.
 async fn setup_tool_chain_templates(td: &tempfile::TempDir, h: &meclaw_testing::ColonyHandle) {
     let templates_root = td.path().join("templates");
     for (name, cell_type) in &[
@@ -73,19 +74,19 @@ fn make_tool_call_msg(target: &str, args: &str, id: &str, reply_to: Path) -> mec
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_7_tool_chain_web_fetch_to_file_to_bash() {
     let td = tempfile::TempDir::new().unwrap();
-    // base_path für die file-Cell ist ein Unterverzeichnis im Tempdir,
-    // damit es nicht mit Colony's eigenem Tree kollidiert.
+    // base_path for the file cell is a sub-directory in the tempdir, so it does
+    // not collide with the colony's own tree.
     let work_dir = td.path().join("work");
     std::fs::create_dir_all(&work_dir).unwrap();
 
     let (addr, _server) = start_mock_server(MockResponse::ok(b"hello chain")).await;
     let mock_url = format!("http://{addr}/data");
 
-    // Alle fünf Factories — built_in_factories() ist das Wiring aus T1.
+    // All five factories — built_in_factories() is the wiring from T1.
     let factories: Vec<(String, std::sync::Arc<dyn meclaw_colony::CellFactory>)> =
         built_in_factories().into_iter().collect();
     let h = meclaw_testing::ColonyHandle::new_with_factories_at(&td, factories);
-    // Phase-11 T16: Templates-Registry mit den drei Tool-Chain-Cells befüllen.
+    // Phase-11 T16: populate the templates registry with the three tool-chain cells.
     setup_tool_chain_templates(&td, &h).await;
 
     // /sink = terminale CaptureCell
@@ -158,7 +159,7 @@ async fn phase_7_tool_chain_web_fetch_to_file_to_bash() {
     let fetched_text = body1["messages"][0]["text"].as_str().unwrap().to_string();
     assert_eq!(fetched_text, "hello chain", "hop 1 fetched text mismatch");
 
-    // === HOP 2: test orchestrator baut file-write tool_call ===
+    // === HOP 2: the test orchestrator builds a file-write tool_call ===
     let write_args = json!({
         "op": "write",
         "path": "out.txt",
@@ -186,11 +187,11 @@ async fn phase_7_tool_chain_web_fetch_to_file_to_bash() {
     };
     validate_ubf_body(&body2).expect("hop 2 valid UBF");
     assert_eq!(m2.headers.hop["operation"], "write");
-    // sanity: file ist tatsächlich geschrieben worden
+    // sanity: the file was actually written
     let on_disk = std::fs::read_to_string(work_dir.join("out.txt")).unwrap();
     assert_eq!(on_disk, "hello chain");
 
-    // === HOP 3: test orchestrator baut bash tool_call ===
+    // === HOP 3: the test orchestrator builds a bash tool_call ===
     let cat_cmd = format!("cat {}/out.txt", work_dir.to_str().unwrap());
     let bash_args = json!({"command": cat_cmd});
     h.inbox_tx
@@ -218,7 +219,7 @@ async fn phase_7_tool_chain_web_fetch_to_file_to_bash() {
     assert_eq!(m3.headers.hop["exit_code"], 0);
     assert_eq!(m3.headers.hop["had_stderr"], false);
     let bash_output = body3["messages"][0]["text"].as_str().unwrap();
-    // === KERNBEWEIS: bash output == ursprünglicher web_fetch input ===
+    // === CORE PROOF: bash output == the original web_fetch input ===
     assert_eq!(
         bash_output, "hello chain",
         "content flow web_fetch → file → bash broken"

@@ -1,13 +1,13 @@
 //! Phase-16 β5: `proxy` runtime params-overlay — the richest surface, all three
 //! propagation ways.
 //!
-//! Weg A: `send_timeout_ms` — handle-side; the next `sendMessage` uses it.
-//! Weg B: `long_poll_timeout_ms` / `long_poll_request_secs` — signalled to the
+//! Path A: `send_timeout_ms` — handle side; the next `sendMessage` uses it.
+//! Path B: `long_poll_timeout_ms` / `long_poll_request_secs` — signalled to the
 //! I/O-task via `ProxyReconfig::SetPolling` (next poll uses them).
-//! Weg C: `query_timeout_ms` — DbConn (cell.db ops).
+//! Path C: `query_timeout_ms` — DbConn (cell.db ops).
 //! Immutable: `bot_token`, `emit_to`, `base_url` (credential/identity/endpoint).
 //!
-//! Behavioral live-receipt (Weg A): a cell built with a 60 s `send_timeout_ms`
+//! Behavioral live receipt (path A): a cell built with a 60 s `send_timeout_ms`
 //! gets a params-update lowering it to 100 ms; a subsequent inbound message
 //! whose `sendMessage` hits a black-hole endpoint then emits `send_failed`
 //! within a 2 s deadline — only possible if the lowered timeout is live.
@@ -102,7 +102,7 @@ async fn send_timeout_ms_lowered_live_then_send_fails_fast() {
     );
     let (rc_tx, _rc_rx) = mpsc::channel::<ProxyReconfig>(8);
 
-    // 1) params-update lowers send_timeout_ms to 100 ms (Weg A, live).
+    // 1) params-update lowers send_timeout_ms to 100 ms (path A, live).
     let (ptx, mut prx) = mpsc::channel::<CellEmission>(8);
     let psink = sink(ptx);
     cell.handle(
@@ -157,7 +157,7 @@ async fn params_update_signals_io_reconfig_setpolling() {
     )
     .await;
 
-    // Weg B: the handler signalled the I/O-task with the new poll-config.
+    // Path B: the handler signalled the I/O task with the new poll config.
     let rc = tokio::time::timeout(Duration::from_secs(1), rc_rx.recv())
         .await
         .expect("SetPolling within 1 s")
@@ -173,7 +173,7 @@ async fn params_update_signals_io_reconfig_setpolling() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn base_url_update_live_signals_new_url_to_io() {
-    // Weg B: base_url is mutable (config URL, not a credential). A params-update
+    // Path B: base_url is mutable (a config URL, not a credential). A params update
     // changing it makes the handler signal the I/O-task with the new URL (which
     // rebuilds its client via with_base_url, reholding the immutable bot_token).
     let tmp = TempDir::new().unwrap();
@@ -208,7 +208,7 @@ async fn base_url_update_live_signals_new_url_to_io() {
     let ProxyReconfig::SetPolling { base_url, .. } = rc;
     assert_eq!(
         base_url, "http://127.0.0.1:9999",
-        "the new base_url must reach the I/O-task live (Weg B)"
+        "the new base_url must reach the I/O-task live (path B)"
     );
 }
 
@@ -242,7 +242,7 @@ async fn params_update_query_timeout_live_and_persisted() {
     assert_eq!(
         db.query_timeout(),
         Some(Duration::from_millis(1234)),
-        "Weg C live"
+        "path C live"
     );
     let persisted: String = db
         .call(|c| {

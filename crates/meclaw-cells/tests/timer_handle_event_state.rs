@@ -1,7 +1,7 @@
-//! Phase-10-B T11: `handle_event` Persist-Pfad (State-vor-Emit / Phase-5-
-//! Kanon). Fire eines repeating Schedules → `iteration_n` geht in `cell.db`
-//! von 0 → 1, status bleibt `active`. Fire eines once → status='completed'.
-//! Race-Check: removed-Row → kein Persist. Emit folgt in T15.
+//! Phase-10-B T11: the `handle_event` persist path (state before emit / phase-5
+//! canon). Firing a repeating schedule takes `iteration_n` in `cell.db` from 0 → 1
+//! while status stays `active`. Firing a one-shot sets status='completed'.
+//! Race check: a removed row → no persist. The emit follows in T15.
 
 use chrono::Utc;
 use meclaw_cells::timer::cell::TimerCell;
@@ -55,7 +55,7 @@ async fn handle_event_for_repeating_bumps_iteration_n_in_db_before_emit() {
         .unwrap();
     assert_eq!(
         loaded.iteration_n, 1,
-        "repeating fire muss iteration_n bumpen"
+        "a repeating fire must bump iteration_n"
     );
     assert_eq!(loaded.status, "active");
 }
@@ -90,14 +90,14 @@ async fn handle_event_for_once_marks_completed_and_does_not_bump_iteration() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.status, "completed");
-    assert_eq!(loaded.iteration_n, 0, "once darf iteration_n nicht bumpen");
+    assert_eq!(loaded.iteration_n, 0, "once must not bump iteration_n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handle_event_race_check_skips_persist_when_row_removed_between_sleep_and_fire() {
-    // Sleep-Fenster zwischen I/O-Fire-Push und Handler-handle_event: in
-    // diesem Fenster passierte ein remove-Op → status='removed'. Fire darf
-    // dann NICHT iteration_n bumpen oder status auf 'completed' setzen.
+    // Sleep window between the I/O fire push and the handler's handle_event: a
+    // remove op happened in this window → status='removed'. The fire must then NOT
+    // bump iteration_n or set status to 'completed'.
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     setup_timer_schema(&conn).unwrap();
     let id = Uuid::now_v7();
@@ -126,7 +126,7 @@ async fn handle_event_race_check_skips_persist_when_row_removed_between_sleep_an
         .unwrap();
     assert_eq!(
         loaded.status, "removed",
-        "race-check muss removed-Row in Ruhe lassen"
+        "the race check must leave the removed row alone"
     );
     assert_eq!(loaded.iteration_n, 0);
 }

@@ -127,9 +127,9 @@ async fn phase_10_a_demo_outputs_backpressure_blocks_handler_emit() {
             EmitOnEventIo
         }
 
-        // Explizites `+ Send` ist load-bearing — AFIT bindet kein `Send`,
-        // `cell_task_long_running` braucht es. `clippy::manual_async_fn`
-        // ist hier False-Positive (siehe long_running_cell.rs § run_io).
+        // The explicit `+ Send` is load-bearing — AFIT does not bind `Send`,
+        // and `cell_task_long_running` needs it. `clippy::manual_async_fn`
+        // is a false positive here (see long_running_cell.rs § run_io).
         #[allow(clippy::manual_async_fn)]
         fn run_io(
             _io: Self::Io,

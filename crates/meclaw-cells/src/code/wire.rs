@@ -30,8 +30,8 @@ pub fn build_stdin_json(msg: &Message) -> Result<String, String> {
     };
     // Path::as_str() — Path has no Display impl (verified against
     // meclaw-core/src/path.rs).
-    // Slice 2 Zwei-Fächer-Modell: das `header`-Feld trägt jetzt beide Fächer
-    // (`{"context":{...},"hop":{...}}`) — die Code-Cell sieht beide Compartments.
+    // Slice 2 two-compartment model: the `header` field now carries both
+    // compartments (`{"context":{...},"hop":{...}}`) — the code cell sees both.
     let headers_value = meclaw_core::serde_json::to_value(&msg.headers)
         .map_err(|e| format!("header serialize: {e}"))?;
     out.insert("header".into(), headers_value);

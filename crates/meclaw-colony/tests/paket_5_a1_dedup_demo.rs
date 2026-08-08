@@ -97,7 +97,7 @@ async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
 
 /// Probe to /a. The probe is a Source establishing `kind` in `context`
 /// (Ingress-at-birth) so it survives the /a Echo-Cell hop — input.hop verfaellt
-/// bei Cell-Emission, nur context reist durch (`carry_context_with_hop`); the
+/// on cell emission, only context travels through (`carry_context_with_hop`); the
 /// dedup edge condition (`context.kind == 'text'`) is evaluated at /a's emit.
 /// Low ttl bounds the no-match self-loop.
 fn probe_to_a() -> Message {

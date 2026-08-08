@@ -53,7 +53,7 @@ pub async fn apply_bootstrap_plan(
     // ColonyMsg::RegisterDormant (Dormant, Phase-13-K-2).
     for c in &plan.cells {
         // Phase-13.5 Lifecycle-3b Task 9.1, demo (g): boot-gating of inactive
-        // cells (Startup Schritt 6, "Long-Running only for active cells"). A
+        // cells (startup step 6, "long-running only for active cells"). A
         // rehydrated cell whose persisted `status == 'inactive'` (overlay →
         // `c.active == false`) must NOT get a running task at boot. We skip the
         // factory `spawn_cell` call entirely (no task built, no polling) and
@@ -86,7 +86,7 @@ pub async fn apply_bootstrap_plan(
             .expect("validated in plan-phase: unknown cell_type cannot reach apply");
         // Phase-13-K-2: idle_timeout-Mapping aktiv. `cell.timeout == 0` →
         // Default-Idle (oder per-cell-Override via `idle_timeout_ms`). Andere
-        // Werte (-1 persistent, >0 one-shot) bekommen kein Idle-Timer.
+        // values (-1 persistent, >0 one-shot) get no idle timer.
         let idle_timeout = match c.cell_timeout {
             0 => Some(std::time::Duration::from_millis(
                 c.idle_timeout_ms
@@ -180,7 +180,7 @@ pub async fn apply_bootstrap_plan(
                 respawn,
             } => {
                 // Phase-13-K-2: stateful Cells starten als `NotYetSpawned` —
-                // Mailbox-Receiver parkt im Status, Cell-Task erst beim ersten
+                // The mailbox receiver parks in the status; the cell task only on the first
                 // Wake-Pre-Send (13-I-1) gespawnt.
                 runtime
                     .inbox_tx
@@ -226,8 +226,8 @@ pub async fn apply_bootstrap_plan(
             .expect("colony inbox closed");
         nc_ack_rx.await.expect("SetNodeContract ack");
     }
-    // FIX 3 — InitialApply-Bundle: hive_scopes + edges in EINER Transaktion (atomar).
-    // Der Handler trägt beide auch in-memory ein (EdgeTable + HiveScopeTable).
+    // FIX 3 — InitialApply bundle: hive_scopes + edges in ONE transaction (atomic).
+    // The handler also enters both in memory (EdgeTable + HiveScopeTable).
     {
         let (ack_tx, ack_rx) = oneshot::channel();
         runtime
@@ -627,8 +627,8 @@ mod tests {
     #[test]
     fn effective_validate_emits_resolves_knob_chain() {
         // F1 Knopf-Ketten-Pin: debug_assertions ODER strict_validation.
-        assert!(resolve_validate_emits(true)); // strict an → immer
-        assert_eq!(resolve_validate_emits(false), cfg!(debug_assertions)); // strict aus → nur debug
+        assert!(resolve_validate_emits(true)); // strict on → always
+        assert_eq!(resolve_validate_emits(false), cfg!(debug_assertions)); // strict off → debug only
     }
 
     // ── Unit tests for the pure `dangling_edge_endpoints` helper ─────────────

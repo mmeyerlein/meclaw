@@ -1,14 +1,14 @@
-//! Mutation-Validation (Phase 6 + Phase 11). Einstufige Colony-Validierung
-//! gegen den post_state-Graph; alle Checks pure, ohne FS oder DB.
+//! Mutation validation (phase 6 + phase 11). Single-stage colony validation
+//! against the post_state graph; all checks pure, without FS or DB.
 
 use crate::CellFactoryRegistry;
 use crate::mutation::MutationError;
 use meclaw_core::JsonValue;
 
-/// T10 — Schema-Check + Template-Existenz.
+/// T10 — schema check + template existence.
 ///
-/// T11 erweitert mit Match-Patterns und Naming-Eindeutigkeit; T11b ergänzt
-/// Cycle und Edge-Schema (siehe Phase-6-Plan Entscheidung 7).
+/// T11 extends this with match patterns and naming uniqueness; T11b adds
+/// cycle and edge schema (see phase-6 plan, decision 7).
 pub fn validate_post_state(
     diff_substituted: &JsonValue,
     factories: &CellFactoryRegistry,
@@ -173,10 +173,10 @@ pub fn validate_post_state_with_edges_and_subtree(
 /// mirroring `registry_names`. For `swap_nodes`, a match.name that refers to a HIVE
 /// (which has no registry entry but IS in the pre-state via `hive_scopes`) must also
 /// pass the match check — hives are valid swap sources (they carry external edges
-/// just like cells). Per spec Z.265 ("Namen sind pro Scope eindeutig") this set MUST
+/// just like cells). Per spec Z.265 ("Names are unique per scope") this set MUST
 /// be scope-filtered so a hive in a FOREIGN scope cannot satisfy a short-name match
 /// (apply-side `resolve_scoped_path` is scope-correct, so a global set here would be a
-/// validate-side false-positive — Paket-5 Companion Befund Paket-2-b'). Pass an empty
+/// validate-side false-positive — Paket-5 companion finding Paket-2-b'). Pass an empty
 /// slice for callers that do not have this information (e.g. `validate_post_state_full`,
 /// which does not know hive names; existing swap-of-cell tests are unaffected).
 fn validate_naming_and_match(
@@ -313,7 +313,7 @@ fn validate_edges_and_cycle(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| MutationError::Schema("add_edges[].to missing".into()))?;
             // Befund 6: endpoints are scope-relative; the canonical mutation
-            // form is `./name` (overview § Variablen-Substitution example). Both
+            // form is `./name` (overview § Variable substitution example). Both
             // `./name` and the bare `name` denote the same scope-local node, so
             // strip the `./` before the short-name membership test — otherwise a
             // `./`-prefixed endpoint never matched an `add_nodes`/registry
@@ -358,7 +358,7 @@ fn validate_edges_and_cycle(
             if let Some(modif) = e.get("modifier") {
                 // Befund-6-Folge: the modifier must match the
                 // `{set_context, delete_context, set_hop, delete_hop}` schema
-                // (spec § Validierung Z.277). Reject any unknown key — the old
+                // (spec § Validation l.277). Reject any unknown key — the old
                 // flat `{"headers.X": ...}` map form was previously ignored at
                 // apply and committed silently (builder foot-gun).
                 if let Some(modif_obj) = modif.as_object() {
@@ -406,9 +406,9 @@ fn validate_edges_and_cycle(
             }
         }
     }
-    // Befund 2 — NO general cycle reject. Spec overview § Validierung:
-    // "Cycle-Freiheit … sofern die Anwendung Zyklen verbietet; meclaw-Core
-    // schlägt nicht generell auf Zyklen". Tool-/reply-loops are legitimately
+    // Finding 2 — NO general cycle reject. Spec overview § Validation:
+    // "cycle-freedom … insofar as the application forbids cycles; meclaw-core
+    // does not reject cycles in general". Tool/reply loops are legitimately
     // instantiable per mutation (and boot fine from the filesystem); the
     // runtime TTL loop-guard bounds any traversal cycle. Edge endpoints were
     // verified above (node-set membership); the topological cycle gate is gone.
@@ -587,7 +587,7 @@ pub fn validate_post_state_with_templates_scoped(
                 .ok_or_else(|| MutationError::TemplateMissing(template.into()))?;
             // Phase-13.5 a5-subtree T8b-1: a SUBTREE template's ROOT cell.type is
             // `hive` — a scope marker, never an actor, so it has NO factory by
-            // design (CLAUDE.md: "Hive ist kein Aktor"). Skip the Ebene-2
+            // design (CLAUDE.md: "a hive is not an actor"). Skip the level-2
             // factory check for a hive root; the spawnable nested cells are
             // staged + registered by `stage_subtree` (their own cell-types are
             // validated by bootstrap-side factory presence at spawn time).
@@ -1405,9 +1405,9 @@ mod tests {
         assert_eq!(err.error_code(), "naming_collision");
     }
 
-    /// Substrat-Fix Befund 7 — two `add_nodes` with the SAME name in one diff
-    /// form a post_state duplicate (spec § Naming-Kollisionen: "ein Node-Name,
-    /// der im post_state innerhalb desselben Scopes doppelt vorkommt"). This is
+    /// Substrate-fix finding 7 — two `add_nodes` with the SAME name in one diff
+    /// form a post_state duplicate (spec § Naming collisions: "a node name that
+    /// occurs twice within the same scope in the post_state"). This is
     /// `naming_collision` and must be caught in VALIDATE — before staging — so
     /// it never reaches the rename step, where the second `rename(2)` failed
     /// with a `schema` (rename-IO) token AND left the first node's directory
@@ -1424,10 +1424,10 @@ mod tests {
         assert_eq!(err.error_code(), "naming_collision");
     }
 
-    /// Substrat-Fix Befund 2 — spec overview § Validierung: "Cycle-Freiheit …
-    /// sofern die Anwendung Zyklen verbietet; meclaw-Core schlägt nicht generell
-    /// auf Zyklen". A self-edge `a → a` (a tool/reply loop's degenerate form) is
-    /// instantiable per mutation; meclaw-Core does NOT reject it. The runtime
+    /// Substrate fix, finding 2 — spec overview § Validation: "cycle-freedom …
+    /// insofar as the application forbids cycles; meclaw-core does not reject
+    /// cycles in general". A self-edge `a → a` (a tool/reply loop's degenerate
+    /// form) is instantiable per mutation; meclaw-core does NOT reject it. The runtime
     /// TTL loop-guard (`hive_cycle_terminates_with_ttl_expired`) bounds it.
     #[test]
     fn self_edge_cycle_is_tolerated() {
@@ -1671,10 +1671,10 @@ mod tests {
         }
     }
 
-    /// Substrat-Fix modifier-Schema (post-Befund-6): a `modifier` key outside
+    /// Substrate fix, modifier schema (post-finding-6): a `modifier` key outside
     /// the `{set_context, delete_context, set_hop, delete_hop}` schema (spec
-    /// overview § Validierung Z.277: "modifier (falls gesetzt) entspricht dem
-    /// {set?, delete?}-Schema") must reject as `edge_schema`. The old flat
+    /// overview § Validation l.277: "modifier (if set) matches the
+    /// {set?, delete?} schema") must reject as `edge_schema`. The old flat
     /// `{"headers.X": ...}` map form used to commit silently (the unknown key
     /// was ignored at apply) — a builder foot-gun: silent no-op instead of
     /// schema feedback.
@@ -1854,7 +1854,7 @@ mod tests {
         let factories = factories_with(&["echo"]);
         let registry_names: Vec<String> = vec!["a".into()];
         let existing_edges: Vec<(String, String)> = vec![];
-        // "newcomer" wird per add_nodes im selben Diff geboren — Edge-Endpoint ok.
+        // "newcomer" is born via add_nodes in the same diff — edge endpoint ok.
         let diff = json!({
             "add_nodes": [{"name": "newcomer", "template": "echo"}],
             "add_edges": [{"from": "a", "to": "newcomer"}]
@@ -1963,7 +1963,7 @@ mod tests {
             &factories,
             &[],
             &[],
-            // simulieren: template-Verzeichnis trägt eine config.json mit cell.type = "ghost"
+            // simulate: the template directory carries a config.json with cell.type = "ghost"
             &[("echo".into(), "ghost".into())],
             &[],
             &[],
@@ -2006,10 +2006,11 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// T17.fix — R3-Konformität: versionierte Template-Refs müssen via entry.name aufgelöst werden.
+    /// T17.fix — R3 conformance: versioned template refs must be resolved via entry.name.
     ///
-    /// Bug: ct_map-Lookup nutzte raw `template`-String ("echo@1.0.0") statt `entry.name` ("echo").
-    /// Fix: resolve() liefert TemplateEntry; ct_map-Lookup auf entry.name.
+    /// Bug: the ct_map lookup used the raw `template` string ("echo@1.0.0") instead of
+    /// `entry.name` ("echo").
+    /// Fix: resolve() returns a TemplateEntry; the ct_map lookup uses entry.name.
     #[test]
     fn validate_resolves_versioned_template_ref() {
         use std::path::PathBuf;
@@ -2092,7 +2093,7 @@ mod tests {
 
     /// Substrat-Fix Befund 2: a subtree-internal edge-set that forms a cycle
     /// (a→b, b→a) is TOLERATED — meclaw-Core does not reject cycles generally
-    /// (spec overview § Validierung). Endpoint-existence still applies (both
+    /// (spec overview § Validation). Endpoint-existence still applies (both
     /// endpoints are in `subtree_nodes`), so this validates clean.
     #[test]
     fn subtree_internal_edge_cycle_is_tolerated() {
@@ -2665,7 +2666,7 @@ mod tests {
         assert_eq!(err.error_code(), "match_no_hit");
     }
 
-    /// Paket-5 T4 (P10b companion, Befund Paket-2-b'): a `swap_nodes` `match.name`
+    /// Paket-5 T4 (P10b companion, finding Paket-2-b'): a `swap_nodes` `match.name`
     /// naming a HIVE that lives in a FOREIGN scope must be rejected as MatchNoHit.
     /// The caller scope-filters `hive_match_names` (parent path == guard_scope), so a
     /// hive in another scope never contributes its short-name here — the global
@@ -3128,7 +3129,7 @@ mod tests {
         );
     }
 
-    /// (j) NEGATIVE (non-vacuity guard, Pflicht-Punkt TDD b): a key NOT
+    /// (j) NEGATIVE (non-vacuity guard, mandatory point TDD b): a key NOT
     /// guaranteed on EVERY path into the hive must still reject — a second
     /// inbound edge without the key empties the transit contribution.
     #[test]
@@ -3169,7 +3170,7 @@ mod tests {
         );
     }
 
-    /// (l) Loops are legal (tool-/refine-loops, Pflicht-Punkt 2): a hive⇄hive
+    /// (l) Loops are legal (tool-/refine-loops, mandatory point 2): a hive⇄hive
     /// cycle on the walk must TERMINATE (proven by returning) and must NOT
     /// falsely empty the intersection — the loop back-edge imposes no
     /// additional obligation (greatest-fixpoint reading).
@@ -3340,7 +3341,7 @@ mod tests {
 
     // ── R12: add_edges depth-endpoint resolution into sub-scopes ────────────
     //
-    // Spec Z.227: edge from/to are "Pfade relativ zum Hive-Scope" — WITHOUT a
+    // Spec Z.227: edge from/to are "paths relative to the hive scope" — WITHOUT a
     // depth restriction. A `./unit/dispatch` endpoint must resolve against the
     // mutation scope (post_state membership), while containment stays sharp
     // (Form C of the llm-unit RECEIPT matrix is covered by

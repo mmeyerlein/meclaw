@@ -1,11 +1,12 @@
-//! Phase-12-A TDD-Anker: --validate ist Dry-Run, no HTTP-bind selbst wenn
-//! --api parallel steht (einzeilige stderr-Notiz, kein Error).
+//! Phase-12-A TDD anchor: --validate is a dry run, no HTTP bind even when
+//! --api stands alongside it (a one-line stderr note, no error).
 //!
-//! Phase-12-Close T28 Hinweis: --validate wurde additiv um plan_bootstrap +
-//! probe_boot_state gehärtet (siehe `phase_12_validate_hardening.rs`). Der
-//! bind-skip-Test braucht daher eine valide Fixture, sonst failt der neue
-//! plan_bootstrap-Check (NoRootDir auf leerer TempDir). Die Aussage des Tests
-//! bleibt: --validate-Vorrang skipt den bind, auch wenn --api parallel steht.
+//! Phase-12-close T28 note: --validate was hardened additively with
+//! plan_bootstrap + probe_boot_state (see `phase_12_validate_hardening.rs`). The
+//! bind-skip test therefore needs a valid fixture, otherwise the new
+//! plan_bootstrap check fails (NoRootDir on an empty TempDir). The statement of
+//! the test stays: --validate precedence skips the bind, even with --api
+//! alongside.
 
 use meclaw_cli::{Cli, run};
 use std::net::SocketAddr;
@@ -13,7 +14,7 @@ use std::net::SocketAddr;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_skips_http_bind_even_with_api_flag() {
     let td = tempfile::TempDir::new().unwrap();
-    // Minimale valid-fixture (single hive-marker), passt durch plan_bootstrap.
+    // A minimal valid fixture (single hive marker) that passes plan_bootstrap.
     std::fs::create_dir_all(td.path().join("demo")).unwrap();
     std::fs::write(
         td.path().join("demo/config.json"),

@@ -1,6 +1,6 @@
-//! Phase-10-C T5/T6: TelegramClient::get_updates + send_message gegen
-//! Mock-Server. 200-OK mit gueltigem `result`-Array → Vec<ProxyEvent::
-//! UserMessage>; sendMessage POST mit chat_id/text + Fehler-Klassifikation.
+//! Phase-10-C T5/T6: TelegramClient::get_updates + send_message against a mock
+//! server. A 200 OK with a valid `result` array yields Vec<ProxyEvent::
+//! UserMessage>; the sendMessage POST carries chat_id/text + error classification.
 
 use meclaw_cells::proxy::io::ProxyEvent;
 use meclaw_cells::proxy::telegram::{TelegramClient, TelegramError};
@@ -53,7 +53,7 @@ async fn get_updates_parses_text_messages_into_proxy_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_updates_skips_non_text_updates() {
-    // Update ohne `message.text` (z.B. `edited_message` oder Sticker) → leer.
+    // An update without `message.text` (e.g. `edited_message` or a sticker) → empty.
     let body = br#"{"ok": true, "result": [
         {"update_id": 99, "edited_message": {"chat":{"id":1}, "text":"x"}}
     ]}"#;

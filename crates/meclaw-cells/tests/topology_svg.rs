@@ -1,11 +1,10 @@
-//! Workstream B (14-A-Nachtrag): Topologie-Bild pro Test, gerendert aus dem
-//! LIVE gebooteten Graph (`/colony/graph` je Scope, gemerged). Quelle ist genau
-//! das, was das Substrat WIRKLICH geladen hat — nicht der FS-Tree auf Papier.
+//! Workstream B (14-A addendum): one topology picture per test, rendered from the
+//! LIVE booted graph (`/colony/graph` per scope, merged). The source is exactly
+//! what the substrate REALLY loaded — not the filesystem tree on paper.
 //!
-//! Zero-Tooling: `dot` ist im Env nicht garantiert vorhanden → wir rendern ein
-//! hand-gerolltes SVG (zero-dep) und emittieren ZUSÄTZLICH eine `.dot`-Datei
-//! (zero-dep Text), damit das SVG später via `dot -Tsvg` reproduzierbar ist.
-//! KEIN Cargo-Dep.
+//! Zero tooling: `dot` is not guaranteed to exist in the environment → we render a
+//! hand-rolled SVG (zero-dep) and ADDITIONALLY emit a `.dot` file (zero-dep text)
+//! so the SVG can be reproduced later via `dot -Tsvg`. NO cargo dep.
 //!
 //! Render-Konventionen: Hive = Transit-Form (Raute, gestrichelt), Cell = Box,
 //! Edge-Label = CEL-`condition`, `/sink` als Test-Sonde markiert (gepunktet).
@@ -19,7 +18,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Eine Edge im Live-Graph: aufgelöste `from`/`to`-Pfade + CEL-`condition`-Source.
+/// One edge in the live graph: resolved `from`/`to` paths + the CEL `condition` source.
 #[derive(Clone)]
 pub struct LiveEdge {
     pub from: String,
@@ -27,20 +26,20 @@ pub struct LiveEdge {
     pub condition: Option<String>,
 }
 
-/// Der gemergte Live-Graph: Edges + klassifizierte Knoten.
-/// `cells` = Registry-Nodes (echte Aktoren); `hives` = Edge-Endpunkte, die KEIN
-/// Registry-Node sind (Hive-Scope-Marker sind keine Aktoren → nicht in der
-/// Registry, erscheinen nur als Transit-Endpunkte).
+/// The merged live graph: edges + classified nodes.
+/// `cells` = registry nodes (real actors); `hives` = edge endpoints that are NOT
+/// registry nodes (hive scope markers are not actors → not in the registry, they
+/// only appear as transit endpoints).
 pub struct LiveGraph {
     pub edges: Vec<LiveEdge>,
     pub hives: Vec<String>,
     pub cells: Vec<String>,
 }
 
-/// Liest `/colony/graph` für jeden Scope und merged (dedup per Edge-`id`).
-/// `graph_rx` ist der rx der `/graphsink`-CaptureCell (Boot registriert sie als
-/// `reply_to`-Ziel). Quelle = der live gebootete Graph; kommt ein erwarteter Edge
-/// nicht zurück, schlägt der aufrufende Assert fehl = BEFUND (Read lädt nicht den
+/// Reads `/colony/graph` for every scope and merges (dedup by edge `id`).
+/// `graph_rx` is the rx of the `/graphsink` CaptureCell (boot registers it as the
+/// `reply_to` target). Source = the live booted graph; if an expected edge does not
+/// come back, the calling assert fails = a FINDING (the read does not load the
 /// real gebooteten Stand).
 pub async fn read_live_graph(
     h: &ColonyHandle,
@@ -70,8 +69,8 @@ pub async fn read_live_graph(
         if let Some(nodes) = g["nodes"].as_array() {
             for n in nodes {
                 if let Some(p) = n["path"].as_str() {
-                    // `/graphsink` ist die Graph-Read-Sonde dieses Helfers selbst
-                    // (kantenlos, kein Teil der Demo-Topologie) → nicht rendern.
+                    // `/graphsink` is this helper's own graph-read probe (edgeless,
+                    // not part of the demo topology) → do not render it.
                     if p == "/graphsink" {
                         continue;
                     }
@@ -94,7 +93,7 @@ pub async fn read_live_graph(
         }
     }
 
-    // Hives = Edge-Endpunkte ohne Registry-Node (Scope-Marker, kein Aktor).
+    // Hives = edge endpoints without a registry node (scope markers, not actors).
     let mut hives: BTreeSet<String> = BTreeSet::new();
     for e in &edges {
         for p in [&e.from, &e.to] {
@@ -111,8 +110,8 @@ pub async fn read_live_graph(
     }
 }
 
-/// Deterministische Knoten-Reihenfolge: Edge-Quellen in Auftauch-Reihenfolge,
-/// dann übrige Knoten sortiert. Stabil über Läufe (kein Zufall, kein Timestamp).
+/// Deterministic node order: edge sources in order of appearance, then the
+/// remaining nodes sorted. Stable across runs (no randomness, no timestamp).
 fn ordered_nodes(g: &LiveGraph) -> Vec<String> {
     let mut order: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -148,7 +147,7 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Hand-gerolltes, deterministisches SVG des Live-Graphs (zero-dep).
+/// Hand-rolled, deterministic SVG of the live graph (zero-dep).
 /// Hive = Raute (gestrichelt), Cell = Box, `/sink` gepunktet, Edge-Label =
 /// CEL-`condition`.
 pub fn render_topology_svg(g: &LiveGraph) -> String {
@@ -157,7 +156,7 @@ pub fn render_topology_svg(g: &LiveGraph) -> String {
     let box_w = 220;
     let box_h = 44;
     let x = 60;
-    let width = x + box_w + 360; // Platz für Edge-Labels rechts
+    let width = x + box_w + 360; // room for edge labels on the right
     let height = 60 + nodes.len() as i32 * row_h;
     let cy = |i: usize| -> i32 { 40 + i as i32 * row_h + box_h / 2 };
     let idx = |p: &str| -> Option<usize> { nodes.iter().position(|n| n == p) };
@@ -168,7 +167,7 @@ pub fn render_topology_svg(g: &LiveGraph) -> String {
     ));
     s.push_str("<marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"8\" refY=\"3\" orient=\"auto\"><path d=\"M0,0 L8,3 L0,6 Z\" fill=\"#444\"/></marker>\n");
 
-    // Edges zuerst (unter den Knoten).
+    // Edges first (below the nodes).
     for e in &g.edges {
         let (fi, ti) = match (idx(&e.from), idx(&e.to)) {
             (Some(a), Some(b)) => (a, b),
@@ -177,7 +176,7 @@ pub fn render_topology_svg(g: &LiveGraph) -> String {
         let y1 = cy(fi);
         let y2 = cy(ti);
         let ex = x + box_w + 30;
-        // Orthogonaler Pfad: raus nach rechts, vertikal, zurück in den Zielknoten.
+        // Orthogonal path: out to the right, vertical, back into the target node.
         s.push_str(&format!(
             "<path d=\"M{} {} H{} V{} H{}\" fill=\"none\" stroke=\"#444\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\"/>\n",
             x + box_w, y1, ex, y2, x + box_w + 6
@@ -192,7 +191,7 @@ pub fn render_topology_svg(g: &LiveGraph) -> String {
         }
     }
 
-    // Knoten.
+    // Nodes.
     for (i, p) in nodes.iter().enumerate() {
         let y = 40 + i as i32 * row_h;
         if is_hive(g, p) {
@@ -237,8 +236,8 @@ pub fn render_topology_svg(g: &LiveGraph) -> String {
     s
 }
 
-/// Begleitendes Graphviz-DOT (zero-dep Text) — falls `dot` verfügbar ist, kann
-/// das SVG via `dot -Tsvg <fn>.dot` reproduziert werden.
+/// Accompanying Graphviz DOT (zero-dep text) — where `dot` is available, the SVG
+/// can be reproduced via `dot -Tsvg <fn>.dot`.
 pub fn render_topology_dot(g: &LiveGraph) -> String {
     let mut s = String::from("digraph topology {\n  rankdir=TB;\n");
     for p in &g.cells {
@@ -266,10 +265,10 @@ pub fn render_topology_dot(g: &LiveGraph) -> String {
     s
 }
 
-/// Schreibt das Topologie-SVG des LIVE gebooteten Graphs nach
+/// Writes the topology SVG of the LIVE booted graph to
 /// `target/phase-14a-topologies/<test_fn>.svg` (+ begleitendes `.dot`).
-/// Scopes: `/` und `/tool-loop` (gemerged). Read unvollständig → der
-/// `read_live_graph`-Pfad bzw. der aufrufende Assert deckt es auf = BEFUND.
+/// Scopes: `/` and `/tool-loop` (merged). An incomplete read is exposed by the
+/// `read_live_graph` path or the calling assert = a FINDING.
 pub async fn write_topology_diagram(
     h: &ColonyHandle,
     graph_rx: &mut mpsc::Receiver<Message>,
@@ -284,19 +283,19 @@ pub async fn write_topology_diagram(
     g
 }
 
-/// Spiegelt das kanonische 14a-Topologie-Diagramm in den eingecheckten
-/// Beispiel-Ordner `tests/fixtures/14a-tool-loop/` — NUR unter Env-Gate
-/// `MECLAW_EMIT_DOT=1` (sonst no-op; gleicher Mechanismus wie
-/// `emit_dot_if_requested` der 14b/c/d-Examples in `support_14b.rs`).
-/// Kanonischer Producer ist `tool_loop_end_to_end_reaches_collector` —
-/// genau EIN Test schreibt das Beispiel-Artefakt, keine Hand-Kopien aus
+/// Mirrors the canonical 14a topology diagram into the checked-in example folder
+/// `tests/fixtures/14a-tool-loop/` — ONLY under the env gate `MECLAW_EMIT_DOT=1`
+/// (otherwise a no-op; the same mechanism as `emit_dot_if_requested` of the
+/// 14b/c/d examples in `support_14b.rs`).
+/// The canonical producer is `tool_loop_end_to_end_reaches_collector` — exactly ONE
+/// test writes the example artefact, no hand copies from
 /// `target/phase-14a-topologies/` mehr.
 ///
-/// Edges werden wie in `support_14b::live_graph_from_dtos` deterministisch
-/// nach `(from, to, condition)` sortiert: `/colony/graph` liefert sie in
-/// Registry-Iterations-Reihenfolge (nicht deterministisch über Prozesse),
-/// und der Renderer leitet die Knoten-Anordnung aus der Edge-Reihenfolge
-/// ab — ohne Sortierung wäre das committete Artefakt lauf-abhängig.
+/// Edges are sorted deterministically by `(from, to, condition)` as in
+/// `support_14b::live_graph_from_dtos`: `/colony/graph` returns them in registry
+/// iteration order (not deterministic across processes), and the renderer derives
+/// the node arrangement from the edge order — without sorting, the committed
+/// artefact would be run-dependent.
 pub fn emit_14a_example_diagram_if_requested(g: &LiveGraph) {
     if std::env::var("MECLAW_EMIT_DOT").as_deref() == Ok("1") {
         let mut edges = g.edges.clone();

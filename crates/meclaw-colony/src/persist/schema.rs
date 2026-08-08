@@ -1,8 +1,8 @@
-//! Schema-DDL + PRAGMA-Setup für cell.db und colony.db.
+//! Schema DDL + PRAGMA setup for cell.db and colony.db.
 //!
-//! **Pflicht-Helper**: kein Schreib-Pfad darf rusqlite direkt öffnen — immer über
-//! `setup_cell_db(conn)` (Phase 5) oder `setup_colony_db(conn)` (T6) gehen.
-//! Vergessener Aufruf = silent FULL-Sync = 10× langsamer.
+//! **Mandatory helpers**: no write path may open rusqlite directly — always go
+//! through `setup_cell_db(conn)` (phase 5) or `setup_colony_db(conn)` (T6).
+//! A forgotten call = silent FULL sync = 10× slower.
 
 const CELL_DB_DDL: &str = "
 CREATE TABLE IF NOT EXISTS system (
@@ -29,8 +29,8 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
 
 /// Setup a cell.db connection: PRAGMAs + DDL.
 ///
-/// PRAGMA-Reihenfolge: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`.
-/// DDL ist idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`).
+/// PRAGMA order: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`.
+/// The DDL is idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`).
 pub fn setup_cell_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -122,13 +122,13 @@ CREATE TABLE IF NOT EXISTS meta (
 INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '4');
 ";
 
-/// Setup a colony.db connection: PRAGMAs + DDL (alle Phase-5-Tabellen + Indizes).
+/// Setup a colony.db connection: PRAGMAs + DDL (all phase-5 tables + indexes).
 ///
-/// PRAGMA-Reihenfolge analog `setup_cell_db`: `journal_mode=WAL`, `synchronous=NORMAL`,
-/// `foreign_keys=ON`. DDL ist idempotent.
+/// PRAGMA order analogous to `setup_cell_db`: `journal_mode=WAL`, `synchronous=NORMAL`,
+/// `foreign_keys=ON`. The DDL is idempotent.
 ///
-/// **FIX 1 (review 2026-05-20)**: `message_log` enthält `correlation_id`,
-/// `ttl`, `reply_to` — lasttragend für Phase 8/10-Request/Response-Korrelation.
+/// **FIX 1 (review 2026-05-20)**: `message_log` carries `correlation_id`,
+/// `ttl`, `reply_to` — load-bearing for phase 8/10 request/response correlation.
 pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -145,9 +145,9 @@ pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 /// Read the schema_version from the `meta` table.
 ///
-/// Pflicht-Helper für integrity-Probes in `plan_bootstrap` (T19) und für
-/// `probe_boot_state` (T20). Erwartet eine via `setup_cell_db` oder
-/// `setup_colony_db` initialisierte DB.
+/// Mandatory helper for the integrity probes in `plan_bootstrap` (T19) and for
+/// `probe_boot_state` (T20). Expects a DB initialized via `setup_cell_db` or
+/// `setup_colony_db`.
 pub fn read_schema_version(conn: &rusqlite::Connection) -> rusqlite::Result<u32> {
     let s: String = conn.query_row(
         "SELECT value FROM meta WHERE key='schema_version'",
@@ -235,7 +235,7 @@ mod tests {
     fn setup_cell_db_is_idempotent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_cell_db(&conn).unwrap();
-        setup_cell_db(&conn).unwrap(); // zweiter Aufruf darf nicht fehlschlagen
+        setup_cell_db(&conn).unwrap(); // the second call must not fail
         let cnt: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM meta WHERE key='schema_version'",
@@ -243,7 +243,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(cnt, 1, "meta INSERT OR IGNORE bleibt single-row");
+        assert_eq!(cnt, 1, "meta INSERT OR IGNORE stays single-row");
     }
 
     #[test]
@@ -257,14 +257,14 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        // FIX 1: correlation_id, ttl, reply_to müssen Spalten sein.
+        // FIX 1: correlation_id, ttl, reply_to must be columns.
         assert!(
             cols.contains(&"correlation_id".to_string()),
             "correlation_id missing"
         );
         assert!(cols.contains(&"ttl".to_string()), "ttl missing");
         assert!(cols.contains(&"reply_to".to_string()), "reply_to missing");
-        // Plus alle anderen Pflicht-Spalten.
+        // Plus all other required columns.
         for required in &[
             "id",
             "trace_id",

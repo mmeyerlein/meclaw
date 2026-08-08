@@ -1,9 +1,9 @@
-//! Phase-10-D: Factory fuer die `mcp`-Cell.
+//! Phase-10-D: the factory for the `mcp` cell.
 //!
-//! Oeffnet `cell.db` sync, ruft `setup_mcp_schema` (idempotent). Baut
-//! `McpClient`. `make_build`-Closure ist sync + await-frei zwischen
-//! DB-Open und dem LR-Spawn via `build_long_running_task` —
-//! Phase-5-Tripwire-konform (vgl. `crates/meclaw-cells/src/proxy/factory.rs`).
+//! Opens `cell.db` synchronously, calls `setup_mcp_schema` (idempotent), builds
+//! the `McpClient`. The `make_build` closure is sync and await-free between the
+//! DB open and the LR spawn via `build_long_running_task` —
+//! conformant with the phase-5 tripwire (cf. `crates/meclaw-cells/src/proxy/factory.rs`).
 
 use crate::mcp::cell::McpCell;
 use crate::mcp::db::setup_mcp_schema;
@@ -20,26 +20,26 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// `mcp`-Cell-Factory. Production-Wiring (`built_in_factories` in
-/// `meclaw-cli`) deferred bis erste `examples/`-Topologie mit `mcp`,
+/// `meclaw-cli`) is deferred until the first `examples/` topology using `mcp`,
 /// analog Phase-10-B/-C-Limitation. Demos in
 /// `crates/meclaw-cells/tests/phase_10d_mcp_demo.rs` nutzen die Factory
 /// direkt via `ColonyHandle::register_spawned`.
 pub struct McpCellFactory;
 
 impl CellFactory for McpCellFactory {
-    /// Pre-Spawn-Validierung. Routet ueber denselben Parse-Pfad wie
+    /// Pre-spawn validation. Routes through the same parse path as
     /// `spawn_cell` (Parser-Invariante per `CellFactory`-Doc).
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
         McpParams::parse(params).map(|_| ())
     }
 
-    /// Spawn eine `mcp`-Cell-Instanz.
+    /// Spawn an `mcp` cell instance.
     ///
-    /// **Korridor-Pflicht (Phase-5-Tripwire)**: Der `make_build`-Closure laeuft
-    /// initial UND beim Respawn (`RespawnFn` ist `Fn`, nicht `FnOnce`).
-    /// Zwischen dem LR-Spawn via `build_long_running_task` und der
-    /// `RegistryEntry.handle`-Setzung in `colony::handle_cell_died` DARF KEIN
-    /// `.await` liegen. Alle vorgelagerten Ops sind sync
+    /// **Corridor duty (phase-5 tripwire)**: the `make_build` closure runs on the
+    /// initial spawn AND on the respawn (`RespawnFn` is `Fn`, not `FnOnce`).
+    /// Between the LR spawn via `build_long_running_task` and setting
+    /// `RegistryEntry.handle` in `colony::handle_cell_died` there must be NO
+    /// `.await`. All preceding ops are sync
     /// (`open_or_create_cell_db_with_status`, `setup_mcp_schema`,
     /// `McpClient::new`, `McpCell::new`, `DbConn::wrap`,
     /// `mpsc::channel`, `tokio::spawn`).
@@ -109,7 +109,7 @@ impl CellFactory for McpCellFactory {
     /// preserved — no MCP I/O loop runs until reconnect). The returned closure
     /// is the SAME construction as `spawn_cell`'s `respawn` (built via the
     /// shared `make_build` helper); an `add_edges` reconnect calls it and the
-    /// Long-Running task starts IMMEDIATELY (spec § Konnektivität & Aktivität:
+    /// long-running task starts IMMEDIATELY (spec § Connectivity and activity:
     /// reactivated Long-Running cells start "sofort"). Restart-inert
     /// (`build()`) like the normal respawn.
     fn build_boot_inactive_respawn(
@@ -161,7 +161,7 @@ impl CellFactory for McpCellFactory {
 /// (boot-inactive: respawn only, no initial spawn) so the `RespawnFn`
 /// construction has ONE definition. The closure is `Fn` (not `FnOnce` —
 /// `RespawnFn` may fire twice) and stays sync + await-free between DB-open and
-/// `tokio::spawn` (Phase-5-Tripwire).
+/// `tokio::spawn` (phase-5 tripwire).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn make_build(
     params: JsonValue,
@@ -213,11 +213,11 @@ fn make_build(
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Receiver<()>,
     ) {
-        // 1. Open cell.db (sync). OpenStatus wird verworfen — der
-        //    Cache ist idempotent re-discoverbar (PK-Overwrite).
+        // 1. Open cell.db (sync). OpenStatus is discarded — the cache is
+        //    idempotently re-discoverable (PK overwrite).
         let (conn, _status) =
             open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db")).expect("open cell.db");
-        // 2. Idempotente DDL (sync, korridor-frei).
+        // 2. Idempotent DDL (sync, outside the corridor).
         setup_mcp_schema(&conn).expect("setup_mcp_schema");
         // 2b. β restore: effective timeouts = birth ⊕ cell.db-Overlay.
         let crate::mcp::params::McpOverlay {
@@ -255,10 +255,10 @@ fn make_build(
     })
 }
 
-/// Provider-Key-Ableitung aus dem Cell-Pfad. Fuehrendes `/` wird
-/// entfernt, innere `/` werden durch `_` ersetzt.
+/// Derives the provider key from the cell path. A leading `/` is removed, inner
+/// `/` characters are replaced by `_`.
 ///
-/// Beispiel: `/main/mcp` → `main_mcp`. Wird in T21 in `spawn_cell`
+/// Example: `/main/mcp` → `main_mcp`. Used in T21 in `spawn_cell`
 /// konsumiert (System-Tools-Slot-Prefix).
 pub(crate) fn provider_key_from_path(path: &Path) -> String {
     path.as_str().trim_start_matches('/').replace('/', "_")

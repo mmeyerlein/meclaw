@@ -1,9 +1,9 @@
-//! GET /colony/dead_letters — Phase 12-B T8.2 (Pure-Read).
-//! DELETE /colony/dead_letters — Phase 12-B T8.3 (Drain).
+//! GET /colony/dead_letters — phase 12-B T8.2 (pure read).
+//! DELETE /colony/dead_letters — phase 12-B T8.3 (drain).
 //!
-//! Pure-Read nutzt `ColonyMsg::ReadDeadLetters` (in-memory Queue, non-destruktiv).
-//! Drain nutzt das vorhandene `ColonyMsg::DrainDeadLetters` — kein neuer
-//! Variant noetig. Beide Endpoints liefern JSON-Slot `dead_letters`.
+//! The pure read uses `ColonyMsg::ReadDeadLetters` (in-memory queue,
+//! non-destructive). The drain uses the existing `ColonyMsg::DrainDeadLetters` —
+//! no new variant needed. Both endpoints return the JSON slot `dead_letters`.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -18,19 +18,19 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `GET /colony/dead_letters`.
+/// Query params for `GET /colony/dead_letters`.
 #[derive(Debug, Deserialize)]
 pub struct DeadLettersQuery {
-    /// Optional: nur Eintraege mit `created_at >= since` (Unix-Sek). Aktuell
-    /// no-op — DLs haben keinen Timestamp (Phase-14-Backlog).
+    /// Optional: only entries with `created_at >= since` (Unix seconds).
+    /// Currently a no-op — dead letters carry no timestamp (phase-14 backlog).
     pub since: Option<i64>,
-    /// Optional: exakter Match auf canonical `error_code` string.
+    /// Optional: exact match on the canonical `error_code` string.
     pub error_code: Option<String>,
     /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
-/// Handler fuer `GET /colony/dead_letters` (Pure-Read).
+/// Handler for `GET /colony/dead_letters` (pure read).
 pub async fn get_dead_letters(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<DeadLettersQuery>,
@@ -63,11 +63,11 @@ pub async fn get_dead_letters(
     )
 }
 
-/// Handler fuer `DELETE /colony/dead_letters` (Drain via `ColonyMsg::DrainDeadLetters`).
+/// Handler for `DELETE /colony/dead_letters` (drain via `ColonyMsg::DrainDeadLetters`).
 ///
-/// Liefert die gedrainten Eintraege als JSON-Slot `dead_letters`, gemappt auf
-/// `DeadLetterDto` (gleiches Schema wie Pure-Read). Status 200 selbst wenn
-/// die Queue leer war — Idempotenz.
+/// Returns the drained entries as the JSON slot `dead_letters`, mapped onto
+/// `DeadLetterDto` (same schema as the pure read). Status 200 even when the
+/// queue was empty — idempotence.
 pub async fn delete_dead_letters(State(colony): State<Arc<ColonyHandle>>) -> impl IntoResponse {
     let (ack_tx, ack_rx) = oneshot::channel();
     if colony

@@ -2,10 +2,10 @@
 //! unreachable: the cell-init failure (post-commit `initialize` connect error)
 //! must take the spec'd supervision path, NOT vanish from the registry.
 //!
-//! Spec (overview § Fehler-Verhalten, Z.1369): a cell-init follow-up failure
+//! Spec (overview § Behavior on errors, l.1369): a cell-init follow-up failure
 //! from an invalid substituted value (the unreachable `endpoint` here) is
-//! caught at "Cell-Init nach Commit" and reacts with "Restart one_for_one,
-//! nach N Retries `failed`-Status". Spec (overview § Restart-Strategie): the
+//! caught at "cell init after commit" and reacts with "restart one_for_one, after
+//! N retries `failed` status". Spec (overview § Restart strategy): the
 //! exhausted entry is RETAINED in the registry as `failed` and may return via
 //! the reconnect semantics — it is never silently removed.
 //!
@@ -133,9 +133,9 @@ async fn install_mcp_template(
     ack_rx.await.unwrap();
 }
 
-/// Befund #9: `add_nodes` of an mcp cell with an unreachable endpoint commits,
+/// Finding #9: `add_nodes` of an mcp cell with an unreachable endpoint commits,
 /// then the init failure runs the one_for_one restart cycle to exhaustion and
-/// the registry RETAINS the entry as `failed` (Z.1369 + § Restart-Strategie).
+/// the registry RETAINS the entry as `failed` (l.1369 + § Restart strategy).
 /// Pre-fix the entry silently vanished (`DeathKind::Normal` → `registry.remove`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn add_nodes_mcp_unreachable_endpoint_commits_then_marks_failed() {

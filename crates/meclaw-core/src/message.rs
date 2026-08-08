@@ -1,4 +1,4 @@
-//! Phase-3a message: ten envelope fields per spec § Message-Modell.
+//! Phase-3a message: ten envelope fields per spec § Message model.
 //!
 //! Phase 3b adds Universal-Body-Format JSON-Schema validation; the body
 //! itself remains `Body::Inline` in 3a.
@@ -11,34 +11,34 @@ use uuid::Uuid;
 /// `colony.json::message_default_ttl` from Phase 4 onward (spec recommendation: 64).
 pub const MESSAGE_DEFAULT_TTL: u32 = 64;
 
-/// Routable message per spec § Message-Modell. All ten envelope fields:
+/// Routable message per spec § Message model. All ten envelope fields:
 /// id, trace_id, parent_message_id, correlation_id, target, reply_to, ttl,
 /// headers, body, created_at.
 #[derive(Debug, Clone)]
 pub struct Message {
-    /// v7 UUID, zeitsortiert, gesetzt von Colony bei jeder neuen Message.
+    /// v7 UUID, time-sorted, set by colony for every new message.
     pub id: Uuid,
-    /// Root-Message-ID, konstant über den gesamten Trace.
+    /// Root message ID, constant across the entire trace.
     pub trace_id: Uuid,
-    /// `None` bei Source-Messages; sonst ID der konsumierten Eingangs-Message.
+    /// `None` on source messages; otherwise the ID of the consumed inbound message.
     pub parent_message_id: Option<Uuid>,
-    /// Optional, für req/resp-Paarung (Cell setzt via header-Slot, Colony propagiert).
+    /// Optional, for req/resp pairing (the cell sets it via the header slot, colony propagates).
     pub correlation_id: Option<Uuid>,
-    /// Adresse (absolut oder relativ-vor-Resolution).
+    /// Address (absolute, or relative before resolution).
     pub target: Path,
-    /// `None` bei Source-Messages; sonst absoluter Pfad des Senders.
+    /// `None` on source messages; otherwise the sender's absolute path.
     pub reply_to: Option<Path>,
-    /// Routing-Step-basierter Hop-Counter, dekrementiert pro Colony-Routing-Entscheidung.
+    /// Routing-step-based hop counter, decremented per colony routing decision.
     pub ttl: u32,
-    /// Routing-Metadaten in zwei Fächern (`context` persistent, `hop` Cell-Output).
+    /// Routing metadata in two compartments (`context` persistent, `hop` cell output).
     pub headers: crate::Headers,
-    /// Inhalt.
+    /// Content.
     pub body: Body,
-    /// Unix-Sekunden (SystemTime → as_secs() as i64), nicht Millisekunden.
+    /// Unix seconds (SystemTime → as_secs() as i64), not milliseconds.
     pub created_at: i64,
 }
 
-/// Unix-Sekunden seit Epoche (spec § Message-Modell Z. 788 — i64, nicht ms).
+/// Unix seconds since the epoch (spec § Message model l. 788: i64, not ms).
 pub fn now_unix_seconds() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

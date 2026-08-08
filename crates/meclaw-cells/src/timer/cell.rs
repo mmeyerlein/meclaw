@@ -1,9 +1,9 @@
-//! `TimerCell` — `LongRunningCell`-Implementierung des `timer`-Cell-Type
-//! (Doppel-Task: Handler + I/O). Der Handler ist DB-Authority: er parst
-//! Schedule-Ops (`add`/`modify`/`remove`) aus der Mailbox, persistiert sie
-//! in `cell.db` und schickt der I/O-Task via `reconfig_tx` einen frischen
-//! Active-Snapshot. Die I/O-Task rechnet `sleep_until` auf der Arbeitskopie
-//! und emittiert die Zündungen. Spec: `docs/cell-types.md` § `timer`.
+//! `TimerCell` — the `LongRunningCell` implementation of the `timer` cell type
+//! (double task: handler + I/O). The handler is the DB authority: it parses
+//! schedule ops (`add`/`modify`/`remove`) off the mailbox, persists them into
+//! `cell.db` and sends the I/O task a fresh active snapshot via `reconfig_tx`.
+//! The I/O task computes `sleep_until` on the working copy and emits the firings.
+//! Spec: `docs/cell-types.md` § `timer`.
 
 use crate::timer::io::{TimerEvent, TimerReconfig};
 use crate::timer::schedule::ActiveSchedule;
@@ -12,25 +12,25 @@ use meclaw_core::{Message, OriginSink, OutputSink, Path};
 use std::future::Future;
 use tokio::sync::mpsc;
 
-/// `timer`-Cell. State lebt single-threaded im Handler-Sub-Task von
-/// `cell_task_long_running` (kein Mutex — Phase-1-Disziplin). `initial_io`
-/// wird einmal von `split_io` rausgezogen + an die I/O-Task uebergeben.
+/// The `timer` cell. State lives single-threaded in the handler sub-task of
+/// `cell_task_long_running` (no mutex — phase-1 discipline). `initial_io` is
+/// pulled out once by `split_io` and handed to the I/O task.
 pub struct TimerCell {
-    /// Eigener Routing-Pfad — disambiguiert die `handle_event`-Skip-Logs,
-    /// wenn mehrere `timer`-Cells in einer Colony laufen.
+    /// The cell's own routing path — disambiguates the `handle_event` skip logs
+    /// when several `timer` cells run in one colony.
     pub(crate) own_path: Path,
-    /// I/O-Initialmenge, wird durch `split_io` einmalig konsumiert.
+    /// The initial I/O set, consumed exactly once by `split_io`.
     pub(crate) initial_io: Option<Vec<ActiveSchedule>>,
     /// β: live effective `query_timeout_ms` (the timer's only overlay field).
-    /// A runtime `params`-update merges over it and applies it to the `DbConn`
-    /// live (Weg C); the next cell.db op runs under the new A-timeout.
+    /// A runtime `params` update merges over it and applies it to the `DbConn`
+    /// live (path C); the next cell.db op runs under the new A timeout.
     pub(crate) query_timeout_ms: u64,
 }
 
 impl TimerCell {
-    /// Konstruktor. `initial_active` kommt aus der Factory (sync-load aus
-    /// `cell.db`, past-onces gefiltert). `query_timeout_ms` ist der effektive
-    /// A-Timeout (Birth ⊕ cell.db-Overlay).
+    /// Constructor. `initial_active` comes from the factory (sync load from
+    /// `cell.db`, past one-shots filtered out). `query_timeout_ms` is the
+    /// effective A timeout (birth ⊕ cell.db overlay).
     pub fn new(own_path: Path, initial_active: Vec<ActiveSchedule>, query_timeout_ms: u64) -> Self {
         Self {
             own_path,
@@ -40,10 +40,10 @@ impl TimerCell {
     }
 }
 
-/// I/O-lokale State-Struktur. Single-Owner (vom I/O-Sub-Task by-value
-/// gehalten). Kein Mutex, kein Arc.
+/// I/O-local state struct. Single owner (held by-value by the I/O sub-task).
+/// No mutex, no Arc.
 pub struct TimerIo {
-    /// Arbeitskopie der aktiven Schedules (cron + future-at).
+    /// Working copy of the active schedules (cron + future-at).
     pub active: Vec<ActiveSchedule>,
 }
 
@@ -58,11 +58,11 @@ impl LongRunningCell for TimerCell {
         }
     }
 
-    /// I/O-Sub-Task — delegiert an `crate::timer::io::run_io` (T8 Korrektur B).
+    /// I/O sub-task — delegates to `crate::timer::io::run_io` (T8 correction B).
     ///
-    /// `+ Send` ist load-bearing (AFIT bindet kein Send; `tokio::spawn`
-    /// in `cell_task_long_running` braucht es). `clippy::manual_async_fn`
-    /// ist stable-1.95 False-Positive — siehe Pattern in
+    /// `+ Send` is load-bearing (AFIT does not bind Send; `tokio::spawn` in
+    /// `cell_task_long_running` needs it). `clippy::manual_async_fn` is a
+    /// stable-1.95 false positive — see the pattern in
     /// `crates/meclaw-colony/src/long_running_cell.rs:96-110`.
     #[allow(clippy::manual_async_fn)]
     fn run_io(
@@ -73,14 +73,14 @@ impl LongRunningCell for TimerCell {
         crate::timer::io::run_io(io, events_tx, reconfig_rx)
     }
 
-    /// Handler fuer Mailbox-Messages. Parst die Op (T12), dispatched
-    /// in `add`/`modify`/`remove`. Bei Parse-/Op-Fehlern: Error-Reply
-    /// via `OutputSink` an `msg.reply_to` (fallback `msg.target` (W2d: eigener Pfad, nicht der READ-Endpoint)).
-    /// Bei Erfolg: frischer Active-Snapshot an die I/O-Task via
-    /// `reconfig_tx` (T13: `add`; T14: `modify`/`remove`).
+    /// Handler for mailbox messages. Parses the op (T12) and dispatches into
+    /// `add`/`modify`/`remove`. On parse/op errors: an error reply via
+    /// `OutputSink` to `msg.reply_to` (fallback `msg.target` (W2d: its own path,
+    /// not the READ endpoint)). On success: a fresh active snapshot to the I/O
+    /// task via `reconfig_tx` (T13: `add`; T14: `modify`/`remove`).
     ///
-    /// Korrektur A: Parse-Errors mit Prefix `"cron:"` → `invalid_cron`;
-    /// sonst generisches `parse_error`.
+    /// Correction A: parse errors with the prefix `"cron:"` map to
+    /// `invalid_cron`; everything else to a generic `parse_error`.
     #[allow(clippy::manual_async_fn)]
     fn handle<'a>(
         &'a mut self,
@@ -103,9 +103,10 @@ impl LongRunningCell for TimerCell {
                     return;
                 }
             };
-            // β: params-update slot (config.md § Zugriff Z.20). The timer's only
-            // overlay field is `query_timeout_ms` (Weg C, sofort-live); schedules
-            // change via the ops below, not here. A params-update is standalone:
+            // β: params-update slot (config.md § Access l.20). The timer's only
+            // overlay field is `query_timeout_ms` (path C, immediately live);
+            // schedules change via the ops below, not here. A params update is
+            // standalone:
             // apply + persist + live-set, then return silently (no op follows).
             if let Some(params_val) = body_val.get("params") {
                 let update_obj = match params_val.as_object() {
@@ -155,7 +156,7 @@ impl LongRunningCell for TimerCell {
                                 return;
                             }
                         }
-                        // Live apply (Weg C, sofort-live).
+                        // Live apply (path C, immediately live).
                         self.query_timeout_ms = new_ov.query_timeout_ms;
                         db.set_query_timeout(Some(std::time::Duration::from_millis(
                             self.query_timeout_ms,
@@ -219,9 +220,9 @@ impl LongRunningCell for TimerCell {
                     new_at,
                     new_emit_to,
                 } => {
-                    // Type-Mismatch-Guard: cron-Update auf at-Row oder at-
-                    // Update auf cron-Row → reject (Spec: modify wechselt
-                    // den Typ nicht).
+                    // Type-mismatch guard: a cron update on an at row or an at
+                    // update on a cron row is rejected (spec: modify does not
+                    // switch the type).
                     let current = match db
                         .call_with_timeout(move |c| crate::timer::db::load_schedule(c, schedule_id))
                         .await
@@ -333,14 +334,14 @@ impl LongRunningCell for TimerCell {
         }
     }
 
-    /// Handler fuer I/O-Events — T11: race-check + State-vor-Emit
-    /// (Phase-5-Kanon). Persist BEVOR Emit. Emit folgt in T15.
+    /// Handler for I/O events — T11: race check + state-before-emit (phase-5
+    /// canon). Persist BEFORE emitting. The emit follows in T15.
     ///
-    /// Sequenz:
-    /// 1. `load_schedule` — Row holen. None oder `status != "active"`:
-    ///    skip (race: zwischen I/O-Fire-Push und handle_event passierte
-    ///    eine remove/complete-Op).
-    /// 2. Persist: repeating → `bump_iteration`; once → `mark_completed`.
+    /// Sequence:
+    /// 1. `load_schedule` — fetch the row. None or `status != "active"`: skip
+    ///    (race: a remove/complete op happened between the I/O fire push and
+    ///    handle_event).
+    /// 2. Persist: repeating → `bump_iteration`; one-shot → `mark_completed`.
     /// 3. Emit (T15).
     #[allow(clippy::manual_async_fn)]
     fn handle_event<'a>(
@@ -355,7 +356,7 @@ impl LongRunningCell for TimerCell {
                 scheduled_at,
             } = event;
 
-            // 1. SELECT — race-check. Under query_timeout (Weg C): on Interrupt,
+            // 1. SELECT — race check. Under query_timeout (path C): on Interrupt,
             // skip this fire (no emit) — a timed-out load means the cell.db is
             // overloaded; better to drop the tick than block.
             let row = match db
@@ -390,7 +391,7 @@ impl LongRunningCell for TimerCell {
                 return;
             }
 
-            // 2. State-vor-Emit (Phase-5-Kanon).
+            // 2. State before emit (phase-5 canon).
             let is_once = matches!(row.kind, crate::timer::schedule::ScheduleKind::At(_));
             if is_once {
                 let _ = db
@@ -402,12 +403,11 @@ impl LongRunningCell for TimerCell {
                     .await;
             }
 
-            // 3. UBF-Body + Auto-Set-Header (T15). Auto-Set-Header
-            //    ueberschreiben kollidierende `emit_headers` strikt
-            //    (cell-types.md Z.441–451). RFC-3339-Z via
-            //    `to_rfc3339_opts(SecondsFormat::Secs, true)`. Emit via
-            //    OriginSink → parent_message_id=None, fresh trace_id
-            //    (overview Z.852).
+            // 3. UBF body + auto-set headers (T15). Auto-set headers strictly
+            //    override colliding `emit_headers` (cell-types.md l.441-451).
+            //    RFC-3339-Z via `to_rfc3339_opts(SecondsFormat::Secs, true)`.
+            //    Emit via OriginSink → parent_message_id=None, fresh trace_id
+            //    (overview l.852).
             let content = build_fire_content(&row, scheduled_at, is_once);
             let _ = sink
                 .emit(meclaw_core::CellOutput {
@@ -419,15 +419,15 @@ impl LongRunningCell for TimerCell {
     }
 }
 
-/// Baut den UBF-Content fuer eine Fire-Emission. `row.emit_body` traegt
-/// den Cell-Payload; `row.emit_headers` wird mit den Auto-Set-Headern
-/// gemergt — Auto-Set-Header **ueberschreiben** kollidierende Keys strikt
-/// (Spec cell-types.md Z.441–451). `iteration_n` wird NUR fuer repeating
-/// (cron) gesetzt; once omitted das Feld (Spec Z.427/449).
+/// Builds the UBF content for a fire emission. `row.emit_body` carries the cell
+/// payload; `row.emit_headers` is merged with the auto-set headers — auto-set
+/// headers strictly **override** colliding keys (spec cell-types.md l.441-451).
+/// `iteration_n` is set ONLY for repeating (cron) schedules; a one-shot omits the
+/// field (spec l.427/449).
 ///
-/// `iteration_n` ist der PRE-bump-Wert: T11 hat in der DB bereits +1
-/// gemacht, aber `row` wurde davor geladen — der erste Fire fuer einen
-/// frisch INSERTed cron traegt also iteration_n=0 (Spec „ab 0").
+/// `iteration_n` is the PRE-bump value: T11 already did the +1 in the DB, but
+/// `row` was loaded before that — so the first fire of a freshly INSERTed cron
+/// carries iteration_n=0 (spec: "from 0").
 fn build_fire_content(
     row: &crate::timer::schedule::ScheduleRow,
     scheduled_at: chrono::DateTime<chrono::Utc>,
@@ -466,10 +466,10 @@ fn build_fire_content(
     content
 }
 
-/// Helper: laedt den aktuellen Active-Snapshot frisch aus `cell.db`
-/// (past-once-Filter inklusive) und schickt ihn als `SetActive` an die
-/// I/O-Task. Fire-and-forget — bei vollem Channel oder Empfaenger-Tod
-/// schluckt der Helper still.
+/// Helper: loads the current active snapshot fresh from `cell.db` (including the
+/// past-one-shot filter) and sends it as `SetActive` to the I/O task.
+/// Fire-and-forget — on a full channel or a dead receiver the helper swallows
+/// silently.
 async fn send_setactive_snapshot(
     db: &mut DbConn,
     reconfig_tx: &mpsc::Sender<crate::timer::io::TimerReconfig>,

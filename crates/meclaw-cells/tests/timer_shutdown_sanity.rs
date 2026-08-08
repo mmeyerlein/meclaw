@@ -1,15 +1,15 @@
 //! Phase-10-B T10: Substrat-Shutdown-Sanity (Phase-10-A-Lesson Z.290–333).
 //!
-//! Endlos-I/O (real `sleep_until` auf once in 2099) muss bei Mailbox-Close
-//! prompt terminieren. Beweis, dass der **Mailbox-Close-Abort-Pfad** durch
-//! `cell_task_long_running` greift — NICHT der events-Channel-Close-Pfad:
+//! Endless I/O (a real `sleep_until` on a one-shot in 2099) must terminate
+//! promptly on mailbox close. Proof that the **mailbox-close abort path** through
+//! `cell_task_long_running` takes effect — NOT the events-channel close path:
 //!
-//! - I/O-Sub-Task steht in `sleep_until(2099)` — kein `events_tx.send` →
-//!   events-Channel-Close-Pfad ist konstruktiv unerreichbar.
-//! - Test sendet bewusst KEINE Message (`handle()` ist noch
-//!   `unimplemented!()`-Stub aus T7). Damit ist die einzige Termination-
-//!   Quelle der `mailbox.recv() == None`-Arm im `handler_loop`.
-//! - `drop(in_tx)` schliesst die Mailbox → `handler_loop` `break` →
+//! - The I/O sub-task sits in `sleep_until(2099)` — no `events_tx.send` → the
+//!   events-channel close path is constructionally unreachable.
+//! - The test deliberately sends NO message (`handle()` is still the
+//!   `unimplemented!()` stub from T7). So the only source of termination is the
+//!   `mailbox.recv() == None` arm in `handler_loop`.
+//! - `drop(in_tx)` closes the mailbox → `handler_loop` `break` →
 //!   `handler_join` returnt → outer `select!` in `cell_task_long_running`
 //!   aborted `io_join` → `join.await` terminiert vor 5 s.
 
@@ -49,16 +49,16 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_sleep_until() {
         None,
     ));
 
-    // Sanity: nichts feuert innerhalb 200 ms (sleep_until liegt in 2099).
+    // Sanity: nothing fires within 200 ms (sleep_until is set to 2099).
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Mailbox close → handler.mailbox.recv() returns None → break →
-    // outer aborts I/O sub-task. Termination via Mailbox-Close-Abort-Pfad.
-    // (handle() ist noch unimplemented!() — Test sendet BEWUSST KEINE
-    //  Message, sonst panickt der Handler statt sauber zu schliessen.)
+    // outer aborts the I/O sub-task. Termination via the mailbox-close abort path.
+    // (handle() is still unimplemented!() — the test DELIBERATELY sends no message,
+    //  otherwise the handler would panic instead of closing cleanly.)
     drop(in_tx);
     tokio::time::timeout(Duration::from_secs(30), join)
         .await
-        .expect("Substrat hat nicht prompt geshutdownt")
+        .expect("substrate did not shut down promptly")
         .unwrap();
 }

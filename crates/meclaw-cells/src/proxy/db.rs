@@ -1,12 +1,12 @@
-//! Phase-10-C: `cell.db.update_cursor`-Single-Row + Persist-Helpers.
-//! W3: eine Instanz = ein Bot = ein Cursor. Sync rusqlite; Aufruf via
-//! `DbConn::call` (außer in der Factory, wo's vor `DbConn::wrap` läuft).
+//! Phase-10-C: the `cell.db.update_cursor` single row + persist helpers.
+//! W3: one instance = one bot = one cursor. Sync rusqlite, called via
+//! `DbConn::call` (except in the factory, where it runs before `DbConn::wrap`).
 
 use rusqlite::Connection;
 
-/// Idempotente DDL für die `update_cursor`-Single-Row-Tabelle.
-/// Mehrfach-Aufruf ist safe (`CREATE TABLE IF NOT EXISTS`). Wird in der
-/// Factory pro Spawn aufgerufen — vor `DbConn::wrap`, korridor-frei.
+/// Idempotent DDL for the `update_cursor` single-row table.
+/// Calling it repeatedly is safe (`CREATE TABLE IF NOT EXISTS`). Invoked by the
+/// factory once per spawn — before `DbConn::wrap`, outside the corridor.
 pub fn setup_proxy_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS update_cursor (

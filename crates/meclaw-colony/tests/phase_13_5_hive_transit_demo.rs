@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 /// mirrors the `phase_13_5_a6_demo` poll-then-drain pattern. Returns ALL drained
 /// entries (the snapshot at the moment the wanted target first showed up, or at
 /// the deadline), so the caller can also assert on co-resident DLQ entries
-/// (trennschärfe).
+/// (discriminating power).
 async fn drain_until_target(h: &ColonyHandle, target: &str) -> Vec<meclaw_colony::DeadLetter> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -172,7 +172,7 @@ async fn message_to_hive_routes_via_cel_edge_to_cell() {
 // out-edge) dead-letters as `hive_no_route` — NOT `unresolved_path`. The same
 // test routes to a path that is neither a cell nor a hive and asserts that case
 // dead-letters as `unresolved_path`. Both DLQ entries are inspected in one test
-// to prove the trennschärfe (F3): the hive WAS reachable, the graph just had no
+// to prove the discriminating power (F3): the hive WAS reachable, the graph just had no
 // onward route; the bogus path was never reachable at all.
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -747,7 +747,7 @@ async fn add_edges_mutation_with_hive_endpoint_accepted_and_fires() {
 //
 // Two nested hives /x and /y. An `add_edges` mutation declaring x -> y AND
 // y -> x forms a 2-hive cycle in the post-state graph. Spec overview
-// § Validierung: meclaw-Core does not reject cycles generally — the mutation
+// § Validation: meclaw-Core does not reject cycles generally — the mutation
 // COMMITS. Endpoint-existence still applies (both hive short-names "x"/"y" are
 // valid Cell ∪ Hive endpoints); the runtime TTL loop-guard
 // (`hive_cycle_terminates_with_ttl_expired`) bounds any traversal.

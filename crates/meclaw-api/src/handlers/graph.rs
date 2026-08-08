@@ -1,8 +1,8 @@
 //! GET /colony/graph — Phase 12-B T8.7.
 //!
-//! Liefert eine scope-gefilterte Nodes+Edges-Snapshot via `ColonyMsg::ReadGraph`.
-//! `?scope=<path>` (default `/`). Reply ist nicht ein Array — sondern das volle
-//! Schema `{scope, graph_version, nodes, edges}` (Spec Z.410).
+//! Returns a scope-filtered nodes+edges snapshot via `ColonyMsg::ReadGraph`.
+//! `?scope=<path>` (default `/`). The reply is not an array but the full schema
+//! `{scope, graph_version, nodes, edges}` (spec l.410).
 
 use crate::ColonyHandle;
 use axum::Json;
@@ -16,14 +16,14 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `GET /colony/graph`.
+/// Query params for `GET /colony/graph`.
 #[derive(Debug, Deserialize)]
 pub struct GraphQuery {
-    /// Scope-Prefix; default `/` (alles).
+    /// Scope prefix; default `/` (everything).
     pub scope: Option<String>,
 }
 
-/// Handler fuer `GET /colony/graph`.
+/// Handler for `GET /colony/graph`.
 pub async fn get_graph(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<GraphQuery>,

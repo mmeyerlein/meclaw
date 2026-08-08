@@ -1,7 +1,7 @@
-//! Phase-10-C: `ProxyCell` — implementiert `LongRunningCell` aus 10-A.
-//! Handler ist DB-Authority (Cursor-Persist + Inbound-Sink-Calls); I/O
-//! pollt Telegram in einer Endlos-Loop. State single-threaded im Handler-
-//! Sub-Task (kein Mutex — Phase-1-Disziplin).
+//! Phase-10-C: `ProxyCell` — implements `LongRunningCell` from 10-A.
+//! The handler is the DB authority (cursor persist + inbound sink calls); the I/O
+//! side polls Telegram in an endless loop. State is single-threaded in the
+//! handler sub-task (no mutex — phase-1 discipline).
 
 use crate::proxy::io::{ProxyEvent, ProxyReconfig, RunIoConfig, run_io};
 use crate::proxy::telegram::TelegramClient;
@@ -10,35 +10,35 @@ use meclaw_core::{Message, OriginSink, OutputSink, Path};
 use std::future::Future;
 use tokio::sync::mpsc;
 
-/// `proxy`-Cell. State lebt single-threaded im Handler-Sub-Task von
-/// `cell_task_long_running`. `initial_io_cfg` wird einmal von `split_io`
-/// rausgezogen + an die I/O-Task uebergeben.
+/// The `proxy` cell. State lives single-threaded in the handler sub-task of
+/// `cell_task_long_running`. `initial_io_cfg` is pulled out once by `split_io`
+/// and handed to the I/O task.
 pub struct ProxyCell {
-    /// Reqwest-Client-Clone (Arc-internal) fuer `handle`/`sendMessage`-Calls.
+    /// reqwest client clone (Arc internally) for the `handle`/`sendMessage` calls.
     pub(crate) client: TelegramClient,
-    /// Routing-Target fuer User-Source-Messages (W4 Pflichtfeld).
+    /// Routing target for user-source messages (W4, mandatory field).
     pub(crate) emit_to: Path,
-    /// A-Timeout fuer `sendMessage` aus `handle` (W7). β: mutable, Weg A (live).
+    /// A timeout for `sendMessage` from `handle` (W7). β: mutable, path A (live).
     pub(crate) send_timeout_ms: u64,
-    /// β: live poll-config (Weg B) — held so a params-update can merge over it
+    /// β: live poll config (path B) — held so a params update can merge over it
     /// and signal the I/O-task via `ProxyReconfig::SetPolling`.
     pub(crate) long_poll_timeout_ms: u64,
-    /// β: live poll-config (Weg B).
+    /// β: live poll config (path B).
     pub(crate) long_poll_request_secs: u64,
-    /// β: live Telegram API base URL (Weg B). On a params-update the handler
+    /// β: live Telegram API base URL (path B). On a params update the handler
     /// rebuilds `self.client` (sendMessage) AND signals the I/O-task to rebuild
     /// its client — both via `TelegramClient::with_base_url` (bot_token rehold).
     pub(crate) base_url: String,
-    /// β: live `query_timeout_ms` (Weg C, cell.db ops via DbConn).
+    /// β: live `query_timeout_ms` (path C, cell.db ops via DbConn).
     pub(crate) query_timeout_ms: u64,
-    /// I/O-Initialkonfig, wird durch `split_io` einmalig konsumiert.
+    /// Initial I/O config, consumed exactly once by `split_io`.
     pub(crate) initial_io_cfg: Option<RunIoConfig>,
 }
 
 impl ProxyCell {
-    /// Konstruktor. `initial_offset` kommt aus der Factory (sync `load_offset`
-    /// aus `cell.db`, W9 Resume-Pfad). `client` ist der initial gebaute
-    /// Reqwest-Client; `split_io` cloned ihn intern (ueber `RunIoConfig`).
+    /// Constructor. `initial_offset` comes from the factory (sync `load_offset`
+    /// from `cell.db`, W9 resume path). `client` is the initially built reqwest
+    /// client; `split_io` clones it internally (through `RunIoConfig`).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: TelegramClient,
@@ -69,8 +69,8 @@ impl ProxyCell {
     }
 }
 
-/// I/O-lokale State-Struktur. Single-Owner (vom I/O-Sub-Task by-value
-/// gehalten). Kein Mutex, kein Arc.
+/// I/O-local state struct. Single owner (held by-value by the I/O sub-task).
+/// No mutex, no Arc.
 pub struct ProxyIo {
     pub(crate) cfg: RunIoConfig,
 }
@@ -86,11 +86,11 @@ impl LongRunningCell for ProxyCell {
         }
     }
 
-    /// I/O-Sub-Task — delegiert an `crate::proxy::io::run_io`.
-    /// `+ Send` ist load-bearing (AFIT bindet kein Send; `tokio::spawn`
-    /// in `cell_task_long_running` braucht es). `clippy::manual_async_fn`
-    /// ist stable-1.95 False-Positive — siehe Pattern in
-    /// `crates/meclaw-colony/src/long_running_cell.rs:96-110` und
+    /// I/O sub-task — delegates to `crate::proxy::io::run_io`.
+    /// `+ Send` is load-bearing (AFIT does not bind Send; `tokio::spawn` in
+    /// `cell_task_long_running` needs it). `clippy::manual_async_fn` is a
+    /// stable-1.95 false positive — see the pattern in
+    /// `crates/meclaw-colony/src/long_running_cell.rs:96-110` and
     /// `crates/meclaw-cells/src/timer/cell.rs:63-70`.
     #[allow(clippy::manual_async_fn)]
     fn run_io(
@@ -101,14 +101,14 @@ impl LongRunningCell for ProxyCell {
         run_io(io.cfg, events_tx, reconfig_rx)
     }
 
-    /// Inbound-Sink-Pfad (W4–W7, W12). Extrahiert `chat_id` aus dem
-    /// `context`-Fach der Message (Standard-Header-Konvention; Befund 1),
-    /// sucht den letzten assistant-Text-Turn in
-    /// `body.messages[]` und ruft `TelegramClient::send_message` mit
-    /// `send_timeout_ms` (A-Timeout). Pure-Sink-Disziplin (cell-types.md
-    /// Z.372): bei Erfolg KEIN OutputSink-Emit. Fehlerpfade (`invalid_body`,
-    /// `missing_chat_id`, `missing_assistant_turn`, `send_failed`) gehen
-    /// über `emit::emit_inbound_error` (T13).
+    /// Inbound sink path (W4-W7, W12). Extracts `chat_id` from the message's
+    /// `context` compartment (standard header convention; finding 1), looks for
+    /// the last assistant text turn in `body.messages[]` and calls
+    /// `TelegramClient::send_message` with `send_timeout_ms` (A timeout).
+    /// Pure-sink discipline (cell-types.md l.372): on success there is NO
+    /// OutputSink emit. The failure paths (`invalid_body`, `missing_chat_id`,
+    /// `missing_assistant_turn`, `send_failed`) go through
+    /// `emit::emit_inbound_error` (T13).
     #[allow(clippy::manual_async_fn)]
     fn handle<'a>(
         &'a mut self,
@@ -118,7 +118,7 @@ impl LongRunningCell for ProxyCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
-            // 1. Body muss inline-lesbar sein (messages[]-Extraktion unten).
+            // 1. The body must be inline-readable (messages[] extraction below).
             let body_val = match &msg.body {
                 meclaw_core::Body::Inline(v) => v.clone(),
                 _ => {
@@ -133,10 +133,10 @@ impl LongRunningCell for ProxyCell {
                 }
             };
 
-            // β: params-update slot (config.md § Zugriff Z.20), handled FIRST.
-            // Mutable: send_timeout_ms (Weg A), long_poll_*/base_url (Weg B → I/O
+            // β: params-update slot (config.md § Access l.20), handled FIRST.
+            // Mutable: send_timeout_ms (path A), long_poll_*/base_url (path B → I/O
             // via reconfig_tx; base_url also rebuilds self.client), query_timeout_ms
-            // (Weg C → DbConn). Immutable: bot_token, emit_to. params-only → silent.
+            // (path C → DbConn). Immutable: bot_token, emit_to. params-only → silent.
             if let Some(params_val) = body_val.get("params") {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
@@ -190,12 +190,12 @@ impl LongRunningCell for ProxyCell {
                             }
                         }
                         // Live apply across all three ways.
-                        self.send_timeout_ms = new_ov.send_timeout_ms; // Weg A
-                        self.query_timeout_ms = new_ov.query_timeout_ms; // Weg C
+                        self.send_timeout_ms = new_ov.send_timeout_ms; // path A
+                        self.query_timeout_ms = new_ov.query_timeout_ms; // path C
                         db.set_query_timeout(Some(std::time::Duration::from_millis(
                             self.query_timeout_ms,
                         )));
-                        // Weg B: poll-config + base_url. Rebuild the handler's own
+                        // Path B: poll config + base_url. Rebuild the handler's own
                         // client (sendMessage) with the new base_url (bot_token
                         // rehold internally), and signal the I/O-task to do the same.
                         self.long_poll_timeout_ms = new_ov.long_poll_timeout_ms;
@@ -225,15 +225,15 @@ impl LongRunningCell for ProxyCell {
                 // Standalone params-update → done (no inbound send in this message).
                 return;
             }
-            // 2. chat_id aus dem `context`-Fach (Standard-Header-Konvention,
-            //    overview § Standard-Header-Konvention — `chat_id` lebt im
-            //    persistenten `context`; cell-types.md § proxy: Reply-Routing
-            //    "über chat_id aus den Headers"). Befund 1: vorher las der
-            //    Inbound `body.header.chat_id`, aber Colony strippt jedes
-            //    emittierte `content.header` ins `hop`-Fach (`split_content_header`),
-            //    das bei der nächsten Emission verfällt — in einer gerouteten
-            //    Topologie sah das Reply-Leg nie eine `chat_id` und starb als
-            //    `missing_chat_id`.
+            // 2. chat_id from the `context` compartment (standard header
+            //    convention, overview § Standard header convention — `chat_id`
+            //    lives in the persistent `context`; cell-types.md § proxy:
+            //    reply routing "via chat_id from the headers"). Finding 1:
+            //    previously the inbound path read `body.header.chat_id`, but
+            //    colony strips every emitted `content.header` into the `hop`
+            //    compartment (`split_content_header`), which decays on the next
+            //    emission — in a routed topology the reply leg never saw a
+            //    `chat_id` and died as `missing_chat_id`.
             let chat_id = msg.headers.context.get("chat_id").and_then(|v| v.as_i64());
             let Some(chat_id) = chat_id else {
                 crate::proxy::emit::emit_inbound_error(
@@ -246,7 +246,7 @@ impl LongRunningCell for ProxyCell {
                 return;
             };
 
-            // 3. Letzten assistant-Turn aus messages[] extrahieren.
+            // 3. Extract the last assistant turn from messages[].
             let text = body_val
                 .get("messages")
                 .and_then(|m| m.as_array())
@@ -260,8 +260,8 @@ impl LongRunningCell for ProxyCell {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let Some(text) = text else {
-                // W12 (ruling 2026-05-24): KEIN silent drop. Error-Reply
-                // analog W5/W6 — symmetrische Inbound-Fehlerklassifikation.
+                // W12 (ruling 2026-05-24): NO silent drop. An error reply
+                // analogous to W5/W6 — symmetric inbound failure classification.
                 crate::proxy::emit::emit_inbound_error(
                     sink,
                     &msg,
@@ -272,10 +272,10 @@ impl LongRunningCell for ProxyCell {
                 return;
             };
 
-            // 4. sendMessage-Call (W7 A-Timeout via Client). Fehler → T13.
+            // 4. sendMessage call (W7 A timeout via the client). Errors → T13.
             let timeout = std::time::Duration::from_millis(self.send_timeout_ms);
             match self.client.send_message(chat_id, &text, timeout).await {
-                Ok(()) => {} // Pure Sink: kein Emit bei Erfolg.
+                Ok(()) => {} // Pure sink: no emit on success.
                 Err(e) => {
                     crate::proxy::emit::emit_inbound_error(
                         sink,
@@ -289,13 +289,13 @@ impl LongRunningCell for ProxyCell {
         }
     }
 
-    /// Phase-5-Kanon (State-vor-Emit): persistiert den Update-Cursor
-    /// (`save_offset(update_id + 1)`) VOR der OriginSink-Emission.
-    /// Bei Cell-Crash zwischen Persist und Emit verliert die Topologie
-    /// höchstens ein Event; ein Crash zwischen Emit und Persist würde
-    /// dasselbe Event nach Restart re-deliver'n — deshalb Persist zuerst.
-    /// Emission läuft via `OriginSink` (parent=None, fresh trace), Target
-    /// ist das in `params.emit_to` konfigurierte Routing-Ziel.
+    /// Phase-5 canon (state before emit): persists the update cursor
+    /// (`save_offset(update_id + 1)`) BEFORE the OriginSink emission.
+    /// If the cell crashes between persist and emit, the topology loses at most
+    /// one event; a crash between emit and persist would re-deliver the same
+    /// event after a restart — hence persist first. The emission runs via
+    /// `OriginSink` (parent=None, fresh trace), and the target is the routing
+    /// destination configured in `params.emit_to`.
     #[allow(clippy::manual_async_fn)]
     fn handle_event<'a>(
         &'a mut self,
@@ -312,14 +312,14 @@ impl LongRunningCell for ProxyCell {
                 text,
             } = event;
 
-            // 1. State-vor-Emit (Phase-5-Kanon): Cursor persistieren VOR Emit.
+            // 1. State before emit (phase-5 canon): persist the cursor BEFORE emitting.
             let next_offset = update_id + 1;
-            // Weg C: cell.db op under query_timeout_ms (via DbConn::call_with_timeout).
+            // Path C: cell.db op under query_timeout_ms (via DbConn::call_with_timeout).
             let _ = db
                 .call_with_timeout(move |c| crate::proxy::db::save_offset(c, next_offset))
                 .await;
 
-            // 2. UBF-Content bauen + via OriginSink (parent=None, fresh trace).
+            // 2. Build the UBF content + emit via OriginSink (parent=None, fresh trace).
             let content =
                 crate::proxy::emit::build_user_turn_content(chat_id, user_id, message_id, &text);
             let _ = sink

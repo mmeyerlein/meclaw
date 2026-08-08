@@ -1,7 +1,7 @@
 //! Phase-10-B Demo. Zwei Tests:
-//! 1. Fire: Anti-Cascade (/sink zuerst), op:add cron */1, Receipts mit
+//! 1. Fire: anti-cascade (/sink first), op:add cron */1, receipts with
 //!    vollstaendigem Header-Set + monotonen iteration_n.
-//! 2. Substrat-Shutdown mit once 2099 — Mailbox-Close-Abort-Pfad.
+//! 2. Substrate shutdown with a one-shot at 2099 — the mailbox-close abort path.
 
 use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::CellFactory;
@@ -17,13 +17,13 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
     let h = ColonyHandle::new();
     let (recv_tx, mut recv_rx) = mpsc::channel::<Message>(32);
 
-    // Anti-Cascade: /sink ZUERST registrieren (Phase-6.5-Lesson).
+    // Anti-cascade: register /sink FIRST (phase-6.5 lesson).
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(recv_tx.clone())
     })
     .await;
 
-    // Timer registrieren via Factory (Production-Pfad).
+    // Register the timer via the factory (production path).
     let td = TempDir::new().unwrap();
     let cell_dir = td.path().join("timer");
     std::fs::create_dir_all(&cell_dir).unwrap();
@@ -52,7 +52,7 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
     )
     .await;
 
-    // op:add — */1 * * * * * → jede Sekunde feuern.
+    // op:add — */1 * * * * * → fire every second.
     let sid = Uuid::now_v7();
     h.send(
         MessageBuilder::new(Path::new("/timer"))
@@ -65,8 +65,8 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
     )
     .await;
 
-    // ~3.5s sammeln. Outer-Deadline + Inner-Recv-Timeout (200ms) — kein
-    // Block-rx, sonst Hang-Risiko.
+    // Collect for ~3.5s. Outer deadline + inner recv timeout (200ms) — no
+    // blocking rx, which would risk a hang.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(3500);
     let mut hits: Vec<Message> = Vec::new();
     while tokio::time::Instant::now() < deadline {
@@ -76,14 +76,14 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
         }
     }
 
-    // Untere Schranke: ≥2 Receipts. KEIN Upper-Bound (flake-Robustheit).
+    // Lower bound: ≥2 receipts. NO upper bound (flake robustness).
     assert!(
         hits.len() >= 2,
         "expected >=2 fires within ~3.5s, got {}",
         hits.len()
     );
 
-    // Header-Vollstaendigkeit + Werte pro Receipt.
+    // Header completeness + values per receipt.
     let mut iters: Vec<i64> = Vec::new();
     for (i, m) in hits.iter().enumerate() {
         let h = &m.headers.hop;
@@ -110,9 +110,9 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
             .expect("fired_at");
         assert!(scheduled_at.ends_with('Z'), "scheduled_at RFC-3339-Z");
         assert!(fired_at.ends_with('Z'), "fired_at RFC-3339-Z");
-        // Beide sind SecondsFormat::Secs — fired_at kann strikt > oder
-        // gleich sein (real ms-spaeter, aber auf Sekunde gerundet
-        // identisch). Spec verlangt Reihenfolge, nicht strikte
+        // Both are SecondsFormat::Secs — fired_at may be strictly greater or
+        // equal (really milliseconds later, but identical once rounded to the
+        // second). The spec demands ordering, not strict
         // Differenz auf Sekunden-Aufloesung.
         assert!(
             scheduled_at <= fired_at,
@@ -124,7 +124,7 @@ async fn phase_10b_demo_fire_via_per_second_cron() {
             .expect("iteration_n");
         iters.push(iter);
     }
-    // Monotonie ab 0 (untere Schranke — keine feste Sequenz, flake-robust).
+    // Monotonic from 0 (a lower bound — no fixed sequence, flake-robust).
     assert_eq!(iters[0], 0, "first iteration_n is 0");
     for w in iters.windows(2) {
         assert!(w[1] > w[0], "iteration_n strictly increasing: {:?}", iters);
@@ -141,9 +141,9 @@ async fn phase_10b_demo_substrate_shutdown_with_once_in_2099() {
     use meclaw_colony::{DbConn, cell_task_long_running};
     use meclaw_core::CellEmission;
 
-    // Echte TimerCell mit einem once-Schedule weit in der Zukunft → I/O-
+    // A real TimerCell with a one-shot schedule far in the future → I/O
     // Sub-Task haengt real in `sleep_until` (Phase-10-A-Lesson, commit
-    // 31c15b6: kein hohler `pending().await`).
+    // 31c15b6: not a hollow `pending().await`).
     let active = vec![ActiveSchedule {
         schedule_id: Uuid::now_v7(),
         kind: ScheduleKind::At(Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap()),
@@ -170,26 +170,26 @@ async fn phase_10b_demo_substrate_shutdown_with_once_in_2099() {
         None,
     ));
 
-    // Sanity: 200 ms warten — `run_io` steht REAL in `sleep_until`
-    // (Ziel: 2099). Wenn cell_task_long_running hier schon terminiert
-    // waere, lief es nicht ueber den echten sleep_until-Pfad.
+    // Sanity: wait 200 ms — `run_io` really sits in `sleep_until` (target:
+    // 2099). If cell_task_long_running had already terminated here, it did not
+    // run through the real sleep_until path.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(
         !join.is_finished(),
-        "cell_task laeuft (sleep_until in 2099)"
+        "cell_task is running (sleep_until in 2099)"
     );
 
-    // Mailbox-Close-Abort-Pfad (Phase-10-A-Lesson, Second-Order-Trap):
-    // drop(in_tx) → handler_loop's mailbox.recv() → None → break aus dem
+    // Mailbox-close abort path (phase-10-A lesson, the second-order trap):
+    // drop(in_tx) → handler_loop's mailbox.recv() → None → break out of the
     // handler_loop → handler_join completes → outer select! in
-    // cell_task_long_running abortet io_join → return. KEIN
-    // events-Channel-Close (das waere der falsche Pfad: events_tx ist
-    // run_io-internal und schliesst erst beim Drop des Senders, der nur
-    // beim run_io-Return passiert — also Henne-Ei mit dem sleep_until
+    // cell_task_long_running aborts io_join → return. NOT an events-channel
+    // close (that would be the wrong path: events_tx is run_io-internal and only
+    // closes when the sender drops, which only happens on run_io's return — a
+    // chicken-and-egg with the sleep_until
     // in 2099).
     drop(in_tx);
     tokio::time::timeout(Duration::from_secs(30), join)
         .await
-        .expect("Substrat-Shutdown nicht prompt")
+        .expect("substrate shutdown was not prompt")
         .unwrap();
 }

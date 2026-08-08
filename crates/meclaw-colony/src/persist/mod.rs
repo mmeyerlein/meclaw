@@ -1,4 +1,4 @@
-//! Persistenz-Modul: cell.db- und colony.db-Helpers.
+//! Persistence module: cell.db and colony.db helpers.
 
 pub mod cell_db;
 pub mod colony_db;

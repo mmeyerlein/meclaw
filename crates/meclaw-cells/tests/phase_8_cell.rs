@@ -240,12 +240,12 @@ fn redact_authorization_replaces_value() {
     assert_eq!(r.get("content-type"), Some(&"application/json".to_string()));
 }
 
-// ───── T20/T21: LlmCell::handle Schritt 5..8 (Build-Translate + HTTP-Call +
+// ───── T20/T21: LlmCell::handle steps 5..8 (build-translate + HTTP call +
 //       Parse-Response + Emit-Assistant-Turn) ─────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn llm_cell_handle_with_messages_hits_mock_openai() {
-    // T20 + T21 integration: full happy path through Schritt 1..8 — parse,
+    // T20 + T21 integration: full happy path through steps 1..8 — parse,
     // persist, read_system_tree, build_openai_request, call_openai →
     // MockOpenAI, parse_openai_response, emit_assistant_turn. Asserts:
     // (1) MockOpenAI received exactly 1 request with leading-system + user.
@@ -571,7 +571,7 @@ async fn llm_cell_handle_response_parse_fail_emits_provider_error_pass_through()
 // to the correct UBF `error_code` AND that `messages` passes through
 // unchanged (Gate-1 spec § 9). T11 already covers the wire-layer mapping;
 // these tests prove the cell-level orchestration honors it for handle()
-// Schritt 6's wire-error branch.
+// Step 6's wire-error branch.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn llm_cell_handle_rate_limit_emits_rate_limit_passthrough() {

@@ -1,6 +1,6 @@
-//! Phase-12-A TDD-Anker: apply_scan_result und boot_load_or_scan sind async.
-//! Beweist, dass die δ-Bridge (send_op_try) wegfällt und Bootstrap denselben
-//! send_op(.await)-Pfad nutzt wie alle anderen Producer.
+//! Phase-12-A TDD anchor: apply_scan_result and boot_load_or_scan are async.
+//! Proves that the δ bridge (send_op_try) disappears and bootstrap uses the
+//! same send_op(.await) path as every other producer.
 
 use meclaw_colony::ColonyDb;
 use meclaw_colony::templates::boot_load_or_scan;

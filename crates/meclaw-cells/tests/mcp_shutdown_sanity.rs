@@ -1,31 +1,31 @@
-//! T23 / Phase-10-A-Lesson: Substrat-Shutdown-Pflicht. Endlos-I/O
-//! (real `initialize` gegen einen Blackhole-TCP-Server) → Cell bleibt
-//! im I/O hängen, A-Timeout im POC ist großzügig (5000 ms); Test-Deadline
-//! 2 s. Wenn Mailbox-Close NICHT prompt greift, hängt die Test-Task
-//! bis zum A-Timeout → Test failed.
+//! T23 / phase-10-A lesson: the substrate shutdown duty. Endless I/O (a real
+//! `initialize` against a blackhole TCP server) leaves the cell hanging in I/O;
+//! the POC A timeout is generous (5000 ms) while the test deadline is 2 s. If the
+//! mailbox close does NOT take effect promptly, the test task hangs until the A
+//! timeout → the test fails.
 //!
-//! ## Termination-Pfad-Audit
+//! ## Termination path audit
 //!
-//! Termination MUSS über den **Mailbox-Close-Abort-Pfad** durch
+//! Termination MUST run through the **mailbox-close abort path** via
 //! `cell_task_long_running` laufen:
 //!
-//! 1. `drop(in_tx)` schließt die Mailbox.
+//! 1. `drop(in_tx)` closes the mailbox.
 //! 2. `handler_loop` in `cell_task_long_running`: `mailbox.recv() => None
 //!    => break` → Handler-Sub-Task endet normal.
 //! 3. Outer-`tokio::select!` triggert auf `handler_join`-Arm.
-//! 4. Outer ruft `io_join.abort()` → I/O-Future (hängt im reqwest-read
-//!    gegen den Blackhole-TCP-Server) wird hart abgebrochen.
-//! 5. Outer-Task kehrt zurück → `h.await` in der Test-Task löst sich.
+//! 4. The outer task calls `io_join.abort()` → the I/O future (stuck in a
+//!    reqwest read against the blackhole TCP server) is hard-aborted.
+//! 5. The outer task returns → `h.await` in the test task resolves.
 //!
-//! Dieser Pfad ist der **Mailbox-Close-Abort-Pfad**. Er ist NICHT der
-//! events-Channel-Close-Pfad (Phase-10-A-Lesson Second-Order-Trap):
+//! This path is the **mailbox-close abort path**. It is NOT the events-channel
+//! close path (phase-10-A lesson, the second-order trap):
 //! `mcp::io::run_io` bindet `events_tx` + `_reconfig_rx` explizit im
-//! `async move`-Scope, damit versehentliches Channel-Drop (der alte Trap)
-//! die I/O-Task NICHT vorzeitig terminiert.
+//! `async move` scope, so that an accidental channel drop (the old trap) does
+//! NOT terminate the I/O task prematurely.
 //!
 //! **Timing-Diskriminator:** Prompt (~200–300 ms) = Mailbox-Close-Abort
-//! hat gegriffen. Erst nach ~5 s = A-Timeout-Elapsed (Mailbox-Close-Pfad
-//! gebrochen) → Test failed in der 2 s-Deadline.
+//! took effect. Only after ~5 s = the A timeout elapsing (mailbox-close path
+//! broken) would the test fail against the 2 s deadline.
 
 use meclaw_cells::mcp::cell::McpCell;
 use meclaw_cells::mcp::db::setup_mcp_schema;
@@ -74,7 +74,7 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_initialize() {
     let client = McpClient::new(&format!("http://{addr}/"), None).unwrap();
     let cell = McpCell::new(
         client,
-        5_000, // A-Timeout deutlich größer als Test-Deadline (2 s).
+        5_000, // A timeout considerably larger than the test deadline (2 s).
         5_000,
         "main_mcp".into(),
     );
@@ -111,6 +111,6 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_initialize() {
     assert!(
         r.is_ok(),
         "cell_task_long_running did not terminate within 2 s after mailbox-close \
-         (Mailbox-Close-Abort-Pfad broken — A-Timeout fired instead)"
+         (mailbox-close abort path broken — the A timeout fired instead)"
     );
 }

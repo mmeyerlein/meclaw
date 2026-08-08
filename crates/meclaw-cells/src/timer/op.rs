@@ -1,9 +1,9 @@
-//! Phase-10-B: Mailbox-Op-Parser. Konsumiert den `body.Inline(JsonValue)`
-//! der Op-Message. `op` ist optional mit Default `"add"` (cell-types.md
-//! Z.398). Cron-Expression wird BEREITS AM EINGANG validiert (Korrektur A,
-//! identischer `CronParser`-Build wie `run_io`/`params`), damit der Handler
-//! in `cell.rs` einen `invalid_cron`-Error-Code aus dem `"cron:"`-Prefix
-//! ableiten kann.
+//! Phase-10-B: the mailbox op parser. Consumes the op message's
+//! `body.Inline(JsonValue)`. `op` is optional with the default `"add"`
+//! (cell-types.md l.398). The cron expression is validated ALREADY AT THE
+//! ENTRANCE (correction A, the same `CronParser` build as `run_io`/`params`), so
+//! that the handler in `cell.rs` can derive an `invalid_cron` error code from the
+//! `"cron:"` prefix.
 
 use crate::timer::schedule::{ScheduleKind, ScheduleRow};
 use chrono::{DateTime, Utc};
@@ -11,39 +11,39 @@ use croner::parser::{CronParser, Seconds};
 use meclaw_core::{Path, Uuid};
 use serde_json::Value as JsonValue;
 
-/// Geparste Mailbox-Op. Strikt typisiert: `Add` traegt die volle Row,
-/// `Modify` nur Aenderungs-Felder, `Remove` nur die id.
+/// Parsed mailbox op. Strictly typed: `Add` carries the full row, `Modify` only
+/// the changed fields, `Remove` only the id.
 #[derive(Debug)]
 pub enum TimerOp {
-    /// INSERT in `cell.db.schedules`. Caller wirft `schedule_id_exists`
-    /// bei PK-Konflikt.
+    /// INSERT into `cell.db.schedules`. The caller raises `schedule_id_exists`
+    /// on a PK conflict.
     Add(ScheduleRow),
-    /// UPDATE existierender Row. `new_cron` XOR `new_at` darf NICHT den
-    /// Schedule-Typ wechseln (Handler-Check in `handle`).
+    /// UPDATE an existing row. `new_cron` XOR `new_at` must NOT switch the
+    /// schedule type (handler check in `handle`).
     Modify {
-        /// PK der zu modifizierenden Row.
+        /// PK of the row to modify.
         schedule_id: Uuid,
-        /// Optional: neuer `schedule_name`.
+        /// Optional: new `schedule_name`.
         new_name: Option<String>,
-        /// Optional: neuer Cron-Ausdruck (bereits format-validiert).
+        /// Optional: new cron expression (already format-validated).
         new_cron: Option<String>,
-        /// Optional: neuer `at`-Zeitpunkt (UTC).
+        /// Optional: new `at` point in time (UTC).
         new_at: Option<DateTime<Utc>>,
-        /// Optional: neuer `emit_to`-Pfad.
+        /// Optional: new `emit_to` path.
         new_emit_to: Option<String>,
     },
-    /// Soft-Delete: setzt `status='removed'` (No-Delete-konform).
+    /// Soft delete: sets `status='removed'` (no-delete conformant).
     Remove {
-        /// PK der zu entfernenden Row.
+        /// PK of the row to remove.
         schedule_id: Uuid,
     },
 }
 
 impl TimerOp {
-    /// Parse + Validate. Bei Fehler: String mit menschenlesbarer Begruendung
-    /// (Caller emittiert daraus die Error-Reply via `OutputSink`). Cron-
-    /// Format-Fehler tragen den Prefix `"cron:"` — der Handler mappt das
-    /// auf `error_code="invalid_cron"`.
+    /// Parse + validate. On error: a string with a human-readable reason (the
+    /// caller emits the error reply from it via `OutputSink`). Cron format errors
+    /// carry the prefix `"cron:"` — the handler maps that to
+    /// `error_code="invalid_cron"`.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("op-body: must be object")?;
         let op = obj.get("op").and_then(|x| x.as_str()).unwrap_or("add");

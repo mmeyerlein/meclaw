@@ -1,13 +1,13 @@
-//! Phase 12-B T8: Integration-Tests fuer die /colony/*-HTTP-Handler.
+//! Phase 12-B T8: integration tests for the /colony/* HTTP handlers.
 //!
-//! Pattern pro Test:
-//! 1. `meclaw_testing::ColonyHandle::new()` startet eine echte Colony-Task
-//!    (multi_thread, worker_threads=4 — implizit via #[tokio::test(...)]).
-//! 2. `meclaw_api::ColonyHandle` wrappt `test_h.inbox_tx.clone()` plus einen
-//!    Stub-`templates_root` (PathBuf::new() — kein Rescan-Driver hier).
-//! 3. `build_router(api_colony)` baut den vollen Router; der Test feuert ein
-//!    `oneshot::Request` via `tower::ServiceExt::oneshot` und asserted Status
-//!    + JSON-Slot-Name.
+//! Pattern per test:
+//! 1. `meclaw_testing::ColonyHandle::new()` starts a real colony task
+//!    (multi_thread, worker_threads=4 — implicit via #[tokio::test(...)]).
+//! 2. `meclaw_api::ColonyHandle` wraps `test_h.inbox_tx.clone()` plus a stub
+//!    `templates_root` (PathBuf::new() — no rescan driver here).
+//! 3. `build_router(api_colony)` builds the full router; the test fires a
+//!    `oneshot::Request` via `tower::ServiceExt::oneshot` and asserts the status
+//!    plus the JSON slot name.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -17,9 +17,9 @@ use tower::ServiceExt;
 
 mod common;
 
-/// Helper: baut einen `meclaw_api::ColonyHandle` aus einem laufenden
-/// `meclaw_testing::ColonyHandle`. Beide leben im Test-Scope; Drop schliesst
-/// die Inbox sauber.
+/// Helper: builds a `meclaw_api::ColonyHandle` from a running
+/// `meclaw_testing::ColonyHandle`. Both live in the test scope; drop closes the
+/// inbox cleanly.
 fn api_colony_from(test_h: &meclaw_testing::ColonyHandle) -> Arc<meclaw_api::ColonyHandle> {
     Arc::new(meclaw_api::ColonyHandle {
         inbox: test_h.inbox_tx.clone(),
@@ -27,9 +27,9 @@ fn api_colony_from(test_h: &meclaw_testing::ColonyHandle) -> Arc<meclaw_api::Col
     })
 }
 
-/// Helper: kombiniert `api_colony_from` mit einem ephemeren `DiskBlobStore`
-/// (Phase-12-X T17). Returnt zusätzlich den `TempDir`-Owner, den der Caller
-/// in einem `let _td = ...;`-Binding halten muss.
+/// Helper: combines `api_colony_from` with an ephemeral `DiskBlobStore`
+/// (phase-12-X T17). Also returns the `TempDir` owner, which the caller must
+/// hold in a `let _td = ...;` binding.
 fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir) {
     let (blob_store, td) = common::test_blob_store();
     let app = meclaw_api::router::build_router(
@@ -69,7 +69,7 @@ async fn get_graph_default_scope_returns_full_schema() {
     let test_h = meclaw_testing::ColonyHandle::new();
     let (app, _blob_td) = app_from(&test_h);
 
-    // ohne ?scope → default "/" (alles).
+    // without ?scope → default "/" (everything).
     let resp = app
         .oneshot(
             Request::builder()
@@ -189,10 +189,10 @@ async fn get_trace_bad_correlation_id_returns_400() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn post_templates_rescan_returns_ok_slot() {
-    // ColonyHandle::new() startet eine Colony in einem frischen TempDir;
-    // wir reichen denselben Pfad als templates_root weiter, damit der
-    // Rescan-Arm einen existierenden (leeren) Ordner findet — apply_scan_result
-    // toleriert leere Roots (loggt nur Warn) und ack'd.
+    // ColonyHandle::new() starts a colony in a fresh TempDir; we pass the same
+    // path on as templates_root so the rescan arm finds an existing (empty)
+    // directory — apply_scan_result tolerates empty roots (it only logs a warn)
+    // and acks.
     let test_h = meclaw_testing::ColonyHandle::new();
     let templates_root = test_h.tempdir_path().to_path_buf();
     let api_colony = Arc::new(meclaw_api::ColonyHandle {
@@ -267,7 +267,7 @@ async fn delete_dead_letters_returns_drained_slot() {
     let slot = json
         .get("dead_letters")
         .expect("response has 'dead_letters' slot");
-    // Leere Queue → leerer Drain.
+    // Empty queue → empty drain.
     assert_eq!(slot.as_array().unwrap().len(), 0);
 }
 

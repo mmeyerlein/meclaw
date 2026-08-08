@@ -2,7 +2,7 @@
 //! B-backstop: proving it is disabled by `0`/`-1` AND that LR cells are
 //! exempt from it regardless of what is configured.
 //!
-//! # Demo-pflicht #3 — `cell.message_timeout: 0` and `-1` disable the backstop
+//! # Demo requirement #3 — `cell.message_timeout: 0` and `-1` disable the backstop
 //!
 //! A `HangMockCell` with `sleep_ms: 300` would be killed by a positive
 //! backstop of e.g. 200 ms.  With `cell.message_timeout: 0` (and separately
@@ -65,7 +65,7 @@ async fn wait_for_sink(
         .flatten()
 }
 
-// ─── Demo-pflicht #3 ─────────────────────────────────────────────────────────
+// ─── Demo requirement #3 ─────────────────────────────────────────────────────
 
 /// Helper that runs one variant of the backstop-disabled proof.
 ///
@@ -155,7 +155,7 @@ async fn run_backstop_disabled_variant(timeout_value: i64) {
     let received = wait_for_sink(&mut sink_rx).await;
     assert!(
         received.is_some(),
-        "Demo-pflicht #3 (timeout_value={timeout_value}): /sink must receive the hang cell's \
+        "Demo requirement #3 (timeout_value={timeout_value}): /sink must receive the hang cell's \
          emission after the 300 ms sleep — backstop is OFF, so the handle completes normally"
     );
 
@@ -163,7 +163,7 @@ async fn run_backstop_disabled_variant(timeout_value: i64) {
     let sc = spawn_count.load(Ordering::Relaxed);
     assert_eq!(
         sc, 1,
-        "Demo-pflicht #3 (timeout_value={timeout_value}): spawn_count must stay 1 \
+        "Demo requirement #3 (timeout_value={timeout_value}): spawn_count must stay 1 \
          (no backstop-restart); got {sc}"
     );
 

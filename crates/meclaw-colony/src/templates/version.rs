@@ -1,5 +1,5 @@
-//! Eigenparsen `<major>.<minor>.<patch>`. Ranges (^, ~) post-roadmap.
-//! Spec: docs/meclaw-overview.md § Template-System, R3 (kein semver-Crate).
+//! Own parser for `<major>.<minor>.<patch>`. Ranges (^, ~) are post-roadmap.
+//! Spec: docs/meclaw-overview.md § Template system, R3 (no semver crate).
 
 /// A parsed semantic version triple `(major, minor, patch)`.
 pub type SimpleVersion = (u64, u64, u64);

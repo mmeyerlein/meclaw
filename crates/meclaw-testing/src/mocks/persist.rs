@@ -1,36 +1,36 @@
-//! `PersistMockCell` — Counter-basierte Test-Cell für Phase-5-Restore-Tests.
+//! `PersistMockCell` — counter-based test cell for the phase-5 restore tests.
 //!
 //! Variants:
-//! - T25 (jetzt): nur counter + conn.
+//! - T25 (current): counter + conn only.
 //! - T26: + overlay_from_db.
-//! - T28: + write_snapshot + Cell-Trait-Impl.
-//! - T29: + panic_after (E6 kanonische Reihenfolge).
-//! - T37: + terminal (E7, kein Output → cascade stoppt) + echo_to (target-Auswahl).
+//! - T28: + write_snapshot + Cell trait impl.
+//! - T29: + panic_after (E6 canonical order).
+//! - T37: + terminal (E7, no output → the cascade stops) + echo_to (target choice).
 
-/// Counter-basierte Test-Cell. Inkrementiert counter pro handle()-Call und
-/// persistiert state via cell.db (T28).
+/// Counter-based test cell. Increments counter per handle() call and persists
+/// state via cell.db (T28).
 ///
-/// Phase-6.5: Connection-Ownership lebt im `cell_task_stateful`-Stack-Frame
-/// (StatefulCell-Trait). Die Cell hat KEIN `conn`-Field mehr.
+/// Phase-6.5: connection ownership lives in the `cell_task_stateful` stack frame
+/// (StatefulCell trait). The cell no longer has a `conn` field.
 pub struct PersistMockCell {
-    /// Inkrementiert pro handle()-Call.
+    /// Incremented per handle() call.
     pub counter: i64,
-    /// Test-only panic hook: wenn `Some(n)` und `counter == n` nach Snapshot,
-    /// panic vor Output (Plan E6 kanonische Reihenfolge).
+    /// Test-only panic hook: if `Some(n)` and `counter == n` after the snapshot,
+    /// panic before the output (plan E6 canonical order).
     pub panic_after: Option<i64>,
-    /// Plan E7: wenn `true`, emittiert `handle()` keinen Output → Cascade stoppt.
+    /// Plan E7: if `true`, `handle()` emits no output → the cascade stops.
     pub terminal: bool,
-    /// T37 / Plan E8: wenn `Some(path)`, setzt `output.target = echo_to`.
-    /// Wenn `None`: `target = msg.target` (Self-Loop-Verhalten ohne Edges).
+    /// T37 / plan E8: if `Some(path)`, sets `output.target = echo_to`.
+    /// If `None`: `target = msg.target` (self-loop behaviour without edges).
     pub echo_to: Option<meclaw_core::Path>,
 }
 
 impl PersistMockCell {
-    /// Konstruiert eine frische Cell aus params.
-    /// `panic_after`: optionales Test-Feld — wenn gesetzt, löst die Cell
-    /// einen panic aus, nachdem der Counter diesen Wert erreicht hat.
-    /// `terminal`: wenn `true`, emittiert die Cell keinen Output (Cascade-Stopp).
-    /// `echo_to`: wenn gesetzt, wird `output.target` auf diesen Pfad gesetzt.
+    /// Construct a fresh cell from params.
+    /// `panic_after`: optional test field — when set, the cell panics after the
+    /// counter has reached this value.
+    /// `terminal`: if `true`, the cell emits no output (cascade stop).
+    /// `echo_to`: when set, `output.target` is set to this path.
     pub fn from_params(params: &meclaw_core::JsonValue) -> Result<Self, String> {
         let panic_after = params.get("panic_after").and_then(|v| v.as_i64());
         let terminal = params
@@ -49,14 +49,14 @@ impl PersistMockCell {
         })
     }
 
-    /// Test-Helper: Inkrementiert counter ohne Output/Snapshot.
-    /// Der echte Cell-Trait-Impl (T28) macht counter++ + output + snapshot + panic-Check.
+    /// Test helper: increments counter without output/snapshot.
+    /// The real Cell trait impl (T28) does counter++ + output + snapshot + panic check.
     pub fn handle_dummy(&mut self) {
         self.counter += 1;
     }
 
-    /// Lädt counter aus cell.db (system-Tabelle, slot_path='counter').
-    /// Absent → no-op. Cold-Boot ≡ Restart (Plan E4).
+    /// Loads counter from cell.db (system table, slot_path='counter').
+    /// Absent → no-op. Cold boot ≡ restart (plan E4).
     pub fn overlay_from_db(&mut self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         match conn.query_row(
             "SELECT value FROM system WHERE slot_path='counter'",
@@ -111,7 +111,7 @@ impl PersistMockCell {
     }
 }
 
-/// `StatefulCell`-Trait implementation on `PersistMockCell` (Phase-9 A5).
+/// `StatefulCell` trait implementation on `PersistMockCell` (phase-9 A5).
 ///
 /// E6 canonical order: counter++ → db.call(snapshot).await → panic-check (sync,
 /// before output) → output emit (async).
@@ -131,7 +131,7 @@ impl meclaw_colony::stateful_cell::StatefulCell for PersistMockCell {
         db: &'a mut meclaw_colony::DbConn,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
-            // 1. SYNC: counter++ (outside db.call — counter lives in self-field).
+            // 1. SYNC: counter++ (outside db.call — counter lives in a self field).
             self.counter += 1;
             let counter = self.counter;
             let last_input_json = match &msg.body {
@@ -150,7 +150,7 @@ impl meclaw_colony::stateful_cell::StatefulCell for PersistMockCell {
                 panic!("PersistMockCell panic_after triggered at counter={counter}");
             }
             // 4. ASYNC: output emit (skipped when terminal=true → cascade stops).
-            // target: echo_to wenn gesetzt, sonst msg.target (Self-Loop ohne Edges).
+            // target: echo_to when set, otherwise msg.target (self-loop without edges).
             let target = self.echo_to.clone().unwrap_or_else(|| msg.target.clone());
             if !self.terminal {
                 let _ = sink
@@ -189,8 +189,8 @@ mod tests {
     fn persist_mock_cell_from_params_rejects_non_object() {
         let p = meclaw_core::serde_json::json!(42);
         let r = PersistMockCell::from_params(&p);
-        // Phase-5-Pragma: from_params akzeptiert beliebige JSON (Phase-5 hat keine
-        // strikte Param-Schema-Validierung für die Mock-Cell). Test erwartet Ok.
+        // Phase-5 pragma: from_params accepts arbitrary JSON (phase 5 has no strict
+        // param schema validation for the mock cell). The test expects Ok.
         assert!(r.is_ok());
     }
 
@@ -222,7 +222,7 @@ mod tests {
         c.overlay_from_db(&conn).unwrap();
         assert_eq!(
             c.counter, 0,
-            "empty system table → counter bleibt Bootstrap (0)"
+            "empty system table → counter stays at bootstrap (0)"
         );
     }
 
@@ -253,7 +253,7 @@ mod tests {
             .build();
         cell.handle(msg, &sink, &mut db).await;
 
-        // Read-Back via db.call (Connection lebt jetzt in DbConn).
+        // Read back via db.call (the connection now lives in DbConn).
         let v: String = db
             .call(|c| {
                 c.query_row(
@@ -278,8 +278,8 @@ mod tests {
         let mut conn2 = rusqlite::Connection::open(&db_path).unwrap();
         let mut c = PersistMockCell::from_params(&json!({})).unwrap();
         c.counter = 7;
-        // Phase-6.5: cell.db Connection lebt extern (cell_task_stateful-Frame).
-        // write_snapshot direkt (ohne StatefulCell-Trait), als Helper-Test.
+        // Phase-6.5: the cell.db connection lives externally (cell_task_stateful frame).
+        // write_snapshot directly (without the StatefulCell trait), as a helper test.
         PersistMockCell::write_snapshot_with(&mut conn2, c.counter, r#"{"msg":"x"}"#).unwrap();
         let v: String = conn2
             .query_row(

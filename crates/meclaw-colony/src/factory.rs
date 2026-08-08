@@ -1,10 +1,10 @@
 //! Cell-Type-spezifische Spawn-Logik.
 //!
-//! **Parser-Invariante**: Jede Factory MUSS `validate_params` und `spawn_cell`
-//! über denselben Parse-Pfad führen (typisch via privatem Helper). Das ist
-//! der Vertrag, der die `.expect("validated in plan-phase")`-Aufrufe in
-//! `apply_bootstrap_plan` sicher macht — driften die beiden Pfade auseinander,
-//! wird der expect zur Boot-Zeit-Bombe. Gilt für alle künftigen Cell-Typen
+//! **Parser invariant**: every factory MUST route `validate_params` and
+//! `spawn_cell` through the same parse path (typically via a private helper).
+//! That is the contract making the `.expect("validated in plan-phase")` calls in
+//! `apply_bootstrap_plan` safe — if the two paths drift apart, the expect becomes
+//! a boot-time bomb. Applies to all future cell types
 //! ab Phase 7.
 
 use crate::RespawnFn;
@@ -30,14 +30,14 @@ use tokio::task::JoinHandle;
 /// No-op WakeFns (stateless/long-running cells that never wake) return a
 /// throwaway disconnected pair — they must never be invoked while `Awake`.
 ///
-/// **Phase-13-G-1**: typseitig eingeführt; produktive Konsumenten kommen in
-/// 13-G-3 (`RegistryEntry.wake`) und 13-K-2 (Stateful-Factories liefern
+/// **Phase-13-G-1**: introduced at the type level; productive consumers arrive in
+/// 13-G-3 (`RegistryEntry.wake`) and 13-K-2 (stateful factories return
 /// `Dormant`).
 pub type WakeFn = Box<
     dyn Fn(mpsc::Receiver<Message>) -> (oneshot::Sender<()>, oneshot::Receiver<()>) + Send + Sync,
 >;
 
-/// Aus `config.json::contract` extrahierte View für Cell-Spawn-Zeit.
+/// A view extracted from `config.json::contract` for cell spawn time.
 ///
 /// Extended in Paket 7 (P13/D-010a) with `emits` and `validate_emits`.
 /// Earlier fields (`tools`, `tags`, `is_collector`, `consumes`, `capabilities`)
@@ -63,18 +63,18 @@ pub struct ContractView {
 
 /// What a `CellFactory` returns for `spawn_cell`.
 ///
-/// **Phase-13-G-2 (Variante a)**: alle Factories liefern HEUTE `Active`. Die
-/// `Dormant`-Variante existiert bereits typseitig — Stateful-Factories
-/// schwenken in 13-K-2 zusammen mit dem Bootstrap-Apply-Match darauf um.
+/// **Phase-13-G-2 (variant a)**: TODAY every factory returns `Active`. The
+/// `Dormant` variant already exists at the type level — stateful factories switch
+/// over to it in 13-K-2 together with the bootstrap-apply match.
 ///
 /// `#[allow(clippy::large_enum_variant)]` (Paket-3 P3-B-restart): `Active` wuchs
-/// um `backstop_rx` und liegt knapp über der Größendifferenz-Schwelle. Boxen
-/// würde nur die Allokation verschieben (kurzlebiges Spawn-Resultat, sofort
-/// destrukturiert) — dieselbe Abwägung wie bei `ColonyMsg`.
+/// by `backstop_rx` and sits just above the size-difference threshold. Boxing
+/// would only move the allocation around (a short-lived spawn result, destructured
+/// immediately) — the same trade-off as for `ColonyMsg`.
 #[allow(clippy::large_enum_variant)]
 pub enum SpawnedCellKind {
-    /// Cell-Task ist sofort gespawnt (Phase-12-Eager-Spawn-Verhalten, peace_pair
-    /// aus 13-E-1). Caller schickt `ColonyMsg::Register`.
+    /// The cell task is spawned immediately (phase-12 eager-spawn behaviour,
+    /// peace_pair from 13-E-1). The caller sends `ColonyMsg::Register`.
     Active {
         /// Sender end of the cell's mailbox.
         sender: mpsc::Sender<Message>,
@@ -103,10 +103,10 @@ pub enum SpawnedCellKind {
         /// supervisor restart.
         respawn: RespawnFn,
     },
-    /// Cell ist NotYetSpawned: Mailbox-Paar existiert, aber kein Task läuft.
-    /// Caller schickt `ColonyMsg::RegisterDormant` (kommt 13-G-3). Phase-13-G-2:
-    /// keine Factory produziert das aktuell — Caller matchen mit
-    /// `unreachable!("Dormant-Pfad kommt 13-K-2")`.
+    /// The cell is NotYetSpawned: the mailbox pair exists but no task runs.
+    /// The caller sends `ColonyMsg::RegisterDormant` (arrives in 13-G-3).
+    /// Implemented since 13-K-2; the bootstrap-apply path takes this branch in
+    /// `bootstrap_apply.rs`.
     Dormant {
         /// Sender end of the cell's mailbox.
         sender: mpsc::Sender<Message>,

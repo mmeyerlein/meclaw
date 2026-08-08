@@ -1,55 +1,55 @@
-//! Schema-Versions-Migration für `colony.db`.
+//! Schema version migration for `colony.db`.
 //!
-//! v1 (Phase-5-Baseline): edges-Tabelle ohne CEL-State.
-//! v2 (Phase-13.5-Durable-Edges): edges erhält `condition` + `modifier`
-//! als TEXT NULL Spalten. ALTER TABLE in-place, kein CREATE-new+COPY (F4).
-//! v3 (Phase-16 W3 / A6): `mutation_log` erhält `error_code` + `trace_id`
-//! als TEXT NULL Spalten — die zwei Reject-Row-Felder ohne Heimat in v2
-//! (status/failure_reason/created_at existieren bereits). ALTER TABLE in-place.
-//! v4 (Phase-16 W6d / A6): neue Tabelle `dead_letters` — die DLQ ist nicht mehr
-//! ein flüchtiger In-Memory-`VecDeque`, sondern persistiert in `colony.db`
-//! (Crash-/Shutdown-Survival der Diagnose-Wahrheit). Spalten: die 6 Lokalisierungs-
-//! Felder (`DeadLetterDto`) PLUS `message_json` — der volle Message-Envelope,
-//! serialisiert mit denselben Primitiven wie `message_log` (ruling W6d:
-//! Envelope mitpersistieren → Drain rekonstruiert volle `DeadLetter` aus DB).
-//! `CREATE TABLE IF NOT EXISTS`, additiv (keine Spalten-Änderung an Bestehendem).
+//! v1 (phase-5 baseline): edges table without CEL state.
+//! v2 (phase-13.5 durable edges): edges gains `condition` + `modifier`
+//! as TEXT NULL columns. ALTER TABLE in-place, no CREATE-new+COPY (F4).
+//! v3 (phase-16 W3 / A6): `mutation_log` gains `error_code` + `trace_id`
+//! as TEXT NULL columns — the two reject-row fields without a home in v2
+//! (status/failure_reason/created_at already exist). ALTER TABLE in-place.
+//! v4 (phase-16 W6d / A6): new table `dead_letters` — the DLQ is no longer a
+//! volatile in-memory `VecDeque` but persisted in `colony.db`
+//! (crash/shutdown survival of the diagnostic truth). Columns: the 6 localization
+//! fields (`DeadLetterDto`) PLUS `message_json` — the full message envelope,
+//! serialized with the same primitives as `message_log` (ruling W6d:
+//! persist the envelope too → drain reconstructs the full `DeadLetter` from DB).
+//! `CREATE TABLE IF NOT EXISTS`, additive (no column change to existing tables).
 //!
-//! WICHTIG: betrifft ausschließlich `colony.db`. `cell.db` bleibt v1.
+//! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
-/// Ziel-Schema-Version für `colony.db` nach diesem Slice.
+/// Target schema version for `colony.db` after this slice.
 pub(crate) const TARGET_SCHEMA_VERSION: u32 = 4;
 
-/// Fehler während der `colony.db`-Schema-Migration.
+/// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MigrationError {
-    /// rusqlite-Fehler beim Lesen der Version oder beim ALTER TABLE.
+    /// rusqlite error while reading the version or during the ALTER TABLE.
     #[error("sqlite error: {0}")]
     Sql(#[from] rusqlite::Error),
-    /// `schema_version` ist weder die aktuelle noch eine bekannte Vorgänger-Version.
+    /// `schema_version` is neither the current nor a known predecessor version.
     #[error("unknown schema_version {0}; target is {}", TARGET_SCHEMA_VERSION)]
     UnknownVersion(u32),
 }
 
-/// Migriert `colony.db` idempotent auf [`TARGET_SCHEMA_VERSION`].
+/// Migrates `colony.db` idempotently to [`TARGET_SCHEMA_VERSION`].
 ///
-/// Atomar: alle `ALTER TABLE` + der Versions-Bump laufen in EINER Transaktion.
-/// Schlägt ein Schritt fehl, rollt alles zurück → `schema_version` bleibt
-/// unverändert. `ADD COLUMN` läuft nur, wenn die Spalte fehlt → ein abgebrochener
-/// Vor-Lauf ist beim Re-Run sauber nachholbar (kein duplicate-column-Deadend).
+/// Atomic: every `ALTER TABLE` + the version bump run in ONE transaction.
+/// If a step fails, everything rolls back → `schema_version` stays
+/// unchanged. `ADD COLUMN` only runs when the column is missing → an aborted
+/// earlier run can be caught up cleanly on re-run (no duplicate-column dead end).
 ///
-/// Die Migration ist gestuft (v1→v2: edges-CEL-Spalten, v2→v3: mutation_log-
-/// Reject-Spalten) und chained in einem Lauf: eine v1-DB erhält beide Stufen.
-/// `mutation_log` existiert beim Aufruf immer — `setup_colony_db` führt das
-/// `CREATE TABLE IF NOT EXISTS`-DDL VOR `migrate` aus.
+/// The migration is staged (v1→v2: edges CEL columns, v2→v3: mutation_log
+/// reject columns) and chains in one run: a v1 DB receives both stages.
+/// `mutation_log` always exists at call time — `setup_colony_db` executes the
+/// `CREATE TABLE IF NOT EXISTS` DDL BEFORE `migrate`.
 pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
         1..=3 => {
             let tx = conn.unchecked_transaction()?;
-            // v1→v2: durable-edges CEL-Spalten.
+            // v1→v2: durable-edges CEL columns.
             if current <= 1 {
                 if !column_exists(&tx, "edges", "condition")? {
                     tx.execute("ALTER TABLE edges ADD COLUMN condition TEXT", [])?;
@@ -58,7 +58,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     tx.execute("ALTER TABLE edges ADD COLUMN modifier TEXT", [])?;
                 }
             }
-            // v2→v3 (A6): mutation_log Reject-Spalten.
+            // v2→v3 (A6): mutation_log reject columns.
             if current <= 2 {
                 if !column_exists(&tx, "mutation_log", "error_code")? {
                     tx.execute("ALTER TABLE mutation_log ADD COLUMN error_code TEXT", [])?;
@@ -67,11 +67,11 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     tx.execute("ALTER TABLE mutation_log ADD COLUMN trace_id TEXT", [])?;
                 }
             }
-            // v3→v4 (W6d/A6): persistente DLQ-Tabelle. `CREATE TABLE IF NOT EXISTS`
-            // ist idempotent — eine via `setup_colony_db` (DDL) bereits angelegte
-            // Tabelle bleibt unangetastet; eine alt-migrierte DB (oder der reine
-            // `migrate`-Pfad ohne DDL) erhält sie hier. `id` = rowid (monotone
-            // Einfüge-Reihenfolge); die 6 Felder spiegeln das `DeadLetterDto`.
+            // v3→v4 (W6d/A6): persistent DLQ table. `CREATE TABLE IF NOT EXISTS`
+            // is idempotent — a table already created via `setup_colony_db` (DDL)
+            // stays untouched; an older migrated DB (or the pure `migrate` path
+            // without DDL) receives it here. `id` = rowid (monotonic insert
+            // order); the 6 fields mirror the `DeadLetterDto`.
             if current <= 3 {
                 tx.execute(
                     "CREATE TABLE IF NOT EXISTS dead_letters (
@@ -106,7 +106,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     }
 }
 
-/// True, wenn `table` die Spalte `col` bereits hat (PRAGMA table_info).
+/// True when `table` already has the column `col` (PRAGMA table_info).
 fn column_exists(conn: &Connection, table: &str, col: &str) -> rusqlite::Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let exists = stmt

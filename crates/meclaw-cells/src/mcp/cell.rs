@@ -1,8 +1,8 @@
-//! Phase-10-D: `McpCell` — implementiert `LongRunningCell` aus 10-A.
-//! Handler ist DB-Authority (Discovery-Cache-Upsert + Tool-Call-Synchron).
-//! I/O läuft `initialize`+`tools/list` einmal, dann `pending().await`.
-//! State single-threaded im Handler-Sub-Task (kein Mutex —
-//! Phase-1-Disziplin).
+//! Phase-10-D: `McpCell` — implements `LongRunningCell` from 10-A.
+//! The handler is the DB authority (discovery-cache upsert + synchronous tool
+//! calls). The I/O side runs `initialize`+`tools/list` once, then
+//! `pending().await`. State is single-threaded in the handler sub-task (no mutex —
+//! phase-1 discipline).
 
 use crate::mcp::io::{McpEvent, McpReconfig, RunIoConfig, run_io};
 use crate::mcp::wire::McpClient;
@@ -11,30 +11,30 @@ use meclaw_core::{Message, OriginSink, OutputSink};
 use std::future::Future;
 use tokio::sync::mpsc;
 
-/// `mcp`-Cell. State single-threaded im Handler-Sub-Task von
-/// `cell_task_long_running`. `initial_io_cfg` wird einmal durch
-/// `split_io` rausgezogen + an die I/O-Sub-Task übergeben.
+/// The `mcp` cell. State is single-threaded in the handler sub-task of
+/// `cell_task_long_running`. `initial_io_cfg` is pulled out once by `split_io`
+/// and handed to the I/O sub-task.
 pub struct McpCell {
-    /// Reqwest-/MCP-Client für `handle(tool_call)`-Pfad (synchroner POST).
+    /// reqwest/MCP client for the `handle(tool_call)` path (a synchronous POST).
     pub(crate) client: McpClient,
-    /// A-Timeout für jede HTTP-Op aus `handle`. Auch von `split_io`
-    /// in die `RunIoConfig` für `run_io` durchgereicht. β: mutable via
-    /// params-update (Weg A, handle-side — der nächste `call_tool` nutzt es
-    /// sofort; der I/O-Task hat post-Discovery keinen live-nachzulesenden Wert).
+    /// A timeout for every HTTP op from `handle`. Also passed through by
+    /// `split_io` into the `RunIoConfig` for `run_io`. β: mutable via a params
+    /// update (path A, handle side — the next `call_tool` uses it immediately;
+    /// post-discovery the I/O task has no value left to re-read live).
     pub(crate) external_timeout_ms: u64,
-    /// β: live effective `query_timeout_ms` (Weg C, cell.db-Ops via DbConn).
+    /// β: live effective `query_timeout_ms` (path C, cell.db ops via DbConn).
     pub(crate) query_timeout_ms: u64,
-    /// Provider-Key für `system.tools.<provider>.<tool>=<schema>`-Emits
-    /// (siehe Konventionen-Sektion im Plan).
+    /// Provider key for the `system.tools.<provider>.<tool>=<schema>` emissions
+    /// (see the conventions section in the plan).
     pub(crate) provider_key: String,
-    /// I/O-Initialkonfig, einmal von `split_io` konsumiert.
+    /// Initial I/O config, consumed once by `split_io`.
     pub(crate) initial_io_cfg: Option<RunIoConfig>,
 }
 
 impl McpCell {
-    /// Konstruktor. `provider_key` wird typisch in der Factory aus dem
-    /// Cell-Pfad abgeleitet (`/main/mcp` → `main_mcp`). `client` ist der
-    /// initial gebaute Reqwest-Client; `split_io` cloned ihn intern über
+    /// Constructor. `provider_key` is typically derived in the factory from the
+    /// cell path (`/main/mcp` → `main_mcp`). `client` is the initially built
+    /// reqwest client; `split_io` clones it internally through
     /// `RunIoConfig` (Arc-internal).
     pub fn new(
         client: McpClient,
@@ -56,10 +56,10 @@ impl McpCell {
     }
 }
 
-/// I/O-lokaler State (Single-Owner, vom I/O-Sub-Task by-value gehalten).
-/// Kein Mutex, kein Arc — Phase-1-Disziplin.
+/// I/O-local state (single owner, held by-value by the I/O sub-task).
+/// No mutex, no Arc — phase-1 discipline.
 pub struct McpIo {
-    /// Konfiguration für `run_io` (Client + Timeout).
+    /// Configuration for `run_io` (client + timeout).
     pub(crate) cfg: RunIoConfig,
 }
 
@@ -75,9 +75,9 @@ impl LongRunningCell for McpCell {
     }
 
     /// I/O-Sub-Task — delegiert an `crate::mcp::io::run_io`.
-    /// `+ Send` ist load-bearing (AFIT bindet kein Send; `tokio::spawn`
+    /// `+ Send` is load-bearing (AFIT does not bind Send; `tokio::spawn`
     /// in `cell_task_long_running` braucht es). Pattern symmetrisch zu
-    /// `proxy::cell::ProxyCell::run_io` und der Trait-Doc in
+    /// `proxy::cell::ProxyCell::run_io` and the trait docs in
     /// `crates/meclaw-colony/src/long_running_cell.rs:96-110`.
     #[allow(clippy::manual_async_fn)]
     fn run_io(
@@ -102,9 +102,9 @@ impl LongRunningCell for McpCell {
         _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
-            // β: params-update slot (config.md § Zugriff Z.20), handled FIRST.
-            // Mutable: external_timeout_ms (Weg A, next call_tool) + query_timeout_ms
-            // (Weg C, DbConn live). Immutable: endpoint + auth (credential/identity).
+            // β: params-update slot (config.md § Access l.20), handled FIRST.
+            // Mutable: external_timeout_ms (path A, next call_tool) + query_timeout_ms
+            // (path C, DbConn live). Immutable: endpoint + auth (credential/identity).
             // A params-only message persists + returns silently.
             if let meclaw_core::Body::Inline(ref v) = msg.body
                 && let Some(params_val) = v.get("params")
@@ -166,8 +166,8 @@ impl LongRunningCell for McpCell {
                                 return;
                             }
                         }
-                        // Live apply: external_timeout_ms (Weg A) + query_timeout_ms
-                        // (Weg C, DbConn). Both effective on the NEXT op.
+                        // Live apply: external_timeout_ms (path A) + query_timeout_ms
+                        // (path C, DbConn). Both effective on the NEXT op.
                         self.external_timeout_ms = new_ov.external_timeout_ms;
                         self.query_timeout_ms = new_ov.query_timeout_ms;
                         db.set_query_timeout(Some(std::time::Duration::from_millis(

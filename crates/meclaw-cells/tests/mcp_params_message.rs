@@ -1,11 +1,11 @@
 //! Phase-16 β4: `mcp` runtime params-overlay.
 //!
-//! Mutable: `external_timeout_ms` (Weg A — handle-side, the next `call_tool`
+//! Mutable: `external_timeout_ms` (path A — handle side, the next `call_tool`
 //! uses it; the I/O-task has no live-rereadable value, mcp structural subtlety)
-//! and `query_timeout_ms` (Weg C — DbConn). Immutable: `endpoint` + `auth`
+//! and `query_timeout_ms` (path C — DbConn). Immutable: `endpoint` + `auth`
 //! (credential/identity).
 //!
-//! Strong behavioral live-receipt (Weg A): a cell built with a 60 s
+//! Strong behavioral live receipt (path A): a cell built with a 60 s
 //! `external_timeout_ms` gets a params-update lowering it to 100 ms; a
 //! subsequent tool-call to a black-hole endpoint then returns `provider_timeout`
 //! within a 2 s test deadline — only possible if the lowered timeout took
@@ -85,7 +85,7 @@ async fn external_timeout_ms_lowered_live_then_tool_call_times_out() {
     let client = McpClient::new(&format!("http://{addr}/"), None).unwrap();
     let mut cell = McpCell::new(client, 60_000, 5_000, "main_mcp".into());
 
-    // 1) params-update lowers external_timeout_ms to 100 ms (Weg A, live).
+    // 1) params-update lowers external_timeout_ms to 100 ms (path A, live).
     let pmsg = params_msg(json!({ "params": { "external_timeout_ms": 100 } }));
     let (ptx, mut prx) = mpsc::channel::<CellEmission>(8);
     let psink = sink_for(&pmsg, ptx);
@@ -130,7 +130,7 @@ async fn params_update_query_timeout_live_and_persisted() {
     assert_eq!(
         db.query_timeout(),
         Some(Duration::from_millis(1234)),
-        "DbConn must carry the new query_timeout live (Weg C)"
+        "DbConn must carry the new query_timeout live (path C)"
     );
     let persisted: String = db
         .call(|c| {

@@ -1,7 +1,8 @@
-//! Variablen-Substitution für Mutation-Diffs (Phase 6).
+//! Variable substitution for mutation diffs (phase 6).
 //!
-//! `${ENV_VAR}` aus `.env`, `${ctx.<key>}` aus Mutation-Ctx, `${uuid7:label}` mit
-//! Pro-Label-Cache. T7 deckt nur `${ENV_VAR}` ab — T8/T9 erweitern.
+//! `${ENV_VAR}` from `.env`, `${ctx.<key>}` from the mutation ctx,
+//! `${uuid7:label}` with a per-label cache. T7 covers only `${ENV_VAR}` — T8/T9
+//! extend it.
 
 use super::MutationError;
 use meclaw_core::JsonValue;
@@ -53,7 +54,7 @@ enum EnvToken {
 /// Rules: no operator char → `Plain`. Exactly `name:-fallback` →
 /// `DefaultIfUnsetOrEmpty`. Anything else carrying an operator (`:` followed by
 /// something other than `-`, or a bare `-`/`+`/`?`/`=` right after the name) →
-/// `Unsupported`. Spec § Variablen-Substitution → `${ENV_VAR}` aus `.env`.
+/// `Unsupported`. Spec § Variable substitution → `${ENV_VAR}` from `.env`.
 fn parse_env_token(inner: &str) -> EnvToken {
     // POSIX default: name + ":-" + fallback. Split on the FIRST ":-".
     if let Some(op) = inner.find(':') {
@@ -215,7 +216,7 @@ fn replace_env_ctx(
 /// Phase-6 T9: full substitute — `${ENV_VAR}`, `${ctx.<key>}`, AND `${uuid7:label}`.
 ///
 /// `${uuid7:label}` is cached per label: repeated `${uuid7:foo}` resolves to the
-/// same UUID within one diff (spec § Variablen-Substitution).
+/// same UUID within one diff (spec § Variable substitution).
 pub fn substitute_full(
     diff: &JsonValue,
     env: &HashMap<String, String>,
@@ -441,10 +442,10 @@ mod tests {
     #[test]
     fn escape_mixed_with_real_substitution() {
         let mut env = HashMap::new();
-        env.insert("REAL".into(), "wert".into());
+        env.insert("REAL".into(), "value".into());
         assert_eq!(
             replace_env("$${KEEP}-${REAL}", &env).unwrap(),
-            "${KEEP}-wert"
+            "${KEEP}-value"
         );
     }
 

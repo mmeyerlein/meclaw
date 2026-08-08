@@ -1,10 +1,10 @@
-//! T17: handle(tool_call) success path — synchroner POST gegen Mock-MCP-Server,
+//! T17: handle(tool_call) success path — a synchronous POST against a mock MCP server,
 //! tool_result-Turn via OutputSink emittiert.
 //!
 //! Plan-Adaption T17: Plan-Text las `name`/`arguments` als Top-Level-Felder am
 //! tool_call-Turn (UBF-invalid: TurnObject.additionalProperties=false). Adaptiert
-//! auf Phase-9-store-Konvention (autoritativ): `text` = JSON-string mit
-//! `{"name":"...","arguments":{...}}`; `id` = UBF-Pflichtfeld für tool_call.
+//! on the phase-9 store convention (authoritative): `text` = a JSON string with
+//! `{"name":"...","arguments":{...}}`; `id` = the UBF-mandatory field for tool_call.
 
 #[path = "mock_mcp.rs"]
 mod mock_mcp;

@@ -1,9 +1,9 @@
-//! Per-Pfad `rename(2)` von `.staging/<id>/<name>/` zu finalem Pfad (Phase 6 Apply Schritt 7).
+//! Per-path `rename(2)` from `.staging/<id>/<name>/` to the final path (phase 6 apply step 7).
 //!
-//! Phase-13.5-A3/A4: `atomic_rename_or_overwrite_all` (F3 Variante B) ersetzt beim
-//! re-add/swap nur `config.json` atomar (tmp + rename(2)); `cell.db` am finalen Pfad
-//! bleibt unberührt. Beim first-add (finaler Pfad existiert nicht) verhält sich die
-//! Funktion wie das bisherige `atomic_rename_all` (rename(2) des ganzen staging-dirs).
+//! Phase-13.5-A3/A4: on re-add/swap, `atomic_rename_or_overwrite_all` (F3 variant B)
+//! replaces only `config.json` atomically (tmp + rename(2)); the `cell.db` at the final
+//! path stays untouched. On first-add (final path does not exist) the function behaves
+//! like the previous `atomic_rename_all` (rename(2) of the whole staging dir).
 
 use super::{MutationError, stage::StagedDir};
 
@@ -22,9 +22,9 @@ fn rename_err(committed: usize, msg: String) -> MutationError {
 
 /// Rename every StagedDir.staging_path → StagedDir.final_path.
 ///
-/// Per-path atomar (rename(2) on POSIX), aber NICHT transaktional über alle Pfade.
-/// Bei partial failure: bereits umbenannte Pfade bleiben am finalen Ort — Audit-Modell
-/// (Recovery markiert die Mutation als failed, FS-Bootstrap adoptiert die orphans).
+/// Per-path atomic (rename(2) on POSIX), but NOT transactional across all paths.
+/// On partial failure: already renamed paths stay at their final location — audit model
+/// (recovery marks the mutation as failed, FS bootstrap adopts the orphans).
 // `committed` is a SEMANTIC commit-counter (input to `rename_err`'s
 // LiveTreeMutated-vs-Schema decision), not a mere loop index — keep it explicit.
 #[allow(clippy::explicit_counter_loop)]

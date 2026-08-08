@@ -1,19 +1,19 @@
-//! Bootstrap-Apply Crash-Atomarität (Daten-Integritäts-Befund Run 5/5b, 2×
-//! reproduziert): Workspace-Verzeichnis fehlt → `--validate` PASS (U11-Shape:
-//! validate prüft den Pfad nicht), Boot panict MITTEN im Apply am
-//! `bootstrap_apply.rs` `.expect("validated in plan-phase")`-Anker → colony.db
-//! bleibt im Mischzustand (registry>0 / edges=0 / hive_scopes=0) → der
-//! Folge-Boot lief in den `Inconsistent`-Panic, ohne Heilpfad.
+//! Bootstrap-apply crash atomicity (data-integrity finding run 5/5b, reproduced
+//! 2×): the workspace directory is missing → `--validate` PASS (U11 shape:
+//! validate does not check the path), the boot panics MID-apply at the
+//! `bootstrap_apply.rs` `.expect("validated in plan-phase")` anchor → colony.db
+//! stays in a mixed state (registry>0 / edges=0 / hive_scopes=0) → the following
+//! boot ran into the `Inconsistent` panic, without a healing path.
 //!
-//! Vertrag unter Test (Spec § Startup-Algorithmus, Bootstrap-Recovery): ein
-//! unterbrochener ERST-Apply heilt sich beim nächsten Boot selbst —
-//! deterministischer Rebuild aus dem Filesystem (das FS ist die Quelle),
-//! NIEMALS ein `Inconsistent`-Panic, kein Operator-„DB löschen". Mechanik:
-//! durable `bootstrap_in_flight`-Marker (colony.db `meta`) vor dem ersten
-//! Spawn, atomar gelöscht in der `InitialApply`-Transaktion; `probe_boot_state`
-//! klassifiziert Marker-Zustände als `FirstBoot` (idempotentes Resume).
-//! Mischzustand OHNE Marker bleibt `Inconsistent` (externe Korruption,
-//! Pin: `boot_state_mixed_returns_inconsistent` in `bootstrap.rs`).
+//! Contract under test (spec § Startup algorithm, bootstrap recovery): an
+//! interrupted FIRST apply heals itself on the next boot — a deterministic
+//! rebuild from the filesystem (the FS is the source), NEVER an `Inconsistent`
+//! panic, no operator "delete the DB". Mechanics: a durable
+//! `bootstrap_in_flight` marker (colony.db `meta`) before the first spawn,
+//! cleared atomically in the `InitialApply` transaction; `probe_boot_state`
+//! classifies marker states as `FirstBoot` (idempotent resume).
+//! A mixed state WITHOUT the marker stays `Inconsistent` (external corruption,
+//! pin: `boot_state_mixed_returns_inconsistent` in `bootstrap.rs`).
 
 use meclaw_colony::{
     BootState, CellFactory, CellFactoryRegistry, ColonyConfig, ColonyDb, ColonyMsg, ColonyRuntime,
@@ -197,10 +197,10 @@ fn bootstrap_marker_present(db_path: &std::path::Path) -> bool {
         > 0
 }
 
-/// Der Repro-Anker + Heilpfad in einem Lauf:
-/// Boot 1 (workspace fehlt) → Apply-Panic mitten im Apply → Mischzustand;
-/// Boot 2 (workspace repariert) → MUSS heilen (FirstBoot-Resume aus dem FS),
-/// NIEMALS `Inconsistent`-Panic; Boot-3-Klassifikation ist `Reboot`.
+/// The repro anchor + healing path in one run:
+/// boot 1 (workspace missing) → apply panic mid-apply → mixed state;
+/// boot 2 (workspace repaired) → MUST heal (FirstBoot resume from the FS),
+/// NEVER an `Inconsistent` panic; the boot-3 classification is `Reboot`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interrupted_first_apply_heals_on_reboot_never_inconsistent() {
     let td = tempfile::TempDir::new().unwrap();
@@ -222,7 +222,7 @@ async fn interrupted_first_apply_heals_on_reboot_never_inconsistent() {
         .await
         .expect("boot-1 colony must shut down cleanly");
 
-    // --- Repro-Anker: the Run-5b mixed state is on disk. ---
+    // --- Repro anchor: the run-5b mixed state is on disk. ---
     let (reg, edges, scopes) = table_counts(&db_path);
     assert!(
         reg > 0,

@@ -3,7 +3,7 @@
 //! `add_nodes` and the bootstrap path.
 //!
 //! Finding (ruling):
-//! the subtree registration path (colony.rs apply-Schritt 9c) installed an
+//! the subtree registration path (colony.rs apply step 9c) installed an
 //! INERT WakeFn for EVERY subtree cell — a pre-R12 assumption ("subtree stays
 //! inactive until a later add_edges; routing dead-letters it") that R12's
 //! same-mutation activation invalidated. First routed delivery to a lazy

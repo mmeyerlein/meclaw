@@ -1,11 +1,11 @@
-//! Phase 12-D: Server-rendered Operator-UI (`maud`-HTML).
+//! Phase 12-D: server-rendered operator UI (`maud` HTML).
 //!
-//! Symmetrie zur Phase-12-B-JSON-Schicht: dieselben `ColonyMsg::Read*`-
-//! Inbox-Variants, andere Repräsentation. Keine JS, kein Auto-Refresh,
-//! keine Mutation-Forms, keine WebSocket. Read-only Operator-Surface.
+//! Symmetric to the phase-12-B JSON layer: the same `ColonyMsg::Read*` inbox
+//! variants, a different representation. No JS, no auto-refresh, no mutation
+//! forms, no WebSocket. A read-only operator surface.
 //!
-//! Geteilte Helfer (`style_block`, `layout`) leben hier, damit Dashboard
-//! und Entity-Pages konsistent aussehen.
+//! Shared helpers (`style_block`, `layout`) live here so the dashboard and the
+//! entity pages look consistent.
 
 pub mod dashboard;
 pub mod dead_letters;
@@ -20,10 +20,10 @@ pub mod trace;
 
 use maud::{DOCTYPE, Markup, html};
 
-/// Inline `<style>`-Block — ~30 Zeilen, plain CSS, kein Framework.
+/// Inline `<style>` block — ~30 lines, plain CSS, no framework.
 ///
-/// Gilt für alle `/ui/*`-Seiten gleich. Pragmatisch: lesbar, funktional,
-/// keine Glossy-Layouts. Operator-UI, kein Marketing.
+/// Applies identically to every `/ui/*` page. Pragmatic: readable, functional,
+/// no glossy layouts. An operator UI, not marketing.
 pub(crate) fn style_block() -> Markup {
     html! {
         style {
@@ -49,10 +49,10 @@ pub(crate) fn style_block() -> Markup {
     }
 }
 
-/// Geteiltes Page-Layout: Doctype + Head + Nav + Main + Footer.
+/// Shared page layout: doctype + head + nav + main + footer.
 ///
-/// `title` rendert in `<title>` (mit `" — meclaw"`-Suffix) und als `<h1>`.
-/// `content` ist der Seiten-Body unter dem `<h1>`.
+/// `title` renders into `<title>` (with a `" — meclaw"` suffix) and as the `<h1>`.
+/// `content` is the page body below the `<h1>`.
 pub(crate) fn layout(title: &str, content: Markup) -> Markup {
     html! {
         (DOCTYPE)

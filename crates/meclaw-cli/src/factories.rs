@@ -1,15 +1,15 @@
-//! Phase-9: Factory-Registry-Wiring für alle Built-in-Cell-Types.
+//! Phase-9: factory registry wiring for all built-in cell types.
 //!
-//! Mappt cell-type-Strings auf ihre `CellFactory`-Implementierungen. Die
-//! fünf Phase-7-Tool-Cells (file, bash, edit, web_fetch, web_search) plus
-//! die Phase-8-`llm`-Cell, die Phase-9-`store`-Cell und die Phase-9-
-//! `code`-Cell sind hier registriert. `base_path`/`endpoint` und andere
-//! instanz-spezifische Params kommen aus `override_params` der
-//! Node-Definitionen, NICHT aus der Registrierung.
+//! Maps cell-type strings to their `CellFactory` implementations. The five
+//! phase-7 tool cells (file, bash, edit, web_fetch, web_search) plus the
+//! phase-8 `llm` cell, the phase-9 `store` cell and the phase-9 `code` cell are
+//! registered here. `base_path`/`endpoint` and other instance-specific params
+//! come from the `override_params` of the node definitions, NOT from the
+//! registration.
 //!
-//! **Schicht**: `meclaw-cli` ist die Bootstrap-Schicht — sie darf
-//! `meclaw-cells` importieren. `meclaw-colony` darf das NICHT (Layering-
-//! Invariante aus Phase-7-Start).
+//! **Layer**: `meclaw-cli` is the bootstrap layer — it may import
+//! `meclaw-cells`. `meclaw-colony` may NOT (layering invariant from the phase-7
+//! start).
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn registry_factories_validate_minimal_params() {
         let reg = built_in_factories();
-        // file/edit/web_search brauchen Pflicht-Params — pure validate_params reject leeres Object.
+        // file/edit/web_search need mandatory params — pure validate_params rejects an empty object.
         assert!(
             reg["file"]
                 .validate_params(&meclaw_core::serde_json::json!({}))
@@ -113,13 +113,13 @@ mod tests {
                 .validate_params(&meclaw_core::serde_json::json!({}))
                 .is_err()
         );
-        // store braucht schema (Pflicht) — leeres Object muss rejected werden.
+        // store needs a schema (mandatory) — an empty object must be rejected.
         assert!(
             reg["store"]
                 .validate_params(&meclaw_core::serde_json::json!({}))
                 .is_err()
         );
-        // code braucht runner (Pflicht) — leeres Object muss rejected werden.
+        // code needs a runner (mandatory) — an empty object must be rejected.
         assert!(
             reg["code"]
                 .validate_params(&meclaw_core::serde_json::json!({}))

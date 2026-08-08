@@ -1,4 +1,4 @@
-//! Phase-9 CodeCellFactory: stateless_dispatcher mit CodeCell.
+//! Phase-9 CodeCellFactory: stateless_dispatcher with CodeCell.
 
 use crate::code::{CodeCell, CodeParams};
 use meclaw_colony::{CellFactory, RespawnFn, SpawnedCellKind, build_stateless_task};
@@ -76,7 +76,7 @@ impl CellFactory for CodeCellFactory {
         );
 
         // RespawnFn: clones outside the closure, no .await inside
-        // (Phase-5-Tripwire). `cell: Arc<CodeCell>` is Send + Sync —
+        // (phase-5 tripwire). `cell: Arc<CodeCell>` is Send + Sync —
         // safe to share across respawn cycles (stateless).
         // `contract` is cloned here so the respawn closure can rebuild the
         // cell with the same contract settings on restart (sync, no await).

@@ -1,12 +1,12 @@
-//! `EmitOnceMockCell`: Stateful Mock-Cell, die genau einmal beim ersten
-//! `handle()` einen vorgegebenen `CellOutput { target, content }` emittiert
-//! und alle weiteren Eingangs-Messages über einen `mpsc::Sender<Message>`
-//! captured. Stateful trait — ignoriert `cell.db` (kein Persistenz-Bedarf).
+//! `EmitOnceMockCell`: a stateful mock cell that emits a given
+//! `CellOutput { target, content }` exactly once, on the first `handle()`, and
+//! captures every further inbound message through an `mpsc::Sender<Message>`.
+//! Stateful trait — ignores `cell.db` (no persistence needed).
 //!
-//! Phase-13.5-A6-Verwendung: Cell emittiert `/colony/<endpoint>` ohne
-//! manuelles `reply_to`. Outputs-Arm setzt reply_to automatisch via
-//! `build_follow_up_with` (Spec Z.891). Reply von /colony kommt zurück
-//! an die Cell und wird vom Capture-Sender im 2. handle()-Call empfangen.
+//! Phase-13.5-A6 usage: the cell emits to `/colony/<endpoint>` without setting
+//! `reply_to` manually. The outputs arm sets reply_to automatically via
+//! `build_follow_up_with` (spec l.891). The reply from /colony comes back to the
+//! cell and is received by the capture sender on the 2nd handle() call.
 
 use meclaw_colony::DbConn;
 use meclaw_colony::stateful_cell::StatefulCell;
@@ -14,20 +14,20 @@ use meclaw_core::serde_json::Value;
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
 use tokio::sync::mpsc;
 
-/// Stateful Mock-Cell für A6-E2E-Tests.
+/// Stateful mock cell for the A6 end-to-end tests.
 ///
-/// Erster `handle()`-Call: emittiert den pending `CellOutput` via `OutputSink::push`.
-/// Der Trigger-Input wird NICHT captured (er war nur Auslöser).
-/// Alle weiteren `handle()`-Calls: leiten die Eingangs-Message an `capture_tx` weiter.
+/// First `handle()` call: emits the pending `CellOutput` via `OutputSink::push`.
+/// The triggering input is NOT captured (it was only the trigger).
+/// Every further `handle()` call: forwards the inbound message to `capture_tx`.
 pub struct EmitOnceMockCell {
-    /// Initial-Emit-Spec; `Some` beim ersten `handle()`, danach `None`.
+    /// Initial emit spec; `Some` on the first `handle()`, `None` afterwards.
     pending_emit: Option<CellOutput>,
-    /// Capture-Channel: alle handle()-Inputs nach dem ersten Emit landen hier.
+    /// Capture channel: every handle() input after the first emit lands here.
     capture_tx: mpsc::Sender<Message>,
 }
 
 impl EmitOnceMockCell {
-    /// Konstruktor: initialer Emit + Capture-Channel.
+    /// Constructor: initial emit + capture channel.
     pub fn new(
         initial_target: Path,
         initial_content: Value,
@@ -54,7 +54,7 @@ impl StatefulCell for EmitOnceMockCell {
         async move {
             if let Some(emit) = self.pending_emit.take() {
                 let _ = sink.push(emit).await;
-                // Erster Input wird IGNORIERT (er war der Trigger).
+                // The first input is IGNORED (it was the trigger).
             } else {
                 let _ = self.capture_tx.send(msg).await;
             }

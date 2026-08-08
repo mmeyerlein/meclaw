@@ -1,15 +1,15 @@
-//! Test-Harness-Poll-Helpers für Phase-5-Quieszenz.
+//! Test-harness poll helpers for phase-5 quiescence.
 //!
-//! Drei Helpers: message_log-COUNT-Polling (Cascade-Barrier),
-//! cell.db-Value-Polling (Restore-Barrier), Arc<AtomicU32>-Polling (Restart-Counter).
+//! Three helpers: message_log COUNT polling (cascade barrier), cell.db value
+//! polling (restore barrier), Arc<AtomicU32> polling (restart counter).
 //!
-//! Alle: 10ms-Interval, Fail-Timeout mit Count-Dump im panic.
+//! All of them: 10 ms interval, fail-timeout with a count dump in the panic.
 
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Pollt cell.db system.value für `slot_path` bis == `expected` oder timeout.
-/// Read-only-Connection; öffnet & schließt sie pro Poll. Letzten gesehenen Wert
-/// im Timeout-panic dumpen.
+/// Polls cell.db system.value for `slot_path` until == `expected` or timeout.
+/// Read-only connection; opened and closed per poll. Dumps the last seen value
+/// in the timeout panic.
 pub async fn wait_for_cell_db_value(
     cell_dir: &std::path::Path,
     slot_path: &str,
@@ -21,7 +21,7 @@ pub async fn wait_for_cell_db_value(
     let mut last_seen: String = String::from("<none>");
     loop {
         // Phase-13-K-2: cell.db may not exist yet — the stateful factory now
-        // returns `Dormant` (Mailbox-Paar only), and the DB-Open lives in the
+        // returns `Dormant` (mailbox pair only), and the DB open lives in the
         // WakeFn closure. First message → Wake-Pre-Send → DB-Open. Tolerate
         // pre-Wake polls by treating Open-failure as "not-yet-existing".
         match rusqlite::Connection::open_with_flags(
@@ -65,8 +65,8 @@ pub async fn wait_for_cell_db_value(
     }
 }
 
-/// Pollt einen `Arc<AtomicU32>`-Counter bis >= `expected` oder timeout.
-/// KEINE DB-Operation; direkter Atomic-Read.
+/// Polls an `Arc<AtomicU32>` counter until >= `expected` or timeout.
+/// NO DB operation; a direct atomic read.
 pub async fn wait_for_spawn_count(
     counter: &std::sync::Arc<std::sync::atomic::AtomicU32>,
     expected: u32,
@@ -88,8 +88,8 @@ pub async fn wait_for_spawn_count(
     }
 }
 
-/// Pollt message_log COUNT für `trace_id` bis >= `expected` oder timeout.
-/// Read-only-Connection; öffnet & schließt sie pro Poll.
+/// Polls message_log COUNT for `trace_id` until >= `expected` or timeout.
+/// Read-only connection; opened and closed per poll.
 pub async fn wait_for_message_log_count(
     db_path: &std::path::Path,
     trace_id: &str,

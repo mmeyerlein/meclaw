@@ -218,10 +218,10 @@ sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","te
 async fn standard_headers_override_script_supplied_values() {
     // cell-types.md Z.220–225: Cell-Standard-Header exit_code,
     // duration_ms, had_stderr OVERRIDE die Skript-gesetzten Keys.
-    // Beweis durch ein Skript, das header.exit_code=99 und
-    // header.had_stderr=true selbst setzt — die Cell muss beides
-    // überschreiben auf den realen exit_code (0) bzw. tatsächlichen
-    // had_stderr-Status (false, weil Skript nicht auf stderr schreibt).
+    // Proof via a script that sets header.exit_code=99 and
+    // header.had_stderr=true itself — the cell must override both with the real
+    // exit_code (0) and the actual had_stderr status (false, because the script
+    // does not write to stderr).
     let cell = CodeCell::new(CodeParams {
         runner: "python3".into(),
         script: Script::Inline(
@@ -236,23 +236,23 @@ async fn standard_headers_override_script_supplied_values() {
     drop(sink);
     let em = orx.recv().await.unwrap();
     let h = &em.content["header"];
-    // Override-Beweise (Cell-Werte gewinnen):
+    // Override proofs (the cell's values win):
     assert_eq!(
         h["exit_code"], 0,
-        "exit_code muss Cell-Wert (0) sein, nicht Skript-99"
+        "exit_code must be the cell value (0), not the script's 99"
     );
     assert_eq!(
         h["had_stderr"], false,
-        "had_stderr muss Cell-Wert (false) sein, nicht Skript-true"
+        "had_stderr must be the cell value (false), not the script's true"
     );
     // Side-Beweis: andere Skript-gesetzte Header-Keys bleiben erhalten.
     assert_eq!(
         h["custom_key"], "keep_me",
-        "Non-Standard-Skript-Header bleiben unverändert"
+        "non-standard script headers stay unchanged"
     );
-    // duration_ms ist gesetzt (numerisch).
+    // duration_ms is set (numeric).
     assert!(
         h["duration_ms"].is_i64() || h["duration_ms"].is_u64(),
-        "duration_ms muss Cell-gesetzt sein"
+        "duration_ms must be set by the cell"
     );
 }

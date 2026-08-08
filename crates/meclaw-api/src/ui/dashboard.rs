@@ -1,11 +1,11 @@
 //! GET /ui/ — Phase 12-D T21 Dashboard.
 //!
-//! Aggregiert drei `ColonyMsg::Read*`-Reads (Registry, DeadLetters,
-//! Trace mit `only_error=true`) und rendert sie als drei HTML-Sections.
+//! Aggregates three `ColonyMsg::Read*` reads (registry, dead letters, trace with
+//! `only_error=true`) and renders them as three HTML sections.
 //!
-//! **Explizit kein konsistenter Snapshot** (Spec Z.468): die drei Reads
-//! laufen sequentiell, zwischen ihnen darf der Colony-State weiterlaufen.
-//! Disclaimer rendert direkt in der Seite.
+//! **Explicitly not a consistent snapshot** (spec l.468): the three reads run
+//! sequentially and colony state may move on between them. The disclaimer is
+//! rendered directly into the page.
 
 use crate::ColonyHandle;
 use crate::ui::layout;
@@ -18,19 +18,19 @@ use meclaw_colony::api_dto::{DeadLetterDto, MessageLogDto, RegistryEntryDto};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Dashboard-Handler. Bei Colony-Unavailable: 503 + minimaler HTML-Error.
+/// Dashboard handler. When colony is unavailable: 503 + a minimal HTML error.
 pub async fn get_dashboard(State(colony): State<Arc<ColonyHandle>>) -> impl IntoResponse {
-    // 1) Registry — alle Cells (Default-Limit 100).
+    // 1) Registry — all cells (default limit 100).
     let registry = match read_registry(&colony).await {
         Ok(r) => r,
         Err(()) => return colony_unavailable(),
     };
-    // 2) Dead Letters — non-destruktiv.
+    // 2) Dead letters — non-destructive.
     let dead_letters = match read_dead_letters(&colony).await {
         Ok(r) => r,
         Err(()) => return colony_unavailable(),
     };
-    // 3) Recent Errors — Trace mit only_error=true.
+    // 3) Recent errors — trace with only_error=true.
     let errors = match read_errors(&colony).await {
         Ok(r) => r,
         Err(()) => return colony_unavailable(),

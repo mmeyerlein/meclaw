@@ -2,7 +2,7 @@
 //! field into the DiskBlobStore, builds a UBF body with the `attachments[]`
 //! slot (BlobRef-serialized), and returns 202 + {message_id, attachments}.
 //!
-//! JSON-Pfad bleibt unberuehrt (Anti-Vorgriff: kein Body::Blob-Auto-Offload).
+//! The JSON path stays untouched (no phase jumping: no Body::Blob auto-offload).
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -87,9 +87,9 @@ async fn post_messages_multipart_uploads_to_blob_and_returns_attachments() {
     assert_eq!(on_disk, pdf_content);
 }
 
-/// Phase-12-X T18: JSON-Pfad bleibt unangetastet. Verifiziert per fresh-build
-/// dieser Test-Binary, dass die Multipart-Branching-Logik den JSON-Pfad nicht
-/// stoert (genauer Reproducer aus phase_12_b_messages_post.rs).
+/// Phase-12-X T18: the JSON path stays untouched. Verifies via a fresh build of
+/// this test binary that the multipart branching logic does not disturb the JSON
+/// path (exact reproducer from phase_12_b_messages_post.rs).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn post_messages_json_path_unchanged_by_multipart_branch() {
     let blob_td = tempfile::TempDir::new().unwrap();

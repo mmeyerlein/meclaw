@@ -1,4 +1,4 @@
-//! Phase-10-D: JSON-RPC-2.0-Envelopes. Pure serde, kein I/O.
+//! Phase-10-D: JSON-RPC 2.0 envelopes. Pure serde, no I/O.
 
 use meclaw_core::Uuid;
 use serde::{Deserialize, Serialize};

@@ -189,7 +189,7 @@ async fn normal_disconnect_still_dlqs_remainder_no_a1_regression() {
     // legitimately-slow death-ack must not spuriously fire `term_timeout` (a
     // premature term_timeout force-kills c1 and changes the remainder handling →
     // R1 would not DLQ as cell_inactive). 60 s tolerates the extra saturation from
-    // the β params-message test binaries (CLAUDE.md: failure-marker großzügig).
+    // the β params-message test binaries (CLAUDE.md: generous failure markers).
     set_term_timeout_ms_for_test(60_000);
     let td = tempfile::TempDir::new().unwrap();
     write(
@@ -314,7 +314,7 @@ async fn normal_disconnect_still_dlqs_remainder_no_a1_regression() {
     // BEFORE we release the gate — otherwise handle(M0) returns and c1 processes
     // the remainder (R1) normally instead of DLQ'ing it as cell_inactive. Generous
     // against full-workspace cargo-parallel saturation (CLAUDE.md: failure-marker
-    // timeouts großzügig). The colony_task then blocks on the death-ack (which
+    // timeouts). The colony_task then blocks on the death-ack (which
     // needs this gate), so there is no observable mid-state to poll deterministically.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     gate.notify_one();

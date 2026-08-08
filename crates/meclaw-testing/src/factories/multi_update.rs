@@ -1,6 +1,6 @@
 //! Phase-6.5 Factory for `MultiUpdateMockCell`. Spawns via `cell_task_stateful`
 //! with a Connection opened from `cell.db` per spawn. The `RespawnFn` closure
-//! reopens the connection on every restart (M1 Resume-mit-State path).
+//! reopens the connection on every restart (M1 resume-with-state path).
 
 use crate::mocks::MultiUpdateMockCell;
 use meclaw_colony::{
@@ -27,7 +27,7 @@ pub struct MultiUpdateMockCellFactory;
 
 impl MultiUpdateMockCellFactory {
     /// Shared parse path for `validate_params` and `spawn_cell`
-    /// (Parser-Invariante per `meclaw_colony::CellFactory`-Doc).
+    /// (parser invariant per the `meclaw_colony::CellFactory` docs).
     fn parse(raw: &JsonValue) -> Result<Path, String> {
         raw.get("sink_target")
             .and_then(|v| v.as_str())
@@ -63,8 +63,8 @@ impl CellFactory for MultiUpdateMockCellFactory {
     ) -> Result<SpawnedCellKind, String> {
         let sink_target = Self::parse(&raw)?;
 
-        // Phase-13-K-2: KEIN initialer Spawn — Mailbox-Paar geht an
-        // RegisterDormant; WakeFn/RespawnFn bauen Connection + Task on demand.
+        // Phase-13-K-2: NO initial spawn — the mailbox pair goes to
+        // RegisterDormant; WakeFn/RespawnFn build connection + task on demand.
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
         // Shared build-from-receiver closure: open cell.db + DDL + DbConn::wrap +
@@ -121,7 +121,7 @@ impl CellFactory for MultiUpdateMockCellFactory {
             )
         });
 
-        // RespawnFn: frischer Channel + build_from_recv.
+        // RespawnFn: fresh channel + build_from_recv.
         let respawn_arc = build_from_recv.clone();
         let respawn_path = path.clone();
         let respawn_inbox_tx = colony_inbox_tx.clone();

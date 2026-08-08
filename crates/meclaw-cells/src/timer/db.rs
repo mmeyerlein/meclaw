@@ -1,14 +1,15 @@
-//! Phase-10-B: `cell.db.schedules`-Tabelle + Persist-Helpers. Sync rusqlite;
-//! Aufruf via `DbConn::call`. CHECK-Constraints auf der cell-eigenen Tabelle
-//! sind erlaubt (Phase-9-Anti-Vorgriff galt nur fuer `store`-`params.schema`).
+//! Phase-10-B: the `cell.db.schedules` table + persist helpers. Sync rusqlite,
+//! called via `DbConn::call`. CHECK constraints on the cell's own table are
+//! allowed (the phase-9 no-phase-jumping rule applied only to `store`'s
+//! `params.schema`).
 
 use crate::timer::schedule::{ActiveSchedule, ScheduleKind, ScheduleRow};
 use chrono::{DateTime, SecondsFormat, Utc};
 use meclaw_core::{Path, Uuid};
 use rusqlite::Connection;
 
-/// Idempotente DDL fuer die `schedules`-Tabelle. Mehrfach-Aufruf ist safe
-/// (`CREATE TABLE IF NOT EXISTS`). Wird in der Factory pro Spawn aufgerufen.
+/// Idempotent DDL for the `schedules` table. Calling it repeatedly is safe
+/// (`CREATE TABLE IF NOT EXISTS`). Invoked by the factory once per spawn.
 pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schedules (
@@ -27,8 +28,8 @@ pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// INSERT eine Schedule-Row. Caller stellt sicher, dass `schedule_id` neu
-/// ist (add-Dup ist Handler-Ebene). PK-Verletzung → rusqlite-Error.
+/// INSERT one schedule row. The caller ensures `schedule_id` is new (add-dup is
+/// handled at the handler level). A PK violation yields a rusqlite error.
 pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result<()> {
     let (kind, cron_expr, at_utc) = match &row.kind {
         ScheduleKind::Cron(s) => ("cron", Some(s.as_str()), None),
@@ -64,7 +65,7 @@ pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result
     Ok(())
 }
 
-/// SELECT row by primary key. Returns `Ok(None)` falls keine Row existiert.
+/// SELECT row by primary key. Returns `Ok(None)` when no row exists.
 pub fn load_schedule(conn: &Connection, id: Uuid) -> rusqlite::Result<Option<ScheduleRow>> {
     let mut stmt = conn.prepare(
         "SELECT schedule_name, kind, cron_expr, at_utc, emit_to,
@@ -78,12 +79,12 @@ pub fn load_schedule(conn: &Connection, id: Uuid) -> rusqlite::Result<Option<Sch
     }
 }
 
-/// UPDATE die getragenen Felder einer existierenden Row. Returns rows_changed
-/// — Caller (Handler) prueft `== 1` fuer „bekannt" vs. `== 0` fuer „unknown".
-/// `kind` ist NICHT als Update-Argument exposed: `modify` wechselt den Typ
-/// nicht (cell-types.md Z.425–429). Cron/At-Update laeuft ueber `cron_expr_new`
-/// bzw. `at_utc_new` separat — Caller stellt sicher, dass nur das jeweilige
-/// Feld zum vorhandenen Kind passt.
+/// UPDATE the carried fields of an existing row. Returns rows_changed — the
+/// caller (handler) checks `== 1` for "known" vs. `== 0` for "unknown".
+/// `kind` is NOT exposed as an update argument: `modify` does not switch the type
+/// (cell-types.md l.425-429). A cron/at update runs through `cron_expr_new` or
+/// `at_utc_new` separately — the caller ensures only the field matching the
+/// existing kind is set.
 pub fn modify_schedule_fields(
     conn: &Connection,
     id: Uuid,
@@ -104,7 +105,7 @@ pub fn modify_schedule_fields(
     )
 }
 
-/// Status='removed'. No-Delete-konform (kein DELETE). Returns rows_changed.
+/// Status='removed'. No-delete conformant (no DELETE). Returns rows_changed.
 pub fn mark_removed(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE schedules SET status='removed' WHERE schedule_id = ?1 AND status='active'",
@@ -112,7 +113,7 @@ pub fn mark_removed(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     )
 }
 
-/// Status='completed' (fuer once nach Fire). Returns rows_changed.
+/// Status='completed' (for a one-shot after firing). Returns rows_changed.
 pub fn mark_completed(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE schedules SET status='completed' WHERE schedule_id = ?1 AND status='active'",
@@ -120,7 +121,7 @@ pub fn mark_completed(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     )
 }
 
-/// iteration_n += 1 (fuer repeating nach Fire). Returns rows_changed.
+/// iteration_n += 1 (for a repeating schedule after firing). Returns rows_changed.
 pub fn bump_iteration(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE schedules SET iteration_n = iteration_n + 1
@@ -129,11 +130,11 @@ pub fn bump_iteration(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
     )
 }
 
-/// SELECT aller `status='active'` Rows; konvertiert in I/O-Arbeitskopie.
-/// **Filtert past-onces raus** (cell-types.md Z.431–436): `at < now` wird
-/// nicht in die Io-Menge uebernommen (bleibt mit status='active' in der DB
-/// liegen — Reading-only entlastet hier; eine spaetere `modify`/`remove`-Op
-/// adressiert sie weiterhin per id). Nur cron + future-at landen im Vec.
+/// SELECT all `status='active'` rows; converts them into the I/O working copy.
+/// **Filters past one-shots out** (cell-types.md l.431-436): `at < now` is not
+/// taken into the I/O set (it stays in the DB with status='active' — read-only
+/// relief here; a later `modify`/`remove` op still addresses it by id). Only cron
+/// and future-at entries land in the Vec.
 pub fn load_active_filter_past(
     conn: &Connection,
     now: DateTime<Utc>,
@@ -276,7 +277,7 @@ mod tests {
         assert!(ids.contains(&fut_id));
         assert!(
             !ids.contains(&past_id),
-            "once-in-past muss aus Io-Menge raus"
+            "once-in-past must drop out of the I/O set"
         );
     }
 

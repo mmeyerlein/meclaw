@@ -1,6 +1,6 @@
 //! Contract `emits` validation — the generic mechanism behind Debt-Register
 //! P13/D-010a. Translates the compact `EmitSpec` map (docs/config.md § emits,
-//! Z.90) into two Draft-2020-12 documents (body + hop) and compiles them
+//! l.90) into two Draft-2020-12 documents (body + hop) and compiles them
 //! with the `jsonschema` crate (already a dependency; same engine as the UBF
 //! validator in `schema.rs`). The `jsonschema` dependency is encapsulated here.
 
@@ -12,22 +12,22 @@ fn default_required() -> bool {
     true
 }
 
-/// One field's emit specification — compact form per docs/config.md Z.90.
+/// One field's emit specification: compact form per docs/config.md l.90.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmitSpec {
     /// JSON value type: `string`/`number`/`boolean`/`object`/`array`/`blob_uuid`.
     #[serde(rename = "type")]
     pub ty: String,
-    /// Optional enum whitelist — only meaningful for `type: string` (Z.99).
+    /// Optional enum whitelist — only meaningful for `type: string` (l.99).
     #[serde(default)]
     pub values: Option<Vec<String>>,
-    /// Whether the key must be present. Defaults to `true` (Z.100).
+    /// Whether the key must be present. Defaults to `true` (l.100).
     #[serde(default = "default_required")]
     pub required: bool,
 }
 
 /// The `emits` block: `body` (content slots) + `hop` (routing metadata),
-/// each a map `key → EmitSpec` (docs/config.md Z.78). Cells only emit hop.
+/// each a map `key → EmitSpec` (docs/config.md l.78). Cells only emit hop.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EmitsBlock {
     /// Declared body slots this cell writes.
@@ -94,7 +94,7 @@ fn json_type_for(token: &str) -> &str {
 
 /// Translate one `key → EmitSpec` map into a Draft-2020-12 object schema.
 /// `additionalProperties` is left at the default (allowed): undeclared slots
-/// are not an error (config.md Z.71 — only declared keys are constrained,
+/// are not an error (config.md l.71: only declared keys are constrained,
 /// required keys must be present, declared keys match type/enum).
 fn emitspec_map_to_schema(map: &BTreeMap<String, EmitSpec>) -> Value {
     let mut properties = serde_json::Map::new();
@@ -154,7 +154,7 @@ impl CompiledEmits {
 
 /// Split a cell `content` JSON into (header-candidate, body-candidate):
 /// `content.header` (object, default `{}`) and the remaining top-level keys.
-/// Mirrors Colony's `split_content_header` (overview Z.672-676) but lives in
+/// Mirrors Colony's `split_content_header` (overview l.672-676) but lives in
 /// core so the cell can reuse it without a colony dependency.
 fn split_content(content: &Value) -> (Value, Value) {
     let mut header = Value::Object(serde_json::Map::new());
@@ -172,7 +172,7 @@ fn split_content(content: &Value) -> (Value, Value) {
 }
 
 /// Validate a cell emission `content` against its compiled `emits` contract.
-/// Checks BOTH the body slots and the hop section (config.md Z.78). The wire
+/// Checks BOTH the body slots and the hop section (config.md l.78). The wire
 /// section key stays `header`; the contract compartment it maps to is `hop`
 /// (cells only emit hop).
 /// Returns `Err` with a `body:`/`hop:`-prefixed, semicolon-joined message.
@@ -225,7 +225,7 @@ impl CompiledConsumes {
     }
 }
 
-/// Substrate-side ingress check (config.md § consumes, Z.135-138): every
+/// Substrate-side ingress check (config.md § consumes, l.135-138): every
 /// `required: true` key must be present with the declared type — `body` keys
 /// against the inline body's top-level slots, `context`/`hop` against the
 /// respective header compartment. Returns a human-readable reason naming
@@ -315,7 +315,7 @@ mod tests {
             schema["properties"]["finish_reason"]["enum"],
             serde_json::json!(["stop", "error"])
         );
-        // required-Array enthält nur required:true-Keys
+        // the required array holds only required:true keys
         assert_eq!(schema["required"], serde_json::json!(["finish_reason"]));
     }
 
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn compile_errs_loudly_for_malformed_type_token() {
-        // "stringg" ist kein gültiger JSON-Schema-Typ → jsonschema-Compile scheitert.
+        // "stringg" is not a valid JSON-Schema type → the jsonschema compile fails.
         let emits: EmitsBlock =
             serde_json::from_str(r#"{"body":{"x":{"type":"stringg"}},"hop":{}}"#).unwrap();
         let err = CompiledEmits::compile(&emits).unwrap_err();
@@ -364,7 +364,7 @@ mod tests {
         let b: EmitsBlock = serde_json::from_str(raw).unwrap();
         assert_eq!(b.body["messages"].ty, "array");
         assert!(b.body["messages"].required);
-        // required defaultet auf true (config.md Z.100)
+        // required defaults to true (config.md l.100)
         assert!(b.hop["finish_reason"].required);
         assert_eq!(
             b.hop["finish_reason"].values.as_deref().unwrap(),
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn validate_emits_rejects_body_violation() {
         let c = sample_compiled();
-        // messages fehlt → required-body-Verstoß
+        // messages is missing → required-body violation
         let content = serde_json::json!({ "header": {"finish_reason": "stop"} });
         let err = validate_emits(&content, &c).unwrap_err();
         assert!(err.contains("body"), "names body: {err}");
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn validate_emits_rejects_hop_violation() {
         let c = sample_compiled();
-        // finish_reason fehlt → required-hop-Verstoß (Reviewer-Punkt 1: hop wird geprüft)
+        // finish_reason is missing → required-hop violation (reviewer point 1: hop is checked)
         let content = serde_json::json!({ "messages": [] });
         let err = validate_emits(&content, &c).unwrap_err();
         assert!(err.contains("hop"), "names hop: {err}");
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn validate_emits_checks_hop_section_against_wire_header() {
-        // Wire-Key bleibt "header"; Contract-Fach heißt "hop".
+        // the wire key stays "header"; the contract compartment is called "hop".
         let emits: EmitsBlock = serde_json::from_str(
             r#"{"body":{"messages":{"type":"array","required":true}},"hop":{"finish_reason":{"type":"string","required":true}}}"#,
         )
@@ -449,7 +449,7 @@ mod tests {
         let c = CompiledEmits::compile(&emits).unwrap();
         let ok = serde_json::json!({"header":{"finish_reason":"stop"},"messages":[]});
         assert!(validate_emits(&ok, &c).is_ok());
-        let bad = serde_json::json!({"messages":[]}); // finish_reason fehlt
+        let bad = serde_json::json!({"messages":[]}); // finish_reason is missing
         assert!(validate_emits(&bad, &c).unwrap_err().contains("hop"));
     }
 
@@ -460,7 +460,7 @@ mod tests {
         }))
         .unwrap();
         let compiled = CompiledConsumes::compile(&block);
-        let headers = crate::Headers::new(); // h1 fehlt
+        let headers = crate::Headers::new(); // h1 is missing
         let body = serde_json::json!({"messages": []});
         let err = validate_consumes(&body, &headers, &compiled).unwrap_err();
         assert!(err.contains("consumes.hop 'h1'"), "{err}");
@@ -513,7 +513,7 @@ mod tests {
         let mut headers = crate::Headers::new();
         headers
             .hop
-            .insert("b1".into(), serde_json::json!("nicht-uuid"));
+            .insert("b1".into(), serde_json::json!("not-a-uuid"));
         assert!(
             validate_consumes(&serde_json::json!({"messages": []}), &headers, &compiled).is_err()
         );

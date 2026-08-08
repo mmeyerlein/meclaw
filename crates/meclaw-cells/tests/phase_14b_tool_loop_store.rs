@@ -1,7 +1,7 @@
-//! Phase-14-B Tool-Loop mit store als alleinigem Thread-Halter.
+//! Phase-14-B tool loop with store as the sole thread holder.
 //! [user]-Upstream-Capture → store + llm; Collector↔store-RMW-Fan-in; voller
 //! kumulierter Thread pro llm-Call; Terminierung via finish_reason-CEL-Edge;
-//! Multi-Iteration + A8-Ganzkörper-Blob-Offload. llm deterministisch via MockOpenAI.
+//! Multi-iteration + A8 whole-body blob offload. llm deterministic via MockOpenAI.
 #[path = "mock_openai.rs"]
 mod mock_openai;
 #[path = "support_14b.rs"]
@@ -21,7 +21,7 @@ async fn user_capture_multisends_to_store_and_llm() {
     let (h, _sink_rx, mut park_rx) = boot(&td).await;
     h.send(user_probe("t1")).await;
 
-    // (a) store-Insert-Reply landet am /park (route=ustore propagiert) → [user] ist in store.
+    // (a) The store insert reply lands at /park (route=ustore propagates) → [user] is in the store.
     let pk = recv_bounded(&mut park_rx)
         .await
         .expect("store insert-reply must reach /park");
@@ -36,9 +36,9 @@ async fn user_capture_multisends_to_store_and_llm() {
         "[user] row inserted into store thread"
     );
 
-    // (b) /llm hat den user-Turn gesehen. Der llm-Pfad (HTTP) läuft parallel zum
-    // lokalen store-Pfad; auf das Eintreffen des Calls bounded warten (kein
-    // /sink-Receipt in diesem Baum, der ihn synchronisieren würde).
+    // (b) /llm has seen the user turn. The llm path (HTTP) runs in parallel with
+    // the local store path; wait boundedly for the call to arrive (there is no
+    // /sink receipt in this tree that would synchronize it).
     let snaps = {
         // 30s failure-marker (was 10s — too tight under cargo-parallel load); the
         // llm HTTP path runs concurrently to the local store path with no /sink
@@ -118,7 +118,7 @@ async fn collector_rebuilds_thread_and_calls_llm_again() {
         "final-fire thread must contain user+assistant+tool, got {roles:?}"
     );
 
-    // store-State-Receipt: die thread-Tabelle hält den vollen Faden für t1.
+    // Store state receipt: the thread table holds the full thread for t1.
     let conn = rusqlite::Connection::open(td.path().join("main/store/cell.db")).unwrap();
     let store_roles: Vec<String> = conn
         .prepare("SELECT role FROM thread WHERE turn_id='t1' ORDER BY rowid")
@@ -134,7 +134,7 @@ async fn collector_rebuilds_thread_and_calls_llm_again() {
         "store thread holds the full conversation: {store_roles:?}"
     );
 
-    // Live-Graph über beide Scopes: store/dispatcher/collector/tool-a als Nodes,
+    // Live graph across both scopes: store/dispatcher/collector/tool-a as nodes,
     // Fire-Edge collector→/llm vorhanden.
     let (nodes, edges) = live_graph(&h, &["/", "/tool-loop"]).await;
     for p in [
@@ -156,23 +156,25 @@ async fn collector_rebuilds_thread_and_calls_llm_again() {
     h.shutdown().await;
 }
 
-/// **PROOF-POINT des Header-Modell-Umbaus.** ≥2 Tool-Iterationen werden GRÜN —
-/// positiver Receipt, kein "kein Crash". Der alte Phase-14-B-Bug (stale
-/// `operation`-Header leakt über den Loop in die Collector-Phasen-Diskriminierung,
-/// ab Iteration 2 nahm das stateless FSM den falschen Branch, Iter-2-Turns wurden
-/// nie persistiert, der Loop entgleiste via TTL-Tod) ist durch den Zwei-Fächer-Umbau
-/// (hop verfällt, `iter` als context, iter-gescopte ID-Set-Diff) strukturell
+/// **PROOF POINT of the header-model rebuild.** ≥2 tool iterations go GREEN — a
+/// positive receipt, not a "no crash". The old phase-14-B bug (a stale
+/// `operation` header leaked through the loop into the collector's phase
+/// discrimination, so from iteration 2 the stateless FSM took the wrong branch,
+/// iteration-2 turns were never persisted and the loop derailed via TTL death) is
+/// structurally impossible after the two-compartment rebuild (hop decays, `iter`
+/// as context, iteration-scoped ID set diff)
 /// eliminiert.
 ///
 /// Mock-Skript: 3 Provider-Calls, 2 Tool-Iterationen.
-///   - Call 1 → assistant mit **2** tool_calls (schärft ID-Set-Diff vs. count —
-///     out-of-order-fest über mehrere IDs in EINEM assistant-Turn).
-///   - Call 2 → assistant mit 1 tool_call.
+///   - Call 1 → an assistant turn with **2** tool_calls (sharpens the ID set diff
+///     vs. a count — out-of-order-proof across several IDs in ONE assistant turn).
+///   - Call 2 → an assistant turn with 1 tool_call.
 ///   - Call 3 → assistant `stop`.
 ///
-/// Positive Receipts (alle): genau 3 LLM-Calls; BEIDE Iterationen in store/cell.db;
-/// Final-Response am /sink mit `hop.finish_reason == "stop"`; `context.iter == 2` am
-/// letzten Hop (Loop-Zähler lief über beide Iterationen auf der fire-Edge); leere DLQ.
+/// Positive receipts (all of them): exactly 3 LLM calls; BOTH iterations in
+/// store/cell.db; the final response at /sink with `hop.finish_reason == "stop"`;
+/// `context.iter == 2` on the last hop (the loop counter ran across both
+/// iterations on the fire edge); an empty DLQ.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_14b_two_iterations_no_stale_operation() {
     use meclaw_colony::ColonyMsg;
@@ -180,7 +182,7 @@ async fn phase_14b_two_iterations_no_stale_operation() {
     use tokio::sync::oneshot;
 
     let mock = MockOpenAI::start(vec![
-        // Iteration 1: zwei parallele Tool-Calls in EINEM assistant-Turn.
+        // Iteration 1: two parallel tool calls in ONE assistant turn.
         canned_tool_calls(vec![
             ("call-a1", "calc", r#"{"x":2,"y":3}"#),
             ("call-b1", "calc", r#"{"x":4,"y":5}"#),
@@ -197,8 +199,8 @@ async fn phase_14b_two_iterations_no_stale_operation() {
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
     h.send(user_probe("t1")).await;
 
-    // Final-Response erreicht /sink mit finish_reason == stop (positiver Receipt;
-    // 30s großzügiger Failure-Marker pro Konvention).
+    // The final response reaches /sink with finish_reason == stop (a positive
+    // receipt; a generous 30s failure marker per convention).
     let fin = recv_bounded(&mut sink_rx)
         .await
         .expect("final response must reach /sink after 2 tool iterations");
@@ -207,17 +209,18 @@ async fn phase_14b_two_iterations_no_stale_operation() {
         "loop terminates on stop, not via TTL-death"
     );
 
-    // context.iter == 2: der Loop-Zähler lief korrekt über BEIDE Iterationen auf der
-    // collector→/llm-fire-Edge (Ingress iter=0; +1 nach Iter-1; +1 nach Iter-2).
+    // context.iter == 2: the loop counter ran correctly across BOTH iterations on
+    // the collector→/llm fire edge (ingress iter=0; +1 after iter 1; +1 after iter 2).
     assert_eq!(
         fin.headers.context["iter"], 2,
         "iter counter advanced once per tool iteration via the fire-edge modifier"
     );
 
-    // LLM-Calls: ≥3 (2 Tool-Iterationen + Terminierung). Exakt-3 ist kein Gate —
-    // ein benign TTL-gekappter Collector-Double-Fire unter Parallellast darf einen
-    // Trailing-Duplikat-Call ergänzen (die leere DLQ unten beweist die TTL-Deckelung).
-    // Korrektheit trägt der positive Receipt (finish_reason/iter/store-rows), nicht der Count.
+    // LLM calls: ≥3 (2 tool iterations + termination). Exactly 3 is not a gate — a
+    // benign TTL-capped collector double fire under parallel load may add a
+    // trailing duplicate call (the empty DLQ below proves the TTL cap). Correctness
+    // is carried by the positive receipt (finish_reason/iter/store rows), not the
+    // count.
     let snaps = mock.recorded_requests().await;
     assert!(
         snaps.len() >= 3,
@@ -225,7 +228,7 @@ async fn phase_14b_two_iterations_no_stale_operation() {
         snaps.len()
     );
 
-    // BEIDE Iterationen in store/cell.db persistiert — der alte Bug ließ Iter-2-Turns
+    // BOTH iterations persisted in store/cell.db — the old bug made iteration-2 turns
     // verschwinden. Konkrete Row-Existenz pro (iter, role).
     let conn = rusqlite::Connection::open(td.path().join("main/store/cell.db")).unwrap();
     let mut rows: Vec<(i64, String)> = conn
@@ -249,8 +252,8 @@ async fn phase_14b_two_iterations_no_stale_operation() {
         2,
         "iter-0 has both tool-results (multi-call fan-in): {rows:?}"
     );
-    // Iter 1: assistant-Turn (1 tool_call) + 1 tool-result. (KEIN user-Turn —
-    // user lebt nur in iter 0.) Der alte Bug ließ genau diese Rows verschwinden.
+    // Iter 1: one assistant turn (1 tool_call) + 1 tool result. (NO user turn —
+    // the user only lives in iter 0.) The old bug made exactly these rows vanish.
     assert!(
         rows.contains(&(1, "assistant".into())),
         "iter-1 assistant row persisted (the old bug dropped this): {rows:?}"
@@ -262,8 +265,8 @@ async fn phase_14b_two_iterations_no_stale_operation() {
     );
     rows.clear();
 
-    // Leere DLQ — positiver Receipt, NICHT Negativ-Indiz: kein Dead-Letter, kein
-    // TtlExpired über den ganzen Loop.
+    // Empty DLQ — a positive receipt, NOT a negative indicator: no dead letter, no
+    // TtlExpired across the whole loop.
     let (ack_tx, ack_rx) = oneshot::channel::<ReadDeadLettersReply>();
     h.runtime()
         .inbox_tx
@@ -286,7 +289,7 @@ async fn phase_14b_two_iterations_no_stale_operation() {
             .collect::<Vec<_>>()
     );
 
-    // Der finale Fire trägt den vollen kumulierten Thread beider Iterationen.
+    // The final fire carries the full accumulated thread of both iterations.
     let m3 = snaps.last().unwrap().messages().unwrap();
     let roles: Vec<&str> = m3.iter().filter_map(|m| m["role"].as_str()).collect();
     assert!(
@@ -301,7 +304,7 @@ async fn phase_14b_two_iterations_no_stale_operation() {
 /// Two DISTINCT tools (`a`, `b`) are called in ONE assistant turn. The dispatcher
 /// reads each tool-call's function name (`json.loads(c["text"])["name"]`),
 /// surrogates it to `'a'`/`'b'`, and emits it as `header.tool_name` (which lands in
-/// the `hop` fach). The hive edges discriminate per call via
+/// the `hop` compartment). The hive edges discriminate per call via
 /// `hop.route == 'tool' && hop.tool_name == 'a'` / `== 'b'`, routing each call to
 /// the correct tool cell. Each tool echoes the input call's `id` back in a DISTINCT
 /// `tool_result` text (`tool-a → "A-ok"`, `tool-b → "B-ok"`).
@@ -451,18 +454,19 @@ async fn phase_14b_fanin_correlation() {
     h.shutdown().await;
 }
 
-/// **Task 6 — A8 Ganzkörper-Blob-Offload (D-025: niemals `messages_id`/`text_id`).**
-/// Identische Topologie wie `14b-tool-loop-store`, aber `tool-a` liefert ein ~40 KB
-/// `tool_result`. Über 2 Tool-Iterationen wächst der kumulierte Thread auf dem
-/// `collector→/llm`-fire-Hop über den `blob_inline_max_bytes`-Default (65 536 Bytes),
-/// sodass A8 (`offload_oversized`) den GANZEN Body als `Body::Blob` auslagert.
+/// **Task 6 — A8 whole-body blob offload (D-025: never `messages_id`/`text_id`).**
+/// The same topology as `14b-tool-loop-store`, but `tool-a` returns a ~40 KB
+/// `tool_result`. Across 2 tool iterations the accumulated thread on the
+/// `collector→/llm` fire hop grows past the `blob_inline_max_bytes` default
+/// (65,536 bytes), so A8 (`offload_oversized`) offloads the WHOLE body as a
+/// `Body::Blob`.
 ///
 /// Positive Receipts:
-///   1. `await_body_kind(<td>, "/llm") == "blob"` — der Fire-Hop wurde als
-///      Ganzkörper-Blob ausgelagert (`message_log.body_kind == "blob"`).
-///   2. Der ausgelagerte Blob ist ein VOLLER UBF-Body mit `messages[]` inline und
-///      enthält NIRGENDS einen `messages_id`/`text_id`-Pointer (D-025: 0 Producer).
-///   3. Leere DLQ — kein Dead-Letter, kein TtlExpired über den Loop.
+///   1. `await_body_kind(<td>, "/llm") == "blob"` — the fire hop was offloaded as
+///      a whole-body blob (`message_log.body_kind == "blob"`).
+///   2. The offloaded blob is a FULL UBF body with `messages[]` inline and contains
+///      NOWHERE a `messages_id`/`text_id` pointer (D-025: 0 producers).
+///   3. Empty DLQ — no dead letter, no TtlExpired across the loop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_14b_blob_offload() {
     use meclaw_colony::ColonyMsg;
@@ -472,7 +476,7 @@ async fn phase_14b_blob_offload() {
     let mock = MockOpenAI::start(vec![
         // Iteration 1: ein Tool-Call → tool-a liefert ~40 KB.
         canned_tool_calls(vec![("call-a1", "calc", r#"{"x":2,"y":3}"#)]),
-        // Iteration 2: ein Tool-Call → noch ~40 KB; kumulierter Thread > 64 KB.
+        // Iteration 2: one tool call → another ~40 KB; accumulated thread > 64 KB.
         canned_tool_calls(vec![("call-a2", "calc", r#"{"x":6,"y":7}"#)]),
         // Terminierung.
         canned_chat_completion("fertig", "stop"),
@@ -486,8 +490,8 @@ async fn phase_14b_blob_offload() {
     let (h, mut sink_rx, mut park_rx) = boot_with_blobs(&td).await;
     h.send(user_probe("t1")).await;
 
-    // Final-Response erreicht /sink mit finish_reason == stop (positiver Receipt;
-    // der Loop terminiert sauber trotz Blob-Offload auf dem Fire-Hop).
+    // The final response reaches /sink with finish_reason == stop (a positive
+    // receipt; the loop terminates cleanly despite the blob offload on the fire hop).
     let fin = recv_bounded(&mut sink_rx)
         .await
         .expect("final response must reach /sink after 2 tool iterations");
@@ -496,24 +500,24 @@ async fn phase_14b_blob_offload() {
         "loop terminates on stop, not via TTL-death"
     );
 
-    // (1) Der collector→/llm-fire-Hop wurde als Ganzkörper-Blob ausgelagert: eine
-    // message_log-Row mit to_path=/llm AND body_kind='blob' existiert (A8 bewiesen).
-    // colony.db liegt unter <td> (build_with_blob_store öffnet dir/colony.db).
+    // (1) The collector→/llm fire hop was offloaded as a whole-body blob: a
+    // message_log row with to_path=/llm AND body_kind='blob' exists (A8 proven).
+    // colony.db lives under <td> (build_with_blob_store opens dir/colony.db).
     let body_kind = await_body_kind(td.path(), "/llm").await;
     assert_eq!(
         body_kind, "blob",
         "collector→/llm fire-hop offloaded whole body as Body::Blob"
     );
 
-    // (2) Der ausgelagerte Blob ist ein VOLLER UBF-Body: `messages[]` inline,
+    // (2) The offloaded blob is a FULL UBF body: `messages[]` inline,
     // NIRGENDS ein `messages_id`/`text_id`-Pointer (D-025: 0 Producer).
     let blobs = read_blob_bodies(td.path());
     assert!(
         !blobs.is_empty(),
         "at least one blob written to <td>/blobs/"
     );
-    // Wähle gezielt den /llm-FIRE-Blob: ein kumulierter Thread, der den user-Turn
-    // UND mind. einen tool-Turn inline trägt (unterscheidet ihn von store-op-Blobs).
+    // Deliberately pick the /llm FIRE blob: an accumulated thread carrying the user
+    // turn AND at least one tool turn inline (distinguishing it from store-op blobs).
     fn carries_role(v: &meclaw_core::serde_json::Value, origin: &str) -> bool {
         v["messages"]
             .as_array()
@@ -528,7 +532,7 @@ async fn phase_14b_blob_offload() {
         blob["messages"].is_array() && !blob["messages"].as_array().unwrap().is_empty(),
         "blob carries a non-empty inline messages[] array"
     );
-    // Kein Pointer irgendwo im Blob-JSON (rekursiv, key-Namen).
+    // No pointer anywhere in the blob JSON (recursive, by key name).
     fn has_pointer_key(v: &meclaw_core::serde_json::Value) -> bool {
         match v {
             meclaw_core::serde_json::Value::Object(m) => {
@@ -545,7 +549,7 @@ async fn phase_14b_blob_offload() {
         "D-025: no messages_id/text_id pointer anywhere in the offloaded blob: {blob:#}"
     );
 
-    // (3) Leere DLQ — positiver Receipt, NICHT Negativ-Indiz.
+    // (3) Empty DLQ — a positive receipt, NOT a negative indicator.
     let (ack_tx, ack_rx) = oneshot::channel::<ReadDeadLettersReply>();
     h.runtime()
         .inbox_tx
@@ -567,13 +571,12 @@ async fn phase_14b_blob_offload() {
             .map(|e| e.error_code.clone())
             .collect::<Vec<_>>()
     );
-    // /park empfängt in DIESER Topologie ausschließlich BY-DESIGN-Routen, keine
-    // Fehler: die user-origin-store-insert-Quittung (`store→/park`) und die
-    // Guard-Verlierer-Parks des Collectors (`collector→/park`, leerer Body — Peers,
-    // die das atomare Fire-Race nicht gewonnen haben). KEINE davon ist ein Fehler;
-    // die autoritative Fehler-DLQ ist `ReadDeadLetters` (oben: leer). Wir prüfen
-    // positiv, dass jede /park-Message eine dieser erwarteten Formen hat — KEIN
-    // Error-Body, kein TtlExpired-Marker.
+    // In THIS topology /park receives exclusively BY-DESIGN routes, no errors: the
+    // user-origin store-insert acknowledgement (`store→/park`) and the collector's
+    // guard-loser parks (`collector→/park`, empty body — peers that did not win the
+    // atomic fire race). NONE of these is an error; the authoritative error DLQ is
+    // `ReadDeadLetters` (above: empty). We check positively that every /park message
+    // has one of these expected shapes — NO error body, no TtlExpired marker.
     while let Ok(pk) = park_rx.try_recv() {
         if let Body::Inline(v) = &pk.body {
             let is_user_receipt = v["messages"][0]["type"] == "tool_result";
@@ -586,7 +589,7 @@ async fn phase_14b_blob_offload() {
         }
     }
 
-    // Live-Graph: Fire-Edge collector→/llm vorhanden; DOT/SVG nur unter Env-Gate.
+    // Live graph: the collector→/llm fire edge is present; DOT/SVG only under the env gate.
     let (nodes, edges) = live_graph(&h, &["/", "/tool-loop"]).await;
     assert!(
         edges

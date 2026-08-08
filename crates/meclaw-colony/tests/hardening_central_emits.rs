@@ -1,22 +1,22 @@
-//! Slice 3 (roadmap Z.135): zentrale contract.emits-Validierung am
-//! outputs-Arm (flag-gated; code-Typ in-cell always-on, hier ausgenommen).
+//! Slice 3 (roadmap Z.135): central contract.emits validation at the outputs
+//! arm (flag-gated; the code cell type is always-on in-cell, excluded here).
 //!
-//! Task 3.2: Eine Nicht-code-Cell mit `contract.emits.hop.h1 (number,
-//! required)` emittiert contract-widrig — die Emission wird am outputs-Arm
-//! GEDROPPT: mit `input_reply_to` geht eine Error-Reply
-//! (`error_code: "contract_violation"`) an den Absender der Input-Message,
-//! ohne `input_reply_to` landet die Emission in der DLQ
-//! (`DeadLetterReason::ContractViolation`). Konforme Emissionen routen
-//! normal; `validate_emits == false` (Release-Modell, via SetNodeContract
-//! erzwungen) schaltet den Check ab.
+//! Task 3.2: a non-code cell with `contract.emits.hop.h1 (number, required)`
+//! emits in violation of its contract — the emission is DROPPED at the outputs
+//! arm: with `input_reply_to` an error reply
+//! (`error_code: "contract_violation"`) goes to the sender of the input message,
+//! without `input_reply_to` the emission lands in the DLQ
+//! (`DeadLetterReason::ContractViolation`). Conforming emissions route
+//! normally; `validate_emits == false` (release model, forced via
+//! SetNodeContract) turns the check off.
 //!
-//! Treiber ist die Echo-Cell (`EchoCellFactory`): sie propagiert KEINEN
-//! Input-Header in ihren Output — ihr Output-Header kommt ausschließlich aus
-//! `params.emitted_header` (config-statisch). Verletzend = Param weglassen
-//! (Emission ohne header-Sektion → hop `{}` → required h1 fehlt), konform =
-//! `emitted_header: {key: "h1", value: 42}`. Topologie-Muster wie
-//! `hardening_consumes_ingress.rs` (FS-Fixtures, `bootstrap_from_filesystem`,
-//! Capture-Receipts, DLQ-Drain, 30s-Failure-Marker).
+//! The driver is the echo cell (`EchoCellFactory`): it propagates NO input
+//! header into its output — its output header comes exclusively from
+//! `params.emitted_header` (config-static). Violating = omit the param
+//! (emission without a header section → hop `{}` → required h1 missing),
+//! conforming = `emitted_header: {key: "h1", value: 42}`. Topology pattern as
+//! in `hardening_consumes_ingress.rs` (FS fixtures, `bootstrap_from_filesystem`,
+//! capture receipts, DLQ drain, 30s failure markers).
 
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, DeadLetterReason, NodeContract,
@@ -47,17 +47,17 @@ fn registry() -> CellFactoryRegistry {
     r
 }
 
-/// Emitter-Topologie (bootet grün): `/c` ist der VERLETZENDE Echo-Emitter —
-/// `contract.emits.hop.h1 (number, required)` deklariert, aber OHNE
-/// `params.emitted_header` → seine Emission trägt keine header-Sektion und
-/// verletzt das hop-Schema. `/ok` ist der KONFORME Emitter — identischer
-/// Contract, `emitted_header` liefert `h1: 42`. Beide echo'n nach `/down`
-/// (Capture). W2b (Ruling A1): der Identity-Fallback ist weg — die Echo-
-/// Zustellung an `/down` braucht eine verdrahtete Catch-all-Out-Edge, sonst
-/// no_routet die Emission. Catch-all `./c→/down` + `./ok→/down` (Edge-Ziel ==
-/// echo_to, keine Ziel-Änderung); `/down` ist in jedem Test vor dem Bootstrap
-/// gespawnt (A8 resolvt gegen die Live-Registry). Die Violation-Tests fangen
-/// `/c`s Emission am zentralen emits-Check VOR dem Routing ab — Edge dort inert.
+/// Emitter topology (boots green): `/c` is the VIOLATING echo emitter —
+/// `contract.emits.hop.h1 (number, required)` is declared, but WITHOUT
+/// `params.emitted_header` → its emission carries no header section and
+/// violates the hop schema. `/ok` is the CONFORMING emitter — identical
+/// contract, `emitted_header` supplies `h1: 42`. Both echo to `/down`
+/// (capture). W2b (ruling A1): the identity fallback is gone — the echo
+/// delivery to `/down` needs a wired catch-all out-edge, otherwise the emission
+/// no_routes. Catch-all `./c→/down` + `./ok→/down` (edge target == echo_to, no
+/// target change); `/down` is spawned before the bootstrap in every test (A8
+/// resolves against the live registry). The violation tests catch `/c`'s
+/// emission at the central emits check BEFORE routing — the edge is inert there.
 fn write_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/c")).unwrap();
     std::fs::create_dir_all(td.join("main/ok")).unwrap();
@@ -84,19 +84,19 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
 }
 
-/// UBF-konforme Probe (Phase-6-Lesson: keine InvalidUbfBody-DLQ) an `target`.
-/// Der ECHO-OUTPUT bleibt ebenfalls valides UBF (messages-Array) — nur der
-/// emits.hop-Contract wird verletzt, nicht der debug-only UBF-Check.
+/// A UBF-conformant probe (phase-6 lesson: no InvalidUbfBody DLQ) to `target`.
+/// The ECHO OUTPUT also stays valid UBF (messages array) — only the emits.hop
+/// contract is violated, not the debug-only UBF check.
 fn ubf_probe(target: &str) -> MessageBuilder {
     MessageBuilder::new(Path::new(target)).body(Body::Inline(json!({
         "messages": [{"origin": "user", "type": "text", "text": "emits-probe"}]
     })))
 }
 
-/// Nicht-code-Cell mit emits-Contract: contract-widrige Emission wird NICHT
-/// geroutet; input_reply_to empfängt error_code == "contract_violation".
-/// Die Error-Reply ist der Ordnungs-Anker; danach beweist ein KURZES bounded
-/// Fenster auf /down, dass die verletzende Emission ihr Ziel NICHT erreicht.
+/// A non-code cell with an emits contract: a contract-violating emission is NOT
+/// routed; input_reply_to receives error_code == "contract_violation".
+/// The error reply is the ordering anchor; afterwards a SHORT bounded window on
+/// /down proves that the violating emission does NOT reach its target.
 // The central emits-validation gate is active only in debug builds
 // (debug_assertions). Under `cargo test --release` the gate is off, so this
 // contract-violation path produces no error-reply; gate the test to match.
@@ -123,27 +123,27 @@ async fn central_emits_violation_with_reply_to_yields_error_reply() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /c MIT reply_to=/sink: das Echo emittiert ohne header.h1 →
-    // zentrale emits-Verletzung → Error-Reply statt Emission.
+    // Probe to /c WITH reply_to=/sink: the echo emits without header.h1 →
+    // central emits violation → error reply instead of an emission.
     let probe = ubf_probe("/c").reply_to(Path::new("/sink")).build();
     h.send(probe).await;
 
     // Error-Reply am input_reply_to (30s-Failure-Marker-Konvention).
     let received = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
         .await
-        .expect("/sink muss innerhalb von 30s die contract_violation-Error-Reply empfangen")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/sink must receive the contract_violation error reply within 30s")
+        .expect("CaptureCell channel must deliver a message");
     assert_eq!(received.target.as_str(), "/sink");
     assert_eq!(
         received.headers.hop.get("error_code"),
         Some(&json!("contract_violation")),
-        "hop.error_code muss contract_violation sein, hop: {:?}",
+        "hop.error_code must be contract_violation, hop: {:?}",
         received.headers.hop
     );
     assert_eq!(
         received.headers.hop.get("finish_reason"),
         Some(&json!("error")),
-        "hop.finish_reason muss error sein, hop: {:?}",
+        "hop.finish_reason must be error, hop: {:?}",
         received.headers.hop
     );
     let body = match &received.body {
@@ -152,22 +152,22 @@ async fn central_emits_violation_with_reply_to_yields_error_reply() {
     };
     assert!(
         body.contains("h1"),
-        "Error-Reply muss den verletzten Key im Grund tragen: {body}"
+        "the error reply must carry the violated key in its reason: {body}"
     );
 
-    // Ziel-Receipt BLEIBT AUS: die Error-Reply ist der Anker — wäre die
-    // Emission geroutet worden, läge sie bereits in der Pipeline.
+    // The target receipt DOES NOT ARRIVE: the error reply is the anchor — had
+    // the emission been routed, it would already be in the pipeline.
     let no_receipt = tokio::time::timeout(Duration::from_millis(300), down_rx.recv()).await;
     assert!(
         no_receipt.is_err(),
-        "die verletzende Emission darf /down NICHT erreichen, got {no_receipt:?}"
+        "the violating emission must NOT reach /down, got {no_receipt:?}"
     );
 
     h.shutdown().await;
 }
 
-/// Ohne input_reply_to → DLQ-Eintrag ContractViolation, Emission gedroppt
-/// (reason-gefiltertes Count-Muster aus hardening_consumes_ingress.rs).
+/// Without input_reply_to → a DLQ entry ContractViolation, the emission is
+/// dropped (reason-filtered count pattern from hardening_consumes_ingress.rs).
 // Debug-only: see the note on central_emits_violation_with_reply_to_yields_error_reply.
 // The dead-letter for a contract violation only occurs while the debug-build gate is on.
 #[cfg(debug_assertions)]
@@ -187,11 +187,11 @@ async fn central_emits_violation_without_reply_to_dead_letters() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /c OHNE reply_to.
+    // Probe to /c WITHOUT reply_to.
     let probe = ubf_probe("/c").build();
     h.send(probe).await;
 
-    // DLQ-Poll mit 30s-Deadline; drain ist destruktiv → akkumulieren.
+    // DLQ poll with a 30s deadline; the drain is destructive → accumulate.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut collected = Vec::new();
     loop {
@@ -204,7 +204,7 @@ async fn central_emits_violation_without_reply_to_dead_letters() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "kein contract_violation-Dead-Letter innerhalb von 30s, got {collected:?}"
+            "no contract_violation dead letter within 30s, got {collected:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -214,7 +214,7 @@ async fn central_emits_violation_without_reply_to_dead_letters() {
         .count();
     assert_eq!(
         cv_count, 1,
-        "genau EIN contract_violation-Dead-Letter erwartet, got {collected:?}"
+        "exactly ONE contract_violation dead letter expected, got {collected:?}"
     );
     let dl = collected
         .iter()
@@ -224,19 +224,19 @@ async fn central_emits_violation_without_reply_to_dead_letters() {
     assert_eq!(dl.sender_path.as_str(), "/c");
     assert_eq!(dl.resolved_target.as_str(), "/down");
 
-    // Emission gedroppt: der DLQ-Eintrag ist der Anker; kurzes bounded
-    // Fenster danach beweist das Ausbleiben des Ziel-Receipts.
+    // Emission dropped: the DLQ entry is the anchor; a short bounded window
+    // afterwards proves the absence of the target receipt.
     let no_receipt = tokio::time::timeout(Duration::from_millis(300), down_rx.recv()).await;
     assert!(
         no_receipt.is_err(),
-        "die verletzende Emission darf /down NICHT erreichen, got {no_receipt:?}"
+        "the violating emission must NOT reach /down, got {no_receipt:?}"
     );
 
     h.shutdown().await;
 }
 
-/// Konforme Emission routet normal: `/ok` liefert `h1: 42` (number) via
-/// `params.emitted_header` → positives Capture-Receipt an /down, DLQ leer.
+/// A conforming emission routes normally: `/ok` supplies `h1: 42` (number) via
+/// `params.emitted_header` → positive capture receipt at /down, DLQ empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn central_emits_conforming_emission_routes() {
     let td = TempDir::new().unwrap();
@@ -258,12 +258,12 @@ async fn central_emits_conforming_emission_routes() {
 
     let received = tokio::time::timeout(Duration::from_secs(30), down_rx.recv())
         .await
-        .expect("/down muss innerhalb von 30s das konforme Echo-Receipt empfangen")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/down must receive the conforming echo receipt within 30s")
+        .expect("CaptureCell channel must deliver a message");
     assert_eq!(
         received.headers.hop.get("h1"),
         Some(&json!(42)),
-        "hop.h1 muss die konforme number tragen, hop: {:?}",
+        "hop.h1 must carry the conforming number, hop: {:?}",
         received.headers.hop
     );
     let body = match &received.body {
@@ -272,22 +272,22 @@ async fn central_emits_conforming_emission_routes() {
     };
     assert!(
         body.contains("echo from /ok"),
-        "Receipt muss den /ok-Echo-Turn tragen — beweist die geroutete \
-         konforme Emission: {body}"
+        "the receipt must carry the /ok echo turn — proves the routed \
+         conforming emission: {body}"
     );
 
-    // DLQ-Wächter NACH dem Fluss.
+    // DLQ guard AFTER the flow.
     let dead = h.drain_dead_letters().await;
     assert!(dead.is_empty(), "DLQ must be empty, got {dead:?}");
 
     h.shutdown().await;
 }
 
-/// validate_emits == false (Release-Modell) → keine Prüfung, auch die
-/// contract-widrige Emission routet. In Debug-Builds resolved der Boot
-/// validate_emits=true — der Test überschreibt den Eintrag für /c NACH dem
-/// Boot via SetNodeContract (gleiches kompiliertes Schema, Flag aus) und
-/// beweist damit das Flag-Gate unabhängig vom Build-Profil.
+/// validate_emits == false (release model) → no check, the contract-violating
+/// emission routes too. In debug builds the boot resolves validate_emits=true —
+/// the test overrides the entry for /c AFTER the boot via SetNodeContract (same
+/// compiled schema, flag off) and thereby proves the flag gate independently of
+/// the build profile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn central_emits_flag_off_skips_check() {
     let td = TempDir::new().unwrap();
@@ -304,7 +304,7 @@ async fn central_emits_flag_off_skips_check() {
         .await
         .expect("topology must boot green");
 
-    // Override für /c: identischer emits-Contract, aber validate_emits=false.
+    // Override for /c: identical emits contract, but validate_emits=false.
     let emits_block: meclaw_core::EmitsBlock = meclaw_core::serde_json::from_value(json!({
         "hop": {"h1": {"type": "number", "required": true}}
     }))
@@ -330,22 +330,22 @@ async fn central_emits_flag_off_skips_check() {
         .expect("SetNodeContract ack within 30s")
         .expect("ack sender not dropped");
 
-    // Identische verletzende Probe wie im DLQ-Test — jetzt routet sie.
+    // The same violating probe as in the DLQ test — now it routes.
     let probe = ubf_probe("/c").build();
     h.send(probe).await;
 
     let received = tokio::time::timeout(Duration::from_secs(30), down_rx.recv())
         .await
-        .expect("/down muss innerhalb von 30s das Receipt empfangen (Flag aus → keine Prüfung)")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/down must receive the receipt within 30s (flag off → no validation)")
+        .expect("CaptureCell channel must deliver a message");
     let body = match &received.body {
         Body::Inline(v) => v.to_string(),
         other => panic!("expected inline UBF body at /down, got {other:?}"),
     };
     assert!(
         body.contains("echo from /c"),
-        "Receipt muss den /c-Echo-Turn tragen — beweist, dass die \
-         contract-widrige Emission bei validate_emits=false ROUTET: {body}"
+        "the receipt must carry the /c echo turn — proves the contract-violating \
+         emission ROUTES when validate_emits=false: {body}"
     );
 
     let dead = h.drain_dead_letters().await;

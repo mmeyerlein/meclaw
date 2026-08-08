@@ -1,14 +1,13 @@
 //! GET /ui/trace — Phase 12-D T25.
 //!
-//! Trace-Tree-Renderer + Search-Form. Wrappt `ColonyMsg::ReadTrace`
-//! analog zum 12-B-JSON-Handler. Aus der flachen Liste an
-//! `MessageLogDto`-Einträgen wird via `parent_message_id`-Map ein
-//! verschachtelter `<ul class="tree">/<li>`-Baum erzeugt — Root-Hops
-//! sind solche mit `parent_message_id is None`.
+//! Trace tree renderer + search form. Wraps `ColonyMsg::ReadTrace` analogously
+//! to the 12-B JSON handler. The flat list of `MessageLogDto` entries is turned
+//! into a nested `<ul class="tree">/<li>` tree via a `parent_message_id` map —
+//! root hops are those with `parent_message_id is None`.
 //!
-//! Ohne `trace_id`-Query rendert die Seite nur die Search-Form +
-//! einen Hinweis-Text. T27 ergänzt 400-HTML bei invalid UUID
-//! (statt 422), zentralisiert in `crate::ui::errors`.
+//! Without a `trace_id` query the page renders only the search form plus a hint.
+//! T27 adds 400 HTML on an invalid UUID (rather than 422), centralized in
+//! `crate::ui::errors`.
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -25,13 +24,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `/ui/trace`.
+/// Query params for `/ui/trace`.
 #[derive(Debug, Deserialize, Default)]
 pub struct TraceUiQuery {
-    /// Trace-ID als UUID-String. Pflicht für Tree-Render; ohne diesen Wert
-    /// rendert die Seite nur die Search-Form.
+    /// Trace ID as a UUID string. Mandatory for the tree render; without it the
+    /// page renders only the search form.
     pub trace_id: Option<String>,
-    /// Hard-Cap (Default 100, Max 1000).
+    /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 
@@ -42,7 +41,7 @@ pub async fn get_trace_ui(
 ) -> impl IntoResponse {
     let trace_id_input = q.trace_id.clone().unwrap_or_default();
 
-    // Ohne trace_id: nur Form + Hinweis.
+    // Without a trace_id: form + hint only.
     let Some(trace_id_str) = q.trace_id.as_deref() else {
         let content = html! {
             (render_search_form(&trace_id_input))
@@ -51,7 +50,7 @@ pub async fn get_trace_ui(
         return (StatusCode::OK, Html(layout("Trace", content).into_string())).into_response();
     };
 
-    // UUID-Validierung — bei Fail 400 (kein 422 bei Reads, T27).
+    // UUID validation — 400 on failure (no 422 on reads, T27).
     let trace_id = match Uuid::parse_str(trace_id_str) {
         Ok(u) => u,
         Err(_) => {
@@ -98,11 +97,11 @@ fn render_search_form(trace_id: &str) -> Markup {
     }
 }
 
-/// Baut aus der flachen Liste eine Children-Map (parent_message_id → Kinder)
-/// und rendert rekursiv. Root-Hops haben `parent_message_id is None`.
+/// Builds a children map (parent_message_id → children) from the flat list and
+/// renders recursively. Root hops have `parent_message_id is None`.
 ///
-/// Bei Cycles (sollte nie passieren) wird per `visited`-Set abgebrochen,
-/// damit der Renderer nicht in eine Endlos-Schleife läuft.
+/// On cycles (which should never happen) a `visited` set aborts the walk so the
+/// renderer cannot run into an infinite loop.
 pub(crate) fn render_trace_tree(entries: &[MessageLogDto]) -> Markup {
     let mut children: HashMap<Option<String>, Vec<&MessageLogDto>> = HashMap::new();
     for e in entries {
@@ -113,9 +112,8 @@ pub(crate) fn render_trace_tree(entries: &[MessageLogDto]) -> Markup {
     }
     let roots: Vec<&MessageLogDto> = children.get(&None).cloned().unwrap_or_default();
 
-    // Falls keine echten Roots vorhanden sind (z.B. Filter schneidet Wurzel
-    // weg), fallback: alle Einträge, deren parent NICHT im Set existiert,
-    // gelten als orphaned Roots.
+    // If there are no real roots (e.g. the filter cut the root away), fall back
+    // to: every entry whose parent is NOT in the set counts as an orphaned root.
     let roots = if roots.is_empty() {
         let ids: std::collections::HashSet<String> = entries.iter().map(|e| e.id.clone()).collect();
         entries
@@ -192,7 +190,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Best-effort `error_code` extraction from the raw `headers_json` string.
-/// Wenn ungültig oder fehlend: None.
+/// None when invalid or absent.
 fn extract_error_code(headers_json: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(headers_json).ok()?;
     v.get("error_code")
@@ -236,7 +234,7 @@ mod tests {
 
     #[test]
     fn tree_handles_orphan_as_root() {
-        // child references unknown parent → child wird selbst zur Root.
+        // child references an unknown parent → the child becomes a root itself.
         let entries = vec![mk_entry("orphan", Some("ghost"), "/o")];
         let s = render_trace_tree(&entries).into_string();
         assert!(s.contains("/o"));

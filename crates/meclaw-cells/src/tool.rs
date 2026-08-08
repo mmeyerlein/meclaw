@@ -1,66 +1,65 @@
 //! Phase-7 shared tool-cell helpers.
 //!
-//! Bietet:
-//! - `parse_tool_call_args`: extrahiert den einzigen `tool_call`-Turn aus
-//!   `msg.body.messages[]`, parsed dessen `text` als JSON, gibt Args + id zurück.
-//! - `build_tool_result_body`: UBF-Body mit einem `tool_result`-Turn.
-//! - `build_error_body`: UBF-Body mit `finish_reason: "error"` + `error_code`.
-//! - `with_external_timeout`: `tokio::time::timeout`-Wrapper (im Slice 1
-//!   ungenutzt; bereitgestellt für Slice 3/web-Cells).
-//! - `ERR_*`-Konstanten: error_code-Strings (geteilte Taxonomie für alle
-//!   Tool-Cells in `meclaw-cells`).
+//! Provides:
+//! - `parse_tool_call_args`: extracts the single `tool_call` turn from
+//!   `msg.body.messages[]`, parses its `text` as JSON, returns args + id.
+//! - `build_tool_result_body`: UBF body with one `tool_result` turn.
+//! - `build_error_body`: UBF body with `finish_reason: "error"` + `error_code`.
+//! - `with_external_timeout`: a `tokio::time::timeout` wrapper (unused in
+//!   slice 1; provided for slice 3 / the web cells).
+//! - the `ERR_*` constants: error_code strings (a shared taxonomy for all tool
+//!   cells in `meclaw-cells`).
 //!
-//! Designentscheidung 7.4 (Phase-7-Brainstorm-Review 2026-05-21):
-//! KEIN `ToolError`-Enum, sondern geteilte error_code-Konstanten + Funktionen
-//! mit `code: &str`-Parameter. Vermeidet enum-vs-string-Doppelpflege, bleibt
-//! konsistent mit der spec-weiten `error_code`-String-Konvention (siehe
-//! § Dead-Letter-Kanonische-Strings, overview Z.570).
+//! Design decision 7.4 (phase-7 brainstorm review 2026-05-21):
+//! NO `ToolError` enum, but shared error_code constants + functions taking a
+//! `code: &str` param. Avoids maintaining an enum and a string in parallel and
+//! stays consistent with the spec-wide `error_code` string convention (see
+//! § Canonical dead-letter strings, overview l.570).
 
 use meclaw_core::{JsonValue, Message, serde_json};
 
-// ---- error_code-Konstanten (geteilte Taxonomie) ----
+// ---- error_code constants (shared taxonomy) ----
 
-/// error_code für ungültige Eingabe-Argumente.
+/// error_code for invalid input arguments.
 pub const ERR_INVALID_INPUT: &str = "invalid_input";
-/// error_code für Pfad außerhalb der Security-Boundary.
+/// error_code for a path outside the security boundary.
 pub const ERR_PATH_OUTSIDE_BOUNDARY: &str = "path_outside_boundary";
-/// error_code für nicht gefundene Ressource.
+/// error_code for a resource that was not found.
 pub const ERR_NOT_FOUND: &str = "not_found";
-/// error_code wenn Pfad kein Verzeichnis ist.
+/// error_code for a path that is not a directory.
 pub const ERR_NOT_A_DIRECTORY: &str = "not_a_directory";
-/// error_code wenn Pfad keine Datei ist.
+/// error_code for a path that is not a file.
 pub const ERR_NOT_A_FILE: &str = "not_a_file";
-/// error_code für I/O-Fehler.
+/// error_code for I/O errors.
 pub const ERR_IO_ERROR: &str = "io_error";
-/// Bereitgestellt für Slice 3 (web-Cells). In Slice 1 nicht emittiert —
-/// FileCell hat keinen `external_timeout`-Vertrag (Disk-I/O ist
-/// nicht netzwerk-getimed).
+/// Provided for slice 3 (the web cells). Not emitted in slice 1 — FileCell has
+/// no `external_timeout` contract (disk I/O is not network-timed).
 pub const ERR_TIMEOUT: &str = "timeout";
-/// error_code wenn das Such-Pattern nicht gefunden wird (find_replace).
+/// error_code for a search pattern that is not found (find_replace).
 pub const ERR_PATTERN_NOT_FOUND: &str = "pattern_not_found";
 
-// ---- tool_call-Parser ----
+// ---- tool_call parser ----
 
-/// Extrahiert genau einen `tool_call`-Turn aus `msg.body.messages[]`,
-/// parsed dessen `text` als JSON-Object und gibt `(args, id)` zurück.
+/// Extracts exactly one `tool_call` turn from `msg.body.messages[]`, parses its
+/// `text` as a JSON object and returns `(args, id)`.
 ///
-/// Failure-Modes (alle als `Err(error_text)` mit `ERR_INVALID_INPUT`-
-/// Semantik — die Cell baut daraus eine Error-Message):
-/// - kein `messages[]`-Array im Body
-/// - kein einziger `tool_call`-Turn vorhanden
-/// - mehr als ein `tool_call`-Turn
-/// - `text` fehlt oder ist kein String
-/// - `text` ist kein valides JSON-Object
-/// - `id` fehlt oder ist kein String
+/// Failure modes (all as `Err(error_text)` with `ERR_INVALID_INPUT` semantics —
+/// the cell turns them into an error message):
+/// - no `messages[]` array in the body
+/// - not a single `tool_call` turn present
+/// - more than one `tool_call` turn
+/// - `text` missing or not a string
+/// - `text` is not a valid JSON object
+/// - `id` missing or not a string
 ///
-/// Returnt `(JsonValue, Option<String>)` — wobei `id: Option` nur deshalb
-/// `Option` ist, weil die UBF-Schema-Validierung `id` für `tool_call`
-/// formal Pflicht macht, aber der Helper für die Phase-7-Tool-Cells
-/// auch Test-Probes ohne id annehmen will (defensiv).
+/// Returns `(JsonValue, Option<String>)` — `id: Option` only because the UBF
+/// schema validation makes `id` formally mandatory for `tool_call`, while the
+/// helper also wants to accept test probes without an id for the phase-7 tool
+/// cells (defensively).
 pub fn parse_tool_call_args(msg: &Message) -> Result<(JsonValue, Option<String>), String> {
     let body_value: JsonValue = match &msg.body {
         meclaw_core::Body::Inline(v) => v.clone(),
-        // Blob-Resolution ist Phase 12; in Phase 7 nicht erwartet.
+        // Blob resolution is phase 12; not expected in phase 7.
         _ => return Err("body is not inline".into()),
     };
     let messages = body_value
@@ -90,10 +89,10 @@ pub fn parse_tool_call_args(msg: &Message) -> Result<(JsonValue, Option<String>)
     Ok((args, id))
 }
 
-// ---- Body-Builder ----
+// ---- body builders ----
 
-/// Baut einen UBF-Body mit genau einem `tool_result`-Turn.
-/// `header`-Map wird unter `body.header` eingehängt.
+/// Builds a UBF body with exactly one `tool_result` turn.
+/// The `header` map is hung under `body.header`.
 pub fn build_tool_result_body(
     text: String,
     id: Option<String>,
@@ -117,9 +116,9 @@ pub fn build_tool_result_body(
     JsonValue::Object(body)
 }
 
-/// Baut einen UBF-Body mit `finish_reason: "error"` + `error_code: <code>`
-/// im Header und einem `tool_result`-Turn mit der menschenlesbaren
-/// Beschreibung in `text`.
+/// Builds a UBF body with `finish_reason: "error"` + `error_code: <code>` in the
+/// header and one `tool_result` turn carrying the human-readable description in
+/// `text`.
 pub fn build_error_body(
     code: &str,
     text: String,
@@ -131,12 +130,12 @@ pub fn build_error_body(
     build_tool_result_body(text, id, header_extras)
 }
 
-// ---- external_timeout-Wrapper (für Slice 3) ----
+// ---- external_timeout wrapper (for slice 3) ----
 
-/// `tokio::time::timeout`-Wrapper mit String-Error bei Elapsed.
-/// In Slice 1 NICHT aufgerufen — FileCell hat keinen `external_timeout`-
-/// Vertrag (Disk-I/O ist Operator-Verantwortung, nicht Cell-getimed).
-/// Bereitgestellt für Slice 3 (`web_fetch`/`web_search`).
+/// `tokio::time::timeout` wrapper with a string error on Elapsed.
+/// NOT called in slice 1 — FileCell has no `external_timeout` contract (disk I/O
+/// is the operator's responsibility, not cell-timed).
+/// Provided for slice 3 (`web_fetch`/`web_search`).
 pub async fn with_external_timeout<F>(
     duration: std::time::Duration,
     fut: F,

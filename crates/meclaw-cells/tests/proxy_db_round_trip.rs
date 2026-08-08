@@ -1,5 +1,5 @@
 //! Phase-10-C T2: Cursor-CRUD-Round-Trip. Created-Default 0 (W9), Resumed
-//! liest persistierten Wert.
+//! reads the persisted value.
 
 use meclaw_cells::proxy::db::{load_offset, save_offset, setup_proxy_schema};
 
@@ -10,7 +10,7 @@ fn load_offset_on_fresh_schema_returns_zero() {
     let off = load_offset(&conn).unwrap();
     assert_eq!(
         off, 0,
-        "fresh schema must default offset to 0 (Created-Pfad)"
+        "fresh schema must default offset to 0 (Created path)"
     );
 }
 

@@ -1,41 +1,42 @@
-//! Task 6 (neu): stdio-Bridge Phasen-Demo + EOF-Lifecycle-Tests.
+//! Task 6 (new): stdio-bridge phase demo + EOF lifecycle tests.
 //!
-//! Demo (Step 6.1): `echo "ping" | meclaw --root <fixture>` mit einer
-//! synchronen, deterministischen code-Cell, echter Return-Edge und CEL-Bedingung
-//! auf der Ingress-Edge. Kein HTTP, kein Mock-Server.
+//! Demo (step 6.1): `echo "ping" | meclaw --root <fixture>` with a synchronous,
+//! deterministic code cell, a real return edge and a CEL condition on the
+//! ingress edge. No HTTP, no mock server.
 //!
-//! Fixture-Topologie:
-//!   <root>/main/config.json       — Root-Hive `/`
-//!                                   Ingress-Edge: `from="." to="./echo" condition="!has(hop.finish_reason)"`
-//!                                   Return-Edge:  `from="./echo" to="."`
-//!   <root>/main/echo/config.json  — `type: "code"` (inline Python, emittiert finish_reason="assistant")
+//! Fixture topology:
+//!   <root>/main/config.json       — root hive `/`
+//!                                   ingress edge: `from="." to="./echo" condition="!has(hop.finish_reason)"`
+//!                                   return edge:  `from="./echo" to="."`
+//!   <root>/main/echo/config.json  — `type: "code"` (inline Python, emits finish_reason="assistant")
 //!
-//! Flow (edge-getrieben, Task-2-Egress via enqueue_hive_transit):
-//!   Bridge-Ingress sendet stdin-Zeile (kein hop.finish_reason) → root-hive "/" →
-//!   Ingress-Edge matcht (condition true) → routes zu "/echo".
-//!   code-Cell: Python-Skript setzt header.finish_reason="assistant" →
-//!   emittiert assistant-Turn zu msg.target="/".
-//!   Colony outputs_rx: sender="/echo", apply_edges → Return-Edge matcht →
+//! Flow (edge-driven, task-2 egress via enqueue_hive_transit):
+//!   The bridge ingress sends the stdin line (no hop.finish_reason) → root hive
+//!   "/" → the ingress edge matches (condition true) → routes to "/echo".
+//!   code cell: the Python script sets header.finish_reason="assistant" →
+//!   emits an assistant turn to msg.target="/".
+//!   Colony outputs_rx: sender="/echo", apply_edges → the return edge matches →
 //!   HiveTransit { hive_path="/", msg }.
-//!   enqueue_hive_transit("/"): apply_edges vom Hive "/" → Ingress-Edge prüft
-//!   condition !has(hop.finish_reason) → false (hop.finish_reason="assistant") →
-//!   Edge überspringen → decisions leer → egress_tx → stdout (Task-2-Egress).
+//!   enqueue_hive_transit("/"): apply_edges from the hive "/" → the ingress edge
+//!   checks condition !has(hop.finish_reason) → false
+//!   (hop.finish_reason="assistant") → skip the edge → decisions empty →
+//!   egress_tx → stdout (task-2 egress).
 //!
-//! EOF-Tests (Step 6.2):
-//! - Direct-Mode: stdin-EOF → Prozess beendet Exit 0 ohne Signal.
-//! - --daemon + sofortiges stdin-EOF → Prozess läuft weiter (erst Signal
-//!   beendet ihn) — beweist EOF-Ignorierung im Daemon-Modus.
+//! EOF tests (step 6.2):
+//! - Direct mode: stdin EOF → the process exits 0 without a signal.
+//! - --daemon + immediate stdin EOF → the process keeps running (only a signal
+//!   ends it) — proves that EOF is ignored in daemon mode.
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// Python-Skript für die Echo-Cell: ignoriert Eingabe, emittiert immer "pong".
+/// Python script for the echo cell: ignores the input, always emits "pong".
 ///
-/// Setzt `header.finish_reason = "assistant"` im Content-Header. Dieser Wert
-/// landet im `hop`-Fach der Message-Headers. Der Ingress-Edge im Root-Hive
-/// prüft `!has(hop.finish_reason)` — damit leitet er nur User-Nachrichten
-/// weiter (kein finish_reason gesetzt) und lässt Antwort-Nachrichten durch
+/// Sets `header.finish_reason = "assistant"` in the content header. That value
+/// lands in the `hop` compartment of the message headers. The ingress edge in
+/// the root hive checks `!has(hop.finish_reason)` — so it only forwards user
+/// messages (no finish_reason set) and lets reply messages through
 /// (finish_reason == "assistant" → Edge-Bedingung false → decisions empty
 /// → enqueue_hive_transit → egress).
 const ECHO_SCRIPT: &str = r#"
@@ -45,28 +46,29 @@ import sys, json
 print(json.dumps({"header": {"finish_reason": "assistant"}, "messages": [{"origin": "assistant", "type": "text", "text": "pong"}]}))
 "#;
 
-/// Schreibt die Fixture-Topologie für den Demo-Test.
+/// Writes the fixture topology for the demo test.
 ///
-/// Root-Hive "/" mit zwei Edges:
-/// - Ingress-Edge: from="." to="./echo" (kein Filter — alle Nachrichten zu /echo)
+/// Root hive "/" with two edges:
+/// - Ingress edge: from="." to="./echo" (no filter — all messages to /echo)
 /// - Return-Edge: from="./echo" to="." (triggert HiveTransit auf "/")
 ///
-/// code-Cell bei "/echo": inline Python, gibt immer "pong" zurück.
+/// code cell at "/echo": inline Python, always returns "pong".
 fn write_echo_fixture(root: &std::path::Path) {
     let echo_dir = root.join("main/echo");
     std::fs::create_dir_all(&echo_dir).unwrap();
 
-    // Root-Hive mit bedingter Ingress-Edge und Return-Edge.
+    // Root hive with a conditional ingress edge and a return edge.
     //
     // Ingress-Edge (bedingt): `from="." to="./echo" condition="!has(hop.finish_reason)"`
-    //   → leitet nur User-Nachrichten an /echo (kein hop.finish_reason gesetzt).
-    //   → Antwort-Nachrichten (hop.finish_reason=="assistant") werden NICHT weitergeleitet.
+    //   → forwards only user messages to /echo (no hop.finish_reason set).
+    //   → reply messages (hop.finish_reason=="assistant") are NOT forwarded.
     //
     // Return-Edge (unbedingt): `from="./echo" to="."`
     //   → In outputs_rx: sender="/echo", apply_edges findet Return-Edge → HiveTransit("/").
-    //   → enqueue_hive_transit("/") prüft apply_edges vom Hive "/":
-    //     Ingress-Edge hat condition=!has(hop.finish_reason) → false für Antwort.
-    //     decisions leer → egress-Kanal (Task-2-Egress, enqueue_hive_transit).
+    //   → enqueue_hive_transit("/") checks apply_edges from the hive "/":
+    //     the ingress edge has condition=!has(hop.finish_reason) → false for a
+    //     reply. decisions empty → egress channel (task-2 egress,
+    //     enqueue_hive_transit).
     std::fs::write(
         root.join("main/config.json"),
         serde_json::json!({
@@ -81,8 +83,8 @@ fn write_echo_fixture(root: &std::path::Path) {
     )
     .unwrap();
 
-    // code-Cell: inline Python, immer "pong", kein HTTP.
-    // Params-Format: `script_inline` (flacher Key, nicht verschachtelt) — CodeParams::parse.
+    // code cell: inline Python, always "pong", no HTTP.
+    // Params format: `script_inline` (a flat key, not nested) — CodeParams::parse.
     std::fs::write(
         echo_dir.join("config.json"),
         serde_json::json!({
@@ -102,28 +104,28 @@ fn write_echo_fixture(root: &std::path::Path) {
 
 // ─── Step 6.1: Demo-Test — stdin → assistant-stdout ──────────────────────────
 
-/// Startet meclaw mit einer synchronen code-Cell-Fixture (kein HTTP, kein Mock),
-/// pipet "ping" als stdin hinein und erwartet "pong" auf stdout sowie Exit 0.
+/// Starts meclaw with a synchronous code-cell fixture (no HTTP, no mock), pipes
+/// "ping" into stdin and expects "pong" on stdout plus exit 0.
 ///
-/// Positives Receipt: stdout enthält "pong" ←→ Bridge + Colony + code-Cell +
-/// Return-Edge + Task-2-Egress laufen korrekt durch.
+/// Positive receipt: stdout contains "pong" ←→ bridge + colony + code cell +
+/// return edge + task-2 egress all run through correctly.
 ///
-/// Egress-Pfad (edge-getrieben):
+/// Egress path (edge-driven):
 ///   code-Cell emittiert an target="/" → Colony outputs_rx: sender="/echo",
 ///   apply_edges findet Return-Edge from="/echo" to="/" → HiveTransit("/")
 ///   → enqueue_hive_transit(egress_tx) → egress-Kanal → stdout.
 ///
-/// Test-Strategie: stdout wird VOR dem stdin-EOF gelesen (blockierend, max 10s).
-/// Erst wenn die erste stdout-Zeile ("pong") angekommen ist, wird stdin
-/// geschlossen → EOF → Shutdown. Das vermeidet den Race zwischen Cell-Worker
-/// und Colony-Shutdown.
+/// Test strategy: stdout is read BEFORE the stdin EOF (blocking, max 10s). Only
+/// once the first stdout line ("pong") has arrived is stdin closed → EOF →
+/// shutdown. That avoids the race between the cell worker and the colony
+/// shutdown.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn direct_mode_stdin_line_produces_assistant_stdout() {
     // Fixture schreiben.
     let td = tempfile::TempDir::new().unwrap();
     write_echo_fixture(td.path());
 
-    // meclaw-Prozess mit gepipetem stdin + stdout starten.
+    // Start the meclaw process with piped stdin + stdout.
     let root_path = td.path().to_path_buf();
     let (status, stdout_content) = tokio::task::spawn_blocking(move || {
         let mut child = Command::new(env!("CARGO_BIN_EXE_meclaw"))
@@ -138,25 +140,25 @@ async fn direct_mode_stdin_line_produces_assistant_stdout() {
         let mut child_stdin = child.stdin.take().expect("stdin");
         let child_stdout = child.stdout.take().expect("stdout");
 
-        // Stdout-Leser: liest eine Zeile blockierend (max 10s bis "pong" kommt).
-        // Strategie: erst "ping" senden, dann blockierend warten bis "pong"
-        // erscheint, DANN stdin schließen → EOF → Shutdown.
-        // So ist der Cell-Output garantiert vor dem Shutdown.
+        // Stdout reader: reads one line blocking (max 10s until "pong" arrives).
+        // Strategy: first send "ping", then block until "pong" appears, THEN
+        // close stdin → EOF → shutdown.
+        // That way the cell output is guaranteed to precede the shutdown.
         child_stdin.write_all(b"ping\n").expect("write");
-        // stdout-flush durch flush() nicht nötig (unbuffered write_all).
+        // No stdout flush via flush() needed (unbuffered write_all).
 
         let stdout_line = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stdout_line_clone = stdout_line.clone();
         let reader_thread = std::thread::spawn(move || {
             use std::io::BufRead as _;
             let reader = std::io::BufReader::new(child_stdout);
-            // Lese EINE Zeile (blockiert bis "pong\n" kommt).
+            // Read ONE line (blocks until "pong\n" arrives).
             if let Some(Ok(l)) = reader.lines().next() {
                 *stdout_line_clone.lock().unwrap() = l;
             }
         });
 
-        // Warte max 10s auf die erste stdout-Zeile.
+        // Wait at most 10s for the first stdout line.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if reader_thread.is_finished() {
@@ -170,10 +172,10 @@ async fn direct_mode_stdin_line_produces_assistant_stdout() {
         }
         let _ = reader_thread.join();
 
-        // Erst jetzt stdin schließen → EOF → Shutdown.
+        // Only now close stdin → EOF → shutdown.
         drop(child_stdin);
 
-        // Auf Prozess-Ende warten (max 5s: Shutdown nach EOF ist schnell).
+        // Wait for the process to end (max 5s: shutdown after EOF is fast).
         let exit_deadline = std::time::Instant::now() + Duration::from_secs(5);
         let status = loop {
             match child.try_wait().expect("try_wait") {
@@ -208,8 +210,8 @@ async fn direct_mode_stdin_line_produces_assistant_stdout() {
 
 // ─── Step 6.2: EOF-Lifecycle-Tests ───────────────────────────────────────────
 
-/// Direct-Mode: stdin-EOF → Prozess beendet Exit 0 ohne Signal.
-/// Nutzt eine einfache Root-Hive-Topologie (keine Cell nötig).
+/// Direct mode: stdin EOF → the process exits 0 without a signal.
+/// Uses a simple root-hive topology (no cell needed).
 #[test]
 fn direct_mode_eof_exits_zero() {
     let td = tempfile::TempDir::new().unwrap();
@@ -220,8 +222,8 @@ fn direct_mode_eof_exits_zero() {
     )
     .unwrap();
 
-    // `output()` schließt stdin sofort (kein Input) → EOF → graceful Shutdown.
-    // Kein Quiesce-Wait: EOF triggert direkt Shutdown.
+    // `output()` closes stdin immediately (no input) → EOF → graceful shutdown.
+    // No quiesce wait: EOF triggers the shutdown directly.
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_meclaw"))
         .arg("--root")
         .arg(td.path())
@@ -236,12 +238,12 @@ fn direct_mode_eof_exits_zero() {
     );
 }
 
-/// Gegenprobe: `--daemon` + sofortiges stdin-EOF → Prozess läuft weiter
-/// (EOF wird ignoriert). Erst ein Signal beendet ihn.
+/// Counter-check: `--daemon` + immediate stdin EOF → the process keeps running
+/// (EOF is ignored). Only a signal ends it.
 ///
-/// Semantisches Timing-Diskriminierungsfenster: 5s nach Start noch am Leben
-/// beweist, dass der Daemon-Mode den EOF-Arm NICHT verdrahtet hat.
-/// Aufräumen via SIGKILL (child.kill()).
+/// Semantic timing discriminator window: still alive 5s after start proves that
+/// daemon mode did NOT wire the EOF arm.
+/// Cleanup via SIGKILL (child.kill()).
 #[test]
 fn daemon_mode_eof_does_not_exit() {
     let td = tempfile::TempDir::new().unwrap();
@@ -262,7 +264,7 @@ fn daemon_mode_eof_does_not_exit() {
         .spawn()
         .expect("spawn meclaw --daemon");
 
-    // Semantisches Timing: 5s. Daemon darf NICHT von EOF getrieben beendet sein.
+    // Semantic timing: 5s. The daemon must NOT have been ended by EOF.
     std::thread::sleep(Duration::from_secs(5));
 
     let still_running = child.try_wait().expect("try_wait").is_none();

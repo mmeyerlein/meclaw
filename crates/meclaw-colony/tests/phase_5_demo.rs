@@ -1,11 +1,12 @@
-//! Phase-5-Demo (T37): End-to-End-Restore über die Boot-Grenze.
+//! Phase-5 demo (T37): end-to-end restore across the boot boundary.
 //!
-//! Topologie: 3 PersistMockCells (/a, /b, /c) als 3-Hop-Chain via echo_to.
-//! /c terminal (kein Output). FirstBoot 3 Inputs → counter=3 in allen drei.
-//! Reboot 3 Inputs → counter=6 (Restore-Beweis: Overlay aus FirstBoot-Snapshot,
-//! NICHT Bootstrap-0).
+//! Topology: 3 PersistMockCells (/a, /b, /c) as a 3-hop chain via echo_to.
+//! /c is terminal (no output). FirstBoot 3 inputs → counter=3 in all three.
+//! Reboot 3 inputs → counter=6 (restore proof: overlay from the FirstBoot
+//! snapshot, NOT bootstrap-0).
 //!
-//! Trace/CTE-Breite ist an Q4/Q6/Q7 delegiert; Demo macht hier nur Counter-Restore.
+//! Trace/CTE breadth is delegated to Q4/Q6/Q7; this demo only does the counter
+//! restore.
 
 use meclaw_colony::factory::CellFactory;
 use meclaw_core::{MessageBuilder, Path, Uuid};
@@ -86,14 +87,14 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
     for _ in 0..3 {
         h1.send(MessageBuilder::new(Path::new("/a")).build()).await;
     }
-    // Counter == 3 in allen drei Cells nach 3 Inputs.
+    // Counter == 3 in all three cells after 3 inputs.
     wait_for_cell_db_value(&dir_a, "counter", "3", std::time::Duration::from_secs(10)).await;
     wait_for_cell_db_value(&dir_b, "counter", "3", std::time::Duration::from_secs(10)).await;
     wait_for_cell_db_value(&dir_c, "counter", "3", std::time::Duration::from_secs(10)).await;
     h1.shutdown().await;
 
     // ---- Reboot ----
-    // Neue ColonyHandle (neue colony.db). Cells re-spawnen aus cell.db (overlay).
+    // A new ColonyHandle (new colony.db). Cells re-spawn from cell.db (overlay).
     let h2 = ColonyHandle::new();
     spawn_persist_cell(
         &h2,
@@ -121,7 +122,7 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
         .await;
     h2.add_edge(Uuid::now_v7(), Path::new("/b"), Path::new("/c"))
         .await;
-    // 3 weitere Sends — Cells starten mit overlay=3 aus FirstBoot.
+    // 3 more sends — the cells start with overlay=3 from FirstBoot.
     for _ in 0..3 {
         h2.send(MessageBuilder::new(Path::new("/a")).build()).await;
     }
@@ -130,7 +131,7 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
     wait_for_cell_db_value(&dir_c, "counter", "6", std::time::Duration::from_secs(10)).await;
     h2.shutdown().await;
 
-    // ---- Final Assert: counter==6 in allen drei ----
+    // ---- Final assert: counter==6 in all three ----
     for dir in &[&dir_a, &dir_b, &dir_c] {
         let conn = rusqlite::Connection::open(dir.join("cell.db")).unwrap();
         let v: String = conn

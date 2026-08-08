@@ -1,5 +1,5 @@
-//! Phase-12-A TDD-Anker: build_router liefert genau /health, alles andere axum-404.
-//! Bewusst KEIN /colony/events-501 in 12-A (das kommt in 12-B).
+//! Phase-12-A TDD anchor: build_router serves exactly /health, everything else
+//! is an axum 404. Deliberately NO /colony/events 501 in 12-A (that arrives in 12-B).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -11,8 +11,8 @@ mod common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn health_returns_200_and_unknown_routes_404() {
-    // build_router nimmt einen ColonyHandle — für 12-A reicht ein minimaler
-    // Stub-Sender, weil /health Colony nicht anfasst. Echter ColonyHandle in 12-B.
+    // build_router takes a ColonyHandle — for 12-A a minimal stub sender suffices,
+    // since /health never touches colony. A real ColonyHandle arrives in 12-B.
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let colony = Arc::new(meclaw_api::ColonyHandle {
         inbox: tx,
@@ -33,9 +33,9 @@ async fn health_returns_200_and_unknown_routes_404() {
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
 
-    // Phase 12-A asserted 404 auf /colony/registry. Ab Phase 12-B T8.1 ist die
-    // Route registriert (200); das 404-Probe-Pattern bleibt aber wertvoll —
-    // jetzt gegen einen wirklich unbekannten Pfad.
+    // Phase 12-A asserted a 404 on /colony/registry. From phase 12-B T8.1 the
+    // route is registered (200); the 404 probe pattern stays valuable though —
+    // now against a genuinely unknown path.
     let unknown = app
         .oneshot(
             Request::builder()

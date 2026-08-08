@@ -2,9 +2,9 @@
 //! (`proxy`/`timer`/`mcp`) override `CellFactory::build_boot_inactive_respawn`
 //! so a cell that booted INACTIVE obtains a REAL respawn closure. A later
 //! `add_edges` reconnect calls that closure and the Long-Running task starts
-//! IMMEDIATELY — no reboot needed (spec § Konnektivität & Aktivität,
-//! `docs/meclaw-overview.md` "Long-Running-Cells des reaktivierten Subtrees
-//! werden **sofort** gestartet").
+//! IMMEDIATELY — no reboot needed (spec § Connectivity and activity,
+//! `docs/meclaw-overview.md`: "long-running cells of the reactivated subtree are
+//! started **immediately**").
 //!
 //! Honest-wiring assertion: each factory's hook must return `Some`, and the
 //! returned closure must build a LIVE `cell_task_long_running` task (proven by

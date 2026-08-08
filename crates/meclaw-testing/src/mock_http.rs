@@ -1,16 +1,16 @@
-//! Phase-7 Slice 3 — hand-gerollter Mock-HTTP-Server für hermetische Tests.
+//! Phase-7 slice 3 — hand-rolled mock HTTP server for hermetic tests.
 //!
-//! TcpListener auf `127.0.0.1:0` (Kernel wählt Port). Akzeptiert Connections
-//! in einer Background-Task, parsed Request-Headers (Inhalt egal), sendet
-//! eine fixe `MockResponse`, schließt Connection. Eine Connection pro Request
-//! — keep-alive nicht supported.
+//! TcpListener on `127.0.0.1:0` (the kernel picks the port). Accepts connections
+//! in a background task, parses the request headers (content irrelevant), sends a
+//! fixed `MockResponse`, closes the connection. One connection per request —
+//! keep-alive is not supported.
 //!
-//! Zweck: hermetische HTTP-Tests ohne Egress (Container-Allowlist erlaubt
-//! kein example.com). reqwest-Cells fetchen `http://127.0.0.1:<port>` —
-//! localhost geht durch den Allowlist-Filter durch.
+//! Purpose: hermetic HTTP tests without egress (the container allowlist does not
+//! permit example.com). reqwest cells fetch `http://127.0.0.1:<port>` — localhost
+//! passes the allowlist filter.
 //!
-//! Phase-8-Erweiterung (T9): `start_mock_server_capturing` + `MockResponse::with_delay`
-//! für POST-Body-Capture (Content-Length-aware) und deterministische A-Timeout-Tests.
+//! Phase-8 extension (T9): `start_mock_server_capturing` + `MockResponse::with_delay`
+//! for POST body capture (Content-Length-aware) and deterministic A-timeout tests.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -356,7 +356,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mock_server_responds_with_canned_200() {
         let (addr, _join) = start_mock_server(MockResponse::ok(b"hello world")).await;
-        // Sync TCP-Client für Hermetizität (kein reqwest-Dep in meclaw-testing).
+        // Sync TCP client for hermeticity (no reqwest dep in meclaw-testing).
         let mut stream = StdTcpStream::connect(addr).unwrap();
         stream
             .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")

@@ -1,4 +1,4 @@
-//! Phase-12-B T10: POST /messages fire-and-forget — spec Z.1656/Z.1658.
+//! Phase-12-B T10: POST /messages fire-and-forget — spec l.1656/l.1658.
 //! Body: {target, body, headers?}. Response: 202 + {message_id}.
 
 use axum::body::{Body, to_bytes};

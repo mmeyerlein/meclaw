@@ -161,9 +161,9 @@ async fn cell_task_long_running_routes_reconfig_from_handle_to_run_io() {
             ReconfigIo(self.0.clone())
         }
 
-        // Explizites `+ Send` ist load-bearing — AFIT bindet kein `Send`,
-        // `cell_task_long_running` braucht es. `clippy::manual_async_fn`
-        // ist hier False-Positive (siehe long_running_cell.rs § run_io).
+        // The explicit `+ Send` is load-bearing — AFIT does not bind `Send`,
+        // and `cell_task_long_running` needs it. `clippy::manual_async_fn`
+        // is a false positive here (see long_running_cell.rs § run_io).
         #[allow(clippy::manual_async_fn)]
         fn run_io(
             io: Self::Io,
@@ -399,7 +399,7 @@ async fn cell_task_long_running_propagates_handler_task_panic_to_outer_join() {
     );
 }
 
-/// T5.4: abort-on-mailbox-close-Pfad — the I/O task runs endlessly (as real
+/// T5.4: abort-on-mailbox-close path — the I/O task runs endlessly (as real
 /// proxy/timer/mcp cells do); only the mailbox is closed. The outer MUST abort
 /// the endless I/O task, otherwise the Cell-Despawn hangs forever. With the
 /// reverted Plan-T4 form (always abort sibling) this terminates in
@@ -427,9 +427,9 @@ async fn cell_task_long_running_aborts_endless_io_on_mailbox_close() {
             EndlessIo
         }
 
-        // Explizites `+ Send` ist load-bearing — AFIT bindet kein `Send`,
-        // `cell_task_long_running` braucht es. `clippy::manual_async_fn`
-        // ist hier False-Positive (siehe long_running_cell.rs § run_io).
+        // The explicit `+ Send` is load-bearing — AFIT does not bind `Send`,
+        // and `cell_task_long_running` needs it. `clippy::manual_async_fn`
+        // is a false positive here (see long_running_cell.rs § run_io).
         #[allow(clippy::manual_async_fn)]
         fn run_io(
             _io: Self::Io,

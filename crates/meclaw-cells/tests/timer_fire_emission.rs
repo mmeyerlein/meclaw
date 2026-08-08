@@ -1,6 +1,6 @@
 //! Phase-10-B T15: `handle_event` Fire-Emission. UBF-Body + strikte
 //! Auto-Set-Header (event_id/schedule_id/schedule_name/scheduled_at/
-//! fired_at/iteration_n nur repeating). Auto-Set-Header **ueberschreiben**
+//! fired_at/iteration_n only for repeating). Auto-set headers **override**
 //! kollidierende `emit_headers` (cell-types.md Z.441–451). RFC-3339-Z
 //! Format via `to_rfc3339_opts(SecondsFormat::Secs, true)`. Emit via
 //! `OriginSink` → parent_message_id=None, fresh trace_id.
@@ -21,9 +21,9 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     setup_timer_schema(&conn).unwrap();
 
-    // Strikter Override-Beweis: emit_headers traegt einen kollidierenden
-    // `event_id` + ein NICHT kollidierendes `msg_type`. Nach Fire muss
-    // event_id ein frisches UUID v7 sein, msg_type aber durchgereicht.
+    // Strict override proof: emit_headers carries a colliding `event_id` + a NON
+    // colliding `msg_type`. After firing, event_id must be a fresh UUID v7 while
+    // msg_type is passed through.
     let mut emit_headers = Map::new();
     emit_headers.insert("event_id".into(), json!("should-be-overridden"));
     emit_headers.insert("msg_type".into(), json!("tick"));
@@ -62,7 +62,7 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
 
     let em = tokio::time::timeout(Duration::from_secs(1), origin_rx.recv())
         .await
-        .expect("keine Fire-Emission")
+        .expect("no fire emission")
         .unwrap();
 
     assert_eq!(em.target, Path::new("/dst"));
@@ -70,12 +70,12 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
 
     let hdr = em.content["header"].as_object().expect("header object");
 
-    // Override-Beweis: event_id ist NICHT "should-be-overridden", sondern UUID v7.
+    // Override proof: event_id is NOT "should-be-overridden" but a UUID v7.
     let event_id_s = hdr["event_id"].as_str().expect("event_id present");
     assert_ne!(event_id_s, "should-be-overridden");
     Uuid::parse_str(event_id_s).expect("event_id is a valid UUID");
 
-    // msg_type bleibt — kein Auto-Set-Key.
+    // msg_type stays — not an auto-set key.
     assert_eq!(hdr["msg_type"], json!("tick"));
 
     assert_eq!(hdr["schedule_id"], json!(id.to_string()));
@@ -85,19 +85,19 @@ async fn fire_emission_for_repeating_carries_all_auto_headers_and_overrides_emit
     let fired_s = hdr["fired_at"].as_str().expect("fired_at str");
     assert!(
         scheduled_s.ends_with('Z'),
-        "scheduled_at muss RFC-3339-Z sein: {scheduled_s}"
+        "scheduled_at must be RFC-3339-Z: {scheduled_s}"
     );
     assert!(
         fired_s.ends_with('Z'),
-        "fired_at muss RFC-3339-Z sein: {fired_s}"
+        "fired_at must be RFC-3339-Z: {fired_s}"
     );
     assert_eq!(
         scheduled_s,
         scheduled_at.to_rfc3339_opts(SecondsFormat::Secs, true)
     );
 
-    // iteration_n: PRE-bump = 0 (T11 hat in DB +1 gemacht, aber `row`
-    // wurde davor geladen — der Header-Wert ist 0 fuer den ersten Fire).
+    // iteration_n: PRE-bump = 0 (T11 already did the +1 in the DB, but `row` was
+    // loaded before that — the header value is 0 for the first fire).
     assert_eq!(hdr["iteration_n"], json!(0u64));
 }
 
@@ -139,11 +139,11 @@ async fn fire_emission_for_once_omits_iteration_n() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), origin_rx.recv())
         .await
-        .expect("keine Fire-Emission")
+        .expect("no fire emission")
         .unwrap();
     let hdr = em.content["header"].as_object().expect("header object");
     assert!(
         !hdr.contains_key("iteration_n"),
-        "once darf KEIN iteration_n im Header tragen, header={hdr:?}"
+        "once must carry NO iteration_n in the header, header={hdr:?}"
     );
 }

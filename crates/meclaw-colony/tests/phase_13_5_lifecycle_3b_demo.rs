@@ -154,7 +154,7 @@ async fn reboot_maps_persisted_status_into_active() {
 }
 
 /// A genuinely-new FS node added before a REBOOT is REPORTED, not adopted (A5b,
-/// Phase-16 W1b — Regression mit Ansage: pre-A5b this pinned the new node
+/// Phase-16 W1b — announced regression: pre-A5b this pinned the new node
 /// rehydrating `active == true`; the ratified ruling reports unknown reboot
 /// nodes and never registers them, so it is absent from the registry).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

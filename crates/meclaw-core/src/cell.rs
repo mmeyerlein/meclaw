@@ -1,4 +1,4 @@
-//! Uniform cell trait per spec § Output-Pfad.
+//! Uniform cell trait per spec § Output path.
 //!
 //! Cells push `CellOutput` via `OutputSink`. The sink is constructed by
 //! `cell_task` per consumed message and carries the parent-context

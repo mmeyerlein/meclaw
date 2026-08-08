@@ -1,4 +1,4 @@
-//! Phase 12-B step-7.2: ColonyMsg::ReadDeadLetters — pure-Read der DLQ.
+//! Phase 12-B step-7.2: ColonyMsg::ReadDeadLetters — a pure read of the DLQ.
 //!
 //! `DrainDeadLetters` (Phase-2) consumes the queue; `ReadDeadLetters` returns
 //! a filtered snapshot without removing entries. HTTP-handlers in Task 8 use

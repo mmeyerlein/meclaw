@@ -1,6 +1,6 @@
 //! Phase-13.5 Lifecycle-3b Task 9.1, demo (g): boot-gating of inactive cells.
 //!
-//! Spec (Startup Schritt 6): "Long-Running only for active cells". At boot, a
+//! Spec (startup step 6): "Long-Running only for active cells". At boot, a
 //! rehydrated eager (Long-Running / Stateless) cell whose persisted
 //! `registry.status == 'inactive'` must NOT get a running task — the registry
 //! entry must still EXIST (with `active == false`), but no cell-task is spawned

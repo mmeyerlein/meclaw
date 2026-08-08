@@ -1,14 +1,14 @@
-//! T23: Mutation-Pfad reicht contract.multi_send_capable aus der kopierten
-//! Template-config.json bis in den spawn_cell-Aufruf durch.
+//! T23: the mutation path passes contract.multi_send_capable from the copied
+//! template config.json all the way into the spawn_cell call.
 //!
-//! Beweis-Kette:
-//!   1. Template-Verzeichnis mit config.json contract.multi_send_capable=true.
+//! Proof chain:
+//!   1. Template directory with config.json contract.multi_send_capable=true.
 //!   2. Colony + RescanTemplates.
 //!   3. Mutation add_nodes.
-//!   4. TrackingFactory zeichnet den ContractView-Wert auf.
-//!   5. Assert: multi_send_capable==true im aufgezeichneten ContractView.
+//!   4. TrackingFactory records the ContractView value.
+//!   5. Assert: multi_send_capable==true in the recorded ContractView.
 //!
-//! TrackingFactory ist Test-Instrumentation only — kein Production-State.
+//! TrackingFactory is test instrumentation only — no production state.
 
 use meclaw_colony::{CellFactory, ColonyMsg, ContractView, MutationOutcome, SpawnedCellKind};
 use meclaw_core::{CellEmission, JsonValue, Path, Uuid};
@@ -95,7 +95,7 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
 async fn contract_view_propagates_from_template_config_json_to_spawn() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // 1. Template mit contract.multi_send_capable=true.
+    // 1. Template with contract.multi_send_capable=true.
     let tpl_dir = td.path().join("templates").join("tracked");
     std::fs::create_dir_all(&tpl_dir).unwrap();
     std::fs::write(
@@ -116,13 +116,13 @@ async fn contract_view_propagates_from_template_config_json_to_spawn() {
         captured: captured.clone(),
     }) as Arc<dyn CellFactory>;
 
-    // 3. Colony mit TrackingFactory hochfahren.
+    // 3. Boot the colony with the TrackingFactory.
     let h = ColonyHandle::new_with_factories_at(&td, vec![("echo".to_string(), tracking_factory)]);
 
-    // Templates scannen.
+    // Scan templates.
     rescan_templates(&h, td.path().join("templates")).await;
 
-    // 4. Mutation: add_nodes mit Template "tracked@1.0.0".
+    // 4. Mutation: add_nodes with template "tracked@1.0.0".
     let outcome = send_mutation(
         &h,
         meclaw_core::serde_json::json!({
@@ -137,22 +137,22 @@ async fn contract_view_propagates_from_template_config_json_to_spawn() {
     )
     .await;
 
-    // 5. Mutation muss Committed sein.
+    // 5. The mutation must be committed.
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
-        "Mutation muss Committed sein, got {outcome:?}"
+        "mutation must be Committed, got {outcome:?}"
     );
 
     h.shutdown().await;
 
-    // 6. Beweis: captured ContractView hat multi_send_capable==true.
+    // 6. Proof: the captured ContractView has multi_send_capable==true.
     let cv = captured
         .lock()
         .unwrap()
         .clone()
-        .expect("TrackingFactory muss einmal aufgerufen worden sein");
+        .expect("TrackingFactory must have been called once");
     assert!(
         cv.multi_send_capable,
-        "ContractView.multi_send_capable muss true sein (aus Template-config.json)"
+        "ContractView.multi_send_capable must be true (from the template config.json)"
     );
 }

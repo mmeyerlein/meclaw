@@ -1,4 +1,4 @@
-//! Paket-8 C — E2E demos für das Paket-8 Stateless-Disconnect-Substrat
+//! Paket-8 C — end-to-end demos for the paket-8 stateless-disconnect substrate
 //! (Plan C1 + C7).
 //!
 //! Lives in `meclaw-cells/tests/` (NOT `meclaw-colony/tests/`) because it drives
@@ -53,7 +53,7 @@
 //!
 //! These four pin the Normal-exit corridor without a dedicated test body here.
 //!
-//! ## Anti-Cascade (Phase-6.5/7 Demo-Disziplin)
+//! ## Anti-cascade (phase-6.5/7 demo discipline)
 //!
 //! `/sink` is a terminal CaptureCell, spawned and resolved BEFORE any probe goes
 //! out. A persistent `/anchor -> /sink` edge keeps `/sink` connected after `/code`
@@ -224,9 +224,10 @@ async fn no_route_dlq_for(h: &ColonyHandle, path: &str) -> Vec<Message> {
 /// (No-Delete) and routes the mailbox-rest into the DLQ as `cell_inactive`.
 ///
 /// Beweist Z.1397 No-Delete (entry stays, `cell_id` stable) + Z.1488
-/// Mailbox-Rest→DLQ for a stateless cell. Vor dem Paket-8-Fix verschwand der
-/// Eintrag (`registry.remove` aus `handle_cell_died{Normal}`), `cell_id`-after
-/// wäre `None` und der No-Delete-Assert würde feuern (Roter-Beweis-Vermerk).
+/// Mailbox remainder → DLQ for a stateless cell. Before the paket-8 fix the
+/// entry disappeared (`registry.remove` from `handle_cell_died{Normal}`),
+/// `cell_id` after would be `None` and the no-delete assert would fire (red-proof
+/// note).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
     // Generous term-timeout budget so a load-slow death-ack never spuriously
@@ -323,10 +324,10 @@ async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Demo (a-late) — Late-Worker-Emission nach Park → DLQ / inaktiv
+// Demo (a-late) — late worker emission after parking → DLQ / inactive
 // ───────────────────────────────────────────────────────────────────────────
 //
-// ## pin: "Worker laufen aus" ist getestetes Verhalten
+// ## pin: "workers run to completion" is tested behaviour
 //
 // `stateless_dispatcher` spawns ONE detached `tokio::task` per message (Z.635 in
 // `cell_task.rs`): the worker holds a per-message `OutputSink` + semaphore permit
@@ -341,7 +342,7 @@ async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
 // inactive path — no panic, no zombie delivery to a swung-away/inactive target,
 // colony stable.
 //
-// ## E2 Reason-Observation (against the FROZEN `route()` / `route_with_log` IST)
+// ## E2 reason observation (against the FROZEN `route()` / `route_with_log` actual)
 //
 // The worker emits to `/late-sink`. At emission time `/late-sink` STILL EXISTS in
 // the registry but is `active == false` (the single edge `/gated -> /late-sink`
@@ -354,7 +355,7 @@ async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
 // here anyway (it only does `registry.get(&resolved)` and sends to a live
 // handle). The observed reason is therefore `cell_inactive`, NOT `unresolved_path`
 // (which is the registry-MISS case — the target never existed). This is an
-// OBSERVATION of the frozen routing IST, asserted exactly as measured; `route()`
+// OBSERVATION of the frozen routing actual, asserted exactly as measured; `route()`
 // is NOT touched.
 //
 // ## Determinism (no sleeps as a correctness discriminator)
@@ -370,7 +371,7 @@ async fn demo_a_disconnect_parks_stateless_entry_and_dlqs_remainder() {
 //     it, the loop body yields between drains.
 //   - Stability: a follow-up probe to the always-active `/live-sink` is awaited on
 //     its CaptureCell receipt (30 s failure-marker) — a POSITIVE delivery proof
-//     (CaptureCell receives ⟺ cell live), per the Demo-Disziplin lesson.
+//     (CaptureCell receives ⟺ cell live), per the demo-discipline lesson.
 
 /// Test-local stateless cell that, on `handle()`: (1) signals "entered" to the
 /// test (`entered.add_permits(1)`), (2) blocks until the test releases the
@@ -605,7 +606,7 @@ async fn await_no_route_dlq(h: &ColonyHandle, path: &str) -> Vec<Message> {
 
 /// Demo (a-late): a detached stateless worker that was in-flight at disconnect
 /// emits AFTER the park; the emission lands in the DLQ as `cell_inactive` (E2:
-/// observed against the frozen routing IST), no panic, and the colony stays
+/// observed against the frozen routing actual), no panic, and the colony stays
 /// stable (a follow-up probe to the always-active `/live-sink` is delivered).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn demo_a_late_detached_worker_emission_after_park_lands_in_dlq() {
@@ -800,7 +801,7 @@ async fn demo_a_late_detached_worker_emission_after_park_lands_in_dlq() {
 // reconnect-eager arm → `(entry.respawn)()` → an IMMEDIATE re-spawn of the
 // dispatcher. The respawned cell processes a fresh probe and emits to `/sink`
 // again — a POSITIVE receipt proves it is live (CaptureCell receives ⟺ cell
-// live; Demo-Disziplin). The `cell_id` is stable across the whole
+// live; demo discipline). The `cell_id` is stable across the whole
 // disconnect→reconnect cycle (No-Delete: same entry, never re-created).
 //
 // Proves: Reconnect (Z.1404) + eager-Respawn for a real stateless cell.
@@ -1390,7 +1391,7 @@ async fn demo_d_stateless_swap_is_reversible() {
 // Demo (f) — parked stateless cell SURVIVES a reboot and RECONNECTS eagerly
 // ───────────────────────────────────────────────────────────────────────────
 //
-// Proves "Hälfte B" (the REAL boot-inactive respawn from `CodeCellFactory`)
+// Proves "half B" (the REAL boot-inactive respawn from `CodeCellFactory`)
 // end-to-end: a disconnected (parked) stateless `code` cell survives a colony
 // reboot AND is reconnect-able afterwards WITHOUT a further reboot.
 //
@@ -1401,12 +1402,12 @@ async fn demo_d_stateless_swap_is_reversible() {
 // An `add_edges` reconnect therefore eager-respawns the dispatcher IMMEDIATELY
 // (exactly the in-process Demo (b) behaviour, now across a reboot).
 //
-// Gegenprobe (why Hälfte B matters): without it, `build_boot_inactive_respawn`
+// Counter-check (why half B matters): without it, `build_boot_inactive_respawn`
 // would return the default `None` → the rehydrated entry would carry NO respawn
 // hook → an `add_edges` reconnect could not eager-spawn it, and a stateless cell
 // has NO wake-on-message path (no `Dormant`/wake closure like a stateful cell) →
 // the cell would be permanently un-reconnectable post-reboot. This demo passing
-// is the proof that Hälfte B supplies the hook.
+// is the proof that half B supplies the hook.
 //
 // PROOF (positive-and-deep):
 //   1. `/code`'s `cell_id` is STABLE across the reboot (read from `colony.db` in
@@ -1434,10 +1435,10 @@ async fn demo_d_stateless_swap_is_reversible() {
 
 /// Demo (f): a disconnected (parked) stateless `code` cell survives a colony
 /// reboot and reconnects eagerly. After a disconnect→reboot the rehydrated
-/// `/code` entry is inactive with a REAL boot-inactive respawn hook (Hälfte B);
+/// `/code` entry is inactive with a REAL boot-inactive respawn hook (half B);
 /// an `add_edges` reconnect eager-respawns it WITHOUT a further reboot, and a
 /// fresh origin-probe emits to `/sink` again. The `cell_id` is stable across the
-/// reboot (read from `colony.db`). Gegenprobe: without Hälfte B the entry would
+/// reboot (read from `colony.db`). Counter-check: without half B the entry would
 /// carry no respawn hook and (stateless = no wake-on-message path) stay
 /// permanently un-reconnectable post-reboot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1535,7 +1536,7 @@ async fn demo_f_parked_stateless_cell_survives_reboot_and_reconnects() {
         .expect("boot2 (reboot) bootstrap must succeed");
 
     // (1) /code rehydrated INACTIVE (its edge was removed before shutdown); the
-    // boot path called `build_boot_inactive_respawn` (Hälfte B) → a REAL respawn
+    // boot path called `build_boot_inactive_respawn` (half B) → a REAL respawn
     // hook + eager_on_reconnect=true. cell_id is STABLE across the reboot.
     let post_reboot = ram_entry(&h2, "/code")
         .await

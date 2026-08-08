@@ -1,10 +1,10 @@
-//! T19: handle(tool_call mit __list_tools__) → reads discovery cache, emits
+//! T19: handle(tool_call with __list_tools__) → reads discovery cache, emits
 //! system.tools.<provider>.<tool>=<schema> via OutputSink an `reply_to`.
 //!
-//! Plan-Adaption T19: tool_call-Body UBF-konform (`text` = JSON-string mit
-//! `{"name":"__list_tools__"}`, `id` Pflicht). McpClient zeigt auf
-//! `http://x.invalid` — der `__list_tools__`-Branch ruft `call_tool` NICHT.
-//! Cache wird via `upsert_discovery_tools` direkt in die cell.db gepflanzt.
+//! Plan adaptation T19: the tool_call body is UBF-conformant (`text` = a JSON
+//! string with `{"name":"__list_tools__"}`, `id` mandatory). McpClient points at
+//! `http://x.invalid` — the `__list_tools__` branch does NOT call `call_tool`.
+//! The cache is planted directly into cell.db via `upsert_discovery_tools`.
 
 #[path = "mock_mcp.rs"]
 mod mock_mcp;
@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handle_list_tools_emits_system_tools_from_cache() {
-    // 1. Pflanze Tools via `upsert_discovery_tools` in eine frische cell.db.
+    // 1. Plant tools into a fresh cell.db via `upsert_discovery_tools`.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("cell.db");
 
@@ -45,15 +45,15 @@ async fn handle_list_tools_emits_system_tools_from_cache() {
         // conn dropped here — close connection before re-opening
     }
 
-    // 2. Öffne DB neu via `open_or_create_cell_db_with_status` (fresh connection).
+    // 2. Re-open the DB via `open_or_create_cell_db_with_status` (fresh connection).
     let (conn, _) = open_or_create_cell_db_with_status(&db_path).unwrap();
     let mut db = DbConn::wrap(conn, Some(Duration::from_secs(1)));
 
-    // 3. McpClient zeigt auf http://x.invalid — kein call_tool wird ausgelöst.
+    // 3. McpClient points at http://x.invalid — no call_tool is triggered.
     let client = McpClient::new("http://x.invalid", None).unwrap();
     let mut cell = McpCell::new(client, 5_000, 5_000, "main_mcp".into());
 
-    // 4. Baue UBF-konforme tool_call-Message mit `__list_tools__` + `reply_to=/sink`.
+    // 4. Build a UBF-conformant tool_call message with `__list_tools__` + `reply_to=/sink`.
     let inner = json!({"name": "__list_tools__"}).to_string();
     let msg = MessageBuilder::new(Path::new("/main/mcp"))
         .reply_to(Path::new("/sink"))
@@ -76,7 +76,7 @@ async fn handle_list_tools_emits_system_tools_from_cache() {
     );
     let (rc_tx, _) = mpsc::channel(1);
 
-    // 5. handle() — muss in den __list_tools__-Branch gehen, NICHT call_tool aufrufen.
+    // 5. handle() — must take the __list_tools__ branch, NOT call call_tool.
     cell.handle(msg, &sink, &mut db, &rc_tx).await;
 
     // 6. Verifiziere Emission.
@@ -88,10 +88,10 @@ async fn handle_list_tools_emits_system_tools_from_cache() {
     // target == /sink
     assert_eq!(em.target.as_str(), "/sink", "target must be /sink");
 
-    // UBF-Validator grün
+    // UBF validator green
     meclaw_core::validate_ubf_body(&em.content).expect("system.tools emission must be valid UBF");
 
-    // system.tools.main_mcp.echo und ...add müssen aus dem Cache kommen
+    // system.tools.main_mcp.echo and ...add must come from the cache
     assert_eq!(
         em.content["system"]["tools"]["main_mcp"]["echo"]["properties"]["x"]["type"], "string",
         "echo schema not found in emission"

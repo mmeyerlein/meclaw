@@ -17,7 +17,7 @@ pub(crate) enum TranslateError {
     /// function-call JSON (`{"name": ..., "arguments": "..."}`).
     ToolCallParse(String),
     /// Response carried a `finish_reason` that is null, missing or unknown —
-    /// NEVER silently treated as `stop` (-Präzisierung 4).
+    /// NEVER silently treated as `stop` (clarification 4).
     UnknownFinishReason(String),
     /// Response JSON shape mismatch (missing `choices[0]`, `model`, `id`, …).
     ResponseShape(String),
@@ -238,7 +238,7 @@ fn tool_call_entry(turn: &Value) -> Result<Value, TranslateError> {
 /// All variants map to `"provider_error"` (Q6 catch-all, see Phase-8-Plan
 /// § 2 Q6). cell-types Z.112 does not have a translate-specific code, so
 /// `provider_error` is the catch-all bucket for Translate-/Mapping-/
-/// `UnknownFinishReason`-Fehler.
+/// `UnknownFinishReason` error.
 ///
 /// The signature accepts `&TranslateError` for symmetry with
 /// `wire_error_to_code` and so future variants can be mapped differently
@@ -280,7 +280,7 @@ pub(crate) struct TranslatedResponse {
 /// 2. Map `finish_reason`: `stop`/`length`/`tool_calls`/`content_filter`
 ///    pass-through; legacy `function_call` → `tool_calls`; null/missing/unknown
 ///    → `UnknownFinishReason` (NEVER silently coerced to `stop`,
-///    the spec owner-Präzisierung 4).
+///    the spec owner's clarification 4).
 /// 3. Build `assistant_turn`: each `message.tool_calls[i]` → one UBF
 ///    `tool_call`-turn (id pass-through, text = serde-stringified
 ///    `function`). If `message.content` is a non-null string, append a

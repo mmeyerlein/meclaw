@@ -1,13 +1,13 @@
 //! Phase-6 T26 demo: crash-recovery end-to-end.
 //!
-//! Isoliert in eigener Test-Binary: der `AFTER_RENAME`-Static aus
-//! `mutation::hook` ist binary-lokal. Wenn dieser Test mit anderen
-//! Mutation-Tests in der gleichen Binary parallel liefe, würde das hook-set
-//! auch fremde `handle_mutation`-Aufrufe parken — sie würden hängen, bis
-//! der Hook gecleared wird. Eigene Binary = eigener Static = keine Kopplung.
+//! Isolated in its own test binary: the `AFTER_RENAME` static from
+//! `mutation::hook` is binary-local. If this test ran in parallel with other
+//! mutation tests in the same binary, the hook set would also park foreign
+//! `handle_mutation` calls — they would hang until the hook is cleared.
+//! Own binary = own static = no coupling.
 //!
-//! Nur unter `feature = "test-hooks"` aktiv; im Default-Build ist die Datei
-//! ein leerer Test-Binary-Stub.
+//! Only active under `feature = "test-hooks"`; in the default build the file is
+//! an empty test-binary stub.
 
 #![cfg(feature = "test-hooks")]
 
@@ -46,22 +46,22 @@ async fn rescan_templates(
     ack_rx.await.unwrap();
 }
 
-/// Chain: set hook → send mutation → parks after rename → in_flight row ist
-/// durabel (`wait_for_any_in_flight`) → colony-task aborten (Crash-Sim) →
-/// Handle droppen, TempDir behalten → zweiter Boot ruft
-/// `recover_in_flight_mutations` → in_flight-Row transitioniert zu
+/// Chain: set hook → send mutation → parks after rename → the in_flight row is
+/// durable (`wait_for_any_in_flight`) → abort the colony task (crash sim) →
+/// drop the handle, keep the TempDir → the second boot calls
+/// `recover_in_flight_mutations` → the in_flight row transitions to
 /// `failed`/`crash_during_commit`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
     use std::sync::Arc;
     use tokio::sync::Notify;
 
-    // TempDir hält das FS-Setup über h.abort() hinaus am Leben.
+    // The TempDir keeps the FS setup alive beyond h.abort().
     let td = tempfile::TempDir::new().unwrap();
     let db_path = td.path().join("colony.db");
 
-    // Hook VOR dem Colony-Spawn setzen — die erste passende Mutation parkt
-    // zwischen rename(2) und Spawn-Loop.
+    // Set the hook BEFORE the colony spawn — the first matching mutation parks
+    // between rename(2) and the spawn loop.
     let notify = Arc::new(Notify::new());
     meclaw_colony::mutation::hook::set_after_rename(notify.clone());
 
@@ -75,8 +75,8 @@ async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
         write_echo_template(td.path());
         rescan_templates(&inbox, td.path().join("templates")).await;
 
-        // Mutation im Hintergrund senden — der Ack feuert nie, weil
-        // handle_mutation auf dem Hook parkt und nie zum committed-Step kommt.
+        // Send the mutation in the background — the ack never fires because
+        // handle_mutation parks on the hook and never reaches the committed step.
         let send_task = tokio::spawn(async move {
             let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
             inbox
@@ -96,31 +96,31 @@ async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
                 })
                 .await
                 .unwrap();
-            // ack_rx wird absichtlich gedroppt — der Ack kommt nie.
+            // ack_rx is dropped on purpose — the ack never arrives.
         });
 
-        // Barrier: warte auf den durablen in_flight-Insert. Beweis, dass die
-        // Mutation `apply_mutation` (stage+rename) erreicht hat UND der Writer
-        // die in_flight-Row committet hat, BEVOR der Hook geparkt hat.
+        // Barrier: wait for the durable in_flight insert. Proof that the
+        // mutation reached `apply_mutation` (stage+rename) AND the writer
+        // committed the in_flight row BEFORE the hook parked.
         meclaw_testing::wait::wait_for_any_in_flight(&db_path, std::time::Duration::from_secs(5))
             .await;
 
-        // Crash-Simulation: Colony-Task aborten. KEIN shutdown, KEIN drain —
-        // der Writer-Thread wird gedroppt, wenn die Colony-Future endet.
+        // Crash simulation: abort the colony task. NO shutdown, NO drain —
+        // the writer thread is dropped when the colony future ends.
         h.abort();
 
         send_task
     };
 
-    // Der send_task ist obsolet — Join-Handle droppen.
+    // The send_task is obsolete — drop the join handle.
     drop(send_task);
 
-    // Hook löschen, damit nachfolgende Tests unbeeinflusst sind.
+    // Clear the hook so subsequent tests stay unaffected.
     meclaw_colony::mutation::hook::clear_after_rename();
 
-    // Boot 2: Recovery auf der überlebenden DB. Der TempDir lebt noch in
-    // diesem Scope, also sind colony.db und `.staging/<id>/`-Reste noch auf
-    // dem FS.
+    // Boot 2: recovery against the surviving DB. The TempDir is still alive in
+    // this scope, so colony.db and the `.staging/<id>/` remains are still on the
+    // filesystem.
     let report =
         meclaw_colony::mutation::recovery::recover_in_flight_mutations(td.path(), &db_path)
             .expect("recovery must succeed against the surviving DB");
@@ -131,7 +131,7 @@ async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
         "expected exactly 1 in_flight mutation to be recovered, got {report:?}"
     );
 
-    // DB-Row muss auf `failed` mit kanonischem Grund transitioniert sein.
+    // The DB row must have transitioned to `failed` with the canonical reason.
     let conn =
         rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -149,5 +149,5 @@ async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
         "failure_reason must be 'crash_during_commit'"
     );
 
-    // TempDir droppt hier — Staging-Cleanup ist best-effort (Audit-Modell).
+    // The TempDir drops here — staging cleanup is best-effort (audit model).
 }

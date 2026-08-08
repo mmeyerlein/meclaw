@@ -1,8 +1,8 @@
 //! Phase-7-Close T2: verifies that all five StatelessCell::handle impls
 //! have non-empty doc-comments above them.
 //!
-//! Pragmatischer Audit: liest die fünf Cell-Source-Dateien und prüft,
-//! dass die Zeile direkt vor `fn handle<'a>` mit `///` beginnt.
+//! A pragmatic audit: reads the five cell source files and checks that the line
+//! directly before `fn handle<'a>` starts with `///`.
 
 use std::path::PathBuf;
 

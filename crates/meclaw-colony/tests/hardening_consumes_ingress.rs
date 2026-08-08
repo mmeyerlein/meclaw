@@ -1,19 +1,19 @@
-//! Slice 2 (roadmap Z.136): substrat-seitiger required-consumes-Check an der
-//! Delivery-Grenze.
+//! Slice 2 (roadmap Z.136): the substrate-side required-consumes check at the
+//! delivery boundary.
 //!
-//! Task 2.4: Eine Cell mit `consumes.hop.h1 required:true` im contract wird
-//! NICHT aufgerufen, wenn die Message den Key nicht trägt — mit `reply_to`
-//! geht eine Error-Message (`error_code: "consumes_violation"`) an den
-//! Absender, ohne `reply_to` landet die Message in der DLQ
-//! (`DeadLetterReason::ConsumesViolation`). Erfüllte consumes und Cells ohne
-//! Deklaration liefern normal (positives Capture-Receipt, DLQ leer).
+//! Task 2.4: a cell with `consumes.hop.h1 required:true` in its contract is NOT
+//! invoked when the message does not carry the key — with `reply_to` an error
+//! message (`error_code: "consumes_violation"`) goes to the sender, without
+//! `reply_to` the message lands in the DLQ
+//! (`DeadLetterReason::ConsumesViolation`). Satisfied consumes and cells
+//! without a declaration deliver normally (positive capture receipt, DLQ empty).
 //!
-//! Topologie-Muster wie `hardening_header_locality.rs` (FS-Fixtures mit
-//! contract-Blöcken, `bootstrap_from_filesystem`, Capture-Receipts,
-//! DLQ-Drain). Der Echo-Konsument `/c` läuft über den `cell_task`-Pfad
-//! (Reply-Zweig); der stateful Konsument `/m` (multi_update) läuft über
-//! `cell_task_stateful` mit verdrahtetem `colony_inbox_tx` (DLQ-Zweig) —
-//! der plain `cell_task` hat per Konvention keinen DLQ-Pfad.
+//! Topology pattern as in `hardening_header_locality.rs` (FS fixtures with
+//! contract blocks, `bootstrap_from_filesystem`, capture receipts, DLQ drain).
+//! The echo consumer `/c` runs over the `cell_task` path (reply branch); the
+//! stateful consumer `/m` (multi_update) runs over `cell_task_stateful` with a
+//! wired `colony_inbox_tx` (DLQ branch) — the plain `cell_task` has no DLQ path
+//! by convention.
 
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, DeadLetterReason, bootstrap_from_filesystem,
@@ -49,14 +49,14 @@ fn registry() -> CellFactoryRegistry {
     r
 }
 
-/// Konsumenten-Topologie (bootet grün, Muster `hardening_header_locality`):
-/// Producer `/p` mit `emits.hop.h1` + Boot-Edge `p → c` erfüllt den
-/// 14-B-Fan-in-Check des Konsumenten `/c` (`consumes.hop.h1 required:true`,
-/// echo't nach `/sink`). `/n` ist der kontrakt-lose Echo-Konsument (vacuous).
-/// `/m` ist der STATEFUL Konsument (multi_update, gleicher consumes-Block) für
-/// den DLQ-Zweig — die Boot-Edge `p → m` erfüllt auch seinen Fan-in-Check
+/// Consumer topology (boots green, pattern `hardening_header_locality`):
+/// producer `/p` with `emits.hop.h1` + boot edge `p → c` satisfies the 14-B
+/// fan-in check of the consumer `/c` (`consumes.hop.h1 required:true`, echoes
+/// to `/sink`). `/n` is the contract-less echo consumer (vacuous).
+/// `/m` is the STATEFUL consumer (multi_update, same consumes block) for the
+/// DLQ branch — the boot edge `p → m` satisfies its fan-in check too
 /// (ein teilnehmender required-Konsument braucht ≥1 liefernde In-Edge);
-/// die Delivery-Grenze prüft die TATSÄCHLICHE Message unabhängig davon.
+/// the delivery boundary checks the ACTUAL message independently of that.
 fn write_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/p")).unwrap();
     std::fs::create_dir_all(td.join("main/c")).unwrap();
@@ -97,27 +97,28 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
 }
 
-/// UBF-konforme Probe (Phase-6-Lesson: keine InvalidUbfBody-DLQ) an `target`.
+/// A UBF-conformant probe (phase-6 lesson: no InvalidUbfBody DLQ) to `target`.
 fn ubf_probe(target: &str) -> MessageBuilder {
     MessageBuilder::new(Path::new(target)).body(Body::Inline(json!({
         "messages": [{"origin": "user", "type": "text", "text": "consumes-probe"}]
     })))
 }
 
-/// reply_to gesetzt + required-Key fehlt → Cell läuft NICHT, reply_to
-/// empfängt Error-Message mit hop.error_code == "consumes_violation"
-/// (Colony extrahiert `content.header` ins hop-Fach der Folge-Message,
-/// Muster `emit_backstop_timeout`/`message_timeout`). Die Error-Reply ist
-/// der Ordnungs-Anker; danach beweist ein KURZES bounded Fenster auf /sink,
-/// dass der Echo-Receipt des Ziels AUSBLEIBT.
+/// reply_to set + required key missing → the cell does NOT run, reply_to
+/// receives an error message with hop.error_code == "consumes_violation"
+/// (the colony extracts `content.header` into the hop compartment of the
+/// follow-up message, pattern `emit_backstop_timeout`/`message_timeout`). The
+/// error reply is the ordering anchor; afterwards a SHORT bounded window on
+/// /sink proves that the target's echo receipt DOES NOT ARRIVE.
 ///
-/// W2b DIRECT-REPLY-PIN (Ruling A1, ruling 2026-06-12): `/c` trägt jetzt die
-/// Catch-all-Out-Edge `./c→/sink` (write_topology). Die `consumes_violation`-
-/// Error-Reply MUSS trotzdem DIREKT an `/cap` (reply_to) gehen — via
-/// route_with_log, NICHT über `/c`s Out-Edges. Beweis hier doppelt: (1) `/cap`
-/// empfängt die Reply (Direkt-Zustellung), (2) `/sink` empfängt NICHTS (die
-/// Catch-all-Edge leitet die Error-Reply NICHT um) und (3) kein `no_route`-DLQ-
-/// Eintrag von `/c` (die Reply wurde zugestellt, nicht ins Leere geroutet).
+/// W2b DIRECT-REPLY PIN (ruling A1, ruling 2026-06-12): `/c` now carries the
+/// catch-all out-edge `./c→/sink` (write_topology). The `consumes_violation`
+/// error reply MUST still go DIRECTLY to `/cap` (reply_to) — via
+/// route_with_log, NOT over `/c`'s out-edges. Proven doubly here: (1) `/cap`
+/// receives the reply (direct delivery), (2) `/sink` receives NOTHING (the
+/// catch-all edge does NOT divert the error reply) and (3) there is no
+/// `no_route` DLQ entry from `/c` (the reply was delivered, not routed into the
+/// void).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_required_hop_key_with_reply_to_yields_error_reply() {
     let td = TempDir::new().unwrap();
@@ -138,26 +139,26 @@ async fn missing_required_hop_key_with_reply_to_yields_error_reply() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /c: reply_to=/cap, OHNE h1 im hop-Fach.
+    // Probe to /c: reply_to=/cap, WITHOUT h1 in the hop compartment.
     let probe = ubf_probe("/c").reply_to(Path::new("/cap")).build();
     h.send(probe).await;
 
-    // Error-Reply am reply_to (30s-Failure-Marker-Konvention).
+    // Error reply at reply_to (30s failure-marker convention).
     let received = tokio::time::timeout(Duration::from_secs(30), cap_rx.recv())
         .await
-        .expect("/cap muss innerhalb von 30s die consumes_violation-Error-Reply empfangen")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/cap must receive the consumes_violation error reply within 30s")
+        .expect("CaptureCell channel must deliver a message");
     assert_eq!(received.target.as_str(), "/cap");
     assert_eq!(
         received.headers.hop.get("error_code"),
         Some(&json!("consumes_violation")),
-        "hop.error_code muss consumes_violation sein, hop: {:?}",
+        "hop.error_code must be consumes_violation, hop: {:?}",
         received.headers.hop
     );
     assert_eq!(
         received.headers.hop.get("finish_reason"),
         Some(&json!("error")),
-        "hop.finish_reason muss error sein, hop: {:?}",
+        "hop.finish_reason must be error, hop: {:?}",
         received.headers.hop
     );
     let body = match &received.body {
@@ -166,25 +167,25 @@ async fn missing_required_hop_key_with_reply_to_yields_error_reply() {
     };
     assert!(
         body.contains("required consumes.hop 'h1' missing"),
-        "Error-Reply muss den Grund tragen: {body}"
+        "the error reply must carry the reason: {body}"
     );
 
-    // Ziel-Cell-Receipt BLEIBT AUS: die Error-Reply ist der Anker — wäre /c
-    // gelaufen, läge sein Echo bereits in der Pipeline. Kurzes bounded Fenster.
+    // The target cell receipt DOES NOT ARRIVE: the error reply is the anchor —
+    // had /c run, its echo would already be in the pipeline. Short bounded window.
     let no_receipt = tokio::time::timeout(Duration::from_millis(300), sink_rx.recv()).await;
     assert!(
         no_receipt.is_err(),
-        "/c darf die Message NICHT verarbeitet haben (kein Echo an /sink), got {no_receipt:?}"
+        "/c must NOT have processed the message (no echo to /sink), got {no_receipt:?}"
     );
 
-    // W2b direct-reply pin: die Error-Reply wurde DIREKT zugestellt — kein
-    // no_route-DLQ-Eintrag von /c (wäre sie über /c→/sink edge-geroutet bzw.
-    // ohne match no_route'd worden, läge hier ein Eintrag).
+    // W2b direct-reply pin: the error reply was delivered DIRECTLY — no
+    // no_route DLQ entry from /c (had it been edge-routed over /c→/sink, or
+    // no_route'd without a match, there would be an entry here).
     let dls = h.drain_dead_letters().await;
     assert!(
         !dls.iter()
             .any(|d| d.reason.as_code() == "no_route" && d.sender_path.as_str() == "/c"),
-        "consumes_violation-Error-Reply darf NICHT no_route'n (Direkt-Zustellung), got: {:?}",
+        "the consumes_violation error reply must NOT no_route (direct delivery), got: {:?}",
         dls.iter()
             .map(|d| (d.sender_path.as_str().to_string(), d.reason.as_code()))
             .collect::<Vec<_>>()
@@ -193,9 +194,9 @@ async fn missing_required_hop_key_with_reply_to_yields_error_reply() {
     h.shutdown().await;
 }
 
-/// reply_to None + required-Key fehlt → DLQ-Eintrag ConsumesViolation
-/// (as_code "consumes_violation"), Cell läuft nicht. Ziel ist der STATEFUL
-/// Konsument /m (cell_task_stateful mit colony_inbox_tx → DLQ-Pfad).
+/// reply_to None + required key missing → a DLQ entry ConsumesViolation
+/// (as_code "consumes_violation"), the cell does not run. The target is the
+/// STATEFUL consumer /m (cell_task_stateful with colony_inbox_tx → DLQ path).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_required_key_without_reply_to_dead_letters() {
     let td = TempDir::new().unwrap();
@@ -212,12 +213,12 @@ async fn missing_required_key_without_reply_to_dead_letters() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /m: OHNE reply_to, OHNE h1.
+    // Probe to /m: WITHOUT reply_to, WITHOUT h1.
     let probe = ubf_probe("/m").build();
     h.send(probe).await;
 
-    // DLQ-Poll mit 30s-Deadline (der DLQ-Eintrag reist asynchron
-    // cell_task → colony inbox); drain ist destruktiv → akkumulieren.
+    // DLQ poll with a 30s deadline (the DLQ entry travels asynchronously
+    // cell_task → colony inbox); the drain is destructive → accumulate.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut collected = Vec::new();
     loop {
@@ -230,7 +231,7 @@ async fn missing_required_key_without_reply_to_dead_letters() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "kein consumes_violation-Dead-Letter innerhalb von 30s, got {collected:?}"
+            "no consumes_violation dead letter within 30s, got {collected:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -240,7 +241,7 @@ async fn missing_required_key_without_reply_to_dead_letters() {
         .count();
     assert_eq!(
         cv_count, 1,
-        "genau EIN consumes_violation-Dead-Letter erwartet, got {collected:?}"
+        "exactly ONE consumes_violation dead letter expected, got {collected:?}"
     );
     let dl = collected
         .iter()
@@ -250,19 +251,19 @@ async fn missing_required_key_without_reply_to_dead_letters() {
     assert_eq!(dl.reason.as_code(), "consumes_violation");
     assert_eq!(dl.resolved_target.as_str(), "/m");
 
-    // Cell lief nicht: multi_update hätte an /sink emittiert. Der DLQ-Eintrag
-    // ist der Anker; kurzes bounded Fenster danach.
+    // The cell did not run: multi_update would have emitted to /sink. The DLQ
+    // entry is the anchor; a short bounded window afterwards.
     let no_receipt = tokio::time::timeout(Duration::from_millis(300), sink_rx.recv()).await;
     assert!(
         no_receipt.is_err(),
-        "/m darf die Message NICHT verarbeitet haben (keine Emission an /sink), got {no_receipt:?}"
+        "/m must NOT have processed the message (no emission to /sink), got {no_receipt:?}"
     );
 
     h.shutdown().await;
 }
 
-/// Key vorhanden + typ-korrekt im hop-Fach → handle() läuft (positives
-/// Capture-Receipt mit dem /c-Echo-Turn an /sink), DLQ leer.
+/// Key present + type-correct in the hop compartment → handle() runs (positive
+/// capture receipt with the /c echo turn at /sink), DLQ empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfied_consumes_delivers_normally() {
     let td = TempDir::new().unwrap();
@@ -279,7 +280,7 @@ async fn satisfied_consumes_delivers_normally() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /c MIT h1 (string) im hop-Fach.
+    // Probe to /c WITH h1 (string) in the hop compartment.
     let mut hop = Map::new();
     hop.insert("h1".into(), json!("v1"));
     let probe = ubf_probe("/c").hop(hop).build();
@@ -287,27 +288,27 @@ async fn satisfied_consumes_delivers_normally() {
 
     let received = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
         .await
-        .expect("/sink muss innerhalb von 30s das Echo-Receipt empfangen")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/sink must receive the echo receipt within 30s")
+        .expect("CaptureCell channel must deliver a message");
     let body = match &received.body {
         Body::Inline(v) => v.to_string(),
         other => panic!("expected inline UBF body at /sink, got {other:?}"),
     };
     assert!(
         body.contains("echo from /c"),
-        "Receipt muss den /c-Echo-Turn tragen — beweist, dass /c die Message \
-         mit erfülltem consumes EMPFANGEN hat: {body}"
+        "the receipt must carry the /c echo turn — proves /c RECEIVED the message \
+         with consumes satisfied: {body}"
     );
 
-    // DLQ-Wächter NACH dem Fluss.
+    // DLQ guard AFTER the flow.
     let dead = h.drain_dead_letters().await;
     assert!(dead.is_empty(), "DLQ must be empty, got {dead:?}");
 
     h.shutdown().await;
 }
 
-/// Cell ohne consumes-Deklaration bleibt unberührt (vacuous): Message ohne
-/// jegliche Header liefert normal (Receipt), DLQ leer.
+/// A cell without a consumes declaration stays unaffected (vacuous): a message
+/// without any headers delivers normally (receipt), DLQ empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cell_without_consumes_is_unaffected() {
     let td = TempDir::new().unwrap();
@@ -324,21 +325,21 @@ async fn cell_without_consumes_is_unaffected() {
         .await
         .expect("topology must boot green");
 
-    // Probe an /n: keine Header, kein contract am Ziel.
+    // Probe to /n: no headers, no contract at the target.
     let probe = ubf_probe("/n").build();
     h.send(probe).await;
 
     let received = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
         .await
-        .expect("/sink muss innerhalb von 30s das Echo-Receipt empfangen")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/sink must receive the echo receipt within 30s")
+        .expect("CaptureCell channel must deliver a message");
     let body = match &received.body {
         Body::Inline(v) => v.to_string(),
         other => panic!("expected inline UBF body at /sink, got {other:?}"),
     };
     assert!(
         body.contains("echo from /n"),
-        "Receipt muss den /n-Echo-Turn tragen (vacuous consumes): {body}"
+        "the receipt must carry the /n echo turn (vacuous consumes): {body}"
     );
 
     let dead = h.drain_dead_letters().await;

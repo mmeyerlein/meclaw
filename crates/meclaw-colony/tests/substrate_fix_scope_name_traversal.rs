@@ -8,8 +8,8 @@
 //! without clamping; a flat workspace anchors at `{root}` itself, so
 //! `{root}/../escape` lands beside the colony root).
 //!
-//! Spec § Mutation-Format (overview Z.251): "Mutationen, deren Pfade außerhalb
-//! des Scopes liegen würden, werden bei der Validierung rejected."
+//! Spec § Mutation format (overview Z.251): "Mutations whose paths would lie
+//! outside the scope are rejected during validation."
 //!
 //! This test drives the REAL mutation path (`ColonyMsg::Mutation` →
 //! `handle_mutation`) against a flat workspace and proves both halves:

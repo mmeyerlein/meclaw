@@ -31,7 +31,7 @@
 //!             (stateless disconnect); this a3 demo became its acceptance demo.
 //!             The B5/C2 units already pin the flag-survival construction here.
 //!
-//! Anti-Cascade (Phase-6.5/7 Demo-Disziplin): `/sink` is a terminal CaptureCell,
+//! Anti-cascade (phase-6.5/7 demo discipline): `/sink` is a terminal CaptureCell,
 //! spawned and resolved BEFORE any probe goes out. The sink receipt is the proof
 //! (positive signal: a message arrives ⟺ the emission passed the contract).
 
@@ -426,7 +426,7 @@ async fn demo_d_knob_chain_off_passes_on_rejects() {
 //
 // WHY IT CANNOT BE DRIVEN TEST-ONLY: a `code` cell is STATELESS and is spawned by
 // `CodeCellFactory::spawn_cell` via `build_stateless_task`, which wires a REAL
-// `stop_tx` into the dispatcher's `stop_rx`. The Schritt-10b disconnect recompute
+// `stop_tx` into the dispatcher's `stop_rx`. The step-10b disconnect recompute
 // (colony.rs) `take()`s that `stop_tx` and fires it; the dispatcher's biased
 // stop-arm (`stateless_dispatcher` in `crates/meclaw-colony/src/cell_task.rs`)
 // sends `ColonyMsg::Stopped` and RETURNS — but, unlike `cell_task_stateful`
@@ -473,5 +473,5 @@ async fn demo_d_knob_chain_off_passes_on_rejects() {
 // once `stateless_dispatcher` parks on peace-stop instead of
 // dying `Normal`, this demo becomes Paket 8's acceptance demo — a reconnect-
 // respawned `code` cell still validates `contract.emits`. Pre-existing substrate
-// gap (No-Delete Z.1397 / Reconnect Z.1404 / Graph-Swap-Rückschwenk), surfaced
+// gap (no-delete l.1397 / reconnect l.1404 / graph-swap switch-back), surfaced
 // by this a3 attempt (precedent: hive_endpoint_names, Paket-2-Demo → Paket-5).

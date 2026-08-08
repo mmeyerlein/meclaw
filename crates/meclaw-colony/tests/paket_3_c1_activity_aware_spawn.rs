@@ -2,9 +2,9 @@
 //!
 //! Bug (P8): a single-cell `add_nodes` of an EAGER long-running cell whose
 //! diff-edges derive it INACTIVE (target under an inactive parent hive) is
-//! eager-spawned at Apply-Schritt 9 — its real task runs (real side effects:
+//! eager-spawned at apply step 9 — its real task runs (real side effects:
 //! mcp subprocess, proxy connection) — and the connectivity recompute
-//! (Schritt 10b) then peace-stops it sub-second later. The spawn loop runs
+//! (step 10b) then peace-stops it sub-second later. The spawn loop runs
 //! BEFORE the diff's edges land in `edges`, so the gate must compute activity
 //! against the POST-STATE edge view (`edges` ∪ diff-adds − diff-removes).
 //!

@@ -1,5 +1,5 @@
-//! Phase-12-X T15: BlobRef is serde-stable and I/O-rein.
-//! sha256 is Option (Phase-12-Spec Z.1334: nicht berechnet in Phase 12).
+//! Phase-12-X T15: BlobRef is serde-stable and I/O-free.
+//! sha256 is Option (phase-12 spec l.1334: not computed in phase 12).
 
 use meclaw_core::BlobRef;
 use uuid::Uuid;

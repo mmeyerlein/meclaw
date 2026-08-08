@@ -23,8 +23,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1", features = ["v7"] }
-# Phase 12-B T8: meclaw-testing als dev-dep — Handler-Integration-Tests in
-# tests/phase_12_b_routes.rs treiben eine echte Colony-Task via
-# `meclaw_testing::ColonyHandle::new()` und reichen deren `inbox_tx` an einen
-# `meclaw_api::ColonyHandle` weiter. Bleibt strikt [dev-dependencies] (Regel 6).
+# Phase 12-B T8: meclaw-testing as a dev-dep — the handler integration tests in
+# tests/phase_12_b_routes.rs drive a real colony task via
+# `meclaw_testing::ColonyHandle::new()` and pass its `inbox_tx` on to a
+# `meclaw_api::ColonyHandle`. Stays strictly [dev-dependencies] (rule 6).
 meclaw-testing = { path = "../meclaw-testing" }

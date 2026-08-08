@@ -1,48 +1,48 @@
-//! Phase-10-B: Schedule-Datenmodell. `ScheduleKind` ist die XOR-Disjunktion
-//! cron vs. at (cell-types.md Z.425–429). `ScheduleRow` ist die Handler-Sicht
-//! aus `cell.db.schedules`; `ActiveSchedule` ist die I/O-lokale Arbeitskopie.
+//! Phase-10-B: the schedule data model. `ScheduleKind` is the XOR disjunction
+//! cron vs. at (cell-types.md l.425-429). `ScheduleRow` is the handler's view of
+//! `cell.db.schedules`; `ActiveSchedule` is the I/O-local working copy.
 
 use chrono::{DateTime, Utc};
 use meclaw_core::{Path, Uuid};
 use serde_json::{Map, Value as JsonValue};
 
-/// Schedule-Typ: cron (repeating, 6-Feld-Quartz) ODER at (einmalig, UTC).
-/// Exklusiv per Spec — `modify` darf den Typ nicht wechseln.
+/// Schedule type: cron (repeating, 6-field Quartz) OR at (one-shot, UTC).
+/// Exclusive per spec — `modify` must not switch the type.
 #[derive(Debug, Clone)]
 pub enum ScheduleKind {
-    /// Repeating Cron-Schedule (6-Feld-Quartz, Sekunden-Granularitaet).
+    /// Repeating cron schedule (6-field Quartz, second granularity).
     Cron(String),
-    /// Einmaliger `at`-Schedule, UTC-DateTime.
+    /// One-shot `at` schedule, UTC datetime.
     At(DateTime<Utc>),
 }
 
-/// Full row aus `cell.db.schedules`. Handler-Sicht.
+/// Full row from `cell.db.schedules`. The handler's view.
 #[derive(Debug, Clone)]
 pub struct ScheduleRow {
-    /// Eindeutiger PK (UUID v7).
+    /// Unique PK (UUID v7).
     pub schedule_id: Uuid,
-    /// Non-unique Label, vom Caller in `add`/`modify`-Op gesetzt.
+    /// Non-unique label, set by the caller in the `add`/`modify` op.
     pub schedule_name: String,
-    /// Cron XOR At; `modify` wechselt den Typ nicht.
+    /// Cron XOR at; `modify` does not switch the type.
     pub kind: ScheduleKind,
-    /// Routing-Ziel fuer Fire-Emits.
+    /// Routing target for fire emissions.
     pub emit_to: Path,
-    /// UBF-Body fuer Fire-Emits.
+    /// UBF body for fire emissions.
     pub emit_body: JsonValue,
-    /// Optionale Header-Map; Auto-Set-Header ueberschreiben kollidierende Keys.
+    /// Optional header map; auto-set headers override colliding keys.
     pub emit_headers: Map<String, JsonValue>,
-    /// Lifecycle-Status: `active`/`completed`/`removed`.
+    /// Lifecycle status: `active`/`completed`/`removed`.
     pub status: String,
-    /// Iteration-Counter, nur fuer repeating Schedules relevant.
+    /// Iteration counter, relevant only for repeating schedules.
     pub iteration_n: u64,
 }
 
-/// I/O-lokale Arbeitskopie. Der I/O-Sub-Task haelt genau das, was er fuer
-/// `find_next_occurrence` + `sleep_until` braucht — keine `emit_*`-Felder.
+/// I/O-local working copy. The I/O sub-task holds exactly what it needs for
+/// `find_next_occurrence` + `sleep_until` — no `emit_*` fields.
 #[derive(Debug, Clone)]
 pub struct ActiveSchedule {
-    /// PK der zugrundeliegenden Row in `cell.db.schedules`.
+    /// PK of the underlying row in `cell.db.schedules`.
     pub schedule_id: Uuid,
-    /// Cron XOR At — Quelle fuer `find_next_occurrence`/sleep_until.
+    /// Cron XOR at — the source for `find_next_occurrence`/sleep_until.
     pub kind: ScheduleKind,
 }

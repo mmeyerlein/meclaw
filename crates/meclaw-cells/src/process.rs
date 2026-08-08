@@ -1,10 +1,10 @@
 //! Shared subprocess helper for `bash` and `code` cells.
 //!
 //! `with_killing_timeout` kills the child if `timeout` elapses
-//! (tokio::process::Child wird beim Drop NICHT automatisch gekillt —
-//! Pipe via `.stdout.take()`/`.stderr.take()`, `child.wait()` unter
-//! `tokio::time::timeout`, bei Elapsed `start_kill() + wait().await`
-//! zum Reapen).
+//! (a tokio::process::Child is NOT killed automatically on drop — pipe via
+//! `.stdout.take()`/`.stderr.take()`, `child.wait()` under
+//! `tokio::time::timeout`, and on Elapsed `start_kill() + wait().await` to
+//! reap it).
 //!
 //! Used by `bash::*` (Phase 7) and `code::*` (Phase 9).
 
@@ -58,7 +58,7 @@ pub(crate) async fn with_killing_timeout(
         stderr_pipe.read_to_end(&mut buf).await.map(|_| buf)
     };
 
-    // NICHT 'async move' — combined borrows &mut child via child.wait()
+    // NOT 'async move' — combined borrows &mut child via child.wait()
     // over the try_join lifetime. When tokio::time::timeout drops the future
     // on Elapsed, the borrow ends and child.start_kill() is reachable again.
     let combined = async {

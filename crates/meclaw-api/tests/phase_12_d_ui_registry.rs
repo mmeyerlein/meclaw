@@ -1,8 +1,8 @@
-//! Phase 12-D T22: Integration-Tests fuer `/ui/registry`.
+//! Phase 12-D T22: integration tests for `/ui/registry`.
 //!
-//! Server-rendered HTML-Tabelle der Cells + GET-Form fuer Filter
-//! (path_prefix, type, limit). Verwendet dieselbe ColonyMsg::ReadRegistry
-//! wie der JSON-Handler aus 12-B.
+//! Server-rendered HTML table of the cells + a GET form for the filters
+//! (path_prefix, type, limit). Uses the same ColonyMsg::ReadRegistry as the JSON
+//! handler from 12-B.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -48,7 +48,7 @@ async fn ui_registry_returns_html_with_filter_form() {
 
     let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
-    // Filter-Form mit allen drei Inputs.
+    // Filter form with all three inputs.
     assert!(
         body.contains("<form") && body.contains("method=\"get\""),
         "expected GET-form"
@@ -57,7 +57,7 @@ async fn ui_registry_returns_html_with_filter_form() {
     assert!(body.contains("name=\"path_prefix\""));
     assert!(body.contains("name=\"type\""));
     assert!(body.contains("name=\"limit\""));
-    // Leerer State -> Empty-Hint.
+    // Empty state -> empty hint.
     assert!(body.contains("Keine Cells"));
 }
 
@@ -78,7 +78,7 @@ async fn ui_registry_filter_values_round_trip_into_form() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
-    // Eingegebene Werte erscheinen als `value=`-Defaults im Form.
+    // Submitted values appear as `value=` defaults in the form.
     assert!(body.contains("value=\"/main\""));
     assert!(body.contains("value=\"echo\""));
     assert!(body.contains("value=\"25\""));

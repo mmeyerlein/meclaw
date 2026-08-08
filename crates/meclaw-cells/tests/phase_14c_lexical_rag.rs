@@ -1,9 +1,9 @@
 //! Phase-14-C Lexical-RAG-Topologie — TDD-Tests.
 //! Slice 14-C-1: `retrieve`-Cell isoliert, Keyword-Overlap-Ranking deterministisch.
-//! Slice 14-C-2: `rag_question` reist als context durch den store-Retrieval-Hop.
-//! Slice 14-C-3: hop verfällt / explizite Promotion überlebt (volle Kette, llm-mock).
+//! Slice 14-C-2: `rag_question` travels as context through the store retrieval hop.
+//! Slice 14-C-3: hop decays / an explicit promotion survives (full chain, llm mock).
 //! Slice 14-C-5: Mutations-Validator akzeptiert RAG-Topologie (Positiv + Negativ).
-//! Slice 14-C-6: Live-Graph-SVG/DOT aus gebooteter RAG-Topologie.
+//! Slice 14-C-6: live-graph SVG/DOT from the booted RAG topology.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -27,7 +27,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
-/// Minimal boot: nur `code`-Factory + /sink CaptureCell + bootstrap über `dir`.
+/// Minimal boot: only the `code` factory + the /sink CaptureCell + bootstrap over `dir`.
 async fn boot_code_only(td: &TempDir) -> (ColonyHandle, mpsc::Receiver<meclaw_core::Message>) {
     let h = ColonyHandle::new_with_factories_at(
         td,
@@ -49,7 +49,7 @@ async fn boot_code_only(td: &TempDir) -> (ColonyHandle, mpsc::Receiver<meclaw_co
     (h, sink_rx)
 }
 
-/// Boot: `code` + `store` Factories + /sink CaptureCell + bootstrap über `dir`.
+/// Boot: `code` + `store` factories + the /sink CaptureCell + bootstrap over `dir`.
 async fn boot_code_and_store(td: &TempDir) -> (ColonyHandle, mpsc::Receiver<meclaw_core::Message>) {
     let h = ColonyHandle::new_with_factories_at(
         td,
@@ -78,12 +78,12 @@ async fn boot_code_and_store(td: &TempDir) -> (ColonyHandle, mpsc::Receiver<mecl
     (h, sink_rx)
 }
 
-/// Repo-root-relativer Pfad zum eingecheckten 14c-rag-Beispiel-Baum.
+/// Repo-root-relative path to the checked-in 14c-rag example tree.
 fn example_dir_14c() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/14c-rag")
 }
 
-/// Kopiert den 14c-rag-Baum in `dst` (rekursiv, ohne SVG/DOT-Artefakte).
+/// Copies the 14c-rag tree into `dst` (recursively, without SVG/DOT artefacts).
 fn copy_14c_tree(dst: &std::path::Path) {
     copy_dir_recursive_14c(&example_dir_14c(), dst);
 }
@@ -107,7 +107,7 @@ fn copy_dir_recursive_14c(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
-/// Bounded recv (30 s — robust gegen cargo-parallel-Last).
+/// Bounded recv (30 s — robust against cargo's parallel load).
 async fn recv_bounded(
     rx: &mut mpsc::Receiver<meclaw_core::Message>,
 ) -> Option<meclaw_core::Message> {
@@ -117,8 +117,9 @@ async fn recv_bounded(
         .flatten()
 }
 
-/// Injected corpus: store-select-Ergebnis für 4 Zeilen als JSON-String im tool_result.
-/// Format entspricht dem, was die store-Cell bei `select * from corpus` emittiert.
+/// Injected corpus: a store-select result for 4 rows as a JSON string in the
+/// tool_result. The format matches what the store cell emits for
+/// `select * from corpus`.
 fn corpus_tool_result_body() -> Value {
     let rows = json!([
         {"doc_id": "d1", "text": "Cats are small domesticated felines that purr."},
@@ -136,11 +137,11 @@ fn corpus_tool_result_body() -> Value {
     })
 }
 
-/// Baut die minimale Topologie-Verzeichnisse für Slice 14-C-1 in `dir`.
+/// Builds the minimal topology directories for slice 14-C-1 in `dir`.
 ///
-/// Erzeugt:
+/// Creates:
 /// - `main/config.json`  (hive, edge retrieve→/sink)
-/// - `main/retrieve/config.json`  (code, `script_inline` aus `script`)
+/// - `main/retrieve/config.json`  (code, `script_inline` from `script`)
 fn build_minimal_topology(dir: &std::path::Path, script: &str) {
     let main_dir = dir.join("main");
     std::fs::create_dir_all(&main_dir).unwrap();
@@ -190,8 +191,9 @@ fn build_minimal_topology(dir: &std::path::Path, script: &str) {
 /// Real Retrieve-Script: Keyword-Overlap-Ranking + Body-Bau.
 /// tokenize: lowercase + split [^a-z0-9]+ + leere droppen.
 /// score = |tokens(frage) ∩ tokens(doc.text)|; rank desc, tie-break doc_id asc; top_k=2.
-/// header (= hop nach Colony-Verarbeitung): query, scores, top_k.
-/// body: system.context.text = joined top_k chunks, messages[0] = user-Turn mit rag_question.
+/// header (= hop after colony processing): query, scores, top_k.
+/// body: system.context.text = joined top_k chunks, messages[0] = the user turn
+/// carrying rag_question.
 const RETRIEVE_SCRIPT: &str = r#"
 import sys, json, re
 
@@ -244,24 +246,24 @@ sys.stdout.write(json.dumps(out))
 
 /// **14-C-1 — Lexical-Retriever isoliert (deterministisch).**
 ///
-/// Boot einer minimalen Topologie (nur `/main/retrieve` code-Cell + `/sink`).
-/// Injiziert Corpus-Zeilen als `tool_result` + `context.rag_question`.
+/// Boots a minimal topology (only the `/main/retrieve` code cell + `/sink`).
+/// Injects corpus rows as a `tool_result` + `context.rag_question`.
 /// Beweist: ehrliches Keyword-Overlap-Ranking top_k=2, scores=[4,1] + Body-Bau.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retriever_ranks_top_k_by_keyword_overlap() {
     let td = TempDir::new().unwrap();
-    // Grün: echtes Ranking-Script.
+    // Green: the real ranking script.
     build_minimal_topology(td.path(), RETRIEVE_SCRIPT);
 
     let (h, mut sink_rx) = boot_code_only(&td).await;
 
-    // Inject: context.rag_question gesetzt, body = Corpus als tool_result.
+    // Inject: context.rag_question set, body = the corpus as a tool_result.
     let mut ctx = Map::new();
     ctx.insert(
         "rag_question".into(),
         json!("domesticated felines that purr"),
     );
-    // Die Cell ist unter /retrieve registriert (root_dir=main/ → / strip).
+    // The cell is registered at /retrieve (root_dir=main/ → / stripped).
     h.send(
         MessageBuilder::new(Path::new("/retrieve"))
             .context(ctx)
@@ -271,7 +273,7 @@ async fn retriever_ranks_top_k_by_keyword_overlap() {
     )
     .await;
 
-    // Positiver Receipt: retrieve emittiert eine Message an /sink.
+    // Positive receipt: retrieve emits a message to /sink.
     let msg = recv_bounded(&mut sink_rx)
         .await
         .expect("retrieve must emit a message to /sink");
@@ -328,24 +330,24 @@ async fn retriever_ranks_top_k_by_keyword_overlap() {
     h.shutdown().await;
 }
 
-/// **14-C-2 — `rag_question` reist als context durch den store-Retrieval-Hop.**
+/// **14-C-2 — `rag_question` travels as context through the store retrieval hop.**
 ///
 /// Bootet die reale Kette `ask → corpus(store) → retrieve → /sink`.
-/// Injiziert eine Message mit der Frage an `/main/ask`.
-/// Beweist: am Eingang von `/sink` (nach dem store-Hop) ist
-/// `header.context.rag_question == "<frage>"` intakt, weil store nur `hop`
-/// schreibt und der strukturelle Grund, warum `rag_question` context sein
-/// MUSS (wäre es hop, verfiele es an der store-Emission).
+/// Injects a message carrying the question to `/main/ask`.
+/// Proves: at the entrance of `/sink` (after the store hop)
+/// `header.context.rag_question == "<question>"` is intact, because store only
+/// writes `hop` — which is the structural reason why `rag_question` MUST be
+/// context (as hop it would decay at the store emission).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rag_question_survives_store_retrieval_hop() {
     let td = TempDir::new().unwrap();
     copy_14c_tree(td.path());
 
-    // Main-Config patchen: retrieve→/sink (statt retrieve→llm), damit /sink als Probe dient.
+    // Patch the main config: retrieve→/sink (instead of retrieve→llm) so /sink serves as the probe.
     let main_cfg_path = td.path().join("main/config.json");
     let main_cfg_txt = std::fs::read_to_string(&main_cfg_path).unwrap();
     let mut main_cfg: Value = meclaw_core::serde_json::from_str(&main_cfg_txt).unwrap();
-    // Ersetze den `retrieve→llm`-Edge durch `retrieve→/sink`, llm+capture entfernen.
+    // Replace the `retrieve→llm` edge with `retrieve→/sink`, remove llm+capture.
     main_cfg["params"]["graph"]["edges"] = json!([
         { "from": "./ask", "to": "./corpus",
           "modifier": { "set_context": { "rag_question": "hop.rag_question" } } },
@@ -358,17 +360,17 @@ async fn rag_question_survives_store_retrieval_hop() {
     )
     .unwrap();
 
-    // llm + capture aus dem TempDir entfernen: Slice 2 bootet nur code+store;
-    // die Verzeichnisse wurden per copy_14c_tree mitgebracht (Slice 3 hat sie
-    // eingecheckt), sind hier aber nicht Teil der Probe-Topologie.
+    // Remove llm + capture from the TempDir: slice 2 boots only code+store; the
+    // directories came along via copy_14c_tree (slice 3 checked them in) but are not
+    // part of the probe topology here.
     let _ = std::fs::remove_dir_all(td.path().join("main/llm"));
     let _ = std::fs::remove_dir_all(td.path().join("main/capture"));
 
     let (h, mut sink_rx) = boot_code_and_store(&td).await;
 
-    // Inject: eine Message mit der Frage an /ask.
-    // Bootstrap strippt das top-level-Verzeichnis (main/ → /),
-    // daher ist die ask-Cell unter /ask registriert (nicht /main/ask).
+    // Inject: a message carrying the question to /ask.
+    // Bootstrap strips the top-level directory (main/ → /), so the ask cell is
+    // registered at /ask (not /main/ask).
     let question = "domesticated felines that purr";
     h.send(
         MessageBuilder::new(Path::new("/ask"))
@@ -380,12 +382,12 @@ async fn rag_question_survives_store_retrieval_hop() {
     )
     .await;
 
-    // Positiver Receipt: retrieve emittiert eine Message an /sink (nach dem store-Hop).
+    // Positive receipt: retrieve emits a message to /sink (after the store hop).
     let msg = recv_bounded(&mut sink_rx)
         .await
         .expect("retrieve must emit a message to /sink after the store hop");
 
-    // Kern-Assertion: context.rag_question ist nach dem store-Hop intakt.
+    // Core assertion: context.rag_question is intact after the store hop.
     let rag_q = msg
         .headers
         .context
@@ -402,7 +404,7 @@ async fn rag_question_survives_store_retrieval_hop() {
     h.shutdown().await;
 }
 
-/// Boot: `code` + `store` + `llm` Factories + /sink CaptureCell + bootstrap über `dir`.
+/// Boot: `code` + `store` + `llm` factories + the /sink CaptureCell + bootstrap over `dir`.
 async fn boot_code_store_and_llm(
     td: &TempDir,
 ) -> (ColonyHandle, mpsc::Receiver<meclaw_core::Message>) {
@@ -438,23 +440,24 @@ async fn boot_code_store_and_llm(
     (h, sink_rx)
 }
 
-/// **14-C-3 — hop verfällt / explizite Promotion überlebt.**
+/// **14-C-3 — hop decays / an explicit promotion survives.**
 ///
 /// Kette `ask → corpus(store) → retrieve → llm(mock) → /sink` (llm→/sink im Test
-/// direkt verdrahtet, /sink als CaptureCell-Probe — analoges Muster wie Slice 2).
-/// Der committete `capture`-Knoten liegt im Baum, wird aber für den Test durch
-/// `/sink` ersetzt, damit der llm-Hop direkt messbar ist ohne Capture-Code-Cell-Verfall.
+/// wired directly, /sink as the CaptureCell probe — the same pattern as slice 2).
+/// The committed `capture` node lies in the tree but is replaced by `/sink` for the
+/// test, so the llm hop is directly measurable without capture-code-cell decay.
 ///
-/// Assertions am `/sink`-Empfang (1 Hop downstream der `retrieve→llm`-Promotion):
+/// Assertions at the `/sink` receipt (1 hop downstream of the `retrieve→llm` promotion):
 ///
 /// POSITIV: `context.retrieved_top_k == 2` — per `set_context:{retrieved_top_k:"hop.top_k"}`
-///   auf der `retrieve→llm`-Edge befördert, überlebt den llm-Hop (context reist durch).
-/// NEGATIV: `hop.scores` ABSENT — retrieve emittierte hop.scores, wurde NIE befördert,
-///   verfällt an der llm-Emission (input.hop wird structural-fresh ersetzt).
-///   Der hop am /sink trägt stattdessen die llm-Output-Keys (finish_reason, model).
+///   promoted on the `retrieve→llm` edge, survives the llm hop (context travels through).
+/// NEGATIVE: `hop.scores` ABSENT — retrieve emitted hop.scores, it was NEVER
+///   promoted and decays at the llm emission (input.hop is structurally replaced
+///   fresh). Instead the hop at /sink carries the llm output keys (finish_reason,
+///   model).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hop_decays_unless_promoted() {
-    // Mock-OpenAI: eine deterministische Antwort ("rag-answer", finish_reason "stop").
+    // Mock OpenAI: one deterministic response ("rag-answer", finish_reason "stop").
     let mock = MockOpenAI::start(vec![canned_chat_completion("rag-answer", "stop")]).await;
     let base_url = format!("{}/v1", mock.base_url);
 
@@ -464,9 +467,9 @@ async fn hop_decays_unless_promoted() {
     // base_url-PLACEHOLDER in llm/config.json ersetzen.
     patch_llm_base_url_14c(td.path(), &base_url);
 
-    // Patch main/config.json: llm→/sink direkt (statt llm→capture),
-    // damit der llm-Hop am /sink ohne Capture-Code-Verfall messbar ist.
-    // Die `capture`-Cell liegt im Baum (für Slice 4), wird hier aber nicht genutzt.
+    // Patch main/config.json: llm→/sink directly (instead of llm→capture) so the
+    // llm hop is measurable at /sink without capture-code decay. The `capture` cell
+    // lies in the tree (for slice 4) but is not used here.
     let main_cfg_path = td.path().join("main/config.json");
     let main_cfg_txt = std::fs::read_to_string(&main_cfg_path).unwrap();
     let mut main_cfg: Value = meclaw_core::serde_json::from_str(&main_cfg_txt).unwrap();
@@ -502,8 +505,8 @@ async fn hop_decays_unless_promoted() {
         .await
         .expect("RAG chain ask→corpus→retrieve→llm must deliver a message to /sink");
 
-    // POSITIV: context.retrieved_top_k == 2 (per Edge-Promotion von retrieve→llm
-    // befördert, überlebt den llm-Hop weil context reist unverändert durch).
+    // POSITIVE: context.retrieved_top_k == 2 (promoted by the retrieve→llm edge
+    // promotion, survives the llm hop because context travels through unchanged).
     let top_k = msg
         .headers
         .context
@@ -518,8 +521,8 @@ async fn hop_decays_unless_promoted() {
         msg.headers.context
     );
 
-    // NEGATIV: hop.scores ist ABSENT (retrieve emittierte es, nie befördert →
-    // structural verfall an der llm-Emission — input.hop wird fallengelassen).
+    // NEGATIVE: hop.scores is ABSENT (retrieve emitted it, it was never promoted →
+    // structural decay at the llm emission — input.hop is dropped).
     assert!(
         msg.headers.hop.get("scores").is_none(),
         "hop.scores must be absent at /sink — retrieve's scores were never promoted \
@@ -527,7 +530,7 @@ async fn hop_decays_unless_promoted() {
         msg.headers.hop
     );
 
-    // Schärfe: der hop trägt llm-Output-Keys (finish_reason), NICHT retrieve's Keys.
+    // Sharpness: the hop carries llm output keys (finish_reason), NOT retrieve's keys.
     assert!(
         msg.headers.hop.get("finish_reason").is_some(),
         "hop.finish_reason must be present — it is the llm's fresh output hop; \
@@ -547,22 +550,22 @@ async fn hop_decays_unless_promoted() {
 /// **14-C-4 — llm gekoppelt an context.rag_question, end-to-end + Receipt.**
 ///
 /// Volle Kette `ask → corpus(store) → retrieve → llm(capturing-mock) → capture → /sink`.
-/// Der capturing Mock fängt den OpenAI-Chat-Request, der llm→Mock sendet.
+/// The capturing mock intercepts the OpenAI chat request that llm sends to the mock.
 ///
 /// Assertions:
 /// - **Kopplung (Runtime):** user-Turn `content` == rag_question;
-///   system-Turn `content` enthält die top_k-Chunk-Texte (d1 + d2).
-/// - **Receipt (positiv):** `/sink` empfängt die Assistant-Antwort.
-/// - **DLQ leer:** keine Dead-Letters über die volle Kette.
+///   the system turn's `content` contains the top_k chunk texts (d1 + d2).
+/// - **Receipt (positive):** `/sink` receives the assistant answer.
+/// - **DLQ empty:** no dead letters across the full chain.
 ///
-/// Beweist: die Inferenz-Eingabe ist strukturell an Frage+Chunks gekoppelt.
+/// Proves: the inference input is structurally coupled to question + chunks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn final_answer_coupled_to_rag_question() {
     use meclaw_colony::ColonyMsg;
     use meclaw_colony::api_dto::ReadDeadLettersReply;
     use tokio::sync::oneshot;
 
-    // Mock-OpenAI: eine deterministische Antwort, capturing.
+    // Mock OpenAI: one deterministic response, capturing.
     let mock = MockOpenAI::start(vec![canned_chat_completion("rag-coupled-answer", "stop")]).await;
     let base_url = format!("{}/v1", mock.base_url);
 
@@ -572,9 +575,9 @@ async fn final_answer_coupled_to_rag_question() {
     // base_url-PLACEHOLDER in llm/config.json ersetzen.
     patch_llm_base_url_14c(td.path(), &base_url);
 
-    // Vollständige Topologie aus dem eingecheckten Baum nutzen:
+    // Use the complete topology from the checked-in tree:
     // ask → corpus → retrieve → llm → capture → /sink.
-    // Main-Config patchen: capture→/sink (statt llm→capture Ende).
+    // Patch the main config: capture→/sink (instead of ending at llm→capture).
     let main_cfg_path = td.path().join("main/config.json");
     let main_cfg_txt = std::fs::read_to_string(&main_cfg_path).unwrap();
     let mut main_cfg: Value = meclaw_core::serde_json::from_str(&main_cfg_txt).unwrap();
@@ -606,13 +609,13 @@ async fn final_answer_coupled_to_rag_question() {
     )
     .await;
 
-    // --- Receipt (positiv): /sink empfängt die Antwort ---
+    // --- Receipt (positive): /sink receives the answer ---
     let _msg = recv_bounded(&mut sink_rx)
         .await
         .expect("full RAG chain ask→corpus→retrieve→llm→capture must deliver to /sink");
 
     // --- Kopplung (Runtime): Request-Inspektion ---
-    // Poll bis der Mock den Request empfangen hat (LLM-HTTP-Call läuft asynchron).
+    // Poll until the mock has received the request (the LLM HTTP call runs asynchronously).
     let snaps = {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -629,7 +632,7 @@ async fn final_answer_coupled_to_rag_question() {
         .messages()
         .expect("llm request must carry messages");
 
-    // user-Turn: content == rag_question (retrieve baut messages[0] = user-Turn mit rag_question).
+    // User turn: content == rag_question (retrieve builds messages[0] = the user turn with rag_question).
     let user_turn = msgs
         .iter()
         .find(|m| m["role"] == "user")
@@ -640,7 +643,7 @@ async fn final_answer_coupled_to_rag_question() {
         user_turn["content"]
     );
 
-    // system-Turn: content enthält d1 + d2 Chunk-Texte.
+    // System turn: content contains the d1 + d2 chunk texts.
     let system_turn = msgs
         .iter()
         .find(|m| m["role"] == "system")
@@ -657,7 +660,7 @@ async fn final_answer_coupled_to_rag_question() {
         "system content must contain d2 text (top_k chunk); got: {sys_content:?}"
     );
 
-    // --- DLQ leer ---
+    // --- DLQ empty ---
     let (ack_tx, ack_rx) = oneshot::channel::<ReadDeadLettersReply>();
     h.runtime()
         .inbox_tx
@@ -704,20 +707,20 @@ fn factories_14c() -> CellFactoryRegistry {
 
 /// **14-C-5 Positiv — Validator akzeptiert die committete RAG-Topologie.**
 ///
-/// Bootstrappt den vollständigen `tests/fixtures/14c-rag/`-Baum (alle 5 Knoten +
-/// reale Edges) via `plan_bootstrap` (validate-only, kein Spawn).
-/// `consumes.context.rag_question` an retrieve + llm ist via der
-/// `ask→corpus`-`set_context`-Wurzel reachable; keine required-hop-Verletzung.
+/// Bootstraps the complete `tests/fixtures/14c-rag/` tree (all 5 nodes + the real
+/// edges) via `plan_bootstrap` (validate only, no spawn).
+/// `consumes.context.rag_question` at retrieve + llm is reachable via the
+/// `ask→corpus` `set_context` root; no required-hop violation.
 ///
-/// Assertion: `plan_bootstrap` liefert `Ok` — kein `HeaderContractViolation`,
-/// kein `EdgeSchema`-Fehler.
+/// Assertion: `plan_bootstrap` returns `Ok` — no `HeaderContractViolation`, no
+/// `EdgeSchema` error.
 #[test]
 fn validator_accepts_rag_topology() {
     let td = TempDir::new().unwrap();
     copy_14c_tree(td.path());
-    // base_url-PLACEHOLDER belassen — plan_bootstrap spawnt nicht, HTTP ist irrelevant.
+    // Leave the base_url PLACEHOLDER — plan_bootstrap does not spawn, HTTP is irrelevant.
 
-    let overlay = RegistryOverlay::new(); // Kein colony.db = FirstBoot-Overlay
+    let overlay = RegistryOverlay::new(); // no colony.db = FirstBoot overlay
     let result = plan_bootstrap(td.path(), &factories_14c(), &overlay);
     assert!(
         result.is_ok(),
@@ -727,26 +730,25 @@ fn validator_accepts_rag_topology() {
     );
 }
 
-/// **14-C-5 Negativ — Validator rejectet ohne `rag_question`-Promotion.**
+/// **14-C-5 negative — the validator rejects without the `rag_question` promotion.**
 ///
-/// Kopiert den 14c-rag-Baum in TempDir und entfernt `set_context:{rag_question}`
-/// von der `ask→corpus`-Edge (Patch der main/config.json). Danach ist
-/// `consumes.context.rag_question` an retrieve + llm nicht mehr reachable.
+/// Copies the 14c-rag tree into a TempDir and removes `set_context:{rag_question}`
+/// from the `ask→corpus` edge (patching main/config.json). Afterwards
+/// `consumes.context.rag_question` at retrieve + llm is no longer reachable.
 ///
-/// Assertion: `plan_bootstrap` liefert `Err` mit einem `HeaderContractViolation`,
-/// dessen `reason` sowohl `"rag_question"` als auch `"context presence not reachable"`
-/// enthält. Beweist: die Promotion ist nicht optional — ohne sie bricht die
-/// Bauzeit-Prüfung.
+/// Assertion: `plan_bootstrap` returns `Err` with a `HeaderContractViolation` whose
+/// `reason` contains both `"rag_question"` and `"context presence not reachable"`.
+/// Proves: the promotion is not optional — without it the build-time check breaks.
 #[test]
 fn validator_rejects_without_rag_question_promotion() {
     let td = TempDir::new().unwrap();
     copy_14c_tree(td.path());
 
-    // Entferne set_context:{rag_question} von der ask→corpus-Edge.
+    // Remove set_context:{rag_question} from the ask→corpus edge.
     let main_cfg_path = td.path().join("main/config.json");
     let main_cfg_txt = std::fs::read_to_string(&main_cfg_path).unwrap();
     let mut main_cfg: Value = meclaw_core::serde_json::from_str(&main_cfg_txt).unwrap();
-    // Ersetze ask→corpus ohne modifier (Promotion entfernt), rest unverändert.
+    // Replace ask→corpus without the modifier (promotion removed), rest unchanged.
     main_cfg["params"]["graph"]["edges"] = json!([
         { "from": "./ask", "to": "./corpus" },
         { "from": "./corpus", "to": "./retrieve" },
@@ -766,7 +768,7 @@ fn validator_rejects_without_rag_question_promotion() {
         "plan_bootstrap must REJECT topology without rag_question promotion (context not reachable)",
     );
 
-    // Mind. ein HeaderContractViolation-Fehler muss rag_question + die
+    // At least one HeaderContractViolation error must mention rag_question + the
     // kanonische Reject-Message nennen.
     let found = errs.items().iter().any(|e| {
         if let BootstrapError::HeaderContractViolation { reason } = e {
@@ -783,7 +785,7 @@ fn validator_rejects_without_rag_question_promotion() {
     );
 }
 
-/// Patcht die `base_url` in JEDER `llm`-config.json im Teilbaum `dir` auf `base_url`.
+/// Patches the `base_url` in EVERY `llm` config.json under the subtree `dir` to `base_url`.
 fn patch_llm_base_url_14c(dir: &std::path::Path, base_url: &str) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let p = entry.unwrap().path();
@@ -800,17 +802,18 @@ fn patch_llm_base_url_14c(dir: &std::path::Path, base_url: &str) {
     }
 }
 
-/// **14-C-6 — Live-Graph-SVG/DOT aus gebooteter RAG-Topologie.**
+/// **14-C-6 — live-graph SVG/DOT from the booted RAG topology.**
 ///
-/// Bootet den vollständigen `tests/fixtures/14c-rag/`-Baum (TempDir-Kopie, llm gegen Mock),
-/// liest den Live-Graph via `ColonyMsg::ReadGraph` für den Scope `/main`,
-/// rendert `graph.dot` + `graph.svg` mit dem zero-dep-Generator (identisch zu 14a/14b)
-/// und schreibt sie nach `tests/fixtures/14c-rag/` (unter Env-Gate `MECLAW_EMIT_DOT=1`).
+/// Boots the complete `tests/fixtures/14c-rag/` tree (a TempDir copy, llm against
+/// the mock), reads the live graph via `ColonyMsg::ReadGraph` for the scope `/main`,
+/// renders `graph.dot` + `graph.svg` with the zero-dep generator (identical to
+/// 14a/14b) and writes them to `tests/fixtures/14c-rag/` (under the env gate
+/// `MECLAW_EMIT_DOT=1`).
 ///
 /// Assertions:
-/// - Alle 5 Knoten (`/ask`, `/corpus`, `/retrieve`, `/llm`, `/capture`) erscheinen im DOT.
-/// - Beide Edge-Promotions (`rag_question`, `retrieved_top_k`) erscheinen im DOT.
-/// - Das generierte SVG ist ein gültiges SVG-Dokument (`<svg`).
+/// - All 5 nodes (`/ask`, `/corpus`, `/retrieve`, `/llm`, `/capture`) appear in the DOT.
+/// - Both edge promotions (`rag_question`, `retrieved_top_k`) appear in the DOT.
+/// - The generated SVG is a valid SVG document (`<svg`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn topology_svg_from_live_graph() {
     let mock = MockOpenAI::start(vec![canned_chat_completion("rag-svg-answer", "stop")]).await;
@@ -820,9 +823,9 @@ async fn topology_svg_from_live_graph() {
     copy_14c_tree(td.path());
     patch_llm_base_url_14c(td.path(), &base_url);
 
-    // Main-Config patchen: capture→/sink hinzufügen (positiver Receipt für den Test).
-    // Der committete Baum endet bei llm→capture; hier wird capture→/sink ergänzt
-    // damit der Test den vollständigen Durchlauf als positives Receipt messen kann.
+    // Patch the main config: add capture→/sink (a positive receipt for the test).
+    // The committed tree ends at llm→capture; capture→/sink is added here so the
+    // test can measure the complete run as a positive receipt.
     let main_cfg_path = td.path().join("main/config.json");
     let main_cfg_txt = std::fs::read_to_string(&main_cfg_path).unwrap();
     let mut main_cfg: Value = meclaw_core::serde_json::from_str(&main_cfg_txt).unwrap();
@@ -843,7 +846,7 @@ async fn topology_svg_from_live_graph() {
 
     let (h, mut sink_rx) = boot_code_store_and_llm(&td).await;
 
-    // Inject: volle Kette starten damit alle 5 Knoten im Live-Graph registriert sind.
+    // Inject: start the full chain so all 5 nodes are registered in the live graph.
     let question = "domesticated felines that purr";
     h.send(
         MessageBuilder::new(Path::new("/ask"))
@@ -855,23 +858,23 @@ async fn topology_svg_from_live_graph() {
     )
     .await;
 
-    // Positiver Receipt: Kette ask→corpus→retrieve→llm→capture→/sink läuft vollständig.
+    // Positive receipt: the chain ask→corpus→retrieve→llm→capture→/sink runs completely.
     let _msg = recv_bounded(&mut sink_rx)
         .await
         .expect("full RAG chain ask→corpus→retrieve→llm→capture must deliver to /sink");
 
-    // Live-Graph lesen: Scope "/" liefert alle 5 Knoten + Edges
-    // (bootstrap_from_filesystem strippt das top-level-Verzeichnis → Pfade: /ask, /corpus, …).
+    // Read the live graph: scope "/" returns all 5 nodes + edges
+    // (bootstrap_from_filesystem strips the top-level directory → paths: /ask, /corpus, …).
     let (nodes, edges) = support::live_graph(&h, &["/"]).await;
 
-    // SVG/DOT unter Env-Gate `MECLAW_EMIT_DOT=1` nach tests/fixtures/14c-rag/ schreiben.
+    // Write SVG/DOT to tests/fixtures/14c-rag/ under the env gate `MECLAW_EMIT_DOT=1`.
     support::emit_dot_if_requested("14c-rag", &nodes, &edges);
 
-    // --- DOT/SVG für Assertions lokal rendern (unabhängig von MECLAW_EMIT_DOT) ---
+    // --- Render DOT/SVG locally for the assertions (independent of MECLAW_EMIT_DOT) ---
     let dot = support::render_dot(&nodes, &edges);
     let svg = support::render_svg(&nodes, &edges);
 
-    // Alle 5 RAG-Knoten müssen im DOT erscheinen.
+    // All 5 RAG nodes must appear in the DOT.
     for node in &["/ask", "/corpus", "/retrieve", "/llm", "/capture"] {
         assert!(
             dot.contains(node),
@@ -879,9 +882,9 @@ async fn topology_svg_from_live_graph() {
         );
     }
 
-    // Beide Edge-Promotions müssen als Modifier in den Live-Graph-DTOs erscheinen.
-    // Der DOT-Renderer kodiert Modifier nicht als Edge-Label (nur condition), daher
-    // direkt gegen die DTO-Struktur testen.
+    // Both edge promotions must appear as modifiers in the live-graph DTOs. The DOT
+    // renderer does not encode modifiers as an edge label (only the condition), so we
+    // test directly against the DTO structure.
     let modifier_str: String = edges
         .iter()
         .filter_map(|e| e.modifier.as_ref().map(|m| m.to_string()))
@@ -896,7 +899,7 @@ async fn topology_svg_from_live_graph() {
         "Live-graph edges must carry retrieved_top_k modifier; modifiers = {modifier_str:?}"
     );
 
-    // SVG muss ein gültiges SVG-Dokument sein und alle 5 Knoten enthalten.
+    // The SVG must be a valid SVG document and contain all 5 nodes.
     assert!(
         svg.contains("<svg"),
         "rendered output must be an SVG document; got = {svg:.200?}"

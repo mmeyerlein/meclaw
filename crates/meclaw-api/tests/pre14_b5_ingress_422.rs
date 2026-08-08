@@ -18,7 +18,7 @@
 //! uploaded files. A `BlobRef` always serializes to a schema-valid `Attachment`
 //! (`blob_id`/`mime_type`/`size_bytes`), and an upload with no file fields yields
 //! `{"attachments": []}`, which still satisfies the `attachments` anyOf branch.
-//! So no real multipart request reaches the 422 branch (messages.rs ~Z.283) — it
+//! So no real multipart request reaches the 422 branch (messages.rs ~l.283) — it
 //! is defensive-but-unreachable. The test below proves the positive direction
 //! (a target-only multipart is accepted, 202), documenting the finding instead of
 //! faking a 422 that the code cannot emit. See the Pass-2 report.

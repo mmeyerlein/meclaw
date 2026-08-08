@@ -1,5 +1,5 @@
-//! Phase-10-D Phase-Close-Audit: alle pub items + LongRunningCell-Impl-
-//! Methoden in `src/mcp/**` haben `///`-Doc-Comments (CLAUDE.md
+//! Phase-10-D phase-close audit: every pub item + LongRunningCell impl method in
+//! `src/mcp/**` carries `///` doc comments (CLAUDE.md
 //! § Coding-Standards). Pattern analog `doc_comment_audit_phase_10c.rs`.
 
 use std::fs;

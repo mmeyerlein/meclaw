@@ -1,16 +1,16 @@
 //! Phase-10-D Demo-Tests. T24: Tool-Call Round-Trip (success + failure).
 //!
-//! Anti-Cascade-Pflicht: `/sink` MUSS vor der Probe bei `/mcp` registriert
-//! sein — sonst landet die Emission im TtlExpired-Dead-Letter-Pfad.
+//! Anti-cascade duty: `/sink` MUST be registered before the probe at `/mcp` —
+//! otherwise the emission ends up on the TtlExpired dead-letter path.
 //!
 //! Plan-Adaptionen (dokumentiert per Auftrag):
-//! - `MockMcp::start(Vec<MockResponse>)` statt Handler-Closure-API.
-//! - `h.spawn(path, closure)` fuer `/sink` (CaptureCell via mpsc-channel-Direkt-Impl).
+//! - `MockMcp::start(Vec<MockResponse>)` instead of a handler-closure API.
+//! - `h.spawn(path, closure)` for `/sink` (CaptureCell via a direct mpsc-channel impl).
 //! - Factory-Spawn via `factory.spawn_cell(...)` + `h.register_spawned(...)`.
-//! - Routing via `reply_to` in der Probe (kein `h.add_edge`).
-//! - `h.runtime().outputs_tx` (nicht `h.outputs_tx()`).
-//! - `mpsc::channel::<Message>` + `recv_rx.recv()` statt `CaptureCell::wait_for`.
-//! - `MessageBuilder::new(Path).body(Body::Inline(json!)).build()` fuer Probes.
+//! - Routing via `reply_to` in the probe (no `h.add_edge`).
+//! - `h.runtime().outputs_tx` (not `h.outputs_tx()`).
+//! - `mpsc::channel::<Message>` + `recv_rx.recv()` instead of `CaptureCell::wait_for`.
+//! - `MessageBuilder::new(Path).body(Body::Inline(json!)).build()` for probes.
 
 #[path = "mock_mcp.rs"]
 mod mock_mcp;

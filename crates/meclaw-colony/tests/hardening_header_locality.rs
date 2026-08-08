@@ -1,10 +1,10 @@
-//! Slice 1 (roadmap Z.138): 14-B-Lokalität läuft bei Runtime-Mutationen.
+//! Slice 1 (roadmap Z.138): 14-B locality runs on runtime mutations.
 //!
-//! Task 1.2: Smoke-Test für die `ColonyMsg::SetNodeContract`-Variante.
-//! Task 1.4: semantische Locality-Tests — Negativ-Rejects sind das
-//! Builder-Feedback, `error_code == "edge_schema"` ist Vertrag; die
-//! Teilnahme-Regel (edge-loser Node trägt keine Obligation) hält
-//! `remove_nodes`-Disconnects legal.
+//! Task 1.2: smoke test for the `ColonyMsg::SetNodeContract` variant.
+//! Task 1.4: semantic locality tests — the negative rejects are the builder
+//! feedback, `error_code == "edge_schema"` is contract; the participation rule
+//! (an edge-less node carries no obligation) keeps `remove_nodes` disconnects
+//! legal.
 
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, NodeContract,
@@ -36,11 +36,12 @@ fn echo_registry() -> CellFactoryRegistry {
     r
 }
 
-/// Hop-Topologie (bootet grün): Producer `/p` mit `emits.hop.h1`, Konsument
-/// `/c` mit `consumes.hop.h1 required:true`, Boot-Edge `p → c` (Fan-in-Check
-/// im Bootstrap erfüllt), plus dritte Cell `/t` OHNE `emits.hop.h1`.
-/// `/c` echo't nach `/sink` — Capture-Receipt-Ziel im Gutfall-Test; in den
-/// Reject-/Disconnect-Tests fließen keine Messages, der Wert ist dort inert.
+/// Hop topology (boots green): producer `/p` with `emits.hop.h1`, consumer
+/// `/c` with `consumes.hop.h1 required:true`, boot edge `p → c` (the fan-in
+/// check is satisfied at bootstrap), plus a third cell `/t` WITHOUT
+/// `emits.hop.h1`. `/c` echoes to `/sink` — the capture-receipt target in the
+/// good-case test; in the reject/disconnect tests no messages flow, so the
+/// value is inert there.
 fn write_hop_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/p")).unwrap();
     std::fs::create_dir_all(td.join("main/c")).unwrap();
@@ -69,10 +70,10 @@ fn write_hop_topology(td: &std::path::Path) {
     .unwrap();
 }
 
-/// Context-Topologie (bootet grün): Setter-Edge `s → c2` mit
-/// `modifier.set_context.c1` versorgt den Konsumenten `/c2`
-/// (`consumes.context.c1 required:true`); die zweite Edge `x → c2` hält `/c2`
-/// nach dem Setter-Kill im post_state teilnehmend (≥1 inzidente Edge).
+/// Context topology (boots green): the setter edge `s → c2` with
+/// `modifier.set_context.c1` supplies the consumer `/c2`
+/// (`consumes.context.c1 required:true`); the second edge `x → c2` keeps `/c2`
+/// participating in the post_state after the setter kill (≥1 incident edge).
 fn write_context_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/s")).unwrap();
     std::fs::create_dir_all(td.join("main/x")).unwrap();
@@ -103,11 +104,11 @@ fn write_context_topology(td: &std::path::Path) {
     .unwrap();
 }
 
-/// Transit-Topologie (F1 / K-H1-Shape, bootet erst seit dem F1-Fix grün):
-/// `entry → /sub` trägt `set_hop.hmark`, `/sub → /sub/cellA` ist der
-/// Hive-Transit, `cellA` deklariert EHRLICH `consumes.hop.hmark
-/// required:true`. Dritte Cell `/x` (edge-frei, keine required Keys) als
-/// Quelle für die Mutations-Zwillinge.
+/// Transit topology (F1 / K-H1 shape, only boots green since the F1 fix):
+/// `entry → /sub` carries `set_hop.hmark`, `/sub → /sub/cellA` is the hive
+/// transit, `cellA` HONESTLY declares `consumes.hop.hmark required:true`.
+/// A third cell `/x` (edge-free, no required keys) serves as the source for the
+/// mutation twins.
 fn write_transit_topology(td: &std::path::Path) {
     std::fs::create_dir_all(td.join("main/entry")).unwrap();
     std::fs::create_dir_all(td.join("main/x")).unwrap();
@@ -143,8 +144,8 @@ fn write_transit_topology(td: &std::path::Path) {
     .unwrap();
 }
 
-/// Mutation senden + Outcome über den ack-oneshot lesen
-/// (Muster: phase_11_contract_via_mutation.rs).
+/// Sends a mutation and reads the outcome via the ack oneshot
+/// (pattern: phase_11_contract_via_mutation.rs).
 async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
@@ -163,8 +164,8 @@ async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
         .expect("ack sender not dropped")
 }
 
-/// add_edges, deren Quelle den required consumes.hop-Key NICHT liefert,
-/// wird pre-destruktiv rejected (Fan-in-Schnittmenge, 14-B).
+/// An add_edges whose source does NOT supply the required consumes.hop key is
+/// rejected pre-destructively (fan-in intersection, 14-B).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_add_edge_breaking_hop_fanin_is_rejected_edge_schema() {
     let td = TempDir::new().unwrap();
@@ -196,8 +197,8 @@ async fn mutation_add_edge_breaking_hop_fanin_is_rejected_edge_schema() {
     h.shutdown().await;
 }
 
-/// remove_edges, das den einzigen set_context-Setter-Pfad eines required
-/// consumes.context-Konsumenten kappt, wird rejected.
+/// A remove_edges that cuts the only set_context setter path of a required
+/// consumes.context consumer is rejected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_remove_edge_breaking_context_reachability_is_rejected() {
     let td = TempDir::new().unwrap();
@@ -225,8 +226,8 @@ async fn mutation_remove_edge_breaking_context_reachability_is_rejected() {
     h.shutdown().await;
 }
 
-/// remove_nodes-Disconnect eines hop-Konsumenten bleibt LEGAL
-/// (Teilnahme-Regel: edge-loser Node trägt keine Obligation).
+/// A remove_nodes disconnect of a hop consumer stays LEGAL
+/// (participation rule: an edge-less node carries no obligation).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_disconnect_of_hop_consumer_is_committed() {
     let td = TempDir::new().unwrap();
@@ -248,12 +249,12 @@ async fn mutation_disconnect_of_hop_consumer_is_committed() {
     h.shutdown().await;
 }
 
-/// Gutfall: add_edges mit modifier.set_hop, der den required Key liefert →
-/// Committed; danach POSITIVES Capture-Receipt (CLAUDE.md-Disziplin): eine
-/// Probe fließt über die neue Edge `t → c` (set_hop liefert h1) durch den
-/// Konsumenten `/c` bis `/sink` — der Receipt-Body trägt die Echo-Turns von
-/// `/t` UND `/c` und beweist, dass `/c` die Message empfangen hat
-/// ("Message-Fluss danach intakt"). Erst dann der DLQ-Wächter (leer).
+/// Good case: an add_edges with modifier.set_hop that supplies the required key
+/// → committed; afterwards a POSITIVE capture receipt (CLAUDE.md discipline): a
+/// probe flows over the new edge `t → c` (set_hop supplies h1) through the
+/// consumer `/c` to `/sink` — the receipt body carries the echo turns of `/t`
+/// AND `/c` and proves that `/c` received the message ("message flow intact
+/// afterwards"). Only then the DLQ guard (empty).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_add_edge_satisfying_hop_via_set_hop_is_committed() {
     let td = TempDir::new().unwrap();
@@ -288,9 +289,9 @@ async fn mutation_add_edge_satisfying_hop_via_set_hop_is_committed() {
         "set_hop satisfies the required key — must commit, got {outcome:?}"
     );
 
-    // Probe → /t: /t echo't nach /c, die NEUE Edge t→c (set_hop h1) greift,
-    // /c echo't nach /sink. UBF-konformer Body (Phase-6-Lesson, keine
-    // InvalidUbfBody-DLQ).
+    // Probe → /t: /t echoes to /c, the NEW edge t→c (set_hop h1) applies,
+    // /c echoes to /sink. A UBF-conformant body (phase-6 lesson, no
+    // InvalidUbfBody DLQ).
     let probe = MessageBuilder::new(Path::new("/t"))
         .body(Body::Inline(json!({
             "messages": [{"origin": "user", "type": "text", "text": "hop-probe"}]
@@ -301,12 +302,12 @@ async fn mutation_add_edge_satisfying_hop_via_set_hop_is_committed() {
     // Positives Receipt (30s-Failure-Marker-Konvention).
     let received = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
         .await
-        .expect("/sink muss innerhalb von 30s ein Receipt empfangen — beweist t→c→sink-Fluss")
-        .expect("CaptureCell-Channel muss eine Nachricht liefern");
+        .expect("/sink must receive a receipt within 30s — proves the t→c→sink flow")
+        .expect("CaptureCell channel must deliver a message");
     assert_eq!(
         received.target.as_str(),
         "/sink",
-        "Receipt-Target muss /sink sein, got {}",
+        "receipt target must be /sink, got {}",
         received.target.as_str()
     );
     let body = match &received.body {
@@ -315,25 +316,25 @@ async fn mutation_add_edge_satisfying_hop_via_set_hop_is_committed() {
     };
     assert!(
         body.contains("echo from /t"),
-        "Receipt muss den /t-Echo-Turn tragen (Probe lief über /t): {body}"
+        "the receipt must carry the /t echo turn (the probe went through /t): {body}"
     );
     assert!(
         body.contains("echo from /c"),
-        "Receipt muss den /c-Echo-Turn tragen — beweist, dass der Konsument /c \
-         die Message über die neue set_hop-Edge EMPFANGEN hat: {body}"
+        "the receipt must carry the /c echo turn — proves the consumer /c RECEIVED \
+         the message over the new set_hop edge: {body}"
     );
 
-    // DLQ-Wächter NACH dem Fluss: kein Dead-Letter-Eintrag im Gutfall.
+    // DLQ guard AFTER the flow: no dead-letter entry in the good case.
     let dead = h.drain_dead_letters().await;
     assert!(dead.is_empty(), "DLQ must be empty, got {dead:?}");
     h.shutdown().await;
 }
 
-/// F1-Zwilling (Pflicht-Punkt 1, Gutfall): die K-H1-Transit-Topologie bootet
-/// mit ehrlichem Contract, und eine UNVERWANDTE Mutation committet — die
-/// post_state-Re-Validierung in `handle_mutation` läuft denselben
-/// Transit-Walk wie der Boot-Pfad (vor dem Fix hätte sie hier transit-blind
-/// rejected, obwohl die Mutation `cellA` gar nicht berührt).
+/// F1 twin (mandatory point 1, good case): the K-H1 transit topology boots with
+/// an honest contract, and an UNRELATED mutation commits — the post_state
+/// re-validation in `handle_mutation` runs the same transit walk as the boot
+/// path (before the fix it would have rejected transit-blind here, even though
+/// the mutation does not touch `cellA` at all).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_unrelated_edge_commits_with_live_transit_required_hop() {
     let td = TempDir::new().unwrap();
@@ -355,10 +356,10 @@ async fn mutation_unrelated_edge_commits_with_live_transit_required_hop() {
     h.shutdown().await;
 }
 
-/// F1-Zwilling (Negativ): add_edges, das eine key-lose Quelle IN die Hive
-/// verdrahtet, leert die Transit-Schnittmenge von `cellA`s required
-/// `hop.hmark` → pre-destruktiver Reject `edge_schema` mit 14-B-Marker
-/// (der Mutations-Pfad-Check darf nicht vakuos werden).
+/// F1 twin (negative): an add_edges that wires a key-less source INTO the hive
+/// empties the transit intersection of `cellA`'s required `hop.hmark` →
+/// pre-destructive reject `edge_schema` with the 14-B marker (the mutation-path
+/// check must not become vacuous).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_add_edge_breaking_transit_intersection_is_rejected() {
     let td = TempDir::new().unwrap();
@@ -410,7 +411,7 @@ async fn set_node_contract_acks() {
         .await
         .expect("colony inbox open");
 
-    // 30s-Failure-Marker-Konvention (robust gegen cargo-parallel-Last).
+    // 30s failure-marker convention (robust against cargo-parallel load).
     tokio::time::timeout(Duration::from_secs(30), ack_rx)
         .await
         .expect("SetNodeContract ack within 30s")

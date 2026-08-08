@@ -1,24 +1,24 @@
 //! Phase-13 Persistent-Demo (Task 13-N-1).
 //!
-//! POSITIVES RECEIPT für `cell.timeout = -1` (Persistent-Modell):
-//!   1. NotYetSpawned direkt nach Boot.
-//!   2. 1. Wake → counter=1 → Status=Awake (kein One-Shot-Despawn).
-//!   3. Lange Wartezeit (500ms) → Status BLEIBT Awake (kein Idle-Despawn).
-//!   4. 2. Msg → counter=2 ohne Re-Wake (gleiche dauerhafte Cell-Task-Instanz).
+//! POSITIVE RECEIPT for `cell.timeout = -1` (persistent model):
+//!   1. NotYetSpawned directly after boot.
+//!   2. 1st wake → counter=1 → status=Awake (no one-shot despawn).
+//!   3. A long wait (500ms) → the status STAYS Awake (no idle despawn).
+//!   4. 2nd msg → counter=2 without a re-wake (same long-lived cell-task instance).
 //!
-//! Beweis-Linie: Bootstrap-Apply (13-K-2) mapped `cell.timeout = -1` auf
+//! Proof line: the bootstrap apply (13-K-2) maps `cell.timeout = -1` to
 //! `idle_timeout = None` (`match c.cell_timeout { 0 => Some(...), _ => None }`).
-//! `cell_task_stateful` (13-M-1) hat `if cell_timeout > 0` als One-Shot-Gate
-//! — negative Werte fallen NICHT in den `> 0`-Branch. Damit ist sowohl
-//! Idle- als auch One-Shot-Despawn baulich unterbunden; der Test verifiziert
-//! das emergente Persistent-Verhalten.
+//! `cell_task_stateful` (13-M-1) has `if cell_timeout > 0` as the one-shot gate
+//! — negative values do NOT fall into the `> 0` branch. That structurally rules
+//! out both idle and one-shot despawn; the test verifies the emergent persistent
+//! behaviour.
 //!
-//! Topologie (Vorlage: `phase_13_lifecycle_demo`):
+//! Topology (modelled on `phase_13_lifecycle_demo`):
 //!   td.path()/main/config.json            (hive, root)
 //!   td.path()/main/persist/config.json    (persist_mock, cell.timeout = -1,
 //!                                          echo_to=/sink)
-//!   /sink                                 (CaptureCell, vor bootstrap
-//!                                          registriert für Anti-Cascade)
+//!   /sink                                 (CaptureCell, registered before
+//!                                          bootstrap for anti-cascade)
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg};
@@ -64,9 +64,9 @@ async fn read_registry_status(h: &ColonyHandle, path: &str) -> String {
 async fn persistent_stateful_cell_never_sleeps_after_wake() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // FS-Tree: root-hive + stateful persist_mock mit `cell.timeout = -1`
-    // (Persistent-Modell). Bootstrap-Apply mapped das auf
-    // `idle_timeout = None` (siehe 13-K-2). Output → /sink.
+    // FS tree: root hive + stateful persist_mock with `cell.timeout = -1`
+    // (persistent model). The bootstrap apply maps that to
+    // `idle_timeout = None` (see 13-K-2). Output → /sink.
     write(
         td.path(),
         "main/config.json",
@@ -108,15 +108,15 @@ async fn persistent_stateful_cell_never_sleeps_after_wake() {
     h.add_edge(Uuid::now_v7(), Path::new("/persist"), Path::new("/sink"))
         .await;
 
-    // RECEIPT 1: NotYetSpawned direkt nach Boot.
+    // RECEIPT 1: NotYetSpawned directly after boot.
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "NotYetSpawned",
         "RECEIPT 1: persistent stateful cell must boot Dormant (NotYetSpawned)"
     );
 
-    // RECEIPT 2: 1. Wake → counter=1 → Status=Awake (kein One-Shot-Despawn,
-    // weil cell_timeout = -1 NICHT in den `> 0`-Branch fällt).
+    // RECEIPT 2: 1st wake → counter=1 → status=Awake (no one-shot despawn,
+    // because cell_timeout = -1 does NOT fall into the `> 0` branch).
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
     let m1 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
@@ -131,12 +131,12 @@ async fn persistent_stateful_cell_never_sleeps_after_wake() {
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Awake",
-        "RECEIPT 2: status=Awake nach erstem Wake (kein One-Shot-Despawn)"
+        "RECEIPT 2: status=Awake after the first wake (no one-shot despawn)"
     );
 
-    // RECEIPT 3: Lange Wartezeit — persistent MUSS Awake bleiben (kein Idle-
-    // Despawn, weil idle_timeout = None → idle_fut = pending()). 500ms ist
-    // großzügig oberhalb jedes plausiblen Idle-Timers.
+    // RECEIPT 3: a long wait — a persistent cell MUST stay Awake (no idle
+    // despawn, because idle_timeout = None → idle_fut = pending()). 500ms is
+    // generously above any plausible idle timer.
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
         read_registry_status(&h, "/persist").await,
@@ -144,8 +144,8 @@ async fn persistent_stateful_cell_never_sleeps_after_wake() {
         "RECEIPT 3: persistent cell must NOT sleep after long idle"
     );
 
-    // RECEIPT 4: 2. Msg → counter=2 auf der gleichen, dauerhaft laufenden
-    // cell_task_stateful-Instanz (kein Re-Wake, kein cell.db-Resume-Pfad).
+    // RECEIPT 4: 2nd msg → counter=2 on the same, continuously running
+    // cell_task_stateful instance (no re-wake, no cell.db resume path).
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
     let m2 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
@@ -160,7 +160,7 @@ async fn persistent_stateful_cell_never_sleeps_after_wake() {
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Awake",
-        "RECEIPT 4: status=Awake bleibt nach zweiter Msg"
+        "RECEIPT 4: status=Awake persists after the second msg"
     );
 
     h.shutdown().await;

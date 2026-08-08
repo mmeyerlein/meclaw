@@ -29,17 +29,17 @@ pub mod templates;
 pub mod term_ack;
 pub mod watchdog;
 
-/// Default-Wert für die Idle-Dauer (in ms) bei stateful Cells mit
+/// Default value for the idle duration (in ms) for stateful cells with
 /// `cell.timeout: 0`. Spec: `docs/meclaw-overview.md` § "colony.json — Schema",
-/// Schlüssel `idle_timeout_default_ms`.
+/// key `idle_timeout_default_ms`.
 ///
-/// **Seit Phase-13.5 Slice-6 (A7) nur noch Seed-Quelle für
-/// [`ColonyConfig::default`]** — der einzige Konsument dieser Konstante. Alle
+/// **Since phase-13.5 slice-6 (A7) it is only the seed source for
+/// [`ColonyConfig::default`]** — the sole consumer of this constant. All
 /// Live-Spawn-Pfade (Bootstrap-apply, Mutation-Spawn, Subtree-Instanziierung,
-/// Swap-Re-Spawn, R3-Rollback) lesen den Default aus
-/// `colony_config.idle_timeout_default_ms` (gefüllt aus `colony.json`, sonst aus
-/// dieser Konstante), nie direkt aus der Konstante. Pro-Cell-Override via
-/// `cell.idle_timeout_ms` (siehe 13-B-2/3).
+/// swap re-spawn, R3 rollback) read the default from
+/// `colony_config.idle_timeout_default_ms` (filled from `colony.json`, otherwise
+/// from this constant), never directly from the constant. Per-cell override via
+/// `cell.idle_timeout_ms` (see 13-B-2/3).
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 60_000;
 
 pub use blob::{BlobError, BlobSidecar, DiskBlobStore};

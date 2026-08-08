@@ -1,14 +1,14 @@
-//! Phase-10-C: Emit-Helpers für `ProxyCell`. (1) `build_user_turn_content`
-//! konstruiert den UBF-Body für Outbound (T11). (2) `emit_inbound_error`
-//! emittiert Error-Replies für `missing_chat_id`/`send_failed`/`missing_assistant_turn`
+//! Phase-10-C: emit helpers for `ProxyCell`. (1) `build_user_turn_content`
+//! constructs the UBF body for outbound (T11). (2) `emit_inbound_error` emits
+//! error replies for `missing_chat_id`/`send_failed`/`missing_assistant_turn`
 //! (T13, W5/W6/W12).
 
 use meclaw_core::{CellOutput, JsonValue, Message, OutputSink, serde_json::json};
 
-/// Baut den UBF-Content für eine User-Source-Emission. Header pro Spec
-/// cell-types.md Z.370: `chat_id`, `user_id`, `platform: "telegram"`,
-/// optional `message_id`. Body = `messages[]` mit einem User-Turn
-/// (`origin: "user"`, `type: "text"`, `text: <user-getippt>`).
+/// Builds the UBF content for a user-source emission. Headers per spec
+/// cell-types.md l.370: `chat_id`, `user_id`, `platform: "telegram"`, optionally
+/// `message_id`. Body = `messages[]` with one user turn (`origin: "user"`,
+/// `type: "text"`, `text: <what the user typed>`).
 pub fn build_user_turn_content(
     chat_id: i64,
     user_id: Option<i64>,
@@ -32,14 +32,14 @@ pub fn build_user_turn_content(
     })
 }
 
-/// Phase-10-C T13: Error-Reply für Inbound-Fehlerpfade (W5/W6/W12, Spec
-/// cell-types.md Z.374 Commit `1dc081a`). Target = `msg.reply_to`.
-/// Phase-16 W2 (Ruling A1): bei fehlendem `reply_to` ist `/colony/dead_letters`
-/// (der READ-Endpoint) NICHT mehr das Emissions-Target — die Error-Reply läuft
-/// als normale Emission an das eigene `msg.target`; matcht keine Out-Edge,
-/// endet sie laut als `no_route` in der DLQ. Nicht-Konversations-Origin:
-/// `messages[]` ist leer — KEIN user/assistant-Turn. Die Pure-Sink-Disziplin
-/// bleibt gewahrt, weil die Error-Reply kein Konversations-Turn ist.
+/// Phase-10-C T13: error reply for the inbound failure paths (W5/W6/W12, spec
+/// cell-types.md l.374, commit `1dc081a`). Target = `msg.reply_to`.
+/// Phase-16 W2 (ruling A1): with `reply_to` absent, `/colony/dead_letters` (the
+/// READ endpoint) is NO longer the emission target — the error reply travels as a
+/// normal emission to the cell's own `msg.target`; matching no out-edge, it ends
+/// up loudly as `no_route` in the DLQ. Non-conversational origin: `messages[]` is
+/// empty — NO user/assistant turn. The pure-sink discipline is preserved because
+/// the error reply is not a conversation turn.
 pub async fn emit_inbound_error(sink: &OutputSink, msg: &Message, error_code: &str, detail: &str) {
     let target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
     let content = json!({

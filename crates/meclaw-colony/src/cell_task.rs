@@ -341,7 +341,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                 }
                 if cell_timeout > 0 {
                     // Phase-13 13-M-1: One-Shot — despawn after this message.
-                    // peace + Sleep-Send analog zum idle-arm.
+                    // peace + sleep send analogous to the idle arm.
                     if let Some(p) = peace_tx.take() {
                         let _ = p.send(());
                     }
@@ -1613,22 +1613,22 @@ mod tests {
     }
 
     // Cap-Substrat-Invariante via deterministischem Rendezvous (umgebaut 2026-05-22,
-    // Pre-Phase-9-Aufräumen). Zwei async-aware counting-Semaphoren ersetzen die
-    // ursprüngliche 5s-busy-wait-Polling-Schleife:
+    // pre-phase-9 cleanup). Two async-aware counting semaphores replace the
+    // original 5s busy-wait polling loop:
     //
-    // 1. `arrival`-Rendezvous: jeder Worker macht `add_permits(1)` NACH fetch_add+fetch_max.
-    //    Test wartet via `acquire_many(2)`. SeqCst-Ordering garantiert: wenn der Test
-    //    durchkommt, sind zwei Worker past fetch_add → max_observed >= 2.
-    //    3 Messages bei max_concurrency=2 testen die Cap-Upper-Bound: ein fälschlich
-    //    nebenläufig zugelassener 3. Worker hätte vor dem Rendezvous-Return fetch_add
+    // 1. `arrival` rendezvous: every worker does `add_permits(1)` AFTER
+    //    fetch_add+fetch_max. The test waits via `acquire_many(2)`. SeqCst ordering
+    //    guarantees: if the test gets through, two workers are past fetch_add →
+    //    max_observed >= 2. 3 messages at max_concurrency=2 test the cap's upper
+    //    bound: a wrongly admitted concurrent 3rd worker would have done fetch_add
     //    gemacht → max_observed==3 → assert failt.
     //
-    // 2. `completion`-Rendezvous: jeder Worker macht `add_permits(1)` NACH fetch_sub.
-    //    Test wartet via `acquire_many(3)`. Notwendig, weil Worker-Tasks im Dispatcher
-    //    `tokio::spawn`'d und detached sind (kein JoinHandle, ephemeral by design —
-    //    siehe Modul-Doc oben). `join.await` joint NUR den Dispatcher, nicht die
-    //    Worker. Ohne diesen Sync würde der Drain-Assert `concurrent_now==0` mit
-    //    einem späten Worker (der noch nicht fetch_sub gemacht hat) racen.
+    // 2. `completion` rendezvous: every worker does `add_permits(1)` AFTER
+    //    fetch_sub. The test waits via `acquire_many(3)`. Necessary because worker
+    //    tasks are `tokio::spawn`'d by the dispatcher and detached (no JoinHandle,
+    //    ephemeral by design — see the module docs above). `join.await` joins ONLY
+    //    the dispatcher, not the workers. Without this sync the drain assert
+    //    `concurrent_now==0` would race a late worker that has not done fetch_sub yet.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn stateless_dispatcher_caps_concurrency_at_max_and_processes_all() {
         use crate::stateless_cell::StatelessCell;
@@ -1691,9 +1691,9 @@ mod tests {
             None,
         ));
 
-        // 3 Messages = max_concurrency + 1. Mit korrektem Cap blocken nur die
-        // ersten 2 Worker am `release`, der 3. wartet im Dispatcher-Semaphore
-        // (un-spawned, kein fetch_add).
+        // 3 messages = max_concurrency + 1. With a correct cap only the first 2
+        // workers block on `release`, the 3rd waits in the dispatcher semaphore
+        // (un-spawned, no fetch_add).
         for _ in 0..3 {
             in_tx
                 .send(meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/x")).build())
@@ -1701,8 +1701,8 @@ mod tests {
                 .unwrap();
         }
 
-        // Rendezvous 1 — Arrival: returnt sobald zwei Worker past fetch_add sind.
-        // 5s-Timeout ist Failure-Marker, keine Toleranz.
+        // Rendezvous 1 — arrival: returns as soon as two workers are past fetch_add.
+        // The 5s timeout is a failure marker, not a tolerance.
         let _arrival_permit =
             tokio::time::timeout(std::time::Duration::from_secs(5), arrival.acquire_many(2))
                 .await
@@ -1722,9 +1722,10 @@ mod tests {
         drop(in_tx);
         join.await.unwrap();
 
-        // Rendezvous 2 — Completion: returnt sobald alle 3 Worker past fetch_sub sind.
-        // Detached-Task-Race-Frei: ohne diesen Sync würde der Drain-Assert mit einem
-        // späten Worker racen, der nach Dispatcher-Exit noch fetch_sub abschließen muss.
+        // Rendezvous 2 — completion: returns as soon as all 3 workers are past
+        // fetch_sub. Detached-task race-free: without this sync the drain assert would
+        // race a late worker that still has to finish fetch_sub after the dispatcher
+        // exits.
         let _completion_permit = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             completion.acquire_many(3),
@@ -1961,9 +1962,9 @@ mod tests {
         );
     }
 
-    /// Verhaltensneutralitäts-Beweis (phase-10a.0): Cells, die via `OutputSink`
-    /// emittieren (Stateful/Stateless), liefern weiter `Some(input_msg.id)` als
-    /// `parent_message_id`. `None` gibt es nur für event-originated Emissions via
+    /// Behaviour-neutrality proof (phase-10a.0): cells that emit via `OutputSink`
+    /// (stateful/stateless) still deliver `Some(input_msg.id)` as
+    /// `parent_message_id`. `None` only occurs for event-originated emissions via
     /// `OriginSink` (Phase-10-A).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn cell_emission_via_output_sink_keeps_parent_as_some() {
@@ -2010,7 +2011,7 @@ mod tests {
         assert_eq!(
             em.parent_message_id,
             Some(input_id),
-            "OutputSink::push lifts parent to Some — verhaltensneutral für non-source cells"
+            "OutputSink::push lifts parent to Some — behavior-neutral for non-source cells"
         );
     }
 

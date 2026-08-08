@@ -1,14 +1,14 @@
-//! Phase-12-B T13: 400 Bad Request mapping fuer malformed Query-Parameter
-//! (UUIDs, Integers). Spec Z.1660: 422 bleibt Mutation-Reject-Write-only.
-//! Read-Filter-Fehler sind 400.
+//! Phase-12-B T13: 400 Bad Request mapping for malformed query parameters
+//! (UUIDs, integers). Spec l.1660: 422 stays mutation-reject-write-only.
+//! Read filter errors are 400.
 //!
-//! Drei Tests:
-//! 1. `?trace_id=not-a-uuid` → 400 mit JSON-Error-Body `{error: "bad_query"}`
-//!    (custom Mapping in `handlers/trace.rs`, T8.6).
-//! 2. `?correlation_id=also-not-a-uuid` → analog.
-//! 3. `?limit=not-a-number` → 400 (free win von axum's `Query<T>`-Extractor;
-//!    Body-Shape ist axum-default Text, nicht unser JSON — fuer T13's Zweck
-//!    akzeptabel, in Phase-14-Backlog dokumentiert).
+//! Three tests:
+//! 1. `?trace_id=not-a-uuid` → 400 with the JSON error body `{error: "bad_query"}`
+//!    (custom mapping in `handlers/trace.rs`, T8.6).
+//! 2. `?correlation_id=also-not-a-uuid` → analogous.
+//! 3. `?limit=not-a-number` → 400 (a free win from axum's `Query<T>` extractor;
+//!    the body shape is axum's default text, not our JSON — acceptable for T13's
+//!    purpose, documented in the phase-14 backlog).
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -86,9 +86,9 @@ async fn trace_invalid_correlation_id_returns_400_bad_query() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn registry_invalid_limit_returns_400_bad_query() {
-    // axum's `Query<T>`-Extractor returnt 400 bei integer-parse-fail fuer
-    // `limit=not-a-number`. Body-Format ist axum-default (Text), nicht unser
-    // JSON-Shape — fuer T13's Zweck ist die 400 das wesentliche Signal.
+    // axum's `Query<T>` extractor returns 400 on an integer parse failure for
+    // `limit=not-a-number`. The body format is axum's default (text), not our
+    // JSON shape — for T13's purpose the 400 is the essential signal.
     let test_h = meclaw_testing::ColonyHandle::new();
     let (app, _blob_td) = app_from(&test_h);
 

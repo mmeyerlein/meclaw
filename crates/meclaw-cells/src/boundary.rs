@@ -1,11 +1,10 @@
-//! Phase-7 Slice 2 — geteilte Security-Boundary-Resolver für Tool-Cells.
+//! Phase-7 slice 2 — shared security-boundary resolvers for tool cells.
 //!
-//! Aus FileCell extrahiert (Slice 1) und für EditCell wiederverwendet.
+//! Extracted from FileCell (slice 1) and reused for EditCell.
 //! Freie Funktionen + `ResolveErr` + `resolve_error_code`. FileCells
 //! `resolve_existing`/`resolve_write_parent`-Methoden delegieren intern
-//! an diese freien Funktionen — Signatur unverändert, Verhalten
-//! byte-für-byte identisch (FileCells T4-Security-Tests sind der
-//! Regressions-Wächter).
+//! to these free functions — signature unchanged, behaviour byte-for-byte
+//! identical (FileCell's T4 security tests are the regression guard).
 
 use crate::tool::{ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_NOT_FOUND, ERR_PATH_OUTSIDE_BOUNDARY};
 use std::path::{Path as StdPath, PathBuf};

@@ -1,20 +1,21 @@
-//! Phase-13 Step 13-L-1 Mutation-Spawn-Switch:
-//! stateful Cells, die via `ColonyMsg::Mutation { add_nodes }` instanziiert
-//! werden, landen analog Bootstrap als `SpawnedCellKind::Dormant` →
-//! `lifecycle_status == "NotYetSpawned"` direkt nach `MutationOutcome::Committed`.
+//! Phase-13 step 13-L-1 mutation-spawn switch:
+//! stateful cells instantiated via `ColonyMsg::Mutation { add_nodes }` land, as
+//! on the bootstrap path, as `SpawnedCellKind::Dormant` →
+//! `lifecycle_status == "NotYetSpawned"` directly after
+//! `MutationOutcome::Committed`.
 //!
-//! Der Switch wurde in 13-K-2 bereits in `colony.rs::handle_mutation`
-//! verdrahtet (Match auf `SpawnedCellKind`); dieser Test ist der Nachweis,
-//! dass der Mutation-Spawn-Pfad das Verhalten korrekt liefert.
+//! The switch was already wired in 13-K-2 in `colony.rs::handle_mutation`
+//! (a match on `SpawnedCellKind`); this test is the proof that the
+//! mutation-spawn path delivers the behaviour correctly.
 //!
-//! **Phase-13.5-Update (Task 7, A2)**: die frühere Hardcode-Limitation
-//! (`idle_timeout = DEFAULT_IDLE_TIMEOUT_MS`, `cell_timeout = 0`) ist behoben —
-//! `StagedDir` trägt jetzt `cell_timeout` + `idle_timeout_ms` aus der
-//! substituierten `config.json`, und der Mutation-Spawn nutzt dieselbe
-//! `match`-Mapping-Logik wie `bootstrap_apply.rs`. Dieser Test deckt nur den
-//! Default-Fall ab (Template ohne `cell.timeout` → 0 → Idle-Default-Dormant);
-//! der `cell.timeout = -1`-Pfad ist in
-//! `phase_13_5_lifecycle_3b_reconnect.rs` (Demo h) abgedeckt.
+//! **Phase-13.5 update (task 7, A2)**: the former hardcode limitation
+//! (`idle_timeout = DEFAULT_IDLE_TIMEOUT_MS`, `cell_timeout = 0`) is fixed —
+//! `StagedDir` now carries `cell_timeout` + `idle_timeout_ms` from the
+//! substituted `config.json`, and the mutation spawn uses the same `match`
+//! mapping logic as `bootstrap_apply.rs`. This test covers only the default
+//! case (a template without `cell.timeout` → 0 → idle-default dormant); the
+//! `cell.timeout = -1` path is covered in
+//! `phase_13_5_lifecycle_3b_reconnect.rs` (demo h).
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
@@ -63,33 +64,33 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
     ack_rx.await.unwrap();
 }
 
-/// Phase-13-L-1: Stateful Cells via `add_nodes`-Mutation müssen direkt nach
-/// `MutationOutcome::Committed` als `NotYetSpawned` in der Registry stehen.
+/// Phase-13-L-1: stateful cells created via an `add_nodes` mutation must appear
+/// in the registry as `NotYetSpawned` directly after `MutationOutcome::Committed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutation_add_nodes_stateful_registers_dormant() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // FS-Tree: NUR root-hive. Die /persist-Cell entsteht erst durch die Mutation.
+    // FS tree: ONLY the root hive. The /persist cell only comes into being via the mutation.
     write(
         td.path(),
         "main/config.json",
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
     );
 
-    // Template `persist_mock` für add_nodes(template=…).
+    // Template `persist_mock` for add_nodes(template=…).
     let tpl_dir = td.path().join("templates").join("persist_mock");
     std::fs::create_dir_all(&tpl_dir).unwrap();
     std::fs::write(tpl_dir.join("template.json"), r#"{"name":"persist_mock"}"#).unwrap();
-    // High idle_timeout, damit die Cell während des Assertion-Fensters nicht
-    // von alleine in Idle-Sleep wandert. `terminal: true` → Cell emittiert
-    // keine Outputs (Anti-Cascade, kein /sink nötig).
+    // A high idle_timeout so the cell does not drift into idle sleep on its own
+    // during the assertion window. `terminal: true` → the cell emits no outputs
+    // (anti-cascade, no /sink needed).
     std::fs::write(
         tpl_dir.join("config.json"),
         r#"{"cell":{"type":"persist_mock","idle_timeout_ms":60000},"params":{"terminal":true},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 
-    // Colony hochfahren mit PersistCellFactory unter "persist_mock".
+    // Boot the colony with the PersistCellFactory under "persist_mock".
     let spawn_count = Arc::new(AtomicU32::new(0));
     let persist_factory: Arc<dyn CellFactory> = Arc::new(PersistCellFactory {
         spawn_count: spawn_count.clone(),
@@ -102,7 +103,7 @@ async fn mutation_add_nodes_stateful_registers_dormant() {
     // Templates-Scan.
     rescan_templates(&h, td.path().join("templates")).await;
 
-    // Mutation: add_nodes(name="added", template="persist_mock") unter scope "/".
+    // Mutation: add_nodes(name="added", template="persist_mock") under scope "/".
     let outcome = send_mutation(
         &h,
         meclaw_core::serde_json::json!({
@@ -118,10 +119,10 @@ async fn mutation_add_nodes_stateful_registers_dormant() {
     .await;
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
-        "Mutation muss Committed sein; got {outcome:?}"
+        "mutation must be Committed; got {outcome:?}"
     );
 
-    // ReadRegistry: /added muss als NotYetSpawned (Dormant) registriert sein.
+    // ReadRegistry: /added must be registered as NotYetSpawned (dormant).
     let (ack_tx, ack_rx) = oneshot::channel::<ReadRegistryReply>();
     h.inbox_tx
         .send(ColonyMsg::ReadRegistry {

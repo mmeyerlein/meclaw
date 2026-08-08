@@ -1,4 +1,4 @@
-//! Templates-Subsystem (Phase 11). Spec: docs/meclaw-overview.md § Template-System.
+//! Templates subsystem (phase 11). Spec: docs/meclaw-overview.md § Template system.
 
 pub mod registry;
 pub mod scanner;
@@ -14,12 +14,12 @@ use meclaw_core::Uuid;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Inkrementiert `queue_depth` + sendet `op` an den Writer-Thread (bounded).
+/// Increments `queue_depth` + sends `op` to the writer thread (bounded).
 ///
-/// Phase-12-A Helper: nutzt den geklonten Writer-Sender + queue_depth-Arc
-/// (beide Send+Sync) statt `&ColonyDb` über `.await` zu halten — `ColonyDb`
-/// enthält `rusqlite::Connection` (!Sync) → `&ColonyDb` ist !Send → würde
-/// das umgebende `colony_task`-Future !Send machen und `tokio::spawn` brechen.
+/// Phase-12-A helper: uses the cloned writer sender + the queue_depth Arc
+/// (both Send+Sync) instead of holding `&ColonyDb` across `.await` — `ColonyDb`
+/// contains a `rusqlite::Connection` (!Sync) → `&ColonyDb` is !Send → it would
+/// make the surrounding `colony_task` future !Send and break `tokio::spawn`.
 async fn send_op_via(
     writer_tx: &tokio::sync::mpsc::Sender<ColonyWriteOp>,
     queue_depth: &Arc<AtomicI64>,
@@ -33,8 +33,8 @@ async fn send_op_via(
     writer_tx.send(op).await.expect("writer thread dead");
 }
 
-/// Async-Kern von `apply_scan_result`: nimmt Send+Sync-Channels statt
-/// `&ColonyDb` → kein !Send-Capture im `colony_task`-Future.
+/// Async core of `apply_scan_result`: takes Send+Sync channels instead of
+/// `&ColonyDb` → no !Send capture in the `colony_task` future.
 async fn apply_scan_result_inner(
     scanned: Vec<scanner::ScannedTemplate>,
     existing: Vec<TemplateRow>,
@@ -88,21 +88,21 @@ async fn apply_scan_result_inner(
 
 /// Walk `templates_root`, persist findings, delete entries whose directory disappeared.
 ///
-/// Idempotent: zweimaliger Aufruf mit demselben Filesystem-Stand ergibt denselben DB-Stand.
+/// Idempotent: calling it twice against the same filesystem state yields the same DB state.
 /// Seen entries are upserted; entries whose (name, version) are no longer on disk are removed
-/// (Lazy-Remove Pfad 1, overview Z.1163).
+/// (lazy-remove path 1, overview Z.1163).
 ///
-/// Phase-12-A: returns `impl Future + Send` statt `async fn`, damit der
-/// `&ColonyDb`-Borrow nicht ins Future captured wird — er lebt nur im
-/// sync-Vorlauf-Block. Das resultierende Future hält ausschließlich
-/// Send-Captures (Channel-Clone + Arc-Clone + Owned-Daten); damit bleibt
-/// das umgebende `colony_task`-Future Send (rusqlite::Connection ist !Sync).
+/// Phase-12-A: returns `impl Future + Send` instead of `async fn`, so that the
+/// `&ColonyDb` borrow is not captured into the future — it only lives in the
+/// synchronous prologue block. The resulting future holds exclusively Send
+/// captures (channel clone + Arc clone + owned data); that keeps the
+/// surrounding `colony_task` future Send (rusqlite::Connection is !Sync).
 pub fn apply_scan_result<'a>(
     templates_root: &'a std::path::Path,
     db: &ColonyDb,
     now: i64,
 ) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + 'a {
-    // Sync-Vorlauf: scannen + db-Read; nichts davon übersteht das Funktions-Ende.
+    // Synchronous prologue: scan + db read; none of it outlives the function end.
     let scan_result = scanner::scan_templates_dir(templates_root);
     let existing = db.read_templates().unwrap_or_default();
     let writer_tx = db.writer_tx.clone();
@@ -114,14 +114,14 @@ pub fn apply_scan_result<'a>(
     }
 }
 
-/// Startup-Algorithmus Schritt 3 (overview Z.1368): aus DB laden; leer → auto-scan;
-/// `force_rescan=true` → immer scannen.
+/// Startup algorithm step 3 (overview Z.1368): load from DB; empty → auto-scan;
+/// `force_rescan=true` → always scan.
 ///
 /// Called after `ColonyDb::open`, before bootstrap walk. Idempotent.
 ///
-/// Phase-12-A: `impl Future + Send`-Form analog `apply_scan_result` — der
-/// `&ColonyDb`-Borrow überlebt das sync-Vorlauf-Scope nicht, das returned
-/// Future ist Send.
+/// Phase-12-A: `impl Future + Send` form analogous to `apply_scan_result` — the
+/// `&ColonyDb` borrow does not outlive the synchronous prologue scope, so the
+/// returned future is Send.
 pub fn boot_load_or_scan<'a>(
     templates_root: &'a std::path::Path,
     db: &ColonyDb,
@@ -201,7 +201,7 @@ mod sync_tests {
             .unwrap();
         assert!(
             db.read_templates().unwrap().is_empty(),
-            "ghost-Eintrag muss gelöscht sein"
+            "the ghost entry must be deleted"
         );
     }
 }

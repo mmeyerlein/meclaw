@@ -1,5 +1,5 @@
-//! Phase-10 Slice C: `proxy`-Cell. Long-Running Doppel-Task auf dem
-//! 10-A-Substrat. Telegram-Bridge via Long-Poll (W2). Siehe
+//! Phase-10 slice C: the `proxy` cell. A long-running double task on the 10-A
+//! substrate. Telegram bridge via long poll (W2). See
 //! `docs/cell-types.md` § `proxy` (Z.348–376) inkl.
 //! § „Inbound-Fehlerpfade" (Z.374, Commit `1dc081a`).
 

@@ -5,7 +5,7 @@
 //!
 //! Phase 13.5-A1: provides `parse_condition`, `parse_modifier`,
 //! `evaluate_condition`. Modifier-Eval (`apply_modifier_set` / `_delete`)
-//! kommt in T7/T8.
+//! arrives in T7/T8.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -400,9 +400,9 @@ mod tests {
         assert!(out.hop.get("keep").is_some());
     }
 
-    /// Phase 13.5-A1 T9 (F6-PIN): source string von `CompiledCondition`
-    /// bleibt für `remove_edges`/`swap_nodes` match-pattern-equality erhalten
-    /// (string-equality, nicht semantic).
+    /// Phase 13.5-A1 T9 (F6 pin): the source string of `CompiledCondition` is
+    /// preserved for `remove_edges`/`swap_nodes` match-pattern equality
+    /// (string equality, not semantic).
     #[test]
     fn compiled_condition_preserves_source_for_match_pattern_f6() {
         let c = parse_condition("hop.x == 'y'").unwrap();
@@ -412,8 +412,8 @@ mod tests {
         );
     }
 
-    /// Phase 13.5-A1 T9 (F6-PIN): source `ModifierSpec` von `CompiledModifier`
-    /// bleibt für match-pattern-equality erhalten (set-expr-strings + delete-keys).
+    /// Phase 13.5-A1 T9 (F6 pin): the source `ModifierSpec` of `CompiledModifier`
+    /// is preserved for match-pattern equality (set-expr strings + delete keys).
     #[test]
     fn compiled_modifier_preserves_source_for_match_pattern_f6() {
         let mut spec = ModifierSpec::default();

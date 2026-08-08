@@ -1,7 +1,7 @@
 //! Phase-13.5 Lifecycle-3a Resume/Reconnect (G4): `add_nodes` at an already
 //! existing path is a Reconnect/Resume, not an instantiation.
 //!
-//! Spec § Authority „Instanziierung & cell_id-Stabilität" (overview Z.170-180):
+//! Spec § Authority "Instantiation and cell_id stability" (overview Z.170-180):
 //! instantiation happens **iff** no cell-directory exists at the target path
 //! (fresh cell_id). If the directory exists → Reconnect/Resume: NO new cell_id,
 //! `config.json` untouched, `cell.db` resumed (M1).
@@ -211,7 +211,7 @@ fn write_template_only(td: &std::path::Path) {
     .unwrap();
 }
 
-/// Apply-Resume (Schritt C): a second `add_nodes` at an existing path whose cell
+/// Apply resume (step C): a second `add_nodes` at an existing path whose cell
 /// is NOT running (NotYetSpawned) with a populated `cell.db` → mutation
 /// **committed**, `cell.db`-state survives (Resume), `cell_id` unchanged,
 /// `config.json` byte-identical. The existing registry entry stays; no rename

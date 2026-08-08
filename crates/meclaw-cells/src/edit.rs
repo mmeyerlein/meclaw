@@ -1,4 +1,4 @@
-//! Phase-7 EditCell. Detail in Step 3 dieses Tasks.
+//! Phase-7 EditCell. Detail in step 3 of this task.
 
 use std::path::PathBuf;
 
@@ -311,7 +311,7 @@ fn run_edit_op(base: &std::path::Path, op: EditOp) -> OpOutcome {
                 Ok(s) => s,
                 Err(e) => return map_io_err(e),
             };
-            // split_inclusive behält Newlines; insert_content owned für Borrow-Safety
+            // split_inclusive keeps newlines; insert_content owned for borrow safety
             let mut lines: Vec<&str> = file_content.split_inclusive('\n').collect();
             let line_idx = (line as usize).saturating_sub(1);
             if line_idx > lines.len() {
@@ -583,7 +583,7 @@ mod tests {
         );
     }
 
-    // ---- U11: validate ≡ spawn parse path (Existenz/is_dir auch in validate) ----
+    // ---- U11: validate ≡ spawn parse path (existence/is_dir checked in validate too) ----
 
     #[test]
     fn factory_validate_params_rejects_nonexistent_base_path() {
@@ -654,10 +654,10 @@ mod tests {
         };
         sender.send(msg).await.unwrap();
 
-        // Deterministisches Rendezvous: recv().await returnt sobald der Worker
-        // die Emission in out_tx schreibt. Kein zeitbasierter Failure-Marker —
-        // Channel-Close (None) würde den Test mit unwrap() explodieren lassen,
-        // was ein echter Failure wäre, kein Flake.
+        // Deterministic rendezvous: recv().await returns as soon as the worker
+        // writes the emission into out_tx. No time-based failure marker — a
+        // channel close (None) would blow the test up on unwrap(), which would be
+        // a real failure, not a flake.
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.target, Path::new("/caller"));
         assert_eq!(em.content["header"]["operation"], "find_replace");
@@ -775,7 +775,7 @@ mod tests {
         .await;
         assert_eq!(em.content["header"]["error_code"], "invalid_input");
 
-        // FIND_REPLACE: nicht-existent → ERR_NOT_FOUND
+        // FIND_REPLACE: non-existent → ERR_NOT_FOUND
         let em = invoke(
             &cell,
             json!({"op":"find_replace","path":"nope.txt","find":"a","replace":"b"}),

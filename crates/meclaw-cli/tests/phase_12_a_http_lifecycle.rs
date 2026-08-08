@@ -9,9 +9,9 @@ use std::net::SocketAddr;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn meclaw_api_starts_serves_health_and_shuts_down_on_signal() {
     let td = tempfile::TempDir::new().unwrap();
-    // Ab T12 spawnt `run_with_hooks` eine echte Colony und ruft
-    // `bootstrap_from_filesystem` — das verlangt ein Root-Cell-Directory mit
-    // `config.json`. Minimal: ein leeres Hive (registriert keine Cells).
+    // Since T12 `run_with_hooks` spawns a real colony and calls
+    // `bootstrap_from_filesystem` — that requires a root cell directory with a
+    // `config.json`. Minimal: an empty hive (registers no cells).
     let main_dir = td.path().join("main");
     std::fs::create_dir_all(&main_dir).unwrap();
     std::fs::write(main_dir.join("config.json"), br#"{"cell":{"type":"hive"}}"#).unwrap();
@@ -49,10 +49,10 @@ async fn meclaw_api_starts_serves_health_and_shuts_down_on_signal() {
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
 
-    // Phase 12-A asserted 404 auf /colony/registry. Ab Phase 12-B T8.1 ist die
-    // Route registriert (200) — der Lifecycle-Test soll nur beweisen, dass
-    // ungelistete Pfade 404 liefern; daher hier auf einen wirklich unbekannten
-    // Pfad umgestellt.
+    // Phase 12-A asserted 404 on /colony/registry. Since phase 12-B T8.1 the
+    // route is registered (200) — the lifecycle test should only prove that
+    // unlisted paths return 404, so it was switched to a genuinely unknown
+    // path here.
     let unknown = client
         .get(format!("http://{actual_addr}/does-not-exist"))
         .send()

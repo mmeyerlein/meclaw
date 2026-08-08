@@ -1,17 +1,17 @@
 //! Phase-12-B T9: POST /colony/mutations with 200/422 status code mapping.
 //! Full MutationOutcome::Rejected detail stays in the `mutation` reply slot
-//! (spec Z.1660).
+//! (spec l.1660).
 //!
-//! Pattern wie phase_12_b_routes.rs: meclaw_testing::ColonyHandle treibt eine
-//! echte Colony-Task, wir wrappen deren inbox in einen meclaw_api::ColonyHandle
-//! und feuern HTTP-Requests gegen den vollen Router.
+//! Same pattern as phase_12_b_routes.rs: meclaw_testing::ColonyHandle drives a
+//! real colony task, we wrap its inbox in a meclaw_api::ColonyHandle and fire
+//! HTTP requests at the full router.
 //!
-//! Mutation-Payload-Schema (kanonisch, siehe handle_mutation in colony.rs):
+//! Mutation payload schema (canonical, see handle_mutation in colony.rs):
 //! `{ "scope": "/", "ctx": {}, "diff": { "add_nodes": [...] } }`.
-//! Test 1 (200): valides add_nodes via "echo"-Template, das ColonyHandle::new_with_echo
-//! plus eines on-disk Template-Verzeichnisses + RescanTemplates registriert.
-//! Test 2 (422): unbekanntes Template → TemplateMissing-Reject → 422 mit
-//! voller `mutation`-Detail (outcome/id/error_code/details).
+//! Test 1 (200): a valid add_nodes via the "echo" template, registered by
+//! ColonyHandle::new_with_echo plus an on-disk template directory + RescanTemplates.
+//! Test 2 (422): unknown template → TemplateMissing reject → 422 with the full
+//! `mutation` detail (outcome/id/error_code/details).
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -20,8 +20,8 @@ use tower::ServiceExt;
 
 mod common;
 
-/// Helper: legt ein Template-Verzeichnis fuer `name`/`cell_type` an und laedt es
-/// via `RescanTemplates` in die Colony-Registry. Spiegelt das Pattern aus
+/// Helper: creates a template directory for `name`/`cell_type` and loads it into
+/// the colony registry via `RescanTemplates`. Mirrors the pattern from
 /// `crates/meclaw-colony/tests/phase_6_demo.rs`.
 async fn setup_template(h: &meclaw_testing::ColonyHandle, name: &str, cell_type: &str) {
     let root = h.tempdir_path();
@@ -60,9 +60,9 @@ async fn post_valid_mutation_returns_200_with_committed_slot() {
     let app =
         meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
-    // `override_params.echo_to` ist Pflicht fuer EchoCell (sonst spawn-Reject).
-    // Wir setzen einen plausiblen Pfad — die Cell wird nicht wirklich gepingt,
-    // wir wollen nur Committed beobachten.
+    // `override_params.echo_to` is mandatory for EchoCell (otherwise spawn reject).
+    // We set a plausible path — the cell is never actually pinged, we only want
+    // to observe Committed.
     let body_json = serde_json::json!({
         "scope": "/",
         "ctx": {},
@@ -98,8 +98,8 @@ async fn post_valid_mutation_returns_200_with_committed_slot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn post_invalid_mutation_returns_422_with_rejected_detail() {
-    // Kein Template-Setup: das Template-Lookup in handle_mutation rejected
-    // sofort mit TemplateMissing.
+    // No template setup: the template lookup in handle_mutation rejects
+    // immediately with TemplateMissing.
     let test_h = meclaw_testing::ColonyHandle::new();
     let api_colony = Arc::new(meclaw_api::ColonyHandle {
         inbox: test_h.inbox_tx.clone(),

@@ -5,7 +5,7 @@ use meclaw_testing::ColonyHandle;
 use meclaw_testing::mocks::EchoMockCell;
 use meclaw_testing::wait::wait_for_message_log_count;
 
-/// T34: Outputs-Arm-Hop muss em.sender_path tragen, NICHT @external.
+/// T34: the outputs-arm hop must carry em.sender_path, NOT @external.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t34_outputs_arm_logs_with_sender_path_not_external() {
     let h = ColonyHandle::new();
@@ -34,11 +34,11 @@ async fn t34_outputs_arm_logs_with_sender_path_not_external() {
         .unwrap();
     assert_eq!(
         from_to_b, "/a",
-        "Outputs-Arm-Hop muss em.sender_path tragen, NICHT @external"
+        "the outputs-arm hop must carry em.sender_path, NOT @external"
     );
 }
 
-/// T35: in 2-Hop-Trace genau 1 @external-Row (die Source-Message).
+/// T35: in a 2-hop trace exactly 1 @external row (the source message).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t35_at_external_appears_only_for_parent_null_messages() {
     let h = ColonyHandle::new();
@@ -71,7 +71,7 @@ async fn t35_at_external_appears_only_for_parent_null_messages() {
     );
 }
 
-/// T36: 3-Hop-Trace via CTE-Replay-Logik. Total=3, eine NULL-Root, keine Orphans.
+/// T36: 3-hop trace via the CTE replay logic. Total=3, one NULL root, no orphans.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t36_cte_replay_returns_full_chain_no_orphan_one_null_root() {
     let h = ColonyHandle::new();
@@ -131,7 +131,7 @@ async fn t36_cte_replay_returns_full_chain_no_orphan_one_null_root() {
     assert_eq!(orphans, 0, "no orphan hops in trace chain");
 }
 
-/// T31: nach Panic+Restart sieht Cell den persistierten Snapshot, NICHT Bootstrap.
+/// T31: after panic+restart the cell sees the persisted snapshot, NOT bootstrap.
 /// panic_after=3, 4 Sends, assert counter==4.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t31_cell_sees_last_persisted_state_after_restart_not_bootstrap() {
@@ -178,7 +178,7 @@ async fn t31_cell_sees_last_persisted_state_after_restart_not_bootstrap() {
     // msg2: counter=2, snap, no panic.
     h.send(MessageBuilder::new(Path::new("/a")).build()).await;
     wait_for_cell_db_value(&cell_dir, "counter", "2", std::time::Duration::from_secs(5)).await;
-    // msg3: counter=3, snap(3) — Pre-Panic-Counter persistiert. Dann panic (kein Output).
+    // msg3: counter=3, snap(3) — pre-panic counter persisted. Then panic (no output).
     h.send(MessageBuilder::new(Path::new("/a")).build()).await;
     wait_for_cell_db_value(&cell_dir, "counter", "3", std::time::Duration::from_secs(5)).await;
     // Supervisor restart → spawn_count == 2.

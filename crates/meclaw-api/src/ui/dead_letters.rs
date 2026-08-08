@@ -1,9 +1,8 @@
 //! GET /ui/dead_letters — Phase 12-D T24.
 //!
-//! Pure-Read der in-memory Dead-Letter-Queue via
-//! `ColonyMsg::ReadDeadLetters`. Render als HTML-Tabelle mit
-//! `error_code` + Pfaden. Kein Drain-Knopf (Mutation-Forms sind
-//! per Anti-Scope verboten).
+//! Pure read of the in-memory dead-letter queue via
+//! `ColonyMsg::ReadDeadLetters`. Rendered as an HTML table with `error_code` +
+//! paths. No drain button (mutation forms are forbidden by the anti-scope).
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
@@ -18,12 +17,12 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// Query-Params fuer `/ui/dead_letters`.
+/// Query params for `/ui/dead_letters`.
 #[derive(Debug, Deserialize, Default)]
 pub struct DeadLettersUiQuery {
-    /// Filter auf `error_code`.
+    /// Filter on `error_code`.
     pub error_code: Option<String>,
-    /// Hard-Cap (Default 100, Max 1000).
+    /// Hard cap (default 100, max 1000).
     pub limit: Option<usize>,
 }
 

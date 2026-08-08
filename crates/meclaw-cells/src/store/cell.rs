@@ -18,7 +18,7 @@ use meclaw_core::{Body, CellOutput, Message, OutputSink, Path};
 pub struct StoreCell {
     /// Live effective params (β). Held so a runtime `params`-update message can
     /// merge over them ([`crate::params_overlay::apply_update`]). The only
-    /// mutable param is `query_timeout_ms` (Weg C, applied live to the `DbConn`);
+    /// mutable param is `query_timeout_ms` (path C, applied live to the `DbConn`);
     /// `schema` is immutable. When `query_timeout_ms` is set, ops run via
     /// `DbConn::call_with_timeout`; on interrupt → Error-Message with
     /// `finish_reason:"error"`, `error_code:"query_timeout"`.
@@ -142,7 +142,7 @@ impl StatefulCell for StoreCell {
             let started = std::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
-            // β: params-update slot (config.md § Zugriff Z.20), handled FIRST and
+            // β: params-update slot (config.md § Access l.20), handled FIRST and
             // strictly. The `params` block is merged into `self.params` + persisted
             // to cell.db, THEN any tool_call runs with the updated params. A
             // params-only message persists and returns silently. All-or-nothing:
@@ -184,7 +184,7 @@ impl StatefulCell for StoreCell {
                             .await;
                             return;
                         }
-                        // Live apply: self.params + DbConn query-timeout (Weg C,
+                        // Live apply: self.params + DbConn query timeout (path C,
                         // sofort-live — the next op already uses the new value).
                         self.params = new_params;
                         db.set_query_timeout(self.query_timeout());
@@ -328,7 +328,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn params_update_query_timeout_persisted_and_live() {
-        // Weg C sofort-live: a params-update sets query_timeout_ms; it is persisted
+        // Path C, immediately live: a params update sets query_timeout_ms; it is persisted
         // to cell.db AND immediately applied to the live DbConn (positive receipt:
         // db.query_timeout() reflects the new value without any wake/respawn — and
         // db_conn.rs::set_query_timeout_takes_effect_on_next_call proves that live
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(
             db.query_timeout(),
             Some(std::time::Duration::from_millis(1234)),
-            "DbConn must carry the new timeout live (Weg C)"
+            "DbConn must carry the new timeout live (path C)"
         );
         assert_eq!(cell.params.query_timeout_ms, Some(1234));
         // persisted to cell.db params table

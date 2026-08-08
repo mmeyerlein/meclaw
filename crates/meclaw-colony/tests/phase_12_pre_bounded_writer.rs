@@ -1,12 +1,12 @@
-//! Phase 12-Pre TDD-Anker: bounded colony.db-Writer-Channel.
+//! Phase 12-Pre TDD anchor: bounded colony.db writer channel.
 //!
-//! Inkarnation 2 (async, post-Migration): nutzt `send_op(...).await`. Beweist
-//! die Cap-Invariante (queue_depth bleibt nahe Cap unter kooperativem Block)
-//! UND den Positiv-Beweis (alle N Ops nach Drain in der DB).
+//! Incarnation 2 (async, post-migration): uses `send_op(...).await`. Proves the
+//! cap invariant (queue_depth stays near the cap under a cooperative block)
+//! AND the positive proof (all N ops in the DB after the drain).
 //!
-//! Sampling-Strategie: queue_depth() inline nach jedem .await (kein Observer,
-//! kein Arc<ColonyDb> — ColonyDb ist !Sync via rusqlite). multi_thread für
-//! CLAUDE.md-Topologie-Test-Konvention (worker_threads = 4).
+//! Sampling strategy: queue_depth() inline after every .await (no observer, no
+//! Arc<ColonyDb> — ColonyDb is !Sync via rusqlite). multi_thread per the
+//! CLAUDE.md topology-test convention (worker_threads = 4).
 
 use meclaw_colony::persist::colony_db::ColonyDb;
 use meclaw_colony::persist::writer::ColonyWriteOp;
@@ -47,7 +47,7 @@ async fn bounded_writer_caps_queue_depth_at_capacity_under_burst() {
     assert!(
         max_observed <= CAP_PLUS_BATCH_PLUS_EPS,
         "queue_depth max was {max_observed} (expected ≤ {CAP_PLUS_BATCH_PLUS_EPS} \
-         = cap 1000 + BATCH_MAX 64 + ε). Bounded Backpressure greift nicht."
+         = cap 1000 + BATCH_MAX 64 + ε). Bounded backpressure is not taking effect."
     );
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();

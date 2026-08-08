@@ -1,7 +1,7 @@
-//! Phase 12-D T26: Integration-Tests fuer `/ui/templates`.
+//! Phase 12-D T26: integration tests for `/ui/templates`.
 //!
-//! Server-rendered Templates-Tabelle + Filter-Form. Wrappt
-//! `ColonyMsg::ReadTemplates` analog zum 12-B-JSON-Handler.
+//! Server-rendered templates table + filter form. Wraps
+//! `ColonyMsg::ReadTemplates` analogously to the 12-B JSON handler.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -51,6 +51,6 @@ async fn ui_templates_renders_html_with_filter_form() {
     assert!(body.contains("name=\"name\""));
     assert!(body.contains("name=\"type\""));
     assert!(body.contains("Templates"));
-    // Leerer Registry-State.
+    // Empty registry state.
     assert!(body.contains("Keine Templates"));
 }

@@ -1,7 +1,7 @@
 //! Opaque path identifier used as the key in Colony's actor registry,
 //! plus pure-string resolution primitives (`is_absolute`, `parent`,
 //! `starts_with`, `resolve`) per `docs/meclaw-overview.md`
-//! § Pfad-Adressierung.
+//! § Path addressing.
 
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ impl Path {
     ///
     /// Always returns a `Path`, never an error: invalid-looking inputs (empty target,
     /// `../` past root, bare name) normalise to a well-defined path per the
-    /// `docs/meclaw-overview.md` § "Pfad-Resolution: Edge-Cases" table. Whether the
+    /// `docs/meclaw-overview.md` § "Path resolution: edge cases" table. Whether the
     /// resulting path is registered is a separate question answered by the registry
     /// lookup downstream.
     pub fn resolve(sender: &Path, target: &str) -> Path {
@@ -80,7 +80,7 @@ fn normalize_segments(raw: &str) -> Path {
             "" | "." => continue,
             ".." => {
                 // pop on empty stack = no-op = root-clamp per spec
-                // § Pfad-Resolution: Edge-Cases (clamp on `/`).
+                // § Path resolution: edge cases (clamp on `/`).
                 stack.pop();
             }
             other => stack.push(other),

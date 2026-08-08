@@ -1,24 +1,24 @@
-//! Phase-10-D: `McpClient`. reqwest-basierter HTTP+JSON-RPC-Wrapper für
-//! MCP. POC-Scope: `initialize`, `list_tools`, `call_tool`. A-Timeout
-//! pro Op via `tokio::time::timeout` (CLAUDE.md Regel 12). TLS-Gate:
-//! reqwest mit `rustls-tls` + `default-features = false` (Phase-7-Gate).
+//! Phase-10-D: `McpClient`. A reqwest-based HTTP+JSON-RPC wrapper for MCP.
+//! POC scope: `initialize`, `list_tools`, `call_tool`. An A timeout per op via
+//! `tokio::time::timeout` (CLAUDE.md rule 12). TLS gate: reqwest with
+//! `rustls-tls` + `default-features = false` (phase-7 gate).
 
 use crate::mcp::db::DiscoveredTool;
 use crate::mcp::jsonrpc::{JsonRpcRequest, JsonRpcResponse, RequestId};
 use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 
-/// Fehler-Klassifikation für `McpClient`-Ops. Im POC mappen alle
-/// non-Timeout-Fehler auf `mcp_error` als `error_code`-Header
-/// (siehe `emit::emit_tool_result_error`).
+/// Error classification for `McpClient` ops. In the POC every non-timeout error
+/// maps onto `mcp_error` as the `error_code` header (see
+/// `emit::emit_tool_result_error`).
 #[derive(Debug)]
 pub enum McpError {
-    /// A-Timeout-Elapsed (Client-Side `tokio::time::timeout`).
+    /// A timeout elapsed (client-side `tokio::time::timeout`).
     Timeout,
-    /// reqwest-Build-/Send-/JSON-Parse-Fehler, HTTP-non-2xx,
-    /// missing-result-and-error.
+    /// reqwest build/send/JSON-parse errors, HTTP non-2xx, missing result and
+    /// error.
     Transport(String),
-    /// JSON-RPC-Error-Object vom Server.
+    /// JSON-RPC error object from the server.
     Rpc {
         /// Negative numeric code per JSON-RPC 2.0.
         code: i64,
@@ -27,12 +27,12 @@ pub enum McpError {
     },
 }
 
-/// HTTP+JSON-RPC-MCP-Client.
+/// HTTP+JSON-RPC MCP client.
 ///
-/// Hält `reqwest::Client` (intern Arc) + Endpoint + optionalen
-/// Bearer-Token. `Clone` ist günstig (Arc-internal). Pro Cell-Instanz
-/// ein Client in der Factory gebaut; `McpCell` + `McpIo` halten je
-/// einen Clone (symmetrisch zum `proxy::TelegramClient`-Pattern).
+/// Holds a `reqwest::Client` (Arc internally) + endpoint + an optional bearer
+/// token. `Clone` is cheap (Arc internally). One client is built per cell
+/// instance in the factory; `McpCell` and `McpIo` each hold a clone (symmetric to
+/// the `proxy::TelegramClient` pattern).
 #[derive(Clone)]
 pub struct McpClient {
     inner: reqwest::Client,
@@ -41,8 +41,8 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Build the client. TLS-/builder-Fehler → String-Error für den
-    /// Factory-Spawn-Pfad (analog `TelegramClient::new`).
+    /// Build the client. TLS/builder errors yield a string error for the factory
+    /// spawn path (analogous to `TelegramClient::new`).
     pub fn new(endpoint: &str, bearer: Option<String>) -> Result<Self, String> {
         let inner = reqwest::Client::builder()
             .build()
@@ -56,8 +56,8 @@ impl McpClient {
 
     /// Send a single JSON-RPC request and decode the response. A-Timeout
     /// is mandatory (`tokio::time::timeout`). `Timeout` → `McpError::Timeout`;
-    /// reqwest-/HTTP-/decode-Fehler → `McpError::Transport`;
-    /// JSON-RPC-Error-Object → `McpError::Rpc`.
+    /// reqwest/HTTP/decode errors → `McpError::Transport`;
+    /// a JSON-RPC error object → `McpError::Rpc`.
     pub async fn call_rpc(
         &self,
         method: &str,
@@ -94,7 +94,7 @@ impl McpClient {
 
     /// Perform the MCP `initialize` handshake. POC: no capability match;
     /// the server response is discarded after confirming no RPC error.
-    /// A-Timeout is applied per CLAUDE.md Regel 12.
+    /// The A timeout is applied per CLAUDE.md rule 12.
     pub async fn initialize(&self, timeout: Duration) -> Result<(), McpError> {
         let _ = self
             .call_rpc("initialize", build_initialize_params(), timeout)

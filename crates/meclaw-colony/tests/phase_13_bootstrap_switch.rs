@@ -1,7 +1,7 @@
-//! Phase-13 Step 13-K-2 Bootstrap-Switch:
-//! stateful Factories liefern jetzt `SpawnedCellKind::Dormant`, Bootstrap-Apply
-//! sendet `ColonyMsg::RegisterDormant` → `lifecycle_status == "NotYetSpawned"`.
-//! stateless Factories bleiben `SpawnedCellKind::Active` → `"Awake"`.
+//! Phase-13 step 13-K-2 bootstrap switch:
+//! stateful factories now return `SpawnedCellKind::Dormant`, the bootstrap apply
+//! sends `ColonyMsg::RegisterDormant` → `lifecycle_status == "NotYetSpawned"`.
+//! Stateless factories stay `SpawnedCellKind::Active` → `"Awake"`.
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};

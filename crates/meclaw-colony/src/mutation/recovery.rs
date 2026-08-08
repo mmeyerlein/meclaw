@@ -2,10 +2,10 @@
 //! scan `mutation_log` for `in_flight` rows, clean up `.staging/<id>/` debris,
 //! and transition them to `failed` with `failure_reason='crash_during_commit'`.
 //!
-//! Audit-Modell (Entscheidung 9): `failed` = "hat committed-Schritt nicht erreicht".
-//! FS-Bootstrap (Startup Schritt 4) ist autoritativ für tatsächliche Cell-Existenz —
-//! renamete Pfade aus dem crashed Apply-Lauf bleiben als Orphans im Live-Tree und
-//! werden vom FS-Bootstrap adoptiert. KEINE Roll-Forward-Reconciliation.
+//! Audit model (decision 9): `failed` = "did not reach the committed step".
+//! The FS bootstrap (startup step 4) is authoritative for actual cell existence —
+//! renamed paths from the crashed apply run stay as orphans in the live tree and
+//! are adopted by the FS bootstrap. NO roll-forward reconciliation.
 //!
 //! P3-D1: additionally sweeps `config.json.tmp` crash debris left in live cell
 //! directories by `targeted_overwrite_config` (rename.rs). Only the exact file
@@ -13,10 +13,10 @@
 
 #[derive(Debug, Clone, Default)]
 pub struct RecoveryReport {
-    /// `mutation_log.id`-Werte, die auf `failed` transitioniert wurden.
+    /// `mutation_log.id` values that were transitioned to `failed`.
     pub failed_mutation_ids: Vec<String>,
-    /// `.staging/<id>/`-Verzeichnisse, die in dieser Recovery-Runde gelöscht wurden.
-    /// Enthält auch Orphans (Sub-Dirs ohne mutation_log-Eintrag).
+    /// `.staging/<id>/` directories removed in this recovery round.
+    /// Includes orphans (sub-dirs without a mutation_log entry).
     pub staging_dirs_removed: Vec<String>,
     /// Paths of orphaned `config.json.tmp` side-files swept from live cell
     /// directories. These are the exact staging artifact left by
@@ -25,8 +25,8 @@ pub struct RecoveryReport {
     pub tmp_files_swept: Vec<std::path::PathBuf>,
 }
 
-/// Phase-6 startup-recovery. Synchron, läuft VOR `ColonyDb::open` (kein Writer-Thread).
-/// Eigene rusqlite-Connection außerhalb der Writer-Owner-Lifetime (sauber per FIX 2).
+/// Phase-6 startup recovery. Synchronous, runs BEFORE `ColonyDb::open` (no writer thread).
+/// Own rusqlite connection outside the writer-owner lifetime (clean per FIX 2).
 pub fn recover_in_flight_mutations(
     root: &std::path::Path,
     colony_db_path: &std::path::Path,
@@ -50,7 +50,7 @@ pub fn recover_in_flight_mutations(
     for id in &ids {
         let staging_dir = root.join(".staging").join(id);
         if staging_dir.exists() {
-            // Audit-Modell: cleanup is best-effort; an FS error here just leaves debris,
+            // Audit model: cleanup is best-effort; an FS error here just leaves debris,
             // never blocks the DB transition.
             if std::fs::remove_dir_all(&staging_dir).is_ok() {
                 staging_removed.push(id.clone());
@@ -62,9 +62,9 @@ pub fn recover_in_flight_mutations(
         )?;
     }
 
-    // Orphan-Sweep: .staging/<dir>/ ohne mutation_log-Eintrag.
-    // Best-effort (Audit-Modell): FS-Fehler hier nicht in rusqlite::Error mappen —
-    // einfach skippen, niemals DB-Transition blockieren.
+    // Orphan sweep: .staging/<dir>/ without a mutation_log entry.
+    // Best-effort (audit model): do not map FS errors here into rusqlite::Error —
+    // just skip, never block the DB transition.
     let staging_root = root.join(".staging");
     if staging_root.is_dir()
         && let Ok(read_dir) = std::fs::read_dir(&staging_root)

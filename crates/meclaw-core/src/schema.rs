@@ -1,6 +1,6 @@
 //! UBF-Body validation against the JSON-Schema in `schemas/ubf-body.json`.
 //!
-//! Spec § "Schema-Validierung — Zeitpunkt und Scope": validation runs on
+//! Spec § "Schema validation: timing and scope": validation runs on
 //! cell output in Colony, before routing, only there. Compiled once via
 //! `OnceLock`. The `jsonschema` dependency is encapsulated — only this
 //! module's `validate_ubf_body` function is exported from the crate.

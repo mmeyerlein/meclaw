@@ -1,5 +1,5 @@
 //! Phase-10-C T3: ProxyParams::parse. Pflichtfelder bot_token + emit_to;
-//! Defaults aus W7; W7-Tripwire `long_poll_timeout_ms > long_poll_request_secs * 1000`.
+//! Defaults from W7; the W7 tripwire `long_poll_timeout_ms > long_poll_request_secs * 1000`.
 
 use meclaw_cells::proxy::params::ProxyParams;
 use serde_json::json;
@@ -35,7 +35,7 @@ fn parse_rejects_missing_emit_to() {
 #[test]
 fn parse_w7_tripwire_rejects_client_timeout_le_request_secs() {
     // long_poll_timeout_ms = 30000, long_poll_request_secs = 30 → 30s == 30s
-    // → Client kappt seinen eigenen Poll. Reject.
+    // → the client cuts off its own poll. Reject.
     let err = ProxyParams::parse(&json!({
         "bot_token": "x", "emit_to": "/x",
         "long_poll_timeout_ms": 30000,
@@ -50,7 +50,7 @@ fn parse_w7_tripwire_rejects_client_timeout_le_request_secs() {
 
 #[test]
 fn parse_w7_tripwire_accepts_client_timeout_strictly_greater() {
-    // 31000 > 30000 → OK (>5s Headroom empfohlen, aber strikt > reicht).
+    // 31000 > 30000 → OK (>5s headroom recommended, but strictly > suffices).
     let p = ProxyParams::parse(&json!({
         "bot_token": "x", "emit_to": "/x",
         "long_poll_timeout_ms": 31000,

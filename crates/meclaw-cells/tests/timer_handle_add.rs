@@ -1,5 +1,5 @@
 //! Phase-10-B T13: `handle` add-Branch. INSERT in cell.db + on-dup-Error
-//! (`schedule_id_exists`) + SetActive-Snapshot nach Erfolg. Invalid-cron-
+//! (`schedule_id_exists`) + the SetActive snapshot after success. Invalid-cron
 //! Body → `invalid_cron`-Error (Korrektur A: Prefix-`"cron:"`-Mapping).
 
 use meclaw_cells::timer::cell::TimerCell;
@@ -62,12 +62,12 @@ async fn handle_add_fresh_inserts_row_and_sends_setactive() {
     assert_eq!(row.status, "active");
     let rc = tokio::time::timeout(Duration::from_secs(1), rc_rx.recv())
         .await
-        .expect("kein SetActive innerhalb 1s")
+        .expect("no SetActive within 1s")
         .unwrap();
     let TimerReconfig::SetActive(snap) = rc;
     assert!(
         snap.iter().any(|s| s.schedule_id == id),
-        "SetActive-Snapshot enthaelt id nicht: {:?}",
+        "the SetActive snapshot does not contain the id: {:?}",
         snap.iter().map(|s| s.schedule_id).collect::<Vec<_>>()
     );
 }
@@ -112,7 +112,7 @@ async fn handle_add_dup_emits_schedule_id_exists_error_to_reply_to() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.target, Path::new("/reply"));
     assert_eq!(
@@ -120,12 +120,12 @@ async fn handle_add_dup_emits_schedule_id_exists_error_to_reply_to() {
         "got: {}",
         em.content
     );
-    // KEIN SetActive bei Fehler.
+    // NO SetActive on error.
     assert!(
         tokio::time::timeout(Duration::from_millis(100), rc_rx.recv())
             .await
             .is_err(),
-        "SetActive darf bei Fehler NICHT gesendet werden"
+        "SetActive must NOT be sent on error"
     );
 }
 
@@ -154,7 +154,7 @@ async fn handle_add_invalid_cron_emits_invalid_cron_error() {
 
     let em = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
         .await
-        .expect("keine Error-Emission")
+        .expect("no error emission")
         .unwrap();
     assert_eq!(em.target, Path::new("/reply"));
     assert_eq!(
@@ -162,12 +162,12 @@ async fn handle_add_invalid_cron_emits_invalid_cron_error() {
         "got: {}",
         em.content
     );
-    // Kein DB-Insert passiert.
+    // No DB insert happens.
     assert!(
         db.call(move |c| load_schedule(c, id))
             .await
             .unwrap()
             .is_none(),
-        "ungueltige cron-Op darf keine Row erzeugen"
+        "an invalid cron op must not create a row"
     );
 }

@@ -1,6 +1,6 @@
-//! In-Memory-View der Templates-Registry für Lookup-Operationen.
-//! Datenquelle: `ColonyDb::read_templates()`; Konsumenten halten ihre eigene
-//! Snapshot-Instanz (Mutation-Validator, Bootstrap, Rescan-Handler).
+//! In-memory view of the templates registry for lookup operations.
+//! Data source: `ColonyDb::read_templates()`; consumers hold their own
+//! snapshot instance (mutation validator, bootstrap, rescan handler).
 
 use super::version::parse_simple_version;
 use std::path::PathBuf;
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn unversioned_entry_is_less_than_any_versioned() {
-        // R3: "unversioniert < versioniert" — wenn versioned existieren, gewinnt highest versioned.
+        // R3: "unversioned < versioned" — if versioned ones exist, the highest versioned wins.
         let r = TemplatesRegistry::from_entries(vec![
             entry("echo", None),
             entry("echo", Some("0.0.1")),

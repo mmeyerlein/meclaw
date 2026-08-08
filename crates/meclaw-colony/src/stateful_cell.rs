@@ -1,15 +1,15 @@
-//! Phase-6.5 StatefulCell — Cell-Variante mit cell.db-Connection als Param.
+//! Phase-6.5 StatefulCell — the cell variant taking the cell.db connection as a param.
 //!
 //! DbConn-Ownership lebt im `cell_task_stateful`-Stack-Frame
-//! (Authority-Modell: cell_task öffnet → entscheidet resume-vs-fresh →
-//! reopens beim Restart; Cell-Impl ist agnostisch über DB-Identität).
+//! (authority model: cell_task opens → decides resume vs. fresh → reopens on
+//! restart; the cell impl is agnostic about DB identity).
 //!
-//! `+ '_` setzt explizit die `&mut self`-/`&mut db`-Capture-Lifetime
-//! der Future (Edition 2024 macht das per Default, expliziter Marker für
-//! Disziplin-Klarheit).
+//! `+ '_` explicitly sets the future's `&mut self` / `&mut db` capture lifetime
+//! (edition 2024 does this by default; the explicit marker is there for clarity of
+//! discipline).
 //!
-//! Lebt in `meclaw-colony`, nicht `meclaw-core` — gleiche Schicht-Logik
-//! wie `CellFactory` (`meclaw-core` bleibt DB-agnostisch).
+//! Lives in `meclaw-colony`, not `meclaw-core` — the same layering logic as
+//! `CellFactory` (`meclaw-core` stays DB-agnostic).
 
 #[allow(clippy::manual_async_fn)]
 pub trait StatefulCell: Send {

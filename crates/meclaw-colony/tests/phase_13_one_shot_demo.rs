@@ -1,13 +1,13 @@
-//! Phase-13 One-Shot-Demo (Task 13-M-1).
+//! Phase-13 one-shot demo (task 13-M-1).
 //!
-//! POSITIVES RECEIPT für `cell.timeout > 0` (One-Shot-Modell):
-//!   1. NotYetSpawned direkt nach Boot.
-//!   2. 1. Wake → counter=1 → cell despawned NACH `handle()`-Return → Asleep.
-//!   3. 2. Wake → counter=2 via cell.db-Resume → despawned wieder → Asleep.
+//! POSITIVE RECEIPT for `cell.timeout > 0` (one-shot model):
+//!   1. NotYetSpawned directly after boot.
+//!   2. 1st wake → counter=1 → cell despawned AFTER `handle()` returns → Asleep.
+//!   3. 2nd wake → counter=2 via cell.db resume → despawned again → Asleep.
 //!
-//! Beweis-Linie: `cell_task_stateful` darf NICHT in den Mailbox-Loop
-//! zurückkehren, wenn `cell.timeout > 0` — sondern feuert peace + sendet
-//! `ColonyMsg::Sleep` direkt aus dem recv-arm (analog zum idle-arm).
+//! Proof line: `cell_task_stateful` must NOT return into the mailbox loop when
+//! `cell.timeout > 0` — instead it fires peace and sends `ColonyMsg::Sleep`
+//! directly from the recv arm (analogous to the idle arm).
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg};
@@ -53,9 +53,10 @@ async fn read_registry_status(h: &ColonyHandle, path: &str) -> String {
 async fn one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // FS-Tree: root-hive + stateful persist_mock mit `cell.timeout = 1000`
-    // (One-Shot-Modell — Wert egal, solange > 0). Bootstrap-Apply mapped das
-    // auf `idle_timeout = None` (siehe 13-K-2). Output → /sink.
+    // FS tree: root hive + stateful persist_mock with `cell.timeout = 1000`
+    // (one-shot model — the value does not matter as long as it is > 0). The
+    // bootstrap apply maps that to `idle_timeout = None` (see 13-K-2).
+    // Output → /sink.
     write(
         td.path(),
         "main/config.json",
@@ -97,7 +98,7 @@ async fn one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments()
     h.add_edge(Uuid::now_v7(), Path::new("/persist"), Path::new("/sink"))
         .await;
 
-    // RECEIPT 1: NotYetSpawned direkt nach Boot.
+    // RECEIPT 1: NotYetSpawned directly after boot.
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "NotYetSpawned",
@@ -121,7 +122,7 @@ async fn one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments()
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Asleep",
-        "RECEIPT 2: status=Asleep nach One-Shot-Despawn"
+        "RECEIPT 2: status=Asleep after the one-shot despawn"
     );
 
     // RECEIPT 3: Wake 2 → counter=2 (cell.db Resumed) → One-Shot-Despawn → Asleep.
@@ -140,7 +141,7 @@ async fn one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments()
     assert_eq!(
         read_registry_status(&h, "/persist").await,
         "Asleep",
-        "RECEIPT 3: status=Asleep nach zweitem One-Shot-Despawn"
+        "RECEIPT 3: status=Asleep after the second one-shot despawn"
     );
 
     h.shutdown().await;

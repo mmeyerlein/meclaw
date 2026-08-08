@@ -1,29 +1,29 @@
-//! Phase-12-X T19: End-to-End-Beweis, dass eine multipart-`POST /messages`-
-//! Anfrage mit Datei-Attachment durch den gesamten Stack laeuft —
-//! Upload → DiskBlobStore (Datei + Sidecar on disk) → UBF-Body mit
-//! `attachments[]`-Slot → Colony-Routing → `colony.db.message_log` →
-//! `GET /colony/trace` liefert den Eintrag inkl. serialisiertem
-//! `attachments[]`-Slot zurueck.
+//! Phase-12-X T19: end-to-end proof that a multipart `POST /messages` request
+//! with a file attachment runs through the entire stack —
+//! upload → DiskBlobStore (file + sidecar on disk) → UBF body with an
+//! `attachments[]` slot → colony routing → `colony.db.message_log` →
+//! `GET /colony/trace` returns the entry including the serialized
+//! `attachments[]` slot.
 //!
-//! Routing-Detail: `route_with_log` schreibt die `message_log`-Row nur bei
-//! `pre_routable = registry.contains_key(resolved_target)`. Damit die Probe
-//! im Trace landet, registriert das Bootstrap eine reale `bash`-Cell. Da
-//! `plan_bootstrap` genau ein Top-Level-Root-Verzeichnis erwartet und es
-//! als meclaw-`/` mappt (siehe `fs_to_meclaw_path`), liegt die Cell unter
-//! `/cell` — daher Routing-Target `/cell` und Trace-Filter `path_prefix=/cell`.
+//! Routing detail: `route_with_log` writes the `message_log` row only when
+//! `pre_routable = registry.contains_key(resolved_target)`. So that the probe
+//! lands in the trace, the bootstrap registers a real `bash` cell. Since
+//! `plan_bootstrap` expects exactly one top-level root directory and maps it to
+//! meclaw `/` (see `fs_to_meclaw_path`), the cell lives under `/cell` — hence
+//! the routing target `/cell` and the trace filter `path_prefix=/cell`.
 //!
-//! NICHT im Test-Scope: `/ui/trace`-HTML-Render (Phase 12-D).
+//! NOT in the test scope: the `/ui/trace` HTML render (phase 12-D).
 
 use meclaw_cli::{Cli, run_with_hooks};
 use std::net::SocketAddr;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multipart_attachment_appears_in_colony_trace_entry() {
-    // Bootstrap-Tree: das Root-Verzeichnis `<tmp>/root` ist die einzige
-    // Top-Level-Cell-Hive (Bootstrap erwartet exakt eine), darunter eine
-    // reale `bash`-Cell unter `<tmp>/root/cell` → meclaw-Pfad `/cell`.
-    // Die Cell-Existenz im Registry ist Pflicht, damit `route_with_log`
-    // die `message_log`-Row schreibt (pre_routable-Check).
+    // Bootstrap tree: the root directory `<tmp>/root` is the only top-level
+    // cell hive (the bootstrap expects exactly one), and below it a real `bash`
+    // cell at `<tmp>/root/cell` → meclaw path `/cell`.
+    // The cell's existence in the registry is mandatory so that `route_with_log`
+    // writes the `message_log` row (pre_routable check).
     let td = tempfile::TempDir::new().unwrap();
     let root_dir = td.path().join("root");
     let cell_dir = root_dir.join("cell");
@@ -64,8 +64,8 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
     let actual_addr = addr_rx.await.unwrap();
     let client = reqwest::Client::new();
 
-    // Hand-rolled multipart body (`reqwest` ist hier ohne `multipart`-Feature
-    // konfiguriert; analog zu T18 in `phase_12_x_multipart_upload.rs`).
+    // Hand-rolled multipart body (`reqwest` is configured here without the
+    // `multipart` feature; same as T18 in `phase_12_x_multipart_upload.rs`).
     let boundary = "----E2EBoundary";
     let pdf_content = b"%PDF-1.4 e2e attachment payload";
     let prelude = format!(
@@ -113,17 +113,17 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
     let on_disk = std::fs::read(&blob_path).unwrap();
     assert_eq!(on_disk, pdf_content);
 
-    // Routing ist async; kurz auf den Writer-Pfad warten, bis die
-    // `message_log`-Row durch `route_with_log` geschrieben ist.
+    // Routing is async; wait briefly on the writer path until the
+    // `message_log` row is written by `route_with_log`.
     let trace_entries = poll_for_trace_entry(&client, actual_addr, "/cell").await;
     assert!(
         !trace_entries.is_empty(),
         "expected at least one /colony/trace entry for path_prefix=/cell within 2s"
     );
 
-    // DTO-Shape (`MessageLogDto`): `body_payload` ist ein JSON-String
-    // (Option<String>), nicht nested JSON. Parsen, dann `attachments[]`
-    // pruefen. `body_kind` muss "inline" sein (kein Body::Blob-Auto-Offload).
+    // DTO shape (`MessageLogDto`): `body_payload` is a JSON string
+    // (Option<String>), not nested JSON. Parse it, then check `attachments[]`.
+    // `body_kind` must be "inline" (no Body::Blob auto-offload).
     let our_entry = trace_entries
         .iter()
         .find(|e| e["to_path"].as_str() == Some("/cell"))
@@ -152,9 +152,9 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
         .expect("run_with_hooks must return Ok");
 }
 
-/// Pollt `GET /colony/trace?path_prefix=<prefix>&limit=10` bis zu ~2s auf
-/// mindestens einen Eintrag; gibt die Eintraege beim Treffer oder beim
-/// Deadline-Hit zurueck. Polling statt Fixed-Sleep, analog Phase-12-B-Demo.
+/// Polls `GET /colony/trace?path_prefix=<prefix>&limit=10` for up to ~2s for at
+/// least one entry; returns the entries on a hit or at the deadline. Polling
+/// instead of a fixed sleep, same as the phase-12-B demo.
 async fn poll_for_trace_entry(
     client: &reqwest::Client,
     addr: SocketAddr,

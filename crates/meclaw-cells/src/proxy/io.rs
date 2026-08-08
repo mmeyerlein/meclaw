@@ -32,7 +32,7 @@ pub enum ProxyEvent {
     },
 }
 
-/// Handler → I/O: live poll-config update (β, Weg B). The handler sends this
+/// Handler → I/O: live poll-config update (β, path B). The handler sends this
 /// after a runtime `params`-update so the I/O-task's next poll uses the new
 /// long-poll timeouts AND `base_url` WITHOUT a wake/respawn. `bot_token` is NOT
 /// here — it is immutable; the I/O-task rebuilds its client via
@@ -146,7 +146,7 @@ pub fn run_io(
             long_poll_timeout_ms,
         } = cfg;
         let mut running_offset = initial_offset;
-        // β (Weg B): poll-config + base_url are mutable at runtime via
+        // β (path B): poll config + base_url are mutable at runtime via
         // `ProxyReconfig::SetPolling`. The client is rebuilt live on a base_url
         // change (bot_token rehold internally — never from the update).
         let mut client = client;
@@ -189,7 +189,7 @@ pub fn run_io(
             tokio::select! {
                 biased;
                 maybe_rc = reconfig_rx.recv() => match maybe_rc {
-                    // β (Weg B): apply new poll-config + base_url live; next
+                    // β (path B): apply the new poll config + base_url live; next
                     // iteration's `work` snapshots the updated values + rebuilt
                     // client. `with_base_url` reholds the immutable bot_token.
                     Some(ProxyReconfig::SetPolling {

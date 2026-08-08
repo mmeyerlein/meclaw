@@ -78,7 +78,7 @@ pub fn set_term_timeout_ms_for_test(ms: u64) {
 /// unit test.
 ///
 /// Spec: listed in the mutation-reject `error_code` enum
-/// (`docs/meclaw-overview.md` § Validierung). It is a mutation-reject code, not
+/// (`docs/meclaw-overview.md` § Validation). It is a mutation-reject code, not
 /// a dead-letter reason, so it is deliberately absent from the dead-letter
 /// `error_code` string list.
 pub(crate) const TERM_TIMEOUT_ERROR_CODE: &str = "term_timeout";
@@ -87,10 +87,10 @@ pub(crate) const TERM_TIMEOUT_ERROR_CODE: &str = "term_timeout";
 /// guard**: a disconnect would deactivate a running (`Awake`) cell that has NO
 /// live `stop_tx`. Such a disconnect cannot be peace-stopped, so honoring it
 /// would leave the task running while the cell is marked inactive — a silent
-/// "Task ⇔ aktiv" violation (zombie). Instead the whole mutation is rejected
+/// "task ⇔ active" violation (zombie). Instead the whole mutation is rejected
 /// atomically (edges rolled back, no durable write).
 ///
-/// **Guard-Bleibt (ruling 2026-06-07, P4-B2 closure): this guard STAYS as the
+/// **Guard-stays (ruling 2026-06-07, P4-B2 closure): this guard STAYS as the
 /// PERMANENT backstop — it is NOT interim and NOT unreachable.** Slice-4
 /// stop-wiring restoration (`renotify_stop_wiring` on the reconnect-eager and
 /// crash/backstop-restart paths) closes the COMMON case, but three classes of
@@ -109,7 +109,7 @@ pub(crate) const TERM_TIMEOUT_ERROR_CODE: &str = "term_timeout";
 /// `stateful_survivor_heals_via_backstop_then_retry_disconnect_commits`.)
 ///
 /// Spec: like `term_timeout`, listed in the mutation-reject `error_code` enum
-/// (`docs/meclaw-overview.md` § Validierung), not a dead-letter string.
+/// (`docs/meclaw-overview.md` § Validation), not a dead-letter string.
 pub(crate) const STOP_WIRING_UNAVAILABLE_ERROR_CODE: &str = "stop_wiring_unavailable";
 
 /// Factory function that spawns a fresh cell task, returning its sender, join handle,
@@ -151,23 +151,23 @@ pub enum CellStatus {
 /// `colony_task`-state and dispatches `ColonyDispatch` directly, avoiding
 /// the inbox_self_tx-self-send deadlock (`colony.rs:1604` note).
 ///
-/// Illegale Zustände unrepräsentierbar — keine `Option<>`-Mehrdeutigkeit
-/// zwischen "nothing more to do" und "cascade further" mehr (CellStatus-
-/// disziplin aus Phase 13).
+/// Illegal states are unrepresentable — no more `Option<>` ambiguity between
+/// "nothing more to do" and "cascade further" (the CellStatus discipline from
+/// phase 13).
 pub(crate) enum RouteAction {
-    /// Routing terminal — successful Cell-send, DLQ, TTL-expired,
+    /// Routing terminal — successful cell send, DLQ, TTL expired,
     /// or `/colony` bare endpoint-invalid.
     Done,
-    /// Iterative cascade — entspricht dem heutigen `Some((sender, msg))`.
-    /// Outputs-arm + inbox-arm loopen weiter über `route_with_log`.
+    /// Iterative cascade — corresponds to today's `Some((sender, msg))`.
+    /// The outputs arm + inbox arm keep looping through `route_with_log`.
     Cascade { sender: Path, msg: Message },
-    /// `/colony/<endpoint>` — outputs-arm hat den vollen State, ruft
-    /// `dispatch_colony_endpoint` direkt. KEIN Self-Send, KEIN
-    /// outputs_tx-Roundtrip. `sender` ist der `sender_path` aus dem
-    /// route()-Aufruf (= `em.sender_path` im Outputs-Arm, = ColonyMsg::Route's
-    /// `sender_path` im Inbox-Arm), gebraucht für (a) den T2-Stub, der
-    /// Pre-T2-`handle_colony_target`-Verhalten exakt spiegelt, und (b) den
-    /// DLQ-Reason-Sender bei unknown Endpunkten in T3.
+    /// `/colony/<endpoint>` — the outputs arm holds the full state and calls
+    /// `dispatch_colony_endpoint` directly. NO self-send, NO outputs_tx
+    /// round-trip. `sender` is the `sender_path` from the `route()` call
+    /// (= `em.sender_path` in the outputs arm, = ColonyMsg::Route's
+    /// `sender_path` in the inbox arm), needed for (a) the T2 stub, which
+    /// mirrors the pre-T2 `handle_colony_target` behaviour exactly, and (b) the
+    /// DLQ reason sender for unknown endpoints in T3.
     ColonyDispatch {
         endpoint: Path,
         msg: Message,
@@ -324,21 +324,21 @@ pub enum ColonyMsg {
         wake: Option<crate::WakeFn>,
         /// Per-cell restart ceiling. `None` → `DEFAULT_RESTART_LIMIT` (5).
         restart_limit: Option<u32>,
-        /// UUID v7, vergeben in plan_bootstrap (PlannedCell.cell_id) ODER synthetisch
-        /// in Test-Helpers (ColonyHandle::spawn). Stabil über Re-Boots.
+        /// UUID v7, assigned in plan_bootstrap (PlannedCell.cell_id) OR synthetically
+        /// in test helpers (ColonyHandle::spawn). Stable across reboots.
         cell_id: Uuid,
-        /// Cell-Type-String aus config.json (PlannedCell.cell_type).
+        /// Cell-type string from config.json (PlannedCell.cell_type).
         cell_type: String,
         /// Phase-13.5 Lifecycle-3b: edge-derived activity for `RegistryEntry`.
         /// `true` for fresh spawns; rehydration passes the overlay-derived value.
         active: bool,
         ack: oneshot::Sender<()>,
     },
-    /// Phase-13-G-3: register a stateful cell as `NotYetSpawned` (kein Task,
-    /// kein Watcher — Mailbox-Paar wandert in `RegistryEntry.status`-Payload).
+    /// Phase-13-G-3: register a stateful cell as `NotYetSpawned` (no task,
+    /// no watcher — the mailbox pair moves into the `RegistryEntry.status` payload).
     /// Persist UpsertRegistry **identical** to `Register` (no lifecycle column
-    /// in `colony.db.registry`). Konsument kommt in 13-K-2 (Bootstrap-Apply
-    /// branched per CellKind). Heute kein Produktiv-Caller.
+    /// in `colony.db.registry`). The consumer arrives in 13-K-2 (bootstrap apply
+    /// branches per CellKind). No production caller today.
     RegisterDormant {
         path: Path,
         sender: mpsc::Sender<Message>,
@@ -386,7 +386,7 @@ pub enum ColonyMsg {
     /// `sender_path` is the originator of the message: an external/test sender
     /// typically passes `Path::new("/")` (root); the colony itself, when routing
     /// a `CellEmission`, passes `em.sender_path`.
-    /// Used for relative-target resolution (`./x`, `../x`) per spec § Pfad-Adressierung.
+    /// Used for relative-target resolution (`./x`, `../x`) per spec § Path addressing.
     Route { sender_path: Path, msg: Message },
     /// Graceful shutdown: sends ack then exits the loop.
     Shutdown { ack: oneshot::Sender<()> },
@@ -424,44 +424,44 @@ pub enum ColonyMsg {
         /// Why it is undeliverable (`DeadLetterReason::BlobUnavailable`).
         reason: DeadLetterReason,
     },
-    /// First-Boot atomarer Apply (FIX 3, E9): persistiert edges + hive_scopes
-    /// in EINER Transaktion UND trägt sie in die in-memory Tabellen ein.
-    /// `apply_bootstrap_plan` sendet das nach allen Registers.
-    /// op-before-ack: `colony_db.send_op(InitialApply)` wird VOR `ack.send()` ausgeführt.
+    /// First-boot atomic apply (FIX 3, E9): persists edges + hive_scopes in ONE
+    /// transaction AND enters them into the in-memory tables.
+    /// `apply_bootstrap_plan` sends this after all registers.
+    /// op-before-ack: `colony_db.send_op(InitialApply)` runs BEFORE `ack.send()`.
     InitialApply {
-        /// Edges aus dem Bootstrap-Plan.
+        /// Edges from the bootstrap plan.
         edges: Vec<crate::bootstrap::PlannedEdge>,
-        /// Hive-Scope-Pfade aus dem Bootstrap-Plan.
+        /// Hive-scope paths from the bootstrap plan.
         hive_scopes: Vec<Path>,
-        /// Ack-Channel — fires NACH send_op.
+        /// Ack channel — fires AFTER send_op.
         ack: oneshot::Sender<()>,
     },
-    /// Bootstrap-Recovery (Run-5/5b-Befund): `apply_bootstrap_plan` sendet das
-    /// VOR dem ersten Cell-Spawn. Auf dem FirstBoot-Pfad schreibt der Arm den
-    /// durablen `bootstrap_in_flight`-Marker (colony.db `meta`) und acked erst
-    /// NACH dem Writer-Commit — ein Crash irgendwo im Apply hinterlässt den
-    /// Marker, der Folge-Boot klassifiziert als resumierbarer `FirstBoot` statt
-    /// `Inconsistent`. Die Löschung läuft atomar in der `InitialApply`-Transaktion.
-    /// Auf dem Reboot-Pfad ist der Arm ein No-op (alle Tabellen voll — ein
-    /// Reboot-Apply-Crash ist klassifikationsneutral).
+    /// Bootstrap recovery (run-5/5b finding): `apply_bootstrap_plan` sends this
+    /// BEFORE the first cell spawn. On the FirstBoot path the arm writes the
+    /// durable `bootstrap_in_flight` marker (colony.db `meta`) and only acks
+    /// AFTER the writer commit — a crash anywhere in the apply leaves the marker
+    /// behind and the following boot classifies as a resumable `FirstBoot`
+    /// instead of `Inconsistent`. The clear runs atomically inside the
+    /// `InitialApply` transaction. On the reboot path the arm is a no-op (all
+    /// tables full — a reboot apply crash is classification-neutral).
     BeginInitialApply {
-        /// Ack-Channel — fires nach dem durablen Marker-Commit (FirstBoot)
-        /// bzw. sofort (Reboot).
+        /// Ack channel — fires after the durable marker commit (FirstBoot)
+        /// resp. immediately (reboot).
         ack: oneshot::Sender<()>,
     },
-    /// Phase 11 Slice 11-E: triggert intern denselben Pfad wie der Boot-Scan.
-    /// CLI-Flag `--rescan-templates` und (Phase 12) HTTP-POST schicken diese Message.
+    /// Phase 11 slice 11-E: internally triggers the same path as the boot scan.
+    /// The CLI flag `--rescan-templates` and (phase 12) an HTTP POST send this message.
     RescanTemplates {
         templates_root: std::path::PathBuf,
         ack: oneshot::Sender<()>,
     },
-    /// Phase 12-B step-7.6: Trace-Read mit `spawn_blocking` + fresh
-    /// `SQLITE_OPEN_READ_ONLY`-Connection auf `colony.db`. WAL erlaubt
-    /// concurrent Reader; Writer-Thread bleibt unbeeinflusst.
+    /// Phase 12-B step-7.6: trace read with `spawn_blocking` + a fresh
+    /// `SQLITE_OPEN_READ_ONLY` connection on `colony.db`. WAL allows
+    /// concurrent readers; the writer thread stays unaffected.
     ///
-    /// **Honest warning**: stalls the Colony-Inbox loop for the query duration
-    /// (bounded by `limit ≤ 1000` rows). Off-Loop-Reads (eigene Read-Task)
-    /// sind Phase 14.
+    /// **Honest warning**: stalls the colony inbox loop for the query duration
+    /// (bounded by `limit ≤ 1000` rows). Off-loop reads (a dedicated read task)
+    /// are phase 14.
     ReadTrace {
         /// Optional: filter by trace_id (UUID).
         trace_id: Option<Uuid>,
@@ -478,33 +478,33 @@ pub enum ColonyMsg {
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadTraceReply>,
     },
-    /// P1 (message browser): paginierter, gefilterter Read über
-    /// `colony.db::message_log`. Spiegelt `ReadTrace` — `spawn_blocking` +
-    /// frische `SQLITE_OPEN_READ_ONLY`-Connection, die gesamte Logik lebt in
+    /// P1 (message browser): paginated, filtered read over
+    /// `colony.db::message_log`. Mirrors `ReadTrace` — `spawn_blocking` + a
+    /// fresh `SQLITE_OPEN_READ_ONLY` connection; the entire logic lives in
     /// `colony_dispatch::handle_read_messages`.
     ///
-    /// **Honest warning**: stallt die Colony-Inbox-Loop für die Query-Dauer.
-    /// Begrenzt durch `filter.scan_budget` (≤ 50_000 gelesene Rows), nicht durch
-    /// `limit` allein. Off-Loop-Reads sind post-v0.1.0 (`docs/roadmap.md`).
+    /// **Honest warning**: stalls the colony inbox loop for the query duration.
+    /// Bounded by `filter.scan_budget` (≤ 50_000 rows read), not by `limit`
+    /// alone. Off-loop reads are post-v0.1.0 (`docs/roadmap.md`).
     ReadMessages {
-        /// Filter + Paging-Cursor; alle Caps werden im Dispatch-Helper geklemmt.
+        /// Filter + paging cursor; all caps are clamped in the dispatch helper.
         filter: crate::api_dto::MessageLogFilter,
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadMessagesReply>,
     },
-    /// Phase 12-B step-7.5: Scope-gefilterte Graph-Snapshot (Nodes + Edges).
-    /// Nodes = Registry-Entries deren Pfad mit `scope` beginnt.
-    /// Edges = `EdgeTable`-Entries deren `from` UND `to` im Scope liegen.
+    /// Phase 12-B step-7.5: scope-filtered graph snapshot (nodes + edges).
+    /// Nodes = registry entries whose path starts with `scope`.
+    /// Edges = `EdgeTable` entries whose `from` AND `to` lie inside the scope.
     ReadGraph {
-        /// Scope-Pfad-Prefix (z.B. `/main` → matched `/main`, `/main/x`, ...).
+        /// Scope path prefix (e.g. `/main` → matches `/main`, `/main/x`, ...).
         scope: Path,
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadGraphReply>,
     },
-    /// Phase 12-B step-7.4: read-only Audit-View auf `colony.db::mutation_log`.
+    /// Phase 12-B step-7.4: read-only audit view on `colony.db::mutation_log`.
     /// Sync read via `colony_db.read_mutation_log()`.
     ReadMutationsAudit {
-        /// Optional: nur Rows mit `created_at >= since` (Unix-Sekunden).
+        /// Optional: only rows with `created_at >= since` (unix seconds).
         since: Option<i64>,
         /// Hard cap on returned entries; clamped to `1..=1000` in the arm.
         limit: usize,
@@ -707,10 +707,10 @@ async fn handle_register(
     };
     registry.insert(path.clone(), entry);
 
-    // 2. Writer-Op enqueuen — op-before-ack-Invariante (T22).
-    // Direkt-Send via `writer_tx`+`queue_depth` (NICHT via `&ColonyDb.send_op`,
-    // weil `&ColonyDb` !Send ist — rusqlite::Connection ist !Sync, der Borrow
-    // dürfte nicht über `.await` leben).
+    // 2. Enqueue the writer op — op-before-ack invariant (T22).
+    // Direct send via `writer_tx`+`queue_depth` (NOT via `&ColonyDb.send_op`,
+    // because `&ColonyDb` is !Send — rusqlite::Connection is !Sync, so the
+    // borrow must not live across `.await`).
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
@@ -731,7 +731,7 @@ async fn handle_register(
         .await
         .expect("writer thread dead");
 
-    // 3. Ack — Caller weiß: Op ist im Channel.
+    // 3. Ack — the caller knows: the op is in the channel.
     let _ = ack.send(());
 
     // 4. Spawn watcher.
@@ -786,8 +786,8 @@ async fn handle_register_dormant(
     };
     registry.insert(path.clone(), entry);
 
-    // 2. Writer-Op enqueuen — IDENTISCH zu `handle_register`. Kein
-    // lifecycle-Feld; lifecycle_status existiert nur in-memory + im DTO.
+    // 2. Enqueue the writer op — IDENTICAL to `handle_register`. No
+    // lifecycle field; lifecycle_status exists only in-memory + in the DTO.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
@@ -808,7 +808,7 @@ async fn handle_register_dormant(
         .await
         .expect("writer thread dead");
 
-    // 3. Ack — Caller weiß: Op ist im Channel.
+    // 3. Ack — the caller knows: the op is in the channel.
     let _ = ack.send(());
 
     // NO spawn_watcher — no cell-task running yet (wake-on-first-message
@@ -835,7 +835,7 @@ async fn handle_sleep(
         // (no `CellDied` → no `registry.remove`). The sole `registry.remove` site
         // (handle_cell_died `DeathKind::Normal`) requires peace NOT fired, so it is
         // mutually exclusive with having emitted Sleep; `remove_nodes`/`swap_nodes`
-        // are Disconnect-statt-Delete and never remove the entry. The parked
+        // are disconnect-instead-of-delete and never remove the entry. The parked
         // receiver is therefore expected EMPTY.
         debug_assert!(
             receiver.is_empty(),
@@ -1052,9 +1052,9 @@ pub enum CellDiedOutcome {
 /// status parking happen at the `colony_task` call-site, never between respawn and
 /// sender-swap (an exhausted cell has no respawn).
 ///
-/// `#[rustfmt::skip]`: dieser Korridor ist gegen ein zeichenweises Fixture-Gate
-/// (`plans/paket-6-fixtures/expected_handle_cell_died_body.txt`) eingefroren —
-/// rustfmt darf ihn nicht umformatieren.
+/// `#[rustfmt::skip]`: this corridor is frozen against a character-exact fixture
+/// gate (`plans/paket-6-fixtures/expected_handle_cell_died_body.txt`) — rustfmt
+/// must not reformat it.
 #[rustfmt::skip]
 async fn handle_cell_died(
     registry: &mut HashMap<Path, RegistryEntry>,
@@ -1224,21 +1224,22 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // `dead_letters` table after every handled event (`persist_dead_letters`).
     // Not a store, not bounded (no drop-oldest), never a second source of truth.
     let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
-    // Re-Boot-Hydration: Boot-State klassifizieren, bei Reboot aus DB laden.
+    // Reboot hydration: classify the boot state, load from DB on a reboot.
     let is_reboot: bool = match colony_db.boot_state() {
         Ok(crate::bootstrap::BootState::FirstBoot) => {
-            // FirstBoot: InitialApply-Handler arbeitet normal (in-memory + persist).
+            // FirstBoot: the InitialApply handler works normally (in-memory + persist).
             false
         }
         Ok(crate::bootstrap::BootState::Reboot) => {
-            // Reboot: hydrate EdgeTable + HiveScopeTable aus DB, ignoriere Hints.
+            // Reboot: hydrate EdgeTable + HiveScopeTable from DB, ignore hints.
             // Phase-13.5-Durable-Edges: persisted edges carry CEL condition/modifier;
             // read_edges re-parses them, hard-fail on corruption.
             let persisted_edges = colony_db.read_edges().unwrap_or_else(|e| {
-                // Hard-fail (F5): korrupte persistierte CEL ist schlimmer als Boot-Fail
-                // (sonst stille Routing-Verfälschung). {e:?} trägt den Varianten-Namen
-                // (ConditionParseFailed/ModifierJsonInvalid) + edge_id + source in die
-                // Panic-Message — Demo-Tests (Task 7) asserten darauf via JoinHandle-Error.
+                // Hard-fail (F5): corrupt persisted CEL is worse than a boot failure
+                // (otherwise routing is silently falsified). {e:?} carries the variant
+                // name (ConditionParseFailed/ModifierJsonInvalid) + edge_id + source
+                // into the panic message — demo tests (task 7) assert on it via the
+                // JoinHandle error.
                 panic!("colony.db edge hydration failed: {e:?}");
             });
             for e in persisted_edges {
@@ -1304,10 +1305,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
             Some(m) = inbox.recv() => {
                 match m {
                     ColonyMsg::Shutdown { ack } => {
-                        // Phase-5-Minimal-Shutdown (E6):
-                        // 1. Close inbox — keine neuen Sends akzeptiert.
+                        // Phase-5 minimal shutdown (E6):
+                        // 1. Close inbox — no new sends accepted.
                         inbox.close();
-                        // 2. Drain gepufferte Items.
+                        // 2. Drain buffered items.
                         while let Ok(m) = inbox.try_recv() {
                             match m {
                                 ColonyMsg::Shutdown { .. } => {} // skip nested Shutdown in drain
@@ -1339,11 +1340,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                 work.push_back((sender, msg));
                                             }
                                             RouteAction::ColonyDispatch { endpoint, msg, sender } => {
-                                                // T3: echter Dispatcher — alle `&ColonyDb`-Sub-Refs
-                                                // SYNCHRON pre-extrahieren, dann awaiten. ColonyDb ist
-                                                // !Sync → kein `&ColonyDb` über .await-Grenze. Templates-
-                                                // Snapshot + Pre-Templates-Rows + Rescan-Future-Vorlauf
-                                                // alle aus dem sync-Borrow gewonnen.
+                                                // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
+                                                // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
+                                                // `&ColonyDb` across an .await boundary. Templates
+                                                // snapshot + pre-extracted template rows + rescan-future
+                                                // prologue all obtained from the sync borrow.
                                                 let templates_rows = colony_db.read_templates().unwrap_or_default();
                                                 let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                                                     templates_rows.clone().into_iter()
@@ -1433,7 +1434,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                             hive_scopes.register(HiveScope { path: s.clone() });
                                         }
                                         for e in &ia_edges {
-                                            // Phase 13.5-A1: condition/modifier von PlannedEdge übernehmen.
+                                            // Phase 13.5-A1: carry condition/modifier over from PlannedEdge.
                                             edges.insert(Edge {
                                                 id: e.id,
                                                 from: e.from.clone(),
@@ -1442,8 +1443,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                 modifier: e.modifier.clone(),
                                             });
                                         }
-                                        // Direkt-Send via writer_tx (NICHT &ColonyDb über .await,
-                                        // siehe handle_register-Begründung).
+                                        // Direct send via writer_tx (NOT &ColonyDb across .await,
+                                        // see the handle_register rationale).
                                         colony_db
                                             .queue_depth
                                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1465,7 +1466,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                             .await
                                             .expect("writer thread dead");
                                     }
-                                    // Reboot: skip — edges/hive_scopes wurden beim Boot-Start hydratisiert.
+                                    // Reboot: skip — edges/hive_scopes were hydrated at boot start.
                                     let _ = ia_ack.send(());
                                 }
                                 ColonyMsg::BeginInitialApply { ack } => {
@@ -1504,7 +1505,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 }
                                 ColonyMsg::Mutation { payload, reply_to, trace_id, parent_message_id, ack } => {
                                     // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
-                                    // (ColonyDb ist !Sync → kein &ColonyDb über .await-Grenze).
+                                    // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
                                     let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                                         colony_db.read_templates().unwrap_or_default().into_iter()
                                             .map(|r| crate::templates::TemplateEntry {
@@ -1547,7 +1548,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // runs for it. FIFO guarantees these land before the
                         // writer's own Shutdown op.
                         persist_dead_letters(&mut dead_letters, &colony_db.writer_tx).await;
-                        // 3. Shutdown writer thread (async variant — wir sind im Tokio-context).
+                        // 3. Shutdown writer thread (async variant — we are in a Tokio context).
                         colony_db.shutdown_async().await;
                         // 4. Ack + break.
                         let _ = ack.send(());
@@ -1581,11 +1582,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     work.push_back((sender, msg));
                                 }
                                 RouteAction::ColonyDispatch { endpoint, msg, sender } => {
-                                    // T3: echter Dispatcher — alle `&ColonyDb`-Sub-Refs
-                                    // SYNCHRON pre-extrahieren, dann awaiten. ColonyDb ist
-                                    // !Sync → kein `&ColonyDb` über .await-Grenze. Templates-
-                                    // Snapshot + Pre-Templates-Rows + Rescan-Future-Vorlauf
-                                    // alle aus dem sync-Borrow gewonnen.
+                                    // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
+                                    // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
+                                    // `&ColonyDb` across an .await boundary. Templates
+                                    // snapshot + pre-extracted template rows + rescan-future
+                                    // prologue all obtained from the sync borrow.
                                     let templates_rows = colony_db.read_templates().unwrap_or_default();
                                     let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                                         templates_rows.clone().into_iter()
@@ -1676,7 +1677,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 hive_scopes.register(HiveScope { path: s.clone() });
                             }
                             for e in &ia_edges {
-                                // Phase 13.5-A1: condition/modifier von PlannedEdge übernehmen.
+                                // Phase 13.5-A1: carry condition/modifier over from PlannedEdge.
                                 edges.insert(Edge {
                                     id: e.id,
                                     from: e.from.clone(),
@@ -1685,8 +1686,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     modifier: e.modifier.clone(),
                                 });
                             }
-                            // op-before-ack. Direkt-Send via writer_tx (NICHT &ColonyDb
-                            // über .await, siehe handle_register-Begründung).
+                            // op-before-ack. Direct send via writer_tx (NOT &ColonyDb
+                            // across .await, see the handle_register rationale).
                             colony_db
                                 .queue_depth
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1705,7 +1706,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 .await
                                 .expect("writer thread dead");
                         }
-                        // Reboot: skip — edges/hive_scopes wurden beim Boot-Start hydratisiert.
+                        // Reboot: skip — edges/hive_scopes were hydrated at boot start.
                         let _ = ack.send(());
                     }
                     ColonyMsg::BeginInitialApply { ack } => {
@@ -1777,7 +1778,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::Mutation { payload, reply_to, trace_id, parent_message_id, ack } => {
                         // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
-                        // (ColonyDb ist !Sync → kein &ColonyDb über .await-Grenze).
+                        // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
                         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                             colony_db.read_templates().unwrap_or_default().into_iter()
                                 .map(|r| crate::templates::TemplateEntry {
@@ -1818,7 +1819,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 // TTL slice (2026-06-11): a source emission (parent_message_id ==
                 // None — the OriginSink shape of timer/proxy/mcp) gets its fresh
                 // TTL from colony.json `message_default_ttl` here. Envelope-Setter-
-                // Authority (spec § Message-Modell): Colony stamps `ttl` anew on
+                // Authority (spec § Message model): Colony stamps `ttl` anew on
                 // source messages; the OriginSink `input_ttl` is only the constant
                 // seed. Follow-up emissions inherit the consumed input's TTL.
                 let em = if em.parent_message_id.is_none() {
@@ -1855,10 +1856,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     continue;
                 }
-                // (1+2) Header-Split-Preview + Validierung — Debug-only. Im Release
-                //       fällt der ganze Block weg → echtes Zero-Overhead.
-                //       build_follow_up_message macht den Split intern nochmal für den
-                //       Merge; die Preview-Doublette ist debug-only und unkritisch.
+                // (1+2) Header-split preview + validation — debug-only. In release
+                //       the whole block disappears → true zero overhead.
+                //       build_follow_up_message performs the split again internally
+                //       for the merge; the duplicated preview is debug-only and
+                //       uncritical.
                 #[cfg(debug_assertions)]
                 {
                     let (_cell_headers, body_candidate) = split_content_header(em.content.clone());
@@ -1970,20 +1972,20 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                 }
 
-                // (3) Valid → Edge-Hook + unified Cascade-Loop. Phase 4: implicit
-                //     identity decision wenn keine Edge matched; Edge überlagert
-                //     target sonst. Fan-out: ein follow_up pro Decision.
+                // (3) Valid → edge hook + unified cascade loop. Phase 4: implicit
+                //     identity decision when no edge matches; otherwise the edge
+                //     overlays the target. Fan-out: one follow_up per decision.
                 let from = em.sender_path.clone();
 
-                // Zwei-Fächer-Verfall: context reist durch, hop = isolierter Cell-Output.
-                // input.hop wird fallengelassen (strukturelle Frische, ADR-0001).
+                // Two-compartment decay: context travels through, hop = isolated cell output.
+                // input.hop is dropped (structural freshness, ADR-0001).
                 let (cell_hop, _body_unused) = split_content_header(em.content.clone());
                 let merged_headers = em.input_headers.carry_context_with_hop(cell_hop);
 
                 // W2b (Ruling A1 + the spec owner 2026-06-12): a cell emission targeting a
                 // /colony/* VIRTUAL service endpoint (EDA — cell-emitted mutation/read,
                 // phase-13.5 A6) is DISPATCHED DIRECTLY, before apply_edges. /colony/*
-                // are virtual endpoints (overview § Routing-Fehler), not topology nodes,
+                // are virtual endpoints (overview § Behavior on routing errors), not topology nodes,
                 // so no out-edge is needed or possible and the A1 no_route rule does not
                 // apply to them. Re-enqueue as ColonyMsg::Route so the Route handler runs
                 // the full ColonyDispatch machinery (unknown endpoint ⇒
@@ -2041,11 +2043,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 work.push_back((sender, msg));
                             }
                             RouteAction::ColonyDispatch { endpoint, msg, sender } => {
-                                // T3: echter Dispatcher — alle `&ColonyDb`-Sub-Refs
-                                // SYNCHRON pre-extrahieren, dann awaiten. ColonyDb ist
-                                // !Sync → kein `&ColonyDb` über .await-Grenze. Templates-
-                                // Snapshot + Pre-Templates-Rows + Rescan-Future-Vorlauf
-                                // alle aus dem sync-Borrow gewonnen.
+                                // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
+                                // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
+                                // `&ColonyDb` across an .await boundary. Templates
+                                // snapshot + pre-extracted template rows + rescan-future
+                                // prologue all obtained from the sync borrow.
                                 let templates_rows = colony_db.read_templates().unwrap_or_default();
                                 let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                                     templates_rows.clone().into_iter()
@@ -2112,9 +2114,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
 /// Signature and body are byte-identical to Phase-4-done. Message-log emission
 /// is handled by the caller via `route_with_log` (E11, Phase-5-fix).
 ///
-/// `#[rustfmt::skip]`: dieser Korridor ist gegen ein zeichenweises Tag-Gate
-/// (A6-Fixture `expected_route_body.txt`) eingefroren — rustfmt darf ihn nicht
-/// umformatieren.
+/// `#[rustfmt::skip]`: this corridor is frozen against a character-exact tag gate
+/// (A6 fixture `expected_route_body.txt`) — rustfmt must not reformat it.
 #[rustfmt::skip]
 async fn route(
     registry: &HashMap<Path, RegistryEntry>,
@@ -2193,9 +2194,9 @@ async fn route(
 /// async frame stays Send. The borrow ends at `.send(...).await` return; only
 /// owned values (e.g. oneshot::Receiver) cross the await boundary.
 ///
-/// Phase-12-Pre: `.send().await` propagiert kooperatives Backpressure rückwärts
-/// in die Routing-Loop bei vollem Writer-Channel. `route()` selbst bleibt
-/// byte-identisch (sendet nicht; Tripwire-Diff-Gate gegen phase-10c-done).
+/// Phase-12-Pre: `.send().await` propagates cooperative backpressure backwards
+/// into the routing loop when the writer channel is full. `route()` itself stays
+/// byte-identical (it does not send; tripwire diff gate against phase-10c-done).
 /// Phase-13.5 A8 (F2/F5): auto-offload an oversized inline body to a `Body::Blob`
 /// before the message is logged + delivered. Spec Z.1361 (write-rule) + A1
 /// canonical `>=` threshold (`Body`-enum Z.893): an inline body whose serialized
@@ -2325,21 +2326,21 @@ async fn route_with_log(
         return RouteAction::Done;
     }
 
-    // Phase-13 Wake-Pre-Send (Slice 13-I-1): bevor `route()` den Send tut,
-    // bei Asleep/NotYetSpawned die WakeFn aufrufen + Receiver an die Cell-Task
-    // übergeben. Status wird auf Awake gesetzt. Sync ops only — kein `.await`
-    // zwischen Status-Set und dem nachfolgenden `route(...)`-Aufruf, der den
-    // `entry.handle.send(msg).await` tut. `route()` selbst bleibt byte-identisch
-    // zu phase-12-done (Tripwire 1).
+    // Phase-13 wake-pre-send (slice 13-I-1): before `route()` does the send,
+    // call the WakeFn on Asleep/NotYetSpawned and hand the receiver over to the
+    // cell task. The status is set to Awake. Sync ops only — no `.await` between
+    // the status set and the subsequent `route(...)` call that does the
+    // `entry.handle.send(msg).await`. `route()` itself stays byte-identical to
+    // phase-12-done (tripwire 1).
     //
-    // Gate: nur wenn `pre_routable` (kein Colony-Endpoint, TTL > 0, target
-    // existiert in der Registry) — sonst sendet `route()` ohnehin nicht, und
-    // ein Status-Flip wäre falsch.
+    // Gate: only when `pre_routable` (no colony endpoint, TTL > 0, target exists
+    // in the registry) — otherwise `route()` would not send anyway, and a status
+    // flip would be wrong.
     //
-    // Heute (Phase-13-I-1) ist der Wake-Arm logisch korrekt aufgebaut, aber
-    // praktisch nie ausgeführt: alle Cells werden im Active-Pfad (Variante a,
-    // 13-G-2) als `Awake` registriert. Wake live ab 13-K-2 (Stateful →
-    // Dormant + NotYetSpawned-Initial-Status).
+    // Today (phase-13-I-1) the wake arm is logically correct but practically
+    // never executed: every cell is registered as `Awake` on the active path
+    // (variant a, 13-G-2). Wake goes live from 13-K-2 (stateful → dormant +
+    // NotYetSpawned initial status).
     if pre_routable && let Some(entry) = registry.get_mut(&resolved_target) {
         // F1-KH2 Schicht 2 (defense-in-depth): a PARKED cell whose registration
         // carries NO wake mechanic (`wake == None` — eager kinds, exceptional
@@ -2399,7 +2400,7 @@ async fn route_with_log(
 }
 
 /// Befund 8 — sweep the filesystem residue of a POST-RENAME mutation reject so
-/// the reject is spurless (spec § Validierung Z.279: "kein Teilcommit").
+/// the reject is spurless (spec § Validation l.279: "no partial commit").
 ///
 /// `apply_mutation` renames ALL staged cells into their final paths BEFORE the
 /// spawn loop, so a spawn reject mid-loop leaves the not-yet-registered cells
@@ -2490,7 +2491,7 @@ pub(crate) async fn handle_mutation(
     strict_validation: bool, // paket-7 B5 — colony.json strict_validation for mutation-spawn validate_emits resolution
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — delivery-boundary resolution
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold for EDA error-reply paths
-    env_source: Option<&std::path::Path>, // U8 (RULED A8) — die vom Start gemerkte Env-Quelle; None ⇒ Default `<root>/.env`
+    env_source: Option<&std::path::Path>, // U8 (RULED A8) — the env source remembered from startup; None ⇒ default `<root>/.env`
     death_ack_wait_tx: Option<&mpsc::Sender<()>>, // test-only deterministic sync hook; None in production (byte-identical prod path)
 ) -> crate::mutation::MutationOutcome {
     use crate::mutation::MutationOutcome;
@@ -2509,9 +2510,10 @@ pub(crate) async fn handle_mutation(
                 .collect()
         })
         .unwrap_or_default();
-    // U8 (RULED A8): die vom Colony-Start gemerkte Env-Quelle. Identisch zur
-    // Boot-Substitution (`plan_bootstrap_with_env`): Override gilt, sonst Default
-    // `<root>/.env`. So lesen Boot, Mutation und 2b-Adoption aus derselben Quelle.
+    // U8 (RULED A8): the env source remembered from colony startup. Identical to
+    // the boot substitution (`plan_bootstrap_with_env`): the override wins,
+    // otherwise the default `<root>/.env`. That way boot, mutation and 2b
+    // adoption read from the same source.
     let env_path = env_source
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| root.join(".env"));
@@ -2575,9 +2577,9 @@ pub(crate) async fn handle_mutation(
     // Resume produces NO `StagedDir` (stage.rs skips an existing final_path), so
     // — unlike the subtree path's `subtree.existing` — it would never seed the
     // recompute `involved` set. A Resume IS a direct diff-address of the node
-    // (overview Z.170-180), so the Sticky-Diskriminator must treat it as such:
+    // (overview Z.170-180), so the sticky discriminator must treat it as such:
     // collect the resolved target paths here and seed them into `involved` once
-    // it is declared (Schritt 9), so a `failed` cell resumed on its own path is
+    // it is declared (step 9), so a `failed` cell resumed on its own path is
     // reactivated (cleared + reset) exactly like an `add_edges` reconnect.
     let mut resume_targets: Vec<Path> = Vec::new();
     if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
@@ -2748,7 +2750,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Step 1b: Lazy-Check (overview Z.1163 Pfad-2, T18).
+    // Step 1b: lazy check (overview Z.1163 path 2, T18).
     // For each add_nodes entry that references a template: if the registry knows
     // the template but its filesystem_path no longer exists on disk, fire a
     // fire-and-forget RemoveTemplate write op and immediately reject.
@@ -2848,9 +2850,9 @@ pub(crate) async fn handle_mutation(
     // `swap_nodes` `match.name` existence check. Mirrors the `registry_names`
     // parent==scope_prefix filter above: only hives whose full path lives DIRECTLY
     // within `guard_scope` contribute their short-name. A `match.name` is scope-bound
-    // (spec Z.265 "Namen sind pro Scope eindeutig"), so a hive in a FOREIGN scope must
+    // (spec Z.265 "Names are unique per scope"), so a hive in a FOREIGN scope must
     // NOT satisfy a short-name match — otherwise validate passes a node that the
-    // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (Befund
+    // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (finding
     // Paket-2-b'). This is DISTINCT from `hive_endpoint_names` (global, for add_edges
     // endpoints, which are scope-relative and may legitimately reference any hive).
     let hive_match_names: Vec<String> = hive_scopes
@@ -3227,7 +3229,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritt 5: durable in_flight insert.
+    // Apply sequence step 5: durable in_flight insert.
     // The `&log_tx` borrow ends at `.send(...)` return; only `rx` (Send) crosses
     // the await — keeping the `colony_task` Future Send on multi_thread runtimes.
     let now = std::time::SystemTime::now()
@@ -3263,10 +3265,11 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritte 6+7 (T17): stage + atomic rename.
-    // Schritte 9 (spawn) + 10 (edges) come in T18 + T21.
-    // templates-Snapshot wurde vom Caller (colony_task) gebaut + als Parameter übergeben
-    // (Phase-11 T16: ColonyDb ist !Sync, daher kein &ColonyDb über .await-Grenze).
+    // Apply sequence steps 6+7 (T17): stage + atomic rename.
+    // Steps 9 (spawn) + 10 (edges) come in T18 + T21.
+    // The templates snapshot was built by the caller (colony_task) and passed in as a
+    // parameter (phase-11 T16: ColonyDb is !Sync, hence no &ColonyDb across an
+    // .await boundary).
     let (staged, staged_subtrees) = match crate::mutation::apply::apply_mutation(
         root,
         &id,
@@ -3341,18 +3344,18 @@ pub(crate) async fn handle_mutation(
         }
     };
 
-    // Apply-Sequenz Schritt 7: optional crash-injection hook.
+    // Apply sequence step 7: optional crash-injection hook.
     crate::mutation::hook::park_after_rename().await;
 
-    // Apply-Sequenz Schritt 8: remove_nodes — Phase-13.5-Lifecycle-3b Task 6
+    // Apply sequence step 8: remove_nodes — Phase-13.5-Lifecycle-3b Task 6
     // (SCOPE 4, spec Z.260): `remove_nodes` = Disconnect, NOT Delete. The node's
     // registry entry STAYS (No-Delete: `cell_id`, FS, `cell.db` untouched). We
     // only COLLECT the resolved paths here; their edges (from + to) are removed
-    // in Schritt 10 via the SAME A5 buffer/rollback machinery (the buffer and
+    // in step 10 via the SAME A5 buffer/rollback machinery (the buffer and
     // rollback vectors are declared there), and each path is seeded into the
     // recompute `affected_scope` so the recompute-hook flips `active→false`,
     // stops the running task, and drains the mailbox remainder to the DLQ.
-    // Reihenfolge remove-vor-add (Spec): erlaubt remove+add an demselben Pfad.
+    // Remove-before-add ordering (spec): allows remove+add at the same path.
     let mut removed_node_paths: Vec<Path> = Vec::new();
     if let Some(rems) = diff_subst.get("remove_nodes").and_then(|v| v.as_array()) {
         for r in rems {
@@ -3367,7 +3370,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritt 9: Cell-Spawn + DIRECT registry.insert (NO Self-Send).
+    // Apply sequence step 9: cell spawn + DIRECT registry.insert (NO self-send).
     // correction 2: the Mutation arm already holds `&mut registry`. A
     // self-send (`inbox_self_tx.send(ColonyMsg::Register).await`) would deadlock
     // because the select! loop cannot process its own message while the Mutation
@@ -3378,14 +3381,14 @@ pub(crate) async fn handle_mutation(
         .unwrap()
         .as_secs() as i64;
 
-    // Paket-3 P3-C1 (P8 fix, Reviewer-Auflage A3): build the POST-STATE
+    // Paket-3 P3-C1 (P8 fix, reviewer requirement A3): build the POST-STATE
     // edge view this diff will produce, so the eager-spawn gate below can derive
     // a staged cell's activity against the edges as they WILL be after the diff
-    // applies. The spawn loop runs BEFORE Schritt 9b/9c/10 mutate `edges`, so
+    // applies. The spawn loop runs BEFORE steps 9b/9c/10 mutate `edges`, so
     // computing activity from the current `edges` would always look inactive for
     // a fresh cell. The view = `edges ∪ add_edges − (remove_edges ∪ remove_nodes
-    // edges)`, mirroring exactly what Schritt 10b recomputes against (see
-    // `connectivity::post_state_edges`). Scope-resolution mirrors the Schritt-10
+    // edges)`, mirroring exactly what step 10b recomputes against (see
+    // `connectivity::post_state_edges`). Scope resolution mirrors the step-10
     // `add_edges`/`remove_edges` blocks verbatim (`resolve_scoped_path`).
     let post_add_edges: Vec<(Path, Path)> = diff_subst
         .get("add_edges")
@@ -3483,10 +3486,10 @@ pub(crate) async fn handle_mutation(
         // the SAME discriminator the bootstrap boot-inactive path uses), do NOT
         // eager-spawn it: registering it inactive + `NotYetSpawned` WITHOUT
         // building the task avoids the transient real side effect (mcp
-        // subprocess / proxy connection) that Schritt 10b would peace-stop a
+        // subprocess / proxy connection) that step 10b would peace-stop a
         // sub-second later. We mirror `bootstrap_apply::register_inactive_non_spawned`
         // EXACTLY: the real respawn carries `eager_on_reconnect == true`, so a
-        // later `add_edges` reconnect's `(entry.respawn)()` (Schritt 10b) spawns
+        // later `add_edges` reconnect's `(entry.respawn)()` (step 10b) spawns
         // the task immediately. A cell that would be ACTIVE (Grace — pure
         // edge-less `add_nodes` under an active/root scope), or a lazy/Dormant
         // kind (`build_boot_inactive_respawn` returns `None`, never eager-spawns
@@ -3555,10 +3558,10 @@ pub(crate) async fn handle_mutation(
                     cell_id,
                     cell_type: sd.template.clone(),
                     status: CellStatus::NotYetSpawned { receiver },
-                    // Eager kind → eager re-spawn on reconnect (Schritt 10b).
+                    // Eager kind → eager re-spawn on reconnect (step 10b).
                     eager_on_reconnect: true,
                     // POST-STATE derives this cell inactive → register inactive,
-                    // NO task. Schritt 10b confirms (no flip) until a reconnect.
+                    // NO task. Step 10b confirms (no flip) until a reconnect.
                     active: false,
                     failed: false,
                     stop_tx: None,
@@ -3625,9 +3628,9 @@ pub(crate) async fn handle_mutation(
 
         // Phase-13-K-2: branch per CellKind. Active → DIRECT insert (stateless,
         // status Awake). Dormant → DIRECT insert (stateful, status
-        // NotYetSpawned). NO Self-Send (correction 2) — die Mutation-arm
-        // hält &mut registry, und ColonyMsg::Register/RegisterDormant würde die
-        // select!-Loop blockieren.
+        // NotYetSpawned). NO self-send (correction 2) — the mutation arm holds
+        // &mut registry, and ColonyMsg::Register/RegisterDormant would block the
+        // select! loop.
         let cell_id = Uuid::now_v7();
         match spawned {
             crate::SpawnedCellKind::Active {
@@ -3710,8 +3713,8 @@ pub(crate) async fn handle_mutation(
                     },
                 );
                 // NO spawn_watcher — cell-task is parked, no join handle yet.
-                // First Wake-Pre-Send (route_with_log, 13-I-1) starts the task
-                // + watcher analog zum Bootstrap-Pfad.
+                // First wake-pre-send (route_with_log, 13-I-1) starts the task
+                // + watcher analogously to the bootstrap path.
             }
         }
 
@@ -3732,14 +3735,14 @@ pub(crate) async fn handle_mutation(
             .await;
     }
 
-    // Apply-Sequenz Schritt 10 (A5 atomicity restructure): Edge-Ops are NO LONGER
+    // Apply sequence step 10 (A5 atomicity restructure): edge ops are NO LONGER
     // fire-and-forget. Instead we (1) apply edge changes IN-RAM (needed for the
     // recompute below) while tracking rollback info, and (2) collect the matching
     // `InsertEdge`/`RemoveEdge` WriteOps into a LOCAL buffer. The recompute-hook
-    // (Schritt 10b) appends `SetRegistryStatus` ops to the same buffer and may
+    // (step 10b) appends `SetRegistryStatus` ops to the same buffer and may
     // trigger a death-ack-wait (F5-Variante-A). Only on SUCCESS is the buffer
     // enqueued in order — BEFORE the durable committed-update (FIFO durability,
-    // Entscheidung 8a). On term-timeout the in-RAM changes are rolled back and the
+    // decision 8a). On term-timeout the in-RAM changes are rolled back and the
     // buffer is discarded: `colony.db` stays untouched (no half-disconnect).
     let now_edges = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3758,7 +3761,7 @@ pub(crate) async fn handle_mutation(
     // resumed `failed`/inactive cell on its own path.
     involved.extend(resume_targets.iter().cloned());
 
-    // Apply-Sequenz Schritt 9b (Paket-2 T4): swap_nodes graph-swap lowering.
+    // Apply sequence step 9b (Paket-2 T4): swap_nodes graph-swap lowering.
     //
     // Runs AFTER Step 9's registry.insert loop (t3 already staged + spawned +
     // registered via the SAME machinery as add_nodes) and feeds the EXISTING
@@ -3829,11 +3832,11 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritt 9c (Paket-5 T12, P9 per-node subtree merge resume):
+    // Apply sequence step 9c (Paket-5 T12, P9 per-node subtree merge resume):
     // instantiate each merge-staged SUBTREE. ONLY the missing rename-roots were
     // staged + renamed into place by `apply_mutation`; existing nodes were never
     // FS-touched (F1). Here we wire it into the live substrate so the EXISTING
-    // Schritt-10b recompute sees it:
+    // step-10b recompute sees it:
     //   - every MISSING (rename-root) NON-hive cell is registered INACTIVE-non-
     //     spawned (mirroring `bootstrap_apply::register_inactive_non_spawned`: a
     //     real respawn from `build_boot_inactive_respawn` for eager kinds, else an
@@ -4117,7 +4120,7 @@ pub(crate) async fn handle_mutation(
         }
         // (3) Internal edges: EdgeTable insert + rollback-track + InsertEdge op.
         // condition/modifier arrive resolved (`Option<String>`/`Option<Value>`)
-        // and are compiled the same way Schritt 10 compiles `add_edges`.
+        // and are compiled the same way step 10 compiles `add_edges`.
         for edge in &subtree.internal_edges {
             let cel_condition = edge.condition.as_ref().map(|s| {
                 crate::cel_eval::parse_condition(s)
@@ -4166,7 +4169,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Schritt 10 (Task 6, SCOPE 4): `remove_nodes` = Disconnect. For each removed
+    // Step 10 (task 6, SCOPE 4): `remove_nodes` = disconnect. For each removed
     // node, remove ALL of its edges (`from == p` OR `to == p`) in-RAM through the
     // SAME A5 machinery as `remove_edges`: clone the matched edges into
     // `removed_edges_saved` (rollback), push a `RemoveEdge` WriteOp to
@@ -4208,9 +4211,9 @@ pub(crate) async fn handle_mutation(
                 .expect("validate guaranteed add_edges[].to");
             let from_path = crate::mutation::resolve_scoped_path(&scope, from_name);
             let to_path = crate::mutation::resolve_scoped_path(&scope, to_name);
-            // Phase 13.5-A1 T5: condition + modifier parsen (validate hat das
-            // bereits CEL-geparst → `expect` ist safe). Persistenz von CEL-State
-            // ist nicht Teil von A1; reboot rehydriert ohne CEL.
+            // Phase 13.5-A1 T5: parse condition + modifier (validate already
+            // CEL-parsed them → `expect` is safe). Persisting CEL state is not
+            // part of A1; a reboot rehydrates without CEL.
             let cel_condition = e.get("condition").and_then(|v| v.as_str()).map(|s| {
                 crate::cel_eval::parse_condition(s)
                     .expect("validate guaranteed add_edges[].condition is valid CEL")
@@ -4267,7 +4270,7 @@ pub(crate) async fn handle_mutation(
                 continue;
             }
             let edge_id = candidate.id;
-            // Source-Strings VOR dem Move in edges.insert sichern (Durable-Edges).
+            // Save the source strings BEFORE the move into edges.insert (durable edges).
             let cond_src = candidate.condition.as_ref().map(|c| c.source.clone());
             let mod_src = candidate
                 .modifier
@@ -4353,7 +4356,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritt 10b (F1+F2, A3): connectivity-recompute + Disconnect.
+    // Apply sequence step 10b (F1+F2, A3): connectivity recompute + disconnect.
     // Build the affected scope over the involved endpoints + registry keys, then
     // per node compute the edge-derived activity. On a `true→false` transition
     // deactivate the cell: flip `entry.active` (rollback-tracked), buffer a
@@ -4374,7 +4377,7 @@ pub(crate) async fn handle_mutation(
     // disconnect be vetted up front. For every node that would transition
     // `true→false` AND is `Awake` AND has NO live `stop_tx`, the disconnect
     // cannot be peace-stopped → honoring it would leave the task running while
-    // the cell is marked inactive (a silent "Task ⇔ aktiv" zombie). Reject the
+    // the cell is marked inactive (a silent "task ⇔ active" zombie). Reject the
     // whole mutation atomically instead.
     //
     // `compute_active` is re-run here (pure, cheap) — duplicating it vs. the
@@ -4382,7 +4385,7 @@ pub(crate) async fn handle_mutation(
     // fires stops mid-iteration). At this point NO `active` flip has happened
     // yet, so the reject only needs to roll back the in-RAM edge ops.
     //
-    // F5 CONTRACT — guard is the PERMANENT backstop (Guard-Bleibt, the spec owner
+    // F5 CONTRACT — guard is the PERMANENT backstop (guard-stays, the spec owner
     // 2026-06-07, P4-B closure; NOT interim, NOT unreachable):
     //   • Slice-4 T6 restored stop-wiring on the reconnect-eager path and the
     //     crash/backstop-restart path: both now call `renotify_stop_wiring`, so a
@@ -4543,7 +4546,7 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply-Sequenz Schritt 10c (F5-Variante-A): inline death-ack-wait with a
+    // Apply sequence step 10c (F5 variant A): inline death-ack-wait with a
     // term-timeout per deactivated Awake cell. Happy path: every death_ack fires
     // < term_timeout() → proceed to flush+commit. Timeout on ANY cell → full in-RAM
     // rollback + discard buffer → Rejected{term_timeout} (colony.db untouched).
@@ -4604,7 +4607,7 @@ pub(crate) async fn handle_mutation(
         let _ = log_tx.send(op).await;
     }
 
-    // Apply-Sequenz Schritt 11: durable committed update.
+    // Apply sequence step 11: durable committed update.
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         log_tx
@@ -4760,11 +4763,11 @@ async fn send_eda_reject(
                 msg,
                 sender,
             } => {
-                // T3 (callsite Nr. 4): EDA-Error-Reply mit `reply_to = /colony/<x>` ist
-                // ein DLQ-Fall — wir können hier NICHT dispatch_colony_endpoint aufrufen
-                // (kein colony_db/factories/root in send_eda_reject-Scope, und ein Reentry
-                // in /colony/mutations wäre eine Endlosschleife). DLQ-Push direkt inline
-                // mit sender-pass-through (must-fix #2).
+                // T3 (call site no. 4): an EDA error reply with `reply_to = /colony/<x>`
+                // is a DLQ case — we can NOT call dispatch_colony_endpoint here
+                // (no colony_db/factories/root in the send_eda_reject scope, and a
+                // re-entry into /colony/mutations would be an endless loop). DLQ push
+                // directly inline with sender pass-through (must-fix #2).
                 tracing::warn!(
                     endpoint = %endpoint.as_str(),
                     sender = %sender.as_str(),
@@ -4857,14 +4860,14 @@ fn handle_colony_target(
     );
 }
 
-/// Phase-3a full cascade per spec § Verhalten bei Routing-Fehlern:
-///   1. reply_to gesetzt → Error-Reply (terminal, reply_to=None) wird an die
-///      äußere Routing-Loop zurückgegeben; sie läuft durch reguläres route().
-///   2. sonst → /colony/dead_letters.
+/// Phase-3a full cascade per spec § Behavior on routing errors:
+///   1. reply_to set → the error reply (terminal, reply_to=None) is returned to
+///      the outer routing loop; it runs through the regular route().
+///   2. otherwise → /colony/dead_letters.
 ///
-/// "Terminal" heißt: die Error-Reply hat selbst kein reply_to gesetzt; ihr
-/// eigener Routing-Miss geht direkt zu Schritt 2 (DLQ), keine weitere Kaskade
-/// (Spec § "Cascade ist One-Shot"). Maximale Cascade-Tiefe = 2 Hops.
+/// "Terminal" means: the error reply itself has no reply_to set; its own routing
+/// miss goes straight to step 2 (DLQ), no further cascade
+/// (spec § "cascade is one-shot"). Maximum cascade depth = 2 hops.
 fn handle_unresolved(
     dead_letters: &mut VecDeque<DeadLetter>,
     sender_path: Path,
@@ -4882,20 +4885,20 @@ fn handle_unresolved(
     );
 
     if let Some(reply_target) = message.reply_to.clone() {
-        // Schritt 1: Error-Reply terminal — über die äußere Loop durch route().
+        // Step 1: the error reply is terminal — through the outer loop via route().
         let error_reply = MessageBuilder::new(reply_target)
             .trace_id(message.trace_id)
             .parent_message_id(message.id)
-            .ttl(message.ttl) // bereits dekrementiert von route() → weiter dekrementieren beim nächsten Hop
+            .ttl(message.ttl) // already decremented by route() → decrement further on the next hop
             .build();
         // error_reply.reply_to is None by default → terminal.
-        // sender_path für den nächsten route()-Aufruf ist "/colony" — die Cascade
-        // hat keine emittierende Cell; eine virtuelle Colony-Adresse als Sender
-        // ist konsistent mit Spec § Routing-Symmetrie.
+        // The sender_path for the next route() call is "/colony" — the cascade has
+        // no emitting cell; a virtual colony address as sender is consistent with
+        // spec § routing symmetry.
         return Some((Path::new("/colony"), error_reply));
     }
 
-    // Schritt 2: reply_to == None → direkt DLQ.
+    // Step 2: reply_to == None → straight to the DLQ.
     push_dead_letter(
         dead_letters,
         DeadLetter {
@@ -5098,8 +5101,8 @@ fn split_content_header(mut content: Value) -> (Map<String, Value>, Value) {
 /// Retained as a test helper; production code uses `build_follow_up_with`.
 #[cfg(test)]
 fn build_follow_up_message(em: CellEmission) -> Message {
-    // Zwei-Fächer-Verfall: context reist durch, hop = isolierter Cell-Output
-    // (input.hop fällt weg, strukturelle Frische, ADR-0001).
+    // Two-compartment decay: context travels through, hop = isolated cell output
+    // (input.hop is dropped, structural freshness, ADR-0001).
     let (cell_hop, body_value) = split_content_header(em.content);
     let merged = em.input_headers.carry_context_with_hop(cell_hop);
     MessageBuilder::new(em.target)
@@ -5530,7 +5533,7 @@ mod tests {
 
     /// Phase-13.5 Lifecycle-3b Task 4 (4.6): pin the canonical `term_timeout`
     /// mutation-reject error_code string (stable API contract). Listed in the
-    /// spec `error_code` enum (`docs/meclaw-overview.md` § Validierung).
+    /// spec `error_code` enum (`docs/meclaw-overview.md` § Validation).
     #[test]
     fn term_timeout_error_code_is_pinned() {
         assert_eq!(super::TERM_TIMEOUT_ERROR_CODE, "term_timeout");
@@ -5538,7 +5541,7 @@ mod tests {
 
     /// Pin the canonical `stop_wiring_unavailable` mutation-reject error_code
     /// string (stable API contract), analog to `term_timeout`. Listed in the
-    /// spec `error_code` enum (`docs/meclaw-overview.md` § Validierung).
+    /// spec `error_code` enum (`docs/meclaw-overview.md` § Validation).
     #[test]
     fn stop_wiring_unavailable_error_code_is_pinned() {
         assert_eq!(
@@ -6488,16 +6491,16 @@ mod tests {
         join.await.unwrap();
     }
 
-    /// Phase-13.5-A6-T3: `/colony/templates` und `/colony/dead_letters` sind
-    /// jetzt **implementiert** — sie produzieren keinen DLQ-Push mehr, sondern
-    /// einen Reply (bzw. `RouteAction::Done` bei `reply_to=None`). Der Test pinnt
-    /// das verbleibende DLQ-Verhalten:
-    /// - `/colony` bare → `ColonyEndpointInvalid` (in `route()` selbst, nicht
-    ///   im Dispatcher — Vollbody-Fixture pinned).
-    /// - `/colonial/x` → `UnresolvedPath` (boundary check: NICHT-`/colony`-Präfix
-    ///   muss durch die normale Registry-Lookup-Cascade laufen).
-    /// - Unknown `/colony/<x>` → `ColonyEndpointUnimplemented` mit sender-pass-
-    ///   through (zusätzlicher Test in `colony_dispatch::tests`).
+    /// Phase-13.5-A6-T3: `/colony/templates` and `/colony/dead_letters` are now
+    /// **implemented** — they no longer produce a DLQ push but a reply (resp.
+    /// `RouteAction::Done` when `reply_to=None`). The test pins the remaining
+    /// DLQ behaviour:
+    /// - `/colony` bare → `ColonyEndpointInvalid` (in `route()` itself, not in
+    ///   the dispatcher — full-body fixture pinned).
+    /// - `/colonial/x` → `UnresolvedPath` (boundary check: a NON-`/colony` prefix
+    ///   must run through the normal registry-lookup cascade).
+    /// - Unknown `/colony/<x>` → `ColonyEndpointUnimplemented` with sender
+    ///   pass-through (additional test in `colony_dispatch::tests`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn colony_route_bare_and_non_colony_prefix_land_in_dead_letters() {
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
@@ -7117,12 +7120,12 @@ mod tests {
         join.await.unwrap();
     }
 
-    /// Slice 2 — Outputs-Arm Zwei-Fächer-Verfall: eine eingehende Message mit
-    /// `context.turn_id="t1"` und `hop.operation="select"` wird von einer Cell
-    /// konsumiert, die `{"header":{"finish_reason":"tool_calls"}, ...}` emittiert.
-    /// Am Follow-up: `hop.operation` ist verfallen (alter hop fällt weg),
-    /// `hop.finish_reason` ist der frische Cell-Output, `context.turn_id` reist
-    /// durch.
+    /// Slice 2 — outputs-arm two-compartment decay: an incoming message with
+    /// `context.turn_id="t1"` and `hop.operation="select"` is consumed by a cell
+    /// that emits `{"header":{"finish_reason":"tool_calls"}, ...}`.
+    /// At the follow-up: `hop.operation` has decayed (the old hop is dropped),
+    /// `hop.finish_reason` is the fresh cell output, `context.turn_id` travels
+    /// through.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn outputs_arm_two_compartment_verfall_drops_hop_carries_context() {
         use meclaw_core::serde_json::json;
@@ -7234,9 +7237,11 @@ mod tests {
             .await
             .clone()
             .expect("follow-up must reach /listener");
+        // "two-compartment decay" is the two-compartment header model's decay rule
+        // (tag: header-model-zwei-faecher-done).
         assert!(
             captured.headers.hop.get("operation").is_none(),
-            "old input hop (operation) dropped (Zwei-Fächer-Verfall)"
+            "old input hop (operation) dropped (two-compartment decay)"
         );
         assert_eq!(
             captured.headers.hop.get("finish_reason"),
@@ -7258,11 +7263,10 @@ mod tests {
         join.await.unwrap();
     }
 
-    /// Slice 2 — Fan-out context-Kopie-Pin: eine Cell mit zwei matchenden
-    /// Out-Edges erzeugt zwei Follow-ups an zwei Sinks; jede Edge setzt ein
-    /// unterschiedliches `hop.route`. Das persistente `context` MUSS byte-
-    /// identisch in beide Zweige kopiert werden, während sich `hop` pro Zweig
-    /// unterscheidet.
+    /// Slice 2 — fan-out context-copy pin: a cell with two matching out-edges
+    /// produces two follow-ups to two sinks; each edge sets a different
+    /// `hop.route`. The persistent `context` MUST be copied byte-identically
+    /// into both branches, while `hop` differs per branch.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn fan_out_copies_context_byte_identical_while_hop_diverges() {
         use meclaw_core::serde_json::json;
@@ -7494,8 +7498,8 @@ mod tests {
         use meclaw_core::serde_json::json;
         use meclaw_core::{Body, CellEmission, Headers, Path, Uuid};
 
-        // context.session_id reist durch; input.hop.operation verfällt; der
-        // Cell-Output (content.header) wird zum neuen hop.
+        // context.session_id travels through; input.hop.operation decays; the
+        // cell output (content.header) becomes the new hop.
         let mut ctx = meclaw_core::serde_json::Map::new();
         ctx.insert("session_id".into(), json!("s1"));
         let mut old_hop = meclaw_core::serde_json::Map::new();
@@ -7525,7 +7529,7 @@ mod tests {
         );
         assert!(
             msg.headers.hop.get("operation").is_none(),
-            "old input hop dropped (Zwei-Fächer-Verfall)"
+            "old input hop dropped (two-compartment decay)"
         );
         assert_eq!(
             msg.headers.hop.get("forwarded_by"),

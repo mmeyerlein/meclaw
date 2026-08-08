@@ -5,10 +5,10 @@
 //! in `Arc<Mutex<Option<Sender>>>` so tests can fetch the post-restart
 //! sender for fresh-I/O-Task event-injection.
 //!
-//! **Cell.db: in-memory per rebuild** — bewusst gewählt, da der Mock keine
-//! persistente State-Wahrheit prüft. Echte Long-Running-Cells in 10-B/C/D
-//! öffnen via `open_or_create_cell_db_with_status` (Phase-9-Pattern) und
-//! erleben Resume-mit-State über den Restart.
+//! **Cell.db: in-memory per rebuild** — a deliberate choice, since the mock
+//! asserts no persistent state truth. Real long-running cells in 10-B/C/D open
+//! via `open_or_create_cell_db_with_status` (phase-9 pattern) and do experience
+//! resume-with-state across the restart.
 
 use crate::mocks::{MockEvent, ReceiptMockLongRunningCell};
 use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, cell_task_long_running};
@@ -131,12 +131,12 @@ impl CellFactory for LongRunningReceiptFactory {
                 tokio::sync::oneshot::Receiver<()>,
                 tokio::sync::oneshot::Receiver<()>,
             ) {
-                // CRITICAL: fetch_add VOR Panic-Arm-Entscheidung. `prior == 0`
-                // ist die erste Cell-Instanz (armed); jeder spätere Rebuild
-                // (Post-Restart) bekommt `prior >= 1` und bleibt gesund.
-                // Ohne diese Reihenfolge würde auch die Post-Restart-Instanz
-                // panicken und der positive Receipt im Test wäre hohl
-                // (handle_calls inkrementiert VOR Panic).
+                // CRITICAL: fetch_add BEFORE the panic-arm decision. `prior == 0`
+                // is the first cell instance (armed); every later rebuild
+                // (post-restart) gets `prior >= 1` and stays healthy.
+                // Without this ordering the post-restart instance would panic too
+                // and the positive receipt in the test would be hollow
+                // (handle_calls increments BEFORE the panic).
                 let prior = factory
                     .spawn_count
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -159,7 +159,7 @@ impl CellFactory for LongRunningReceiptFactory {
                     .try_lock()
                     .expect("latest_inject: no concurrent rebuild") = Some(inject_tx);
 
-                // In-memory cell.db pro Rebuild (Mock — siehe Modul-Doc).
+                // In-memory cell.db per rebuild (mock — see the module docs).
                 let conn = rusqlite::Connection::open_in_memory().expect("open_in_memory");
                 let db = DbConn::wrap(conn, None);
 

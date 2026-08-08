@@ -1,11 +1,12 @@
-//! FIX-3-Treue-Test: route_with_log Pre-Check muss EXAKT die zugestellten Hops loggen.
+//! FIX-3 fidelity test: the route_with_log pre-check must log EXACTLY the
+//! delivered hops.
 //!
-//! Verifiziert über drei Phase-5-Topologien:
+//! Verified across three phase-5 topologies:
 //! - 1-Hop: external → /a (terminal)
 //! - 2-Hop: external → /a → /b (terminal)
 //! - 3-Hop: external → /a → /b → /c (terminal)
 //!
-//! Bei rotem Test (COUNT > expected): route_with_log-Pre-Check-Divergenz. ZURÜCKMELDEN.
+//! On a red test (COUNT > expected): route_with_log pre-check divergence. REPORT BACK.
 
 use meclaw_core::{MessageBuilder, Path, Uuid};
 use meclaw_testing::ColonyHandle;

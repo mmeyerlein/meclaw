@@ -1,8 +1,8 @@
-//! Phase-11-Pre-Demo: .env wird beim Mutation-Apply gelesen, ${ENV_VAR} substituiert.
-//! Schließt Phase-6-Stub colony.rs:643 ("T13-MVP uses an empty env map").
+//! Phase-11 pre-demo: .env is read on mutation apply, ${ENV_VAR} substituted.
+//! Closes the phase-6 stub colony.rs:643 ("T13-MVP uses an empty env map").
 //!
-//! Vollständiger Roundtrip-Test wird in 11-F nachgereicht, sobald
-//! `build_staging_tree` den .env-substituierten config.json-Inhalt schreibt.
+//! The full round-trip test follows in 11-F, once `build_staging_tree` writes
+//! the .env-substituted config.json content.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn env_var_in_override_params_resolves_from_root_env() {

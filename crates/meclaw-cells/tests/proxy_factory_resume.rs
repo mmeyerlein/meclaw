@@ -1,7 +1,7 @@
 //! Phase-10-C T17 / W9: Cursor ueberlebt Spawn-Drop-Spawn. Beweis-Pattern
-//! analog timer T17. Direkter DB-Touch zwischen den Spawns (statt
-//! handle_event-Trigger ueber echte Mailbox), weil der Test die Resume-
-//! Semantik der Factory prueft, nicht den Event-Pfad.
+//! analogous to timer T17. A direct DB touch between the spawns (instead of a
+//! handle_event trigger through a real mailbox), because the test checks the
+//! factory's resume semantics, not the event path.
 
 use meclaw_cells::proxy::db::{load_offset, save_offset, setup_proxy_schema};
 use meclaw_cells::proxy::factory::ProxyCellFactory;
@@ -19,7 +19,7 @@ async fn factory_resumes_cursor_after_spawn_drop_spawn() {
     std::fs::create_dir_all(&cell_dir).unwrap();
     let params = json!({
         "bot_token": "T", "emit_to": "/x",
-        "base_url": "http://127.0.0.1:1",  // unused (kein Long-Poll-Test)
+        "base_url": "http://127.0.0.1:1",  // unused (not a long-poll test)
     });
     let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
@@ -84,11 +84,11 @@ async fn factory_resumes_cursor_after_spawn_drop_spawn() {
         .unwrap()
         .unwrap();
 
-    // Probe direkt mit fresh-Connection.
+    // Probe directly with a fresh connection.
     let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
     assert_eq!(
         load_offset(&conn).unwrap(),
         4711,
-        "Resume muss persistierten Cursor laden"
+        "Resume must load the persisted cursor"
     );
 }

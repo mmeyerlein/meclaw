@@ -41,8 +41,8 @@ impl EdgeTable {
 
     /// Removes the edge with the given `id` from the table, if present.
     ///
-    /// Phase-6 T21: `remove_edges`-Handler in `handle_mutation` ruft das pro
-    /// Edge auf, das durch das `match{from,to}`-Pattern selektiert wurde.
+    /// Phase-6 T21: the `remove_edges` handler in `handle_mutation` calls this per
+    /// edge selected by the `match{from,to}` pattern.
     pub fn remove(&mut self, id: &Uuid) {
         for v in self.by_from.values_mut() {
             v.retain(|e| &e.id != id);
@@ -591,8 +591,8 @@ mod hook_tests {
     }
 
     /// Phase 13.5-A1 T9 (F3-PIN): undefined-header access in a condition →
-    /// CEL eval error → edge skipped. Spec ist unklar; A1-Ruling = CEL-Standard
-    /// (NICHT Crash, NICHT DLQ).
+    /// CEL eval error → edge skipped. The spec is silent here; ruling A1 = the CEL
+    /// standard (NOT a crash, NOT the DLQ).
     #[test]
     fn evaluate_edge_skips_when_condition_reads_undefined_header_f3() {
         let cond = crate::cel_eval::parse_condition("hop.never_was == 'x'").unwrap();

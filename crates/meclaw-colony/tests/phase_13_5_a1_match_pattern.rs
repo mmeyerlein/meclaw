@@ -1,14 +1,14 @@
-//! Phase-13.5-A1-F6: remove_edges-Match-Pattern für condition/modifier ist
-//! String-Equality (nicht semantisch). Zwei Edges mit gleichem from/to,
-//! unterschiedlicher condition: nur die mit exakt-passender condition-Source
-//! wird durch remove_edges entfernt.
+//! Phase-13.5-A1-F6: the remove_edges match pattern for condition/modifier is
+//! string equality (not semantic). Two edges with the same from/to but different
+//! conditions: only the one with the exactly matching condition source is
+//! removed by remove_edges.
 //!
-//! Spec-Anker: docs/meclaw-overview.md Z.253 ("per Eigenschaften
-//! (from/to/condition/modifier)"). F6-PIN-Unit-Tests stehen bereits in
-//! `crates/meclaw-colony/src/cel_eval.rs::tests` (T9, commit 9133b14) für
-//! `CompiledCondition.source` + `CompiledModifier.source`-Preservation; dieser
-//! Integrations-Test beweist die Match-Pattern-Disziplin im
-//! `handle_mutation::remove_edges`-Apply-Pfad + die DTO-Exposition über
+//! Spec anchor: docs/meclaw-overview.md Z.253 ("by properties
+//! (from/to/condition/modifier)"). The F6 pin unit tests already live in
+//! `crates/meclaw-colony/src/cel_eval.rs::tests` (T9, commit 9133b14) for
+//! `CompiledCondition.source` + `CompiledModifier.source` preservation; this
+//! integration test proves the match-pattern discipline in the
+//! `handle_mutation::remove_edges` apply path + the DTO exposure via
 //! `ColonyMsg::ReadGraph`.
 
 use meclaw_colony::api_dto::ReadGraphReply;

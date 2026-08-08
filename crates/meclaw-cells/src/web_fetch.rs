@@ -11,11 +11,11 @@ use meclaw_core::{CellOutput, Message, OutputSink, Path};
 
 /// Stateless HTTP-GET cell.
 pub struct WebFetchCell {
-    /// reqwest Client (Arc-intern, kein Mutex nötig).
+    /// reqwest client (Arc internally, no mutex needed).
     pub client: reqwest::Client,
     /// External-timeout pro Roundtrip (send + bytes).
     pub external_timeout: Duration,
-    /// Max. Anzahl parallel laufender Workers für diese Cell.
+    /// Max number of workers running in parallel for this cell.
     pub max_concurrency: usize,
 }
 
@@ -261,7 +261,7 @@ impl CellFactory for WebFetchCellFactory {
 
         let respawn_path = path.clone();
         let respawn_outputs_tx = outputs_tx.clone();
-        let respawn_client = client.clone(); // Arc-clone — kein Rebuild, kein .expect()
+        let respawn_client = client.clone(); // Arc clone — no rebuild, no .expect()
         let respawn_blob = blob_store.clone();
         let respawn_mailbox_capacity = mailbox_capacity;
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
@@ -461,7 +461,7 @@ mod tests {
         cell.handle(msg, &sink).await;
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.content["header"]["http_status"], 404);
-        // 404 ist NORMAL — KEIN finish_reason=error (Decision 3.8).
+        // 404 is NORMAL — NO finish_reason=error (decision 3.8).
         assert!(
             em.content["header"].get("finish_reason").is_none()
                 || em.content["header"]["finish_reason"] != "error"
@@ -476,7 +476,7 @@ mod tests {
         };
         use tokio::sync::mpsc;
 
-        // 127.0.0.1:1 — Port 1 ist nicht reserviert, vermutlich kein Listener → connect refused.
+        // 127.0.0.1:1 — port 1 is not reserved, presumably no listener → connect refused.
         let cell = WebFetchCell {
             client: reqwest::Client::builder().build().unwrap(),
             external_timeout: std::time::Duration::from_secs(2),
@@ -588,10 +588,10 @@ mod tests {
         };
         sender.send(msg).await.unwrap();
 
-        // Deterministisches Rendezvous: recv().await returnt sobald der Worker
-        // die Emission in out_tx schreibt. Kein zeitbasierter Failure-Marker —
-        // Channel-Close (None) würde den Test mit unwrap() explodieren lassen,
-        // was ein echter Failure wäre, kein Flake.
+        // Deterministic rendezvous: recv().await returns as soon as the worker
+        // writes the emission into out_tx. No time-based failure marker — a
+        // channel close (None) would blow the test up on unwrap(), which would be
+        // a real failure, not a flake.
         let em = out_rx.recv().await.unwrap();
         assert_eq!(em.target, Path::new("/caller"));
         assert_eq!(em.content["messages"][0]["text"], "factory ok");

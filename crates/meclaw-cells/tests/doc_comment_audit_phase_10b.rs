@@ -1,5 +1,5 @@
-//! Phase-10-B Doc-Comment-Audit (CLAUDE.md § Coding-Standards). Prueft,
-//! dass alle public Items in `crates/meclaw-cells/src/timer/**/*.rs` ein
+//! Phase-10-B doc-comment audit (CLAUDE.md § Coding standards). Checks that
+//! every public item in `crates/meclaw-cells/src/timer/**/*.rs` carries a
 //! `///`-Doc oder `#[doc(...)]`-Attribut tragen. Symmetrisch zu
 //! `doc_comment_audit_phase_9.rs` (Phase-9-Audit-Test).
 
@@ -19,12 +19,12 @@ fn check_file(path: &StdPath, missing: &mut Vec<String>) {
         if !is_public {
             continue;
         }
-        // Spec-Intent (CLAUDE.md § Coding-Standards): "Alle public items
-        // haben Doc-Comments." Standard-Rust-Reihenfolge: `///` →
+        // Spec intent (CLAUDE.md § Coding standards): "every public item has
+        // doc comments." Standard Rust ordering: `///` →
         // `#[derive(...)]`/`#[allow(...)]`/`#[cfg(...)]` → `pub …`. Wir
-        // ueberspringen Attribute (Zeilen die mit `#[` beginnen) und
-        // Leerzeilen, und schauen, ob die letzte echte Vorgaenger-Zeile
-        // mit `///` (oder `#[doc(...)]`) beginnt.
+        // we skip attributes (lines starting with `#[`) and blank lines, and
+        // check whether the last real predecessor line starts with `///` (or
+        // `#[doc(...)]`).
         let mut j = i;
         let mut found_doc = false;
         while j > 0 {

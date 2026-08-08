@@ -1,16 +1,16 @@
-//! Phase-13.5-A6: Cell→/colony-Endpoint-Dispatcher + extrahierte Inbox-Arm-Handler.
+//! Phase-13.5-A6: cell→/colony endpoint dispatcher + extracted inbox-arm handlers.
 //!
-//! Dieses Modul kapselt alles, was sowohl der Inbox-Arm (HTTP-API über ColonyMsg)
-//! als auch der Outputs-Arm (Cell-Emission via route() → RouteAction::ColonyDispatch)
-//! aufruft. Vor A6 lebten alle Handler inline im Inbox-Arm von `colony_task` —
-//! jetzt gemeinsame Aufruf-Punkte mit identischer Semantik.
+//! This module encapsulates everything called by both the inbox arm (HTTP API via
+//! ColonyMsg) and the outputs arm (cell emission via route() →
+//! RouteAction::ColonyDispatch). Before A6 all handlers lived inline in the inbox
+//! arm of `colony_task` — now they are shared call points with identical semantics.
 //!
-//! Spec: `docs/meclaw-overview.md` § /colony als virtueller Endpunkt (Z.393-417).
-//! Symmetrie interne API ↔ externe API (Z.397).
+//! Spec: `docs/meclaw-overview.md` § `/colony` as a virtual endpoint (Z.393-417).
+//! Symmetry internal API ↔ external API (Z.397).
 //!
-//! **T1-Skopus**: 8 Handler verbatim aus `colony_task` inbox-arm extrahiert. Reine
-//! Verschiebung — keine Logik-Änderung. Zweiter Caller (`dispatch_colony_endpoint`
-//! im outputs-arm) folgt in T3.
+//! **T1 scope**: 8 handlers extracted verbatim from the `colony_task` inbox arm. A
+//! pure move — no logic change. The second caller (`dispatch_colony_endpoint` in the
+//! outputs arm) follows in T3.
 
 use crate::colony::CellStatus;
 use crate::colony::RegistryEntry;
@@ -553,17 +553,17 @@ pub fn handle_read_graph(
     }
 }
 
-/// Phase 11 Slice 11-E: triggert intern denselben Pfad wie der Boot-Scan.
-/// CLI-Flag `--rescan-templates` und (Phase 12) HTTP-POST schicken diese Operation.
+/// Phase 11 slice 11-E: internally triggers the same path as the boot scan.
+/// The CLI flag `--rescan-templates` and (phase 12) an HTTP POST send this operation.
 ///
 /// Phase 13.5-A6: extracted verbatim from `colony_task` inbox-arm — same
 /// semantics, two callers expected (inbox-arm now, outputs-arm in T3).
-/// `&ColonyDb` ist erlaubt: `apply_scan_result` ist `fn -> impl Future + Send`
-/// (sync-Vorlauf-Pattern), der DB-Borrow lebt NICHT im Future — siehe
-/// `templates/mod.rs` Doc. Result wird zurückgegeben, damit die beiden
-/// Aufrufer (regulär + Shutdown-drain) ihre jeweilige Log-Message ausgeben
-/// können (verbatim-Erhalt der Drain-Variante).
-/// Spec: `docs/meclaw-overview.md` § /colony als virtueller Endpunkt (Symmetrie).
+/// `&ColonyDb` is allowed: `apply_scan_result` is `fn -> impl Future + Send`
+/// (synchronous-prologue pattern), the DB borrow does NOT live in the future — see
+/// the `templates/mod.rs` doc. The result is returned so that both callers
+/// (regular + shutdown drain) can emit their respective log message
+/// (verbatim preservation of the drain variant).
+/// Spec: `docs/meclaw-overview.md` § `/colony` as a virtual endpoint (symmetry).
 pub fn handle_rescan_templates<'a>(
     colony_db: &ColonyDb,
     templates_root: &'a std::path::Path,
@@ -573,7 +573,7 @@ pub fn handle_rescan_templates<'a>(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    // Delegate to `apply_scan_result`, which uses the same sync-Vorlauf
+    // Delegate to `apply_scan_result`, which uses the same synchronous-prologue
     // pattern: the `&ColonyDb` borrow lives only in the sync prelude, the
     // returned future captures only Send-types (writer-tx clone +
     // queue-depth Arc-clone + owned data). Keeps `colony_task` Send.
@@ -586,11 +586,11 @@ pub fn handle_rescan_templates<'a>(
 
 /// Build a reply-Cascade if `reply_to` is set, else `Done`.
 ///
-/// Reply-Routing per A6-Plan: KEIN `outputs_tx`-Send (würde den outputs-Channel
-/// füllen). Stattdessen `RouteAction::Cascade { sender: "/colony", msg }` —
-/// `route_with_log` greift den Cascade-Arm und routet die Reply direkt an
-/// `reply_to`. `sender = "/colony"` ist konsistent mit `send_eda_reject`
-/// (siehe `colony.rs::send_eda_reject` — derselbe virtuelle Origin-Path).
+/// Reply routing per the A6 plan: NO `outputs_tx` send (that would fill the outputs
+/// channel). Instead `RouteAction::Cascade { sender: "/colony", msg }` —
+/// `route_with_log` takes the cascade arm and routes the reply directly to
+/// `reply_to`. `sender = "/colony"` is consistent with `send_eda_reject`
+/// (see `colony.rs::send_eda_reject` — the same virtual origin path).
 fn emit_reply_or_done(
     reply_to: Option<meclaw_core::Path>,
     reply_body: meclaw_core::serde_json::Value,
@@ -793,39 +793,41 @@ fn build_trace_reply(reply: &crate::api_dto::ReadTraceReply) -> meclaw_core::ser
 
 // ---------------------------- Main dispatcher ----------------------------
 
-/// Phase-13.5-A6-T3: routet `/colony/<endpoint>` an T1-Helper bzw. `handle_mutation`,
-/// baut Reply-Message als UBF-Top-Level-Slot und gibt `RouteAction` zurück.
+/// Phase-13.5-A6-T3: routes `/colony/<endpoint>` to the T1 helpers resp.
+/// `handle_mutation`, builds the reply message as a UBF top-level slot and returns
+/// a `RouteAction`.
 ///
-/// **KEIN Self-Send** an `inbox_self_tx` — Direct-Call der Helper.
-/// **KEIN outputs_tx-Send** für Reply — Reply geht via `RouteAction::Cascade`
-/// über `route_with_log` zurück an `msg.reply_to`.
+/// **NO self-send** to `inbox_self_tx` — direct call of the helpers.
+/// **NO outputs_tx send** for the reply — the reply goes back to `msg.reply_to`
+/// via `RouteAction::Cascade` through `route_with_log`.
 ///
-/// **Send-Constraint**: `&ColonyDb` ist `!Sync` (RefCell<Connection>) — `&ColonyDb`
-/// als Parameter würde das umgebende `colony_task`-Future `!Send` machen (jeder
-/// `.await` im async-fn-body capture'd den Borrow im state-Machine, auch wenn er
-/// nur in einem Branch genutzt wird). Lösung: `&ColonyDb` wird im **Caller**
-/// (colony.rs, vor dem `.await`) in seine Sub-Refs aufgeteilt; dispatch_colony_endpoint
-/// bekommt nur Send-Sub-Refs:
+/// **Send constraint**: `&ColonyDb` is `!Sync` (RefCell<Connection>) — `&ColonyDb`
+/// as a parameter would make the surrounding `colony_task` future `!Send` (every
+/// `.await` in the async fn body captures the borrow in the state machine, even if
+/// it is only used in one branch). Solution: `&ColonyDb` is split into its sub-refs
+/// in the **caller** (colony.rs, before the `.await`); dispatch_colony_endpoint
+/// only receives Send sub-refs:
 /// - `writer_tx: &Sender<ColonyWriteOp>` (Send+Sync)
 /// - `db_path: &Path` (Send+Sync)
-/// - `templates_rows`/`mutation_audit_rows`: sync vor-extrahiert im Caller,
-///   owned als Parameter durchgereicht
+/// - `templates_rows`/`mutation_audit_rows`: pre-extracted synchronously in the
+///   caller, passed through owned as parameters
 ///
-/// **`/colony/events`** ist deferred (U4) und fällt in den `_ =>`-Arm
-/// → `ColonyEndpointUnimplemented`-DLQ-push mit `sender`-pass-through
+/// **`/colony/events`** is deferred (U4) and falls into the `_ =>` arm
+/// → `ColonyEndpointUnimplemented` DLQ push with `sender` pass-through
 /// (must-fix #2).
 ///
-/// Spec: `docs/meclaw-overview.md` § /colony als virtueller Endpunkt (Z.393-417).
+/// Spec: `docs/meclaw-overview.md` § `/colony` as a virtual endpoint (Z.393-417).
 ///
 /// **Send-pre-extraction params**:
-/// - `templates_rows`: vor-extrahierte template-rows für `/colony/templates`. Caller
-///   liest `colony_db.read_templates()` sync vor dem `.await` und reicht sie owned durch.
-/// - `rescan_future`: vor-extrahiertes Rescan-Future für `/colony/templates/rescan`.
-///   Caller baut `handle_rescan_templates(&colony_db, &root)` sync (sync-Vorlauf
-///   verbraucht den `&ColonyDb`-Borrow, das returned Future captured nur Send-owned
-///   Daten) und reicht es boxed durch. Lifetime `'fut` ist gebunden an `&root` im
-///   Caller (lebt im `colony_task`-Scope; die Future wird im selben Scope awaited
-///   und nicht gespawnt).
+/// - `templates_rows`: pre-extracted template rows for `/colony/templates`. The caller
+///   reads `colony_db.read_templates()` synchronously before the `.await` and passes
+///   them through owned.
+/// - `rescan_future`: pre-extracted rescan future for `/colony/templates/rescan`.
+///   The caller builds `handle_rescan_templates(&colony_db, &root)` synchronously (the
+///   synchronous prologue consumes the `&ColonyDb` borrow, the returned future captures
+///   only Send-owned data) and passes it through boxed. Lifetime `'fut` is bound to
+///   `&root` in the caller (it lives in the `colony_task` scope; the future is awaited
+///   in the same scope and not spawned).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_colony_endpoint<'fut>(
     registry: &mut std::collections::HashMap<meclaw_core::Path, crate::RegistryEntry>,
@@ -857,7 +859,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     strict_validation: bool, // paket-7 B5 — colony.json strict_validation forwarded to handle_mutation
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — forwarded to handle_mutation
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold forwarded to handle_mutation
-    env_source: Option<&std::path::Path>, // U8 (RULED A8) — Env-Quelle vom Start, an handle_mutation weitergereicht
+    env_source: Option<&std::path::Path>, // U8 (RULED A8) — env source from startup, forwarded to handle_mutation
 ) -> crate::colony::RouteAction {
     let body = body_value(&msg);
     let reply_to = msg.reply_to.clone();
@@ -941,8 +943,8 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/templates/rescan" => {
-            // Rescan-future kommt owned aus dem Caller (sync-Vorlauf-Pattern hat
-            // den `&ColonyDb`-Borrow konsumiert; Future ist Send + 'static).
+            // The rescan future comes owned from the caller (the synchronous-prologue
+            // pattern consumed the `&ColonyDb` borrow; the future is Send + 'static).
             let outcome = rescan_future.await;
             let reply_body = build_rescan_reply(&outcome);
             emit_reply_or_done(reply_to, reply_body)
@@ -995,8 +997,8 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     }
 }
 
-/// Variante von `handle_read_templates` ohne `&ColonyDb`-Borrow. Filtert
-/// vor-extrahierte rows analog zur DB-Version.
+/// Variant of `handle_read_templates` without the `&ColonyDb` borrow. Filters
+/// pre-extracted rows analogously to the DB version.
 fn handle_read_templates_from_rows(
     rows: Vec<crate::persist::colony_db::TemplateRow>,
     _cell_type: Option<String>,
@@ -1391,8 +1393,8 @@ mod tests {
 
     #[test]
     fn prefix_range_excludes_sibling_outside_the_prefix() {
-        // "/a" schliesst "/ab" ein (String-Prefix-Semantik wie der bestehende
-        // LIKE-Filter in handle_read_trace), "/b" nicht.
+        // "/a" includes "/ab" (string-prefix semantics like the existing
+        // LIKE filter in handle_read_trace), "/b" does not.
         let (lo, hi) = path_prefix_range("/a");
         let hi = hi.expect("successor exists");
         assert!("/ab" >= lo.as_str() && "/ab" < hi.as_str());
@@ -1442,13 +1444,13 @@ mod tests {
         db2.shutdown_async().await;
     }
 
-    /// Phase-13.5-A6-T3 failing-test-first: pinnt das `sender`-pass-through-Verhalten
-    /// (must-fix #2) für unknown `/colony/<x>` endpoints.
+    /// Phase-13.5-A6-T3 failing-test-first: pins the `sender` pass-through behaviour
+    /// (must-fix #2) for unknown `/colony/<x>` endpoints.
     ///
-    /// Beweist:
-    /// - `RouteAction::Done` zurück (terminal, kein Cascade-Loop).
-    /// - Genau 1 DLQ-Entry mit `ColonyEndpointUnimplemented`.
-    /// - `dlq.sender_path == "/probe"` (sender vom RouteAction::ColonyDispatch).
+    /// Proves:
+    /// - `RouteAction::Done` returned (terminal, no cascade loop).
+    /// - Exactly 1 DLQ entry with `ColonyEndpointUnimplemented`.
+    /// - `dlq.sender_path == "/probe"` (sender from RouteAction::ColonyDispatch).
     /// - `dlq.resolved_target == "/colony/bogus"` (endpoint).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_unknown_endpoint_returns_done_with_dlq_push() {
@@ -1519,13 +1521,13 @@ mod tests {
         colony_db.shutdown_async().await;
     }
 
-    /// Phase-13.5-A6-T4 F4-Pin: Cell→/colony/mutations erwartet body als
-    /// UBF-top-level-slots {"diff": {...}, "scope": "...", "ctx": {...}}.
-    /// KEIN messages[]-array, KEIN tool_call-turn (das wäre HTTP-Anlehnung,
-    /// nicht Cell-Convention).
+    /// Phase-13.5-A6-T4 F4 pin: cell→/colony/mutations expects the body as
+    /// UBF top-level slots {"diff": {...}, "scope": "...", "ctx": {...}}.
+    /// NO messages[] array, NO tool_call turn (that would follow the HTTP shape,
+    /// not the cell convention).
     ///
-    /// Spec Z.221 + Z.412 sagen das nicht explizit — A6-pin, Klarstellung
-    /// → Phase-16-Doc-Audit-Backlog.
+    /// Spec Z.221 + Z.412 do not say this explicitly — A6 pin, clarification
+    /// → phase-16 doc-audit backlog.
     #[test]
     fn dispatch_mutations_body_form_is_diff_scope_ctx_top_level_f4() {
         let body = meclaw_core::serde_json::json!({
@@ -1547,9 +1549,9 @@ mod tests {
         );
     }
 
-    /// Phase-13.5-A6-T4 F4-Pin: Cell→/colony/<read> erwartet filter unter
-    /// body.query. Spec Z.221 + Z.412 sagen das nicht — A6-pin, Klarstellung
-    /// → Phase-16-Doc-Audit-Backlog.
+    /// Phase-13.5-A6-T4 F4 pin: cell→/colony/<read> expects the filter under
+    /// body.query. Spec Z.221 + Z.412 do not say this — A6 pin, clarification
+    /// → phase-16 doc-audit backlog.
     #[test]
     fn dispatch_reads_body_form_is_query_top_level_f4() {
         let body = meclaw_core::serde_json::json!({
@@ -1563,10 +1565,10 @@ mod tests {
         assert_eq!(q.get("limit").and_then(|v| v.as_u64()), Some(50));
     }
 
-    /// Phase-13.5-A6-T4 F7-Pin: /colony/dead_letters mit body.operation="drain"
-    /// → drain. Sonst (z.B. body.operation="read" oder fehlend) → Read.
-    /// Spec Z.401 sagt "beides (Read + Drain)" ohne body-form — A6-pin,
-    /// Klarstellung → Phase-16-Doc-Audit-Backlog.
+    /// Phase-13.5-A6-T4 F7 pin: /colony/dead_letters with body.operation="drain"
+    /// → drain. Otherwise (e.g. body.operation="read" or absent) → read.
+    /// Spec Z.401 says "both (read + drain)" without a body form — A6 pin,
+    /// clarification → phase-16 doc-audit backlog.
     #[test]
     fn dispatch_dead_letters_drain_marker_is_body_operation_f7() {
         let drain_body = meclaw_core::serde_json::json!({"operation": "drain"});

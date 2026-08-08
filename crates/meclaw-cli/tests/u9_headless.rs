@@ -1,22 +1,23 @@
-//! U9 (roadmap 2026-06-11; RULED A8 2026-06-12): Headless-Modus ist legitim.
-//! `--daemon` ohne `--api` startet die Colony OHNE HTTP-Server — die Flags sind
-//! operator-unabhängig (daemon = Prozess läuft; api = HTTP-Server). Vorher:
-//! `--daemon` ohne `--api` war ein No-op (sofortiger `return Ok(())` VOR dem
-//! `colony_task`-Spawn — nichts bootete, kein Timer tickte).
+//! U9 (roadmap 2026-06-11; RULED A8 2026-06-12): headless mode is legitimate.
+//! `--daemon` without `--api` starts the colony WITHOUT an HTTP server — the
+//! flags are independent of each other (daemon = the process runs; api = HTTP
+//! server). Before: `--daemon` without `--api` was a no-op (an immediate
+//! `return Ok(())` BEFORE the `colony_task` spawn — nothing booted, no timer
+//! ticked).
 //!
-//! U9-a beweist Headless POSITIV über ein echtes Timer-Tick-Receipt: eine
-//! `timer`-Cell mit `cron */1` bumpt bei jedem Fire `iteration_n` in ihrer
-//! `cell.db`. Läuft die Colony headless, ist `iteration_n > 0` nach kurzer Zeit.
-//! U9-b beweist, dass `--daemon --api` BEIDES liefert: HTTP-Server an UND laufend.
+//! U9-a proves headless POSITIVELY via a real timer-tick receipt: a `timer` cell
+//! with `cron */1` bumps `iteration_n` in its `cell.db` on every fire. If the
+//! colony runs headless, `iteration_n > 0` after a short while.
+//! U9-b proves that `--daemon --api` delivers BOTH: HTTP server on AND running.
 
 use meclaw_cli::{Cli, run_with_hooks};
 use std::net::SocketAddr;
 
 const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000001";
 
-/// Root-Hive + eine `timer`-Cell mit Sekunden-Cron. `emit_to` zeigt auf einen
-/// nicht-existenten Pfad → der Fire geht in die DLQ (egal), aber `iteration_n`
-/// wird bei jedem repeating-Fire gebumpt (timer/cell.rs `bump_iteration`).
+/// Root hive + a `timer` cell with a seconds cron. `emit_to` points at a
+/// non-existent path → the fire goes to the DLQ (irrelevant), but `iteration_n`
+/// is bumped on every repeating fire (timer/cell.rs `bump_iteration`).
 fn write_timer_tree(root: &std::path::Path) {
     std::fs::create_dir_all(root.join("main/tick")).unwrap();
     std::fs::write(

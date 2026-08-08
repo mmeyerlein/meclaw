@@ -105,11 +105,11 @@ mod tests {
             TrivialIo
         }
 
-        // Explizites `+ Send` ist load-bearing — AFIT (`async fn` in Trait)
-        // bindet kein `Send` an den Return-Future, generischer
-        // `tokio::spawn` im `cell_task_long_running` braucht es aber
-        // (siehe overview § Output-Pfad / § Long-Running-Cells: Doppel-Task).
-        // `clippy::manual_async_fn` ist hier False-Positive.
+        // The explicit `+ Send` is load-bearing — AFIT (`async fn` in a trait)
+        // does not bind `Send` to the returned future, but the generic
+        // `tokio::spawn` in `cell_task_long_running` needs it
+        // (see overview § Output path / § Long-running cells: double task).
+        // `clippy::manual_async_fn` is a false positive here.
         #[allow(clippy::manual_async_fn)]
         fn run_io(
             _io: Self::Io,

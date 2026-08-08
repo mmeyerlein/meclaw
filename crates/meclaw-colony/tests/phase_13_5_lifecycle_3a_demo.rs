@@ -143,7 +143,7 @@ async fn phase_13_5_lifecycle_3a_cell_id_survives_reboot() {
 ///     instantiation/mutation-only, so a manually-added dir found at reboot is
 ///     never registered — it does not appear in the RAM registry.
 ///
-/// **Regression mit Ansage (Phase-16 W1b, Ruling A5b 2026-06-12):** pre-A5b
+/// **Announced regression (Phase-16 W1b, ruling A5b 2026-06-12):** pre-A5b
 /// this test pinned the old auto-adoption ("a new dir on reboot gets a fresh
 /// cell_id"). The ratified A5b ruling reverses that — the reboot walk reports
 /// unknown nodes (WARN / `--validate` listing) and never adopts them. Only the
@@ -200,7 +200,7 @@ async fn reboot_mixed_tree_known_keeps_id_new_is_reported_not_adopted() {
 /// resurrect the cell. The FS walk never reaches the orphan path, so it simply
 /// stays in the DB (no-delete) and is not re-spawned. A genuinely-new FS path
 /// added at the same reboot is REPORTED, not adopted (A5b, Phase-16 W1b —
-/// Regression mit Ansage: pre-A5b this pinned the new path getting a fresh
+/// announced regression: pre-A5b this pinned the new path getting a fresh
 /// cell_id; the ratified ruling reports unknown reboot nodes instead).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_13_5_lifecycle_3a_orphan_overlay_entry_does_not_crash_or_remint() {

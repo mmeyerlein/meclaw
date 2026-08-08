@@ -5,14 +5,14 @@
 //! for any input. T13+ replaces the inline arm with a real `handle_mutation`
 //! that does substitute / validate / apply.
 //!
-//! Phase-11 T16 Migration: Mutation nutzt Templates-Registry. Tests, die `echo`-
-//! Template benutzen, legen via RescanTemplates vorab einen Registry-Eintrag an.
+//! Phase-11 T16 migration: the mutation uses the templates registry. Tests that
+//! use the `echo` template create a registry entry up front via RescanTemplates.
 
 use meclaw_colony::{ColonyMsg, MutationOutcome};
 use meclaw_core::Uuid;
 use meclaw_testing::ColonyHandle;
 
-/// Phase-11 T16: Legt ein Template-Verzeichnis für `name`/`cell_type` an und lädt es.
+/// Phase-11 T16: creates a template directory for `name`/`cell_type` and loads it.
 async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
     let root = h.tempdir_path();
     let templates_root = root.join("templates");

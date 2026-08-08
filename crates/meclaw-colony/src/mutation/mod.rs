@@ -63,7 +63,7 @@ pub fn build_error_reply(
 /// Befund 6: `Path::resolve` normalises `./name` → `<scope>/name` (and collapses
 /// `//`); the former raw string-join produced `<scope>/./name`, a path the
 /// routing layer would never match — a `./`-prefixed `add_edges` endpoint
-/// (the canonical mutation form per overview § Variablen-Substitution) committed
+/// (the canonical mutation form per overview § Variable substitution) committed
 /// a dead edge. Validate mirrors this by stripping `./` before its short-name
 /// membership test.
 pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
@@ -84,7 +84,7 @@ pub enum MutationError {
     /// A `${...}` substitution token uses an operator form that meclaw does not
     /// support (e.g. `${VAR:=x}`, `${VAR-x}`, `${VAR:+x}`, `${VAR:?msg}`). Only
     /// the plain `${VAR}` and POSIX default `${VAR:-fallback}` forms are valid
-    /// for env tokens (spec § Variablen-Substitution → `${ENV_VAR}` aus `.env`).
+    /// for env tokens (spec § Variable substitution → `${ENV_VAR}` from `.env`).
     /// Carries the offending token inner string. Never silently passed through.
     UnsupportedSubstitution(String),
     CtxKeyMissing(String),

@@ -1,8 +1,8 @@
-# Rust-Build-Artefakte
+# Rust build artifacts
 /target/
 **/*.rs.bk
 
-# Runtime-State (entsteht beim Daemon-Run)
+# Runtime state (created by a daemon run)
 /log.jsonl
 /colony.db
 /colony.db-*
@@ -11,9 +11,9 @@
 /blobs/
 /.staging/
 
-# Demo-Fixture-State (entsteht, wenn jemand `meclaw --root examples/demo-colony`
-# direkt im Repo laufen laesst; Fixture-Disziplin: NUR config.json + template.json
-# bleiben committet, alles andere ist generiert und ignoriert).
+# Demo fixture state (created when someone runs `meclaw --root examples/demo-colony`
+# directly inside the repo; fixture discipline: ONLY config.json + template.json
+# stay committed, everything else is generated and ignored).
 /tests/fixtures/demo-colony/colony.db
 /tests/fixtures/demo-colony/colony.db-*
 /tests/fixtures/demo-colony/log.jsonl
@@ -38,6 +38,11 @@
 /tests/fixtures/**/blobs/
 /tests/fixtures/**/.staging/
 
+# P5 eval: dataset, runtime trees and raw results NEVER belong in a commit.
+# The dataset itself lives OUTSIDE the repo.
+/builder/evals/**/data/
+/builder/evals/**/runs/
+
 # Secrets
 /.env
 
@@ -54,17 +59,14 @@
 # Internal launch tracker (strategy, posting accounts) — never exported
 /LAUNCH-PLAN.md
 
-# OS-Junk
+# OS junk
 .DS_Store
 Thumbs.db
 
-# === Deutsche Design-Doku (lokale Durability — Item 4, 2026-05-21) ===
-# docs/, plans/, CLAUDE.md, PROGRESS.md werden lokal getrackt, damit Lessons
-# + Pläne mit der Code-History versionsfest sind. Sie sind NICHT Teil eines
-# späteren GitHub-Exports (v0.1.0): der wird kuratiert + englisch und
-# exportiert nur einen Subset. Bis dahin: alles bleibt im lokalen Repo.
-# PROGRESS.md ist schon getrackt (Marker-Eintrag effektiv no-op).
+# === Internal design docs (local durability — item 4, 2026-05-21) ===
+# docs/, plans/, CLAUDE.md, PROGRESS.md are tracked locally so that lessons
+# + plans stay version-locked with the code history. They are NOT part of a
+# later GitHub export (v0.1.0): that one is curated + English and exports
+# only a subset. Until then: everything stays in the local repo.
+# PROGRESS.md is already tracked (marker entry effectively a no-op).
 /PROGRESS.md
-
-# README.md bleibt erstmal deutsch im Repo;
-# wird in Phase 16 durch eine englische Version ersetzt, bevor du das erste Mal pushst.

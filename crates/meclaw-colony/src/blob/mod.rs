@@ -1,15 +1,16 @@
-//! Phase-12-X: Blob-Storage für attachments[]-Slot.
-//! Concrete `DiskBlobStore` ohne Trait-Abstraktion (Variante b, directive).
+//! Phase-12-X: blob storage for the attachments[] slot.
+//! A concrete `DiskBlobStore` without a trait abstraction (variant b, directive).
 //!
 //! Layout (docs/meclaw-overview.md § Blob-Storage Z.1311):
 //!   blobs/<uuid-v7>.<ext>            # Blob-Inhalt
 //!   blobs/<uuid-v7>.<ext>.meta.json  # Sidecar (Commit-Marker)
 //!
-//! Schreib-Reihenfolge: erst Blob-Datei (tmp→rename), dann Sidecar (.meta.json)
-//! als Commit-Marker per atomarem rename. Reader-Konvention: Blob ohne Sidecar
+//! Write order: first the blob file (tmp→rename), then the sidecar (.meta.json)
+//! as a commit marker via an atomic rename. Reader convention: a blob without a
+//! sidecar
 //! = ignorieren.
 //!
-//! Phase-12-Scope: NUR write_streaming + read_sidecar. read_body kommt in
+//! Phase-12 scope: ONLY write_streaming + read_sidecar. read_body arrives in
 //! Phase 13 (Cell-Konsumenten).
 
 pub mod disk;

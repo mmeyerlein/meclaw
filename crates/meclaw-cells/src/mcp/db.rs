@@ -1,6 +1,6 @@
 //! Phase-10-D: `cell.db.mcp_discovery_cache`-Schema + Helpers.
-//! Sync rusqlite. Aufruf in der Factory vor `DbConn::wrap` (korridor-frei)
-//! und im Handler über `DbConn::call(|c| ...)`.
+//! Sync rusqlite. Called in the factory before `DbConn::wrap` (outside the
+//! corridor) and in the handler through `DbConn::call(|c| ...)`.
 
 use rusqlite::{Connection, params};
 

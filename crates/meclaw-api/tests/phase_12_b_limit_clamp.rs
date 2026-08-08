@@ -1,10 +1,10 @@
-//! Phase-12-B T13: Read-Limit-Clamp Default 100 / Hard-Cap 1000 (Spec Z.412).
+//! Phase-12-B T13: read-limit clamp, default 100 / hard cap 1000 (spec l.412).
 //!
-//! Diese Tests feuern `?limit=10000` und `?limit=0` gegen `/colony/registry`
-//! und verifizieren, dass der Handler NICHT mit 500 antwortet, sondern sauber
-//! mit `200 OK` und leerem `registry`-Array zurueckkommt. Die `clamp_limit`-
-//! Funktion aus `handlers::mod` (T8.0) ist bereits in allen 6 Read-Handlern
-//! verdrahtet — diese Tests sind die HTTP-End-to-End-Bestaetigung.
+//! These tests fire `?limit=10000` and `?limit=0` at `/colony/registry` and
+//! verify that the handler does NOT answer with a 500 but comes back cleanly
+//! with `200 OK` and an empty `registry` array. The `clamp_limit` function from
+//! `handlers::mod` (T8.0) is already wired into all 6 read handlers — these
+//! tests are the end-to-end HTTP confirmation.
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -14,8 +14,8 @@ use tower::ServiceExt;
 
 mod common;
 
-/// Helper: baut einen `meclaw_api::ColonyHandle` aus einem laufenden
-/// `meclaw_testing::ColonyHandle`. Beide leben im Test-Scope.
+/// Helper: builds a `meclaw_api::ColonyHandle` from a running
+/// `meclaw_testing::ColonyHandle`. Both live in the test scope.
 fn api_colony_from(test_h: &meclaw_testing::ColonyHandle) -> Arc<meclaw_api::ColonyHandle> {
     Arc::new(meclaw_api::ColonyHandle {
         inbox: test_h.inbox_tx.clone(),

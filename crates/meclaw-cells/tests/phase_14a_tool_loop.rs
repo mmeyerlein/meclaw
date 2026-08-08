@@ -1,10 +1,10 @@
 //! Phase-14-A Tool-Loop-Mechanik — store-freie Single-Iteration-Topologie
-//! `llm → dispatcher → tool → collector → CaptureCell`, end-to-end gegen das
+//! `llm → dispatcher → tool → collector → CaptureCell`, end-to-end against the
 //! eingefrorene Substrat. llm deterministisch via MockOpenAI; dispatcher/tool/
-//! collector sind code-Cells (python3 inline). Positiver Beweis: /sink-Receipt.
+//! collector are code cells (inline python3). Positive proof: the /sink receipt.
 //!
 //! Diagnose-Slice (PROGRESS § Geplante Phasen, overview Z.1998 + Z.1122):
-//! KEIN store, KEIN Thread-Rebuild, KEIN zweiter llm-Call — das ist 14-B.
+//! NO store, NO thread rebuild, NO second llm call — that is 14-B.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 
 use mock_openai::{MockOpenAI, canned_tool_calls};
 
-/// Dispatcher: zerlegt den llm-Output in typisierte Tool-Call-Messages.
+/// Dispatcher: splits the llm output into typed tool-call messages.
 const DISPATCHER_PY: &str = r#"
 import sys, json
 data = json.load(sys.stdin)
@@ -41,8 +41,8 @@ sys.stdout.write(json.dumps(out))
 "#;
 
 /// Tool-A: deterministisches Tool-Endpoint-Surrogat (atomisch-emittierend).
-/// Liest den Tool-Call-Turn, emittiert genau einen `tool_result`-Turn mit
-/// `header.msg_type="tool_result"`. Determiniert ("42"), keine externe I/O.
+/// Reads the tool-call turn and emits exactly one `tool_result` turn with
+/// `header.msg_type="tool_result"`. Deterministic ("42"), no external I/O.
 const TOOL_A_PY: &str = r#"
 import sys, json
 data = json.load(sys.stdin)
@@ -56,7 +56,7 @@ out = {
 sys.stdout.write(json.dumps(out))
 "#;
 
-/// Eine code-Cell-config.json mit inline-python und optionalem multi_send.
+/// One code-cell config.json with inline python and an optional multi_send.
 fn code_config(script: &str, multi_send: bool) -> String {
     to_string_pretty(&json!({
         "cell": {"type": "code"},
@@ -70,7 +70,7 @@ fn code_config(script: &str, multi_send: bool) -> String {
     .unwrap()
 }
 
-/// llm-config.json gegen den Mock.
+/// llm config.json pointed at the mock.
 fn llm_config(base_url: &str) -> String {
     to_string_pretty(&json!({
         "cell": {"type": "llm"},
@@ -80,8 +80,8 @@ fn llm_config(base_url: &str) -> String {
     .unwrap()
 }
 
-/// Standard-Probe: ein user-Turn + tool-Schema unter `system.tools.*`, sodass
-/// der Mock einen tool_calls-Response liefert (Muster phase_8_demo T28).
+/// Standard probe: one user turn + a tool schema under `system.tools.*`, so that
+/// the mock returns a tool_calls response (pattern from phase_8_demo T28).
 ///
 /// Sets intentionally **no `reply_to`**: the receipt travels over the FS
 /// topology edge `dispatcher → /sink`, not via `reply_to`.
@@ -99,7 +99,7 @@ fn tool_request_probe() -> Message {
         .build()
 }
 
-/// Bounded /sink-Receipt (30s, robust gegen cargo-parallel-Last).
+/// Bounded /sink receipt (30s, robust against cargo's parallel load).
 async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
     tokio::time::timeout(Duration::from_secs(30), rx.recv())
         .await
@@ -107,10 +107,11 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
         .flatten()
 }
 
-/// Boot-Boilerplate: Factories (llm+code), `/sink`- und `/graphsink`-CaptureCells
-/// vor Bootstrap, bootstrap_from_filesystem. Gibt `(ColonyHandle, sink_rx,
-/// graph_rx)` zurück. `/graphsink` ist das `reply_to`-Ziel der
-/// `/colony/graph`-Reads (Workstream B, Live-Graph-Quelle für die Topologie-SVGs).
+/// Boot boilerplate: factories (llm+code), the `/sink` and `/graphsink`
+/// CaptureCells before bootstrap, bootstrap_from_filesystem. Returns
+/// `(ColonyHandle, sink_rx, graph_rx)`. `/graphsink` is the `reply_to` target of
+/// the `/colony/graph` reads (workstream B, the live graph source for the
+/// topology SVGs).
 async fn boot(
     td: &tempfile::TempDir,
 ) -> (
@@ -152,7 +153,7 @@ async fn boot(
 /// mirrors the `phase_13_5_a6_demo` poll-then-drain pattern. Returns ALL drained
 /// entries (the snapshot at the moment the wanted target first showed up, or at
 /// the deadline), so the caller can also assert on co-resident DLQ entries
-/// (trennschärfe).
+/// (discriminating power).
 async fn drain_until_target(h: &ColonyHandle, target: &str) -> Vec<meclaw_colony::DeadLetter> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -184,11 +185,11 @@ fn dlq_entry_for<'a>(
     matches[0]
 }
 
-/// Kopiert den eingecheckten `tests/fixtures/14a-tool-loop/main/`-Baum nach `<td>/main`
-/// und überschreibt den llm-Placeholder-`base_url` auf den Mock. Quelle ist der
-/// COMMITTED Baum (Single Source of Truth der Demo-Topologie) — Laufzeit-State
-/// landet im `TempDir`, der eingecheckte Baum bleibt sauber. `base_url` ist der
-/// echte Override-Punkt (am Code via `LlmParams` geerdet).
+/// Copies the checked-in `tests/fixtures/14a-tool-loop/main/` tree to `<td>/main`
+/// and overwrites the llm placeholder `base_url` with the mock. The source is the
+/// COMMITTED tree (single source of truth for the demo topology) — runtime state
+/// lands in the `TempDir`, the checked-in tree stays clean. `base_url` is the real
+/// override point (grounded in the code via `LlmParams`).
 fn copy_example_tree(td: &std::path::Path, base_url: &str) {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/14a-tool-loop/main");
@@ -283,7 +284,7 @@ async fn hive_transit_routes_llm_output_to_dispatcher() {
     let disp = td.path().join("main/tool-loop/dispatcher");
     std::fs::create_dir_all(&disp).unwrap();
     std::fs::create_dir_all(td.path().join("main/llm")).unwrap();
-    // Root-Hive /: Edge /llm → /tool-loop (HIVE-PFAD als Target → Transit).
+    // Root hive /: edge /llm → /tool-loop (a HIVE PATH as target → transit).
     std::fs::write(
         td.path().join("main/config.json"),
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
@@ -291,7 +292,7 @@ async fn hive_transit_routes_llm_output_to_dispatcher() {
         ]}}}"#,
     )
     .unwrap();
-    // Hive /tool-loop. Hive-Out-Edge from="." routet den Transit weiter zum Dispatcher.
+    // Hive /tool-loop. The hive out-edge from="." routes the transit on to the dispatcher.
     std::fs::write(
         td.path().join("main/tool-loop/config.json"),
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
@@ -447,8 +448,8 @@ async fn hive_no_route_distinct_from_unresolved_path() {
     copy_example_tree(td.path(), &base_url);
     let (h, _sink_rx, mut graph_rx) = boot(&td).await;
 
-    // (1) Erreichbare Hive /tool-loop, aber Header matcht KEINE Out-Edge
-    //     (finish_reason=stop ≠ 'tool_calls', msg_type fehlt) → hive_no_route.
+    // (1) Reachable hive /tool-loop, but the header matches NO out-edge
+    //     (finish_reason=stop ≠ 'tool_calls', msg_type missing) → hive_no_route.
     let mut headers = meclaw_core::serde_json::Map::new();
     headers.insert("finish_reason".into(), json!("stop"));
     let probe = MessageBuilder::new(Path::new("/tool-loop"))
@@ -465,7 +466,7 @@ async fn hive_no_route_distinct_from_unresolved_path() {
         "hive_no_route"
     );
 
-    // (2) Nicht-existenter Pfad → unresolved_path.
+    // (2) Non-existent path → unresolved_path.
     let bogus = MessageBuilder::new(Path::new("/tool-loop/nope"))
         .body(Body::Inline(
             json!({"messages":[{"origin":"user","type":"text","text":"x"}]}),
@@ -549,10 +550,10 @@ async fn tool_loop_trace_is_complete() {
     h.shutdown().await;
 }
 
-/// Workstream B (14-A-Nachtrag): die Quelle des Topologie-Bilds ist der LIVE
-/// gebootete Graph. Liest `/colony/graph` für `/` + `/tool-loop` (gemerged) und
-/// beweist, dass das Substrat die Transit- UND CEL-Edges der Demo-Topologie
-/// wirklich geladen hat. Read unvollständig → BEFUND.
+/// Workstream B (14-A addendum): the source of the topology picture is the LIVE
+/// booted graph. Reads `/colony/graph` for `/` + `/tool-loop` (merged) and proves
+/// that the substrate really loaded the demo topology's transit AND CEL edges.
+/// An incomplete read is a FINDING.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_graph_read_returns_tool_loop_edges() {
     let mock = MockOpenAI::start(vec![canned_tool_calls(vec![(
@@ -587,7 +588,7 @@ async fn live_graph_read_returns_tool_loop_edges() {
         has_edge("/tool-loop/collector", "/sink"),
         "live graph must carry the terminal edge collector → /sink"
     );
-    // CEL-condition-Source kommt mit (Edge-Label-Quelle).
+    // The CEL condition source comes along (the edge-label source).
     let transit = g
         .edges
         .iter()
@@ -598,7 +599,7 @@ async fn live_graph_read_returns_tool_loop_edges() {
         Some("hop.finish_reason == 'tool_calls'"),
         "edge condition source must survive into the graph read"
     );
-    // /tool-loop ist als Hive klassifiziert (Edge-Endpunkt ohne Registry-Node).
+    // /tool-loop is classified as a hive (an edge endpoint without a registry node).
     assert!(
         g.hives.iter().any(|p| p == "/tool-loop"),
         "/tool-loop must classify as hive (no registry node); hives={:?}",
@@ -608,12 +609,13 @@ async fn live_graph_read_returns_tool_loop_edges() {
     h.shutdown().await;
 }
 
-/// Schreibt einen FEHLKONFIGURIERTEN Tool-Loop-Tree: identisch zur Demo, aber die
-/// Dispatcher-Out-Edge trägt eine CEL-`condition`, die NIE matcht (`msg_type ==
-/// 'WRONG'` statt `'tool_call'`). Damit matcht die Dispatcher-Emission KEINE
-/// Out-Edge → das Substrat fällt auf die implizite Identity-Decision (`em.target`)
-/// zurück (colony.rs `if matched.is_empty()`). `em.target` der code-Cell =
-/// inbound `reply_to` (cell.rs `reply_target`), und das ist via Transit-Erhalt
+/// Writes a MISCONFIGURED tool-loop tree: identical to the demo, but the
+/// dispatcher out-edge carries a CEL `condition` that NEVER matches (`msg_type ==
+/// 'WRONG'` instead of `'tool_call'`). So the dispatcher emission matches NO
+/// out-edge → the substrate falls back to the implicit identity decision
+/// (`em.target`) (colony.rs `if matched.is_empty()`). The code cell's `em.target`
+/// = the inbound `reply_to` (cell.rs `reply_target`), and via transit preservation
+/// that is
 /// `/llm` → Loop-Back-Inferenz.
 fn write_misconfigured_no_match_tree(td: &std::path::Path, base_url: &str) {
     let tl = td.join("main/tool-loop");
@@ -627,7 +629,7 @@ fn write_misconfigured_no_match_tree(td: &std::path::Path, base_url: &str) {
         ]}}}"#,
     )
     .unwrap();
-    // MISCONFIG: dispatcher → tool-a Condition matcht NIE (Builder-Tippfehler).
+    // MISCONFIG: the dispatcher → tool-a condition NEVER matches (a builder typo).
     std::fs::write(
         tl.join("config.json"),
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
@@ -645,15 +647,16 @@ fn write_misconfigured_no_match_tree(td: &std::path::Path, base_url: &str) {
     std::fs::write(tl.join("tool-a/config.json"), code_config(TOOL_A_PY, false)).unwrap();
 }
 
-/// Workstream C (14-A-Nachtrag): EMPIRISCHE Beobachtung des Loop-Back. Pinnt den
-/// EXAKTEN Mechanismus, ersetzt das „wahrscheinlich" der 14-A-Diagnose-Notiz.
-/// Mehrere canned `tool_calls`-Responses (der Loop-Back-Call darf nicht am Mock
+/// Workstream C (14-A addendum): EMPIRICAL observation of the loop-back. Pins the
+/// EXACT mechanism, replacing the "probably" of the 14-A diagnosis note.
+/// Several canned `tool_calls` responses (the loop-back call must not die at the
+/// mock
 /// verhungern), kleine TTL (Deckel). Beobachtet: `mock.recorded_requests()` —
-/// Anzahl + Inhalt jedes `/llm`-Requests.
+/// count + content of every `/llm` request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loop_back_mechanism_trace() {
-    // 8 canned tool_calls: jeder llm-Call liefert wieder finish_reason=tool_calls
-    // → Root-Edge matcht erneut → der Loop ist selbsttragend bis zur TTL.
+    // 8 canned tool_calls: every llm call again returns finish_reason=tool_calls
+    // → the root edge matches again → the loop is self-sustaining until the TTL.
     let canned: Vec<_> = (0..8)
         .map(|i| {
             let id = format!("call-{i}");
@@ -671,7 +674,7 @@ async fn loop_back_mechanism_trace() {
     write_misconfigured_no_match_tree(td.path(), &base_url);
     let (h, _sink_rx, _graph_rx) = boot(&td).await;
 
-    // Probe mit kleiner TTL als Deckel.
+    // Probe with a small TTL as the cap.
     let tool_schema = json!({
         "type": "function",
         "function": {"name": "calc", "description": "calc", "parameters": {"type": "object", "properties": {}}}

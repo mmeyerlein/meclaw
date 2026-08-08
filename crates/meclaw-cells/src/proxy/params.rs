@@ -1,9 +1,9 @@
 //! Phase-10-C: `ProxyParams`. Pflichtfelder `bot_token` + `emit_to` (W4);
-//! Defaults aus W7. W7-Tripwire: `long_poll_timeout_ms > long_poll_request_secs * 1000`
-//! — Client-Timeout muss strikt größer als der an Telegram gesendete
-//! `getUpdates?timeout=<sek>`-Wert sein, sonst kappt der Client seinen eigenen
-//! gültigen Poll. `base_url` ist optional (Default `https://api.telegram.org`,
-//! Override für Mock-Tests).
+//! Defaults from W7. W7 tripwire: `long_poll_timeout_ms > long_poll_request_secs * 1000`
+//! — the client timeout must be strictly greater than the
+//! `getUpdates?timeout=<sec>` value sent to Telegram, otherwise the client cuts
+//! off its own valid poll. `base_url` is optional (default
+//! `https://api.telegram.org`, an override for mock tests).
 
 use meclaw_core::Path;
 use serde_json::Value as JsonValue;
@@ -36,23 +36,23 @@ pub struct ProxyParams {
 /// β: the `proxy` runtime-overlay projection — the mutable, runtime-tunable
 /// fields. Only `bot_token` + `emit_to` (credential / routing identity) are
 /// immutable. `base_url` is a config URL (like `llm.base_url`), NOT a
-/// credential — mutable, Weg B (the client is rebuilt live, the immutable
+/// credential — mutable, path B (the client is rebuilt live, the immutable
 /// `bot_token` rehold from existing state, never from the update). A minimal
 /// projection (not full `ProxyParams`) so the round-trip never carries
 /// `bot_token`/`emit_to`. `KNOWN_KEYS` lists the immutable keys so an update
 /// touching them is a loud `Immutable` reject.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProxyOverlay {
-    /// Telegram API base URL. Mutable, Weg B (I/O-task + handler swap the client
+    /// Telegram API base URL. Mutable, path B (I/O task + handler swap the client
     /// live). NOT a credential — a config URL like `llm.base_url`.
     pub base_url: String,
-    /// Client-side long-poll A-timeout. Mutable, Weg B (I/O-task, live).
+    /// Client-side long-poll A timeout. Mutable, path B (I/O task, live).
     pub long_poll_timeout_ms: u64,
-    /// Telegram-side long-poll wait. Mutable, Weg B (I/O-task, live).
+    /// Telegram-side long-poll wait. Mutable, path B (I/O task, live).
     pub long_poll_request_secs: u64,
-    /// `sendMessage` A-timeout. Mutable, Weg A (handle-side, live).
+    /// `sendMessage` A timeout. Mutable, path A (handle side, live).
     pub send_timeout_ms: u64,
-    /// cell.db A-timeout. Mutable, Weg C (DbConn, live).
+    /// cell.db A timeout. Mutable, path C (DbConn, live).
     pub query_timeout_ms: u64,
 }
 

@@ -1,4 +1,4 @@
-//! Phase-4+ Cell-Factories für Tests.
+//! Phase-4+ cell factories for tests.
 
 pub mod echo;
 pub use echo::EchoCellFactory;

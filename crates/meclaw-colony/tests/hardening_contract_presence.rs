@@ -1,14 +1,14 @@
-//! Hardening Slice 4 (Task 4.2): Presence-Enforcement der Pflicht-Keys
-//! `contract.version`/`settings`/`consumes` auf dem Mutations-Pfad
-//! (config.md § contract, Enforcement-Stufen).
+//! Hardening slice 4 (task 4.2): presence enforcement of the mandatory keys
+//! `contract.version`/`settings`/`consumes` on the mutation path
+//! (config.md § contract, enforcement levels).
 //!
-//! (1) `add_nodes` mit einem Template, dessen `contract`-Block `settings`
-//!     NICHT deklariert, wird pre-destruktiv rejected —
-//!     `error_code == "contract_incomplete"` ist Builder-Feedback-Vertrag.
-//! (2) Ein Template mit allen drei Pflicht-Keys wird Committed.
+//! (1) `add_nodes` with a template whose `contract` block does NOT declare
+//!     `settings` is rejected pre-destructively —
+//!     `error_code == "contract_incomplete"` is the builder-feedback contract.
+//! (2) A template with all three mandatory keys is committed.
 //!
-//! Muster: phase_11_contract_via_mutation.rs (ColonyHandle + RescanTemplates
-//! + add_nodes, kein Filesystem-Bootstrap nötig).
+//! Pattern: phase_11_contract_via_mutation.rs (ColonyHandle + RescanTemplates
+//! + add_nodes, no filesystem bootstrap needed).
 
 use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
 use meclaw_core::Uuid;
@@ -26,7 +26,7 @@ fn echo_factories() -> Vec<(String, Arc<dyn CellFactory>)> {
     )]
 }
 
-/// Template-Verzeichnis mit gegebenem `config.json`-Body anlegen.
+/// Creates a template directory with the given `config.json` body.
 fn write_template(td: &TempDir, name: &str, config_body: &str) {
     let tpl_dir = td.path().join("templates").join(name);
     std::fs::create_dir_all(&tpl_dir).unwrap();
@@ -38,8 +38,8 @@ fn write_template(td: &TempDir, name: &str, config_body: &str) {
     std::fs::write(tpl_dir.join("config.json"), config_body).unwrap();
 }
 
-/// Mutation senden + Outcome über den ack-oneshot lesen
-/// (Muster: hardening_header_locality.rs).
+/// Sends a mutation and reads the outcome via the ack oneshot
+/// (pattern: hardening_header_locality.rs).
 async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
@@ -74,9 +74,9 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         .expect("ack sender not dropped");
 }
 
-/// (1) Template ohne `contract.settings` → add_nodes wird pre-destruktiv
-/// rejected, `error_code == "contract_incomplete"`; die Details nennen den
-/// fehlenden Key (Builder-Feedback).
+/// (1) A template without `contract.settings` → add_nodes is rejected
+/// pre-destructively, `error_code == "contract_incomplete"`; the details name
+/// the missing key (builder feedback).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn add_nodes_with_template_missing_settings_is_rejected_contract_incomplete() {
     let td = TempDir::new().unwrap();
@@ -111,7 +111,7 @@ async fn add_nodes_with_template_missing_settings_is_rejected_contract_incomplet
     h.shutdown().await;
 }
 
-/// (2) Gutfall: Template mit allen drei Pflicht-Keys → Committed.
+/// (2) Good case: a template with all three mandatory keys → committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn add_nodes_with_full_contract_presence_is_committed() {
     let td = TempDir::new().unwrap();

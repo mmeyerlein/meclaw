@@ -1,11 +1,11 @@
 //! `ReceiptMockLongRunningCell` — Phase-10 substrate test fixture.
 //!
-//! **Test-Instrumentation only.** The `tokio::Mutex` over shared
-//! observation state is NOT a Production-Pattern — Production
-//! Long-Running-Cells hold state exclusively in the handler sub-task
-//! (Phase-1 discipline: no `Mutex`/`RwLock`/atomics over cell state).
-//! Long-Running-Cell-Implementierungen in 10-B/C/D dürfen diesen Mock
-//! als Strukturvorlage nehmen, **aber den Mutex-Pfad weglassen**.
+//! **Test instrumentation only.** The `tokio::Mutex` over shared observation
+//! state is NOT a production pattern — production long-running cells hold state
+//! exclusively in the handler sub-task (phase-1 discipline: no
+//! `Mutex`/`RwLock`/atomics over cell state). Long-running cell implementations
+//! in 10-B/C/D may take this mock as a structural template, **but must leave the
+//! mutex path out**.
 
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink};
@@ -25,8 +25,8 @@ pub struct MockReconfig(pub String);
 /// Mock long-running cell — records handle/handle_event calls, mirrors
 /// reconfig hints, supports panic injection.
 ///
-/// **Test-Instrumentation only.** Cf. module doc — the shared `Mutex`
-/// over reconfigs is not a Production pattern.
+/// **Test instrumentation only.** Cf. the module docs — the shared `Mutex`
+/// over reconfigs is not a production pattern.
 #[derive(Clone)]
 pub struct ReceiptMockLongRunningCell {
     /// Counts `handle()` invocations (shared across clones).

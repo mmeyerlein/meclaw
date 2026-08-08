@@ -27,7 +27,7 @@ fn cli_no_args_runs_default_path_and_exits_0() {
         "exit code; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // colony.db wurde in cwd erzeugt (run-Pfad lief).
+    // colony.db was created in the cwd (the run path executed).
     assert!(
         tmp.path().join("colony.db").exists(),
         "colony.db must exist in cwd after default run"

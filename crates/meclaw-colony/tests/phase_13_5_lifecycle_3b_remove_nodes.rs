@@ -187,7 +187,7 @@ async fn remove_nodes_disconnects_keeps_entry_then_add_edges_reactivates() {
     );
 
     // Persisted status is "inactive" after the disconnect (fresh read-only conn).
-    // NB: the reactivation tail of demo (f) ("danach add_edges reaktiviert") needs
+    // NB: the reactivation tail of demo (f) ("add_edges reactivates afterwards") needs
     // the recompute-hook's `false→true` arm, which is Task 7 (plan 7.4). Here we
     // only prove that `add_edges` against the still-registered entry COMMITS and
     // re-attaches an edge through the SAME entry (`cell_id` unchanged) — the

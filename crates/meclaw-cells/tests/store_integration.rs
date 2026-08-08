@@ -76,11 +76,11 @@ async fn insert_then_select_round_trip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_error_emits_tool_result_with_error_code_header_not_finish_reason() {
-    // Brainstorm E5 Beweis: SQL-Errors sind NORMALER tool_result mit
-    // error_code-Header, NICHT finish_reason:"error".
+    // Brainstorm E5 proof: SQL errors are a NORMAL tool_result with an error_code
+    // header, NOT finish_reason:"error".
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    // Absichtlich KEINE Tabelle anlegen → insert wird mit sql_error
-    // ablehnen, aber als tool_result-Turn (nicht als Error-Message).
+    // Deliberately create NO table → the insert is rejected with sql_error, but as
+    // a tool_result turn (not as an error message).
     let mut db = DbConn::wrap(conn, None);
     let mut cell = StoreCell::new(StoreParams {
         schema: Default::default(),
@@ -111,20 +111,20 @@ async fn sql_error_emits_tool_result_with_error_code_header_not_finish_reason() 
     cell.handle(msg, &sink, &mut db).await;
     let em = orx.recv().await.unwrap();
 
-    // KEY ASSERT: error_code im Header gesetzt.
+    // KEY ASSERT: error_code set in the header.
     // paket-7 D1: missing table now classifies as unknown_table (Zero-Drift-with-intent:
     // spec cell-types.md Z.71 always declared this code; now wired up).
     assert_eq!(em.content["header"]["error_code"], "unknown_table");
-    // KEY ASSERT: kein finish_reason:"error" — das wäre Brainstorm-E5-Verstoß.
+    // KEY ASSERT: no finish_reason:"error" — that would violate brainstorm E5.
     assert!(
         em.content["header"].get("finish_reason").is_none(),
         "SQL-Error must NOT set finish_reason:error per Brainstorm E5 — \
          only Connection-Open-Fail (Spawn-time) and query_timeout do."
     );
-    // operation + rows_affected weiterhin gesetzt (normaler tool_result).
+    // operation + rows_affected still set (a normal tool_result).
     assert_eq!(em.content["header"]["operation"], "insert");
     assert_eq!(em.content["header"]["rows_affected"], 0);
-    // Turn ist tool_result.
+    // The turn is a tool_result.
     let turn = em.content["messages"].as_array().unwrap();
     assert_eq!(turn[0]["type"], "tool_result");
 }

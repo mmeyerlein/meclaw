@@ -184,7 +184,7 @@ pub struct StoreParams {
 }
 
 impl crate::params_overlay::OverlayParams for StoreParams {
-    /// `schema` (immutable) + `query_timeout_ms` (mutable, Weg C).
+    /// `schema` (immutable) + `query_timeout_ms` (mutable, path C).
     const KNOWN_KEYS: &'static [&'static str] = &["schema", "query_timeout_ms", "fts"];
     /// `schema` is bootstrap-only — it is baked into `cell.db` via DDL at spawn;
     /// changing it at runtime would desync the live tables from the declared
