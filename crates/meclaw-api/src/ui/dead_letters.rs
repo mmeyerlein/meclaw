@@ -63,7 +63,7 @@ fn render_filter_form(q: &DeadLettersUiQuery) -> Markup {
     let limit = q.limit.map(|n| n.to_string()).unwrap_or_default();
     html! {
         form method="get" action="/ui/dead_letters" {
-            label { "Error-Code: " input type="text" name="error_code" value=(error_code); }
+            label { "Error code: " input type="text" name="error_code" value=(error_code); }
             label { "Limit: " input type="text" name="limit" value=(limit); }
             button type="submit" { "Filter" }
         }
@@ -72,13 +72,13 @@ fn render_filter_form(q: &DeadLettersUiQuery) -> Markup {
 
 fn render_table(entries: &[DeadLetterDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Dead Letters." } };
+        return html! { p class="empty" { "No dead letters." } };
     }
     html! {
         table {
             thead {
                 tr {
-                    th { "Error-Code" }
+                    th { "Error code" }
                     th { "Sender" }
                     th { "Original Target" }
                     th { "Resolved Target" }

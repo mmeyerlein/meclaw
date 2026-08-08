@@ -33,7 +33,7 @@ async fn body_of(resp: axum::response::Response) -> String {
 async fn route_one_message(app: &Router) -> serde_json::Value {
     let body_json = serde_json::json!({
         "target": "/echo",
-        "body": { "messages": [{ "origin": "user", "type": "text", "text": "hallo welt" }] }
+        "body": { "messages": [{ "origin": "user", "type": "text", "text": "hello world" }] }
     });
     let resp = app
         .clone()
@@ -102,7 +102,7 @@ async fn ui_message_detail_shows_headers_payload_and_all_pivots() {
     assert!(body.contains("hop"), "hop compartment rendered");
 
     // Full payload, not the truncated preview.
-    assert!(body.contains("hallo welt"), "payload rendered");
+    assert!(body.contains("hello world"), "payload rendered");
 
     // Pivots.
     assert!(
@@ -132,7 +132,7 @@ async fn ui_message_unknown_id_renders_not_found_hint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_of(resp).await;
-    assert!(body.contains("Keine Message gefunden"));
+    assert!(body.contains("No message found for"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

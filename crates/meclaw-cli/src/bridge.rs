@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn line_becomes_user_turn_targeted_at_root() {
         let chat = Uuid::now_v7();
-        let msg = line_to_message("hallo welt", STDIO_USER_ID, chat);
+        let msg = line_to_message("hello world", STDIO_USER_ID, chat);
         assert_eq!(msg.target, Path::new("/"));
         let Body::Inline(v) = &msg.body else {
             panic!("inline body expected")
@@ -68,7 +68,7 @@ mod tests {
         let turn = &v["messages"][0];
         assert_eq!(turn["origin"], "user");
         assert_eq!(turn["type"], "text");
-        assert_eq!(turn["text"], "hallo welt");
+        assert_eq!(turn["text"], "hello world");
         // context triad set:
         assert_eq!(
             msg.headers.context["user_id"],

@@ -4,6 +4,34 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.6] — 2026-08-08
+
+The server-rendered operator UI speaks English. This is a small functional
+release: the only behaviour that changes is the rendered text.
+
+### Changed
+
+- **Operator UI renders English end to end.** Every string the `/ui/*` pages
+  emit — empty states, filter labels, table headers, pivot links, the
+  pagination arrow, the dashboard's consistency disclaimer, the header
+  compartment captions and the blob-resolution notices — is now English, with
+  one term per concept across all seven pages. Route names, query parameters,
+  field names and error tokens (`missing_blob_id`, `malformed_blob_id`,
+  `blob_unreadable`) are untouched: they are API surface, not copy. No markup,
+  layout or logic changed.
+- **Tests asserting on rendered text moved with it.** Ten assertions match UI
+  copy through `contains()`; each was flipped to the English text first,
+  observed red, and only then was the string translated. Two of the ten were
+  not in any inventory — they were invisible to the German-text heuristic
+  because their literals carry neither an umlaut nor a listed function word.
+  The lesson is recorded with them: coupling is found by reading the files,
+  not by trusting a scanner's hit set.
+- **German test fixtures anglicized.** The `"hallo welt"` fixture (four test
+  sites across three crates, eight literals) became `"hello world"`. Each site
+  is inside `#[cfg(test)]` or under `tests/`; none has runtime effect. The
+  FTS5 tripwire keeps its shape — it indexes two tokens and matches on the
+  *second* one, so `MATCH 'welt'` became `MATCH 'world'`, not `'hello'`.
+
 ## [0.1.5] — 2026-08-08
 
 The memory hive gets its full read path. No Rust behaviour changed in this release —

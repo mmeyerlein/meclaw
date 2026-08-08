@@ -16,7 +16,7 @@ pub(crate) fn render_400(detail: &str) -> Response {
     let content = html! {
         p class="error" { "400 Bad Request" }
         p { (detail) }
-        p { a href="/ui/" { "Zurück zum Dashboard" } }
+        p { a href="/ui/" { "Back to dashboard" } }
     };
     (
         StatusCode::BAD_REQUEST,
@@ -30,7 +30,7 @@ pub(crate) fn render_500(detail: &str) -> Response {
     let content = html! {
         p class="error" { "500 Internal Server Error" }
         p { (detail) }
-        p { a href="/ui/" { "Zurück zum Dashboard" } }
+        p { a href="/ui/" { "Back to dashboard" } }
     };
     (
         StatusCode::INTERNAL_SERVER_ERROR,

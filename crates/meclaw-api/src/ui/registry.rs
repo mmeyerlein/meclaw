@@ -72,7 +72,7 @@ fn render_filter_form(q: &RegistryUiQuery) -> Markup {
     let limit = q.limit.map(|n| n.to_string()).unwrap_or_default();
     html! {
         form method="get" action="/ui/registry" {
-            label { "Path-Prefix: " input type="text" name="path_prefix" value=(path_prefix); }
+            label { "Path prefix: " input type="text" name="path_prefix" value=(path_prefix); }
             label { "Type: " input type="text" name="type" value=(cell_type); }
             label { "Limit: " input type="text" name="limit" value=(limit); }
             button type="submit" { "Filter" }
@@ -82,7 +82,7 @@ fn render_filter_form(q: &RegistryUiQuery) -> Markup {
 
 fn render_table(entries: &[RegistryEntryDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Cells gefunden." } };
+        return html! { p class="empty" { "No cells found." } };
     }
     html! {
         table {
@@ -90,7 +90,7 @@ fn render_table(entries: &[RegistryEntryDto]) -> Markup {
                 tr {
                     th { "Path" }
                     th { "Type" }
-                    th { "Cell-ID" }
+                    th { "Cell ID" }
                 }
             }
             tbody {

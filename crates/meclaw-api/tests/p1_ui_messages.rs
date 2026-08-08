@@ -62,7 +62,10 @@ async fn ui_messages_renders_filter_form_and_empty_hint() {
             "filter field {field} missing"
         );
     }
-    assert!(body.contains("Keine Messages"), "empty hint expected");
+    assert!(
+        body.contains("No messages for this filter."),
+        "empty hint expected"
+    );
     assert!(
         body.contains("href=\"/ui/messages\""),
         "nav must link the new page"

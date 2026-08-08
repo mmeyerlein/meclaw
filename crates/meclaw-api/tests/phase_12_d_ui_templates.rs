@@ -52,5 +52,5 @@ async fn ui_templates_renders_html_with_filter_form() {
     assert!(body.contains("name=\"type\""));
     assert!(body.contains("Templates"));
     // Empty registry state.
-    assert!(body.contains("Keine Templates"));
+    assert!(body.contains("No templates registered."));
 }

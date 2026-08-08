@@ -38,11 +38,11 @@ pub async fn get_dashboard(State(colony): State<Arc<ColonyHandle>>) -> impl Into
 
     let content = html! {
         p {
-            "Aggregierte Sicht aus drei Reads. "
-            strong { "Hinweis: " }
-            "Dies ist " strong { "kein konsistenter Snapshot" } " — "
-            "die drei Reads laufen sequentiell, zwischen ihnen darf der "
-            "Colony-State weiterlaufen."
+            "Aggregated view from three reads. "
+            strong { "Note: " }
+            "This is " strong { "not a consistent snapshot" } ": "
+            "the three reads run sequentially and colony state may "
+            "move on between them."
         }
 
         h2 { "Cells (" (registry.len()) ")" }
@@ -64,7 +64,7 @@ pub async fn get_dashboard(State(colony): State<Arc<ColonyHandle>>) -> impl Into
 
 fn render_registry_section(entries: &[RegistryEntryDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Cells registriert." } };
+        return html! { p class="empty" { "No cells registered." } };
     }
     html! {
         table {
@@ -72,7 +72,7 @@ fn render_registry_section(entries: &[RegistryEntryDto]) -> Markup {
                 tr {
                     th { "Path" }
                     th { "Type" }
-                    th { "Cell-ID" }
+                    th { "Cell ID" }
                 }
             }
             tbody {
@@ -90,7 +90,7 @@ fn render_registry_section(entries: &[RegistryEntryDto]) -> Markup {
 
 fn render_dead_letters_section(entries: &[DeadLetterDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Dead Letters." } };
+        return html! { p class="empty" { "No dead letters." } };
     }
     html! {
         table {
@@ -118,13 +118,13 @@ fn render_dead_letters_section(entries: &[DeadLetterDto]) -> Markup {
 
 fn render_errors_section(entries: &[MessageLogDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Error-Hops im Trace-Log." } };
+        return html! { p class="empty" { "No error hops in the trace log." } };
     }
     html! {
         table {
             thead {
                 tr {
-                    th { "Message-ID" }
+                    th { "Message ID" }
                     th { "From" }
                     th { "To" }
                     th { "Headers" }

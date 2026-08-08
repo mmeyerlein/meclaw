@@ -77,7 +77,7 @@ pub(crate) fn layout(title: &str, content: Markup) -> Markup {
                     (content)
                 }
                 footer {
-                    "meclaw Operator-UI · server-rendered, kein JS, kein Auto-Refresh"
+                    "meclaw operator UI · server-rendered, no JS, no auto-refresh"
                 }
             }
         }

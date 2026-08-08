@@ -36,7 +36,7 @@ pub(crate) fn pretty_json(raw: &str) -> Option<String> {
 pub(crate) fn render_headers_split(headers_json: &str) -> Markup {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(headers_json) else {
         return html! {
-            p class="error" { "Headers sind kein gültiges JSON — Rohwert:" }
+            p class="error" { "Headers are not valid JSON. Raw value:" }
             pre { (headers_json) }
         };
     };
@@ -48,24 +48,24 @@ pub(crate) fn render_headers_split(headers_json: &str) -> Markup {
                 h3 { "context" }
                 (render_kv_table(ctx))
                 h3 { "hop" }
-                p class="empty" { "(leer)" }
+                p class="empty" { "(empty)" }
             } @else if let Some(h) = value.get("hop") {
                 h3 { "context" }
-                p class="empty" { "(leer)" }
+                p class="empty" { "(empty)" }
                 h3 { "hop" }
                 (render_kv_table(h))
             } @else {
-                p class="error" { "Headers ohne context/hop-Fächer — Rohwert:" }
+                p class="error" { "Headers without context/hop compartments. Raw value:" }
                 pre { (headers_json) }
             }
         };
     };
     html! {
         h3 { "context" }
-        p class="empty" { "persistent — nur Edges schreiben dieses Fach" }
+        p class="empty" { "persistent, only edges write this compartment" }
         (render_kv_table(context))
         h3 { "hop" }
-        p class="empty" { "genau ein Hop — verfällt bei der nächsten Cell-Emission" }
+        p class="empty" { "exactly one hop, decays on the next cell emission" }
         (render_kv_table(hop))
     }
 }
@@ -77,7 +77,7 @@ fn render_kv_table(value: &serde_json::Value) -> Markup {
         return html! { pre { (value.to_string()) } };
     };
     if map.is_empty() {
-        return html! { p class="empty" { "(leer)" } };
+        return html! { p class="empty" { "(empty)" } };
     }
     html! {
         table {
@@ -112,9 +112,9 @@ pub(crate) fn render_scan_notice(scanned: usize, truncated: bool) -> Markup {
     html! {
         @if truncated {
             p class="error" {
-                (scanned) " Rows gescannt, evtl. unvollständig — nicht-indizierte "
-                "Filter (from_path, body_kind, correlation_id) wirkten nur auf "
-                "dieses Fenster. Zeitraum eingrenzen oder scan_budget erhöhen."
+                (scanned) " rows scanned, possibly incomplete. Non-indexed "
+                "filters (from_path, body_kind, correlation_id) applied to "
+                "this window only. Narrow the time range or raise scan_budget."
             }
         }
     }
@@ -164,7 +164,7 @@ mod tests {
     fn headers_split_marks_an_absent_compartment_as_empty() {
         let s = render_headers_split(r#"{"context":{"turn_id":"t1"}}"#).into_string();
         assert!(s.contains("turn_id"));
-        assert!(s.contains("(leer)"), "missing hop compartment is labelled");
+        assert!(s.contains("(empty)"), "missing hop compartment is labelled");
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
         let shown = render_scan_notice(5000, true).into_string();
         assert!(shown.contains("5000"), "scanned row count must be visible");
         assert!(
-            shown.contains("evtl. unvollständig"),
+            shown.contains("possibly incomplete"),
             "honest truncation wording"
         );
         let quiet = render_scan_notice(12, false).into_string();

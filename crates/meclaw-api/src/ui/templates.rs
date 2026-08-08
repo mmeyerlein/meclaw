@@ -80,7 +80,7 @@ fn render_filter_form(q: &TemplatesUiQuery) -> Markup {
 
 fn render_table(entries: &[TemplateEntryDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Templates registriert." } };
+        return html! { p class="empty" { "No templates registered." } };
     }
     html! {
         table {
@@ -88,8 +88,8 @@ fn render_table(entries: &[TemplateEntryDto]) -> Markup {
                 tr {
                     th { "Name" }
                     th { "Version" }
-                    th { "Template-ID" }
-                    th { "Filesystem-Path" }
+                    th { "Template ID" }
+                    th { "Filesystem path" }
                     th { "Author" }
                 }
             }

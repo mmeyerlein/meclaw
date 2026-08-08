@@ -73,7 +73,7 @@ async fn send_message_happy_path_posts_chat_id_and_text() {
     )])
     .await;
     let c = TelegramClient::new(&format!("http://{addr}"), "T").unwrap();
-    c.send_message(12345, "hallo welt", Duration::from_millis(5000))
+    c.send_message(12345, "hello world", Duration::from_millis(5000))
         .await
         .unwrap();
 
@@ -82,7 +82,7 @@ async fn send_message_happy_path_posts_chat_id_and_text() {
     assert!(cap[0].path.contains("/botT/sendMessage"));
     let body: serde_json::Value = serde_json::from_slice(&cap[0].body).unwrap();
     assert_eq!(body["chat_id"], 12345);
-    assert_eq!(body["text"], "hallo welt");
+    assert_eq!(body["text"], "hello world");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -44,7 +44,7 @@ pub async fn get_graph_ui(
 
     let content = html! {
         (render_scope_form(&scope_str))
-        p { "Scope: " code { (reply.scope) } " · Graph-Version: " code { (reply.graph_version) } }
+        p { "Scope: " code { (reply.scope) } " · Graph version: " code { (reply.graph_version) } }
 
         h2 { "Nodes (" (reply.nodes.len()) ")" }
         (render_nodes(&reply.nodes))
@@ -66,7 +66,7 @@ fn render_scope_form(scope: &str) -> Markup {
 
 fn render_nodes(nodes: &[GraphNodeDto]) -> Markup {
     if nodes.is_empty() {
-        return html! { p class="empty" { "Keine Nodes im Scope." } };
+        return html! { p class="empty" { "No nodes in this scope." } };
     }
     html! {
         ul {
@@ -79,13 +79,13 @@ fn render_nodes(nodes: &[GraphNodeDto]) -> Markup {
 
 fn render_edges(edges: &[GraphEdgeDto]) -> Markup {
     if edges.is_empty() {
-        return html! { p class="empty" { "Keine Edges im Scope." } };
+        return html! { p class="empty" { "No edges in this scope." } };
     }
     html! {
         table {
             thead {
                 tr {
-                    th { "Edge-ID" }
+                    th { "Edge ID" }
                     th { "From" }
                     th { "To" }
                 }

@@ -58,7 +58,7 @@ async fn ui_dashboard_returns_html_with_three_sections() {
         "dashboard missing 'Recent Errors' section"
     );
     assert!(
-        body.contains("kein konsistenter Snapshot"),
+        body.contains("not a consistent snapshot"),
         "dashboard missing snapshot disclaimer"
     );
 }

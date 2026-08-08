@@ -230,7 +230,7 @@ pub async fn get_messages_ui(
         h2 { "Messages (" (reply.entries.len()) ")" }
         (render_table(&reply.entries))
         @if let Some(link) = &older_link {
-            p { a href=(link) { "Ältere →" } }
+            p { a href=(link) { "Older →" } }
         }
     };
     (
@@ -261,13 +261,13 @@ fn render_filter_form(q: &MessagesUiQuery) -> Markup {
 
 fn render_table(entries: &[MessageLogDto]) -> Markup {
     if entries.is_empty() {
-        return html! { p class="empty" { "Keine Messages für diesen Filter." } };
+        return html! { p class="empty" { "No messages for this filter." } };
     }
     html! {
         table {
             thead {
                 tr {
-                    th { "Zeit (UTC)" }
+                    th { "Time (UTC)" }
                     th { "from" }
                     th { "to" }
                     th { "kind" }
@@ -290,7 +290,7 @@ fn render_table(entries: &[MessageLogDto]) -> Markup {
                                 None => span class="empty" { "—" },
                             }
                         }
-                        td { a href=(format!("/ui/message?id={}", urlencode(&e.id))) { "öffnen" } }
+                        td { a href=(format!("/ui/message?id={}", urlencode(&e.id))) { "open" } }
                     }
                 }
             }

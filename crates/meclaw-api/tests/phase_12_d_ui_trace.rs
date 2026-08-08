@@ -47,7 +47,7 @@ async fn ui_trace_no_query_renders_empty_form() {
     assert!(body.contains("<form"));
     assert!(body.contains("name=\"trace_id\""));
     assert!(
-        body.contains("Trace-ID eingeben"),
+        body.contains("Enter a trace ID"),
         "expected hint when no trace_id supplied"
     );
 }
@@ -67,7 +67,7 @@ async fn ui_trace_unknown_trace_id_shows_empty_hint() {
     let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(
-        body.contains("Kein Trace gefunden"),
+        body.contains("No trace found for"),
         "expected empty-trace hint"
     );
     // The trace id round-trips back into the form.

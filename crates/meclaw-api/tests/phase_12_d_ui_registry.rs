@@ -58,7 +58,7 @@ async fn ui_registry_returns_html_with_filter_form() {
     assert!(body.contains("name=\"type\""));
     assert!(body.contains("name=\"limit\""));
     // Empty state -> empty hint.
-    assert!(body.contains("Keine Cells"));
+    assert!(body.contains("No cells found."));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -47,7 +47,7 @@ pub async fn get_message_ui(
 ) -> impl IntoResponse {
     let Some(raw_id) = q.id.as_deref().filter(|s| !s.is_empty()) else {
         let content = html! {
-            p { "Keine Message-ID angegeben. " a href="/ui/messages" { "Zur Message-Liste" } "." }
+            p { "No message ID given. " a href="/ui/messages" { "Back to message list" } "." }
         };
         return (
             StatusCode::OK,
@@ -76,8 +76,8 @@ pub async fn get_message_ui(
     };
     let Some(msg) = message else {
         let content = html! {
-            p class="empty" { "Keine Message gefunden für " code { (raw_id) } "." }
-            p { a href="/ui/messages" { "Zur Message-Liste" } }
+            p class="empty" { "No message found for " code { (raw_id) } "." }
+            p { a href="/ui/messages" { "Back to message list" } }
         };
         return (
             StatusCode::OK,
@@ -109,7 +109,7 @@ pub async fn get_message_ui(
     };
 
     let content = html! {
-        p { a href="/ui/messages" { "← Message-Liste" } }
+        p { a href="/ui/messages" { "← Message list" } }
         (render_envelope(&msg))
         h2 { "Headers" }
         (render_headers_split(&msg.headers_json))
@@ -118,7 +118,7 @@ pub async fn get_message_ui(
         @if let Some(section) = &blob_section { (section) }
         h2 { "Pivots" }
         (render_pivots(&msg))
-        h2 { "Kinder (" (children.len()) ")" }
+        h2 { "Children (" (children.len()) ")" }
         (render_children(&msg, &children))
     };
     (
@@ -170,14 +170,14 @@ fn render_envelope(msg: &MessageLogDto) -> Markup {
 
 fn render_body(msg: &MessageLogDto) -> Markup {
     match msg.body_payload.as_deref() {
-        None => html! { p class="empty" { "Kein Body." } },
+        None => html! { p class="empty" { "No body." } },
         Some(payload) if msg.body_kind == "blob" => html! {
-            p { "Blob-Body. Blob-ID: " code { (payload) } }
+            p { "Blob body. Blob ID: " code { (payload) } }
         },
         Some(payload) => match pretty_json(payload) {
             Some(pretty) => html! { pre { (pretty) } },
             None => html! {
-                p class="empty" { "Payload ist kein gültiges JSON — Rohwert:" }
+                p class="empty" { "Payload is not valid JSON. Raw value:" }
                 pre { (payload) }
             },
         },
@@ -195,27 +195,27 @@ async fn render_blob_section(
         return html! {
             p {
                 a href=(format!("/ui/message?id={}&blob=1", msg.id)) {
-                    "Blob-Body laden"
+                    "Load blob body"
                 }
-                " (wird nicht automatisch geladen)"
+                " (not loaded automatically)"
             }
         };
     }
     let Some(raw) = msg.body_payload.as_deref() else {
-        return html! { p class="error" { "Blob-Body nicht auflösbar: missing_blob_id" } };
+        return html! { p class="error" { "Blob body not resolvable: missing_blob_id" } };
     };
     let Ok(blob_id) = Uuid::parse_str(raw) else {
-        return html! { p class="error" { "Blob-Body nicht auflösbar: malformed_blob_id" } };
+        return html! { p class="error" { "Blob body not resolvable: malformed_blob_id" } };
     };
     match blob_store.read_body(blob_id).await {
         Ok(body) => {
             let pretty = serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string());
             html! {
-                h3 { "Blob-Body" }
+                h3 { "Blob body" }
                 pre { (pretty) }
             }
         }
-        Err(_) => html! { p class="error" { "Blob-Body nicht auflösbar: blob_unreadable" } },
+        Err(_) => html! { p class="error" { "Blob body not resolvable: blob_unreadable" } },
     }
 }
 
@@ -224,18 +224,18 @@ fn render_pivots(msg: &MessageLogDto) -> Markup {
         ul {
             li {
                 "Trace: "
-                a href=(format!("/ui/trace?trace_id={}", msg.trace_id)) { "Hop-Baum" }
+                a href=(format!("/ui/trace?trace_id={}", msg.trace_id)) { "hop tree" }
                 " · "
-                a href=(format!("/ui/messages?trace_id={}", msg.trace_id)) { "als Liste" }
+                a href=(format!("/ui/messages?trace_id={}", msg.trace_id)) { "as a list" }
             }
             @if let Some(parent) = &msg.parent_message_id {
                 li { "Parent: " a href=(format!("/ui/message?id={parent}")) { code { (parent) } } }
             } @else {
-                li class="empty" { "Parent: — (Source-Message)" }
+                li class="empty" { "Parent: — (source message)" }
             }
             li {
-                "Kinder: "
-                a href=(format!("/ui/messages?parent_message_id={}", msg.id)) { "alle anzeigen" }
+                "Children: "
+                a href=(format!("/ui/messages?parent_message_id={}", msg.id)) { "show all" }
             }
             @if let Some(corr) = &msg.correlation_id {
                 li {
@@ -265,7 +265,7 @@ fn render_pivots(msg: &MessageLogDto) -> Markup {
 
 fn render_children(msg: &MessageLogDto, children: &[MessageLogDto]) -> Markup {
     if children.is_empty() {
-        return html! { p class="empty" { "Keine Folge-Messages." } };
+        return html! { p class="empty" { "No follow-up messages." } };
     }
     html! {
         ul {
@@ -278,8 +278,8 @@ fn render_children(msg: &MessageLogDto, children: &[MessageLogDto]) -> Markup {
         }
         @if children.len() == CHILDREN_LIMIT {
             p class="error" {
-                "Nur die ersten " (CHILDREN_LIMIT) " Kinder gezeigt — "
-                a href=(format!("/ui/messages?parent_message_id={}", msg.id)) { "vollständige Liste" }
+                "Only the first " (CHILDREN_LIMIT) " children shown. "
+                a href=(format!("/ui/messages?parent_message_id={}", msg.id)) { "full list" }
             }
         }
     }

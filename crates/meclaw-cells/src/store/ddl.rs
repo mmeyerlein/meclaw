@@ -172,12 +172,12 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE VIRTUAL TABLE probe USING fts5(x);\
-             INSERT INTO probe(x) VALUES('hallo welt');",
+             INSERT INTO probe(x) VALUES('hello world');",
         )
         .expect("bundled SQLite must ship FTS5");
         let n: i64 = conn
             .query_row(
-                "SELECT count(*) FROM probe WHERE probe MATCH 'welt'",
+                "SELECT count(*) FROM probe WHERE probe MATCH 'world'",
                 [],
                 |r| r.get(0),
             )

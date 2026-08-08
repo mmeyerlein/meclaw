@@ -45,7 +45,7 @@ pub async fn get_trace_ui(
     let Some(trace_id_str) = q.trace_id.as_deref() else {
         let content = html! {
             (render_search_form(&trace_id_input))
-            p { "Trace-ID eingeben, um den Hop-Baum zu sehen." }
+            p { "Enter a trace ID to see the hop tree." }
         };
         return (StatusCode::OK, Html(layout("Trace", content).into_string())).into_response();
     };
@@ -80,7 +80,7 @@ pub async fn get_trace_ui(
         (render_search_form(&trace_id_input))
         h2 { "Trace " code { (trace_id_str) } " (" (reply.entries.len()) " hops)" }
         @if reply.entries.is_empty() {
-            p class="empty" { "Kein Trace gefunden für " code { (trace_id_str) } "." }
+            p class="empty" { "No trace found for " code { (trace_id_str) } "." }
         } @else {
             (render_trace_tree(&reply.entries))
         }
@@ -91,8 +91,8 @@ pub async fn get_trace_ui(
 fn render_search_form(trace_id: &str) -> Markup {
     html! {
         form method="get" action="/ui/trace" {
-            label { "Trace-ID: " input type="text" name="trace_id" value=(trace_id) size="40"; }
-            button type="submit" { "Suchen" }
+            label { "Trace ID: " input type="text" name="trace_id" value=(trace_id) size="40"; }
+            button type="submit" { "Search" }
         }
     }
 }

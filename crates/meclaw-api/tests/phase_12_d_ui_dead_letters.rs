@@ -48,7 +48,7 @@ async fn ui_dead_letters_renders_html_empty_hint() {
     let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(body.contains("Dead Letters"));
-    assert!(body.contains("Keine"));
+    assert!(body.contains("No dead letters."));
 }
 
 /// P1 (message browser): every dead letter links back to the message it came
