@@ -32,7 +32,9 @@ impl CellFactory for StoreCellFactory {
     ///
     /// Sequence (per Brainstorm E1+E3+E4):
     /// 1. Parse params (`StoreParams::parse`).
-    /// 2. `open_or_create_cell_db_with_status` → `(Connection, OpenStatus)`.
+    /// 2. `open_or_create_cell_db_with_status` → `(Connection, OpenStatus)`,
+    ///    then `hamming::register` (P4: the scalar function is per connection,
+    ///    so both the wake and the respawn path install it).
     /// 3. `apply_schema_ddl` (Ad-hoc-DDL from `params.schema`, sync), then
     ///    `apply_fts_ddl` (P3: FTS5 index + triggers from `params.fts`, idempotent).
     /// 4. If `OpenStatus::Created` → `load_seed_if_present` (sync, fresh-only).
@@ -88,6 +90,10 @@ impl CellFactory for StoreCellFactory {
                 let (conn, _status) =
                     open_or_create_cell_db_with_status(&respawn_cell_dir.join("cell.db"))
                         .expect("respawn: open_or_create_cell_db_with_status failed");
+                // P4: `hamming` is bound to the CONNECTION, so it is registered
+                // wherever a store connection is born — here and in the WakeFn.
+                crate::store::query::hamming::register(&conn)
+                    .expect("respawn: register hamming scalar function");
                 // β restore: replay the cell.db params-overlay over birth-params.
                 let effective =
                     crate::params_overlay::restore::<StoreParams>(&conn, &respawn_birth)
@@ -141,6 +147,10 @@ impl CellFactory for StoreCellFactory {
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             let (conn, status) = open_or_create_cell_db_with_status(&wake_cell_dir.join("cell.db"))
                 .expect("wake: open_or_create_cell_db_with_status failed");
+            // P4: same registration on the wake path — every wake builds a new
+            // connection and therefore re-registers the function.
+            crate::store::query::hamming::register(&conn)
+                .expect("wake: register hamming scalar function");
             // β restore: replay the cell.db params-overlay over birth-params.
             let effective = crate::params_overlay::restore::<StoreParams>(&conn, &wake_birth)
                 .expect("wake: restore params from cell.db overlay");

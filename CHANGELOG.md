@@ -4,6 +4,45 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.4] — 2026-08-08
+
+### Added
+
+- **store: `traverse` operation.** Multi-hop walk over a declared edge table via
+  a recursive CTE. The caller names the table plus the column roles (`src`,
+  `dst`, optional `kind` and `weight`), the start node(s), an optional `where`
+  over the edge rows and an optional projection of further edge columns — every
+  identifier is resolved against the SQLite catalog, every value is bound. The
+  result is a set of **paths** (end node, depth, the nodes walked through, the
+  last edge's attributes and the accumulated weight), so scoring stays with the
+  caller instead of being guessed in the store.
+- **store: traversal guards.** `max_depth` (default 2, hard cap 5) and
+  `max_nodes` (default 200, hard cap 5000) are mandatory by construction; a
+  value beyond the cap is rejected, never silently clamped. Cycles are
+  eliminated per path, so a walk always terminates and no path visits a node
+  twice. Hitting the node cap sets `truncated` in the payload — the result never
+  shrinks silently.
+- **store: `similar` operation.** Nearest-neighbour ranking over a column of
+  binarized embedding vectors, combinable with `where`, `order_by` and `limit`.
+  Every row carries a `distance` column (hamming distance, smaller is better);
+  without an explicit ordering the result is ranked best-first with `rowid` as
+  the tiebreaker. Rows whose vector is NULL — the embedding backfill queue — are
+  excluded, because NULL would otherwise sort to the top.
+- **store: `hamming(a, b)` scalar function**, registered on every `store`
+  connection (wake and respawn alike). Arguments may be base64 text or a blob;
+  unequal vector lengths, malformed base64 and non-vector arguments raise a
+  regular `sql_error`. Comparing across embedding generations is a caller error
+  and now fails loudly instead of producing a plausible, wrong ranking.
+
+With this, all four retrieval legs — temporal, keyword, graph and semantic — are
+answerable inside the store.
+
+### Changed
+
+- `rusqlite` gains the `functions` feature (needed for the registered scalar
+  function). No new dependency, no lockfile change, and no loadable SQLite
+  extension.
+
 ## [0.1.3] — 2026-08-08
 
 ### Added

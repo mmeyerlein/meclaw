@@ -4,9 +4,12 @@
 //! JSON for selects + error_code for SQL-errors).
 
 use crate::store::query::catalog::{Catalog, CatalogError};
-use crate::store::query::parse::{parse_filters, parse_limit, parse_order_by};
+use crate::store::query::parse::{
+    parse_filters, parse_limit, parse_order_by, parse_similar, parse_traverse,
+};
 use crate::store::query::sql::{
-    render_tail, render_tail_qualified, render_where, render_where_qualified,
+    render_similar, render_tail, render_tail_qualified, render_traverse, render_where,
+    render_where_qualified,
 };
 use meclaw_core::serde_json::Value;
 
@@ -72,6 +75,8 @@ pub fn dispatch(conn: &rusqlite::Connection, args: &Value) -> Result<OpOutcome, 
         "delete" => op_delete(conn, obj),
         "create_table" => op_create_table(conn, obj),
         "search" => op_search(conn, obj),
+        "traverse" => op_traverse(conn, obj),
+        "similar" => op_similar(conn, obj),
         other => Err(format!("unknown op {other:?}")),
     }
 }
@@ -339,6 +344,165 @@ fn op_search(
         error_code: None,
         error_text: None,
     })
+}
+
+/// P4 `traverse`: multi-hop walk over an edge table via a recursive CTE
+/// (memory-spec A.2.4).
+///
+/// The payload is an object, not an array: it carries the paths **plus** the
+/// `truncated` flag and the guards that produced them. Truncation must be
+/// visible — the P1 precedent (`scan_truncated`) applies, and the output header
+/// set is frozen, so the payload is where it belongs.
+fn op_traverse(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+) -> Result<OpOutcome, String> {
+    let table = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("missing table")?;
+    let spec = parse_traverse(args)?;
+    let cat = match Catalog::load(conn, table) {
+        Ok(c) => c,
+        Err(e) => return Ok(catalog_error_outcome("traverse", e)),
+    };
+    let (stmt, vals) = match render_traverse(&spec, &cat) {
+        Ok(s) => s,
+        Err(e) => return Ok(catalog_error_outcome("traverse", e)),
+    };
+    // CTE column order: node, depth, [weight_sum], path, then the edge
+    // attributes in the order the renderer emitted them.
+    let mut names = vec!["node".to_string(), "depth".to_string()];
+    if spec.weight.is_some() {
+        names.push("weight_sum".to_string());
+    }
+    names.push("path".to_string());
+    let mut edge_names: Vec<String> = Vec::new();
+    if spec.kind.is_some() {
+        edge_names.push("kind".to_string());
+    }
+    if spec.weight.is_some() {
+        edge_names.push("weight".to_string());
+    }
+    edge_names.extend(spec.columns.iter().cloned());
+    names.extend((0..edge_names.len()).map(|i| format!("e{i}")));
+
+    let rows = match query_rows(conn, &stmt, &vals, &names) {
+        Ok(r) => r,
+        Err(e) => return Ok(sql_error_outcome("traverse", &e)),
+    };
+    let truncated = rows.len() as i64 > spec.max_nodes;
+    let paths: Vec<Value> = rows
+        .into_iter()
+        .take(spec.max_nodes as usize)
+        .map(|r| traverse_row_to_path(&r, &edge_names))
+        .collect();
+    let payload = meclaw_core::serde_json::json!({
+        "paths": paths,
+        "truncated": truncated,
+        "max_depth": spec.max_depth,
+        "max_nodes": spec.max_nodes,
+    });
+    Ok(OpOutcome {
+        operation: "traverse",
+        rows_affected: paths_len(&payload),
+        payload,
+        error_code: None,
+        error_text: None,
+    })
+}
+
+/// Number of paths in a traverse payload (the value of the `rows_affected` header).
+fn paths_len(payload: &Value) -> i64 {
+    payload["paths"].as_array().map(|a| a.len()).unwrap_or(0) as i64
+}
+
+/// Reshape one CTE row into a path object: the visited nodes as an array, and
+/// the last edge's attributes under their caller-facing names.
+fn traverse_row_to_path(row: &Value, edge_names: &[String]) -> Value {
+    let mut out = meclaw_core::serde_json::Map::new();
+    out.insert("node".into(), row["node"].clone());
+    out.insert("depth".into(), row["depth"].clone());
+    if let Some(w) = row.get("weight_sum") {
+        out.insert("weight_sum".into(), w.clone());
+    }
+    let nodes: Vec<Value> = row["path"]
+        .as_str()
+        .unwrap_or_default()
+        .split('\u{1e}')
+        .filter(|s| !s.is_empty())
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+    out.insert("path".into(), Value::Array(nodes));
+    if !edge_names.is_empty() {
+        let mut edge = meclaw_core::serde_json::Map::new();
+        for (i, name) in edge_names.iter().enumerate() {
+            edge.insert(name.clone(), row[format!("e{i}")].clone());
+        }
+        out.insert("edge".into(), Value::Object(edge));
+    }
+    Value::Object(out)
+}
+
+/// P4 `similar`: nearest-neighbour ranking over a binarized vector column via
+/// the registered `hamming` scalar function (memory-spec A.2.5).
+///
+/// Every row carries an extra `distance` column (**smaller is better**, like
+/// `rank` in `search`). Rows whose vector is NULL — the embedding backfill queue
+/// of memory-spec B.1.1 — are excluded by the renderer, because NULL would sort
+/// to the top. Comparing across embedding generations is a caller error and
+/// surfaces as a regular `sql_error` naming the length mismatch.
+fn op_similar(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+) -> Result<OpOutcome, String> {
+    let table = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("missing table")?;
+    let spec = parse_similar(args)?;
+    let cat = match Catalog::load(conn, table) {
+        Ok(c) => c,
+        Err(e) => return Ok(catalog_error_outcome("similar", e)),
+    };
+    let (stmt, vals) = match render_similar(&spec, &cat) {
+        Ok(s) => s,
+        Err(e) => return Ok(catalog_error_outcome("similar", e)),
+    };
+    let mut names = spec.columns.clone();
+    names.push(crate::store::query::DISTANCE_COLUMN.to_string());
+    match query_rows(conn, &stmt, &vals, &names) {
+        Ok(rows) => Ok(OpOutcome {
+            operation: "similar",
+            rows_affected: rows.len() as i64,
+            payload: Value::Array(rows),
+            error_code: None,
+            error_text: None,
+        }),
+        Err(e) => Ok(sql_error_outcome("similar", &e)),
+    }
+}
+
+/// Run a statement and materialize its rows as JSON objects keyed by `names`
+/// (positional — the renderer owns the projection order).
+fn query_rows(
+    conn: &rusqlite::Connection,
+    stmt: &str,
+    vals: &[rusqlite::types::Value],
+    names: &[String],
+) -> rusqlite::Result<Vec<Value>> {
+    let mut prepared = conn.prepare(stmt)?;
+    let bind: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut rows = prepared.query(bind.as_slice())?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut row_obj = meclaw_core::serde_json::Map::new();
+        for (i, name) in names.iter().enumerate() {
+            row_obj.insert(name.clone(), sql_to_json_value(row, i));
+        }
+        out.push(Value::Object(row_obj));
+    }
+    Ok(out)
 }
 
 fn sql_to_json_value(row: &rusqlite::Row, idx: usize) -> Value {

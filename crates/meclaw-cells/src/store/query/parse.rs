@@ -2,9 +2,12 @@
 //! handle, no SQL string. Validation happens here so that `validate ≡ execute`:
 //! whatever this module accepts is exactly what the renderer will emit.
 
-use super::{Cmp, Dir, Filter, OrderTerm, Predicate};
+use super::{
+    Cmp, DISTANCE_COLUMN, Dir, Filter, MAX_DEPTH_CAP, MAX_DEPTH_DEFAULT, MAX_NODES_CAP,
+    MAX_NODES_DEFAULT, OrderTerm, Predicate, SimilarSpec, TRAVERSE_CTE, TraverseSpec,
+};
 use crate::store::ops::json_to_sql_value;
-use meclaw_core::serde_json::Value;
+use meclaw_core::serde_json::{Map, Value};
 
 /// Parse the optional `where` argument into filters.
 ///
@@ -132,10 +135,287 @@ pub fn parse_limit(v: Option<&Value>) -> Result<Option<i64>, String> {
     }
 }
 
+/// Parse the mandatory `columns` projection shared by `select`/`search`/`similar`.
+fn parse_columns(args: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let arr = args
+        .get("columns")
+        .and_then(|v| v.as_array())
+        .ok_or("missing columns array")?;
+    let cols: Vec<String> = arr
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or("columns entry not string")
+                .map(|s| s.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if cols.is_empty() {
+        return Err("columns must declare at least one entry".into());
+    }
+    Ok(cols)
+}
+
+/// Parse a `traverse` op payload (memory-spec A.2.4).
+///
+/// Guards are mandatory by construction: both have a default, both have a hard
+/// cap, and a value beyond the cap is rejected rather than clamped — a caller
+/// who asked for depth 9 must not believe they got depth 9.
+pub fn parse_traverse(args: &Map<String, Value>) -> Result<TraverseSpec, String> {
+    let table = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("missing table")?;
+    if table == TRAVERSE_CTE {
+        return Err(format!(
+            "table must not be named {TRAVERSE_CTE:?} — that is the traversal's own CTE"
+        ));
+    }
+    let role = |name: &str| -> Result<String, String> {
+        args.get(name)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("missing {name} column role"))
+    };
+    let optional_role = |name: &str| -> Result<Option<String>, String> {
+        match args.get(name) {
+            None => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(format!("{name} column role must be a string")),
+        }
+    };
+    let max_depth = parse_guard(
+        args.get("max_depth"),
+        "max_depth",
+        MAX_DEPTH_DEFAULT,
+        MAX_DEPTH_CAP,
+    )?;
+    let max_nodes = parse_guard(
+        args.get("max_nodes"),
+        "max_nodes",
+        MAX_NODES_DEFAULT,
+        MAX_NODES_CAP,
+    )?;
+    let start = parse_start(args.get("start"), max_nodes)?;
+    let columns = match args.get("columns") {
+        None => Vec::new(),
+        Some(_) => parse_columns(args)?,
+    };
+    Ok(TraverseSpec {
+        src: role("src")?,
+        dst: role("dst")?,
+        kind: optional_role("kind")?,
+        weight: optional_role("weight")?,
+        start,
+        columns,
+        filters: parse_filters(args.get("where"))?,
+        max_depth,
+        max_nodes,
+    })
+}
+
+/// One traversal guard: optional, integer, within `[1, cap]`. Out of range is a
+/// loud reject — silent clamping is the failure mode this repo has banned.
+fn parse_guard(v: Option<&Value>, name: &str, default: i64, cap: i64) -> Result<i64, String> {
+    let Some(x) = v else { return Ok(default) };
+    match x.as_i64() {
+        Some(n) if (1..=cap).contains(&n) => Ok(n),
+        _ => Err(format!("{name} must be an integer between 1 and {cap}")),
+    }
+}
+
+/// The start nodes: a scalar or a non-empty list of scalars, bound as values.
+/// The list may not itself exceed the fan-out guard.
+fn parse_start(v: Option<&Value>, max_nodes: i64) -> Result<Vec<rusqlite::types::Value>, String> {
+    let v = v.ok_or("missing start")?;
+    let items: Vec<&Value> = match v {
+        Value::Array(a) => a.iter().collect(),
+        other => vec![other],
+    };
+    if items.is_empty() {
+        return Err("start must not be empty".into());
+    }
+    if items.len() as i64 > max_nodes {
+        return Err(format!(
+            "start must not list more than max_nodes ({max_nodes}) nodes"
+        ));
+    }
+    if items
+        .iter()
+        .any(|i| i.is_array() || i.is_object() || i.is_null())
+    {
+        return Err("start accepts non-null scalars only".into());
+    }
+    Ok(items.iter().map(|i| json_to_sql_value(Some(i))).collect())
+}
+
+/// Parse a `similar` op payload.
+///
+/// The query vector is decoded here, not at render time: the parser accepts
+/// exactly what the renderer can bind (`validate ≡ execute`). `distance` is the
+/// name of the computed rank column and therefore not available as a projection
+/// name — a collision would silently overwrite the caller's column.
+pub fn parse_similar(args: &Map<String, Value>) -> Result<SimilarSpec, String> {
+    let columns = parse_columns(args)?;
+    if columns.iter().any(|c| c == DISTANCE_COLUMN) {
+        return Err(format!(
+            "columns must not contain {DISTANCE_COLUMN:?} — it is the computed rank column"
+        ));
+    }
+    let vector_column = args
+        .get("vector_column")
+        .and_then(|v| v.as_str())
+        .ok_or("missing vector_column")?
+        .to_string();
+    let vector = args
+        .get("vector")
+        .and_then(|v| v.as_str())
+        .ok_or("missing vector")?
+        .to_string();
+    let bytes =
+        crate::store::query::hamming::decode_base64(&vector).map_err(|e| format!("vector: {e}"))?;
+    if bytes.is_empty() {
+        return Err("vector must not be empty".into());
+    }
+    Ok(SimilarSpec {
+        columns,
+        vector_column,
+        vector,
+        filters: parse_filters(args.get("where"))?,
+        order_by: parse_order_by(args.get("order_by"))?,
+        limit: parse_limit(args.get("limit"))?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    fn obj(v: &Value) -> &meclaw_core::serde_json::Map<String, Value> {
+        v.as_object().unwrap()
+    }
+
+    fn traverse_base() -> Value {
+        json!({"operation":"traverse","table":"entity_edges",
+               "src":"src_entity","dst":"dst_entity","start":"e:marcus"})
+    }
+
+    fn with(extra: Value) -> Value {
+        let mut base = traverse_base();
+        for (k, v) in extra.as_object().unwrap() {
+            base[k] = v.clone();
+        }
+        base
+    }
+
+    #[test]
+    fn traverse_defaults_are_depth_two_and_two_hundred_nodes() {
+        let t = parse_traverse(obj(&traverse_base())).unwrap();
+        assert_eq!(t.max_depth, 2);
+        assert_eq!(t.max_nodes, 200);
+        assert_eq!(t.start.len(), 1);
+        assert!(t.kind.is_none() && t.weight.is_none());
+        assert!(t.columns.is_empty() && t.filters.is_empty());
+    }
+
+    /// Guards reject instead of clamping: a caller who asks for depth 9 must
+    /// learn that they did not get depth 9 (plan R3).
+    #[test]
+    fn traverse_rejects_guards_outside_their_caps_instead_of_clamping() {
+        for bad in [
+            json!({"max_depth": 6}),
+            json!({"max_depth": 0}),
+            json!({"max_depth": -1}),
+            json!({"max_depth": "3"}),
+            json!({"max_depth": 2.5}),
+            json!({"max_nodes": 5001}),
+            json!({"max_nodes": 0}),
+            json!({"max_nodes": "200; DROP TABLE keep"}),
+        ] {
+            let payload = with(bad.clone());
+            assert!(parse_traverse(obj(&payload)).is_err(), "must reject {bad}");
+        }
+        assert_eq!(
+            parse_traverse(obj(&with(json!({"max_depth":5}))))
+                .unwrap()
+                .max_depth,
+            5
+        );
+        assert_eq!(
+            parse_traverse(obj(&with(json!({"max_nodes":5000}))))
+                .unwrap()
+                .max_nodes,
+            5000
+        );
+    }
+
+    #[test]
+    fn traverse_requires_roles_and_a_non_empty_start() {
+        for bad in [
+            json!({"table":"e","dst":"d","start":"a"}),
+            json!({"table":"e","src":"s","start":"a"}),
+            json!({"table":"e","src":"s","dst":"d"}),
+            json!({"table":"e","src":"s","dst":"d","start":[]}),
+            json!({"table":"e","src":"s","dst":"d","start":[{"a":1}]}),
+            json!({"table":"e","src":"s","dst":"d","start":"a","max_nodes":2,
+                   "start_list_too_long":true}),
+        ] {
+            if bad.get("start_list_too_long").is_some() {
+                let big = json!({"table":"e","src":"s","dst":"d","max_nodes":2,
+                                 "start":["a","b","c"]});
+                assert!(
+                    parse_traverse(obj(&big)).is_err(),
+                    "start list beyond max_nodes"
+                );
+                continue;
+            }
+            assert!(parse_traverse(obj(&bad)).is_err(), "must reject {bad}");
+        }
+    }
+
+    /// The CTE name is a fixed literal; a table of that name would silently
+    /// resolve to the CTE instead of the table (plan R5).
+    #[test]
+    fn traverse_rejects_a_table_named_like_the_cte() {
+        let payload = json!({"table":"mc_traverse","src":"s","dst":"d","start":"a"});
+        assert!(parse_traverse(obj(&payload)).is_err());
+    }
+
+    #[test]
+    fn similar_parses_full_form() {
+        let v = json!({"operation":"similar","table":"embeddings","columns":["owner_id","model_id"],
+                       "vector_column":"blob","vector":"AA==","where":{"model_id":"m1"},
+                       "order_by":[{"col":"owner_id","dir":"desc"}],"limit":10});
+        let s = parse_similar(obj(&v)).unwrap();
+        assert_eq!(s.vector_column, "blob");
+        assert_eq!(
+            s.columns,
+            vec!["owner_id".to_string(), "model_id".to_string()]
+        );
+        assert_eq!(s.vector, "AA==");
+        assert_eq!(s.limit, Some(10));
+        assert_eq!(s.filters.len(), 1);
+        assert_eq!(s.order_by.len(), 1);
+    }
+
+    /// The vector is decoded at parse time, so `validate ≡ execute`: whatever
+    /// the parser accepts is something the renderer can actually bind.
+    #[test]
+    fn similar_rejects_missing_and_hostile_args() {
+        for bad in [
+            json!({"table":"e","columns":["a"],"vector":"AA=="}),
+            json!({"table":"e","columns":["a"],"vector_column":"blob"}),
+            json!({"table":"e","columns":[],"vector_column":"blob","vector":"AA=="}),
+            json!({"table":"e","columns":["a","distance"],"vector_column":"blob","vector":"AA=="}),
+            json!({"table":"e","columns":["a"],"vector_column":"blob","vector":""}),
+            json!({"table":"e","columns":["a"],"vector_column":"blob","vector":"not base64!"}),
+            json!({"table":"e","columns":["a"],"vector_column":"blob","vector":"\"; DROP TABLE keep; --"}),
+            json!({"table":"e","columns":["a"],"vector_column":5,"vector":"AA=="}),
+            json!({"table":"e","columns":"a","vector_column":"blob","vector":"AA=="}),
+        ] {
+            assert!(parse_similar(obj(&bad)).is_err(), "must reject {bad}");
+        }
+    }
 
     #[test]
     fn bare_value_parses_as_eq_in_key_order() {

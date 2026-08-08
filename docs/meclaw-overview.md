@@ -2016,7 +2016,7 @@ HTTP status `/colony/mutations` (POST): **200** on `Committed`, **422 Unprocessa
 | Logging | `tracing` + `tracing-subscriber` |
 | Non-blocking log writer (from phase 1) | `tracing-appender` (a writer wrapper with a `WorkerGuard` for flush; complements `tracing-subscriber`'s synchronous writer once async cells log) |
 | Serialization | `serde`, `serde_json` |
-| DB | `rusqlite` (decided in phase 5; `sqlx` rejected, `rusqlite="0.39"` in four crates) |
+| DB | `rusqlite` (decided in phase 5; `sqlx` rejected, `rusqlite="0.39"` in four crates; since P4 with the `functions` feature in `meclaw-cells` for registered scalar functions like `hamming()`) |
 | Graph (data structure) | `petgraph` |
 | Edge expressions | `cel` (crate; GitHub project `cel-rust`) |
 | HTTP API | `axum` |
