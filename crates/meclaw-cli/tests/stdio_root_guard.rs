@@ -22,6 +22,7 @@ fn direct_mode_cli(root: &std::path::Path) -> Args {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     }
 }
 

@@ -38,6 +38,7 @@ async fn e2e_get_registry_via_real_colony_returns_200_empty() {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     };
 
     let join =

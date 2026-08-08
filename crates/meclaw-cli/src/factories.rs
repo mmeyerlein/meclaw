@@ -14,6 +14,7 @@
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::harness::HarnessCellFactory;
 use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::subcolony::SubcolonyCellFactory;
 use meclaw_cells::{
     BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
     ProxyCellFactory, TimerCellFactory, WebFetchCellFactory, WebSearchCellFactory,
@@ -56,6 +57,8 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     reg.insert("timer".to_string(), Arc::new(TimerCellFactory));
     reg.insert("mcp".to_string(), Arc::new(McpCellFactory));
     reg.insert("harness".to_string(), Arc::new(HarnessCellFactory));
+    // P9: a whole child colony, driven as one cell over the JSON stdio wire.
+    reg.insert("subcolony".to_string(), Arc::new(SubcolonyCellFactory));
     reg
 }
 
@@ -94,7 +97,11 @@ mod tests {
                 "registry missing long-running factory: {name}"
             );
         }
-        assert_eq!(reg.len(), 12, "8 Phase-9 + proxy/timer/mcp + harness");
+        assert_eq!(
+            reg.len(),
+            13,
+            "8 Phase-9 + proxy/timer/mcp + harness + subcolony"
+        );
     }
 
     #[test]

@@ -56,6 +56,7 @@ async fn multipart_attachment_appears_in_colony_trace_entry() {
         blobs: Some(blob_root.clone()),
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     };
 
     let join =

@@ -37,6 +37,7 @@ async fn validate_skips_http_bind_even_with_api_flag() {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     };
     run(cli).await.unwrap();
 }

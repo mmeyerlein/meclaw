@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nbody = json.load(sys.stdin)\nsaid = \"\"\nfor t in body.get(\"messages\", []):\n    if t.get(\"origin\") == \"user\":\n        said = t.get(\"text\", \"\")\nprint(json.dumps({\n    \"header\": {\"finish_reason\": \"assistant\"},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": \"child-colony saw: \" + said}]\n}))\n",
+    "external_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  }
+}

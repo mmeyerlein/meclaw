@@ -29,6 +29,7 @@ Detailed spec of the built-in cell types. On conflict between this file and `mec
 | `timer` | periodic event emitter, second-accurate, dual task | yes, long-running | atomic-emitting (schedule body) | 10 |
 | `mcp` | MCP-provider bridge, dual task | yes, long-running | atomic-emitting | 10 |
 | `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running | P8 |
+| `subcolony` | child colony as one cell (opaque composition facade) | yes, long-running | atomic-emitting | P9 |
 
 **Status per cell type / per phase** (which cell is live today, which deferred) → `PROGRESS.md` § Status.
 
@@ -568,3 +569,60 @@ This way a long-running provider call never blocks the acceptance of new tool-ca
 **Trust model (empirically established 2026-08-09)**: `harness` is **not a sandbox**. The harness brings its own tools (shell, file access, network) and runs with the rights of the colony process. The load-bearing V1 barriers are **`env_clear` + `env_passthrough`** (the harness does not see the colony's secrets) and the **canonicalized cwd clamp** under `workspace_root`. **`allowed_tools` is explicitly NOT an upper bound**: the CLI treats `--allowedTools` **additively** to what the permission mode allows anyway — in the acceptance smoke, `Bash` ran despite `allowed_tools: ["Write"]`. `allowed_tools` extends, it does not restrict. Sandbox/container build-out = roadmap defer, as with `bash`; `harness` cells run only in trusted topologies.
 
 **Runtime param updates (β)**: mutable `model`, `max_turns`, `max_budget_usd`, `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms` — take effect from the **next** task. Immutable and a loud reject (`invalid_input`): `adapter`, `command`, `emit_to`, `workspace_root`, `env`, `env_passthrough`, `permission_mode`, `allowed_tools`, `extra_args`, `approval`, `kill_grace_ms` — that is the containment boundary. A params-only message persists and stays silent.
+---
+
+## `subcolony`: a child colony as one cell
+
+**Task**: long-running. Operates a complete child colony as **one** cell in the parent graph. The child is a real `meclaw` binary with its own `{root}`, its own `colony.json`, its own `colony.db` and its own cell tree, supervised as a child process on the stdin/stdout bridge in JSON mode (`--stdio-format json`, wire v1, see `meclaw-overview.md` § Stdin/stdout bridge). **No in-process nesting**: a colony stays one process with one tree; nesting happens across the process boundary. The facade is therefore an **opaque composition boundary**: from the outside the child colony is exactly one addressable cell.
+
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), prescribed, see `meclaw-overview.md`, section "Long-running cells: dual task". The I/O task owns the child process entirely (on the `stdio_child` core, like `mcp` stdio and `harness`); the handler owns the request path and the emissions. The cell holds **no** lock and **no** shared state: the pending requests live in the serve loop, the cell state in the handler task.
+
+**Boot handshake**: spawn (`--root <root> --stdio-format json`, `env_clear`, own process group; `--daemon` and `--api` are **never** set, because stdin EOF must end the child) → the child writes exactly one `ready` frame, **after** its bootstrap succeeded and **before** it reads stdin. `boot_timeout_ms` clamps the A-timeout on that frame. **`v` is the protocol integer and is asserted strictly; `version` is the child's release version and is reported only. Version skew between parent and child is the feature, not the fault.**
+
+**Boot failures and restart cost**: deterministic boot failures (foreign protocol, absent `ready`, spawn failure) do not panic: the cell stays up and rejects every request loudly with the reason — the restart budget is not burned on a certainty. Only transient child death goes into `one_for_one`. One restart cycle costs a full child-colony boot; `boot_timeout_ms` is the upper bound of that cost and therefore the quantity to reckon with in the context of `cell.restart_limit`.
+
+**No automatic re-fire path**: in-flight requests fail loudly with `subcolony_gone` when the child dies; a retry is the requester's decision, never the substrate's. A request is explicitly **not** free to repeat — it may already have triggered store writes inside the child.
+
+**Consume**: any UBF body with `messages[]`. **No `tool_call` wrapper**: a sub-colony is an ordinary cell in the flow (llm-shaped), not a tool cell. That is the operational meaning of "behaves like ONE cell".
+
+**Emit, three forms**:
+
+| Form | Lane | Target | Body |
+|---|---|---|---|
+| `reply` | `OutputSink` (requester's trace) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"reply"},"messages":[…from the child…]}` |
+| `error` | `OutputSink` (requester's trace) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"error","error_code":…},"messages":[{"origin":"assistant","type":"text","text":<detail>}]}` |
+| `unsolicited` | `OriginSink` (fresh trace) | `params.emit_to` (only when set) | `{"header":{"subcolony_event":"unsolicited"},"messages":[…from the child…]}` |
+
+Body discipline as with `harness`: everything structural goes into the `header` slot, the turn carries text only.
+
+**Headers across the process boundary**: only the body crosses the process boundary — `hop` never crosses, in either direction. The `header` slot of a child emission is lifted into the `hop` compartment inside the child already and is consumed there. A parent edge therefore conditions on `hop.subcolony_event`, which the facade sets itself; a child that wants to signal more says it in the body.
+
+**Failure classification** (`error_code`, closed): `subcolony_unavailable` (spawn or boot failed), `protocol_mismatch` (foreign protocol integer in the `ready` frame), `boot_timeout`, `request_timeout`, `subcolony_gone` (child died during the request or is shutting down), `ttl_exhausted`, `invalid_input` (body without `messages[]`), `child_error` (an `error` frame from the child).
+
+**Trace and TTL**: `trace_id` is **carried** across the boundary, not regenerated — a trace runs through the child colony and stays correlatable. `ttl` is **decremented** on the crossing (`ttl - 1`); at `ttl == 0` there is **no** crossing but an `error` emission `ttl_exhausted`. TTL is thus the recursion budget of the composition: a child that calls the parent facade back dies like any other routing loop. The correlation key of request and reply is a **freshly generated per request** `context.turn_id` (the parent message's own would not be unique under fan-out); `turn_id` is therefore a reserved target key in the `context_in` mapping and is rejected loudly at params parse time.
+
+**Opacity**: the child tree is **not addressable** from the outside — there is no path reach-through to a cell inside the child, and the `context` of the child's reply stays in the child (the reply travels in the parent requester's trace). Mutations of the child tree run exclusively over the **child's own operator surface** (its `/colony/mutations`), never over the parent mutation path. This is **composition, not federation**.
+
+**Contract drift (operator responsibility)**: the facade's contract lives in the **parent `config.json`** (`consumes`/`emits` as with every cell type). The boot handshake asserts only what it can assert cheaply: the protocol integer and the existence of the `ready` frame. Whether the child's reality matches the parent's declaration is **operator responsibility** and is not checked by the substrate; a child-published port manifest is a roadmap defer.
+
+**`params`**:
+
+| Key | Type | Default | Mutable (β) | Meaning |
+|---|---|---|---|---|
+| `root` | string | **required** | no | Filesystem root of the child colony. Canonicalized at parse time (existence + `is_dir`), like `harness.workspace_root` |
+| `command` | string | `"meclaw"` | no | The child binary. Explicitly configurable ⇒ version skew is a config decision |
+| `env` | object | `{}` | no | Explicit environment of the child |
+| `env_passthrough` | array | `["PATH","HOME","USER","LANG","TERM"]` | no | Survives `env_clear: true`, the secret isolation of the child colony |
+| `context_in` | object | `{}` | no | **Explicit mapping** parent `context` key → child `context` key. Default: nothing crosses the boundary. `turn_id` as a target ⇒ loud reject |
+| `emit_to` | string | — | no | Optional origin lane for uncorrelated child egress frames |
+| `boot_timeout_ms` | u64 | `30000` | yes | A-timeout on the `ready` frame |
+| `request_timeout_ms` | u64 | `120000` | yes | A-timeout on the correlated reply. Generous: a child colony may contain an `llm` cell |
+| `external_timeout_ms` | u64 | `30000` | yes | A-timeout around every stdin write |
+| `query_timeout_ms` | u64 | `5000` | yes | A-timeout for `cell.db` ops |
+| `kill_grace_ms` | u64 | `5000` | no | SIGTERM→SIGKILL grace of the child process group |
+
+The **immutability boundary is the containment boundary** (the same line as with `harness`): `root`, `command`, `env`, `env_passthrough`, `context_in`, `emit_to`, `kill_grace_ms` are immutable; an update attempt on them or an unknown key ⇒ loud reject (`error_code: "invalid_input"`), no partial apply. A params-only message persists and stays silent.
+
+**Rule 12 (timeouts)**: `cell.message_timeout` (concept B, the substrate backstop) must sit **clearly above** `request_timeout_ms` (concept A), otherwise the backstop fires before the facade can report its typed `request_timeout`. A convention as with all cell types, not enforced in code; see `meclaw-overview.md` § Timeouts.
+
+**Emission mode**: long-running, stateful, atomic-emitting.

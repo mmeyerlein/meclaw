@@ -52,6 +52,7 @@ fn cli_validate(root: PathBuf, api: Option<SocketAddr>) -> Cli {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     }
 }
 

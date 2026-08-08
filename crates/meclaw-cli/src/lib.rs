@@ -173,6 +173,31 @@ pub struct Cli {
         default_value_t = 6669
     )]
     pub tokio_console_port: u16,
+
+    /// Wire format of the stdin/stdout bridge. Default `text`.
+    #[arg(
+        long = "stdio-format",
+        value_enum,
+        value_name = "FORMAT",
+        default_value_t = StdioFormat::Text
+    )]
+    pub stdio_format: StdioFormat,
+}
+
+/// Wire format of the stdin/stdout bridge.
+///
+/// Two formats, one bridge. `text` is what the bridge has always spoken and
+/// stays the default, so every existing pipe and interactive session is
+/// unaffected. `json` is the versioned protocol surface a program talks: it
+/// carries the envelope (`trace_id`, `ttl`, `context`) the text format cannot
+/// express, announces itself with a boot handshake, and returns whole bodies
+/// instead of a single line. It is the wire a sub-colony parent drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum StdioFormat {
+    /// One raw text line in, one assistant line out.
+    Text,
+    /// One JSON frame per line, with full envelope control.
+    Json,
 }
 
 /// Type alias for `Cli` — public surface consumed by integration tests and Phase 11+.
@@ -510,6 +535,15 @@ pub async fn run_with_hooks(
         // EOF oneshot: the reader sends () here when stdin closes.
         let (eof_tx, eof_rx) = tokio::sync::oneshot::channel::<()>();
 
+        // P9 step A7 — the boot handshake. Written here and not earlier: the
+        // bootstrap above has succeeded at this point, so the frame's arrival is
+        // the signal that this colony can actually answer. Synchronous and
+        // before the reader task is spawned, so it is provably the first line.
+        let stdio_format = cli.stdio_format;
+        if stdio_format == StdioFormat::Json {
+            println!("{}", bridge::ready_frame());
+        }
+
         // Step 5.4 — stdin-reader task.
         let inbox_for_stdin = inbox_tx.clone();
         let chat_id = uuid::Uuid::now_v7();
@@ -520,7 +554,26 @@ pub async fn run_with_hooks(
                 if line.is_empty() {
                     continue;
                 }
-                let msg = bridge::line_to_message(&line, bridge::STDIO_USER_ID, chat_id);
+                // P9 step A6 — one bridge, two wires. The text branch is
+                // untouched; the JSON branch reads the envelope the caller
+                // supplied instead of synthesising one.
+                let msg = match stdio_format {
+                    StdioFormat::Text => {
+                        bridge::line_to_message(&line, bridge::STDIO_USER_ID, chat_id)
+                    }
+                    StdioFormat::Json => match bridge::parse_ingress_frame(&line) {
+                        Ok(frame) => {
+                            bridge::frame_to_message(frame, bridge::STDIO_USER_ID, chat_id)
+                        }
+                        // Answer, do not swallow: the sender is a program
+                        // waiting on a correlation key, and a rejected line
+                        // still owes it a reply.
+                        Err(reason) => {
+                            println!("{}", bridge::ingress_error_frame(&reason));
+                            continue;
+                        }
+                    },
+                };
                 if inbox_for_stdin
                     .send(meclaw_colony::ColonyMsg::Route {
                         sender_path: meclaw_core::Path::new("/"),
@@ -541,9 +594,17 @@ pub async fn run_with_hooks(
         let egress_handle = egress_rx_direct.map(|mut erx| {
             tokio::spawn(async move {
                 while let Some(msg) = erx.recv().await {
-                    match bridge::message_to_stdout_line(&msg) {
-                        Some(line) => println!("{line}"),
-                        None => tracing::warn!("egress message has no assistant turn — discarded"),
+                    match stdio_format {
+                        StdioFormat::Text => match bridge::message_to_stdout_line(&msg) {
+                            Some(line) => println!("{line}"),
+                            None => {
+                                tracing::warn!("egress message has no assistant turn — discarded")
+                            }
+                        },
+                        // The JSON wire never discards: an unrepresentable body
+                        // becomes a typed error frame rather than a warning
+                        // nobody on the far side can see.
+                        StdioFormat::Json => println!("{}", bridge::message_to_egress_frame(&msg)),
                     }
                 }
             })
@@ -674,6 +735,30 @@ mod tests {
         assert!(!cli.daemon);
         assert!(!cli.validate);
         assert_eq!(cli.blobs, None);
+    }
+
+    // --- P9 step A5: the `--stdio-format` flag ---
+
+    #[test]
+    fn the_stdio_format_defaults_to_text() {
+        // Load-bearing: every existing invocation of the bridge must keep
+        // behaving byte-identically. The JSON wire is strictly opt-in.
+        let cli = Cli::parse_from(["meclaw"]);
+        assert_eq!(cli.stdio_format, StdioFormat::Text);
+    }
+
+    #[test]
+    fn the_stdio_format_can_be_switched_to_json() {
+        let cli = Cli::parse_from(["meclaw", "--stdio-format", "json"]);
+        assert_eq!(cli.stdio_format, StdioFormat::Json);
+    }
+
+    #[test]
+    fn an_unknown_stdio_format_is_rejected() {
+        // nginx-style flags: an unknown value is an error, never a silent
+        // fallback to the default — a sub-colony parent that mistypes the wire
+        // must not get a text-speaking child.
+        assert!(Cli::try_parse_from(["meclaw", "--stdio-format", "yaml"]).is_err());
     }
 
     #[test]

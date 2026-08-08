@@ -13,6 +13,7 @@ pub(crate) mod process;
 pub mod proxy;
 pub mod stdio_child;
 pub mod store;
+pub mod subcolony;
 pub mod timer;
 pub mod tool;
 pub mod web_fetch;

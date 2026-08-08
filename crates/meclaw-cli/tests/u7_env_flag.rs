@@ -40,6 +40,7 @@ fn cli_for(root: &std::path::Path, env: Option<std::path::PathBuf>) -> Cli {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     }
 }
 

@@ -116,6 +116,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        stdio_format: meclaw_cli::StdioFormat::Text,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

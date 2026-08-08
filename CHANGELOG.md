@@ -4,6 +4,56 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.9] — 2026-08-09
+
+MeClaw calls MeClaw: a whole child colony, driven as one cell.
+
+### Added
+
+- **The `subcolony` cell type.** A child colony runs as its own `meclaw`
+  process and behaves, from the parent tree's point of view, like a single
+  cell: one path, one mailbox, one contract. The child's internal tree is
+  invisible and **not addressable** from outside. That is composition, not
+  federation — and it is pinned by negative tests rather than merely intended.
+  Cross-colony routing is a non-goal, not a deferred feature. The thirteenth
+  built-in cell type, long-running and dual-task, built on the P7 stdio-child
+  core.
+- **A JSON wire for the stdin/stdout bridge (`--stdio-format <text|json>`).**
+  A `meclaw` process is now addressable as a structured endpoint, not only as
+  a line of text: request and reply frames carry the envelope the text format
+  cannot express (`trace_id`, `ttl`, `context`), a `ready` frame announces the
+  boot, and unreadable input is answered with a typed error instead of being
+  swallowed. **`text` remains the default** and is unchanged, down to the byte.
+- **Composition semantics that are tested, not assumed.** The parent's
+  `trace_id` is *carried* into the child, so one conversation stays one trace
+  across two colonies and two message logs. The TTL is *decremented* crossing
+  the boundary — on top of the routing hop — so a sub-colony cycle dies exactly
+  like any routing cycle; at zero the crossing is refused rather than made one
+  last time. Nothing else crosses unless the facade declares it: `context` only
+  through an explicit mapping, `hop` never, in either direction.
+- **Secret isolation as a side effect of the process boundary.** The child is
+  started with a wiped environment plus an explicit passthrough list, in its
+  own process group, so neither the parent's secrets nor the child's process
+  tree outlive their scope.
+
+### Notes
+
+- Two failure classes are treated differently on purpose. A **deterministic**
+  failure — the child speaks another protocol version, never boots, cannot be
+  spawned — does not panic: the cell stays up and refuses every request with
+  the reason, because a restart would reproduce the failure exactly and burning
+  the restart budget on a certainty only turns one clear error into a process
+  storm. A **transient** failure — the child dies mid-conversation — releases
+  whoever was waiting with a typed error first and then restarts, because there
+  a restart is the cure.
+- The protocol version and the release version are separate fields, and only
+  the protocol version is asserted. A parent and a sealed child colony are
+  expected to run different builds; that is the point of the boundary.
+- No task register: not because a request is idempotent (it is not — a request
+  can make the child write to its store), but because there is no automatic
+  re-fire path. Whoever asked decides whether to ask again.
+- No new dependencies.
+
 ## [0.1.8] — 2026-08-09
 
 An agent harness — Claude Code in print mode — supervised as a cell.
