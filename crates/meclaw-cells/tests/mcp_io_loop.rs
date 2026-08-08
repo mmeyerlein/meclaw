@@ -9,7 +9,7 @@
 #[path = "mock_mcp.rs"]
 mod mock_mcp;
 
-use meclaw_cells::mcp::io::{McpEvent, McpReconfig, RunIoConfig, run_io};
+use meclaw_cells::mcp::io::{McpEvent, McpIo, McpReconfig, RunIoConfig, run_io};
 use meclaw_cells::mcp::wire::McpClient;
 use mock_mcp::{MockMcp, canned_initialize, canned_tools_list};
 use serde_json::json;
@@ -33,7 +33,7 @@ async fn run_io_emits_discovery_ready_then_blocks() {
         external_timeout_ms: 2_000,
     };
 
-    let h = tokio::spawn(run_io(cfg, ev_tx, rc_rx));
+    let h = tokio::spawn(run_io(McpIo::Http(cfg), ev_tx, rc_rx));
 
     let first = tokio::time::timeout(Duration::from_secs(30), ev_rx.recv())
         .await
@@ -44,6 +44,7 @@ async fn run_io_emits_discovery_ready_then_blocks() {
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].name, "echo");
         }
+        other => panic!("the http transport emits no child events, got {other:?}"),
     }
     // No second event expected — run_io is in pending().await.
     let none = tokio::time::timeout(Duration::from_millis(200), ev_rx.recv()).await;
@@ -70,7 +71,7 @@ async fn run_io_terminates_when_events_receiver_dropped_after_discovery() {
         client,
         external_timeout_ms: 2_000,
     };
-    let h = tokio::spawn(run_io(cfg, ev_tx, rc_rx));
+    let h = tokio::spawn(run_io(McpIo::Http(cfg), ev_tx, rc_rx));
 
     // Drain the one event so the channel doesn't block.
     let _ = tokio::time::timeout(Duration::from_secs(3), async move {

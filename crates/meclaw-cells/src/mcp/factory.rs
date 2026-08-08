@@ -7,7 +7,7 @@
 
 use crate::mcp::cell::McpCell;
 use crate::mcp::db::setup_mcp_schema;
-use crate::mcp::params::McpParams;
+use crate::mcp::params::{McpParams, McpTransport};
 use crate::mcp::wire::McpClient;
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
 use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, build_long_running_task};
@@ -183,12 +183,11 @@ fn make_build(
     ),
     String,
 > {
-    // endpoint + bearer are immutable (credential/identity) → taken from birth.
-    // external_timeout_ms + query_timeout_ms are overlay-effective and rebuilt
-    // per (re)spawn from the cell.db overlay (β restore) inside the closure.
-    let McpParams {
-        endpoint, bearer, ..
-    } = McpParams::parse(&params)?;
+    // The transport (endpoint+bearer resp. the child spec) is immutable
+    // credential/identity material and is taken from birth. Only
+    // external_timeout_ms + query_timeout_ms are overlay-effective and get
+    // rebuilt per (re)spawn from the cell.db overlay (β restore) below.
+    let McpParams { transport, .. } = McpParams::parse(&params)?;
     let provider_key = provider_key_from_path(&path);
 
     // Owned clones moved into the multi-call closure.
@@ -196,8 +195,7 @@ fn make_build(
     let path_cap = path;
     let outputs_cap = outputs_tx;
     let cell_dir_cap = cell_dir;
-    let endpoint_cap = endpoint;
-    let bearer_cap = bearer;
+    let transport_cap = transport;
     let provider_key_cap = provider_key;
     let colony_inbox_cap = colony_inbox_tx;
     let blob_cap = blob_store;
@@ -225,19 +223,32 @@ fn make_build(
             query_timeout_ms,
         } = crate::params_overlay::restore::<crate::mcp::params::McpOverlay>(&conn, &birth_cap)
             .expect("restore mcp timeouts overlay");
-        // 3. McpClient bauen (sync).
-        let client = McpClient::new(&endpoint_cap, bearer_cap.clone()).expect("McpClient::new");
-        // 4. McpCell + DbConn bauen (sync), create the mailbox, then funnel the
-        //    LR spawn through `build_long_running_task` — the single LR-spawn
-        //    site. The helper mints the peace/stop/death_ack oneshot pairs
-        //    internally and returns `(join, peace_rx, stop_tx, death_ack_rx)`. No
-        //    `.await` inside the helper → await-free respawn corridor preserved.
-        let cell = McpCell::new(
-            client,
-            external_timeout_ms,
-            query_timeout_ms,
-            provider_key_cap.clone(),
-        );
+        // 3. Build the cell for the configured transport (sync). http builds
+        //    its reqwest client here; stdio builds NOTHING — the child process
+        //    is spawned by the I/O sub-task, so a respawn always starts from a
+        //    clean slate and the corridor stays await-free.
+        let cell = match &transport_cap {
+            McpTransport::Http { endpoint, bearer } => {
+                let client = McpClient::new(endpoint, bearer.clone()).expect("McpClient::new");
+                McpCell::new(
+                    client,
+                    external_timeout_ms,
+                    query_timeout_ms,
+                    provider_key_cap.clone(),
+                )
+            }
+            McpTransport::Stdio { spec } => McpCell::new_stdio(
+                spec.clone(),
+                external_timeout_ms,
+                query_timeout_ms,
+                provider_key_cap.clone(),
+            ),
+        };
+        // 4. DbConn bauen (sync), create the mailbox, then funnel the LR spawn
+        //    through `build_long_running_task` — the single LR-spawn site. The
+        //    helper mints the peace/stop/death_ack oneshot pairs internally and
+        //    returns `(join, peace_rx, stop_tx, death_ack_rx)`. No `.await`
+        //    inside the helper → await-free respawn corridor preserved.
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

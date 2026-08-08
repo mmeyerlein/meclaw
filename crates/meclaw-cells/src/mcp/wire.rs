@@ -134,24 +134,32 @@ impl McpClient {
     /// CLAUDE.md Regel 12.
     pub async fn list_tools(&self, timeout: Duration) -> Result<Vec<DiscoveredTool>, McpError> {
         let result = self.call_rpc("tools/list", json!({}), timeout).await?;
-        let arr = result
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| McpError::Transport("tools/list: missing tools array".into()))?;
-        let mut out = Vec::with_capacity(arr.len());
-        for t in arr {
-            let name = t
-                .get("name")
-                .and_then(|n| n.as_str())
-                .ok_or_else(|| McpError::Transport("tools/list: tool missing name".into()))?
-                .to_string();
-            out.push(DiscoveredTool {
-                name,
-                schema_json: t.to_string(),
-            });
-        }
-        Ok(out)
+        tools_from_result(&result)
     }
+}
+
+/// Decode a `tools/list` result object into the discovery snapshot.
+///
+/// Shared by both transports so the discovery cache holds identical rows
+/// whether the provider was reached over HTTP or over a child process.
+pub fn tools_from_result(result: &JsonValue) -> Result<Vec<DiscoveredTool>, McpError> {
+    let arr = result
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| McpError::Transport("tools/list: missing tools array".into()))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for t in arr {
+        let name = t
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| McpError::Transport("tools/list: tool missing name".into()))?
+            .to_string();
+        out.push(DiscoveredTool {
+            name,
+            schema_json: t.to_string(),
+        });
+    }
+    Ok(out)
 }
 
 /// MCP-protocol-version constant for the POC `initialize` handshake.

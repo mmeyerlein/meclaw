@@ -4,19 +4,29 @@
 //! `pending().await`. State is single-threaded in the handler sub-task (no mutex —
 //! phase-1 discipline).
 
-use crate::mcp::io::{McpEvent, McpReconfig, RunIoConfig, run_io};
+use crate::mcp::io::{McpEvent, McpIo, McpReconfig, RunIoConfig, StdioIoConfig, run_io};
 use crate::mcp::wire::McpClient;
+use crate::stdio_child::ChildEvent;
+use crate::stdio_child::ChildSpec;
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink};
 use std::future::Future;
 use tokio::sync::mpsc;
 
+/// How `handle()` reaches the provider. Mirrors the parsed transport.
+pub enum McpLink {
+    /// A synchronous POST per call.
+    Http(McpClient),
+    /// A command to the I/O sub-task, answered through a `oneshot`.
+    Stdio,
+}
+
 /// The `mcp` cell. State is single-threaded in the handler sub-task of
 /// `cell_task_long_running`. `initial_io_cfg` is pulled out once by `split_io`
 /// and handed to the I/O sub-task.
 pub struct McpCell {
-    /// reqwest/MCP client for the `handle(tool_call)` path (a synchronous POST).
-    pub(crate) client: McpClient,
+    /// The transport `handle()` speaks.
+    pub(crate) link: McpLink,
     /// A timeout for every HTTP op from `handle`. Also passed through by
     /// `split_io` into the `RunIoConfig` for `run_io`. β: mutable via a params
     /// update (path A, handle side — the next `call_tool` uses it immediately;
@@ -28,7 +38,7 @@ pub struct McpCell {
     /// (see the conventions section in the plan).
     pub(crate) provider_key: String,
     /// Initial I/O config, consumed once by `split_io`.
-    pub(crate) initial_io_cfg: Option<RunIoConfig>,
+    pub(crate) initial_io_cfg: Option<McpIo>,
 }
 
 impl McpCell {
@@ -44,23 +54,37 @@ impl McpCell {
     ) -> Self {
         let io_client = client.clone();
         Self {
-            client,
+            link: McpLink::Http(client),
             external_timeout_ms,
             query_timeout_ms,
             provider_key,
-            initial_io_cfg: Some(RunIoConfig {
+            initial_io_cfg: Some(McpIo::Http(RunIoConfig {
                 client: io_client,
                 external_timeout_ms,
-            }),
+            })),
         }
     }
-}
 
-/// I/O-local state (single owner, held by-value by the I/O sub-task).
-/// No mutex, no Arc — phase-1 discipline.
-pub struct McpIo {
-    /// Configuration for `run_io` (client + timeout).
-    pub(crate) cfg: RunIoConfig,
+    /// Constructor for the stdio transport. The cell holds no client at all —
+    /// the I/O sub-task owns the child process, and `handle()` talks to it
+    /// through the reconfig channel.
+    pub fn new_stdio(
+        spec: ChildSpec,
+        external_timeout_ms: u64,
+        query_timeout_ms: u64,
+        provider_key: String,
+    ) -> Self {
+        Self {
+            link: McpLink::Stdio,
+            external_timeout_ms,
+            query_timeout_ms,
+            provider_key,
+            initial_io_cfg: Some(McpIo::Stdio(StdioIoConfig {
+                spec,
+                external_timeout_ms,
+            })),
+        }
+    }
 }
 
 impl LongRunningCell for McpCell {
@@ -69,14 +93,12 @@ impl LongRunningCell for McpCell {
     type Io = McpIo;
 
     fn split_io(&mut self) -> Self::Io {
-        McpIo {
-            cfg: self.initial_io_cfg.take().expect("split_io called twice"),
-        }
+        self.initial_io_cfg.take().expect("split_io called twice")
     }
 
-    /// I/O-Sub-Task — delegiert an `crate::mcp::io::run_io`.
-    /// `+ Send` is load-bearing (AFIT does not bind Send; `tokio::spawn`
-    /// in `cell_task_long_running` braucht es). Pattern symmetrisch zu
+    /// I/O sub-task — delegates to `crate::mcp::io::run_io`.
+    /// `+ Send` is load-bearing (AFIT does not bind Send; the `tokio::spawn`
+    /// in `cell_task_long_running` needs it). Pattern symmetric to
     /// `proxy::cell::ProxyCell::run_io` and the trait docs in
     /// `crates/meclaw-colony/src/long_running_cell.rs:96-110`.
     #[allow(clippy::manual_async_fn)]
@@ -85,7 +107,7 @@ impl LongRunningCell for McpCell {
         events_tx: mpsc::Sender<Self::Event>,
         reconfig_rx: mpsc::Receiver<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send {
-        run_io(io.cfg, events_tx, reconfig_rx)
+        run_io(io, events_tx, reconfig_rx)
     }
 
     /// Inbound-Message-Handler. Parses the tail `tool_call`-turn (Phase-9-store
@@ -99,7 +121,7 @@ impl LongRunningCell for McpCell {
         msg: Message,
         sink: &'a OutputSink,
         db: &'a mut DbConn,
-        _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
+        reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             // β: params-update slot (config.md § Access l.20), handled FIRST.
@@ -232,10 +254,23 @@ impl LongRunningCell for McpCell {
             // T17: success-path only. T18 types the Err-branches.
             let timeout = std::time::Duration::from_millis(self.external_timeout_ms);
             let started = std::time::Instant::now();
-            let r = self
-                .client
-                .call_tool(&parsed.name, parsed.arguments, timeout)
-                .await;
+            let r = match &self.link {
+                McpLink::Http(client) => {
+                    client
+                        .call_tool(&parsed.name, parsed.arguments, timeout)
+                        .await
+                }
+                // stdio: the I/O sub-task owns the pipes, so the request goes
+                // out as a command and the answer comes back on a oneshot.
+                McpLink::Stdio => {
+                    let params = serde_json::json!({
+                        "name": &parsed.name,
+                        "arguments": parsed.arguments,
+                    });
+                    crate::mcp::stdio::rpc_over_task(reconfig_tx, "tools/call", params, timeout)
+                        .await
+                }
+            };
             let duration_ms = started.elapsed().as_millis() as u64;
             match r {
                 Ok(payload) => {
@@ -299,6 +334,34 @@ impl LongRunningCell for McpCell {
                             crate::mcp::db::upsert_discovery_tools(c, &tools, &now)
                         })
                         .await;
+                }
+                // An unsolicited frame. The POC protocol has no notifications,
+                // so this is diagnostics only; the typed-emission consumers
+                // (harness cell type) are a later package.
+                McpEvent::Child(ChildEvent::Frame(v)) => {
+                    tracing::debug!(frame = %v, "mcp stdio: unsolicited frame");
+                }
+                McpEvent::Child(ChildEvent::Malformed { raw }) => {
+                    tracing::warn!(line = %raw, "mcp stdio: non-json line from child");
+                }
+                // Ratified liveness slice D1: the child is gone, so this cell
+                // cannot serve anything until it has a fresh one. Panicking is
+                // the only signal the supervisor understands — it classifies
+                // DeathKind::Panic, restarts one_for_one (fresh child, fresh
+                // discovery), and after restart_limit RETAINS the entry as
+                // `failed`. A graceful return would read as DeathKind::Normal
+                // and remove the cell from the registry (core finding #9).
+                //
+                // Delimitation against the panic-hook invariant ("panic BEFORE
+                // output, the panicking cell emits nothing"): that invariant
+                // governs a panic whose trigger is known before the emit. Here
+                // the panic is a deliberate termination AFTER a completed
+                // emit — an in-flight `handle()` has already awaited its
+                // OutputSink push and returned (the serve loop resolves every
+                // pending request before it announces the death), so no output
+                // is lost and no extra hop is produced.
+                McpEvent::Child(ChildEvent::Exited(exit)) => {
+                    panic!("mcp stdio child died: {}", exit.detail());
                 }
             }
         }

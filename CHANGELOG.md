@@ -4,6 +4,48 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.7] — 2026-08-08
+
+A reusable stdio-child core, and the `mcp` cell's second transport riding on it.
+
+### Added
+
+- **`stdio_child`: spawn a child process, speak line-JSON, supervise its life.**
+  A new module in `meclaw-cells` that owns the parts every future child-process
+  consumer needs and none of the parts any single one of them owns: spawning
+  (`ChildSpec`/`StdioChild`), newline-delimited JSON framing tolerant of blank
+  lines and non-JSON banners, request/response correlation through an injected
+  key extractor, lifecycle events, and killing plus reaping. The I/O sub-task of
+  the dual-task pattern owns the child outright — the handler holds no pipe and
+  talks to it over the two channels the substrate already provides, so a
+  request/response call stays a plain `await` instead of deadlocking against the
+  handler's own `select!`.
+- **`mcp` speaks stdio.** `params.transport: "stdio"` runs the provider as a
+  child process (`command`, `args`, `env`, `cwd`, `kill_grace_ms`) and performs
+  the same `initialize` / `tools/list` / `tools/call` protocol over line-JSON.
+  `transport` is optional and defaults to `http`: every configuration written
+  before this release parses to exactly the same result, and the HTTP path is
+  untouched.
+- **Post-init liveness for the stdio transport.** The long-running stream read
+  carries the signal the HTTP transport never had. When the child dies, the
+  in-flight call is answered with a typed `mcp_error` **first**, and only then
+  does the cell panic — `one_for_one` restarts it with a fresh child, and after
+  the restart limit the registry entry is retained as `failed`. Nothing is lost
+  to the panic, because the emit completes before it.
+- **Orphan reaping, proven rather than asserted.** `kill_on_drop` plus an
+  explicit kill-and-wait; the test reads the child's pid from a file and waits
+  for `/proc/<pid>` to disappear, which rules out both a survivor and a zombie
+  in one check.
+
+### Fixed
+
+- **A late request after the child died no longer waits for its timeout.** The
+  handler's `select!` is biased towards its mailbox over its event channel, so
+  it can accept one more message before it has seen the death. The serve loop
+  now keeps draining commands after the child is gone and answers each one
+  immediately with the child's fate, instead of parking and letting a known
+  death surface as a spurious `provider_timeout` a full A-timeout later.
+
 ## [0.1.6] — 2026-08-08
 
 The server-rendered operator UI speaks English. This is a small functional

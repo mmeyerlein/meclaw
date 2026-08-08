@@ -26,6 +26,9 @@ pub mod jsonrpc;
 /// Parsed configuration parameters for the mcp cell.
 pub mod params;
 
+/// The stdio transport: JSON-RPC over line-JSON to a child process.
+pub mod stdio;
+
 /// Pure parser for the `tool_call`-tail-turn: extracts `name` + `arguments` from
 /// `text` (JSON string) and `id` (UBF-required call id). Phase-9 store convention.
 pub mod parse;

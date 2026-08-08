@@ -1,35 +1,58 @@
-//! Phase-10-D: I/O-Sub-Task frames + `run_io`. POC-Shape:
-//! - Handler ← I/O: `McpEvent::DiscoveryReady` (once, after
-//!   `initialize`+`tools/list`).
-//! - Handler → I/O: in the POC `McpReconfig` is an empty enum — no reconfig
-//!   path is needed (tool calls run synchronously in `handle()`). `reconfig_rx`
-//!   MUST still be bound explicitly inside the `run_io` `async move` scope
-//!   (phase-10-A lesson, the second-order trap).
+//! I/O sub-task frames and the `run_io` entry point, for BOTH mcp transports.
+//!
+//! - `http` (phase-10-D): `initialize` + `tools/list` once, then park. No
+//!   persistent connection, so nothing to observe afterwards.
+//! - `stdio` (P7): spawn the child, run the same handshake over line-JSON,
+//!   then hand the child to the shared `serve_child` loop, whose stream read
+//!   carries the liveness signal this cell type never had before.
+//!
+//! Handler → I/O uses `McpReconfig`, I/O → handler uses `McpEvent`.
+//! `reconfig_rx` MUST be bound explicitly inside the `run_io` `async move`
+//! scope (phase-10-A lesson, the second-order trap).
 
 use crate::mcp::db::DiscoveredTool;
 use crate::mcp::wire::McpClient;
+use crate::stdio_child::{ChildCommand, ChildEvent, ChildSpec};
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// I/O → Handler: ein einmaliger Discovery-Snapshot. Handler upsertet
-/// die Tools in `cell.db.mcp_discovery_cache` via `handle_event`.
+/// I/O → Handler.
 #[derive(Debug, Clone)]
 pub enum McpEvent {
     /// Tool list from the provider, fresh after `initialize`+`tools/list`.
     DiscoveryReady {
-        /// Tools-Snapshot (Name + JSON-Schema als String).
+        /// Tools snapshot (name + JSON schema as string).
         tools: Vec<DiscoveredTool>,
     },
+    /// stdio only: something happened on the child connection.
+    Child(ChildEvent),
 }
 
-/// Handler → I/O: unused in 10-D. `LongRunningCell` verlangt die
-/// associated type — an empty enum satisfies it without adding functionality.
-#[derive(Debug, Clone)]
-pub enum McpReconfig {}
+impl From<ChildEvent> for McpEvent {
+    fn from(e: ChildEvent) -> Self {
+        McpEvent::Child(e)
+    }
+}
 
-/// Configuration for the I/O sub-task. `McpCell`'s `split_io` builds it from the
-/// cell state.
+/// Handler → I/O.
+#[derive(Debug)]
+pub enum McpReconfig {
+    /// stdio only: a command for the child-serving loop. On the http
+    /// transport no reconfig hint exists (tool calls run synchronously in
+    /// `handle()` against a fresh connection).
+    Child(ChildCommand),
+}
+
+impl From<McpReconfig> for ChildCommand {
+    fn from(r: McpReconfig) -> Self {
+        match r {
+            McpReconfig::Child(c) => c,
+        }
+    }
+}
+
+/// Configuration for the http I/O sub-task.
 pub struct RunIoConfig {
     /// Cloned client (Arc internally via reqwest::Client).
     pub client: McpClient,
@@ -38,71 +61,91 @@ pub struct RunIoConfig {
     pub external_timeout_ms: u64,
 }
 
-/// I/O-Sub-Task. POC-Shape:
-///
-/// 1. Both channels are bound explicitly into the `async move`-scope
-///    (Phase-10-A-Lesson Second-Order-Trap — required even though
-///    `McpReconfig` is an empty enum and `reconfig_rx` will never yield
-///    `Some(_)`).
-/// 2. Calls `initialize` + `tools/list` ONCE, each wrapped in the
-///    A-Timeout from `RunIoConfig::external_timeout_ms`. On any error:
-///    `panic!` — this is a cell-init follow-up failure (overview
-///    § Behavior on errors l.1369, e.g. an unreachable `endpoint`), and the panic
-///    is the substrate's supervision signal: the watcher classifies
-///    `DeathKind::Panic` → `one_for_one` restart, after N retries the registry
-///    entry is RETAINED as `failed`. A graceful return here would classify as
-///    `DeathKind::Normal` → `registry.remove` — the cell would silently vanish
-///    from the registry after a committed `add_nodes` (core finding #9). NO
-///    in-task retry, NO reconnect (POC scope; supervision drives the retries).
-/// 3. On success: pushes `McpEvent::DiscoveryReady { tools }` into
-///    `events_tx`. If the receiver is gone (`send().is_err()`), returns.
-/// 4. Blocks on `std::future::pending::<()>().await` until the substrate's
-///    mailbox-close path aborts this future via `JoinHandle::abort()`.
+/// Configuration for the stdio I/O sub-task.
+pub struct StdioIoConfig {
+    /// How to start the child process.
+    pub spec: ChildSpec,
+    /// A timeout per provider op (handshake requests, writes).
+    pub external_timeout_ms: u64,
+}
+
+/// The owned I/O state handed to the sub-task, one variant per transport.
+pub enum McpIo {
+    /// HTTP + JSON-RPC.
+    Http(RunIoConfig),
+    /// Child process speaking line-JSON.
+    Stdio(StdioIoConfig),
+}
+
+/// I/O sub-task. Dispatches on the transport; both branches share the
+/// contract that they NEVER return voluntarily (A1′) and that an init failure
+/// panics rather than returning, because a clean return would be classified as
+/// `DeathKind::Normal` and remove the registry entry (core finding #9).
 ///
 /// The `impl Future + Send` return type is required because the generic
 /// `tokio::spawn` call in `cell_task_long_running` needs `Send`.
 #[allow(clippy::manual_async_fn)]
 pub fn run_io(
-    cfg: RunIoConfig,
+    io: McpIo,
     events_tx: mpsc::Sender<McpEvent>,
     reconfig_rx: mpsc::Receiver<McpReconfig>,
 ) -> impl Future<Output = ()> + Send {
     async move {
-        // Phase-10-A-Lesson: explicit bindings prevent unintended Drop.
-        let events_tx = events_tx;
-        let _reconfig_rx = reconfig_rx;
-        let RunIoConfig {
-            client,
-            external_timeout_ms,
-        } = cfg;
-        let timeout = Duration::from_millis(external_timeout_ms);
-
-        // Init errors must NOT end this task gracefully: a clean return reads
-        // as DeathKind::Normal and removes the registry entry. The panic is
-        // the supervision signal for "cell init after commit" (l.1369).
-        if let Err(e) = client.initialize(timeout).await {
-            panic!("mcp init failed (initialize): {e:?}");
+        match io {
+            McpIo::Http(cfg) => run_http_io(cfg, events_tx, reconfig_rx).await,
+            McpIo::Stdio(cfg) => crate::mcp::stdio::run_stdio_io(cfg, events_tx, reconfig_rx).await,
         }
-        let tools = match client.list_tools(timeout).await {
-            Ok(t) => t,
-            Err(e) => panic!("mcp init failed (tools/list): {e:?}"),
-        };
-        if events_tx
-            .send(McpEvent::DiscoveryReady { tools })
-            .await
-            .is_err()
-        {
-            return;
-        }
-        // β (mcp structural subtlety): the I/O-task has NO live-rereadable value
-        // post-discovery — the only live overlay fields are external_timeout_ms
-        // (path A, consumed handle-side on the next `call_tool`) and query_timeout_ms
-        // (path C, applied to the handler's DbConn). So there is nothing to
-        // propagate here and NO reconfig-driven `select!` is added: converting
-        // this `pending()` into a `select!` that returns on `reconfig_rx` close
-        // would make a graceful return read as `DeathKind::Normal` → registry
-        // removal (see the task doc above) — a regression for zero functional
-        // gain. Shutdown stays abort-driven via the mailbox-close path.
-        std::future::pending::<()>().await;
     }
+}
+
+/// The phase-10-D http loop, unchanged in behaviour.
+///
+/// 1. Both channels are bound explicitly into the scope (phase-10-A lesson,
+///    second-order trap — required even though nothing sends reconfig hints on
+///    this transport).
+/// 2. Calls `initialize` + `tools/list` ONCE, each under the A-timeout. On any
+///    error: `panic!` — a cell-init follow-up failure (overview § Behavior on
+///    errors l.1369) whose supervision signal IS the panic: the watcher
+///    classifies `DeathKind::Panic` → `one_for_one`, and after N retries the
+///    registry entry is RETAINED as `failed`. A graceful return would classify
+///    as `DeathKind::Normal` → `registry.remove` (core finding #9). NO in-task
+///    retry, NO reconnect — supervision drives the retries.
+/// 3. Pushes `McpEvent::DiscoveryReady`, then parks.
+///
+/// β (mcp structural subtlety): post-discovery this task has NO live-rereadable
+/// value — the only live overlay fields are `external_timeout_ms` (path A,
+/// consumed handle-side on the next `call_tool`) and `query_timeout_ms`
+/// (path C, on the handler's DbConn). So there is nothing to propagate and no
+/// reconfig-driven `select!` is added: turning this `pending()` into a
+/// `select!` that returns on `reconfig_rx` close would make a graceful return
+/// read as `DeathKind::Normal` → registry removal, a regression for zero gain.
+/// Shutdown stays abort-driven via the mailbox-close path.
+async fn run_http_io(
+    cfg: RunIoConfig,
+    events_tx: mpsc::Sender<McpEvent>,
+    reconfig_rx: mpsc::Receiver<McpReconfig>,
+) {
+    let events_tx = events_tx;
+    let _reconfig_rx = reconfig_rx;
+    let RunIoConfig {
+        client,
+        external_timeout_ms,
+    } = cfg;
+    let timeout = Duration::from_millis(external_timeout_ms);
+
+    if let Err(e) = client.initialize(timeout).await {
+        panic!("mcp init failed (initialize): {e:?}");
+    }
+    let tools = match client.list_tools(timeout).await {
+        Ok(t) => t,
+        Err(e) => panic!("mcp init failed (tools/list): {e:?}"),
+    };
+    if events_tx
+        .send(McpEvent::DiscoveryReady { tools })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    std::future::pending::<()>().await;
 }
