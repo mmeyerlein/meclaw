@@ -1,25 +1,25 @@
-# `config.json` — Format
+# `config.json` format
 
-Detail-Spec des `config.json`-Formats pro Cell und pro Hive-Scope-Marker. Bei Konflikt zwischen dieser Datei und `meclaw-overview.md` gewinnt die overview — sie ist Single Source of Truth.
+Detailed spec of the `config.json` format per cell and per hive scope marker. In case of conflict between this file and `meclaw-overview.md`, the overview wins. It is the single source of truth.
 
-## Oberstes Gebot
+## Supreme rule
 
-**Eine Cell weiß nicht, was vor oder hinter ihr passiert.** Sie kennt nur ihren eigenen Vertrag (Input/Output-Schema), ihre Params und die Message, die sie gerade verarbeitet. Sie hat **keine** Kenntnis von Sender-Pfaden, Empfänger-Pfaden, Hop-Historie, Routing-Strategien oder anderen Cells.
+**A cell does not know what happens before or after it.** It knows only its own contract (input/output schema), its params, and the message it is currently processing. It has **no** knowledge of sender paths, receiver paths, hop history, routing strategies, or other cells.
 
-Messages sind atomar. Trace-Rekonstruktion lebt im zentralen Message-Log in `colony.db` (filterbar nach Pfad-Präfix), nicht in der Message.
+Messages are atomic. Trace reconstruction lives in the central message log in `colony.db` (filterable by path prefix), not in the message.
 
-**Envelope-Felder sind aus Cell-Sicht read-only.** `id`, `trace_id`, `parent_message_id`, `correlation_id`, `target`, `reply_to`, `ttl`, `created_at` werden ausschließlich von Colony beim Routing gesetzt — eine Cell kann sie weder in ihrem content-JSON schreiben noch über eine Edge manipulieren (siehe `meclaw-overview.md` Abschnitt „Envelope-Setter-Authority"). Wer ein anderes Reply-Ziel als den Sender will, löst das anwendungs-spezifisch über Header-basiertes Routing.
+**Envelope fields are read-only from the cell's perspective.** `id`, `trace_id`, `parent_message_id`, `correlation_id`, `target`, `reply_to`, `ttl`, `created_at` are set exclusively by colony during routing. A cell can neither write them in its content JSON nor manipulate them via an edge (see `meclaw-overview.md` section "Envelope setter authority"). Anyone wanting a reply target other than the sender solves it application-specifically via header-based routing.
 
-**Aus Cell-Sicht ist die Welt single-threaded.** Ein `handle()`-Call läuft komplett, bevor der nächste startet — die Cell-Task pulled sequentiell aus der mpsc-Mailbox. Cell-Code enthält daher kein `Mutex`, kein `RwLock`, keine atomics, keine Reentrancy-Defensive. Die Parallelität des Systems liegt außerhalb der Cell — siehe `meclaw-overview.md`, Abschnitt „Nebenläufigkeit & Parallelität".
+**From the cell's perspective, the world is single-threaded.** A `handle()` call runs to completion before the next starts. The cell task pulls sequentially from the mpsc mailbox. Cell code therefore contains no `Mutex`, no `RwLock`, no atomics, no reentrancy defense. The system's parallelism lives outside the cell, see `meclaw-overview.md`, section "Concurrency and parallelism".
 
-## Zugriff
+## Access
 
-- **Authority**: Ausschließlich die Colony liest und schreibt `config.json` — der **einzige Schreiber ist die Instanziierung** (genau einmal). **Read-once:** die laufende Cell-Task liest `config.json` nach dem Start **nie erneut**; `config.json` ist der **Instanziierungs-Snapshot**, kein Live-Dokument.
-- **Bei Instanziierung**: Colony kopiert Template, vergibt neue UUID v7, führt `${VAR}`-/`${ctx.*}`-/`${uuid7:*}`-Substitution durch, schreibt das Ergebnis in `config.json` der Instanz. **Die Knoten-Referenz ist der Filesystem-Verzeichnisname** (das Pfad-Segment unter `{root}`), **nicht** ein `cell.name`-Feld — die `config.json` trägt keinen `name`. Bei der Auflösung der Wurzel-Kette gewinnt die `${...}`-Substitution über den `template.json`-Template-Namen. Namens-Kollisionen mit Geschwistern innerhalb desselben Hive-Scopes werden von Colony in der einstufigen Mutations-Validierung rejected, siehe `meclaw-overview.md` Abschnitt „Naming-Kollisionen".
-- **Nach Instanziierung**: `config.json` ist semantisch eingefroren — der Bootstrap-Snapshot. Niemand schreibt mehr da rein, weder Colony noch die Cell selbst. **Dynamischer Cell-Zustand** (geänderte Params) lebt ausschließlich in `cell.db`; **Colony-Zustand** (Registry, Edge-Tabelle, `cell_id`, Message-Log, Mutations) lebt in `colony.db` — `config.json` trägt nach dem Snapshot keinen von beiden nach (siehe `meclaw-overview.md` Abschnitt „Lifecycle von `config.json` und `cell.db`"). Der Graph einer Topologie lebt zentral in Colony's Registry und `colony.db` — nicht in der `config.json` des Hive-Scope-Markers (sein `params.graph` ist nur initialer Bootstrap-Hint).
-- **Cells lesen `config.json` nicht.** Die Colony übergibt der Cell beim Start den `params`-Block. Param-Updates kommen danach per Message und werden von der Cell in ihrer `cell.db` persistiert (`config.json` divergiert vom Live-Stand — gewollt; Cell-Reset = `cell.db`-Wipe → Cell startet wieder vom Bootstrap-Stand).
+- **Authority**: Only the colony reads and writes `config.json`. The **only writer is instantiation** (exactly once). **Read-once:** the running cell task **never re-reads** `config.json` after startup; `config.json` is the **instantiation snapshot**, not a live document.
+- **At instantiation**: colony copies the template, assigns a new UUID v7, performs `${VAR}`/`${ctx.*}`/`${uuid7:*}` substitution, writes the result into the instance's `config.json`. **The node reference is the filesystem directory name** (the path segment under `{root}`), **not** a `cell.name` field. The `config.json` carries no `name`. When resolving the root chain, the `${...}` substitution wins over the `template.json` template name. Naming collisions with siblings inside the same hive scope are rejected by colony in the single-stage mutation validation, see `meclaw-overview.md` section "Naming collisions".
+- **After instantiation**: `config.json` is semantically frozen, the bootstrap snapshot. No one writes into it anymore, neither colony nor the cell itself. **Dynamic cell state** (changed params) lives exclusively in `cell.db`; **colony state** (registry, edge table, `cell_id`, message log, mutations) lives in `colony.db`. After the snapshot, `config.json` carries neither of the two forward (see `meclaw-overview.md` section "Lifecycle of `config.json` and `cell.db`"). The graph of a topology lives centrally in colony's registry and `colony.db`, not in the `config.json` of the hive scope marker (its `params.graph` is only an initial bootstrap hint).
+- **Cells do not read `config.json`.** The colony hands the cell the `params` block at startup. Param updates come afterwards via message and are persisted by the cell in its `cell.db` (`config.json` diverges from the live state, by design; cell reset = `cell.db` wipe → cell starts again from the bootstrap state).
 
-## Struktur
+## Structure
 
 ```json
 {
@@ -30,58 +30,58 @@ Messages sind atomar. Trace-Rekonstruktion lebt im zentralen Message-Log in `col
 }
 ```
 
-### Block-Definition (kanonisch)
+### Block definition (canonical)
 
-Zwei der vier Blöcke haben grundverschiedene Authority — diese Trennung ist die Wurzel der ganzen Datei:
+Two of the four blocks have fundamentally different authority. This separation is the root of the entire file:
 
-- **`cell`-Block = Colony-Substrat.** Diese Felder steuern, **wie die Colony** die Cell instanziiert, registriert und überwacht. Sie werden der Cell **nie** übergeben — die Cell sieht ausschließlich ihren `params`-Block plus die Message, die sie gerade verarbeitet. Erlaubte Schlüssel: `id`, `type`, `timeout`, `restart_limit`, `idle_timeout_ms`, `mailbox_size`, `message_timeout` (Details in der `cell`-Tabelle unten). Ein im `cell`-Block deklarierter, nicht erlaubter Schlüssel ist ein Boot-Fehler.
-- **`params`-Block = 1:1 opak an die Cell.** Die Colony reicht ihn nach `${VAR}`-/`${ctx.*}`-/`${uuid7:*}`-Substitution **unverändert** an die Cell durch und interpretiert seinen Inhalt **nicht**. Cell-Type-spezifisch (jeder Cell-Type definiert seine eigene `params`-Struktur, siehe `cell-types.md`). **Einzige Ausnahme:** beim Hive-Scope-Marker liest die Colony `params.graph` als initialen Soll-Graph (der Hive ist kein Aktor, bekommt also keinen `params`-Block „übergeben").
+- **`cell` block = colony substrate.** These fields control **how the colony** instantiates, registers, and supervises the cell. They are **never** handed to the cell. The cell sees only its `params` block plus the message it is currently processing. Allowed keys: `id`, `type`, `timeout`, `restart_limit`, `idle_timeout_ms`, `mailbox_size`, `message_timeout` (details in the `cell` table below). A key declared in the `cell` block that is not allowed is a boot error.
+- **`params` block = handed 1:1 opaque to the cell.** After `${VAR}`/`${ctx.*}`/`${uuid7:*}` substitution, the colony passes it through to the cell **unchanged** and does **not** interpret its content. Cell-type-specific (each cell type defines its own `params` structure, see `cell-types.md`). **Sole exception:** at the hive scope marker, the colony reads `params.graph` as the initial desired graph (the hive is not an actor, so it does not get a `params` block "handed" to it).
 
-**Unveränderlich sind nur `id` und `type`** — sie identifizieren die Knoten-Instanz und ihren Cell-Type über die gesamte Lebensdauer. **Wirksamkeits-Regel** für alle anderen Felder: Änderungen an `cell`- oder `params`-Feldern (per neuer Instanziierung am Pfad bzw. neuem Template) greifen **beim nächsten Spawn/Wake** der Cell — die laufende Cell-Task liest `config.json` nicht erneut (siehe § Zugriff, „Read-once").
+**Only `id` and `type` are immutable.** They identify the node instance and its cell type across the entire lifetime. **Effectiveness rule** for all other fields: changes to `cell` or `params` fields (via new instantiation at the path or a new template) take effect **at the next spawn/wake** of the cell. The running cell task does not re-read `config.json` (see § Access, "Read-once").
 
-**Spezialfall Hive-Scope-Marker** (`cell.type: "hive"`): nur `cell` und `params` sind relevant. `params` enthält ausschließlich den optionalen `graph`-Block (initialer Soll-Graph, siehe `meclaw-overview.md` Abschnitt „Graph-Schema") — kein `dead_letters`-Override (der `HiveParams`-Deserializer ist `deny_unknown_fields`; die DLQ ist immer `/colony/dead_letters`). Ein `contract`-Block wird nicht ausgewertet, weil Hive-Scope-Marker keine Aktoren sind und nicht am Message-Flow teilnehmen (siehe `cell-types.md` Abschnitt `hive`). Im `cell`-Block sind nur `id` und `type` relevant — `timeout`, `message_timeout`, `idle_timeout_ms` und `mailbox_size` werden ignoriert (kein Aktor, keine Mailbox, kein `handle()`-Call). Eine `description` ist erlaubt, dient aber nur Discovery durch Builder; `emits_meaning` und `consumes_meaning` entfallen.
+**Special case hive scope marker** (`cell.type: "hive"`): only `cell` and `params` are relevant. `params` contains only the optional `graph` block (initial desired graph, see `meclaw-overview.md` section "Graph schema"), no `dead_letters` override (the `HiveParams` deserializer is `deny_unknown_fields`; the DLQ is always `/colony/dead_letters`). A `contract` block is not evaluated, because hive scope markers are not actors and do not participate in the message flow (see `cell-types.md` section `hive`). In the `cell` block, only `id` and `type` are relevant. `timeout`, `message_timeout`, `idle_timeout_ms`, and `mailbox_size` are ignored (no actor, no mailbox, no `handle()` call). A `description` is allowed, but only serves discovery by builders; `emits_meaning` and `consumes_meaning` are omitted.
 
 ### `cell`
 
-| Schlüssel | Inhalt |
+| Key | Content |
 |---|---|
-| `id` | `cell_id` (UUID v7). **Wird beim Kopiervorgang Template → Instanz gesetzt** — das **einzige Mal**, dass sie geschrieben wird. Die Instanziierung liest sie aus der frisch geschriebenen `config.json` und persistiert sie in die **nie löschende `colony.db`**, die ab dann die **autoritative** Quelle der `cell_id` ist (`config.json` ist nur der Bootstrap-Abdruck). Danach **nie neu vergeben** — auch nicht bei Reconnect, Resume oder Reboot. (Der re-dedizierte `swap_nodes`-Graph-Swap schwenkt Edges auf eine andere Implementierung mit **eigener** `id` und lässt die alte Cell mit ihrer `id` disconnected erhalten — er überträgt **keine** `cell_id`, siehe `meclaw-overview.md` § Mutation-Operationen.) |
-| `type` | Cell-Type (`hive`, `store`, `llm`, `bash`, `code`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`). Zusammen mit `id` der **unveränderliche** Teil des `cell`-Blocks. |
-| `restart_limit` | *(optional)* Maximale Restart-Versuche durch den Supervisor, bevor die Cell als `failed` markiert wird. Default `5`. Siehe `meclaw-overview.md` Abschnitt „Restart-Strategie". |
-| `timeout` | Hot/Cold-Modus (siehe `meclaw-overview.md` Abschnitt „Hot/Cold-Cell-Modell"): `0` = default (Idle-Timeout-Modell, Awake↔Asleep), `>0` = One-Shot (despawn nach jeder Message), `-1` = persistent (typisch `proxy`/`timer`/`mcp`, nie despawnen). Phase-13-Aktivierung; davor sind alle Cells permanent als Task. |
-| `idle_timeout_ms` | *(optional, ab Phase 13)* Idle-Dauer in ms, nach der eine stateful Cell mit `cell.timeout: 0` sich selbst despawnt (Awake→Asleep). Überschreibt Colony-Default aus `colony.json` `idle_timeout_default_ms`. Wird ignoriert, wenn `cell.timeout != 0` (bei `>0` greift One-Shot-Despawn nach jeder Message, bei `-1` ist die Cell persistent und despawnt nie). |
-| `message_timeout` | *(optional)* Substrat-Backstop pro `handle()`-Call in ms — siehe `meclaw-overview.md` Abschnitt „Timeouts" (Konzept B). Überschreibt Colony-Default aus `colony.json` `message_timeout_default_ms`. `0` oder `-1` = kein Backstop (für Long-Running-Cells). **Nicht** der primäre Timeout für I/O-Operationen — dafür ist `params.external_timeout_ms` (Konzept A) zuständig. `cell.message_timeout` sollte deutlich großzügiger als `params.external_timeout_ms` sein, sodass normalerweise A zuerst greift. |
-| `mailbox_size` | *(optional, ab Phase 5)* Bounded-mpsc-Kapazität; überschreibt den Colony-Default (`colony.json` `mailbox_default_capacity`, Default 1000). Siehe overview Abschnitt „Mailbox-Größe". |
+| `id` | `cell_id` (UUID v7). **Set during the copy operation template → instance**, the **only time** it is written. Instantiation reads it from the freshly written `config.json` and persists it into the **never-deleting `colony.db`**, which from then on is the **authoritative** source of the `cell_id` (`config.json` is only the bootstrap imprint). Afterwards **never reassigned**, not even on reconnect, resume, or reboot. (The re-dedicated `swap_nodes` graph swap pivots edges onto a different implementation with its **own** `id` and leaves the old cell with its `id` preserved but disconnected. It transfers **no** `cell_id`, see `meclaw-overview.md` § Mutation operations.) |
+| `type` | Cell type (`hive`, `store`, `llm`, `bash`, `code`, `web_fetch`, `web_search`, `file`, `edit`, `proxy`, `timer`, `mcp`). Together with `id`, the **immutable** part of the `cell` block. |
+| `restart_limit` | *(optional)* Maximum restart attempts by the supervisor before the cell is marked as `failed`. Default `5`. See `meclaw-overview.md` section "Restart strategy". |
+| `timeout` | Hot/cold mode (see `meclaw-overview.md` section "Hot/cold cell model"): `0` = default (idle-timeout model, Awake↔Asleep), `>0` = one-shot (despawn after each message), `-1` = persistent (typically `proxy`/`timer`/`mcp`, never despawn). Phase-13 activation; before that, all cells are permanently a task. |
+| `idle_timeout_ms` | *(optional, from Phase 13)* Idle duration in ms, after which a stateful cell with `cell.timeout: 0` despawns itself (Awake→Asleep). Overrides the colony default from `colony.json` `idle_timeout_default_ms`. Ignored if `cell.timeout != 0` (at `>0`, one-shot despawn after each message takes effect; at `-1`, the cell is persistent and never despawns). |
+| `message_timeout` | *(optional)* Substrate backstop per `handle()` call in ms, see `meclaw-overview.md` section "Timeouts" (concept B). Overrides the colony default from `colony.json` `message_timeout_default_ms`. `0` or `-1` = no backstop (for long-running cells). **Not** the primary timeout for I/O operations. `params.external_timeout_ms` (concept A) is responsible for that. `cell.message_timeout` should be considerably more generous than `params.external_timeout_ms`, so that normally A takes effect first. |
+| `mailbox_size` | *(optional, from Phase 5)* Bounded-mpsc capacity; overrides the colony default (`colony.json` `mailbox_default_capacity`, default 1000). See overview section "Mailbox size". |
 
 ### `params`
 
-**`max_concurrency`** (*optional, nur für stateless Cells, ab Phase 7*) lebt im **`params`**-Block, nicht im `cell`-Block: Maximale Anzahl gleichzeitig laufender Worker-Tasks im Stateless-Cell-Dispatcher (siehe `meclaw-overview.md` Abschnitt „Stateless-Cell-Dispatcher"). Default: hoher Wert (effektiv unbeschränkt für typische Lastpfade). Pro Cell konfigurierbar — z.B. `web_fetch` mit `32` (HTTP-Provider-Rate-Limits), `file` mit `8` (Disk-I/O), `bash` one-shot mit `4` (Process-Resource-Limit). Für stateful und long-running Cells wird der Wert ignoriert.
+**`max_concurrency`** (*optional, only for stateless cells, from Phase 7*) lives in the **`params`** block, not in the `cell` block: maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` section "Stateless-cell dispatcher"). Default: high value (effectively unbounded for typical load paths). Configurable per cell: e.g. `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
 
-Cell-Type-spezifisch. Jeder Cell-Type definiert seine eigene `params`-Struktur (siehe `cell-types.md`). Die Colony übergibt diesen Block der Cell beim Start; danach sind Param-Updates per Message möglich (last-write-wins, in `cell.db` persistiert). **Form** (W4b): die Update-Message trägt einen **Top-Level-`params`-Body-Slot** (1:1 dieser `params`-Block, partial) — reiner Cell-Inhalt, kein Header-Gate; die Cell merged + persistiert ihn selbst und replayt das Overlay bei wake/respawn über die Geburts-params (`config.json` bleibt unberührt). Welche Felder laufzeit-änderbar bzw. immutable sind (z.B. Credentials, Security-Boundaries), ist cell-type-spezifisch (siehe `cell-types.md`, z.B. `llm` § Laufzeit-Param-Updates).
+Cell-type-specific. Each cell type defines its own `params` structure (see `cell-types.md`). The colony hands this block to the cell at startup; afterwards param updates via message are possible (last-write-wins, persisted in `cell.db`). **Form** (W4b): the update message carries a **top-level `params` body slot** (1:1 this `params` block, partial), pure cell content, no header gate; the cell merges + persists it itself and replays the overlay at wake/respawn over the birth params (`config.json` stays untouched). Which fields are runtime-changeable or immutable (e.g. credentials, security boundaries) is cell-type-specific (see `cell-types.md`, e.g. `llm` § Runtime param updates).
 
-`${VAR}`-Substitution aus `.env` erfolgt durch die Colony vor Übergabe an die Cell. `${ctx.<key>}` und `${uuid7:<label>}` werden bei Mutation-Anwendung resolved (siehe overview Abschnitt „Variablen-Substitution").
+`${VAR}` substitution from `.env` is performed by the colony before handover to the cell. `${ctx.<key>}` and `${uuid7:<label>}` are resolved at mutation application (see overview section "Variable substitution").
 
-**Konvention für I/O-Cells**: jede Cell, die I/O-Operationen mit unbestimmter Dauer ausführt (HTTP, DB, Subprozess, Filesystem, MCP-Calls), deklariert ein `params.external_timeout_ms`-Feld (oder einen semantisch passenderen Namen wie `query_timeout_ms` für `store`). Die Cell-Implementation wrappt **jede** solche Operation mit `tokio::time::timeout` und emittiert bei Elapsed eine reguläre Error-Message (`header.finish_reason: "error"`, cell-type-spezifischer `error_code` wie `provider_timeout` / `query_timeout` / `script_timeout`). Das ist Konzept A in `meclaw-overview.md` Abschnitt „Timeouts" — der primäre Schutz, präzise pro Operation gesetzt, vom Operator beherrschbar. **`cell.message_timeout`** (im `cell`-Block) ist der grobe Backstop für Cell-Hänger und liegt deutlich über `external_timeout_ms` — Konzept B im selben Abschnitt.
+**Convention for I/O cells**: every cell that performs I/O operations of indeterminate duration (HTTP, DB, subprocess, filesystem, MCP calls) declares a `params.external_timeout_ms` field (or a semantically more fitting name like `query_timeout_ms` for `store`). The cell implementation wraps **every** such operation with `tokio::time::timeout` and, on elapsed, emits a regular error message (`header.finish_reason: "error"`, cell-type-specific `error_code` like `provider_timeout` / `query_timeout` / `script_timeout`). This is concept A in `meclaw-overview.md` section "Timeouts", the primary protection, set precisely per operation, manageable by the operator. **`cell.message_timeout`** (in the `cell` block) is the coarse backstop for cell hangs and lies considerably above `external_timeout_ms` (concept B in the same section).
 
 ### `contract`
 
-Die `contract`-Schlüssel gliedern sich nach **Enforcement-Stufe** — nicht alle sind in v0.1.0 substrat-hart erzwungen:
+The `contract` keys are organized by **enforcement level**; not all of them are substrate-enforced in v0.1.0:
 
-| Schlüssel | Enforcement (v0.1.0) |
+| Key | Enforcement (v0.1.0) |
 |---|---|
-| `emits` | **substrat-erzwungen** — am `code`-Typ always-on validiert (P13/D-017); übrige emittierende Cell-Types post-v0.1.0 (siehe § Schema-Format und Validierung + `docs/roadmap.md` § Contract-Validierung). |
-| `version`, `settings`, `consumes` | **substrat-erzwungen** — Präsenz + JSON-Typ beim Config-Load (Boot-Hard-Fail; Mutations-Reject `contract_incomplete`). |
-| `capabilities` | **discovery-only** — Hint für Builder-Composer/Audit-Tools, **kein Runtime-Check** bis zum Hardening (siehe `capabilities`-Hinweis unten). |
+| `emits` | **substrate-enforced**: validated always-on at the `code` type (P13/D-017); remaining emitting cell types post-v0.1.0 (see § Schema format and validation; contract validation for the rest is a roadmap defer). |
+| `version`, `settings`, `consumes` | **substrate-enforced**: presence + JSON type at config load (boot hard fail; mutation reject `contract_incomplete`). |
+| `capabilities` | **discovery-only**: hint for builder composer/audit tools, **no runtime check** until the hardening (see `capabilities` note below). |
 
-**`version`-Format:** non-empty String, frei wählbar (kein semver-Zwang). **`settings`-Format:** Objekt `{ "<key>": SettingSpec }` (siehe § SettingSpec), leeres Objekt zulässig. **`consumes`-Format:** Objekt (siehe § consumes), leeres Objekt zulässig.
+**`version` format:** non-empty string, freely choosable (no semver requirement). **`settings` format:** object `{ "<key>": SettingSpec }` (see § SettingSpec), empty object permitted. **`consumes` format:** object (see § consumes), empty object permitted.
 
 Optional: `tools`, `multi_send_capable`.
 
-**Body folgt Universal-Body-Format**: Top-Level-Slots sind primär `system` und `messages[]` (siehe `meclaw-overview.md` Abschnitt „Body-Format (Universal)"). Cells dürfen eigene Top-Level-Slots deklarieren (`meta`, `delta`, `event` etc.). `emits.body` und `consumes.body` deklarieren die Slots, die diese Cell schreibt bzw. liest — unbekannte Top-Level-Slots in einer eingehenden Message werden vom Konsumenten ignoriert.
+**Body follows the universal body format**: top-level slots are primarily `system` and `messages[]` (see `meclaw-overview.md` section "Body format (universal)"). Cells may declare their own top-level slots (`meta`, `delta`, `event` etc.). `emits.body` and `consumes.body` declare the slots this cell writes or reads. Unknown top-level slots in an incoming message are ignored by the consumer.
 
-#### `emits` — was die Cell in ihre Output-Message schreibt
+#### `emits`: what the cell writes into its output message
 
-Aufgeteilt in `body` (eigentlicher Content) und `hop` (der isolierte Cell-Output an Routing-Metadaten). Cells emittieren **nur** `hop` — `context` ist allein Edge-Authority und taucht in `emits` nicht auf (siehe overview Abschnitt „Headers vs. Body — Schreibmodell"). Die Cell produziert content-JSON; Colony interpretiert `content.header` als `hop` und nimmt den Rest als `message.body`.
+Split into `body` (the actual content) and `hop` (the isolated cell output to routing metadata). Cells emit **only** `hop`. `context` is solely edge authority and does not appear in `emits` (see overview section "Headers vs. body: write model"). The cell produces content JSON; colony interprets `content.header` as `hop` and takes the rest as `message.body`.
 
 ```json
 "emits": {
@@ -105,12 +105,12 @@ Aufgeteilt in `body` (eigentlicher Content) und `hop` (der isolierte Cell-Output
 }
 ```
 
-- `values` optional, nur für `type: string` sinnvoll (Enum-Whitelist).
-- `required` defaultet auf `true`.
+- `values` optional, only sensible for `type: string` (enum whitelist).
+- `required` defaults to `true`.
 
-#### `consumes` — was die Cell aus der eingehenden Message liest
+#### `consumes`: what the cell reads from the incoming message
 
-Aufgeteilt in `body` (Content-Slots) und **die zwei Header-Fächer** `context` (persistent) und `hop` (genau dieser Hop). Cells lesen alle drei read-only; sie haben **keine** Kenntnis darüber, wer den Wert wann gesetzt hat — das ist Topologie-Sache. Die Lebensdauer eines Headers ist **rein strukturell** durch den Fach-Namen bestimmt (`context` = persistent, `hop` = hop-lokal/verfällt) — es gibt **keine** Pro-Key-Lebensdauer-Annotation.
+Split into `body` (content slots) and **the two header compartments** `context` (persistent) and `hop` (exactly this hop). Cells read all three read-only; they have **no** knowledge of who set the value when. That is a topology matter. The lifetime of a header is determined **purely structurally** by the compartment name (`context` = persistent, `hop` = hop-local/expires). There is **no** per-key lifetime annotation.
 
 ```json
 "consumes": {
@@ -137,42 +137,42 @@ Aufgeteilt in `body` (Content-Slots) und **die zwei Header-Fächer** `context` (
 }
 ```
 
-- Falls erforderlicher Wert fehlt: Cell wird nicht aufgerufen, Fehler-Message an `reply_to` (falls gesetzt), sonst Dead-Letter.
-- **Mutations-/Lokalitäts-Validator**: der Build-Zeit-Validator nutzt `emits.hop` (was die Cell produziert) zusammen mit `consumes.context` + `consumes.hop` (was die nachgelagerte Cell erwartet), um Lokalität und Reachability eines Header-Werts statisch zu prüfen — ein `hop`-Wert ist nur am unmittelbar folgenden Hop verfügbar (außer eine Edge befördert ihn per `set_context`), ein `context`-Wert über den ganzen Lebenszyklus. Hive-Transits nehmen an der Fan-in-Schnittmenge teil: eine Edge mit Hive-`from` ist eine Transit-Durchreiche und steuert `set_hop` dieser Edge ∪ die Schnittmenge der Beiträge aller Inbound-Edges der Hive bei (rekursiv über mehrstufige Transits, zyklenfest) — derselbe Key-Walk, den die Runtime beim Transit vollzieht (`hop` verfällt nur an einer Cell-Emission, nicht am Transit). **Teilnahme-/Status-Filter am Boot:** Beim Bootstrap trägt der Lokalitäts-Prüfer Contract-Obligationen **nur für aktive Knoten** — Knoten, die am aktiven Graph teilnehmen. Ein registrierter, aber **disconnecteter/inaktiver** Knoten (persistierter `colony.db`-Status beim Reboot **oder** ab t0 inaktiv abgeleitete Insel beim Erst-Boot) ist reine Buchhaltung: er wird rehydratisiert (stabile `cell_id`), unterliegt am Boot aber **keinem** Contract-Zwang. Die volle Prüfung wohnt am **Mutations-Zeitpunkt**, der ihn anschließt (Teilnahme-Regel + transit-bewusste Schnittmenge). Damit ist die Prüfung über beide Boot-Arten uniform: inaktiv ⇒ keine Boot-Obligation; aktiv-und-verdrahtet ⇒ scharf geprüft.
+- If a required value is missing: cell is not called, error message to `reply_to` (if set), otherwise dead letter.
+- **Mutation/locality validator**: the build-time validator uses `emits.hop` (what the cell produces) together with `consumes.context` + `consumes.hop` (what the downstream cell expects) to statically check locality and reachability of a header value. A `hop` value is only available at the immediately following hop (unless an edge carries it forward via `set_context`), a `context` value across the entire lifecycle. Hive transits participate in the fan-in intersection: an edge with a hive `from` is a transit pass-through and contributes `set_hop` of this edge ∪ the intersection of the contributions of all inbound edges of the hive (recursively across multi-stage transits, cycle-safe). The same key walk the runtime performs at transit (`hop` expires only at a cell emission, not at the transit). **Participation/status filter at boot:** at bootstrap, the locality checker carries contract obligations **only for active nodes**, nodes that participate in the active graph. A registered but **disconnected/inactive** node (persisted `colony.db` status at reboot **or** island derived as inactive from t0 at first boot) is pure bookkeeping: it is rehydrated (stable `cell_id`), but at boot is subject to **no** contract enforcement. The full check resides at the **mutation moment** that connects it (participation rule + transit-aware intersection). Thus the check is uniform across both boot kinds: inactive ⇒ no boot obligation; active-and-wired ⇒ sharply checked.
 
-**Enforcement-Stand:** Der substrat-seitige required-`consumes`-Check läuft an der Delivery-Grenze (vor `handle()`): fehlender/typ-falscher required-Key → Fehler-Message an `reply_to` (`error_code: "consumes_violation"`), sonst Dead-Letter (gleicher Token). **Die Error-Reply wird DIREKT an `reply_to` zugestellt** (Registry-Lookup über `route()`), nicht über die Out-Edges des Konsumenten geroutet — sie ist Feedback an einen bekannten Absender, kein Routing-Ziel (W2b Ruling, ruling 2026-06-12; siehe `meclaw-overview.md` § Routing-Fehler „Outputs-Arm — drei disjunkte Fälle", Fall 2). Eine Catch-all-Out-Edge des Konsumenten leitet die Error-Reply nicht um.
+**Enforcement state:** The substrate-side required-`consumes` check runs at the delivery boundary (before `handle()`): missing/type-wrong required key → error message to `reply_to` (`error_code: "consumes_violation"`), otherwise dead letter (same token). **The error reply is delivered DIRECTLY to `reply_to`** (registry lookup via `route()`), not routed via the consumer's out-edges. It is feedback to a known sender, not a routing target (W2b ruling 2026-06-12; see `meclaw-overview.md` § Routing errors "Outputs arm: three disjoint cases", case 2). A catch-all out-edge of the consumer does not redirect the error reply.
 
-#### Schema-Format und Validierung
+#### Schema format and validation
 
-- Schemas folgen **JSON-Schema Draft 2020-12** (Rust: `jsonschema`-Crate).
-- **`code` = always-on Trust-Boundary (kein Opt-out):** die `emits`-Validierung des `code`-Outputs läuft **unbedingt** (`validate_emits = true`) — unabhängig vom Build-Profil **und** von `colony.json` `strict_validation`. `code` ist der einzige user-skript-getriebene Output, dessen Korrektheit nicht aus Cell-Disziplin folgt; deshalb wird er immer geprüft.
-- **Übrige emittierende Cell-Types:** `emits`-Validierung läuft zentral am outputs-Arm der Colony nach dem Debug-on-/`strict_validation`-Modell: im Debug-Build immer aktiv, im Release-Build per `colony.json` `strict_validation: true|false` (Default `false`, Schema siehe `meclaw-overview.md` Abschnitt „`colony.json` — Schema").
-- **`strict_validation`-Rolle:** steuert damit **nur noch** die künftige Non-`code`-emits-Validierung im Release-Build — auf den always-on `code`-Pfad hat das Flag **keinen** Einfluss.
+- Schemas follow **JSON Schema Draft 2020-12** (Rust: `jsonschema` crate).
+- **`code` = always-on trust boundary (no opt-out):** the `emits` validation of the `code` output runs **unconditionally** (`validate_emits = true`), independent of the build profile **and** of `colony.json` `strict_validation`. `code` is the only user-script-driven output whose correctness does not follow from cell discipline; therefore it is always checked.
+- **Remaining emitting cell types:** `emits` validation runs centrally at the colony's outputs arm following the debug-on/`strict_validation` model: in the debug build always active, in the release build per `colony.json` `strict_validation: true|false` (default `false`, schema see `meclaw-overview.md` section "`colony.json` schema").
+- **`strict_validation` role:** thus controls **only** the future non-`code` emits validation in the release build. The flag has **no** influence on the always-on `code` path.
 
-**Enforcement-Stand:** `code` always-on (in-cell, Zwei-Pass — unverändert); alle übrigen emittierenden Cell-Types werden **zentral an der Emissions-Grenze der Colony** (outputs-Arm) validiert, flag-gated nach dem Debug-on-/`strict_validation`-Modell. **Asymmetrie by design:** `code` prüft in-cell always-on mit All-or-nothing-Zwei-Pass; der Rest läuft zentral, flag-gated und per-Emission — das ist gewollt und kein Drift. Verletzung: Emission wird verworfen; mit `input_reply_to` Error-Reply (`error_code: "contract_violation"`), sonst Dead-Letter (gleicher Token). **Zwei registrierte Grenzen des zentralen Checks (Debug-Netz, keine Trust-Boundary — ratified 2026-06-10):** (a) Error-Replies an ein `input_reply_to`, das auf einen `/colony/*`-Endpunkt oder einen Hive-Pfad zeigt, werden silent verworfen (nur die Cell-Pfad-Cascade wird verfolgt); (b) eine Cell, die im µs-Fenster zwischen Task-Spawn und Landung ihres `SetNodeContract`-Eintrags emittiert (selbst-emittierende Typen beim Boot), passiert den Check fail-open (absenter Eintrag ⇒ vakuose Prüfung).
+**Enforcement state:** `code` always-on (in-cell, two-pass, unchanged); all remaining emitting cell types are validated **centrally at the colony's emission boundary** (outputs arm), flag-gated following the debug-on/`strict_validation` model. **Asymmetry by design:** `code` checks in-cell always-on with all-or-nothing two-pass; the rest runs centrally, flag-gated and per-emission. This is intended and not drift. Violation: emission is discarded; with `input_reply_to` error reply (`error_code: "contract_violation"`), otherwise dead letter (same token). **Two registered boundaries of the central check (debug net, not a trust boundary, ratified 2026-06-10):** (a) error replies to an `input_reply_to` that points to a `/colony/*` endpoint or a hive path are silently discarded (only the cell-path cascade is followed); (b) a cell that emits in the µs window between task spawn and the landing of its `SetNodeContract` entry (self-emitting types at boot) passes the check fail-open (absent entry ⇒ vacuous check).
 
-#### `capabilities` — feste Liste
+#### `capabilities`: fixed list
 
-| Capability | Bedeutung |
+| Capability | Meaning |
 |---|---|
-| `network:llm` | darf LLM-Provider kontaktieren |
-| `network:http` | darf beliebige HTTP-Calls machen |
-| `network:search` | darf Search-Provider kontaktieren |
-| `network:mcp` | darf MCP-Provider kontaktieren |
-| `network:proxy` | darf Chat-Plattform-Provider kontaktieren |
-| `fs:read` | darf Dateisystem lesen (innerhalb Boundary) |
-| `fs:write` | darf Dateisystem schreiben |
-| `shell:exec` | darf Shell-Befehle ausführen |
-| `db:own` | darf eigene `cell.db` lesen/schreiben |
-| `mutate-graph` | will Graph-Mutationen auslösen (Discovery-Hint, kein Runtime-Check bis zum Hardening) |
+| `network:llm` | may contact LLM providers |
+| `network:http` | may make arbitrary HTTP calls |
+| `network:search` | may contact search providers |
+| `network:mcp` | may contact MCP providers |
+| `network:proxy` | may contact chat-platform providers |
+| `fs:read` | may read the filesystem (within boundary) |
+| `fs:write` | may write the filesystem |
+| `shell:exec` | may execute shell commands |
+| `db:own` | may read/write its own `cell.db` |
+| `mutate-graph` | wants to trigger graph mutations (discovery hint, no runtime check until the hardening) |
 
-Erweiterbar bei Bedarf, zentral in `meclaw-core` dokumentiert.
+Extensible as needed, documented centrally in `meclaw-core`.
 
-**Hinweis zu Permissions bis zum Hardening**: Die Capabilities sind in dieser Phase **Discovery-Hints** für Builder-Composer und Audit-Tools, **kein Runtime-Check**. Das gilt insbesondere für `mutate-graph`: ob eine Cell tatsächlich mutieren _kann_, hängt allein an der Topologie (existiert eine Edge nach `/colony/mutations`?). Post-Roadmap-Hardening kann Capability-Tokens addieren, die zur Laufzeit geprüft werden. Siehe overview Abschnitt „Permissions" im Mutation-Format.
+**Note on permissions until the hardening**: The capabilities in this phase are **discovery hints** for builder composer and audit tools, **not a runtime check**. This applies in particular to `mutate-graph`: whether a cell actually _can_ mutate depends solely on the topology (does an edge to `/colony/mutations` exist?). Post-roadmap hardening may add capability tokens that are checked at runtime. See overview section "Permissions" in the mutation format.
 
 #### `ToolSpec`
 
-Deklariert, welche Tools die Cell ihrem LLM (oder externen Konsumenten) anbietet. **Kein Routing-Endpoint** — wohin Tool-Calls geroutet werden, entscheidet die Topologie.
+Declares which tools the cell offers to its LLM (or external consumers). **Not a routing endpoint**. Where tool calls are routed is decided by the topology.
 
 ```json
 {
@@ -194,19 +194,19 @@ Deklariert, welche Tools die Cell ihrem LLM (oder externen Konsumenten) anbietet
 
 #### Flags
 
-- `multi_send_capable`: Cell kann mehrere Output-Messages aus einem einzigen Input erzeugen. Aktiviert das Cell-Type-spezifische Multi-Send-Wire-Format — für `code` z.B. das JSON-Array-Format auf stdout (siehe `cell-types.md`). Jede emittierte Message läuft unabhängig durch die ausgehenden Edges; Colony evaluiert pro Message frisch. Der Wert kommt aus `contract.multi_send_capable` (Bool, Default `false`). Die frühere `params.multi_send_capable`-Bridge ist entfernt — ein `params`-Wert wird von der `code`-Factory ignoriert.
+- `multi_send_capable`: cell can produce multiple output messages from a single input. Activates the cell-type-specific multi-send wire format, for `code` e.g. the JSON-array format on stdout (see `cell-types.md`). Each emitted message runs independently through the outgoing edges; colony evaluates freshly per message. The value comes from `contract.multi_send_capable` (bool, default `false`). The former `params.multi_send_capable` bridge is removed. A `params` value is ignored by the `code` factory.
 
 ### `description`
 
-Sechs Schlüssel — **builder-erzwungen**, nicht substrat-hart: die Struktur greift, sobald der Builder/Composer sie konsumiert (dieselbe Discovery-Vertragsfläche für LLM-Builder, der Edges schreibt, und Reviewer/Operator), nicht als Boot-Validierung im Substrat.
+Six keys, **builder-enforced**, not substrate-enforced: the structure takes effect as soon as the builder/composer consumes it (the same discovery contract surface for the LLM builder that writes edges, and reviewer/operator), not as boot validation in the substrate.
 
-| Slot | Inhalt |
+| Slot | Content |
 |---|---|
-| `purpose` | Warum existiert diese Cell? Welches Problem löst sie? (1–2 Sätze) |
-| `use_when` | Wann greift der Composer zu diesem Template? Vorbedingungen, Alternativen. |
-| `not_in_scope` | Was tut diese Cell bewusst **nicht**? Hilft dem Builder, die Cell auszuschließen, wenn sie nicht passt. |
-| `emits_meaning` | Semantik der `contract.emits`-Einträge — was bedeuten sie über Type-Info hinaus? |
-| `consumes_meaning` | Semantik der `contract.consumes`-Einträge. |
-| `examples` | Konkrete Input/Output-Beispiele; mindestens eines. |
+| `purpose` | Why does this cell exist? What problem does it solve? (1-2 sentences) |
+| `use_when` | When does the composer reach for this template? Preconditions, alternatives. |
+| `not_in_scope` | What does this cell deliberately **not** do? Helps the builder exclude the cell when it does not fit. |
+| `emits_meaning` | Semantics of the `contract.emits` entries: what do they mean beyond type info? |
+| `consumes_meaning` | Semantics of the `contract.consumes` entries. |
+| `examples` | Concrete input/output examples; at least one. |
 
-**Bei Hive-Scope-Markern** (`cell.type: "hive"`): `description` beschreibt den Scope-Zweck (was bündelt dieser Hive? wann benutzt der Builder ihn? was gehört nicht hinein?). `emits_meaning` und `consumes_meaning` entfallen, da Hive-Scope-Marker nicht am Message-Flow teilnehmen.
+**At hive scope markers** (`cell.type: "hive"`): `description` describes the scope purpose (what does this hive bundle? when does the builder use it? what does not belong in it?). `emits_meaning` and `consumes_meaning` are omitted, since hive scope markers do not participate in the message flow.

@@ -38,11 +38,6 @@
 /tests/fixtures/**/blobs/
 /tests/fixtures/**/.staging/
 
-# P5-Eval: Datensatz, Laufzeit-Baeume und Roh-Ergebnisse gehoeren NIE in einen Commit.
-# Der Datensatz selbst liegt AUSSERHALB des Repos (projeks/memory/eval-data/).
-/builder/evals/**/data/
-/builder/evals/**/runs/
-
 # Secrets
 /.env
 
