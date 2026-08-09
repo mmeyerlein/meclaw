@@ -1,110 +1,110 @@
-# Cell-Types
+# Cell types
 
-Detail-Spec der Built-in Cell-Types. Bei Konflikt zwischen dieser Datei und `meclaw-overview.md` gewinnt die overview — sie ist Single Source of Truth.
+Detailed spec of the built-in cell types. On conflict between this file and `meclaw-overview.md`, the overview wins. It is the single source of truth.
 
-> **Concurrency-Hinweis**: jede Cell ist in Colony's Registry mit einem uniformen `ActorHandle` (`mpsc::Sender<Message>`) registriert; was hinter der Mailbox läuft, hängt von der Cell-Klasse ab. Stateful Cells: **eine** langlebige `cell_task` mit direktem `handle()`-Aufruf. Stateless Cells: **eine** langlebige `stateless_dispatcher`-Task, die pro Message eine kurzlebige Worker-Task spawnt (Concurrency-Limit pro Cell via `params.max_concurrency`, default unbeschränkt). Long-Running-Cells (`proxy`, `timer`, `mcp`): **zwei** Tokio-Tasks (Handler + I/O), kommunizierend über internen mpsc — siehe `meclaw-overview.md`, Abschnitte „Cell-Modell", „Stateless-Cell-Dispatcher" und „Long-Running-Cells: Doppel-Task". Cell-State ist aus Sicht des jeweiligen Handler-Tasks immer single-threaded zugreifbar; `Mutex`/`RwLock`/atomics in Cell-Code sind verboten.
+> **Concurrency note**: every cell is registered in colony's registry with a uniform `ActorHandle` (`mpsc::Sender<Message>`); what runs behind the mailbox depends on the cell class. Stateful cells: **one** long-lived `cell_task` with a direct `handle()` call. Stateless cells: **one** long-lived `stateless_dispatcher` task that spawns a short-lived worker task per message (concurrency limit per cell via `params.max_concurrency`, default unbounded). Long-running cells (`proxy`, `timer`, `mcp`): **two** Tokio tasks (handler + I/O), communicating over an internal mpsc. See `meclaw-overview.md`, sections "Cell model", "Stateless-cell dispatcher" and "Long-running cells: dual task". Cell state is always single-threaded-accessible from the perspective of the respective handler task; `Mutex`/`RwLock`/atomics in cell code are forbidden.
 
-> **Timeout-Disziplin**: jede I/O-Operation in Cell-Code (HTTP, DB, Subprozess, Filesystem, MCP) wird mit einem eigenen `tokio::time::timeout` umschlossen (Konzept A, „Operation-Timeout"). Bei Elapsed: Cell emittiert eine reguläre Error-Message und beendet `handle()` regulär — kein Restart. Konfiguration pro Cell-Instanz via `params.external_timeout_ms` (oder semantisch passender Name, z.B. `query_timeout_ms` für `store`). Zusätzlich greift der Substrat-Backstop `cell.message_timeout` (Konzept B) als grober Schutz für Cell-Hänger aus unbekanntem Grund. Details und empfohlene Defaults pro Cell-Type: `meclaw-overview.md` Abschnitt „Timeouts".
+> **Timeout discipline**: every I/O operation in cell code (HTTP, DB, subprocess, filesystem, MCP) is wrapped with its own `tokio::time::timeout` (concept A, "operation timeout"). On Elapsed: the cell emits a regular error message and ends `handle()` normally, no restart. Configuration per cell instance via `params.external_timeout_ms` (or a semantically fitting name, e.g. `query_timeout_ms` for `store`). In addition, the substrate backstop `cell.message_timeout` (concept B) takes effect as a coarse protection for cell hangs from unknown causes. Details and recommended defaults per cell type: `meclaw-overview.md` section "Timeouts".
 
-**Cell-Bauarten** (Detail in `meclaw-overview.md` Abschnitt „Cell-Bauarten bzgl. `messages[]`"):
+**Cell emission modes** (detail in `meclaw-overview.md` section "Cell emission modes w.r.t. `messages[]`"):
 
-- **atomisch-emittierend**: Cell emittiert eine frische `messages[]` mit nur ihrem eigenen Beitrag, kein Pass-Through. Default für alle Tool-Endpoints, Quellen und LLM-Inferenz.
-- **stream-fortpflanzend**: Eingangs-`messages[]` wird durchgereicht und um den eigenen Beitrag ergänzt. Im Built-in-Set nicht vertreten — anwendungsspezifisch über `code`-Cells baubar.
-- **vom Skript bestimmt** *(Sonderfall)*: Bauart entsteht pro Execution aus dem Skript-Output — nur `code`.
+- **atomic-emitting**: the cell emits a fresh `messages[]` containing only its own contribution, no pass-through. Default for all tool endpoints, sources and LLM inference.
+- **stream-propagating**: the incoming `messages[]` is passed through and augmented with its own contribution. Not present in the built-in set. Buildable application-specifically via `code` cells.
+- **script-determined** *(special case)*: emission mode arises per execution from the script output, only `code`.
 
-## Übersicht
+## Overview
 
-| Type | Aufgabe | Aktor? | Bauart | Phase |
+| Type | Task | Actor? | Emission mode | Phase |
 |---|---|---|---|---|
-| `hive` | **Scope-Marker** (Authority- und Mutations-Boundary für Pfad-Präfix) + **logischer Transit-Knoten** im Routing-Graph | **nein** — kein Aktor, keine Mailbox, keine `cell.db` | — (Transit, keine Zustellung) | 4 |
-| `store` | typisiertes SQLite-Storage mit Schema + Seed | ja, stateful | atomisch-emittierend | 9 |
-| `llm` | LLM-Inferenz, hält System-State + Blob-Cache | ja, stateful | atomisch-emittierend | 8 |
-| `bash` | Shell-Ausführung (one-shot only) | stateless | atomisch-emittierend | 7 |
-| `code` | programmierbarer Body-Konstruktor (Python first) | ja, **stateless** (Stateless-Dispatcher) — Phasen-Limitation, stateful-`code` mit `cell.db` deferred | vom Skript bestimmt | 9 |
-| `web_fetch` | HTTP-Client | stateless | atomisch-emittierend | 7 |
-| `web_search` | Search-Provider-Client | stateless | atomisch-emittierend | 7 |
-| `file` | Filesystem-CRUD mit Security-Boundary | stateless | atomisch-emittierend | 7 |
-| `edit` | File-Editing-Operationen | stateless | atomisch-emittierend | 7 |
-| `proxy` | External-Chat-Bridge (Telegram first), Doppel-Task | ja, long-running | atomisch-emittierend (User-Turn pro externer Message) | 10 |
-| `timer` | periodischer Event-Emitter, sekundengenau, Doppel-Task | ja, long-running | atomisch-emittierend (Schedule-Body) | 10 |
-| `mcp` | MCP-Provider-Bridge, Doppel-Task | ja, long-running | atomisch-emittierend | 10 |
-| `harness` | Agent-Harness (Claude Code) als supervidierter Kindprozess | ja, stateful | long-running | P8 |
-| `subcolony` | Kind-Colony als eine Cell (opake Kompositions-Fassade) | ja, long-running | atomisch-emittierend | P9 |
+| `hive` | **scope marker** (authority and mutation boundary for a path prefix) + **logical transit node** in the routing graph | **no**, no actor, no mailbox, no `cell.db` | — (transit, no delivery) | 4 |
+| `store` | typed SQLite storage with schema + seed | yes, stateful | atomic-emitting | 9 |
+| `llm` | LLM inference, holds system state + blob cache | yes, stateful | atomic-emitting | 8 |
+| `bash` | shell execution (one-shot only) | stateless | atomic-emitting | 7 |
+| `code` | programmable body constructor (Python first) | yes, **stateless** (stateless dispatcher), phase limitation, stateful `code` with `cell.db` deferred | script-determined | 9 |
+| `web_fetch` | HTTP client | stateless | atomic-emitting | 7 |
+| `web_search` | search-provider client | stateless | atomic-emitting | 7 |
+| `file` | filesystem CRUD with security boundary | stateless | atomic-emitting | 7 |
+| `edit` | file-editing operations | stateless | atomic-emitting | 7 |
+| `proxy` | external-chat bridge (Telegram first), dual task | yes, long-running | atomic-emitting (user turn per external message) | 10 |
+| `timer` | periodic event emitter, second-accurate, dual task | yes, long-running | atomic-emitting (schedule body) | 10 |
+| `mcp` | MCP-provider bridge, dual task | yes, long-running | atomic-emitting | 10 |
+| `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running | P8 |
+| `subcolony` | child colony as one cell (opaque composition facade) | yes, long-running | atomic-emitting | P9 |
 
-**Status pro Cell-Type / pro Phase** (welche Cell ist heute live, welche deferred) → `PROGRESS.md` § Status.
-
----
-
-## `hive` — Scope-Marker + logischer Transit-Knoten (kein Aktor)
-
-**Kein Cell-Type im klassischen Sinne**, sondern ein Scope-Marker mit zusätzlicher Transit-Rolle im Routing-Graph. Ein Verzeichnis mit `config.json` `type: "hive"` markiert einen Pfad-Präfix als Authority- und Mutations-Boundary für seinen Subtree. Es gibt **keine** Hive-Task, **keine** Hive-Mailbox, **keine** Hive-eigene `cell.db`, **keinen** `ActorHandle`-Eintrag in Colony's Registry. Routing, Lifecycle, Mutations-Validierung und UUID-Vergabe laufen zentral über die Colony — siehe `meclaw-overview.md` Abschnitte „Authority-Modell" und „Nebenläufigkeit & Parallelität".
-
-**Wirkung in der DSL**: Verzeichnis-Verschachtelung gruppiert Cells zu einer logischen Einheit (z.B. `/main/tool-loop/dispatcher`, `/main/tool-loop/collector`). Mutationen können den Hive-Pfad als Scope-Feld nutzen — alle Diff-Operationen darin werden relativ zu diesem Pfad-Präfix aufgelöst, und Colony lehnt Mutationen ab, deren Pfade außerhalb des Scopes liegen würden.
-
-**Wirkung im Routing — Transit, keine Zustellung**: ein Hive ist aus Sender-Sicht ein **adressierbares Ziel**, im Substrat ein **Transit-Hop**. Trifft eine Message mit `target = <hive-path>` ein, stellt Colony **nicht** in eine Mailbox zu (es gibt keine) — sie wertet stattdessen die Out-Edges des Hives (`EdgeTable`-Einträge mit `from = <hive-path>`) als Teil ihrer einen Routing-Schicht aus: CEL-`condition` gegen Headers, `modifier` anwenden, regulärer Routing-Hop pro Treffer auf den jeweiligen `to`-Pfad, TTL pro Hop dekrementiert. Kein Hive-eigener Auswerter, keine separate Routing-Logik — siehe `meclaw-overview.md` Abschnitt „Hive-Pfade als Target — Transit-Auswertung". Bei keiner matchenden Out-Edge: Dead-Letter mit `error_code = "hive_no_route"`. Graph-Reads für einen Hive-Scope laufen über `/colony/graph?scope=<hive_path>` (siehe `meclaw-overview.md` Abschnitt „Visibility / Read-Pfade").
-
-**Konnektivität des Hives**: Ob ein Hive aktiv ist, entscheiden ausschließlich die Edges der
-Eltern-Ebene, die seinen Pfad referenzieren — seine interne Verkabelung zählt nicht (siehe
-`meclaw-overview.md` § Konnektivität & Aktivität). Ein disconnecteter Hive deaktiviert seinen
-gesamten Subtree. Genau das macht Hives zum Anschlusspunkt für komplexe Templates: ein
-instanziiertes Subtree-Template wird über Edges an seinen Hive-Pfad angeschlossen — die
-interne Struktur muss der Anschließende nicht kennen.
-
-**`params`** — **ausschließlich `graph`** (der `HiveParams`-Deserializer ist `deny_unknown_fields`; jeder andere Schlüssel ist ein Boot-Fehler):
-- `graph` (optional): initialer Soll-Graph für den Subtree (Format siehe `meclaw-overview.md` Abschnitt „Graph-Schema"). Colony liest das beim Filesystem-Bootstrap und trägt die deklarierten Cells in die Registry und die Edges in `colony.db` ein. Nach dem ersten Bootstrap ist die persistierte Edge-Tabelle in `colony.db` die Wahrheit — `params.graph` ist nur initialer Hint.
-
-Kein scope-eigener `dead_letters`-Override: die Dead-Letter-Queue ist immer `/colony/dead_letters` (Hive = Authority-/Mutations-Boundary, **nicht** DLQ-Boundary). Sonst keine Hive-Type-eigenen Felder. Insbesondere keine Routing-Konfiguration, keine Mailbox-Größe, keine eigene Bauart-Aussage — Hives haben keinen Aktor und keine Mailbox; ihre Routing-Rolle ist passive Transit-Auswertung durch Colony über die `params.graph`-Edges.
+**Status per cell type / per phase** (which cell is live today, which deferred) → `PROGRESS.md` § Status.
 
 ---
 
-## `store` — typisiertes persistentes Storage
+## `hive`: scope marker + logical transit node (not an actor)
 
-**Aufgabe**: CRUD-Cell mit eigener `cell.db`. Schema und Spalten-Typen können in `params.schema` definiert werden; die Cell legt die Tabellen daraus an. Dynamisch kann sie auch per Message eine neue Tabelle anlegen. Tabellen- und Spaltennamen unterliegen einem Syntax-Gate (P3, 2026-08-08): `[A-Za-z_][A-Za-z0-9_]{0,62}`, kein `sqlite_`-Präfix, kein `_fts`-Suffix. In SQL formatiert wird ausschließlich, was der SQLite-Katalog (`sqlite_master`/`pragma_table_info`) selbst zurückgibt oder aus einem internen Enum stammt — Caller-Text erreicht Statements nur als Bind-Parameter.
+**Not a cell type in the classical sense**, but a scope marker with an additional transit role in the routing graph. A directory with `config.json` `type: "hive"` marks a path prefix as the authority and mutation boundary for its subtree. There is **no** hive task, **no** hive mailbox, **no** hive-owned `cell.db`, **no** `ActorHandle` entry in colony's registry. Routing, lifecycle, mutation validation and UUID assignment run centrally through the colony. See `meclaw-overview.md` sections "Authority model" and "Concurrency and parallelism".
 
-**Bauart**: atomisch-emittierend. Pro Query-Message eine Response-Message mit dem Resultat als Turn.
+**Effect in the DSL**: directory nesting groups cells into a logical unit (e.g. `/main/tool-loop/dispatcher`, `/main/tool-loop/collector`). Mutations can use the hive path as a scope field. All diff operations within it are resolved relative to this path prefix, and colony rejects mutations whose paths would lie outside the scope.
 
-**Eingabe-Format** (Phase-9 Brainstorm E7, analog `bash`): strukturierte JSON-Args im `tool_call`-Turn. Pflichtfeld `operation` (`"insert"`/`"select"`/`"update"`/`"delete"`/`"create_table"`/`"search"`/`"traverse"`/`"similar"`) + `table`, plus operationsspezifische Felder:
+**Effect in routing, transit, no delivery**: a hive is from the sender's view an **addressable target**, in the substrate a **transit hop**. When a message with `target = <hive-path>` arrives, colony does **not** deliver it into a mailbox (there is none). Instead it evaluates the hive's out-edges (`EdgeTable` entries with `from = <hive-path>`) as part of its single routing layer: CEL `condition` against headers, apply `modifier`, regular routing hop per match to the respective `to` path, TTL decremented per hop. No hive-owned evaluator, no separate routing logic. See `meclaw-overview.md` section "Hive paths as target: transit evaluation". On no matching out-edge: dead letter with `error_code = "hive_no_route"`. Graph reads for a hive scope run over `/colony/graph?scope=<hive_path>` (see `meclaw-overview.md` section "Visibility / read paths").
 
-- `insert`: `row` (Objekt `{ "<column>": <value> }`).
-- `select`: `columns` (**Pflicht** — Array von Spalten-Namen mit mindestens einem Eintrag; die Projektion) + optional `where`, `order_by` (Array von `{ "col": "<column>", "dir": "asc"|"desc" }`, multi-column) und `limit` (Integer ≥ 1, **kein** impliziter Default, kein Cap — der Runaway-Guard ist `query_timeout_ms`). Es gibt **keinen** projektionslosen `SELECT *`: fehlt `columns` oder ist es leer, antwortet die Cell mit `finish_reason: "error"` und `error_code: "invalid_input"` (kein Cell-Crash; Doku-an-Code-Korrektur, ruling 2026-08-08). Das Resultat ist ein Array von Zeilen-Objekten, projiziert auf die angeforderten Spalten.
-- `update`: `set` (Objekt) + optional `where`.
+**Connectivity of the hive**: whether a hive is active is decided exclusively by the edges of the
+parent level that reference its path. Its internal wiring does not count (see
+`meclaw-overview.md` § Connectivity and activity). A disconnected hive deactivates its
+entire subtree. This is exactly what makes hives the attachment point for complex templates: an
+instantiated subtree template is attached to its hive path via edges. The attacher does not need
+to know the internal structure.
+
+**`params`**: **exclusively `graph`** (the `HiveParams` deserializer is `deny_unknown_fields`; any other key is a boot error):
+- `graph` (optional): initial desired graph for the subtree (format see `meclaw-overview.md` section "Graph schema"). Colony reads this at filesystem bootstrap and enters the declared cells into the registry and the edges into `colony.db`. After the first bootstrap, the persisted edge table in `colony.db` is the truth. `params.graph` is only an initial hint.
+
+No scope-owned `dead_letters` override: the dead-letter queue is always `/colony/dead_letters` (hive = authority and mutation boundary, **not** DLQ boundary). Otherwise no hive-type-owned fields. In particular no routing configuration, no mailbox size, no own emission-mode statement. Hives have no actor and no mailbox; their routing role is passive transit evaluation by colony over the `params.graph` edges.
+
+---
+
+## `store`: typed persistent storage
+
+**Task**: CRUD cell with its own `cell.db`. Schema and column types can be defined in `params.schema`; the cell creates the tables from it. Dynamically it can also create a new table per message. Table and column names pass a syntax gate (P3, 2026-08-08): `[A-Za-z_][A-Za-z0-9_]{0,62}`, no `sqlite_` prefix, no `_fts` suffix. The only strings ever formatted into SQL are what the SQLite catalog (`sqlite_master`/`pragma_table_info`) itself returned or values from an internal enum — caller text reaches statements exclusively as bind parameters.
+
+**Emission mode**: atomic-emitting. Per query message one response message with the result as a turn.
+
+**Input format** (Phase-9 brainstorm E7, analogous to `bash`): structured JSON args in the `tool_call` turn. Mandatory field `operation` (`"insert"`/`"select"`/`"update"`/`"delete"`/`"create_table"`/`"search"`/`"traverse"`/`"similar"`) + `table`, plus operation-specific fields:
+
+- `insert`: `row` (object `{ "<column>": <value> }`).
+- `select`: `columns` (**mandatory**, array of column names with at least one entry; the projection) + optional `where`, `order_by` (array of `{ "col": "<column>", "dir": "asc"|"desc" }`, multi-column) and `limit` (integer ≥ 1, **no** implicit default, no cap — the runaway guard is `query_timeout_ms`). There is **no** projectionless `SELECT *`: if `columns` is missing or empty, the cell answers with `finish_reason: "error"` and `error_code: "invalid_input"` (no cell crash; doc-to-code correction, ruling 2026-08-08). The result is an array of row objects, projected onto the requested columns.
+- `update`: `set` (object) + optional `where`.
 - `delete`: optional `where`.
-- `create_table`: `columns` als **2-Stufen-Map** `{ "<column>": "<type>" }` (Typen `text`/`int`/`json`) — **nicht** `schema`.
-- `search` (P3): `match` (**Pflicht** — FTS5-Query-Syntax) + `columns` (**Pflicht**, wie `select`) + optional `where`/`order_by`/`limit`. Nur auf Tabellen mit `params.fts`-Deklaration (sonst `invalid_input`). Jede Ergebnis-Zeile trägt zusätzlich die Spalte `rank` (bm25, kleiner = besser); ohne `order_by` ist `rank` die Default-Ordnung.
-- `traverse` (P4): Multi-Hop über eine Edge-Tabelle per rekursiver CTE, **gerichtet** `src`→`dst`. Args: `table` + Spalten-Rollen `src`/`dst` (optional `kind`/`weight` — alle katalog-validiert), `start` (Bind-Wert), optional `where` (voller Operatorensatz, gilt pro Kante) und `columns` (zusätzliche Edge-Spalten in den Pfad-Zeilen), Guards `max_depth` (Default 2, Cap 5) und `max_nodes` (Default 200, Cap 5000) — Werte über dem Cap ⇒ **Reject** (`invalid_input`), kein stilles Clampen. Zyklen-Eliminierung pro Pfad einschließlich des Start-Knotens (eine Kante zurück zum Ursprung wird geprunt). Ergebnis ist ein **Objekt-Payload** `{ paths, truncated, max_depth, max_nodes }`; jede Pfad-Zeile trägt Endknoten, Tiefe, Pfad-Array, Edge-Attribute und akkumuliertes Gewicht. **Kein** `order_by` (BFS-artige Expansion; die Reihenfolge innerhalb einer Tiefe ist nicht Teil des Kontrakts); `truncated: true` macht das Abschneiden durch `max_nodes` sichtbar.
-- `similar` (P4): Ähnlichkeits-Ranking über eine Vektor-Spalte via registrierter `hamming()`-Scalar-Function. Args: `table`, Vektor-Spalte, Query-Vektor (Bind), optional `where`/`order_by`/`limit`, `columns` (darf `distance` **nicht** enthalten). Jede Ergebnis-Zeile trägt `distance` (kleiner = besser); Default-Ordnung `distance` aufsteigend mit `rowid`-Tiebreaker. Vektoren sind **Base64-TEXT** (primär; echte BLOBs werden zusätzlich akzeptiert — ein nativer Blob-Schreibpfad ist roadmap-Defer), striktes Base64 (Reject bei Alphabet-, Padding- und Längenfehlern), `NULL` → `NULL`; **Längen-Mismatch zweier Vektoren ⇒ lauter `sql_error`** (ein Mismatch ist praktisch immer ein Bruch der Embedding-Generationen-Disziplin, kein stiller Skip). Die Op ergänzt **immer** implizit `<vektor-spalte> IS NOT NULL` — `NULL`-Embeddings (Backfill-Queue) würden sonst an Platz 1 ranken. Known limits: keine erzwungene Modell-Gleichheit (der Caller filtert `model_id` selbst), kein ANN-Index — Full-Scan über die gefilterte Menge.
+- `create_table`: `columns` as a **2-level map** `{ "<column>": "<type>" }` (types `text`/`int`/`json`), **not** `schema`.
+- `search` (P3): `match` (**mandatory** — FTS5 query syntax) + `columns` (**mandatory**, as in `select`) + optional `where`/`order_by`/`limit`. Only on tables with a `params.fts` declaration (otherwise `invalid_input`). Every result row additionally carries a `rank` column (bm25, smaller is better); without `order_by`, `rank` is the default ordering.
+- `traverse` (P4): multi-hop over an edge table via a recursive CTE, **directed** `src`→`dst`. Args: `table` + column roles `src`/`dst` (optional `kind`/`weight` — all catalog-validated), `start` (bind value), optional `where` (full operator set, applied per edge) and `columns` (additional edge columns in the path rows), guards `max_depth` (default 2, cap 5) and `max_nodes` (default 200, cap 5000) — values above the cap ⇒ **reject** (`invalid_input`), no silent clamping. Cycle elimination per path including the start node (an edge back to the origin is pruned). The result is an **object payload** `{ paths, truncated, max_depth, max_nodes }`; every path row carries end node, depth, path array, edge attributes and accumulated weight. **No** `order_by` (BFS-style expansion; the order within one depth is not part of the contract); `truncated: true` makes the `max_nodes` cutoff visible.
+- `similar` (P4): similarity ranking over a vector column via the registered `hamming()` scalar function. Args: `table`, vector column, query vector (bind), optional `where`/`order_by`/`limit`, `columns` (must **not** contain `distance`). Every result row carries `distance` (smaller is better); default ordering is `distance` ascending with a `rowid` tiebreaker. Vectors are **Base64 TEXT** (primary; real BLOBs are additionally accepted — a native blob write path is a roadmap defer), strict Base64 (reject on alphabet, padding and length errors), `NULL` → `NULL`; **a length mismatch between two vectors ⇒ loud `sql_error`** (a mismatch is almost always a breach of the embedding-generation discipline, never a silent skip). The op **always** implicitly adds `<vector column> IS NOT NULL` — `NULL` embeddings (backfill queue) would otherwise rank first. Known limits: no enforced model equality (the caller filters `model_id` itself), no ANN index — full scan over the filtered set.
 
-`columns` hat damit je nach Operation eine andere Form: bei `select` ein **Array von Spalten-Namen** (Projektion), bei `create_table` eine **2-Stufen-Typ-Map**. `where`: pro Spalte entweder ein nackter Wert (Kurzform für `eq`) oder ein Operator-Objekt mit genau einem Schlüssel aus `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` (Array), `is_null` (bool), `or_null` (umschließt genau einen Vergleichsoperator, Tiefe 1). Ein Objekt mit unbekanntem Schlüssel ⇒ `invalid_input`. Die Operator-Formen gelten einheitlich für `select`/`search`/`update`/`delete` (ein gemeinsamer `build_where`-Pfad). `schema` ist ausschließlich der `params`-Block (Bootstrap-Tabellen). Phase 9 akzeptiert nur `tool_call`-Turns; direkte Verwendung mit `user`/`system`-Origin (s.u.) ist Phase-9-Limitation.
+`columns` thus has a different form depending on the operation: with `select` an **array of column names** (projection), with `create_table` a **2-level type map**. `where`: per column either a bare value (shorthand for `eq`) or an operator object with exactly one key out of `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` (array), `is_null` (bool), `or_null` (wrapping exactly one comparison operator, depth 1). An object with an unknown key ⇒ `invalid_input`. The operator forms apply uniformly to `select`/`search`/`update`/`delete` (one shared `build_where` path). `schema` is exclusively the `params` block (bootstrap tables). Phase 9 accepts only `tool_call` turns; direct use with `user`/`system` origin (see below) is a Phase-9 limitation.
 
-**Body-Format der Response**: `messages[]` mit einem einzelnen Turn. Bei Tool-Loop-Verwendung typisch `{ origin: "tool", type: "tool_result", text: "<json-serialisiertes Ergebnis>", id: "<tool_call_id>" }`. Bei direkter Verwendung außerhalb eines Tool-Loops kann der `origin` je nach Anwendungs-Konvention auch `user` oder `system` sein; `id` entfällt dann.
+**Body format of the response**: `messages[]` with a single turn. In tool-loop use typically `{ origin: "tool", type: "tool_result", text: "<json-serialized result>", id: "<tool_call_id>" }`. In direct use outside a tool-loop, the `origin` may also be `user` or `system` depending on the application convention; `id` is then omitted.
 
-**Output-Header** (`hop`-Fach — verfallen bei der nächsten Cell-Emission): `operation`, `rows_affected`, `duration_ms`, optional `error_code`.
+**Output header** (`hop` compartment, expires on the next cell emission): `operation`, `rows_affected`, `duration_ms`, optional `error_code`.
 
-**Failure-Klassifikation** (Phase-9 Brainstorm E5, analog `bash`): SQL-Errors (Constraint-Verletzung, Type-Mismatch, unknown table/column) sind **reguläre `tool_result`-Turns** mit `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"` / `"query_timeout"` / `"invalid_input"` bei malformierten Args bzw. unbekannter Operation) — **nicht** `finish_reason: "error"`. Begründung: LLM/Caller liest den Code und entscheidet (Retry, Schema-Korrektur, andere Operation). Nur interne Fehler (DB-Korruption, Spawn-Fehler) lösen Cell-Crash + Restart aus. `unknown_column` deckt seit P3 auch `select`/`where`/`order_by` ab (vorher nur den `insert`-Pfad über den SQLite-Fehlertext). Die `traverse`-/`similar`-Fehlerfälle (P4) bilden auf die bestehenden Codes ab — `invalid_input` für Guard-/Arg-Verstöße, `unknown_table`/`unknown_column` über den Katalog, `sql_error` für Vektor-Mismatch, `query_timeout` — **kein neuer Code**.
+**Failure classification** (Phase-9 brainstorm E5, analogous to `bash`): SQL errors (constraint violation, type mismatch, unknown table/column) are **regular `tool_result` turns** with `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"` / `"query_timeout"` / `"invalid_input"` for malformed args or unknown operation), **not** `finish_reason: "error"`. Rationale: the LLM/caller reads the code and decides (retry, schema correction, different operation). Only internal errors (DB corruption, spawn error) trigger a cell crash + restart. Since P3, `unknown_column` also covers `select`/`where`/`order_by` (previously only the `insert` path via the SQLite error text). The `traverse`/`similar` failure cases (P4) map onto the existing codes — `invalid_input` for guard/arg violations, `unknown_table`/`unknown_column` via the catalog, `sql_error` for vector mismatch, `query_timeout` — **no new code**.
 
 **`params`**:
 
-- `schema` (Phase-9 Brainstorm E6): 2-Stufen-Map `{ "<table>": { "<column>": "<type>" } }` mit Typen `text` / `int` / `json`. Constraints (PK / NOT NULL / UNIQUE / Default / Index) sind in Phase 9 **deferred** — eigener Design-Pass nötig.
-- `fts` (P3): Map `{ "<table>": ["<column>", …] }` — aktiviert einen FTS5-Volltextindex (external-content-Tabelle + Trigger) über die genannten Spalten. Nur Tabellen aus `params.schema`, nur `text`-/`json`-Spalten; **kein FTS für per `create_table` angelegte Tabellen** (Known limit P3). Immutable wie `schema`. Bestands-`cell.db`s bauen den Index beim nächsten Spawn einmalig auf — auch für vor der Deklaration geschriebene Zeilen; weicht eine deklarierte Spalte vom Live-Schema ab ⇒ lauter Spawn-Fehler.
-- `query_timeout_ms` (Konzept A, siehe overview § Timeouts): pro Query erzwungener Timeout via `DbConn`'s `InterruptHandle`; unterbricht nachweislich auch eine laufende rekursive CTE (`traverse`).
-- Optional Seed-Daten (Convention-Pfad `seed/<table>.jsonl`). Seed greift nur bei `OpenStatus::Created` der `cell.db` — siehe overview § Seed-Konzept.
+- `schema` (Phase-9 brainstorm E6): 2-level map `{ "<table>": { "<column>": "<type>" } }` with types `text` / `int` / `json`. Constraints (PK / NOT NULL / UNIQUE / default / index) are **deferred** in Phase 9. A separate design pass is needed.
+- `fts` (P3): map `{ "<table>": ["<column>", …] }` — enables an FTS5 full-text index (external-content table + triggers) over the listed columns. Only tables from `params.schema`, only `text`/`json` columns; **no FTS for tables created via `create_table`** (known limit P3). Immutable like `schema`. Existing `cell.db`s build the index once on the next spawn — including rows written before the declaration; a declared column drifting from the live schema ⇒ loud spawn error.
+- `query_timeout_ms` (concept A, see overview § Timeouts): per-query enforced timeout via `DbConn`'s `InterruptHandle`; demonstrably also interrupts a running recursive CTE (`traverse`).
+- Optional seed data (convention path `seed/<table>.jsonl`). Seed takes effect only on `OpenStatus::Created` of the `cell.db` (see overview § Seed concept).
 
-**Laufzeit-Param-Updates (β, `config.md` § Zugriff Z.20):** wie `llm` (siehe dort) — Top-Level-`params`-Body-Slot, partial, last-write-wins, in der `cell.db` persistiert, bei wake/respawn über die Geburts-params replayt. **Mutabel:** `query_timeout_ms` — wirkt **sofort live** (der laufende `DbConn` übernimmt den neuen A-Timeout für den nächsten Query, ohne wake/respawn). **Immutable je `store`:** `schema` (bootstrap-only — beim Spawn per DDL in die `cell.db` gebacken; eine Laufzeit-Änderung würde die Live-Tabellen von der deklarierten Schema desynchronisieren). Update-Versuch auf `schema` oder ein unbekannter Key ⇒ lauter Reject (`error_code: "invalid_input"`), kein Teil-Apply.
+**Runtime param updates (β, `config.md` § Access L.20):** like `llm` (see there): top-level `params` body slot, partial, last-write-wins, persisted in the `cell.db`, replayed over the birth params on wake/respawn. **Mutable:** `query_timeout_ms`: takes effect **immediately live** (the running `DbConn` adopts the new A-timeout for the next query, without wake/respawn). **Immutable per `store`:** `schema` (bootstrap-only, baked into the `cell.db` via DDL at spawn; a runtime change would desynchronize the live tables from the declared schema). An update attempt on `schema` or an unknown key ⇒ loud reject (`error_code: "invalid_input"`), no partial apply.
 
 ---
 
-## `llm` — LLM-Inferenz via Provider-Adapter
+## `llm`: LLM inference via provider adapter
 
-**Aufgabe**: Bridge zu einem LLM-Provider. Konsumiert und emittiert Universal-Body-Format (siehe `meclaw-overview.md` Abschnitt „Body-Format (Universal)"). **Keine innere Loop** — pro Inferenz-Message genau ein Provider-Call. Iteration (Tool-Loops, ReAct, Plan-and-Execute, …) entsteht durch Topologie.
+**Task**: bridge to an LLM provider. Consumes and emits universal body format (see `meclaw-overview.md` section "Body format (universal)"). **No inner loop**: exactly one provider call per inference message. Iteration (tool-loops, ReAct, plan-and-execute, …) arises through topology.
 
-**Bauart**: atomisch-emittierend. Pro Inferenz-Call emittiert die `llm`-Cell genau einen neuen assistant-Turn — Eingangs-`messages[]` wird **nicht** durchgereicht. Wer den Konversations-Faden über mehrere Schritte zusammenhalten will, baut das per Topologie (z.B. eine Memory-Hive vor der `llm`-Cell, die History aggregiert und dem nächsten Call mitgibt). Konsistent mit der „Messages sind atomar"-Disziplin und der Cell-Bauarten-Tabelle in `meclaw-overview.md`.
+**Emission mode**: atomic-emitting. Per inference call the `llm` cell emits exactly one new assistant turn. The incoming `messages[]` is **not** passed through. Whoever wants to hold the conversation thread together across multiple steps builds that via topology (e.g. a memory hive in front of the `llm` cell that aggregates history and passes it to the next call). Consistent with the "messages are atomic" discipline and the cell-emission-mode table in `meclaw-overview.md`.
 
-**Inferenz-Trigger**: ausschließlich `messages[]`. System-Updates (Pfade unter `system.*`) akkumulieren in `cell.db` ohne Provider-Call.
+**Inference trigger**: exclusively `messages[]`. System updates (paths under `system.*`) accumulate in `cell.db` without a provider call.
 
 **State in `cell.db`**:
-- `system.*` — akkumulativ-replace pro Pfad. Bootstrap-Kontext (Persona, Tool-Schemas, Facts). Updates kommen per Message von beliebigen Cells; Sender kennt die Struktur nicht.
-- `messages[]` — last-received as-is (Blob-Refs unaufgelöst, keine appended Turns).
-- **Nicht in cell.db**: appended assistant-Turn (Output), Blob-Cache (nur in-memory).
+- `system.*`: accumulative-replace per path. Bootstrap context (persona, tool schemas, facts). Updates arrive per message from arbitrary cells; the sender does not know the structure.
+- `messages[]`: last-received as-is (blob refs unresolved, no appended turns).
+- **Not in cell.db**: appended assistant turn (output), blob cache (in-memory only).
 
 **`params`**:
 ```json
@@ -133,109 +133,109 @@ Kein scope-eigener `dead_letters`-Override: die Dead-Letter-Queue ist immer `/co
 }
 ```
 
-- `external_timeout_ms` (Konzept A, siehe overview § Timeouts): A-Timeout um den Provider-HTTP-Call (`tokio::time::timeout`), Default `110000` (110 s). Bei Elapsed: reguläre Error-Message mit `finish_reason: "error"`, `error_code: "timeout"`.
+- `external_timeout_ms` (concept A, see overview § Timeouts): A-timeout around the provider HTTP call (`tokio::time::timeout`), default `110000` (110 s). On Elapsed: regular error message with `finish_reason: "error"`, `error_code: "timeout"`.
 
-- `provider` (Phase 8): **nur `"openai"`** (inkl. OpenAI-kompatible Endpoints via `base_url`). Der Wert ist als Enum angelegt, aber Phase 8 implementiert ausschließlich den OpenAI-Translate. Weitere Provider (insb. `"anthropic"`, Messages-API nativ) sind **deferred** — kein fester Phasen-Bezug (siehe „Multi-Provider" unten). Ein nicht-`openai`-Wert ist in Phase 8 ein `model_not_found`/`invalid_input`-äquivalenter Konfigurationsfehler beim Spawn.
-- `auth` (P10): **`"api_key"`** (Default) | **`"oauth_subscription"`**. Wählt die Credential-Quelle, **nicht** den Provider. Genau **ein** Credential pro Cell: `api_key` ist Pflicht bei `"api_key"` und verboten bei `"oauth_subscription"`; `auth_ref` umgekehrt. Jede Verletzung ist ein Konfigurationsfehler beim Spawn, dessen Meldung **nie** einen Param-Wert nennt.
-- `auth_ref` (P10): Pfad auf einen OAuth-Token-Store im Codex-`auth.json`-Format. Pflicht bei `auth: "oauth_subscription"`, sonst verboten. **Kein Default — bewusst.** Ein impliziter `~/.codex/auth.json`-Zugriff würde eine Cell den `refresh_token` einer laufenden interaktiven Session rotieren lassen; einen Store zu teilen ist damit eine Config-Entscheidung, keine Code-Entscheidung.
-- `wire_dialect` (P10): **`"chat_completions"`** | **`"responses"`**; `null` leitet ab (`api_key` → chat-completions, `oauth_subscription` → responses). Eigene Achse **orthogonal zu `provider`**: die Responses-API ist derselbe Vendor mit anderem Wire-Format, kein anderer Provider — der `provider`-Constraint oben bleibt davon unberührt. `auth: "oauth_subscription"` mit `"chat_completions"` ist ein Konfigurationsfehler (der Subscription-Backend spricht nur Responses).
-- `oauth_token_endpoint` / `oauth_client_id` / `oauth_originator` (P10): Overrides der Provider-Defaults für den OAuth-Refresh bzw. den `originator`-Request-Header. `null` = Provider-Default. Sie existieren, damit ein Endpoint-Drift ohne Release korrigierbar ist und Tests auf einen Fake zeigen können.
-- `base_url` überschreibt Provider-Default (nützlich für lokale/proxied Endpoints wie LiteLLM, Ollama, vllm — alle über den OpenAI-kompatiblen Wire).
-- `system_order`: optionale Reihenfolge der `system.*`-Sub-Slots bei Konkatenation zum Provider-System-String. Nicht gelistete Sub-Slots kommen danach in alphabetischer Reihenfolge.
-- `provider_extra`: freier JSON-Block für Provider-spezifische Knobs (Phase 8: z.B. OpenAI `seed`). Overlay über Common-Params bei Konflikten. Provider-fremde Knobs (z.B. Anthropic `cache_control`) sind erst mit dem jeweiligen Provider-Translate aktiv.
-- `http_referer` / `x_title`: optionale Provider-Attribution (OpenRouter `HTTP-Referer` / `X-Title`). **Reguläre params** (Audit-Ruling A4, params-uniform): in `config.json` gesetzt, via `${VAR}` aus `.env` substituiert wie jeder andere param — **kein** Code-Pfad liest `.env` direkt, **keine** Sonder-Header-Mechanik. Unset (`null`/weggelassen) ⇒ der Header wird **nicht** gesendet. Das Wire-Ziel (HTTP-Request-Header statt Request-Body) entscheidet die Translate-Grenze (siehe „Provider-Translate" unten).
+- `provider` (Phase 8): **`"openai"` only** (including OpenAI-compatible endpoints via `base_url`). The value is set up as an enum, but Phase 8 implements exclusively the OpenAI translate. Further providers (in particular `"anthropic"`, Messages API native) are **deferred**, no fixed phase reference (see "Multi-provider" below). A non-`openai` value is in Phase 8 a `model_not_found`/`invalid_input`-equivalent configuration error at spawn.
+- `auth` (P10): **`"api_key"`** (default) | **`"oauth_subscription"`**. Selects the credential source, **not** the provider. Exactly **one** credential per cell: `api_key` is required for `"api_key"` and forbidden for `"oauth_subscription"`; `auth_ref` the other way round. Any violation is a configuration error at spawn whose message **never** names a param value.
+- `auth_ref` (P10): path to an OAuth token store in the Codex `auth.json` format. Required for `auth: "oauth_subscription"`, forbidden otherwise. **No default, deliberately.** An implicit `~/.codex/auth.json` would let a cell rotate the `refresh_token` of a live interactive session; sharing a store is therefore a config decision, not a code decision.
+- `wire_dialect` (P10): **`"chat_completions"`** | **`"responses"`**; `null` derives it (`api_key` → chat-completions, `oauth_subscription` → responses). A separate axis **orthogonal to `provider`**: the Responses API is the same vendor with a different wire shape, not a different provider, so the `provider` constraint above is untouched. `auth: "oauth_subscription"` with `"chat_completions"` is a configuration error (the subscription backend speaks Responses only).
+- `oauth_token_endpoint` / `oauth_client_id` / `oauth_originator` (P10): overrides for the OAuth refresh defaults and the `originator` request header. `null` = provider default. They exist so an endpoint drift is fixable without a release, and so tests can point at a fake.
+- `base_url` overrides the provider default (useful for local/proxied endpoints like LiteLLM, Ollama, vllm, all over the OpenAI-compatible wire).
+- `system_order`: optional order of the `system.*` sub-slots when concatenating into the provider system string. Sub-slots not listed come afterwards in alphabetical order.
+- `provider_extra`: free JSON block for provider-specific knobs (Phase 8: e.g. OpenAI `seed`). Overlay over common params on conflicts. Provider-foreign knobs (e.g. Anthropic `cache_control`) are active only with the respective provider translate.
+- `http_referer` / `x_title`: optional provider attribution (OpenRouter `HTTP-Referer` / `X-Title`). **Regular params** (audit ruling A4, params-uniform): set in `config.json`, substituted via `${VAR}` from `.env` like any other param, **no** code path reads `.env` directly, **no** special header mechanics. Unset (`null`/omitted) ⇒ the header is **not** sent. The wire target (HTTP request header instead of request body) is decided by the translate boundary (see "Provider translate" below).
 
-**Laufzeit-Param-Updates (W4b, `config.md` § Zugriff Z.20):** params sind Cell-**Inhalt**, kein Topologie-Zustand — sie ändern sich per **Message**, nicht per Mutation. Die Form ist ein **Top-Level-`params`-Body-Slot** (1:1 der `config.json`-`params`-Block), partial, **last-write-wins pro Key**:
+**Runtime param updates (W4b, `config.md` § Access L.20):** params are cell **content**, not topology state. They change per **message**, not per mutation. The form is a **top-level `params` body slot** (1:1 with the `config.json` `params` block), partial, **last-write-wins per key**:
 
 ```json
 { "params": { "model": "gpt-4o-mini", "temperature": 0.4 } }
 ```
 
-Reihenfolge in einer Message: der `params`-Slot wird **zuerst** gemerged + in der `cell.db` persistiert, **dann** läuft eine ggf. mitgesendete `system`/`messages`-Inferenz mit den **aktualisierten** params (derselbe Call nutzt schon das neue Modell / die neue Attribution). Eine **params-only**-Message (Slot ohne `system`/`messages`) persistiert und schweigt (kein Emit, analog system-only). `config.json` divergiert dabei vom Live-Stand — **gewollt**; bei wake/respawn replayt die Cell ihr `cell.db`-Overlay über die Geburts-params (`config.json` bleibt der Instanziierungs-Snapshot). **Reset = `cell.db`-Wipe ⇒ Bootstrap-params** zurück.
+Order within a message: the `params` slot is merged **first** + persisted in the `cell.db`, **then** a possibly co-sent `system`/`messages` inference runs with the **updated** params (the same call already uses the new model / the new attribution). A **params-only** message (slot without `system`/`messages`) persists and stays silent (no emit, analogous to system-only). `config.json` thereby diverges from the live state, **intended**; on wake/respawn the cell replays its `cell.db` overlay over the birth params (`config.json` remains the instantiation snapshot). **Reset = `cell.db` wipe ⇒ bootstrap params** back.
 
-**Immutable je llm** (Update-Versuch ⇒ **lauter Reject**, `error_code: "invalid_input"`, **kein** Teil-Apply): `api_key` (Credential, Secret-Hygiene — Spiegel des A4-`Authorization`-Rulings), `provider` (Phase-8-Identität) und die gesamte P10-Auth-Dimension — `auth`, `auth_ref`, `wire_dialect`, `oauth_token_endpoint`, `oauth_client_id`, `oauth_originator`. Begründung für die Erweiterung: `auth`/`auth_ref` sind Credential-Identität, und `wire_dialect`/`oauth_*` entscheiden, **an welchen Endpoint** ein Credential präsentiert wird — wären sie mutierbar, könnte eine Message ein bestehendes Token an ein neues Ziel umleiten. **Unbekannte** Param-Keys ⇒ ebenfalls lauter Reject (kein stiller No-op). Ein malformter Wert (falscher Typ) ⇒ Reject (All-or-nothing). Die Reject-Detail nennt nur den Key/die Regel, **nie** einen Param-Wert.
+**Immutable per llm** (update attempt ⇒ **loud reject**, `error_code: "invalid_input"`, **no** partial apply): `api_key` (credential, secret hygiene, mirror of the A4 `Authorization` ruling), `provider` (Phase-8 identity) and the entire P10 auth dimension — `auth`, `auth_ref`, `wire_dialect`, `oauth_token_endpoint`, `oauth_client_id`, `oauth_originator`. Rationale for the extension: `auth`/`auth_ref` are credential identity, and `wire_dialect`/`oauth_*` decide **which endpoint** a credential is presented to; if they were mutable, a message could redirect an existing token to a new destination. **Unknown** param keys ⇒ likewise loud reject (no silent no-op). A malformed value (wrong type) ⇒ reject (all-or-nothing). The reject detail names only the key/the rule, **never** a param value.
 
-**Tool-Definitionen**: leben in `system.tools.<tool_name>.text` als JSON-Strings. Der Adapter parsed sie beim Provider-Call und baut das provider-native Tool-Set. Tools werden **nicht** in den System-Prompt-String konkateniert — separat extrahiert. Tool-Calls und Tool-Results sind eigene `messages[]`-Turn-Types (`type: "tool_call"` / `"tool_result"` mit `id` als Korrelations-Anker, Pass-Through-Wert vom Provider).
+**Tool definitions**: live in `system.tools.<tool_name>.text` as JSON strings. The adapter parses them at the provider call and builds the provider-native tool set. Tools are **not** concatenated into the system-prompt string. Extracted separately. Tool calls and tool results are their own `messages[]` turn types (`type: "tool_call"` / `"tool_result"` with `id` as the correlation anchor, pass-through value from the provider).
 
-**Output-Body**:
-- `messages[]` = nur der neue assistant-Turn (kein Pass-Through des Eingangs-`messages[]`)
-- `system.*` wird **nicht** emittiert (privater Cell-State)
-- `meta` (Cell-spezifischer Top-Level-Slot): `{ provider, model, response_id, latency_ms, started_at, tokens_cache_read?, tokens_cache_creation?, … }`
+**Output body**:
+- `messages[]` = only the new assistant turn (no pass-through of the incoming `messages[]`)
+- `system.*` is **not** emitted (private cell state)
+- `meta` (cell-specific top-level slot): `{ provider, model, response_id, latency_ms, started_at, tokens_cache_read?, tokens_cache_creation?, … }`
 
-**Output-Header** (`hop`-Fach — verfallen bei der nächsten Cell-Emission):
+**Output header** (`hop` compartment, expires on the next cell emission):
 
-| Header | Inhalt |
+| Header | Content |
 |---|---|
-| `finish_reason` | `"stop"` \| `"length"` \| `"tool_calls"` \| `"content_filter"` \| `"error"` — Pflicht |
-| `tokens_prompt` | Input-Token-Count |
-| `tokens_completion` | Output-Token-Count |
-| `model` | Modell, das der Provider tatsächlich benutzt hat |
-| `error_code` | nur bei `finish_reason == "error"`: `"rate_limit"` \| `"auth"` \| `"timeout"` \| `"model_not_found"` \| `"provider_error"` \| `"invalid_input"` (W4b: params-Update-Reject — immutable/unbekannter/malformter Key) |
+| `finish_reason` | `"stop"` \| `"length"` \| `"tool_calls"` \| `"content_filter"` \| `"error"`, mandatory |
+| `tokens_prompt` | input token count |
+| `tokens_completion` | output token count |
+| `model` | model the provider actually used |
+| `error_code` | only on `finish_reason == "error"`: `"rate_limit"` \| `"auth"` \| `"timeout"` \| `"model_not_found"` \| `"provider_error"` \| `"invalid_input"` (W4b: param-update reject, immutable/unknown/malformed key) |
 
-**`meta.error`-Feinklassifikation (P10).** Die `error_code`-Enum oben ist **geschlossen** und bekommt für die Subscription-Lane bewusst keinen neuen Wert. Die Unterscheidung, die eine Failover-Edge braucht, lebt stattdessen in `meta.error`:
+**`meta.error` fine classification (P10).** The `error_code` enum above is **closed** and deliberately gains no new value for the subscription lane. The discriminator a failover edge needs lives in `meta.error` instead:
 
-| Fall | `error_code` | `meta.error.kind` | zusätzlich |
+| Case | `error_code` | `meta.error.kind` | extra |
 |---|---|---|---|
-| Quota des Abos erschöpft | `rate_limit` | `quota_exhausted` | `resets_at` (Unix-Sekunden), `plan_type` |
-| Plan deckt das Modell nicht | `rate_limit` | `plan_not_included` | — |
-| gewöhnliches Rate-Limit | `rate_limit` | `rate_limited` | — |
-| Token abgelaufen, auch nach Refresh + einem Retry | `auth` | `auth_expired` | — |
-| Refresh-Token endgültig tot | `auth` | `auth_permanent` | `re_login_required: true` |
-| Token-Store fehlt/unlesbar | `auth` | `auth_store_unavailable` | — |
-| 5xx / Überlast | `provider_error` | `transient` | — |
+| subscription quota spent | `rate_limit` | `quota_exhausted` | `resets_at` (unix seconds), `plan_type` |
+| plan does not cover the model | `rate_limit` | `plan_not_included` | — |
+| ordinary rate limit | `rate_limit` | `rate_limited` | — |
+| token expired, even after refresh + one retry | `auth` | `auth_expired` | — |
+| refresh token permanently dead | `auth` | `auth_permanent` | `re_login_required: true` |
+| token store missing/unreadable | `auth` | `auth_store_unavailable` | — |
+| 5xx / overload | `provider_error` | `transient` | — |
 
-Vor-P10-Fehlerpfade emittieren **kein** `kind` — ihre Message bleibt unverändert.
+Pre-P10 failure paths emit **no** `kind` — their message is unchanged.
 
-**Aggregation über Loops** (Total-Cost, kumulierte Tokens): **kein Cell-Feature**. Separate Aggregator-Hive in der Topologie gruppiert über `correlation_id` und ergänzt Pass-Through-Header (`cost_total_usd`, `tokens_total`). Begründung in `meclaw-overview.md` Abschnitt „Metadata-Aggregation ist Topologie".
+**Aggregation over loops** (total cost, cumulative tokens): **not a cell feature**. A separate aggregator hive in the topology groups over `correlation_id` and augments pass-through headers (`cost_total_usd`, `tokens_total`). Rationale in `meclaw-overview.md` section "Metadata aggregation is topology".
 
-**Error-Modell**: Provider-Fehler (Rate-Limit, Auth, Timeout etc.) sind **reguläre Output-Messages** mit `finish_reason: "error"` + `error_code`, `messages[]` unverändert (kein Turn angehängt), `meta.error` mit Detail-Info. Topologie kann via Edge-Bedingung Failover machen. Nur interne Fehler (Panic, Bad-Params) lösen Cell-Crash + Restart aus.
+**Error model**: provider errors (rate limit, auth, timeout etc.) are **regular output messages** with `finish_reason: "error"` + `error_code`, `messages[]` unchanged (no turn appended), `meta.error` with detail info. Topology can do failover via edge condition. Only internal errors (panic, bad params) trigger a cell crash + restart.
 
-**Streaming**: als **Ausgabe** nicht unterstützt (Single-Message-Output), post-Roadmap. Davon zu trennen ist der **Transport**: der Responses-Dialekt streamt auf dem Wire (`stream: true` ist beim Subscription-Backend Pflicht, es gibt dort keinen nicht-streamenden Pfad). Die Cell konsumiert den SSE-Body **vollständig und nicht-inkrementell** und faltet ihn zu **einer** atomaren Message — die Atomaritäts-Zusage dieser Cell gilt unverändert.
+**Streaming**: not supported as **output** (single-message output), post-roadmap. This is distinct from the **transport**: the Responses dialect streams on the wire (`stream: true` is mandatory on the subscription backend, which has no non-streaming path). The cell consumes the SSE body **fully and non-incrementally** and folds it into **one** atomic message — this cell's atomicity guarantee is unchanged.
 
-**Multi-Provider**: Phase 8 implementiert **ausschließlich den OpenAI-Translate** (ein Provider pro Instanz). **Anthropic ist deferred — kein fester Phasen-Bezug.** Die Cell-Logik (UBF-Konsum, `system.*`-Akkumulation in `cell.db`, Tool-Definition-Extraction, atomic-emit, Error-Modell) ist provider-agnostisch; provider-spezifisch ist allein der Translate (siehe „Provider-Translate" unten). Failover/A-B-Test über mehrere Provider läuft via Topologie (zwei `llm`-Cells + Dispatcher-Hive unter einem Hive-Scope), nicht cell-intern. Post-Roadmap zusätzlich denkbar: Cell-interne Provider-Liste für robuste Provider-Anbindung (Cell sichert „Kommunikation zum Provider klappt" über Retries/Failover).
+**Multi-provider**: Phase 8 implements **exclusively the OpenAI translate** (one provider per instance). **Anthropic is deferred, no fixed phase reference.** The cell logic (UBF consumption, `system.*` accumulation in `cell.db`, tool-definition extraction, atomic-emit, error model) is provider-agnostic; provider-specific is solely the translate (see "Provider translate" below). Failover/A-B test over multiple providers runs via topology (two `llm` cells + dispatcher hive under one hive scope), not cell-internally. Additionally conceivable post-roadmap: a cell-internal provider list for robust provider connection (the cell guarantees "communication to the provider works" via retries/failover).
 
-**Provider-Translate (Übersetzungs-Grenze)**: Die `llm`-Cell ist **provider-agnostisch**. Sie konsumiert ausschließlich Universal-Body-Format, akkumuliert `system.*` als UBF in ihrer `cell.db` (UBF ist damit auch ihr internes/persistentes Format) und emittiert genau einen assistant-Turn als UBF. Die gesamte Provider-Kenntnis lebt in einer Übersetzungs-Funktion (hier „Translate", synonym zum in `meclaw-overview.md` genannten „LLM-Provider-Adapter"), die zwei Richtungen kennt: **UBF → provider-natives Request** (System-Konkatenation, `messages[]`-Mapping, `system.tools.*` → provider-natives Tool-Set) und **provider-natives Response → UBF** (assistant-Turn inkl. ggf. `type: "tool_call"`-Turns, Header wie `finish_reason`/Tokens, `meta`-Slot). Konsequenzen, die jeder Phase-8-Implementer einhalten muss:
-- **Keine Loop.** Pro Inferenz-Message genau ein Provider-Call, dann Emit. Iteration ist Topologie (siehe `meclaw-overview.md` „Iteration ist Topologie").
-- **Kein Composing/Decomposing von Tool-Calls.** Die Cell baut keine Tool-Aufrufe zusammen und löst keine auf. `tool_call`/`tool_result` sind reine UBF-`messages[]`-Turn-Types mit `id` als Pass-Through-Korrelations-Anker (Wert vom Provider). Tool-Schemas werden vom Translate aus `system.tools.*` ins provider-native Tool-Set übersetzt — das ist Format-Übersetzung, kein Tool-Loop.
-- **Wire-Merge konsekutiver `tool_call`-Turns (Request-Bau, Ruling 2026-06-11).** Beim UBF→Request-Mapping fasst der Translate **konsekutive** assistant-`tool_call`-Turns zu **einer** provider-nativen assistant-Message mit `tool_calls[]` zusammen — der OpenAI-Wire-Vertrag verlangt, dass auf eine assistant-Message mit `tool_calls` unmittelbar `tool`-Messages zu jeder `tool_call_id` folgen (Run-4b-Wire-Befund: Ein-Call-Messages vor gesammelten Results → 400). Das ist reine Wire-Format-Übersetzung innerhalb der Translate-Grenze, kein Composing auf UBF-Ebene: UBF bleibt unverändert (ein Turn = ein Call = eine `id`), `id`s bleiben Pass-Through. Der Response-Rückweg bleibt unverändert (jedes Provider-`tool_calls[i]` → ein eigener UBF-Turn).
-- **Provider-natives JSON verlässt nie die Translate-Grenze.** Der Cell-Core sieht ausschließlich UBF; provider-spezifische Strukturen existieren nur innerhalb des Translate.
-- **Param → Wire-Ziel-Mapping (Audit-Ruling A4).** Die Translate-Grenze entscheidet je param das Wire-Ziel — Request-Body-JSON vs. HTTP-Request-Header. Provider-Wissen wohnt damit ausschließlich im Translate. Die explizite Tabelle:
+**Provider translate (translation boundary)**: the `llm` cell is **provider-agnostic**. It consumes exclusively universal body format, accumulates `system.*` as UBF in its `cell.db` (UBF is thereby also its internal/persistent format) and emits exactly one assistant turn as UBF. All provider knowledge lives in a translation function (here "translate", synonymous with the "LLM provider adapter" named in `meclaw-overview.md`), which knows two directions: **UBF → provider-native request** (system concatenation, `messages[]` mapping, `system.tools.*` → provider-native tool set) and **provider-native response → UBF** (assistant turn including any `type: "tool_call"` turns, headers like `finish_reason`/tokens, `meta` slot). Consequences every Phase-8 implementer must observe:
+- **No loop.** Exactly one provider call per inference message, then emit. Iteration is topology (see `meclaw-overview.md` "Iteration is topology").
+- **No composing/decomposing of tool calls.** The cell does not assemble tool calls and does not resolve any. `tool_call`/`tool_result` are pure UBF `messages[]` turn types with `id` as the pass-through correlation anchor (value from the provider). Tool schemas are translated by the translate from `system.tools.*` into the provider-native tool set, that is format translation, not a tool-loop.
+- **Wire merge of consecutive `tool_call` turns (request build, ruling 2026-06-11).** During UBF→request mapping the translate merges **consecutive** assistant `tool_call` turns into **one** provider-native assistant message with `tool_calls[]`. The OpenAI wire contract requires that an assistant message with `tool_calls` is immediately followed by `tool` messages for each `tool_call_id` (Run-4b wire finding: one-call messages before collected results → 400). This is pure wire-format translation within the translate boundary, not composing at the UBF level: UBF stays unchanged (one turn = one call = one `id`), `id`s stay pass-through. The response return path stays unchanged (each provider `tool_calls[i]` → its own UBF turn).
+- **Provider-native JSON never leaves the translate boundary.** The cell core sees exclusively UBF; provider-specific structures exist only within the translate.
+- **Param → wire-target mapping (audit ruling A4).** The translate boundary decides the wire target per param, request-body JSON vs. HTTP request header. Provider knowledge thus resides exclusively in the translate. The explicit table:
 
-  | param | Wire-Ziel |
+  | param | wire target |
   |---|---|
-  | `model`, `temperature`, `max_tokens`, `provider_extra` (Overlay) | Request-Body-JSON |
-  | `http_referer` | HTTP-Header `HTTP-Referer` |
-  | `x_title` | HTTP-Header `X-Title` |
+  | `model`, `temperature`, `max_tokens`, `provider_extra` (overlay) | request-body JSON |
+  | `http_referer` | HTTP header `HTTP-Referer` |
+  | `x_title` | HTTP header `X-Title` |
 
-  Die Header-Tabelle ist eine **geschlossene Allow-List**: `Authorization` ist **kein** params-steuerbarer Header — er ist der `api_key`-Bearer und wird allein von der Wire-Schicht gesetzt; ein params-Versuch, ihn zu überschreiben, wird ignoriert (Secret-Hygiene). Nur gesetzte (`Some`) Attribution-params erzeugen einen Header; unset ⇒ kein Header.
+  The header table is a **closed allow-list**: `Authorization` is **not** a params-controllable header. It is the `api_key` bearer and is set solely by the wire layer; a params attempt to override it is ignored (secret hygiene). Only set (`Some`) attribution params produce a header; unset ⇒ no header.
 
-Daraus folgt direkt die Deferral-Sauberkeit: ein weiterer Provider (z.B. Anthropic) ist allein ein zweiter Translate plus Enum-Wert — die Cell-Logik, `cell.db`-Semantik und das Error-Modell bleiben unverändert.
+From this follows directly the deferral cleanliness: a further provider (e.g. Anthropic) is solely a second translate plus an enum value, the cell logic, `cell.db` semantics and the error model stay unchanged.
 
-**Zweiter Wire-Dialekt (P10): Responses.** Neben chat-completions kennt der Translate den Responses-Dialekt — dieselbe Übersetzungs-Grenze, dieselbe UBF-Semantik, anderes Wire-Format: `messages[]` → typisierte `input[]`-Items (`input_text`/`output_text`, `function_call`/`function_call_output`), System-Prompt → Top-Level-`instructions`, `max_tokens` → `max_output_tokens`, Tool-Schemas flach statt verschachtelt. `store: false` ist gesetzt (der Subscription-Backend persistiert nicht), `include: ["reasoning.encrypted_content"]` nur auf der Subscription-Lane. Die Antwort wird aus `response.output_item.done` gelesen, **nicht** aus den Deltas; `reasoning`-Items erreichen UBF nicht.
+**Second wire dialect (P10): Responses.** Beside chat-completions the translate knows the Responses dialect — same translation boundary, same UBF semantics, different wire shape: `messages[]` → typed `input[]` items (`input_text`/`output_text`, `function_call`/`function_call_output`), system prompt → top-level `instructions`, `max_tokens` → `max_output_tokens`, tool schemas flat instead of nested. `store: false` is set (the subscription backend does not persist), `include: ["reasoning.encrypted_content"]` only on the subscription lane. The answer is read from `response.output_item.done`, **not** from the deltas; `reasoning` items never reach UBF.
 
-Der Wire ist gegen die Referenz-Implementierung `github.com/openai/codex` @ `266c6920d9b82fe4d68959529565256b12a9be99` gepinnt (Endpoint, Header-Satz, Body-Form, SSE-Events, Refresh-Flow, Fehler-Taxonomie); die Test-Fixtures sind die Drift-Detektoren. Endpoint: `https://chatgpt.com/backend-api/codex/responses` (Subscription, **ohne** `/v1`) bzw. `https://api.openai.com/v1/responses` (API-Key). Die beiden sind **nicht** austauschbar — ein Subscription-Token gegen den gemeterten Endpoint scheitert an fehlenden Scopes.
+The wire is pinned against the reference implementation `github.com/openai/codex` @ `266c6920d9b82fe4d68959529565256b12a9be99` (endpoint, header set, body shape, SSE events, refresh flow, error taxonomy); the test fixtures are the drift detectors. Endpoint: `https://chatgpt.com/backend-api/codex/responses` (subscription, **without** `/v1`) or `https://api.openai.com/v1/responses` (API key). The two are **not** interchangeable — a subscription token against the metered endpoint fails on missing scopes.
 
-**Token-Lebenszyklus (P10, nur `auth: "oauth_subscription"`).** Das Access-Token ist **kein Param** — es ist cell-externer, rotierender Zustand im Store hinter `auth_ref`. Refresh ist **rein reaktiv**: Call → `401` → Refresh → **genau ein** Retry → getypter Fehler. Kein Timer, kein Polling, kein Backoff-Loop; Failover bei Quota-Erschöpfung ist **Topologie**, nicht Cell-Logik (siehe Error-Modell).
+**Token lifecycle (P10, `auth: "oauth_subscription"` only).** The access token is **not a param** — it is cell-external, rotating state in the store behind `auth_ref`. Refresh is **purely reactive**: call → `401` → refresh → **exactly one** retry → typed error. No timer, no polling, no backoff loop; failover on quota exhaustion is **topology**, not cell logic (see error model).
 
-**Ein Refresher pro Prozess.** Der `refresh_token` **rotiert** bei jedem Refresh — zwei Cells, die denselben Store gleichzeitig refreshen, erzeugen `refresh_token_reused` und töten den Login dauerhaft. Alle Cells eines Prozesses teilen sich deshalb **einen** Token-Broker: ein Aktor, in dem der Refresh-Call selbst läuft, wodurch Single-Flight konstruktionsbedingt garantiert ist (kein Lock, keine Warteschleife). Eine Cell, die nach einem `401` refreshen will, nennt die Token-Generation, die sie benutzt hat; hat inzwischen jemand anders refresht, bekommt sie dessen frisches Token statt einer zweiten Rotation. **Grenze:** das serialisiert **innerhalb eines Prozesses** — ein parallel laufendes CLI auf demselben Store kann weiterhin kollidieren (siehe `roadmap.md`).
+**One refresher per process.** The `refresh_token` **rotates** on every refresh — two cells refreshing the same store concurrently produce `refresh_token_reused` and kill the login permanently. All cells in a process therefore share **one** token broker: an actor that performs the refresh call itself, which guarantees single-flight by construction (no lock, no wait loop). A cell that wants to refresh after a `401` names the token generation it used; if someone else refreshed meanwhile, it receives their fresh token instead of a second rotation. **Limit:** this serializes **within one process** — a CLI running in parallel on the same store can still collide (see `roadmap.md`).
 
-**Secret-Hygiene (Erweiterung der `api_key`-Disziplin auf den Token-Pfad).** Ein Token steht **nie** in `config.json`, **nie** im `message_log`, **nie** in einer emittierten Message oder deren `meta`, **nie** in einem Fehlertext und **nie** in einem Log. `Debug`-Ausgaben der Token-Typen redigieren ihre Werte; Fremd-Fehlertexte werden vor der Weitergabe von token-förmigen Zeichenketten befreit. Der Store wird atomar geschrieben (Temp-Datei + `rename`) und trägt Unix-Rechte `0600`.
+**Secret hygiene (the `api_key` discipline extended to the token path).** A token is **never** in `config.json`, **never** in the `message_log`, **never** in an emitted message or its `meta`, **never** in an error text and **never** in a log. `Debug` output of the token types redacts its values; third-party error texts are stripped of token-shaped strings before being passed on. The store is written atomically (temp file + `rename`) and carries Unix mode `0600`.
 
-**Ko-Eigentümerschaft des Stores.** Der Store gehört auch der Vendor-CLI — MeClaw ist dort ein **zweiter Schreiber**, nicht der Eigentümer. Beim Rotieren wird deshalb **gepatcht statt überschrieben**: nur `tokens.access_token`, `tokens.refresh_token`, `tokens.account_id` und `last_refresh` werden angefasst, alle unbekannten Felder (`auth_mode`, `id_token`, `OPENAI_API_KEY`, …) bleiben unverändert. Ein naives Rewrite würde einen interaktiven Login beim ersten Rotate zerstören.
+**Store co-ownership.** The store also belongs to the vendor CLI — MeClaw is a **second writer** there, not the owner. Rotation therefore **patches instead of overwriting**: only `tokens.access_token`, `tokens.refresh_token`, `tokens.account_id` and `last_refresh` are touched, and all unknown fields (`auth_mode`, `id_token`, `OPENAI_API_KEY`, …) survive unchanged. A naive rewrite would destroy an interactive login on the first rotation.
 
 ---
 
-## `bash` — Shell-Ausführung
+## `bash`: shell execution
 
-**Aufgabe**: führt Shell-Befehle aus — **one-shot only** (`cell.timeout > 0`, Cell terminiert nach jeder Message). Ein persistent-Mode (`cell.timeout: -1`, langlebige interaktive Shell-Session) wird **by-design nicht eingeführt** (Architektur-Ruling 2026-06-08, Design-Record in `archive/roadmap-resolved.md`): zustandsbehaftet, fragil, schwer sandboxbar. `cwd`/`env`-Kontinuität über mehrere Befehle — falls gebraucht — läuft über Persistieren von `cwd`/`env` in der `bash`-`cell.db` + Mitgabe pro one-shot-Call, nicht über eine lebende Shell. Für Programm-Logik, Body-Manipulation oder Multi-Send siehe `code` — die Wahl-Heuristik steht am Anfang der `code`-Sektion.
+**Task**: runs shell commands, **one-shot only** (`cell.timeout > 0`, the cell terminates after each message). A persistent mode (`cell.timeout: -1`, long-lived interactive shell session) is **by-design not introduced** (architecture ruling 2026-06-08, design record in `archive/roadmap-resolved.md`): stateful, fragile, hard to sandbox. `cwd`/`env` continuity across multiple commands (if needed) runs via persisting `cwd`/`env` in the `bash` `cell.db` + passing it per one-shot call, not via a living shell. For program logic, body manipulation or multi-send see `code` (the choice heuristic is at the start of the `code` section).
 
-**State-Modell**: `bash` ist **stateless** im klassischen Sinne (Stateless-Dispatcher, kurzlebige Worker-Tasks) und hat **keine `cell.db`** — konsistent mit der Phase-7-Disziplin „Tool-Cells ohne `cell.db`". Shell-State (cwd, env-Vars, History, offene Prozesse) wird nicht über Calls hinweg gehalten; jeder Call startet eine frische Shell.
+**State model**: `bash` is **stateless** in the classical sense (stateless dispatcher, short-lived worker tasks) and has **no `cell.db`**, consistent with the Phase-7 discipline "tool cells without `cell.db`". Shell state (cwd, env vars, history, open processes) is not held across calls; each call starts a fresh shell.
 
-**Bauart**: atomisch-emittierend. Pro ausgeführtem Kommando ein `tool_result`-Turn.
+**Emission mode**: atomic-emitting. Per executed command one `tool_result` turn.
 
-**Body-Format der Response**: `messages[]` mit einem Turn `{ origin: "tool", type: "tool_result", text: "<stdout-plus-ggf-stderr>", id: "<tool_call_id falls vorhanden>" }`.
+**Body format of the response**: `messages[]` with one turn `{ origin: "tool", type: "tool_result", text: "<stdout-plus-possibly-stderr>", id: "<tool_call_id if present>" }`.
 
-**stderr-Konvention**: stderr lebt **nicht** in einem eigenen Header oder Body-Slot, sondern wird in `text` hinter den stdout-Anteil angehängt, abgegrenzt durch klare Sentinel-Marker (nur eingefügt, wenn stderr nicht-leer):
+**stderr convention**: stderr lives **not** in its own header or body slot, but is appended in `text` after the stdout portion, demarcated by clear sentinel markers (inserted only when stderr is non-empty):
 
 ```
 <stdout-content>
@@ -245,17 +245,17 @@ Der Wire ist gegen die Referenz-Implementierung `github.com/openai/codex` @ `266
 ##meclaw-stderr-end##
 ```
 
-Damit liest ein LLM-Konsument den vollen Tool-Output natürlich (stdout zuerst, stderr explizit markiert), und Edges können vor dem `text`-Parse über `header.had_stderr` schnell routen. Verworfen wurden: stderr als eigener Header-String (würde bei großen Compiler-Outputs / Stack-Traces die „Headers = klein"-Disziplin sprengen), stderr als eigener Top-Level-Body-Slot (bricht das natürliche LLM-Konsumenten-Modell „Tool-Output lesen heißt `text` lesen" und erhöht Slot-Inflation), und stderr immer als JSON-Struct in `text` (`{stdout, stderr, exit_code}`, nicht direkt LLM-lesbar ohne Parse-Schritt).
+This way an LLM consumer reads the full tool output naturally (stdout first, stderr explicitly marked), and edges can route quickly via `header.had_stderr` before the `text` parse. Rejected were: stderr as its own header string (would break the "headers = small" discipline with large compiler outputs / stack traces), stderr as its own top-level body slot (breaks the natural LLM-consumer model "reading tool output means reading `text`" and increases slot inflation), and stderr always as a JSON struct in `text` (`{stdout, stderr, exit_code}`, not directly LLM-readable without a parse step).
 
-**Output-Header** (`hop`-Fach — verfallen bei der nächsten Cell-Emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (Pflicht, immer gesetzt), `bytes` (Länge des `text`), optional `truncated` (bei langem stdout).
+**Output header** (`hop` compartment, expires on the next cell emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (mandatory, always set), `bytes` (length of the `text`), optional `truncated` (on long stdout).
 
-**`params`**: typisch das auszuführende Kommando bzw. die Skript-Pfad-Konvention.
+**`params`**: typically the command to execute or the script-path convention.
 
-**Phase-7-Konventionen** (Slice-2-Entscheidungen):
-- **`exit ≠ 0` ist NORMAL tool_result**: `exit_code` immer im Header (auch =0). LLM/Caller liest den Code und entscheidet. Konsistent mit Claude Code's Bash-Tool.
-- **Nur Spawn-Failure, Timeout + ungültiger Input = Error**: `error_code: "io_error"` (spawn) bzw. `"timeout"` (external_timeout elapsed) bzw. `"invalid_input"` (fehlendes/ungültiges `command`-Feld).
-- **`exit_code = -1`** bei signal-killed/abnormal-Termination (plattform-unspezifische Convention). Bei Timeout zusätzlich `error_code: "timeout"`.
-- **stderr-Sentinel-Format** (nur einfügen wenn stderr non-empty):
+**Phase-7 conventions** (Slice-2 decisions):
+- **`exit ≠ 0` is a NORMAL tool_result**: `exit_code` always in the header (even =0). The LLM/caller reads the code and decides. Consistent with Claude Code's Bash tool.
+- **Only spawn failure, timeout + invalid input = error**: `error_code: "io_error"` (spawn) or `"timeout"` (external_timeout elapsed) or `"invalid_input"` (missing/invalid `command` field).
+- **`exit_code = -1`** on signal-killed/abnormal termination (platform-unspecific convention). On timeout additionally `error_code: "timeout"`.
+- **stderr sentinel format** (insert only when stderr non-empty):
   ```
   <stdout>
 
@@ -263,44 +263,44 @@ Damit liest ein LLM-Konsument den vollen Tool-Output natürlich (stdout zuerst, 
   <stderr>
   ##meclaw-stderr-end##
   ```
-- **`had_stderr: bool`** Header IMMER gesetzt (true/false).
-- **Kein Security-Boundary**: bash hat Vollzugriff aufs FS via Shell. Trust-Modell — bash-Cell läuft nur in vertrauenswürdigen Topologien. Sandbox-Ausbau ist Post-Roadmap.
-- **Shell**: `/bin/sh -c <command>`. `cwd`/`shell` als params deferred (Operator setzt via `cd /x && cmd` inline).
-- **Kein Persistent-bash** (`cell.timeout: -1`): by-design gestrichen (Architektur-Ruling 2026-06-08) — `bash` ist one-shot only, keine deferred Option.
+- **`had_stderr: bool`** header ALWAYS set (true/false).
+- **No security boundary**: bash has full FS access via the shell. Trust model: the bash cell runs only in trustworthy topologies. Sandbox build-out is post-roadmap.
+- **Shell**: `/bin/sh -c <command>`. `cwd`/`shell` as params deferred (operator sets via `cd /x && cmd` inline).
+- **No persistent bash** (`cell.timeout: -1`): by-design dropped (architecture ruling 2026-06-08). `bash` is one-shot only, not a deferred option.
 - **Input minimal**: `{"command": "..."}`.
 - **Defaults**: `max_concurrency: 4`, `external_timeout_ms: 60000`.
 
 ---
 
-## `code` — programmierbarer Body-Konstruktor
+## `code`: programmable body constructor
 
-**Wahl `bash` vs `code`** (für AI-Builder und Template-Authors):
+**Choice of `bash` vs `code`** (for AI builders and template authors):
 
-- Brauchst du nur „Kommando absetzen, stdout/stderr als `tool_result`-Turn emittieren"? → **`bash`** (immer one-shot, auch für Befehlssequenzen — `cwd`/`env`-Kontinuität falls gebraucht via `bash`-`cell.db` pro Call, siehe § `bash`).
-- Brauchst du Programm-Logik, die den Body manipuliert, mehrere Messages aus einer macht (Multi-Send), Headers gezielt setzt, oder eingehende `messages[]` umarbeitet? → **`code`**.
+- Do you only need to "issue a command, emit stdout/stderr as a `tool_result` turn"? → **`bash`** (always one-shot, also for command sequences, `cwd`/`env` continuity if needed via the `bash` `cell.db` per call, see § `bash`).
+- Do you need program logic that manipulates the body, makes several messages from one (multi-send), sets headers deliberately, or reworks incoming `messages[]`? → **`code`**.
 
-**Aufgabe**: führt user-suppliertes Programm in einer deklarierten Sprache aus (Python first; Node und weitere später). Im Unterschied zu `bash` ist `code` ein **Body-Konstruktor**: das Skript bekommt die eingehende Message als JSON, baut komplett selbst die ausgehende Content-JSON — Headers, `messages[]`, eigene Top-Level-Slots, Routing-relevante Headers für Edges. Damit ist `code` das Schweizer Taschenmesser für anwendungs-spezifische Logik: LLM-Outputs zerpflücken, Tool-Calls extrahieren, Transform-Logik, Multi-Send-Dispatcher.
+**Task**: runs user-supplied program in a declared language (Python first; Node and others later). Unlike `bash`, `code` is a **body constructor**: the script gets the incoming message as JSON, builds the outgoing content JSON entirely itself: headers, `messages[]`, own top-level slots, routing-relevant headers for edges. This makes `code` the Swiss army knife for application-specific logic: dissecting LLM outputs, extracting tool calls, transform logic, multi-send dispatchers.
 
-**Begründung dieser Rolle**: ein simpler Subprozess-Wrapper analog `bash` würde diese Aufgabenfläche nicht abdecken — Body-Manipulation, Multi-Send und Header-Routing brauchen Programm-Logik, nicht bloß stdout-zu-Text. Verworfen wurden: (a) `code` als bash-artiger Wrapper mit „Skalar-Lift" (die Cell extrahiert nur skalare Header-Werte aus stdout — deckt die echte Anwendungsfläche nicht ab, lässt den Body unberührt), (b) separate Transform-Cells für jede dieser Aufgaben (würde den Cell-Type-Katalog ohne Mehrwert vergrößern), (c) `bash` und `code` formgleich machen (würde `bash` unnötig schwer machen). Mit dem Body-Konstruktor-Modell bleibt der Katalog schlank, ohne neue Cell-Types erfinden zu müssen. Trade-off: `code` und `bash` sind formal nicht symmetrisch — das ist gewollt und über die Wahl-Heuristik oben für AI-Builder explizit aufgelöst.
+**Rationale for this role**: a simple subprocess wrapper analogous to `bash` would not cover this task surface. Body manipulation, multi-send and header routing need program logic, not just stdout-to-text. Rejected were: (a) `code` as a bash-like wrapper with "scalar lift" (the cell extracts only scalar header values from stdout, does not cover the real application surface, leaves the body untouched), (b) separate transform cells for each of these tasks (would enlarge the cell-type catalog with no added value), (c) making `bash` and `code` formally identical (would make `bash` unnecessarily heavy). With the body-constructor model the catalog stays lean, without having to invent new cell types. Trade-off: `code` and `bash` are not formally symmetric, that is intended and explicitly resolved for AI builders via the choice heuristic above.
 
-**Bauart**: **vom Skript bestimmt** — atomisch-emittierend oder stream-fortpflanzend, je nachdem ob das Skript die eingehenden `messages[]` durchreicht oder neu baut. `code` ist die einzige Cell-Type ohne fixe Bauart.
+**Emission mode**: **script-determined**: atomic-emitting or stream-propagating, depending on whether the script passes through the incoming `messages[]` or builds it anew. `code` is the only cell type without a fixed emission mode.
 
-**Skript-Schnittstelle**:
-- **stdin**: JSON-serialisierte eingehende Message — alles, was die Cell laut `contract.consumes` und Standard-Message-Konvention liest (`header`, Body-Slots, plus die Envelope-Felder `target`, `reply_to`, `trace_id`, `parent_message_id`, `correlation_id`, `ttl`).
-- **stdout**: vollständige Content-JSON in genau der Form, die jede andere Cell auch produziert — `header`-Sektion (optional) plus Top-Level-Slots. Das **Wire-Format ist unverändert**: das Skript schreibt weiterhin eine `header`-Sektion. Colony interpretiert diese als `hop` (der isolierte Cell-Output — verfällt bei der nächsten Cell-Emission), der Rest wird `message.body`. Das Skript schreibt **nicht** `context` (das ist allein Edge-Authority).
+**Script interface**:
+- **stdin**: JSON-serialized incoming message, everything the cell reads per its `contract.consumes` and the standard message convention (`header`, body slots, plus the envelope fields `target`, `reply_to`, `trace_id`, `parent_message_id`, `correlation_id`, `ttl`).
+- **stdout**: complete content JSON in exactly the form every other cell also produces. `header` section (optional) plus top-level slots. The **wire format is unchanged**: the script still writes a `header` section. Colony interprets this as `hop` (the isolated cell output, expires on the next cell emission), the rest becomes `message.body`. The script does **not** write `context` (that is solely edge authority).
 
-**Das Skript sieht seine `params` nie.** `build_stdin_json` (`crates/meclaw-cells/src/code/wire.rs`) legt auf stdin genau den Body, `header` (beide Fächer `context` + `hop`), `target`, `reply_to`, `trace_id` und `ttl` (plus `parent_message_id` / `correlation_id`, falls gesetzt) — **keine** `params`. Konfiguration eines `code`-Skripts läuft daher ausschließlich über `${VAR}`-Substitution (greift bei Bootstrap **und** bei Mutations-Instanziierung) oder über die Message selbst. Der context-Weg ist ausdrücklich **kein** Ersatz: der `/colony`-Reply kommt mit leerem context zurück — eine zweiphasige Cell verlöre ihre Konfiguration genau dann, wenn sie sie braucht.
+**The script never sees its `params`.** `build_stdin_json` (`crates/meclaw-cells/src/code/wire.rs`) puts exactly the body, `header` (both compartments `context` + `hop`), `target`, `reply_to`, `trace_id` and `ttl` (plus `parent_message_id` / `correlation_id`, if set) on stdin, **no** `params`. Configuration of a `code` script therefore runs exclusively via `${VAR}` substitution (which applies at bootstrap **and** at mutation instantiation) or via the message itself. The context route is explicitly **no** substitute: the `/colony` reply comes back with an empty context, a two-phase cell would lose its configuration exactly when it needs it.
 
-**Multi-Send**: wenn `multi_send_capable: true` (Quelle ist `contract.multi_send_capable` aus der `config.json` der Cell; die frühere Phase-9-`params.multi_send_capable`-Bridge ist **entfernt**), darf das Skript statt eines einzelnen Content-JSONs ein **JSON-Array** von Content-JSONs auf stdout schreiben. Die Cell discriminiert anhand des JSON-Wurzel-Typs:
+**Multi-send**: when `multi_send_capable: true` (the source is `contract.multi_send_capable` from the cell's `config.json`; the earlier Phase-9 `params.multi_send_capable` bridge is **removed**), the script may write, instead of a single content JSON, a **JSON array** of content JSONs to stdout. The cell discriminates by the JSON root type:
 
-- **JSON-Object** → eine ausgehende Message (Standard-Fall).
-- **JSON-Array** → N ausgehende Messages, eine pro Element. Reihenfolge: Array-Reihenfolge.
+- **JSON object** → one outgoing message (standard case).
+- **JSON array** → N outgoing messages, one per element. Order: array order.
 
-Wenn `multi_send_capable: false` und das Skript ein Array schreibt → Contract-Violation, Error-Message mit `error_code: "multi_send_not_declared"`. Wenn `multi_send_capable: true` und das Skript ein Object schreibt → erlaubt, behandelt wie ein Array der Länge 1.
+If `multi_send_capable: false` and the script writes an array → contract violation, error message with `error_code: "multi_send_not_declared"`. If `multi_send_capable: true` and the script writes an object → allowed, treated as an array of length 1.
 
-Jede emittierte Message läuft **unabhängig** durch die ausgehenden Edges der Cell — Colony evaluiert pro emittierter Message frisch alle Edge-Conditions; eine Message kann an Edge A landen, die nächste an Edge B.
+Each emitted message runs **independently** through the cell's outgoing edges. Colony evaluates all edge conditions freshly per emitted message; one message can land at edge A, the next at edge B.
 
-Wire-Beispiel:
+Wire example:
 
 ```json
 [
@@ -313,214 +313,214 @@ Wire-Beispiel:
 ]
 ```
 
-Verworfen wurden: Multi-Send über NDJSON (line-delimited JSON — bringt keinen Vorteil, weil die Cell auf Skript-Ende wartet, kein Streaming-Bedarf), Multi-Send mit explizitem Wrapper (`{ "messages": [...] }` als Wrapper für das Array — unnötig, JSON-Type-Discrimination reicht).
+Rejected were: multi-send via NDJSON (line-delimited JSON, brings no advantage, because the cell waits for script end, no streaming need), multi-send with an explicit wrapper (`{ "messages": [...] }` as wrapper for the array, unnecessary, JSON-type discrimination suffices).
 
-**Cell-Standard-Header** (gesetzt von der Cell selbst nach Skript-Ende, **überlagern** Skript-Output für diese Keys):
+**Cell standard headers** (set by the cell itself after script end, **override** the script output for these keys):
 - `exit_code` (number)
 - `duration_ms` (number)
 - `had_stderr` (bool)
 
-Das Skript kann diese Keys nicht hijacken — Process-Metadaten gehören der Cell.
+The script cannot hijack these keys. Process metadata belongs to the cell.
 
-**stderr** bei erfolgreichem Skript-Run (Exit 0): wird **nicht** in den Skript-Output injiziert (Body-Konstruktion des Skripts bleibt sauber). `header.had_stderr` wird gesetzt, stderr-Inhalt landet in `log.jsonl` mit Warn-Level. Bei Skript-Fehler (Exit ≠ 0, siehe Failure-Modell) emittiert die Cell stattdessen eine Error-Message mit stderr in der `bash`-Konvention.
+**stderr** on a successful script run (exit 0): is **not** injected into the script output (the script's body construction stays clean). `header.had_stderr` is set, the stderr content lands in `log.jsonl` with warn level. On a script error (exit ≠ 0, see failure model) the cell instead emits an error message with stderr in the `bash` convention.
 
-**Failure-Modell** (vollständige `error_code`-Liste):
-- stdin kein valides JSON (eingehende Message unparsbar) → Error mit `error_code: "invalid_input"`, **kein** DB-Write.
-- Skript-Spawn schlägt fehl (Runner nicht startbar) → Error mit `error_code: "io_error"`.
-- `external_timeout_ms` elapsed (Skript-Lauf zu lang) → Error mit `error_code: "script_timeout"`.
-- Skript-Exit ≠ 0 → Cell verwirft den Skript-Output und emittiert Error-Message mit `header.finish_reason: "error"`, `header.error_code: "script_failed"`, `header.exit_code`, `header.had_stderr`. Body: `tool_result`-Turn mit stderr in der `bash`-Sentinel-Marker-Form (stdout, dann abgegrenzter stderr-Block).
-- Skript-stdout kein valides JSON → Error mit `error_code: "invalid_json"`.
-- Skript schreibt JSON-Array ohne `multi_send_capable` → Error mit `error_code: "multi_send_not_declared"`.
-- Skript-stdout valide, aber `contract.emits` verletzt → Error mit `error_code: "contract_violation"`. Diese `code`-Validierung läuft **always-on** (unbedingt, unabhängig von Build-Profil und `colony.json` `strict_validation` — `code` ist die einzige user-skript-getriebene Trust-Boundary; siehe `meclaw-overview.md` § „Schema-Validierung — Zeitpunkt und Scope" und `docs/config.md` § Schema-Format und Validierung).
+**Failure model** (complete `error_code` list):
+- stdin not valid JSON (incoming message unparsable) → error with `error_code: "invalid_input"`, **no** DB write.
+- script spawn fails (runner not startable) → error with `error_code: "io_error"`.
+- `external_timeout_ms` elapsed (script run too long) → error with `error_code: "script_timeout"`.
+- script exit ≠ 0 → cell discards the script output and emits an error message with `header.finish_reason: "error"`, `header.error_code: "script_failed"`, `header.exit_code`, `header.had_stderr`. Body: `tool_result` turn with stderr in the `bash` sentinel-marker form (stdout, then demarcated stderr block).
+- script stdout not valid JSON → error with `error_code: "invalid_json"`.
+- script writes a JSON array without `multi_send_capable` → error with `error_code: "multi_send_not_declared"`.
+- script stdout valid, but `contract.emits` violated → error with `error_code: "contract_violation"`. This `code` validation runs **always-on** (unconditionally, independent of build profile and `colony.json` `strict_validation`, `code` is the only user-script-driven trust boundary; see `meclaw-overview.md` § "Schema validation: timing and scope" and `docs/config.md` § Schema format and validation).
 
-**`params`**: typisch `runner` (kanonisch `"python3"` in Phase 9 — `CodeParams::parse` rejected andere Werte mit `'params.runner: only "python3" is supported in Phase 9'`. Hintergrund: auf den Zielplattformen Ubuntu 24 / Python 3.12 ist `/usr/bin/python3` der reale Binary, `python` existiert dort bewusst nicht), Skript-Pfad bzw. inline-Code, `external_timeout_ms` (Konzept A, siehe overview § Timeouts; Default `60000`). **`multi_send_capable` liegt nicht (mehr) in `params`** — es kommt aus `contract.multi_send_capable` (siehe Multi-Send oben).
+**`params`**: typically `runner` (canonically `"python3"` in Phase 9, `CodeParams::parse` rejects other values with `'params.runner: only "python3" is supported in Phase 9'`. Background: on the target platforms Ubuntu 24 / Python 3.12 the real binary is `/usr/bin/python3`, `python` deliberately does not exist there), script path or inline code, `external_timeout_ms` (concept A, see overview § Timeouts; default `60000`). **`multi_send_capable` is not (any longer) in `params`**. It comes from `contract.multi_send_capable` (see Multi-send above).
 
-**`cell.db` für `code`** (Phase-9 Brainstorm E9): in Phase 9 **deferred**. DB-Zugriff aus Skript-Logik läuft über Topologie (`code` → Multi-Send → `store`), nicht in-process. Wer einen Collector-/State-Pattern in `code` braucht, hebt das in einen eigenen Design-Pass.
+**`cell.db` for `code`** (Phase-9 brainstorm E9): **deferred** in Phase 9. DB access from script logic runs via topology (`code` → multi-send → `store`), not in-process. Whoever needs a collector/state pattern in `code` lifts that into a separate design pass.
 
 ---
 
-## `web_fetch` — Outbound HTTP-Client
+## `web_fetch`: outbound HTTP client
 
-**Aufgabe**: reines HTTP-Tool. Stateless (kein `cell.db`). **Implementiert ist nur `GET`** (Phase-7-Slice-3, siehe Phase-7-Konventionen unten); `POST`/`PUT`/`PATCH`/`DELETE` samt `method`/`headers`/`body` sind ein Roadmap-Defer (siehe `docs/roadmap.md` § Cell-Type-Feature-Erweiterungen, „`web_fetch` POST/headers/body").
+**Task**: pure HTTP tool. Stateless (no `cell.db`). **Only `GET` is implemented** (Phase-7 Slice-3, see Phase-7 conventions below); `POST`/`PUT`/`PATCH`/`DELETE` including `method`/`headers`/`body` are a roadmap defer.
 
-**Bauart**: atomisch-emittierend. Pro HTTP-Call ein `tool_result`-Turn.
+**Emission mode**: atomic-emitting. Per HTTP call one `tool_result` turn.
 
-**Body-Format der Response**: `messages[]` mit einem Turn `{ origin: "tool", type: "tool_result", text: "<response body>", id: "<tool_call_id>" }`. Bei großem Body wird (ab Phase 12) die **gesamte** Output-Message als `Body::Blob` ausgelagert — **Ganzkörper-Offload** an der Delivery-Grenze (`blob_inline_max_bytes`-Schwelle, `resolve_blob_for_delivery`), **nicht** ein In-Message-`text_id`-Pointer. In-Message-Pointer (`text_id`/`messages_id`) haben heute **keinen Producer** (D-025 deferred, siehe `docs/roadmap.md` § Body / Blob-Auflösung und CLAUDE.md Regel 14).
+**Body format of the response**: `messages[]` with one turn `{ origin: "tool", type: "tool_result", text: "<response body>", id: "<tool_call_id>" }`. On a large body the **entire** output message is offloaded (from Phase 12) as `Body::Blob`, **whole-body offload** at the delivery boundary (`blob_inline_max_bytes` threshold, `resolve_blob_for_delivery`), **not** an in-message `text_id` pointer. In-message pointers (`text_id`/`messages_id`) have **no producer** today (D-025 deferred).
 
-**Output-Header**: `operation` (= `"web_fetch"`), `http_status`, `content_type`, `duration_ms`, `bytes`, optional `truncated`.
+**Output header**: `operation` (= `"web_fetch"`), `http_status`, `content_type`, `duration_ms`, `bytes`, optional `truncated`.
 
-**`params`**: typisch `base_url`, Default-`headers`, optional Auth-Konfiguration.
+**`params`**: typically `base_url`, default `headers`, optional auth configuration.
 
-**Phase-7-Konventionen** (Slice-3-Entscheidungen):
-- **Nur GET** in Slice 3. `method`/`headers`/`body` deferred.
+**Phase-7 conventions** (Slice-3 decisions):
+- **GET only** in Slice 3. `method`/`headers`/`body` deferred.
 - **Input minimal**: `{"url": "..."}`.
-- **non-2xx HTTP status = NORMAL tool_result** mit `http_status`-Header. LLM/Caller liest den Status. Nur DNS/connect/timeout/ungültiger Input produzieren Error-Messages (`io_error` / `timeout` / `invalid_input` bei fehlender/ungültiger `url`).
-- **TLS**: rustls (`rustls-tls`-Feature von reqwest); kein OpenSSL/native-tls im Tree.
-- **Header**: `operation: "web_fetch"`, `http_status: u16` (Pflicht), `content_type: String`, `duration_ms`, `bytes`.
-- **Truncation/Blob**: deferred (Phase 12) — große Bodies inline in `text`.
-- **`reqwest::Client` pro Cell-Instanz** (intern Arc, kein Mutex). Build-Fehler beim Spawn → spawn-Error. RespawnFn cloned den initial-gebauten Client.
+- **non-2xx HTTP status = NORMAL tool_result** with `http_status` header. The LLM/caller reads the status. Only DNS/connect/timeout/invalid input produce error messages (`io_error` / `timeout` / `invalid_input` on missing/invalid `url`).
+- **TLS**: rustls (`rustls-tls` feature of reqwest); no OpenSSL/native-tls in the tree.
+- **Header**: `operation: "web_fetch"`, `http_status: u16` (mandatory), `content_type: String`, `duration_ms`, `bytes`.
+- **Truncation/blob**: deferred (Phase 12), large bodies inline in `text`.
+- **`reqwest::Client` per cell instance** (internally Arc, no Mutex). Build error at spawn → spawn error. RespawnFn clones the initially built client.
 - **Defaults**: `max_concurrency: 32`, `external_timeout_ms: 30000`.
 
 ---
 
-## `web_search` — Web-Search-Client
+## `web_search`: web-search client
 
-**Aufgabe**: reines Search-Tool, spricht einen externen Search-Provider an (z.B. Brave, Tavily, SerpAPI). Stateless (kein `cell.db`).
+**Task**: pure search tool, talks to an external search provider (e.g. Brave, Tavily, SerpAPI). Stateless (no `cell.db`).
 
-**Bauart**: atomisch-emittierend. Pro Such-Anfrage ein `tool_result`-Turn.
+**Emission mode**: atomic-emitting. Per search request one `tool_result` turn.
 
-**Body-Format der Response**: `messages[]` mit einem `tool_result`-Turn, dessen `text` die Suchergebnisse als JSON-Liste enthält (Titel, URL, Snippet pro Treffer). Bei großen Ergebnis-Listen (ab Phase 12) Ganzkörper-Offload der gesamten Message als `Body::Blob` an der Delivery-Grenze, **nicht** via In-Message-`text_id`-Pointer (D-025 deferred).
+**Body format of the response**: `messages[]` with a `tool_result` turn whose `text` contains the search results as a JSON list (title, URL, snippet per hit). On large result lists (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer (D-025 deferred).
 
-**Output-Header**: `operation` (= `"web_search"`), `result_count`, `duration_ms`, `bytes`.
+**Output header**: `operation` (= `"web_search"`), `result_count`, `duration_ms`, `bytes`.
 
-**error_codes**: `io_error` (DNS/connect-Fehler), `timeout` (external_timeout elapsed), `invalid_input` (fehlende/ungültige `query`). Eine bloß nicht-konforme Provider-Response ist **kein** Error (siehe Phase-7-Konventionen — `result_count=0`, Body durchgereicht).
+**error_codes**: `io_error` (DNS/connect error), `timeout` (external_timeout elapsed), `invalid_input` (missing/invalid `query`). A merely non-conformant provider response is **not** an error (see Phase-7 conventions: `result_count=0`, body passed through).
 
-**`params`**: typisch Provider `base_url` und API-Token (via `${VAR}`-Substitution).
+**`params`**: typically provider `base_url` and API token (via `${VAR}` substitution).
 
-**Phase-7-Konventionen** (Slice-3-Entscheidungen):
-- **Generischer JSON-Wrapper**: Cell macht GET `<params.endpoint>?q=<query>` mit optionalem `params.api_key` als Bearer-Token. Erwartet Response `{"results":[{"title","url","snippet"}]}`.
-- **Provider-spezifische Adapter** (Brave, Tavily, SerpAPI, …) sind **deferred** — Anwendungs-Topologie via `code`-Cell (Phase 9) oder Builder-Hive normalisiert.
+**Phase-7 conventions** (Slice-3 decisions):
+- **Generic JSON wrapper**: the cell does GET `<params.endpoint>?q=<query>` with optional `params.api_key` as bearer token. Expects response `{"results":[{"title","url","snippet"}]}`.
+- **Provider-specific adapters** (Brave, Tavily, SerpAPI, …) are **deferred**. Application topology via a `code` cell (Phase 9) or builder-hive normalizes.
 - **Input**: `{"query": "..."}`.
-- **Graceful bei nicht-konformer Response**: `result_count=0` wenn `results`-Key fehlt oder kein Array. Body wird IMMER in `text` durchgereicht — **kein Hart-Error**.
-- **Header**: `operation: "web_search"`, `result_count: u64`, `duration_ms`, `bytes`. (`http_status`-Header ist hier deferred — Parität mit web_fetch wäre konsistenter, ist aber Post-Slice-3.)
-- **Truncation/Blob**: deferred (Phase 12).
-- **`reqwest::Client` pro Cell-Instanz** (analog web_fetch). Build-Fehler beim Spawn → spawn-Error. RespawnFn cloned den Client.
+- **Graceful on non-conformant response**: `result_count=0` when the `results` key is missing or not an array. The body is ALWAYS passed through in `text`, **no hard error**.
+- **Header**: `operation: "web_search"`, `result_count: u64`, `duration_ms`, `bytes`. (The `http_status` header is deferred here, parity with web_fetch would be more consistent, but is post-Slice-3.)
+- **Truncation/blob**: deferred (Phase 12).
+- **`reqwest::Client` per cell instance** (analogous to web_fetch). Build error at spawn → spawn error. RespawnFn clones the client.
 - **Defaults**: `max_concurrency: 8`, `external_timeout_ms: 15000`.
 
 ---
 
-## `file` — Filesystem-Operationen
+## `file`: filesystem operations
 
-**Aufgabe**: CRUD für Dateien innerhalb einer Security-Boundary. Pfad-Traversal außerhalb der Boundary wird abgewiesen. Stateless.
+**Task**: CRUD for files within a security boundary. Path traversal outside the boundary is rejected. Stateless.
 
-**Bauart**: atomisch-emittierend. Pro Operation (`read`/`write`/`list`/`stat`) ein `tool_result`-Turn.
+**Emission mode**: atomic-emitting. Per operation (`read`/`write`/`list`/`stat`) one `tool_result` turn.
 
-**Body-Format der Response**: `messages[]` mit einem `tool_result`-Turn. Bei `read` enthält `text` den Datei-Inhalt (bei großen Dateien ab Phase 12 Ganzkörper-Offload der gesamten Message als `Body::Blob` an der Delivery-Grenze, **nicht** via In-Message-`text_id`-Pointer — D-025 deferred). Bei `write`/`list`/`stat` enthält `text` einen JSON-strukturierten Status (Bytes geschrieben, Datei-Liste, Stat-Info).
+**Body format of the response**: `messages[]` with a `tool_result` turn. On `read`, `text` contains the file content (on large files from Phase 12 whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer, D-025 deferred). On `write`/`list`/`stat`, `text` contains a JSON-structured status (bytes written, file list, stat info).
 
-**Output-Header**: `operation` (`"read"`/`"write"`/`"list"`/`"stat"`), `bytes`, `duration_ms`.
+**Output header**: `operation` (`"read"`/`"write"`/`"list"`/`"stat"`), `bytes`, `duration_ms`.
 
-**`params`**: `base_path` (Pflicht; Security-Boundary).
+**`params`**: `base_path` (mandatory; security boundary).
 
-**Phase-7-Konventionen** (Slice-1-Entscheidungen):
-- **`target = reply_to`**: FileCell emittiert an `msg.reply_to`; Fallback `/colony/dead_letters` falls `reply_to` fehlt. Edges in der Topologie können das Target überlagern.
-- **`tool_call.text` ist JSON-Args**: `{"op": "read"|"write"|"list"|"stat", "path": "<rel>", "content"?: "<str für write>"}`.
-- **`write` ohne auto-mkdir**: Parent-Dir MUSS existieren. Fehlender Parent → `io_error`. Symlink-safe via Parent-canonicalize.
-- **Security-Boundary**: alle Pfade gegen `base_path` canonicalisiert (Symlinks aufgelöst); Traversal/absolute-rel/symlink-escape → `path_outside_boundary` bzw. `invalid_input`.
+**Phase-7 conventions** (Slice-1 decisions):
+- **`target = reply_to`**: FileCell emits to `msg.reply_to`; fallback `/colony/dead_letters` if `reply_to` is missing. Edges in the topology can override the target.
+- **`tool_call.text` is JSON args**: `{"op": "read"|"write"|"list"|"stat", "path": "<rel>", "content"?: "<str for write>"}`.
+- **`write` without auto-mkdir**: the parent dir MUST exist. Missing parent → `io_error`. Symlink-safe via parent canonicalize.
+- **Security boundary**: all paths canonicalized against `base_path` (symlinks resolved); traversal/absolute-rel/symlink-escape → `path_outside_boundary` or `invalid_input`.
 - **Default `max_concurrency`**: 8.
 - **error_codes**: `invalid_input`, `path_outside_boundary`, `not_found`, `not_a_directory`, `not_a_file`, `io_error`.
 
 ---
 
-## `edit` — File-Editing-Operationen
+## `edit`: file-editing operations
 
-**Aufgabe**: editiert Dateien innerhalb einer Security-Boundary (typisch: Find/Replace, Insert-At-Line, Patch). Stateless.
+**Task**: edits files within a security boundary (typically: find/replace, insert-at-line, patch). Stateless.
 
-**Bauart**: atomisch-emittierend. Pro Edit-Operation ein `tool_result`-Turn.
+**Emission mode**: atomic-emitting. Per edit operation one `tool_result` turn.
 
-**Body-Format der Response**: `messages[]` mit einem `tool_result`-Turn. `text` enthält Status der Edit-Operation (z.B. „3 Stellen ersetzt" oder ein Diff-Snippet). Bei Fehler (Datei nicht gefunden, Pattern matcht nicht) wird der Fehler im `text` strukturiert beschrieben; `header.error_code` markiert die Klasse.
+**Body format of the response**: `messages[]` with a `tool_result` turn. `text` contains the status of the edit operation (e.g. "3 occurrences replaced" or a diff snippet). On error (file not found, pattern does not match) the error is described structured in `text`; `header.error_code` marks the class.
 
-**Output-Header**: `operation`, `matches_changed`, `bytes`, `duration_ms`, optional `error_code`.
+**Output header**: `operation`, `matches_changed`, `bytes`, `duration_ms`, optional `error_code`.
 
-**`params`**: `base_path` (Pflicht; Security-Boundary).
+**`params`**: `base_path` (mandatory; security boundary).
 
-**Phase-7-Konventionen** (Slice-2-Entscheidungen):
-- **Ops in Slice 2**: `find_replace` + `insert_at_line`. **Patch ist deferred** (eigener Diff-Format-Design-Pass nötig).
-- **`find_replace` = replace ALL**: alle Vorkommen werden ersetzt. `matches_changed`-Header gibt die Anzahl.
-- **0 matches → `ERR_PATTERN_NOT_FOUND`**: Caller wollte ersetzen, Pattern war nicht da → Error (kein normaler tool_result mit `matches_changed: 0`).
-- **`insert_at_line` ist 1-based und insert-VOR**: `line = 1` → ganz am Anfang; `line = file_lines + 1` → ganz am Ende. `line < 1` oder `line > file_lines + 1` → `invalid_input`.
-- **Teilt FileCells Security-Boundary**: gleiche `base_path`-Logik (extrahiert in `meclaw-cells/src/boundary.rs`).
-- **Nicht atomar**: read-modify-write ohne tempfile+rename (konsistent mit FileCell::write). Crash-mitten = OS-Level-Problem. Atomare Edits sind Post-Roadmap.
-- **Concurrent-edit auf dieselbe Datei**: race-condition möglich (kein Lock in Phase 7). Caller-Topologie serialisiert wenn nötig.
+**Phase-7 conventions** (Slice-2 decisions):
+- **Ops in Slice 2**: `find_replace` + `insert_at_line`. **Patch is deferred** (a separate diff-format design pass is needed).
+- **`find_replace` = replace ALL**: all occurrences are replaced. The `matches_changed` header gives the count.
+- **0 matches → `ERR_PATTERN_NOT_FOUND`**: the caller wanted to replace, the pattern was not there → error (no normal tool_result with `matches_changed: 0`).
+- **`insert_at_line` is 1-based and insert-BEFORE**: `line = 1` → at the very start; `line = file_lines + 1` → at the very end. `line < 1` or `line > file_lines + 1` → `invalid_input`.
+- **Shares FileCell's security boundary**: same `base_path` logic (extracted into `meclaw-cells/src/boundary.rs`).
+- **Not atomic**: read-modify-write without tempfile+rename (consistent with FileCell::write). Crash mid-way = OS-level problem. Atomic edits are post-roadmap.
+- **Concurrent edit on the same file**: race condition possible (no lock in Phase 7). The caller topology serializes if needed.
 - **Input**:
   - `{"op": "find_replace", "path": "<rel>", "find": "<str>", "replace": "<str>"}`
   - `{"op": "insert_at_line", "path": "<rel>", "line": <u32>, "content": "<str>"}`
 - **Default `max_concurrency`**: 8.
-- **error_codes**: reuse aus file + neu `pattern_not_found`.
+- **error_codes**: reuse from file + new `pattern_not_found`.
 
 ---
 
-## `proxy` — External-Chat-Plattform-Bridge
+## `proxy`: external-chat-platform bridge
 
-**Aufgabe**: Long-Running. Bridged zu einem externen Chat-Plattform-Anbieter. Seit P12 gibt es **zwei Plattform-Varianten hinter `params.platform`** (optional, Default `"telegram"` — jede vor P12 geschriebene Config parst unverändert zum exakt selben Ergebnis): `telegram` (Bot-API über HTTP-Long-Poll) und `slack` (Socket Mode, WebSocket-Push). Eine Instanz bridged genau eine Plattform. Hält in `cell.db` einen Cursor für Update-Offsets, damit Restarts keine Nachrichten doppelt verarbeiten.
+**Task**: long-running. Bridges to an external chat-platform provider. Since P12 there are **two platform variants behind `params.platform`** (optional, default `"telegram"`, so every config written before P12 keeps parsing to exactly the same result): `telegram` (Bot API over HTTP long poll) and `slack` (Socket Mode, WebSocket push). One instance bridges exactly one platform. Holds in `cell.db` a cursor for update offsets, so that restarts do not process messages twice.
 
-**Concurrency-Aufbau**: **zwei Tokio-Tasks pro Instanz** (Handler + I/O), kommunizierend über internen mpsc — siehe `meclaw-overview.md`, Abschnitt „Long-Running-Cells: Doppel-Task". Aus Topologie-Sicht bleibt die Cell eine einzige Adresse mit einer einzigen externen Mailbox; die Doppelstruktur ist intern und für diesen Cell-Type vorgeschrieben.
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), communicating over an internal mpsc (see `meclaw-overview.md`, section "Long-running cells: dual task"). From the topology's view the cell stays a single address with a single external mailbox; the dual structure is internal and prescribed for this cell type.
 
-- **Handler-Task**: macht `tokio::select!` über externe Mailbox (Inbound aus Topologie) und internen Channel (Provider-Events vom I/O-Task). Hält den gesamten Cell-State (Cursor in `cell.db`, in-memory Session-Maps). Setzt allein Reihenfolge und State-Mutationen — kein Mutex.
-- **I/O-Task**: pollt Telegram (Long-Poll bzw. Webhook-Reader), serialisiert eingehende User-Messages zu Event-Frames und schiebt sie in den internen mpsc. Hält keinen Cell-State, kein direkter `cell.db`-Zugriff.
+- **Handler task**: does `tokio::select!` over the external mailbox (inbound from topology) and the internal channel (provider events from the I/O task). Holds the entire cell state (cursor in `cell.db`, in-memory session maps). Sets order and state mutations alone, no Mutex.
+- **I/O task**: polls Telegram (long-poll or webhook reader), serializes incoming user messages into event frames and pushes them into the internal mpsc. Holds no cell state, no direct `cell.db` access.
 
-Damit blockiert ein 30s-Long-Poll niemals eine Inbound-Message aus der Topologie und umgekehrt.
+This way a 30s long-poll never blocks an inbound message from the topology and vice versa.
 
-**Bauart**: atomisch-emittierend (Richtung Topologie). Eine externe Chat-Message vom User → eine emittierte meclaw-Message mit genau einem User-Origin-Turn. Die Proxy ist **Quelle** des Konversations-Fadens, nicht Mid-Stream — sie hat kein Eingangs-`messages[]` zum Durchreichen.
+**Emission mode**: atomic-emitting (towards topology). One external chat message from the user → one emitted meclaw message with exactly one user-origin turn. The proxy is the **source** of the conversation thread, not mid-stream. It has no incoming `messages[]` to pass through.
 
-**Body-Format der Outbound-Message** (Telegram → Topologie):
+**Body format of the outbound message** (Telegram → topology):
 ```json
 {
   "messages": [
-    { "origin": "user", "type": "text", "text": "<vom User getippt>" }
+    { "origin": "user", "type": "text", "text": "<typed by the user>" }
   ]
 }
 ```
 
-Plus Header mit Plattform-Metadaten: `chat_id`, `user_id`, `platform: "telegram"`, optional `message_id` (Plattform-eigene ID, Pass-Through für spätere Replies).
+Plus a header with platform metadata: `chat_id`, `user_id`, `platform: "telegram"`, optional `message_id` (platform-own ID, pass-through for later replies).
 
-**Inbound-Verhalten** (Topologie → Telegram): Proxy konsumiert eingehende meclaw-Messages, extrahiert den letzten assistant-Turn aus `messages[]` und sendet dessen `text` an die Chat-Plattform. Emittiert dabei **nichts** zurück in die Topologie — pure Sink. Routing zur richtigen Chat-Konversation läuft über `chat_id` aus den Headers.
+**Inbound behavior** (topology → Telegram): the proxy consumes incoming meclaw messages, extracts the last assistant turn from `messages[]` and sends its `text` to the chat platform. In doing so it emits **nothing** back into the topology, a pure sink. Routing to the right chat conversation runs via `chat_id` from the headers.
 
-**Inbound-Fehlerpfade**: Ist der Inbound-Body nicht inline-lesbar (kein Inline-UBF), emittiert die Proxy `error_code: "invalid_body"`. Fehlt der `chat_id`-Header, `error_code: "missing_chat_id"` (Fallback `/colony/dead_letters`). Enthält `messages[]` keinen sendbaren assistant-Turn, `error_code: "missing_assistant_turn"`. Schlägt der Versand an die Chat-Plattform fehl (Network-Fehler, Telegram-API-Fehler, ungültige `chat_id`), `error_code: "send_failed"`. Alle Error-Replies gehen an `msg.reply_to` (Fallback `/colony/dead_letters`) und tragen einen Nicht-Konversations-Origin (kein `user`/`assistant`-Turn) und zählen nicht als Konversations-Emission — die Pure-Sink-Disziplin („emittiert nichts in den Konversations-Fluss") bleibt gewahrt.
+**Inbound error paths**: if the inbound body is not inline-readable (no inline UBF), the proxy emits `error_code: "invalid_body"`. If the `chat_id` header is missing, `error_code: "missing_chat_id"` (fallback `/colony/dead_letters`). If `messages[]` contains no sendable assistant turn, `error_code: "missing_assistant_turn"`. If the send to the chat platform fails (network error, Telegram API error, invalid `chat_id`), `error_code: "send_failed"`. All error replies go to `msg.reply_to` (fallback `/colony/dead_letters`) and carry a non-conversation origin (no `user`/`assistant` turn) and do not count as a conversation emission, the pure-sink discipline ("emits nothing into the conversation flow") remains preserved.
 
-**`params`**: typisch Plattform-Credentials (Bot-Token via `${VAR}`) und Polling-Konfiguration (Long-Poll-Intervall, Timeout). Optional `query_timeout_ms` (A-Timeout für `cell.db`-Ops via `DbConn::call_with_timeout`, z.B. Cursor-Persist).
+**`params`**: typically platform credentials (bot token via `${VAR}`) and polling configuration (long-poll interval, timeout). Optional `query_timeout_ms` (A-timeout for `cell.db` ops via `DbConn::call_with_timeout`, e.g. cursor persist).
 
-**Laufzeit-Param-Updates (β, `config.md` § Zugriff Z.20):** wie `llm` (siehe dort) — Top-Level-`params`-Body-Slot, in der `cell.db` persistiert, bei wake/respawn replayt. **Mutabel über alle drei Propagations-Wege:** `send_timeout_ms` (Weg A, handle-seitig — der nächste `sendMessage` nutzt es), `long_poll_timeout_ms`/`long_poll_request_secs`/`base_url` (Weg B — der Handler signalisiert der I/O-Task via internem Reconfig-Channel, der nächste Poll nutzt sie; bei `base_url`-Wechsel bauen Handler und I/O-Task ihren `TelegramClient` live neu (`with_base_url`) und **rehalten den immutablen `bot_token` aus dem bestehenden State** — der Token quert die params-Fläche nie; die W7-Tripwire `long_poll_timeout_ms > long_poll_request_secs*1000` wird beim Merge erneut erzwungen), `query_timeout_ms` (Weg C — der laufende `DbConn`). **Immutable je `proxy`:** `bot_token` + `emit_to` (Credential/Routing-Identität). `base_url` ist eine Konfig-URL (wie `llm.base_url`), **kein** Credential → mutabel. Update-Versuch auf ein Immutable oder ein unbekannter Key bzw. eine W7-Verletzung ⇒ lauter Reject (`error_code: "invalid_input"`), kein Teil-Apply. Eine params-only-Message persistiert und schweigt.
+**Runtime param updates (β, `config.md` § Access L.20):** like `llm` (see there): top-level `params` body slot, persisted in the `cell.db`, replayed on wake/respawn. **Mutable over all three propagation paths:** `send_timeout_ms` (path A, handle-side, the next `sendMessage` uses it), `long_poll_timeout_ms`/`long_poll_request_secs`/`base_url` (path B, the handler signals the I/O task via an internal reconfig channel, the next poll uses them; on a `base_url` change handler and I/O task rebuild their `TelegramClient` live (`with_base_url`) and **retain the immutable `bot_token` from the existing state**, the token never crosses the params surface; the W7 tripwire `long_poll_timeout_ms > long_poll_request_secs*1000` is re-enforced at merge), `query_timeout_ms` (path C, the running `DbConn`). **Immutable per `proxy`:** `bot_token` + `emit_to` (credential/routing identity). `base_url` is a config URL (like `llm.base_url`), **not** a credential → mutable. An update attempt on an immutable or an unknown key or a W7 violation ⇒ loud reject (`error_code: "invalid_input"`), no partial apply. A params-only message persists and stays silent.
 
-**Slack-Variante (P12)**
+**Slack variant (P12)**
 
-Zweite Plattform desselben Cell-Types, kein neuer Cell-Type. Aktiviert über `params.platform: "slack"`. Eine Instanz == eine Slack-App == ein Bot-Token == eine Bot-Identität.
+A second platform of the same cell type, not a new cell type. Enabled via `params.platform: "slack"`. One instance == one Slack app == one bot token == one bot identity.
 
-- **`params`**: `app_token` (App-Level-Token `xapp-…`, für `apps.connections.open`) und `bot_token` (Bot-Token `xoxb-…`, für `chat.postMessage`) sind **Pflicht**, werden nur als `${VAR}` gesetzt, sind **immutable** und in `Debug`, Logs und Fehlermeldungen **redigiert** — der `bot_token` IST die Identität des Bots im Workspace. Dazu `emit_to` (Pflicht), `base_url` (Default `https://slack.com/api`), die A-Timeouts `connect_timeout_ms`/`send_timeout_ms`/`query_timeout_ms`, `envelope_dedup_secs` (Retention der `seen_envelopes`-Dedup-Tabelle) und `thread_follow` (Default `true`). Optional `bot_user_id` (`U…`), ausschließlich für den defensiven Selbst-Filter R4.
-- **Socket Mode statt Long-Poll**: der I/O-Task holt per `apps.connections.open` eine kurzlebige `wss://`-URL, verbindet und wartet auf den `hello`-Frame (er trägt die eigene `app_id` — der Eingangswert für R3). Danach ist die Schleife **rein frame-getrieben**: kein Tick, kein Intervall, kein „nachsehen, ob was da ist" (Standing Rule NO POLLING). Ein Reconnect passiert ausschließlich auf ein Ereignis (`disconnect`-Frame, WS-Close, Stream-Fehler); der Backoff dämpft nur den Fehlerfall vor dem nächsten Verbindungsversuch und ist kein Abfrage-Zyklus.
-- **Ack-Pflicht**: das Ack geht **sofort nach dem Dekodieren des Frames** raus — **vor** jedem Filter und bevor der Handler das Event überhaupt sieht. Schweigen ist kein Ignorieren: ein nicht geacktes Envelope stellt Slack erneut zu. Ein Crash zwischen Ack und Persist verliert höchstens ein Event, derselbe Handel, den der Telegram-Pfad mit state-before-emit bereits eingegangen ist. Gegen Redeliveries im Netz dedupliziert der Handler über die `envelope_id` (`cell.db`-Tabelle `seen_envelopes`).
-- **`chat_id` ist ein Composite-STRING**: `"C…"` für eine DM bzw. `"C…:<thread_ts>"` innerhalb eines Threads — dokumentierte Konvention, der Thread-Teil ist optional. Emit-Pfad und Reply-Pfad teilen sich genau eine Bau- und Zerlege-Funktion, damit die beiden Schreibweisen nicht auseinanderdriften. Zusätzlich im `hop`: `platform: "slack"`, `slack_channel`, `slack_thread_ts`, `slack_event_ts`.
-- **Adressierung (D-5)**: eine Mention im Channel-Root **eröffnet einen Thread auf ihrer eigenen `ts`**, und alle Antworten laufen in den eröffneten Thread. Eine Mention innerhalb eines Threads bleibt in diesem Thread, eine DM bleibt threadlos. Ein Follow-up ohne Mention wird nur verarbeitet, wenn die Cell den Thread besitzt (`thread_owner`-Tabelle in `cell.db`, Schalter `thread_follow`). **Ein Bot antwortet nie im fremden Thread** — auch dann nicht, wenn der Ownership-Check an einem DB-Fehler scheitert.
-- **Loop-Guard R1–R5**, Default an; R1–R4 stateless in der I/O-Task, R5 im Handler:
+- **`params`**: `app_token` (app-level token `xapp-…`, for `apps.connections.open`) and `bot_token` (bot token `xoxb-…`, for `chat.postMessage`) are **required**, are supplied only as `${VAR}`, are **immutable**, and are **redacted** in `Debug`, in logs and in error messages: the `bot_token` IS the bot's identity in the workspace. Alongside them `emit_to` (required), `base_url` (default `https://slack.com/api`), the A-timeouts `connect_timeout_ms`/`send_timeout_ms`/`query_timeout_ms`, `envelope_dedup_secs` (retention of the `seen_envelopes` dedup table) and `thread_follow` (default `true`). Optional `bot_user_id` (`U…`), used solely for the defensive self-filter R4.
+- **Socket Mode instead of long poll**: the I/O task fetches a short-lived `wss://` URL via `apps.connections.open`, connects, and waits for the `hello` frame (it carries our own `app_id`, the input value for R3). After that the loop is **purely frame-driven**: no tick, no interval, no "check whether anything arrived" (standing rule NO POLLING). A reconnect happens exclusively on an event (`disconnect` frame, WS close, stream error); the backoff only damps the failure case before the next connection attempt and is never a query cycle.
+- **Acknowledgement duty**: the ack goes out **immediately after the frame is decoded**, **before** any filter and before the handler ever sees the event. Silence is not the same as ignoring: an unacknowledged envelope gets redelivered by Slack. A crash between ack and persist loses at most one event, the same trade the Telegram path already made with state-before-emit. Against network-level redeliveries the handler deduplicates on the `envelope_id` (`cell.db` table `seen_envelopes`).
+- **`chat_id` is a composite STRING**: `"C…"` for a DM, or `"C…:<thread_ts>"` inside a thread; a documented convention whose thread part is optional. Emit path and reply path share exactly one build-and-split function, so the two spellings cannot drift apart. Additionally in the `hop`: `platform: "slack"`, `slack_channel`, `slack_thread_ts`, `slack_event_ts`.
+- **Addressing (D-5)**: a mention in the channel root **opens a thread at its own `ts`**, and every answer runs into the opened thread. A mention inside a thread stays in that thread, a DM stays threadless. A follow-up without a mention is processed only when the cell owns the thread (`thread_owner` table in `cell.db`, switch `thread_follow`). **A bot never answers inside a foreign thread**, not even when the ownership check fails on a database error.
+- **Loop guard R1–R5**, on by default; R1–R4 stateless in the I/O task, R5 in the handler:
 
-  | Regel | Bedingung | Wirkung |
+  | Rule | Condition | Effect |
   |---|---|---|
-  | R1 | `event.bot_id` gesetzt | ignorieren |
-  | R2 | `event.subtype == "bot_message"` | ignorieren |
-  | R3 | `event.app_id` == eigene `app_id` (aus dem `hello`-Frame) | ignorieren |
-  | R4 | `event.user` == `params.bot_user_id` (falls gesetzt) | ignorieren |
-  | R5 | Channel-`message` ohne Mention und ohne Thread-Ownership | ignorieren |
+  | R1 | `event.bot_id` present | ignore |
+  | R2 | `event.subtype == "bot_message"` | ignore |
+  | R3 | `event.app_id` == our own `app_id` (from the `hello` frame) | ignore |
+  | R4 | `event.user` == `params.bot_user_id` (when set) | ignore |
+  | R5 | channel `message` without a mention and without thread ownership | ignore |
 
-  Ignorierte Events werden trotzdem geackt.
+  Ignored events are acknowledged anyway.
 
-  **Live-Lektion (2026-08-09, echte Slack-API):** `app_mention` geht selektiv an die erwähnte App, `message.channels` dagegen an **jede** abonnierte App — jede Channel-Nachricht kommt bei den Bots doppelt bzw. mehrfach an, mit gleicher `ts`, aber **verschiedenen** `envelope_id`s, die der Envelope-Dedup deshalb nicht abfängt. Der Guard ist damit eine **Korrektheitsbedingung, keine Höflichkeit**: ohne ihn emittiert ein Bot dieselbe User-Nachricht doppelt in den Agenten-Baum, und jeder Bot antwortet auf die Mentions aller anderen.
+  **Live lesson (2026-08-09, against the real Slack API):** `app_mention` is routed selectively to the mentioned app, whereas `message.channels` reaches **every** subscribed app. Every channel message therefore arrives at the bots twice or more, carrying the same `ts` but **different** `envelope_id`s, which is exactly why the envelope dedup does not catch it. The guard is thus a **correctness condition, not politeness**: without it a bot emits the same user message twice into the agent tree, and every bot answers the mentions addressed to all the others.
 
-  **Bot-Erkennung läuft über `bot_id`** (Slack setzt es gemeinsam mit `bot_profile` auf bot-verfasste Nachrichten), **nicht über `subtype`**: `subtype: "bot_message"` ist Classic-App-Verhalten, für sich allein nicht verlässlich und bleibt nur zweite Verteidigungslinie. R3 liest `event.app_id`, also die **sendende** App, nie `payload.api_app_id` — letzteres benennt die **empfangende** App, ist bei jedem Inbound-Event die eigene und würde den gesamten Verkehr verwerfen.
-- **Beta-Asymmetrie zu Telegram, ehrlich benannt:** die Slack-Variante nimmt heute **keine** Laufzeit-Param-Updates an. Sie baut ausschließlich aus den Birth-Params; es gibt weder Overlay-Restore noch einen `params`-Update-Pfad im Handler. Eingetragen als Defer in `roadmap.md` („β-Params-Overlay für die Slack-Variante").
+  **Bot detection runs on `bot_id`** (Slack sets it together with `bot_profile` on bot-authored messages), **not on `subtype`**: `subtype: "bot_message"` is classic-app behaviour, unreliable on its own, and stays only a second line of defence. R3 reads `event.app_id`, the **sending** app, never `payload.api_app_id`, which names the **receiving** app, equals our own on every inbound event, and would discard all traffic.
+- **Beta asymmetry towards Telegram, named honestly:** the Slack variant accepts **no** runtime param updates today. It builds exclusively from the birth params; there is neither an overlay restore nor a `params` update path in the handler. Recorded as a defer in `roadmap.md` ("β params overlay for the Slack variant").
 
 ---
 
-## `timer` — periodischer Event-Emitter
+## `timer`: periodic event emitter
 
-**Aufgabe**: Long-Running. Cron-artige Scheduling-Cell. Hält in `cell.db` die aktive Schedule-Liste. **Cron-Format ist 6-Feld-Quartz-Stil** (`Second Minute Hour DayOfMonth Month DayOfWeek`), damit Sekunden-Granularität nativ ausdrückbar ist. Scheduler-Auflösung ist entsprechend sekundengenau — die Zündung erfolgt exakt zur konfigurierten Sekunde, kein Polling-Grid. Kann einmalige wie auch repetierende Events senden.
+**Task**: long-running. Cron-like scheduling cell. Holds the active schedule list in `cell.db`. **The cron format is 6-field Quartz style** (`Second Minute Hour DayOfMonth Month DayOfWeek`), so that second granularity is natively expressible. The scheduler resolution is correspondingly second-accurate. Firing happens exactly at the configured second, no polling grid. Can send one-off as well as repeating events.
 
-**Concurrency-Aufbau**: **zwei Tokio-Tasks pro Instanz** (Handler + I/O), kommunizierend über internen mpsc — siehe `meclaw-overview.md`, Abschnitt „Long-Running-Cells: Doppel-Task". Für diesen Cell-Type vorgeschrieben, nicht optional.
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), communicating over an internal mpsc (see `meclaw-overview.md`, section "Long-running cells: dual task"). Prescribed for this cell type, not optional.
 
-- **Handler-Task**: macht `tokio::select!` über externe Mailbox (Schedule-Anlage/Modifikation/Löschung) und internen Channel (Timer-Zündungen vom I/O-Task). Hält die in-memory Schedule-Liste und persistiert sie nach `cell.db`. Setzt allein Reihenfolge und State-Mutationen.
-- **I/O-Task**: berechnet den nächstfälligen Schedule-Eintrag, wartet mit `tokio::time::sleep_until` darauf, schiebt einen Zündungs-Event-Frame in den internen mpsc, berechnet den nächsten Wartepunkt. Bei Schedule-Änderungen (Add/Modify/Remove) schickt der Handler-Task einen Reconfigure-Hint an den I/O-Task, der seine Sleep-Berechnung neu macht. Hält keinen Cell-State, kein direkter `cell.db`-Zugriff.
+- **Handler task**: does `tokio::select!` over the external mailbox (schedule creation/modification/deletion) and the internal channel (timer firings from the I/O task). Holds the in-memory schedule list and persists it to `cell.db`. Sets order and state mutations alone.
+- **I/O task**: computes the next-due schedule entry, waits for it with `tokio::time::sleep_until`, pushes a firing event frame into the internal mpsc, computes the next wait point. On schedule changes (add/modify/remove) the handler task sends a reconfigure hint to the I/O task, which redoes its sleep computation. Holds no cell state, no direct `cell.db` access.
 
-Damit ist der Timer sekundengenau, ohne dass die Mailbox-Verarbeitung das Sleep-Timing stören kann und umgekehrt.
+This way the timer is second-accurate, without the mailbox processing being able to disturb the sleep timing and vice versa.
 
-**Bauart**: atomisch-emittierend. Timer **erzeugt keine eigenen Inhalte** — er versendet, was bei der Schedule-Anlage als Body-Template mitgegeben wurde, zum konfigurierten Zeitpunkt.
+**Emission mode**: atomic-emitting. The timer **produces no content of its own**. It sends what was passed along as the body template at schedule creation, at the configured time.
 
-**Schedule-Identität**: jede Schedule hat eine **`schedule_id` (UUID v7) als eindeutigen
-Schlüssel** — vom Aufrufer in der Anlage-Nachricht vergeben (bzw. im `params.schedules`-
-Eintrag bei Instanziierung). `schedule_name` ist demgegenüber ein **nicht-eindeutiges
-menschenlesbares Label** (darf mehrfach vorkommen) und dient nur der Lesbarkeit + dem
-Fire-Header. Modifikation und Löschung adressieren **immer über `schedule_id`**, nie über
+**Schedule identity**: each schedule has a **`schedule_id` (UUID v7) as a unique
+key**, assigned by the caller in the creation message (or in the `params.schedules`
+entry at instantiation). `schedule_name`, by contrast, is a **non-unique
+human-readable label** (may occur multiple times) and serves only readability + the
+fire header. Modification and deletion always address **via `schedule_id`**, never via
 `schedule_name`.
 
-**Operation per Nachricht** über das Pflichtfeld `op: "add" | "modify" | "remove"`
-(Default `add`, falls weggelassen):
+**Operation per message** via the mandatory field `op: "add" | "modify" | "remove"`
+(default `add`, if omitted):
 
 ```json
 {
@@ -538,156 +538,156 @@ Fire-Header. Modifikation und Löschung adressieren **immer über `schedule_id`*
 { "op": "remove", "schedule_id": "0190a3f2-...-v7" }
 ```
 
-`modify` trägt `schedule_id` plus die zu ändernden Felder (z.B. neues `cron`).
+`modify` carries `schedule_id` plus the fields to change (e.g. a new `cron`).
 
-**Semantik** (strikt, keine Heuristik):
-- `add` = INSERT; vorhandene `schedule_id` → Fehler (kein impliziter Upsert).
-- `modify` = UPDATE der getragenen Felder; unbekannte `schedule_id` → Fehler.
-- `remove` = Schedule deaktivieren (Status-Update in `cell.db`, **No-Delete-konform** — keine
-  Row-Löschung); unbekannte `schedule_id` → Fehler.
+**Semantics** (strict, no heuristic):
+- `add` = INSERT; an existing `schedule_id` → error (no implicit upsert).
+- `modify` = UPDATE of the carried fields; an unknown `schedule_id` → error.
+- `remove` = deactivate the schedule (status update in `cell.db`, **No-Delete-conformant**, no
+  row deletion); an unknown `schedule_id` → error.
 
-**Validierung & Fehler-Surfacing**: bei `add`/`modify` wird ein `cron`-Ausdruck gegen den 6-Feld-Quartz-Parser validiert — ungültige Ausdrücke werden abgelehnt (es entsteht kein still gespeicherter, nie zündender Schedule). Alle Op-Fehler werden als Message an die `reply_to` der Op-Nachricht emittiert (`parent_message_id` = die konsumierte Op-Nachricht), mit `header.error_code` für: `invalid_body` (Body nicht inline-lesbar), `parse_error` (Op-Nachricht jenseits des Cron-Checks unparsbar), `schedule_id_exists` (add auf vorhandene `schedule_id`), `schedule_not_found` (modify/remove auf unbekannte `schedule_id`), `kind_mismatch` (modify-Typ-Wechsel once↔repeating), `invalid_cron` (ungültiger Cron-Ausdruck). Erfolgreiche Ops werden nicht geackt.
+**Validation & error surfacing**: on `add`/`modify` a `cron` expression is validated against the 6-field Quartz parser. Invalid expressions are rejected (no silently stored, never-firing schedule arises). All op errors are emitted as a message to the `reply_to` of the op message (`parent_message_id` = the consumed op message), with `header.error_code` for: `invalid_body` (body not inline-readable), `parse_error` (op message unparsable beyond the cron check), `schedule_id_exists` (add on an existing `schedule_id`), `schedule_not_found` (modify/remove on an unknown `schedule_id`), `kind_mismatch` (modify type switch once↔repeating), `invalid_cron` (invalid cron expression). Successful ops are not acked.
 
-**Einmalig vs. repetierend**: eine repetierende Schedule trägt `cron` (6-Feld-Quartz). Eine einmalige trägt stattdessen `at` (RFC-3339-Z, UTC) und **kein** `cron` — die Felder sind exklusiv (genau eines pro Schedule). `iteration_n` wird nur bei repetierenden Schedules emittiert (bei once weggelassen). `modify` darf den Typ nicht wechseln (once↔repeating) — dafür `remove` + `add`.
+**One-off vs. repeating**: a repeating schedule carries `cron` (6-field Quartz). A one-off one carries `at` instead (RFC-3339-Z, UTC) and **no** `cron`. The fields are exclusive (exactly one per schedule). `iteration_n` is emitted only on repeating schedules (omitted on once). `modify` may not switch the type (once↔repeating), for that `remove` + `add`.
 
 ```json
 { "op": "add", "schedule_id": "0190a3f2-...-v7", "schedule_name": "one-shot-reminder", "at": "2026-06-01T09:00:00Z", "emit_to": "/main/x", "emit_body": { "messages": [] } }
 ```
 
-**Vergangene Zündungen werden verworfen** (POC-Verhalten): der Timer plant ausschließlich die
-nächste Zündung *nach jetzt* (`find_next_occurrence`). Eine einmalige Schedule, deren Zeitpunkt
-bereits in der Vergangenheit liegt (zur Anlage- oder Restart-Zeit), wird nicht eingeplant und
-nur geloggt. Repetierende Schedules holen verpasste Zündungen nicht nach — sie zünden ab der
-nächsten Zukunfts-Occurrence. Begründung: der Timer hat keine Relevanz-/Prioritäts-
-Klassifikation und kann nicht entscheiden, ob ein verpasstes Event noch zuzustellen ist.
+**Past firings are discarded** (POC behavior): the timer plans exclusively the
+next firing *after now* (`find_next_occurrence`). A one-off schedule whose time
+already lies in the past (at creation or restart time) is not scheduled and
+only logged. Repeating schedules do not catch up missed firings. They fire from the
+next future occurrence. Rationale: the timer has no relevance/priority
+classification and cannot decide whether a missed event is still to be delivered.
 
-Der Body kann beliebige Universal-Body-Slots enthalten — `messages[]`, eigene Top-Level-Slots, oder auch leer (nur Header-Trigger).
+The body can contain arbitrary universal body slots: `messages[]`, own top-level slots, or also empty (header trigger only).
 
-**Bei Schedule-Auslösung emittierte Header** (Timer-automatisch, zusätzlich zu `emit_headers`):
+**Headers emitted on schedule firing** (timer-automatic, in addition to `emit_headers`):
 
-| Header | Inhalt |
+| Header | Content |
 |---|---|
-| `event_id` | UUID v7 dieses einzelnen Events |
-| `schedule_id` | eindeutiger UUID-v7-Schlüssel der auslösenden Schedule |
-| `schedule_name` | menschenlesbares Label der Schedule |
-| `scheduled_at` | geplanter Zeitpunkt (RFC-3339-Z, UTC) |
-| `fired_at` | tatsächlicher Feuer-Zeitpunkt (RFC-3339-Z, UTC) |
-| `iteration_n` | bei repetierenden Schedules: 0, 1, 2, … |
+| `event_id` | UUID v7 of this single event |
+| `schedule_id` | unique UUID-v7 key of the triggering schedule |
+| `schedule_name` | human-readable label of the schedule |
+| `scheduled_at` | planned time (RFC-3339-Z, UTC) |
+| `fired_at` | actual fire time (RFC-3339-Z, UTC) |
+| `iteration_n` | on repeating schedules: 0, 1, 2, … |
 
-**Contract-Quirk**: `emits.body` ist wildcard-mäßig (was die Schedule definiert), `emits.header` strikt das fixe Set oben (plus was die Schedule unter `emit_headers` mitgibt).
+**Contract quirk**: `emits.body` is wildcard-like (what the schedule defines), `emits.header` is strictly the fixed set above (plus what the schedule passes under `emit_headers`).
 
-**`params`**: typisch keine — Schedules werden zur Laufzeit per Message erstellt (oder optional initial via `params.schedules`). `params.schedules`-Einträge tragen dasselbe Schema (jeweils `schedule_id` als UUID v7), und der Initial-Seed greift nur bei frischer `cell.db` (`OpenStatus::Created`-Gate, analog zum Phase-9-`store`-Seed) — sonst re-seedet jeder Restart die Config-Schedules zu Duplikaten. Optional `query_timeout_ms` (Default 5000) setzt den A-Timeout für `cell.db`-Zugriffe (rusqlite-`InterruptHandle` via `DbConn`) — er gilt für **alle** cell.db-Ops der Cell (`add`/`modify`/`remove` + die Fire-seitigen Reads/Writes), die über `DbConn::call_with_timeout` laufen.
+**`params`**: typically none. Schedules are created at runtime per message (or optionally initially via `params.schedules`). `params.schedules` entries carry the same schema (each with `schedule_id` as UUID v7), and the initial seed takes effect only on a fresh `cell.db` (`OpenStatus::Created` gate, analogous to the Phase-9 `store` seed). Otherwise each restart re-seeds the config schedules into duplicates. Optional `query_timeout_ms` (default 5000) sets the A-timeout for `cell.db` accesses (rusqlite `InterruptHandle` via `DbConn`). It applies to **all** cell.db ops of the cell (`add`/`modify`/`remove` + the fire-side reads/writes) that run via `DbConn::call_with_timeout`.
 
-**Laufzeit-Param-Updates (β, `config.md` § Zugriff Z.20):** wie `llm` (siehe dort) — Top-Level-`params`-Body-Slot, in der `cell.db` persistiert, bei wake/respawn replayt. Das **einzige** overlay-fähige Feld ist `query_timeout_ms` — es wirkt **sofort live** (der laufende `DbConn` übernimmt den neuen A-Timeout für die nächste cell.db-Op, ohne wake/respawn). `schedules` sind **nicht** overlay-fähig: sie ändern sich ausschließlich über die `add`/`modify`/`remove`-Ops (sie tragen Live-Zustand `status`/`iteration_n` in der `cell.db`). Immutable-Set ist **leer**; ein Update auf `schedules` oder ein unbekannter Key ⇒ lauter Reject (`error_code: "invalid_input"`). Eine params-only-Message persistiert und schweigt.
-
----
-
-## `mcp` — MCP-Plattform-Bridge
-
-**Aufgabe**: Long-Running. Bridged zu einem externen MCP-Anbieter (Model Context Protocol). Hält in `cell.db` ggf. Zustände (z.B. Tool-Discovery-Cache, Session-Handles). **Zwei Transporte**: `http` (HTTP + JSON-RPC, ein frischer Connect pro Call; `initialize` / `tools/list` / `tools/call`) und `stdio` (Kindprozess, Line-JSON über stdin/stdout, ab 0.1.7). `params.transport` ist optional und steht per Default auf `http`. Server-pushed Notifications, SSE und Auto-Reconnect bleiben Roadmap-Defer (siehe `docs/roadmap.md` § Provider-Erweiterungen, „MCP SSE/Server-Push").
-
-**Concurrency-Aufbau**: **zwei Tokio-Tasks pro Instanz** (Handler + I/O), kommunizierend über internen mpsc — siehe `meclaw-overview.md`, Abschnitt „Long-Running-Cells: Doppel-Task". Für diesen Cell-Type vorgeschrieben, nicht optional.
-
-- **Handler-Task**: macht `tokio::select!` über externe Mailbox (Tool-Call-Requests aus der Topologie, Discovery-Anfragen) und internen Channel (server-pushed Events oder Tool-Responses vom I/O-Task). Hält den gesamten Cell-State (Discovery-Cache, Session-Handles, In-Flight-Map korrelierter Tool-Calls).
-- **I/O-Task**: spricht den MCP-Provider an — auf `http` über HTTP + JSON-RPC (kein persistenter Stream); auf `stdio` **besitzt er den Kindprozess vollständig** und hält den langlaufenden Stream-Read, der Handler hält keine Pipe und spricht über den internen Reconfig-Kanal mit ihm. Serialisiert Responses zu Event-Frames und schiebt sie in den internen mpsc. Hält keinen Cell-State, kein direkter `cell.db`-Zugriff.
-
-Damit blockiert ein langlaufender Provider-Call niemals die Annahme neuer Tool-Call-Requests aus der Topologie.
-
-**Post-Init-Backend-Tod**: Auf `http` hält die Cell **keine** persistente Verbindung — **jeder** Tool-Call verbindet neu. Stirbt das MCP-Backend transient *nach* der Discovery, erholt sich die Cell daher **automatisch beim nächsten Tool-Call** (der frische Connect gelingt wieder); ein dauerhaft toter Backend äußert sich pro Call als `provider_timeout` bzw. `mcp_error`. Eine Tod-Erkennung *zwischen* Calls existiert auf `http` nicht (`run_http_io` pendet nach der Discovery; Roadmap-Defer, Trigger = SSE-Ausbau). Auf `stdio` trägt der Stream-Read das Liveness-Signal: bei EOF oder Exit bekommt ein offener Call zuerst eine reguläre Error-Message (`mcp_error`, Detail nennt Exit-Code/Signal/EOF), danach panickt die Cell → `one_for_one` mit frischem Kindprozess; nach `restart_limit` bleibt der Registry-Eintrag als `failed` erhalten. Kein neuer `error_code`.
-
-**Bauart**: atomisch-emittierend. Pro MCP-Tool-Call eine Response-Message mit dem Resultat als Turn.
-
-**Body-Format der Response**: `messages[]` mit einem `tool_result`-Turn, `text` enthält die MCP-Tool-Antwort (typisch JSON-strukturiert). Bei großen Antworten (ab Phase 12) Ganzkörper-Offload der gesamten Message als `Body::Blob` an der Delivery-Grenze, **nicht** via In-Message-`text_id`-Pointer (D-025 deferred).
-
-**Discovery**: MCP-Tools, die dieser Provider anbietet, werden via Discovery-Message verfügbar gemacht — die Cell kann ihre `system.tools.*`-Slots an eine `llm`-Cell ausspielen, damit diese die Tools dem LLM präsentiert. Genauer Mechanismus ist Phase-10-Detail.
-
-**Output-Header**: `mcp_tool` (Name des aufgerufenen Tools), `duration_ms`, optional `error_code`. Kanonische `mcp`-`error_code`-Werte: `"mcp_error"` (JSON-RPC-/Protokoll-Fehler des Providers, z.B. `tools/call`-Fehlerantwort) und `"provider_timeout"` (`external_timeout_ms`-Elapsed beim Provider-Call, beide Transporte).
-
-**`params`**: `transport` (optional, `"http"` Default | `"stdio"`); auf `http` der Provider-`endpoint` (HTTP-URL für JSON-RPC) + Auth-Credentials (via `${VAR}`); auf `stdio` `command` (Pflicht), optional `args`, `env`, `cwd`, `kill_grace_ms` (Default 2000). `endpoint` und `command` gleichzeitig ⇒ lauter Reject. Dazu Discovery-Konfiguration, optional `external_timeout_ms` (A-Timeout, `error_code: "provider_timeout"`) sowie `query_timeout_ms` (A-Timeout für `cell.db`-Ops via `DbConn::call_with_timeout`).
-
-**Laufzeit-Param-Updates (β, `config.md` § Zugriff Z.20):** wie `llm` (siehe dort) — Top-Level-`params`-Body-Slot, in der `cell.db` persistiert, bei wake/respawn replayt. **Mutabel:** `external_timeout_ms` — wirkt **sofort live** (Weg A, der nächste `call_tool` nutzt es; der I/O-Task hat post-Discovery **keinen** live-nachzulesenden Wert, daher rein handle-seitig) — und `query_timeout_ms` (Weg C, der laufende `DbConn` übernimmt den neuen A-Timeout für die nächste cell.db-Op). **Immutable je `mcp`:** `endpoint` + `auth` (Bearer) — Credential/Identität — sowie `transport`, `command`, `args`, `env`, `cwd`, `kill_grace_ms` (Prozess-Identität des Kindes). Update-Versuch darauf oder ein unbekannter Key ⇒ lauter Reject (`error_code: "invalid_input"`), kein Teil-Apply. Eine params-only-Message persistiert und schweigt.
+**Runtime param updates (β, `config.md` § Access L.20):** like `llm` (see there): top-level `params` body slot, persisted in the `cell.db`, replayed on wake/respawn. The **only** overlay-capable field is `query_timeout_ms`. It takes effect **immediately live** (the running `DbConn` adopts the new A-timeout for the next cell.db op, without wake/respawn). `schedules` are **not** overlay-capable: they change exclusively via the `add`/`modify`/`remove` ops (they carry live state `status`/`iteration_n` in the `cell.db`). The immutable set is **empty**; an update on `schedules` or an unknown key ⇒ loud reject (`error_code: "invalid_input"`). A params-only message persists and stays silent.
 
 ---
 
-## `harness` — Agent-Harness als supervidierter Kindprozess
+## `mcp`: MCP-platform bridge
 
-**Aufgabe**: Long-Running. Betreibt einen vollen Agent-Harness (heute: Claude Code im print mode) als Kindprozess supervised aus der Topologie — der Harness pre-promptet, loopt und nutzt eigene Tools; genau das ist gewollt (Delegation ganzer Coding-Tasks statt einzelner Modell-Calls). Ein Kindprozess **pro Task**: Session-Kontinuität liefert `--resume` des Harness, nicht die Prozess-Lebensdauer.
+**Task**: long-running. Bridges to an external MCP provider (Model Context Protocol). Holds in `cell.db` states as applicable (e.g. tool-discovery cache, session handles). **Two transports**: `http` (HTTP + JSON-RPC, a fresh connect per call; `initialize` / `tools/list` / `tools/call`) and `stdio` (a child process, line JSON over stdin/stdout, since 0.1.7). `params.transport` is optional and defaults to `http`. Server-pushed notifications, SSE and auto-reconnect remain a roadmap defer.
 
-**Concurrency-Aufbau**: **zwei Tokio-Tasks pro Instanz** (Handler + I/O), vorgeschrieben — siehe `meclaw-overview.md` Abschnitt „Long-Running-Cells: Doppel-Task". Der I/O-Task besitzt den Kindprozess vollständig (auf dem `stdio_child`-Core, wie `mcp` stdio); der Handler besitzt das Task-Register und die Emissionen. Genau **ein** Task gleichzeitig pro Cell — Parallelität ist Topologie-Sache (mehrere Cells, je eigener Worktree).
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), communicating over an internal mpsc (see `meclaw-overview.md`, section "Long-running cells: dual task"). Prescribed for this cell type, not optional.
 
-**Task-Lebenszyklus**: `Booted` → Idle → `start_task` → Spawn → Frame-Stream → Kind-Ende → Idle. Ein endender Kindprozess ist hier der **Normalfall** und führt **nicht** zur Panik — die Gegen-Semantik zu `mcp` stdio, wo der Kind-Tod die Cell beendet.
+- **Handler task**: does `tokio::select!` over the external mailbox (tool-call requests from the topology, discovery requests) and the internal channel (server-pushed events or tool responses from the I/O task). Holds the entire cell state (discovery cache, session handles, in-flight map of correlated tool calls).
+- **I/O task**: talks to the MCP provider — on `http` over HTTP + JSON-RPC (no persistent stream); on `stdio` it **owns the child process entirely** and holds the long-running stream read, the handler holds no pipe and talks to it over the internal reconfig channel. Serializes responses into event frames and pushes them into the internal mpsc. Holds no cell state, no direct `cell.db` access.
 
-**Nicht-Idempotenz (Kern-Invariante)**: die `cell.db`-Tabelle `harness_tasks` ist ein Grabstein-Register. Die Zeile steht `running` **vor** dem Spawn; nach einem Supervisor-Restart wird jede unfertige Zeile auf `unknown` gesetzt und genau einmal als `unknown_outcome` gemeldet („inspect worktree") — **nie** neu gestartet. Eine `task_id` läuft genau einmal (Dedup); `task_id` ist deshalb Pflicht-Input, kein generierter Fallback.
+This way a long-running provider call never blocks the acceptance of new tool-call requests from the topology.
 
-**Bauart**: long-running, stateful.
+**Post-init backend death**: on `http` the cell holds **no** persistent connection. **Every** tool call connects anew. If the MCP backend dies transiently *after* the discovery, the cell therefore recovers **automatically on the next tool call** (the fresh connect succeeds again); a permanently dead backend manifests per call as `provider_timeout` or `mcp_error`. A death detection *between* calls does not exist on `http` (`run_http_io` pends after the discovery; a roadmap defer, trigger = SSE build-out). On `stdio` the stream read carries the liveness signal: on EOF or exit an open call first receives a regular error message (`mcp_error`, the detail names exit code/signal/EOF), then the cell panics → `one_for_one` with a fresh child process; after `restart_limit` the registry entry is retained as `failed`. No new `error_code`.
 
-**Body-Format der Emissionen**: fünf Formen — `accepted` (synchron als `tool_result` im Trace der auslösenden Message; trägt die `task_id` als Anker) und `progress` / `question` / `result` / `error` (Origin-Emissionen an `params.emit_to`, je frischer Trace; Korrelation über `header.task_id`).
+**Emission mode**: atomic-emitting. Per MCP tool call one response message with the result as a turn.
 
-**Output-Header**: `harness_event`, `task_id`, `session_id`, `status`, `workspace`, `duration_ms`, `num_turns`, `cost_usd`, `model`, `phase`, `tool_name`, `request_id`, `error_code`. **Der Header trägt nur Beobachtetes** — kein `branch`/`commit`: der Selbst-Report des Harness bleibt Prosa im Turn, Verifikation (Tests, Diff-Inspektion) ist ein Folge-Schritt der Topologie.
+**Body format of the response**: `messages[]` with a `tool_result` turn, `text` contains the MCP tool answer (typically JSON-structured). On large answers (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer (D-025 deferred).
 
-**Failure-Klassifikation** (`error_code`, geschlossen): `invalid_input`, `harness_busy`, `workspace_invalid`, `spawn_failed`, `startup_timeout`, `harness_crashed`, `cancelled`, `unknown_outcome`, `query_timeout`.
+**Discovery**: MCP tools that this provider offers are made available via a discovery message. The cell can play out its `system.tools.*` slots to an `llm` cell, so that the latter presents the tools to the LLM. The exact mechanism is a Phase-10 detail.
 
-**Cancel**: eine `cancel`-Message (mit `task_id`) setzt den Grabstein auf `cancelled`, **bevor** das Kind gestoppt wird (Prozessgruppen-Kill inkl. Enkelprozessen), und emittiert das Task-Ende mit `cancelled`-Kennzeichnung; die Cell nimmt danach neue Tasks an. Der Cancel ist der Stopp-Hebel für die bewusst unbegrenzte Task-Laufzeit (siehe overview § Timeouts).
+**Output header**: `mcp_tool` (name of the called tool), `duration_ms`, optional `error_code`. Canonical `mcp` `error_code` values: `"mcp_error"` (JSON-RPC/protocol error of the provider, e.g. `tools/call` error response) and `"provider_timeout"` (`external_timeout_ms` elapsed at the provider call, both transports).
 
-**`params`**: `adapter` (Pflicht; heute nur `"claude-code"`), `emit_to` (Pflicht), `workspace_root` (Pflicht, kanonisiert — Tasks laufen nur unterhalb), `command`, `model` (aus `${VAR}`), `permission_mode`, `max_turns`, `max_budget_usd`, `allowed_tools`, `extra_args`, `env`, `env_passthrough`, `approval` (`off` | `channel`), `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms`, `kill_grace_ms`.
+**`params`**: `transport` (optional, `"http"` default | `"stdio"`); on `http` the provider `endpoint` (HTTP URL for JSON-RPC) + auth credentials (via `${VAR}`); on `stdio` `command` (required), optional `args`, `env`, `cwd`, `kill_grace_ms` (default 2000). `endpoint` and `command` at the same time ⇒ loud reject. Plus discovery configuration, optional `external_timeout_ms` (A-timeout, `error_code: "provider_timeout"`) as well as `query_timeout_ms` (A-timeout for `cell.db` ops via `DbConn::call_with_timeout`).
 
-**Trust-Modell (empirisch belegt 2026-08-09)**: `harness` ist **keine Sandbox**. Der Harness bringt eigene Tools mit (Shell, Datei-Zugriff, Netz) und läuft mit den Rechten des Colony-Prozesses. Die belastbaren V1-Schranken sind **`env_clear` + `env_passthrough`** (der Harness sieht die Secrets der Colony nicht) und die **kanonisierte cwd-Klemme** unter `workspace_root`. **`allowed_tools` ist ausdrücklich KEINE Obergrenze**: die CLI behandelt `--allowedTools` **additiv** zu dem, was der Permission-Mode ohnehin erlaubt — im Abnahme-Smoke lief mit `allowed_tools: ["Write"]` trotzdem `Bash`. `allowed_tools` erweitert, es begrenzt nicht. Sandbox/Container-Ausbau = Roadmap-Defer, wie bei `bash`; `harness`-Cells laufen nur in vertrauenswürdigen Topologien.
+**Runtime param updates (β, `config.md` § Access L.20):** like `llm` (see there): top-level `params` body slot, persisted in the `cell.db`, replayed on wake/respawn. **Mutable:** `external_timeout_ms`: takes effect **immediately live** (path A, the next `call_tool` uses it; the I/O task has post-discovery **no** live-re-readable value, hence purely handle-side), and `query_timeout_ms` (path C, the running `DbConn` adopts the new A-timeout for the next cell.db op). **Immutable per `mcp`:** `endpoint` + `auth` (bearer), credential/identity, as well as `transport`, `command`, `args`, `env`, `cwd`, `kill_grace_ms` (process identity of the child). An update attempt on it or an unknown key ⇒ loud reject (`error_code: "invalid_input"`), no partial apply. A params-only message persists and stays silent.
 
-**Laufzeit-Param-Updates (β)**: mutabel `model`, `max_turns`, `max_budget_usd`, `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms` — wirken ab dem **nächsten** Task. Immutabel und lauter Reject (`invalid_input`): `adapter`, `command`, `emit_to`, `workspace_root`, `env`, `env_passthrough`, `permission_mode`, `allowed_tools`, `extra_args`, `approval`, `kill_grace_ms` — das ist die Containment-Grenze. Eine params-only-Message persistiert und schweigt.
 ---
 
-## `subcolony` — eine Kind-Colony als eine Cell
+## `harness`: agent harness as a supervised child process
 
-**Aufgabe**: Long-Running. Betreibt eine vollständige Kind-Colony als **eine** Cell im Eltern-Graphen. Das Kind ist ein echtes `meclaw`-Binary mit eigenem `{root}`, eigener `colony.json`, eigener `colony.db` und eigenem Cell-Baum, supervidiert als Kindprozess auf der Stdin/Stdout-Bridge im JSON-Modus (`--stdio-format json`, Wire v1 — siehe `meclaw-overview.md` § Stdin/Stdout-Bridge). **Kein in-process nesting**: eine Colony bleibt ein Prozess mit einem Baum; Verschachtelung passiert über die Prozessgrenze. Die Fassade ist damit eine **opake Kompositions-Grenze** — von außen ist die Kind-Colony genau eine adressierbare Cell.
+**Task**: long-running. Operates a full agent harness (today: Claude Code in print mode) as a supervised child process out of the topology — the harness pre-prompts, loops and uses its own tools; that is exactly the point (delegating whole coding tasks instead of single model calls). One child process **per task**: session continuity comes from the harness's `--resume`, not from process lifetime.
 
-**Concurrency-Aufbau**: **zwei Tokio-Tasks pro Instanz** (Handler + I/O), vorgeschrieben — siehe `meclaw-overview.md` Abschnitt „Long-Running-Cells: Doppel-Task". Der I/O-Task besitzt den Kindprozess vollständig (auf dem `stdio_child`-Core, wie `mcp` stdio und `harness`); der Handler besitzt den Request-Pfad und die Emissionen. Die Cell hält **keinen** Lock und **keinen** geteilten State — die offenen Requests leben im Serve-Loop, der Cell-State im Handler-Task.
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), prescribed — see `meclaw-overview.md`, section "Long-running cells: dual task". The I/O task owns the child process entirely (on the `stdio_child` core, like `mcp` stdio); the handler owns the task register and the emissions. Exactly **one** task at a time per cell — parallelism is a topology matter (multiple cells, each with its own worktree).
 
-**Boot-Handshake**: Spawn (`--root <root> --stdio-format json`, `env_clear`, eigene Prozessgruppe; `--daemon` und `--api` werden **nie** gesetzt, weil stdin-EOF das Kind beenden muss) → das Kind schreibt genau ein `ready`-Frame, **nachdem** sein Bootstrap durch ist und **bevor** es stdin liest. `boot_timeout_ms` klemmt das A-Timeout auf dieses Frame. **`v` ist das Protokoll-Integer und wird strikt assertiert; `version` ist die Release-Version des Kindes und wird ausschließlich berichtet. Versions-Skew zwischen Eltern und Kind ist das Feature, nicht der Fehler.**
+**Task lifecycle**: `Booted` → idle → `start_task` → spawn → frame stream → child end → idle. An ending child process is the **normal case** here and does **not** panic the cell — the counter-semantics to `mcp` stdio, where child death ends the cell.
 
-**Boot-Fehler und Restart-Kosten**: Deterministische Boot-Fehler (fremdes Protokoll, ausbleibendes `ready`, Spawn-Fehler) panicken nicht: die Cell bleibt oben und weist jeden Request laut mit dem Grund ab — das Restart-Budget wird nicht auf eine Gewissheit verbrannt. Nur transienter Kind-Tod geht in `one_for_one`. Ein Restart-Zyklus kostet einen vollen Kind-Colony-Boot; `boot_timeout_ms` ist die Obergrenze dieser Kosten und damit die Größe, die im Kontext von `cell.restart_limit` zu rechnen ist.
+**Non-idempotency (core invariant)**: the `cell.db` table `harness_tasks` is a tombstone register. The row is `running` **before** the spawn; after a supervisor restart every unfinished row is set to `unknown` and reported exactly once as `unknown_outcome` ("inspect worktree") — **never** restarted. A `task_id` runs exactly once (dedup); `task_id` is therefore a required input, not a generated fallback.
 
-**Kein automatischer Re-Fire-Pfad**: In-flight Requests failen bei Kind-Tod laut mit `subcolony_gone`; über einen Retry entscheidet der Requester, nie das Substrat. Ein Request ist ausdrücklich **nicht** folgenlos wiederholbar — er kann im Kind bereits Store-Writes ausgelöst haben.
+**Emission mode**: long-running, stateful.
 
-**Consume**: jeder UBF-Body mit `messages[]`. **Kein `tool_call`-Wrapper** — eine Sub-Colony ist eine gewöhnliche Cell im Fluss (llm-förmig), keine Tool-Cell. Das ist die operative Bedeutung von „verhält sich wie EINE Cell".
+**Body format of the emissions**: five forms — `accepted` (synchronous as a `tool_result` in the trace of the triggering message; carries the `task_id` as the anchor) and `progress` / `question` / `result` / `error` (origin emissions to `params.emit_to`, each with a fresh trace; correlation via `header.task_id`).
 
-**Emit — drei Formen**:
+**Output header**: `harness_event`, `task_id`, `session_id`, `status`, `workspace`, `duration_ms`, `num_turns`, `cost_usd`, `model`, `phase`, `tool_name`, `request_id`, `error_code`. **The header carries only what was observed** — no `branch`/`commit`: the harness's self-report stays prose in the turn; verification (tests, diff inspection) is a follow-up step of the topology.
 
-| Form | Lane | Ziel | Body |
+**Failure classification** (`error_code`, closed): `invalid_input`, `harness_busy`, `workspace_invalid`, `spawn_failed`, `startup_timeout`, `harness_crashed`, `cancelled`, `unknown_outcome`, `query_timeout`.
+
+**Cancel**: a `cancel` message (with `task_id`) sets the tombstone to `cancelled` **before** the child is stopped (process-group kill including grandchildren) and emits the task end marked `cancelled`; the cell accepts new tasks afterwards. Cancel is the stop lever for the deliberately unbounded task runtime (see overview § Timeouts).
+
+**`params`**: `adapter` (required; today only `"claude-code"`), `emit_to` (required), `workspace_root` (required, canonicalized — tasks run only below it), `command`, `model` (from `${VAR}`), `permission_mode`, `max_turns`, `max_budget_usd`, `allowed_tools`, `extra_args`, `env`, `env_passthrough`, `approval` (`off` | `channel`), `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms`, `kill_grace_ms`.
+
+**Trust model (empirically established 2026-08-09)**: `harness` is **not a sandbox**. The harness brings its own tools (shell, file access, network) and runs with the rights of the colony process. The load-bearing V1 barriers are **`env_clear` + `env_passthrough`** (the harness does not see the colony's secrets) and the **canonicalized cwd clamp** under `workspace_root`. **`allowed_tools` is explicitly NOT an upper bound**: the CLI treats `--allowedTools` **additively** to what the permission mode allows anyway — in the acceptance smoke, `Bash` ran despite `allowed_tools: ["Write"]`. `allowed_tools` extends, it does not restrict. Sandbox/container build-out = roadmap defer, as with `bash`; `harness` cells run only in trusted topologies.
+
+**Runtime param updates (β)**: mutable `model`, `max_turns`, `max_budget_usd`, `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms` — take effect from the **next** task. Immutable and a loud reject (`invalid_input`): `adapter`, `command`, `emit_to`, `workspace_root`, `env`, `env_passthrough`, `permission_mode`, `allowed_tools`, `extra_args`, `approval`, `kill_grace_ms` — that is the containment boundary. A params-only message persists and stays silent.
+---
+
+## `subcolony`: a child colony as one cell
+
+**Task**: long-running. Operates a complete child colony as **one** cell in the parent graph. The child is a real `meclaw` binary with its own `{root}`, its own `colony.json`, its own `colony.db` and its own cell tree, supervised as a child process on the stdin/stdout bridge in JSON mode (`--stdio-format json`, wire v1, see `meclaw-overview.md` § Stdin/stdout bridge). **No in-process nesting**: a colony stays one process with one tree; nesting happens across the process boundary. The facade is therefore an **opaque composition boundary**: from the outside the child colony is exactly one addressable cell.
+
+**Concurrency setup**: **two Tokio tasks per instance** (handler + I/O), prescribed, see `meclaw-overview.md`, section "Long-running cells: dual task". The I/O task owns the child process entirely (on the `stdio_child` core, like `mcp` stdio and `harness`); the handler owns the request path and the emissions. The cell holds **no** lock and **no** shared state: the pending requests live in the serve loop, the cell state in the handler task.
+
+**Boot handshake**: spawn (`--root <root> --stdio-format json`, `env_clear`, own process group; `--daemon` and `--api` are **never** set, because stdin EOF must end the child) → the child writes exactly one `ready` frame, **after** its bootstrap succeeded and **before** it reads stdin. `boot_timeout_ms` clamps the A-timeout on that frame. **`v` is the protocol integer and is asserted strictly; `version` is the child's release version and is reported only. Version skew between parent and child is the feature, not the fault.**
+
+**Boot failures and restart cost**: deterministic boot failures (foreign protocol, absent `ready`, spawn failure) do not panic: the cell stays up and rejects every request loudly with the reason — the restart budget is not burned on a certainty. Only transient child death goes into `one_for_one`. One restart cycle costs a full child-colony boot; `boot_timeout_ms` is the upper bound of that cost and therefore the quantity to reckon with in the context of `cell.restart_limit`.
+
+**No automatic re-fire path**: in-flight requests fail loudly with `subcolony_gone` when the child dies; a retry is the requester's decision, never the substrate's. A request is explicitly **not** free to repeat — it may already have triggered store writes inside the child.
+
+**Consume**: any UBF body with `messages[]`. **No `tool_call` wrapper**: a sub-colony is an ordinary cell in the flow (llm-shaped), not a tool cell. That is the operational meaning of "behaves like ONE cell".
+
+**Emit, three forms**:
+
+| Form | Lane | Target | Body |
 |---|---|---|---|
-| `reply` | `OutputSink` (Trace des Requesters) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"reply"},"messages":[…vom Kind…]}` |
-| `error` | `OutputSink` (Trace des Requesters) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"error","error_code":…},"messages":[{"origin":"assistant","type":"text","text":<detail>}]}` |
-| `unsolicited` | `OriginSink` (frischer Trace) | `params.emit_to` (nur wenn gesetzt) | `{"header":{"subcolony_event":"unsolicited"},"messages":[…vom Kind…]}` |
+| `reply` | `OutputSink` (requester's trace) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"reply"},"messages":[…from the child…]}` |
+| `error` | `OutputSink` (requester's trace) | `msg.reply_to ?? msg.target` | `{"header":{"subcolony_event":"error","error_code":…},"messages":[{"origin":"assistant","type":"text","text":<detail>}]}` |
+| `unsolicited` | `OriginSink` (fresh trace) | `params.emit_to` (only when set) | `{"header":{"subcolony_event":"unsolicited"},"messages":[…from the child…]}` |
 
-Body-Disziplin wie bei `harness`: alles Strukturelle in den `header`-Slot, der Turn trägt nur Text.
+Body discipline as with `harness`: everything structural goes into the `header` slot, the turn carries text only.
 
-**Header über die Prozessgrenze**: Über die Prozessgrenze geht allein der Body — `hop` kreuzt nie, in beide Richtungen. Der `header`-Slot einer Kind-Emission wird bereits im Kind ins `hop`-Fach gehoben und ist dort verbraucht. Eine Eltern-Edge konditioniert deshalb auf `hop.subcolony_event`, das die Fassade selbst setzt; ein Kind, das mehr signalisieren will, sagt es im Body.
+**Headers across the process boundary**: only the body crosses the process boundary — `hop` never crosses, in either direction. The `header` slot of a child emission is lifted into the `hop` compartment inside the child already and is consumed there. A parent edge therefore conditions on `hop.subcolony_event`, which the facade sets itself; a child that wants to signal more says it in the body.
 
-**Failure-Klassifikation** (`error_code`, geschlossen): `subcolony_unavailable` (Spawn oder Boot fehlgeschlagen), `protocol_mismatch` (fremdes Protokoll-Integer im `ready`-Frame), `boot_timeout`, `request_timeout`, `subcolony_gone` (Kind während des Requests gestorben oder im Shutdown), `ttl_exhausted`, `invalid_input` (Body ohne `messages[]`), `child_error` (ein `error`-Frame vom Kind).
+**Failure classification** (`error_code`, closed): `subcolony_unavailable` (spawn or boot failed), `protocol_mismatch` (foreign protocol integer in the `ready` frame), `boot_timeout`, `request_timeout`, `subcolony_gone` (child died during the request or is shutting down), `ttl_exhausted`, `invalid_input` (body without `messages[]`), `child_error` (an `error` frame from the child).
 
-**Trace und TTL**: `trace_id` wird über die Grenze **getragen**, nicht regeneriert — ein Trace läuft durch die Kind-Colony hindurch und bleibt korrelierbar. `ttl` wird beim Crossing **dekrementiert** (`ttl - 1`); bei `ttl == 0` gibt es **kein** Crossing, sondern eine `error`-Emission `ttl_exhausted`. TTL ist damit das Rekursions-Budget der Komposition: ein Kind, das die Eltern-Fassade zurückruft, stirbt wie jede andere Routing-Schleife. Korrelationsschlüssel von Request und Reply ist eine **pro Request frisch erzeugte** `context.turn_id` (die des Eltern-Messages wäre bei Fan-out nicht eindeutig); `turn_id` ist deshalb ein reservierter Ziel-Key im `context_in`-Mapping und wird beim Params-Parse laut abgelehnt.
+**Trace and TTL**: `trace_id` is **carried** across the boundary, not regenerated — a trace runs through the child colony and stays correlatable. `ttl` is **decremented** on the crossing (`ttl - 1`); at `ttl == 0` there is **no** crossing but an `error` emission `ttl_exhausted`. TTL is thus the recursion budget of the composition: a child that calls the parent facade back dies like any other routing loop. The correlation key of request and reply is a **freshly generated per request** `context.turn_id` (the parent message's own would not be unique under fan-out); `turn_id` is therefore a reserved target key in the `context_in` mapping and is rejected loudly at params parse time.
 
-**Opazität**: Der Kind-Baum ist von außen **nicht adressierbar** — es gibt keinen Pfad-Durchgriff auf eine Cell innerhalb des Kindes, und der `context` der Kind-Antwort bleibt im Kind (die Antwort reist im Trace des Eltern-Requesters). Mutationen am Kind-Baum laufen ausschließlich über die **eigene Operator-Fläche des Kindes** (dessen `/colony/mutations`), nie über den Eltern-Mutations-Pfad. Das ist **Komposition, nicht Föderation**.
+**Opacity**: the child tree is **not addressable** from the outside — there is no path reach-through to a cell inside the child, and the `context` of the child's reply stays in the child (the reply travels in the parent requester's trace). Mutations of the child tree run exclusively over the **child's own operator surface** (its `/colony/mutations`), never over the parent mutation path. This is **composition, not federation**.
 
-**Contract-Drift (Operator-Verantwortung)**: Der Contract der Fassade lebt in der **Eltern-`config.json`** (`consumes`/`emits` wie bei jedem Cell-Type). Der Boot-Handshake assertiert nur, was er billig kann: das Protokoll-Integer und die Existenz des `ready`-Frames. Ob die Kind-Realität der Eltern-Deklaration entspricht, ist **Operator-Verantwortung** und wird vom Substrat nicht geprüft; ein kind-publiziertes Port-Manifest ist Roadmap-Defer.
+**Contract drift (operator responsibility)**: the facade's contract lives in the **parent `config.json`** (`consumes`/`emits` as with every cell type). The boot handshake asserts only what it can assert cheaply: the protocol integer and the existence of the `ready` frame. Whether the child's reality matches the parent's declaration is **operator responsibility** and is not checked by the substrate; a child-published port manifest is a roadmap defer.
 
 **`params`**:
 
-| Key | Typ | Default | Mutabel (β) | Bedeutung |
+| Key | Type | Default | Mutable (β) | Meaning |
 |---|---|---|---|---|
-| `root` | string | **Pflicht** | nein | Filesystem-Root der Kind-Colony. Kanonisiert beim Parse (Existenz + `is_dir`), wie `harness.workspace_root` |
-| `command` | string | `"meclaw"` | nein | Das Kind-Binary. Explizit konfigurierbar ⇒ Versions-Skew ist eine Config-Entscheidung |
-| `env` | object | `{}` | nein | Explizite Umgebung des Kindes |
-| `env_passthrough` | array | `["PATH","HOME","USER","LANG","TERM"]` | nein | Übersteht `env_clear: true` — die Secret-Isolation der Kind-Colony |
-| `context_in` | object | `{}` | nein | **Explizites Mapping** Eltern-`context`-Key → Kind-`context`-Key. Default: nichts geht über die Grenze. `turn_id` als Ziel ⇒ lauter Reject |
-| `emit_to` | string | — | nein | Optionale Origin-Lane für unkorrelierte Kind-Egress-Frames |
-| `boot_timeout_ms` | u64 | `30000` | ja | A-Timeout auf das `ready`-Frame |
-| `request_timeout_ms` | u64 | `120000` | ja | A-Timeout auf die korrelierte Antwort. Großzügig: eine Kind-Colony darf eine `llm`-Cell enthalten |
-| `external_timeout_ms` | u64 | `30000` | ja | A-Timeout um jeden stdin-Write |
-| `query_timeout_ms` | u64 | `5000` | ja | A-Timeout für `cell.db`-Ops |
-| `kill_grace_ms` | u64 | `5000` | nein | SIGTERM→SIGKILL-Grace der Kind-Prozessgruppe |
+| `root` | string | **required** | no | Filesystem root of the child colony. Canonicalized at parse time (existence + `is_dir`), like `harness.workspace_root` |
+| `command` | string | `"meclaw"` | no | The child binary. Explicitly configurable ⇒ version skew is a config decision |
+| `env` | object | `{}` | no | Explicit environment of the child |
+| `env_passthrough` | array | `["PATH","HOME","USER","LANG","TERM"]` | no | Survives `env_clear: true`, the secret isolation of the child colony |
+| `context_in` | object | `{}` | no | **Explicit mapping** parent `context` key → child `context` key. Default: nothing crosses the boundary. `turn_id` as a target ⇒ loud reject |
+| `emit_to` | string | — | no | Optional origin lane for uncorrelated child egress frames |
+| `boot_timeout_ms` | u64 | `30000` | yes | A-timeout on the `ready` frame |
+| `request_timeout_ms` | u64 | `120000` | yes | A-timeout on the correlated reply. Generous: a child colony may contain an `llm` cell |
+| `external_timeout_ms` | u64 | `30000` | yes | A-timeout around every stdin write |
+| `query_timeout_ms` | u64 | `5000` | yes | A-timeout for `cell.db` ops |
+| `kill_grace_ms` | u64 | `5000` | no | SIGTERM→SIGKILL grace of the child process group |
 
-Die **Immutabilitäts-Grenze ist die Containment-Grenze** (dieselbe Linie wie bei `harness`): `root`, `command`, `env`, `env_passthrough`, `context_in`, `emit_to`, `kill_grace_ms` sind immutabel; ein Update-Versuch darauf oder ein unbekannter Key ⇒ lauter Reject (`error_code: "invalid_input"`), kein Teil-Apply. Eine params-only-Message persistiert und schweigt.
+The **immutability boundary is the containment boundary** (the same line as with `harness`): `root`, `command`, `env`, `env_passthrough`, `context_in`, `emit_to`, `kill_grace_ms` are immutable; an update attempt on them or an unknown key ⇒ loud reject (`error_code: "invalid_input"`), no partial apply. A params-only message persists and stays silent.
 
-**Regel 12 (Timeouts)**: `cell.message_timeout` (Konzept B, Substrat-Backstop) muss **deutlich über** `request_timeout_ms` (Konzept A) liegen — sonst schlägt der Backstop zu, bevor die Fassade ihren getypten `request_timeout` melden kann. Konvention wie bei allen Cell-Types, nicht im Code erzwungen; siehe `meclaw-overview.md` § Timeouts.
+**Rule 12 (timeouts)**: `cell.message_timeout` (concept B, the substrate backstop) must sit **clearly above** `request_timeout_ms` (concept A), otherwise the backstop fires before the facade can report its typed `request_timeout`. A convention as with all cell types, not enforced in code; see `meclaw-overview.md` § Timeouts.
 
-**Bauart**: long-running, stateful, atomisch-emittierend.
+**Emission mode**: long-running, stateful, atomic-emitting.
