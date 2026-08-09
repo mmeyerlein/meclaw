@@ -64,6 +64,27 @@ pub trait LongRunningCell: Send + Sized {
         reconfig_rx: mpsc::Receiver<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send;
 
+    /// Startup work, run in the handler task BEFORE the first mailbox message
+    /// and before the first I/O event. Default: nothing.
+    ///
+    /// This is the slot for anything a cell must settle about its OWN previous
+    /// life — crash recovery over `cell.db` being the motivating case. Doing
+    /// that from an I/O event instead is a race: the `select!` over mailbox and
+    /// events has no ordering, so a message can be handled first and the
+    /// recovery then mistakes this life's freshly written rows for orphans of
+    /// the last one (P8/P10 flake, harness cell).
+    ///
+    /// Deliberately independent of the I/O sub-task: the handler must never
+    /// wait for a signal that a dead or slow `run_io` may never send.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        _sink: &'a OriginSink,
+        _db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async {}
+    }
+
     /// Handle a message from the external mailbox. `reconfig_tx` lets the
     /// handler dispatch a reconfigure hint to the I/O sub-task.
     fn handle<'a>(

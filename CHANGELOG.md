@@ -4,6 +4,59 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.11] — 2026-08-09
+
+The builder hive: a colony grows itself, gated and audited.
+
+### Added
+
+- **A builder that turns a request into a running subtree.** A description of
+  what to build enters at one end and a deployed, validated subtree comes out
+  the other: the draft is written to a staging area, checked by a gate,
+  classified by an approval matrix, promoted into the template registry and
+  finally deployed through a mutation — each step leaving a receipt, and the
+  whole run ending as a receipt file next to the draft it produced. Nothing
+  about it is new substrate; it is topology, and that is the point. Extending
+  the system is a DSL act, never a recompilation.
+- **Self-modification rails that rest on measured behaviour, not on good
+  intentions.** Two properties carry the safety frame, and both are pinned by
+  scenario cases rather than argued in prose. A cell cannot ADDRESS the mutation
+  lane without an edge: every emission targets its reply address or the cell's
+  own path, so a script can compose a mutation but not send one. And no mutation
+  can CREATE that edge — scope containment rejects a `/colony` endpoint for
+  every scope, including the root scope that owns everything else. The
+  privileged edge is therefore bootstrap-only: it exists exactly if an operator
+  wrote it into a configuration file, and no topology can grant it to itself or
+  to anything it builds.
+- **An approval matrix that classifies by effect, not by name.** Growing a new
+  subtree is auto-approved because an unwired subtree is inert by construction;
+  moving an edge between two things that already run is escalated, because that
+  is what silently reroutes live traffic. Edges that TARGET the control plane
+  are escalated as the privilege-escalation shape they are — while the edge that
+  attaches a new subtree to an existing entry point is normal, and required, and
+  must not be mistaken for the former.
+- **A librarian, lexical by choice.** The builder retrieves patterns instead of
+  carrying a corpus in its prompt: the specification, the cookbook, the example
+  briefs, the template catalogue and the pinned error codes, cut by section and
+  ranked with BM25. No embeddings — a lookup that answers to names does not need
+  them, and every build can afford to ask.
+
+### Fixed
+
+- **A start-up race that could destroy a live task record.** Recovery after a
+  restart ran concurrently with the first incoming message instead of before it,
+  so under load a freshly written `running` row could be swept to `unknown`: a
+  task in flight was reported as interrupted, and its real result arrived later
+  as a second result under the same id. Recovery now completes before the first
+  message is handled. The original hypothesis — a test that failed to correlate
+  — was wrong, and acting on it would have hidden real damage behind a test fix.
+
+### Notes
+
+- No Rust was added for the builder. The public surface of this release is the
+  race fix above, the specification pass that follows from building on it, and
+  a placeholder for a self-hosted model endpoint in the example environment.
+
 ## [0.1.10] — 2026-08-09
 
 Subscription auth: the `llm` cell learns a second credential and a second wire.

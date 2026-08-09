@@ -559,6 +559,13 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
             }),
             None => Box::pin(std::future::pending::<()>()),
         };
+    // Startup before service: `on_start` runs to completion before the first
+    // mailbox message and before the first event. Messages queue in the
+    // mailbox meanwhile — that is the point. A cell whose startup depends on
+    // its own previous life (crash recovery) cannot get that from the
+    // `select!` below, which orders mailbox and events not at all. It takes no
+    // I/O signal, so a `run_io` that never speaks cannot wedge the handler.
+    cell.on_start(&origin_sink, &mut db).await;
     loop {
         tokio::select! {
             // A4: biased stop > mailbox > events. End peace-free, return the

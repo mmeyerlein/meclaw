@@ -210,6 +210,97 @@ async fn demo_status_answers_from_the_task_register() {
     assert!(payload["session_id"].is_string(), "audit: {payload}");
 }
 
+/// Drain receipts until the answer to `call_id` arrives, keeping everything
+/// seen on the way. Used as a semantic barrier: once the answer to a later
+/// request is in hand, every emission the cell made before it has been
+/// observed — no sleep required.
+async fn receipts_until_answer_to(rx: &mut mpsc::Receiver<Message>, call_id: &str) -> Vec<Message> {
+    let mut seen = Vec::new();
+    for _ in 0..40 {
+        let m = receipt(rx).await;
+        let is_answer = matches!(&m.body, Body::Inline(b) if b["messages"][0]["id"] == call_id);
+        seen.push(m);
+        if is_answer {
+            return seen;
+        }
+    }
+    panic!("no answer to {call_id} arrived");
+}
+
+fn event_of(m: &Message) -> &str {
+    m.headers
+        .hop
+        .get("harness_event")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<none>")
+}
+
+/// Regression lock (P10 flake): restart recovery reports tasks from a PREVIOUS
+/// life of the cell, so it must be finished before the first inbox message is
+/// handled. It used to be driven by the I/O sub-task's `Booted` event, which
+/// raced the mailbox: under load the first `start_task` won, and the late
+/// recovery then wiped the row of the task that had just started, emitted a
+/// bogus "interrupted by a cell restart" outcome for it, and left the real
+/// outcome to arrive as a second result under the same id.
+///
+/// The task is therefore started as early as possible after the spawn — the
+/// widest race window there is — and the whole emission stream is inspected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn demo_recovery_never_reports_a_task_of_this_life() {
+    let (h, mut sink, _td) = topology().await;
+
+    h.send(tool_call(
+        "start_task",
+        json!({"task_id": "t-1", "prompt": "do the thing", "workspace": "wt-1"}),
+        "call_1",
+    ))
+    .await;
+
+    let mut seen: Vec<Message> = Vec::new();
+    for _ in 0..40 {
+        let m = receipt(&mut sink).await;
+        let done = event_of(&m) == "result"
+            && m.headers.hop.get("status").and_then(|v| v.as_str()) == Some("ok");
+        seen.push(m);
+        if done {
+            break;
+        }
+    }
+
+    // The barrier: everything emitted before this answer has been observed.
+    h.send(tool_call("status", json!({"task_id": "t-1"}), "call_2"))
+        .await;
+    seen.extend(receipts_until_answer_to(&mut sink, "call_2").await);
+
+    let hops: Vec<_> = seen.iter().map(|m| m.headers.hop.clone()).collect();
+
+    // 1. The living task was never reported as a restart casualty.
+    assert!(
+        !seen
+            .iter()
+            .any(|m| m.headers.hop.get("error_code") == Some(&json!("unknown_outcome"))),
+        "recovery reported a task that this very cell had just started: {hops:?}"
+    );
+
+    // 2. Exactly one outcome per task id — a second one would mean the row was
+    //    closed twice under the same id.
+    let results = seen
+        .iter()
+        .filter(|m| event_of(m) == "result" && m.headers.hop["task_id"] == "t-1")
+        .count();
+    assert_eq!(results, 1, "one task, one outcome: {hops:?}");
+
+    // 3. The register still knows the task as this life's, not as an orphan.
+    let last = seen.last().expect("the barrier answer");
+    let Body::Inline(body) = &last.body else {
+        panic!("expected an inline body")
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(body["messages"][0]["text"].as_str().expect("text"))
+            .expect("status payload is json");
+    assert_eq!(payload["status"], "ok", "the running row was overwritten");
+}
+
 /// Dedup end to end: the same task id can never be run a second time, whatever
 /// the topology retries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

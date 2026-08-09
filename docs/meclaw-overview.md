@@ -186,12 +186,12 @@ exclusively when copying into the tree. On instantiation, colony records the nod
 its `cell_id` in `colony.db`; entries there are never deleted, only marked inactive
 (see § Connectivity and activity).
 
-**Flow on graph mutation (EDA, no success ack)**:
+**Flow on graph mutation (EDA, verdict reply to `reply_to`)**:
 
-1. Someone (cell, builder, external API) sends a mutation message to `/colony/mutations` with `hop.msg_type == "mutation"` and a diff (see "Mutation format"). The diff carries a path prefix as scope (typically the path of a hive scope marker). The sender assumes success.
+1. Someone (cell, builder, external API) sends a mutation message to `/colony/mutations` with `hop.msg_type == "mutation"` and a diff (see "Mutation format"). The diff carries a path prefix as scope (typically the path of a hive scope marker). The sender learns the outcome from the verdict reply to `reply_to` (if set, see step 4).
 2. Colony validates in a single stage: schema, match patterns against the current registry, cycle check in the post_state, edge schema compatibility, template existence, filesystem preparation, `.env` variables. On error: logging + reply to `reply_to` (if set). With a flat substrate, colony has all the information needed for single-stage validation (no old two-stage model anymore).
 3. On success: mark the mutation as `in_flight` in `colony.db`, build all new cell directories under `{root}/.staging/<mutation_id>/<cell_name>/` (`config.json` with substituted values and assigned UUIDs, possibly `cell.db` from seed), then move them sequentially via `rename(2)` to the final paths (atomic per directory on POSIX), atomic per directory but **NOT transactional across all directories**: if a `rename(2)` fails after others have already succeeded, the earlier renames stand in the live tree (audit model, no rollback). The substrate handles this half-state loudly (strict-fail, § Validation) instead of papering over it as a clean reject. Registry edits are executed: new cells spawn and are registered under their path, disconnected cells are marked inactive, the registry entry and the filesystem remain, the tasks end gracefully (see "Connectivity and activity"). Then mark as `committed` in `colony.db`. On a crash between `in_flight` and `committed`: recovery pass at the next startup (see "Startup algorithm"). For the rationale of the staging pattern see "Filesystem layout" → `.staging/`.
-4. Cell inits run asynchronously. On init failure: restart one_for_one (N retries, default 5), then `failed` status. Symptoms visible via the routing cascade (`reply_to` → `/colony/dead_letters`). **No** success reply to the builder.
+4. Cell inits run asynchronously. On init failure: restart one_for_one (N retries, default 5), then `failed` status. Symptoms visible via the routing cascade (`reply_to` → `/colony/dead_letters`). The mutation verdict itself goes as a reply to `reply_to` (if set): `{"mutation":{"id":…,"outcome":"committed"}}` on success, `"outcome":"rejected"` plus `error_code`/`details` on rejection (`build_mutation_reply`, see § Dynamics / builder pattern). The ack covers the mutation commit, **not** the success of the asynchronous cell inits.
 
 **Cross-colony federation** (several `meclaw` instances with different colonies that communicate with each other) is post-roadmap. The architecture, colony as authority unit, unique paths within a colony, will not prevent it, but does not implement it now.
 
@@ -1084,6 +1084,7 @@ Each entry is either a **turn object**, a **turn pointer**, or a **bulk pointer*
 - `type` (required): determines the semantic format. `image`/`audio` reserved for multi-modal.
 - `text` (inline) **or** `text_id` (pointer), exclusive per slot.
 - `id` is required on `tool_call`/`tool_result` and is the correlation anchor for the collector aggregation. Values are pass-through from the provider (`tool_call_id`).
+- **The turn object is closed** (`additionalProperties: false` in `crates/meclaw-core/schemas/ubf-body.json` § `$defs.TurnObject`): exactly `origin`, `type`, `text`, `id` are allowed. An additional field, e.g. a tool name next to `type: "tool_call"`, makes **the entire body** `invalid_ubf_body`. Structural extra information therefore belongs in the `header` slot, not in the turn.
 
 ### `attachments[]` schema (slot name reserved from phase 3, active from phase 12)
 
@@ -1104,7 +1105,7 @@ A list of typed file attachments that lie as blobs in the `blobs/` directory (se
 - `filename` (optional): the original filename on upload via the HTTP API; `null` for system-generated attachments.
 - `size_bytes` (required), `sha256` (optional): duplicated from the sidecar, same reason. `sha256` is not mandatory in phase 12 (see the sidecar schema note). **Schema-drift note (D-027):** the UBF JSON schema (`ubf-body.json`) lists `sha256` as **required** in `attachments[]` today, stricter than this spec. Latent (attachments become active only in phase 12); alignment of the schema to "optional" is pending at the attachments activation slice.
 
-Cells that consume attachments declare `consumes.body.attachments` in the contract (see `config.md`). Cells that do not, ignore the slot. Thereby attachment processing is a **cell capability**, not a substrate detail, an `llm` cell with a vision model declares `consumes.body.attachments` and loads images via the storage abstraction, a text-only LLM cell does not see the slot.
+Cells that consume attachments declare `consumes.body.attachments` in the contract (see `config.md`). Declaring is binding: every key declared in `consumes.body` is mandatory, there is no optional `consumes.body` field (see `config.md` § contract). Cells that do not, ignore the slot. Thereby attachment processing is a **cell capability**, not a substrate detail, an `llm` cell with a vision model declares `consumes.body.attachments` and loads images via the storage abstraction, a text-only LLM cell does not see the slot.
 
 Attachments are **separate from `messages[]`**: a conversation stays purely textual, attachments hang as a parallel list off the body. Thereby PDF attachments do not collide with the `messages[]` turn semantics (`origin`, `type: tool_call|...`), and LLM provider adapters can build them into their API call in a cell-type-specific way (e.g. with OpenAI as an `image_url` content block).
 
@@ -1269,6 +1270,7 @@ Colony holds a persistent registry. Schema:
 - **At start**: the registry is loaded from `colony.db`, **no filesystem scan**. A fast start.
 - **First-time start (empty registry)**: an automatic scan.
 - **Manual rescan** via the CLI flag `meclaw --rescan-templates` or the API `POST /colony/templates/rescan`.
+- **Recursive, with no exclusion**: `scan_templates_dir` (`crates/meclaw-colony/src/templates/scanner.rs`) walks the whole tree below `templates/`, **every** directory with a `template.json` is registered, regardless of depth and parent name. `templates/drafts/<name>/` is therefore not a draft space but fully instantiable (listed **and** instantiable into an active cell via `add_nodes`). Draft and staging material therefore does **not** belong below `templates/`; builder staging lies in `<root>/staging/` and is promoted via `rename(2)`.
 
 ### Resolution `name@version`
 
@@ -1998,7 +2000,7 @@ HTTP status `/colony/mutations` (POST): **200** on `Committed`, **422 Unprocessa
 - Colony validates in a single stage, executes staging + an atomic filesystem rename + registry edits, completes the mutation in `colony.db`.
 - **Builder-hive** = a **hive scope** (not a single actor) that bundles several specialized cells under a path prefix, typically an `llm` cell for natural-language request understanding and diff generation, a `code` cell for mutation diff construction and validation, optionally a `code` cell for template-discovery aggregation (reads on `/colony/templates`) and a collector or memory hive for multi-step builder conversations. The final mutation diff is emitted by the outermost cell of the builder-hive (or a dedicated output hive) to `/colony/mutations`. Rationale for a hive instead of a single cell: the builder task is multi-stage (understanding → discovery → diff construction → validation), each stage benefits from its own cell with a clear contract, and a hive bundles them as an authority and mutation boundary. Usually lives under `/main/builder/` or similar, outputs run via the normal edge topology to `/colony/mutations`.
 - Consistent with the no-delete policy: cells are never deleted, they become inactive through edge withdrawal (the registry entry remains, marked inactive; filesystem and `cell_id` remain) and can be reactivated via `add_edges` or a renewed `add_nodes` at the same path; `swap_nodes` swings, for template upgrades, the external edges onto a new or different implementation (a graph swap, the old cell remains disconnected and preserved, see "Connectivity and activity" and § Mutation operations).
-- **EDA**: no success ack to the builder. Only an error notification (to `reply_to` if set, plus logging).
+- **EDA: a success ack to the builder.** `/colony/mutations` answers every mutation via `build_mutation_reply` (`crates/meclaw-colony/src/colony_dispatch.rs`) to `reply_to`: on success `{"mutation":{"id":…,"outcome":"committed"}}`, on rejection analogously with `"outcome":"rejected"` plus `error_code`/`details`. Without a set `reply_to` only the logging remains. Two-phase builders (mutation out, verdict back, receipt from it) build on this.
 
 ---
 

@@ -204,6 +204,23 @@ impl LongRunningCell for HarnessCell {
         }
     }
 
+    /// Restart recovery, before this cell serves anything.
+    ///
+    /// It used to hang off `HarnessEvent::Booted`, which raced the mailbox:
+    /// under load the first `start_task` was handled first, and the late
+    /// recovery then swept its brand-new `running` row into `unknown` — a false
+    /// "interrupted by a cell restart" outcome for a task whose child was very
+    /// much alive, followed by a second outcome under the same id when it
+    /// really ended. Here the ordering is structural, not a race won.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        sink: &'a OriginSink,
+        db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async move { self.recover_after_restart(sink, db).await }
+    }
+
     #[allow(clippy::manual_async_fn)]
     fn handle_event<'a>(
         &'a mut self,
@@ -213,7 +230,9 @@ impl LongRunningCell for HarnessCell {
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             match event {
-                HarnessEvent::Booted => self.recover_after_restart(sink, db).await,
+                // Liveness only. Recovery happened in `on_start`, before any
+                // message was served; there is nothing left to do here.
+                HarnessEvent::Booted => tracing::debug!("harness: io sub-task up"),
                 HarnessEvent::TaskFailed {
                     task_id,
                     error_code,

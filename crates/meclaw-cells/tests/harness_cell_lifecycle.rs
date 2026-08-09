@@ -98,6 +98,12 @@ impl Rig {
         self.cell.handle_event(ev, &self.origin, &mut self.db).await;
     }
 
+    /// Bring the cell up the way `cell_task_long_running` does: startup first,
+    /// service afterwards.
+    async fn start(&mut self) {
+        self.cell.on_start(&self.origin, &mut self.db).await;
+    }
+
     /// Feed a runtime params update, the β slot every stateful cell type has.
     async fn params_update(&mut self, params: JsonValue) {
         let msg = MessageBuilder::new(Path::new("/harness"))
@@ -547,8 +553,10 @@ async fn a_restart_reports_unknown_outcomes_and_starts_nothing() {
     let _ = r.reconfig_rx.try_recv().expect("the first start command");
 
     // A restart: same cell.db, fresh cell (in-memory state lost, per spec).
+    // Recovery is startup work, not an answer to an I/O signal — it must have
+    // run before this cell serves anything (P8/P10 flake).
     r.cell = HarnessCell::new(r.params.clone());
-    r.event(HarnessEvent::Booted).await;
+    r.start().await;
 
     let em = r.emission();
     assert_eq!(em["header"]["harness_event"], "result");
@@ -571,9 +579,17 @@ async fn a_restart_reports_unknown_outcomes_and_starts_nothing() {
     );
 
     // A second restart says nothing more.
-    r.event(HarnessEvent::Booted).await;
+    r.start().await;
     assert!(
         r.origin_rx.try_recv().is_err(),
         "an already-reported orphan must not be reported again"
+    );
+
+    // And the I/O sub-task's boot signal is liveness only: it must never
+    // re-open the recovery question after service has begun.
+    r.event(HarnessEvent::Booted).await;
+    assert!(
+        r.origin_rx.try_recv().is_err(),
+        "Booted must not drive recovery — that was the race"
     );
 }
