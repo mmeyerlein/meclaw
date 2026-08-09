@@ -1,11 +1,174 @@
 //! Phase-8 LlmCell core — orchestrates parse/persist/translate/wire/emit per
 //! handle()-Reihenfolge (Plan § 9). T17-T22 grow this incrementally.
 
-use crate::llm::translate::TranslateError;
-use crate::llm::{output, params::LlmParams, state, translate, wire};
+use crate::llm::params::{AuthMode, WireDialect};
+use crate::llm::translate::{TranslateError, TranslatedResponse};
+use crate::llm::wire::WireError;
+use crate::llm::{auth, output, params::LlmParams, state, translate, translate_responses, wire};
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_core::serde_json::Value;
 use meclaw_core::{Body, Message, OutputSink};
+
+/// How a provider call failed, with everything `emit_error` needs.
+///
+/// Exists so the Responses lane can hand one value back to `handle()` instead
+/// of duplicating the emit block per failure mode.
+struct LaneFailure {
+    /// UBF `error_code` (the closed spec enum).
+    code: &'static str,
+    /// `meta.error.source`.
+    source: &'static str,
+    /// `meta.error.detail` — never contains a credential.
+    detail: String,
+    /// P10 fine-grained kind for `meta.error` (plan D10).
+    extra: Option<meclaw_core::serde_json::Map<String, Value>>,
+}
+
+impl LaneFailure {
+    fn from_wire(err: &WireError) -> Self {
+        Self {
+            code: wire::wire_error_to_code(err),
+            source: "wire",
+            detail: format!("wire: {err:?}"),
+            extra: wire::wire_error_meta(err),
+        }
+    }
+    fn from_translate(err: &TranslateError, source: &'static str) -> Self {
+        Self {
+            code: translate::translate_error_to_code(err),
+            source,
+            detail: format!("translate: {err:?}"),
+            extra: None,
+        }
+    }
+}
+
+/// Resolve base URL + path for the Responses dialect.
+///
+/// `params.base_url` wins when set (cell-types Z.132) — that is also how tests
+/// point the cell at a fake server.
+fn responses_url(params: &LlmParams) -> String {
+    let default_base = match params.auth {
+        AuthMode::OauthSubscription => auth::DEFAULT_SUBSCRIPTION_BASE_URL,
+        AuthMode::ApiKey => wire::OPENAI_DEFAULT_BASE_URL,
+    };
+    format!(
+        "{}{}",
+        params.base_url.as_deref().unwrap_or(default_base),
+        wire::OPENAI_RESPONSES_PATH
+    )
+}
+
+/// Run one Responses-dialect call, including the auth state machine.
+///
+/// State machine (plan § 5.1): get token → POST → on 401 ask the broker to
+/// refresh (passing the generation we used, so a concurrent refresher wins
+/// instead of racing) → retry **exactly once** → typed error. No backoff loop,
+/// no failover: failover is topology (cell-types Z.166).
+async fn run_responses_lane(
+    cell: &LlmCell,
+    request_json: &Value,
+    timeout: std::time::Duration,
+) -> Result<TranslatedResponse, LaneFailure> {
+    let url = responses_url(&cell.params);
+    let attribution = translate::build_attribution_headers(&cell.params);
+
+    let body_text = match cell.params.auth {
+        AuthMode::ApiKey => {
+            let bearer = cell.params.api_key.as_deref().unwrap_or_default();
+            let mut headers = translate_responses::build_responses_headers(&cell.params, None);
+            headers.extend(attribution);
+            wire::call_responses(&cell.http, &url, bearer, &headers, request_json, timeout)
+                .await
+                .map_err(|e| LaneFailure::from_wire(&e))?
+        }
+        AuthMode::OauthSubscription => {
+            call_with_oauth(cell, &url, &attribution, request_json, timeout).await?
+        }
+    };
+
+    // The subscription backend always streams; a metered endpoint or proxy may
+    // answer plain JSON. Sniff the body rather than trusting content-type.
+    //
+    // A real stream opens with an `event:` line, not `data:` — verified against
+    // api.openai.com on 2026-08-09, where sniffing for `data:` alone made the
+    // first live smoke fail. Accept both openers.
+    let head = body_text.trim_start();
+    let translated = if head.starts_with("event:") || head.starts_with("data:") {
+        translate_responses::parse_responses_sse(&body_text)
+    } else {
+        match meclaw_core::serde_json::from_str::<Value>(&body_text) {
+            Ok(json) => translate_responses::parse_responses_response(&json),
+            Err(e) => Err(TranslateError::ResponseShape(format!(
+                "response was neither SSE nor JSON: {e}"
+            ))),
+        }
+    };
+    translated.map_err(|e| LaneFailure::from_translate(&e, "parse"))
+}
+
+/// The oauth_subscription branch: token → call → (401 → refresh → one retry).
+async fn call_with_oauth(
+    cell: &LlmCell,
+    url: &str,
+    attribution: &[(String, String)],
+    request_json: &Value,
+    timeout: std::time::Duration,
+) -> Result<String, LaneFailure> {
+    let auth_ref = cell.params.auth_ref.as_deref().unwrap_or_default();
+    let endpoint = cell
+        .params
+        .oauth_token_endpoint
+        .as_deref()
+        .unwrap_or(auth::DEFAULT_OAUTH_TOKEN_ENDPOINT);
+    let client_id = cell
+        .params
+        .oauth_client_id
+        .as_deref()
+        .unwrap_or(auth::DEFAULT_OAUTH_CLIENT_ID);
+
+    let wire_auth_failure =
+        |e: auth::AuthError| LaneFailure::from_wire(&WireError::Auth(e.clone()));
+
+    let token = crate::llm::token_broker::get_token(auth_ref, endpoint, client_id, None)
+        .await
+        .map_err(wire_auth_failure)?;
+
+    let call = |bearer: String, account: Option<String>| {
+        let mut headers =
+            translate_responses::build_responses_headers(&cell.params, account.as_deref());
+        headers.extend(attribution.to_vec());
+        async move {
+            wire::call_responses(&cell.http, url, &bearer, &headers, request_json, timeout).await
+        }
+    };
+
+    match call(token.access_token.clone(), token.account_id.clone()).await {
+        Ok(text) => Ok(text),
+        Err(WireError::Unauthorized) => {
+            // Pass the generation we used: if another cell already refreshed
+            // past it, the broker hands us their token instead of rotating
+            // again (which would earn `refresh_token_reused`).
+            let fresh = crate::llm::token_broker::get_token(
+                auth_ref,
+                endpoint,
+                client_id,
+                Some(token.generation),
+            )
+            .await
+            .map_err(wire_auth_failure)?;
+            match call(fresh.access_token.clone(), fresh.account_id.clone()).await {
+                Ok(text) => Ok(text),
+                // Still refused after a fresh token — stop. One retry, no loop.
+                Err(WireError::Unauthorized) => {
+                    Err(LaneFailure::from_wire(&WireError::AuthExpired))
+                }
+                Err(e) => Err(LaneFailure::from_wire(&e)),
+            }
+        }
+        Err(e) => Err(LaneFailure::from_wire(&e)),
+    }
+}
 
 /// Phase-8 LlmCell. First production stateful-cell with cell.db.
 ///
@@ -118,6 +281,7 @@ impl StatefulCell for LlmCell {
                         0,
                         None,
                         None,
+                        None,
                     )
                     .await;
                     return;
@@ -135,6 +299,7 @@ impl StatefulCell for LlmCell {
                         vec![],
                         started_at_unix_ms,
                         0,
+                        None,
                         None,
                         None,
                     )
@@ -165,6 +330,7 @@ impl StatefulCell for LlmCell {
                             0,
                             None,
                             None,
+                            None,
                         )
                         .await;
                         return;
@@ -190,6 +356,7 @@ impl StatefulCell for LlmCell {
                                 0,
                                 None,
                                 None,
+                                None,
                             )
                             .await;
                             return;
@@ -207,6 +374,7 @@ impl StatefulCell for LlmCell {
                             vec![],
                             started_at_unix_ms,
                             0,
+                            None,
                             None,
                             None,
                         )
@@ -234,6 +402,7 @@ impl StatefulCell for LlmCell {
                     0,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 return;
@@ -255,6 +424,7 @@ impl StatefulCell for LlmCell {
                             vec![],
                             started_at_unix_ms,
                             0,
+                            None,
                             None,
                             None,
                         )
@@ -296,6 +466,7 @@ impl StatefulCell for LlmCell {
                     0,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 return;
@@ -324,6 +495,7 @@ impl StatefulCell for LlmCell {
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
                         None,
                         None,
+                        None,
                     )
                     .await;
                     return;
@@ -343,6 +515,7 @@ impl StatefulCell for LlmCell {
                         input_messages,
                         started_at_unix_ms,
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
                         None,
                         None,
                     )
@@ -367,11 +540,64 @@ impl StatefulCell for LlmCell {
                             (unix_ms_now() - started_at_unix_ms).max(0) as u64,
                             None,
                             None,
+                            None,
                         )
                         .await;
                         return;
                     }
                 };
+
+            // P10 dialect fork. Everything above (system tree, tools, system
+            // prompt) is dialect-neutral and shared; below this point the two
+            // wires diverge. The chat-completions branch continues UNCHANGED —
+            // pinned by `llm_chat_completions_wire_regression`.
+            if self.params.effective_wire_dialect() == WireDialect::Responses {
+                let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
+                let outcome = match translate_responses::build_responses_request(
+                    &self.params,
+                    &system_string,
+                    &input_messages,
+                    &tools,
+                ) {
+                    Ok(request_json) => run_responses_lane(self, &request_json, timeout).await,
+                    Err(e) => Err(LaneFailure::from_translate(&e, "translate")),
+                };
+                let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
+                match outcome {
+                    Ok(t) => {
+                        output::emit_assistant_turn(
+                            sink,
+                            reply_target,
+                            t.assistant_turn,
+                            &t.finish_reason,
+                            t.tokens_prompt,
+                            t.tokens_completion,
+                            &t.model,
+                            &t.response_id,
+                            started_at_unix_ms,
+                            latency_ms,
+                        )
+                        .await;
+                    }
+                    Err(f) => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            f.code,
+                            &f.detail,
+                            f.source,
+                            input_messages,
+                            started_at_unix_ms,
+                            latency_ms,
+                            None,
+                            None,
+                            f.extra,
+                        )
+                        .await;
+                    }
+                }
+                return;
+            }
 
             // 5d: build OpenAI Chat-Completions request body.
             let request_json = match translate::build_openai_request(
@@ -391,6 +617,7 @@ impl StatefulCell for LlmCell {
                         input_messages,
                         started_at_unix_ms,
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
                         None,
                         None,
                     )
@@ -417,7 +644,9 @@ impl StatefulCell for LlmCell {
             let wire_result = wire::call_openai(
                 &self.http,
                 &url,
-                &self.params.api_key,
+                // `parse` guarantees `api_key` is present whenever this cell
+                // runs the api_key/chat-completions lane.
+                self.params.api_key.as_deref().unwrap_or_default(),
                 &attribution_headers,
                 &request_json,
                 timeout,
@@ -436,6 +665,7 @@ impl StatefulCell for LlmCell {
                         input_messages,
                         started_at_unix_ms,
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
                         None,
                         None,
                     )
@@ -463,6 +693,7 @@ impl StatefulCell for LlmCell {
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
                         resp_model,
                         resp_id,
+                        None,
                     )
                     .await;
                     return;

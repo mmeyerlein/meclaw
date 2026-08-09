@@ -92,6 +92,7 @@ pub(crate) async fn emit_error(
     latency_ms: u64,
     response_model: Option<&str>,
     response_id: Option<&str>,
+    extra_error_meta: Option<Map<String, Value>>,
 ) {
     let mut header = Map::new();
     header.insert("finish_reason".into(), Value::String("error".into()));
@@ -100,6 +101,14 @@ pub(crate) async fn emit_error(
     let mut error_obj = Map::new();
     error_obj.insert("source".into(), Value::String(error_source.to_string()));
     error_obj.insert("detail".into(), Value::String(detail.to_string()));
+    // P10 (plan D10): the fine-grained failure kind lives here, because the
+    // spec's `error_code` enum is closed. Pre-P10 call sites pass `None`, so
+    // their emitted body stays byte-identical.
+    if let Some(extra) = extra_error_meta {
+        for (k, v) in extra {
+            error_obj.insert(k, v);
+        }
+    }
 
     let mut meta = Map::new();
     meta.insert("provider".into(), Value::String("openai".into()));
@@ -194,6 +203,7 @@ mod tests {
             25,
             None,
             None,
+            None,
         )
         .await;
         let em = rx.recv().await.unwrap();
@@ -226,6 +236,7 @@ mod tests {
             0,
             None,
             None,
+            None,
         )
         .await;
         let em = rx.recv().await.unwrap();
@@ -249,6 +260,7 @@ mod tests {
             50,
             Some("gpt-4o-actual"),
             Some("chatcmpl-failed"),
+            None,
         )
         .await;
         let em = rx.recv().await.unwrap();

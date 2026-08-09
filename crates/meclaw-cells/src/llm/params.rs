@@ -15,19 +15,83 @@ fn default_external_timeout_ms() -> u64 {
     110_000
 }
 
-/// Phase-8 LlmCell parameters (cell-types.md `llm`-params block).
+/// How the cell authenticates against the provider (P10).
 ///
-/// Required fields: `provider`, `model`, `api_key`. All other fields have
-/// defaults. In Phase 8 only `provider == "openai"` is supported; other
-/// providers are deferred to a future phase.
+/// Vendor-neutral by design: `OauthSubscription` describes "a rotating OAuth
+/// token from a token store", not an OpenAI specialty. OpenAI-via-Codex is
+/// instance one, not the shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// Static `api_key` param, sent as `Authorization: Bearer` (the pre-P10
+    /// behaviour and the default).
+    #[default]
+    ApiKey,
+    /// Rotating OAuth access token read from the store at `auth_ref`.
+    /// Refreshed lazily on 401 by the shared token broker.
+    OauthSubscription,
+}
+
+/// Which provider wire format the cell speaks (P10).
+///
+/// Deliberately orthogonal to `provider`: the Responses API is the SAME vendor
+/// with a different wire shape, not a different provider. Keeping this a
+/// separate axis leaves the `provider == "openai"` constraint untouched
+/// (plan D1) and makes `auth × wire_dialect` the vendor-neutral matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireDialect {
+    /// `POST /chat/completions` — the pre-P10 dialect.
+    ChatCompletions,
+    /// `POST /responses` — typed `input[]` items, SSE transport.
+    Responses,
+}
+
+/// Phase-8 LlmCell parameters (cell-types.md `llm`-params block), extended by
+/// the P10 auth dimension.
+///
+/// Required: `provider`, `model`, plus exactly one credential — `api_key`
+/// (for `auth: "api_key"`) or `auth_ref` (for `auth: "oauth_subscription"`).
+/// All other fields have defaults. Only `provider == "openai"` is supported.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmParams {
     /// Provider id. Phase 8: must be `"openai"` (cell-types.md Z.92).
     pub provider: String,
     /// Model id (e.g. `"gpt-4o"`).
     pub model: String,
-    /// API key for the provider.
-    pub api_key: String,
+    /// API key for the provider. Required for `auth: "api_key"`, and MUST be
+    /// absent for `auth: "oauth_subscription"` (no double credential).
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// P10: how this cell authenticates. Default `api_key` — every pre-P10
+    /// config keeps its exact behaviour.
+    #[serde(default)]
+    pub auth: AuthMode,
+    /// P10: filesystem path to the OAuth token store (Codex `auth.json`
+    /// format). Required for `auth: "oauth_subscription"`, forbidden otherwise.
+    ///
+    /// Deliberately has NO default: an implicit `~/.codex/auth.json` would let
+    /// a cell silently rotate the refresh token of a live interactive Codex
+    /// session. Pointing at a store is a config decision (plan D7).
+    #[serde(default)]
+    pub auth_ref: Option<String>,
+    /// P10: explicit wire dialect. `None` derives it from `auth`
+    /// (`api_key` → chat-completions, `oauth_subscription` → responses).
+    /// Read it through `effective_wire_dialect()`, never directly.
+    #[serde(default)]
+    pub wire_dialect: Option<WireDialect>,
+    /// P10: OAuth token endpoint override. `None` → the provider default
+    /// (`auth::DEFAULT_OAUTH_TOKEN_ENDPOINT`). Tests point this at a fake.
+    #[serde(default)]
+    pub oauth_token_endpoint: Option<String>,
+    /// P10: OAuth client id override. `None` → the provider default.
+    #[serde(default)]
+    pub oauth_client_id: Option<String>,
+    /// P10: value of the `originator` request header. `None` → the provider
+    /// default (`codex_cli_rs`), which is what the pinned reference client
+    /// sends.
+    #[serde(default)]
+    pub oauth_originator: Option<String>,
     /// Optional override of the provider's base URL.
     #[serde(default)]
     pub base_url: Option<String>,
@@ -83,7 +147,49 @@ impl LlmParams {
                 p.provider
             ));
         }
+        // P10 auth validation — strictly ADDITIVE, after the untouched provider
+        // check. Exactly one credential, and the dialect must be able to carry
+        // the chosen auth. No message ever echoes a param VALUE (cell-types
+        // Z.145 secret hygiene).
+        match p.auth {
+            AuthMode::ApiKey => {
+                if p.api_key.is_none() {
+                    return Err("api_key is required for auth 'api_key'".to_string());
+                }
+                if p.auth_ref.is_some() {
+                    return Err("auth_ref is only valid for auth 'oauth_subscription'".to_string());
+                }
+            }
+            AuthMode::OauthSubscription => {
+                if p.auth_ref.is_none() {
+                    return Err("auth_ref is required for auth 'oauth_subscription'".to_string());
+                }
+                if p.api_key.is_some() {
+                    return Err("api_key must not be set for auth 'oauth_subscription'".to_string());
+                }
+                if p.wire_dialect == Some(WireDialect::ChatCompletions) {
+                    return Err(
+                        "auth 'oauth_subscription' requires wire_dialect 'responses'".to_string(),
+                    );
+                }
+            }
+        }
         Ok(p)
+    }
+
+    /// The wire dialect this cell actually speaks: the explicit
+    /// `wire_dialect` param if set, else derived from `auth`.
+    ///
+    /// `parse` guarantees the derived value is consistent with `auth`, so this
+    /// is total and never panics.
+    pub fn effective_wire_dialect(&self) -> WireDialect {
+        match self.wire_dialect {
+            Some(d) => d,
+            None => match self.auth {
+                AuthMode::ApiKey => WireDialect::ChatCompletions,
+                AuthMode::OauthSubscription => WireDialect::Responses,
+            },
+        }
     }
 
     /// Apply a runtime params-update (W4b). Pure — no IO.
@@ -135,11 +241,32 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "external_timeout_ms",
     "http_referer",
     "x_title",
+    // P10 auth dimension.
+    "auth",
+    "auth_ref",
+    "wire_dialect",
+    "oauth_token_endpoint",
+    "oauth_client_id",
+    "oauth_originator",
 ];
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
-/// `provider` (Phase-8 identity) and `api_key` (credential, secret-hygiene).
-pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &["provider", "api_key"];
+///
+/// `provider` (Phase-8 identity) and `api_key` (credential, secret-hygiene);
+/// P10 adds the whole auth dimension — `auth`/`auth_ref` are credential
+/// identity, and `wire_dialect`/`oauth_*` decide which endpoint a credential is
+/// presented to. Letting a message repoint any of them would let a params
+/// update send an existing token somewhere new.
+pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
+    "provider",
+    "api_key",
+    "auth",
+    "auth_ref",
+    "wire_dialect",
+    "oauth_token_endpoint",
+    "oauth_client_id",
+    "oauth_originator",
+];
 
 /// β: the reject type now lives in the generic params-overlay core. Re-exported
 /// here so existing `llm`-internal references (and W4b tests) are unchanged.
@@ -165,7 +292,7 @@ mod tests {
         let p = LlmParams::parse(&raw).unwrap();
         assert_eq!(p.provider, "openai");
         assert_eq!(p.model, "gpt-4o");
-        assert_eq!(p.api_key, "x");
+        assert_eq!(p.api_key.as_deref(), Some("x"));
         assert_eq!(p.base_url, None);
         assert_eq!(p.temperature, 0.7);
         assert_eq!(p.max_tokens, 4096);
@@ -203,7 +330,7 @@ mod tests {
         let update = json!({"model": "gpt-4o-mini"}).as_object().unwrap().clone();
         let (new, overlay) = base.apply_update(&update).unwrap();
         assert_eq!(new.model, "gpt-4o-mini");
-        assert_eq!(new.api_key, "x"); // unchanged
+        assert_eq!(new.api_key.as_deref(), Some("x")); // unchanged
         assert_eq!(overlay, vec![("model".to_string(), json!("gpt-4o-mini"))]);
     }
 
@@ -288,6 +415,123 @@ mod tests {
             .clone();
         let err = base.apply_update(&update).unwrap_err();
         assert!(matches!(err, super::ParamUpdateError::Immutable(ref k) if k == "api_key"));
+    }
+
+    // ───── P10: auth dimension + wire dialect ─────
+
+    fn api_key_raw() -> serde_json::Value {
+        json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"})
+    }
+
+    fn oauth_raw() -> serde_json::Value {
+        json!({"provider": "openai", "model": "gpt-5", "auth": "oauth_subscription",
+               "auth_ref": "/tmp/auth.json"})
+    }
+
+    #[test]
+    fn parse_auth_defaults_to_api_key() {
+        let p = LlmParams::parse(&api_key_raw()).unwrap();
+        assert_eq!(p.auth, AuthMode::ApiKey);
+        assert_eq!(p.effective_wire_dialect(), WireDialect::ChatCompletions);
+    }
+
+    #[test]
+    fn parse_rejects_missing_api_key_in_api_key_mode() {
+        let raw = json!({"provider": "openai", "model": "gpt-4o"});
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("api_key"), "{err}");
+    }
+
+    #[test]
+    fn parse_accepts_oauth_subscription_with_auth_ref() {
+        let p = LlmParams::parse(&oauth_raw()).unwrap();
+        assert_eq!(p.auth, AuthMode::OauthSubscription);
+        assert_eq!(p.auth_ref.as_deref(), Some("/tmp/auth.json"));
+        assert_eq!(p.api_key, None);
+    }
+
+    #[test]
+    fn parse_rejects_oauth_without_auth_ref() {
+        let raw = json!({"provider": "openai", "model": "gpt-5",
+                         "auth": "oauth_subscription"});
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("auth_ref"), "{err}");
+    }
+
+    #[test]
+    fn parse_rejects_both_credentials() {
+        let mut raw = oauth_raw();
+        raw["api_key"] = json!("leaked-key");
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("api_key"), "{err}");
+        // secret hygiene: the reject must never echo the value.
+        assert!(!err.contains("leaked-key"), "error leaks value: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_auth_ref_in_api_key_mode() {
+        let mut raw = api_key_raw();
+        raw["auth_ref"] = json!("/tmp/auth.json");
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("auth_ref"), "{err}");
+    }
+
+    #[test]
+    fn oauth_defaults_to_responses_dialect() {
+        let p = LlmParams::parse(&oauth_raw()).unwrap();
+        assert_eq!(p.effective_wire_dialect(), WireDialect::Responses);
+    }
+
+    #[test]
+    fn parse_rejects_oauth_with_chat_completions_dialect() {
+        let mut raw = oauth_raw();
+        raw["wire_dialect"] = json!("chat_completions");
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("wire_dialect"), "{err}");
+    }
+
+    #[test]
+    fn api_key_mode_may_opt_into_responses_dialect() {
+        // This is the lane the paid smoke uses: api.openai.com/v1/responses.
+        let mut raw = api_key_raw();
+        raw["wire_dialect"] = json!("responses");
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.effective_wire_dialect(), WireDialect::Responses);
+    }
+
+    #[test]
+    fn apply_update_rejects_immutable_auth_keys() {
+        let base = LlmParams::parse(&api_key_raw()).unwrap();
+        for key in [
+            "auth",
+            "auth_ref",
+            "wire_dialect",
+            "oauth_token_endpoint",
+            "oauth_client_id",
+            "oauth_originator",
+        ] {
+            let update = json!({key: "whatever"}).as_object().unwrap().clone();
+            let err = base.apply_update(&update).unwrap_err();
+            assert!(
+                matches!(err, super::ParamUpdateError::Immutable(ref k) if k == key),
+                "key {key} must be immutable, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn oauth_endpoint_overrides_are_read() {
+        let mut raw = oauth_raw();
+        raw["oauth_token_endpoint"] = json!("http://127.0.0.1:9/token");
+        raw["oauth_client_id"] = json!("client-abc");
+        raw["oauth_originator"] = json!("meclaw_test");
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(
+            p.oauth_token_endpoint.as_deref(),
+            Some("http://127.0.0.1:9/token")
+        );
+        assert_eq!(p.oauth_client_id.as_deref(), Some("client-abc"));
+        assert_eq!(p.oauth_originator.as_deref(), Some("meclaw_test"));
     }
 
     #[test]

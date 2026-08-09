@@ -235,7 +235,7 @@ mod tests {
         let birth = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
         let effective = restore_params(&conn, &birth).unwrap();
         assert_eq!(effective.model, "gpt-4o-mini");
-        assert_eq!(effective.api_key, "x");
+        assert_eq!(effective.api_key.as_deref(), Some("x"));
     }
 
     #[test]

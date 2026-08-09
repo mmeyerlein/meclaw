@@ -122,13 +122,24 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
   "provider_extra": { },
 
   "http_referer": "${OPENROUTER_HTTP_REFERER}",
-  "x_title":      "${OPENROUTER_X_TITLE}"
+  "x_title":      "${OPENROUTER_X_TITLE}",
+
+  "auth":                 "api_key",
+  "auth_ref":             null,
+  "wire_dialect":         null,
+  "oauth_token_endpoint": null,
+  "oauth_client_id":      null,
+  "oauth_originator":     null
 }
 ```
 
 - `external_timeout_ms` (concept A, see overview § Timeouts): A-timeout around the provider HTTP call (`tokio::time::timeout`), default `110000` (110 s). On Elapsed: regular error message with `finish_reason: "error"`, `error_code: "timeout"`.
 
 - `provider` (Phase 8): **`"openai"` only** (including OpenAI-compatible endpoints via `base_url`). The value is set up as an enum, but Phase 8 implements exclusively the OpenAI translate. Further providers (in particular `"anthropic"`, Messages API native) are **deferred**, no fixed phase reference (see "Multi-provider" below). A non-`openai` value is in Phase 8 a `model_not_found`/`invalid_input`-equivalent configuration error at spawn.
+- `auth` (P10): **`"api_key"`** (default) | **`"oauth_subscription"`**. Selects the credential source, **not** the provider. Exactly **one** credential per cell: `api_key` is required for `"api_key"` and forbidden for `"oauth_subscription"`; `auth_ref` the other way round. Any violation is a configuration error at spawn whose message **never** names a param value.
+- `auth_ref` (P10): path to an OAuth token store in the Codex `auth.json` format. Required for `auth: "oauth_subscription"`, forbidden otherwise. **No default, deliberately.** An implicit `~/.codex/auth.json` would let a cell rotate the `refresh_token` of a live interactive session; sharing a store is therefore a config decision, not a code decision.
+- `wire_dialect` (P10): **`"chat_completions"`** | **`"responses"`**; `null` derives it (`api_key` → chat-completions, `oauth_subscription` → responses). A separate axis **orthogonal to `provider`**: the Responses API is the same vendor with a different wire shape, not a different provider, so the `provider` constraint above is untouched. `auth: "oauth_subscription"` with `"chat_completions"` is a configuration error (the subscription backend speaks Responses only).
+- `oauth_token_endpoint` / `oauth_client_id` / `oauth_originator` (P10): overrides for the OAuth refresh defaults and the `originator` request header. `null` = provider default. They exist so an endpoint drift is fixable without a release, and so tests can point at a fake.
 - `base_url` overrides the provider default (useful for local/proxied endpoints like LiteLLM, Ollama, vllm, all over the OpenAI-compatible wire).
 - `system_order`: optional order of the `system.*` sub-slots when concatenating into the provider system string. Sub-slots not listed come afterwards in alphabetical order.
 - `provider_extra`: free JSON block for provider-specific knobs (Phase 8: e.g. OpenAI `seed`). Overlay over common params on conflicts. Provider-foreign knobs (e.g. Anthropic `cache_control`) are active only with the respective provider translate.
@@ -142,7 +153,7 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 
 Order within a message: the `params` slot is merged **first** + persisted in the `cell.db`, **then** a possibly co-sent `system`/`messages` inference runs with the **updated** params (the same call already uses the new model / the new attribution). A **params-only** message (slot without `system`/`messages`) persists and stays silent (no emit, analogous to system-only). `config.json` thereby diverges from the live state, **intended**; on wake/respawn the cell replays its `cell.db` overlay over the birth params (`config.json` remains the instantiation snapshot). **Reset = `cell.db` wipe ⇒ bootstrap params** back.
 
-**Immutable per llm** (update attempt ⇒ **loud reject**, `error_code: "invalid_input"`, **no** partial apply): `api_key` (credential, secret hygiene, mirror of the A4 `Authorization` ruling) and `provider` (Phase-8 identity). **Unknown** param keys ⇒ likewise loud reject (no silent no-op). A malformed value (wrong type) ⇒ reject (all-or-nothing). The reject detail names only the key/the rule, **never** a param value.
+**Immutable per llm** (update attempt ⇒ **loud reject**, `error_code: "invalid_input"`, **no** partial apply): `api_key` (credential, secret hygiene, mirror of the A4 `Authorization` ruling), `provider` (Phase-8 identity) and the entire P10 auth dimension — `auth`, `auth_ref`, `wire_dialect`, `oauth_token_endpoint`, `oauth_client_id`, `oauth_originator`. Rationale for the extension: `auth`/`auth_ref` are credential identity, and `wire_dialect`/`oauth_*` decide **which endpoint** a credential is presented to; if they were mutable, a message could redirect an existing token to a new destination. **Unknown** param keys ⇒ likewise loud reject (no silent no-op). A malformed value (wrong type) ⇒ reject (all-or-nothing). The reject detail names only the key/the rule, **never** a param value.
 
 **Tool definitions**: live in `system.tools.<tool_name>.text` as JSON strings. The adapter parses them at the provider call and builds the provider-native tool set. Tools are **not** concatenated into the system-prompt string. Extracted separately. Tool calls and tool results are their own `messages[]` turn types (`type: "tool_call"` / `"tool_result"` with `id` as the correlation anchor, pass-through value from the provider).
 
@@ -161,11 +172,25 @@ Order within a message: the `params` slot is merged **first** + persisted in the
 | `model` | model the provider actually used |
 | `error_code` | only on `finish_reason == "error"`: `"rate_limit"` \| `"auth"` \| `"timeout"` \| `"model_not_found"` \| `"provider_error"` \| `"invalid_input"` (W4b: param-update reject, immutable/unknown/malformed key) |
 
+**`meta.error` fine classification (P10).** The `error_code` enum above is **closed** and deliberately gains no new value for the subscription lane. The discriminator a failover edge needs lives in `meta.error` instead:
+
+| Case | `error_code` | `meta.error.kind` | extra |
+|---|---|---|---|
+| subscription quota spent | `rate_limit` | `quota_exhausted` | `resets_at` (unix seconds), `plan_type` |
+| plan does not cover the model | `rate_limit` | `plan_not_included` | — |
+| ordinary rate limit | `rate_limit` | `rate_limited` | — |
+| token expired, even after refresh + one retry | `auth` | `auth_expired` | — |
+| refresh token permanently dead | `auth` | `auth_permanent` | `re_login_required: true` |
+| token store missing/unreadable | `auth` | `auth_store_unavailable` | — |
+| 5xx / overload | `provider_error` | `transient` | — |
+
+Pre-P10 failure paths emit **no** `kind` — their message is unchanged.
+
 **Aggregation over loops** (total cost, cumulative tokens): **not a cell feature**. A separate aggregator hive in the topology groups over `correlation_id` and augments pass-through headers (`cost_total_usd`, `tokens_total`). Rationale in `meclaw-overview.md` section "Metadata aggregation is topology".
 
 **Error model**: provider errors (rate limit, auth, timeout etc.) are **regular output messages** with `finish_reason: "error"` + `error_code`, `messages[]` unchanged (no turn appended), `meta.error` with detail info. Topology can do failover via edge condition. Only internal errors (panic, bad params) trigger a cell crash + restart.
 
-**Streaming**: not supported in Phase 8 (single-message output). Post-roadmap.
+**Streaming**: not supported as **output** (single-message output), post-roadmap. This is distinct from the **transport**: the Responses dialect streams on the wire (`stream: true` is mandatory on the subscription backend, which has no non-streaming path). The cell consumes the SSE body **fully and non-incrementally** and folds it into **one** atomic message — this cell's atomicity guarantee is unchanged.
 
 **Multi-provider**: Phase 8 implements **exclusively the OpenAI translate** (one provider per instance). **Anthropic is deferred, no fixed phase reference.** The cell logic (UBF consumption, `system.*` accumulation in `cell.db`, tool-definition extraction, atomic-emit, error model) is provider-agnostic; provider-specific is solely the translate (see "Provider translate" below). Failover/A-B test over multiple providers runs via topology (two `llm` cells + dispatcher hive under one hive scope), not cell-internally. Additionally conceivable post-roadmap: a cell-internal provider list for robust provider connection (the cell guarantees "communication to the provider works" via retries/failover).
 
@@ -185,6 +210,18 @@ Order within a message: the `params` slot is merged **first** + persisted in the
   The header table is a **closed allow-list**: `Authorization` is **not** a params-controllable header. It is the `api_key` bearer and is set solely by the wire layer; a params attempt to override it is ignored (secret hygiene). Only set (`Some`) attribution params produce a header; unset ⇒ no header.
 
 From this follows directly the deferral cleanliness: a further provider (e.g. Anthropic) is solely a second translate plus an enum value, the cell logic, `cell.db` semantics and the error model stay unchanged.
+
+**Second wire dialect (P10): Responses.** Beside chat-completions the translate knows the Responses dialect — same translation boundary, same UBF semantics, different wire shape: `messages[]` → typed `input[]` items (`input_text`/`output_text`, `function_call`/`function_call_output`), system prompt → top-level `instructions`, `max_tokens` → `max_output_tokens`, tool schemas flat instead of nested. `store: false` is set (the subscription backend does not persist), `include: ["reasoning.encrypted_content"]` only on the subscription lane. The answer is read from `response.output_item.done`, **not** from the deltas; `reasoning` items never reach UBF.
+
+The wire is pinned against the reference implementation `github.com/openai/codex` @ `266c6920d9b82fe4d68959529565256b12a9be99` (endpoint, header set, body shape, SSE events, refresh flow, error taxonomy); the test fixtures are the drift detectors. Endpoint: `https://chatgpt.com/backend-api/codex/responses` (subscription, **without** `/v1`) or `https://api.openai.com/v1/responses` (API key). The two are **not** interchangeable — a subscription token against the metered endpoint fails on missing scopes.
+
+**Token lifecycle (P10, `auth: "oauth_subscription"` only).** The access token is **not a param** — it is cell-external, rotating state in the store behind `auth_ref`. Refresh is **purely reactive**: call → `401` → refresh → **exactly one** retry → typed error. No timer, no polling, no backoff loop; failover on quota exhaustion is **topology**, not cell logic (see error model).
+
+**One refresher per process.** The `refresh_token` **rotates** on every refresh — two cells refreshing the same store concurrently produce `refresh_token_reused` and kill the login permanently. All cells in a process therefore share **one** token broker: an actor that performs the refresh call itself, which guarantees single-flight by construction (no lock, no wait loop). A cell that wants to refresh after a `401` names the token generation it used; if someone else refreshed meanwhile, it receives their fresh token instead of a second rotation. **Limit:** this serializes **within one process** — a CLI running in parallel on the same store can still collide (see `roadmap.md`).
+
+**Secret hygiene (the `api_key` discipline extended to the token path).** A token is **never** in `config.json`, **never** in the `message_log`, **never** in an emitted message or its `meta`, **never** in an error text and **never** in a log. `Debug` output of the token types redacts its values; third-party error texts are stripped of token-shaped strings before being passed on. The store is written atomically (temp file + `rename`) and carries Unix mode `0600`.
+
+**Store co-ownership.** The store also belongs to the vendor CLI — MeClaw is a **second writer** there, not the owner. Rotation therefore **patches instead of overwriting**: only `tokens.access_token`, `tokens.refresh_token`, `tokens.account_id` and `last_refresh` are touched, and all unknown fields (`auth_mode`, `id_token`, `OPENAI_API_KEY`, …) survive unchanged. A naive rewrite would destroy an interactive login on the first rotation.
 
 ---
 

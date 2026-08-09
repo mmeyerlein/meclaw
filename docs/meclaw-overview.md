@@ -148,6 +148,8 @@ For **stateless cells**, inbox backpressure plays out at the dispatcher; the dis
 - **No `block_on`** in cell or colony code. Never. Not even in tests, when the test boots a real topology.
 - **No assumption about ordering between cells.** Cell A and cell B emit in parallel; which message arrives first depends on the scheduler. Whoever needs ordering builds it via topology (collector hive with a correlation ID).
 
+Beside cell and colony tasks the substrate may run **process-wide infrastructure actors** (P10: the token broker, which serializes the OAuth refresh for all `llm` cells). They follow the same rule: one task, state exclusively inside that task, no lock.
+
 ---
 
 ## Authority model
@@ -1859,6 +1861,8 @@ For `harness`, A sits on `startup_timeout_ms` and the stdin writes; the **task r
 | The cell removed by a mutation during a running `handle()` | **Graceful**: the running call runs to completion (the drop of the mailbox receiver only closes the inbox for new messages), then the task ends. **No** `abort()`, that would lose the drop cleanup. |
 | An input validation error (a missing body slot) | the cell builds a regular error message, no timeout |
 | The LLM answers `finish_reason: error` | a cell-type-specific error path, no timeout |
+
+The `llm` A-timeout wraps the whole provider roundtrip **including the complete receipt of a streamed response body** — an open SSE stream is covered just as a single request/response is. The OAuth token refresh (P10) carries its own constant 30 s timeout; it is deliberately **not** a param, because it runs inside the shared token broker and must not block it longer than necessary.
 
 ### Hanger detection
 

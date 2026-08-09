@@ -4,6 +4,66 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.10] — 2026-08-09
+
+Subscription auth: the `llm` cell learns a second credential and a second wire.
+
+### Added
+
+- **An `auth` dimension on the `llm` cell (`api_key` | `oauth_subscription`).**
+  Model access no longer has to be pay-per-token. A cell can present a rotating
+  OAuth token from a token store instead of a static key — no CLI harness
+  between the cell and the model, which is the whole point: an agent harness
+  that pre-prompts, loops and tools on its own is exactly what an `llm` cell
+  must not have in front of it. The seam is vendor-neutral by construction;
+  one vendor is implemented, and a second is a set of params rather than a
+  rebuild.
+- **A second wire dialect: Responses.** Beside chat-completions the translate
+  boundary now speaks the Responses shape — typed `input[]` items, a top-level
+  `instructions` slot, `max_output_tokens`, flat tool schemas. It is a
+  **separate axis from `provider`**: the same vendor with a different wire is
+  not a different provider, so the provider constraint stays untouched and
+  `auth × wire_dialect` becomes the matrix. The wire is pinned against a
+  reference implementation rather than reverse-engineered, and the fixtures are
+  the drift detectors.
+- **A single-refresher token broker.** The refresh token rotates, so two cells
+  refreshing one store concurrently would earn a permanent `refresh_token_reused`
+  and force a human back through a login. All cells in a process therefore share
+  one broker actor that performs the refresh itself: single-flight by
+  construction, no lock, no wait loop. A cell that hit a 401 names the token
+  generation it used, so a concurrent refresher wins instead of racing.
+- **A two-level error taxonomy.** The spec's `error_code` enum stays closed;
+  the discriminator a failover edge actually needs — `quota_exhausted` with its
+  reset time, `auth_expired`, `auth_permanent` with `re_login_required` —
+  arrives in `meta.error`. Failover itself remains topology: the cell emits a
+  typed error and stops. It does not retry, it does not fall back, and it never
+  loops.
+
+### Changed
+
+- `api_key` is now optional in `llm` params, because a subscription lane has no
+  key. Exactly one credential per cell is enforced at spawn, and the whole auth
+  dimension is immutable at runtime — `wire_dialect` and the OAuth overrides
+  decide *which endpoint* a credential is presented to, so a mutable one would
+  let a message redirect an existing token somewhere new.
+- The token store is written as a **patch, not a rewrite**. It is the vendor
+  CLI's own credential file that MeClaw is a second writer of; rotation touches
+  three token fields and a timestamp and leaves every unknown field alone. A
+  naive rewrite would have destroyed an interactive login on the first rotation.
+
+### Notes
+
+- The existing `api_key`/chat-completions path is unchanged down to the byte,
+  pinned by a regression test that freezes the serialized request body, the
+  path and the exact set of request headers.
+- Streaming is a **transport** detail here, not an output feature: the wire
+  streams because the subscription backend accepts nothing else, while the cell
+  stays atomically-emitting and folds the whole stream into one message.
+- Secret hygiene extends the existing key discipline to the token path — no
+  token in config, logs, messages, `meta` or error text; redacting `Debug`;
+  atomic `0600` writes — and is covered by an explicit audit test rather than
+  by convention.
+
 ## [0.1.9] — 2026-08-09
 
 MeClaw calls MeClaw: a whole child colony, driven as one cell.
