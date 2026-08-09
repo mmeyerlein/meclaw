@@ -5,6 +5,7 @@ mod colony_handle;
 pub mod factories;
 mod message_builder;
 pub mod mock_http;
+pub mod mock_slack;
 pub mod mocks;
 mod test_root;
 pub mod topologies;

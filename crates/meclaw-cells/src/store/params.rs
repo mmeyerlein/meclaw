@@ -132,11 +132,19 @@ mod tests {
 
     /// The shipped template must keep parsing — the gate is a hardening, not a
     /// migration (compat receipt: plans/p3-fixtures/identifier-compat-scan.py).
+    ///
+    /// Fixture: `tests/fixtures/memory_hive_store_config.json` — a snapshot of
+    /// `builder/templates/memory-hive/store/config.json`, deliberately beside
+    /// the crate: `builder/` is private and never exported, so reading the
+    /// template directly made this test unrunnable in the public repo (same
+    /// defect class as the P10 export fix, `b20bbe5`). The copy is a snapshot on
+    /// purpose — it does NOT track the template. If the template's params grow a
+    /// shape this gate should see, refresh the snapshot by hand.
     #[test]
     fn memory_hive_template_params_still_parse() {
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../builder/templates/memory-hive/store/config.json"
+            "/tests/fixtures/memory_hive_store_config.json"
         ))
         .unwrap();
         let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();

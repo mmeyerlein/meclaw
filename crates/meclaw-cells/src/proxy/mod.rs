@@ -9,6 +9,8 @@ pub mod emit;
 pub mod factory;
 pub mod io;
 pub mod params;
+pub mod platform;
+pub mod slack;
 pub mod telegram;
 
 pub use factory::ProxyCellFactory;

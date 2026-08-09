@@ -20,7 +20,11 @@ chrono = "0.4"
 # which std does not expose. Used for exactly four symbols (killpg, SIGTERM,
 # SIGKILL, pid_t) in one unix-only module, `stdio_child/reap.rs`.
 libc = "0.2"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [dev-dependencies]
 tempfile = "3"
 meclaw-testing = { path = "../meclaw-testing" }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

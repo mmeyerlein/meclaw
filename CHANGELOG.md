@@ -4,6 +4,72 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.12] — 2026-08-09
+
+Slack as the proxy cell's second platform — and a lesson from the real API.
+
+### Added
+
+- **Slack Socket Mode support in the `proxy` cell type.** Slack is instance TWO
+  of an existing cell type, not a new one: the seam is a single
+  `params.platform` discriminator dispatched in the factory, optional with
+  default `telegram`. Every pre-0.1.12 configuration parses to exactly the same
+  result, and the registry still holds 13 cell types.
+- Outbound WebSocket transport (Socket Mode): no public endpoint, no inbound
+  HTTP surface. Purely frame-driven — a reconnect is always caused by an event
+  (`disconnect` frame, close, error), never by a timer. Backoff damps failures
+  and carries a minimum-uptime floor so a peer that accepts and instantly drops
+  cannot turn the reconnect path into a hot loop.
+- Thread ownership: a mention in the channel root opens a thread on its own
+  timestamp; a mention inside a thread stays there; direct messages carry no
+  thread; a bot keeps following the thread it opened without needing to be
+  mentioned again. Anything else in a channel is ignored.
+- Bot-loop guard (default on): own traffic is dropped on `bot_id`, the
+  `bot_message` subtype, the sending app id, and optionally the bot's own user
+  id. Ignored events are still acknowledged — silence makes Slack redeliver.
+- Envelope deduplication and thread-ownership persistence in `cell.db`.
+- Hermetic fake Slack (`meclaw-testing::mock_slack`) serving both the Web API
+  and the WebSocket on one port, with scripts keyed per app token so a
+  multi-bot claim cannot be satisfied by the fake itself.
+
+### Fixed / learned
+
+- **One user message arrives twice.** Verified against the live API: Slack
+  delivers a mention to the addressed bot both as `app_mention` and as
+  `message`, with the same timestamp but different envelope ids — and
+  `message.channels` reaches every app that subscribes to it, so each bot also
+  sees mentions addressed to others. Envelope dedup does not cover this (two
+  envelopes, two ids). The thread-ownership rule is what keeps a message from
+  entering the agent tree twice and keeps bots out of each other's
+  conversations; it is a correctness condition, not a politeness rule.
+- `api_app_id` on an inbound envelope names the RECEIVING app and therefore
+  always equals one's own. A loop guard reading it instead of the sending app
+  id discards all traffic and produces a bot that is silent on a healthy
+  socket. Pinned by a dedicated negative test.
+- Slack timestamps are addresses, not numbers: `ts` carries a dot, `event_ts`
+  frequently does not, and a float round-trip destroys the digits that make a
+  message addressable. All timestamps are kept as strings.
+- **Public-clone test fixtures.** Two tests read a template config from a path
+  that is not part of the published tree, so they could not run in a fresh
+  clone. The file they read is now committed as a snapshot next to the tests
+  (`crates/meclaw-cells/tests/fixtures/memory_hive_store_config.json`) and both
+  read it from there. The snapshot does not track its source by design; the
+  provenance note lives at both call sites.
+
+### Known limitation
+
+- The Slack variant has **no runtime params overlay**. It builds from birth
+  params only, so `base_url`, timeouts and `thread_follow` cannot be changed on
+  a running cell — unlike the Telegram variant. Tracked on the roadmap.
+
+### Verified live
+
+Against the real Slack API with two separate apps: both bots connect with
+distinct app ids, each receives only its own mention and answers in its own
+thread, replies carry the correct per-bot token, `not_in_channel` classifies as
+a typed permanent error, and the loop guard drops a real bot post that it
+provably received.
+
 ## [0.1.11] — 2026-08-09
 
 The builder hive: a colony grows itself, gated and audited.

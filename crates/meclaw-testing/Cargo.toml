@@ -12,3 +12,5 @@ meclaw-core = { path = "../meclaw-core" }
 meclaw-colony = { path = "../meclaw-colony" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 tracing = "0.1"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

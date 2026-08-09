@@ -10,6 +10,8 @@
 use crate::proxy::cell::ProxyCell;
 use crate::proxy::db::{load_offset, setup_proxy_schema};
 use crate::proxy::params::ProxyParams;
+use crate::proxy::platform::ProxyPlatform;
+use crate::proxy::slack::params::SlackParams;
 use crate::proxy::telegram::TelegramClient;
 use meclaw_colony::persist::cell_db::open_or_create_cell_db_with_status;
 use meclaw_colony::{CellFactory, DbConn, RespawnFn, SpawnedCellKind, build_long_running_task};
@@ -20,6 +22,25 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+/// The six-tuple a (re)spawn hands back: mailbox sender, join handle, and the
+/// four lifecycle oneshot ends minted by `build_long_running_task`.
+type SpawnTuple = (
+    mpsc::Sender<Message>,
+    JoinHandle<()>,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+/// A platform-erased build closure.
+///
+/// P12: `make_build` and `make_build_slack` return different opaque `impl Fn`
+/// types, so the platform seam boxes them into one type. The boxing is the
+/// entire cost of the dispatch — the Telegram branch still calls the unchanged
+/// `make_build` and behaves exactly as before.
+type BuildFn = Box<dyn Fn() -> SpawnTuple + Send + Sync>;
+
 /// The `proxy` cell factory. Production wiring (`built_in_factories` in
 /// `meclaw-cli`) is deferred until the first `examples/` topology using `proxy`,
 /// analogous to the phase-10-B limitation (PROGRESS.md l.371-390). The 10-C demo
@@ -29,8 +50,16 @@ pub struct ProxyCellFactory;
 impl CellFactory for ProxyCellFactory {
     /// Pre-spawn validation. Routes through the same parse path as `spawn_cell`
     /// (parser invariant per the `meclaw_colony::CellFactory` docs).
+    ///
+    /// P12: the platform seam. `params.platform` selects the parser; absent
+    /// means Telegram, so every pre-P12 config validates exactly as before.
+    /// The parser invariant holds per branch — the branch chosen here is the
+    /// branch `spawn_cell` will take.
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
-        ProxyParams::parse(params).map(|_| ())
+        match crate::proxy::platform::parse_platform(params)? {
+            ProxyPlatform::Telegram => ProxyParams::parse(params).map(|_| ()),
+            ProxyPlatform::Slack => SlackParams::parse(params).map(|_| ()),
+        }
     }
 
     /// Spawn a `proxy` cell instance.
@@ -61,16 +90,29 @@ impl CellFactory for ProxyCellFactory {
         // before `make_build` consumes `path`/`colony_inbox_tx`.
         let respawn_inbox = colony_inbox_tx.clone();
         let respawn_path = path.clone();
-        let build = make_build(
-            params,
-            path,
-            outputs_tx,
-            cell_dir,
-            colony_inbox_tx,
-            blob_store,
-            mailbox_capacity,
-            contract.consumes.clone(),
-        )?;
+        // P12: the platform seam. Telegram takes the unchanged `make_build`.
+        let build: BuildFn = match crate::proxy::platform::parse_platform(&params)? {
+            ProxyPlatform::Telegram => Box::new(make_build(
+                params,
+                path,
+                outputs_tx,
+                cell_dir,
+                colony_inbox_tx,
+                blob_store,
+                mailbox_capacity,
+                contract.consumes.clone(),
+            )?),
+            ProxyPlatform::Slack => Box::new(make_build_slack(
+                params,
+                path,
+                outputs_tx,
+                cell_dir,
+                colony_inbox_tx,
+                blob_store,
+                mailbox_capacity,
+                contract.consumes.clone(),
+            )?),
+        };
 
         // Initial spawn → `build_long_running_task` (inside `build`) creates the
         // live stop/death_ack/peace ends internally and hands them back via the
@@ -128,17 +170,34 @@ impl CellFactory for ProxyCellFactory {
     ) -> Option<RespawnFn> {
         let respawn_inbox = colony_inbox_tx.clone();
         let respawn_path = path.clone();
-        let build = make_build(
-            params,
-            path,
-            outputs_tx,
-            cell_dir,
-            colony_inbox_tx,
-            blob_store,
-            mailbox_capacity,
-            contract.consumes.clone(),
-        )
-        .ok()?;
+        let build: BuildFn = match crate::proxy::platform::parse_platform(&params).ok()? {
+            ProxyPlatform::Telegram => Box::new(
+                make_build(
+                    params,
+                    path,
+                    outputs_tx,
+                    cell_dir,
+                    colony_inbox_tx,
+                    blob_store,
+                    mailbox_capacity,
+                    contract.consumes.clone(),
+                )
+                .ok()?,
+            ),
+            ProxyPlatform::Slack => Box::new(
+                make_build_slack(
+                    params,
+                    path,
+                    outputs_tx,
+                    cell_dir,
+                    colony_inbox_tx,
+                    blob_store,
+                    mailbox_capacity,
+                    contract.consumes.clone(),
+                )
+                .ok()?,
+            ),
+        };
         // No initial `build(...)` call here → boot-gating: the inactive cell's
         // task is not spawned until the reconnect arm invokes this closure. When
         // invoked, build with a FRESH live stop pair and re-notify so a later
@@ -250,6 +309,70 @@ fn make_build(
             base_url,
         );
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
+        let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
+        let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
+            path_cap.clone(),
+            rx,
+            outputs_cap.clone(),
+            64,
+            cell,
+            db,
+            Some(colony_inbox_cap.clone()),
+            blob_cap.clone(),
+            consumes_cap.clone(),
+        );
+        (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
+    })
+}
+
+/// Build the closure that constructs a fresh Slack-variant `proxy` cell-task.
+///
+/// Mirrors `make_build` position for position: everything between the `cell.db`
+/// open and `build_long_running_task` is sync and await-free, which is what the
+/// phase-5 respawn-corridor tripwire requires.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn make_build_slack(
+    params: JsonValue,
+    path: Path,
+    outputs_tx: mpsc::Sender<CellEmission>,
+    cell_dir: PathBuf,
+    colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
+    blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    mailbox_capacity: usize,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+) -> Result<impl Fn() -> SpawnTuple, String> {
+    // Parsed once, outside the closure: a params error must surface as a spawn
+    // failure, not as a panic on the respawn path.
+    let parsed = SlackParams::parse(&params)?;
+
+    let path_cap = path;
+    let outputs_cap = outputs_tx;
+    let cell_dir_cap = cell_dir;
+    let colony_inbox_cap = colony_inbox_tx;
+    let blob_cap = blob_store;
+    let mailbox_capacity_cap = mailbox_capacity;
+    let consumes_cap = consumes;
+
+    Ok(move || -> SpawnTuple {
+        // 1. Open cell.db (sync).
+        let (conn, _status) = open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db"))
+            .expect("open cell.db");
+        // 2. Idempotent DDL (sync, outside the corridor).
+        crate::proxy::slack::db::setup_slack_schema(&conn).expect("setup_slack_schema");
+        // 3. Drop dedup rows past their retention window. Spawn is the natural
+        //    place: it is sync, it runs on every (re)start, and it keeps the
+        //    table from growing without bound over a long-lived bot's life.
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+            - parsed.envelope_dedup_secs as i64;
+        let _ = crate::proxy::slack::db::prune_envelopes(&conn, cutoff);
+        // 4. Build the client + cell (sync).
+        let client =
+            crate::proxy::slack::client::SlackClient::new(&parsed).expect("SlackClient::new");
+        let cell = crate::proxy::slack::cell::SlackCell::new(&parsed, client);
+        let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(
             path_cap.clone(),

@@ -36,7 +36,7 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// An `embeddings` table shaped exactly like the memory-hive template's
-/// (`builder/templates/memory-hive/store/config.json`), holding one generation
+/// (snapshot: `tests/fixtures/memory_hive_store_config.json`), holding one generation
 /// of 2-byte vectors plus the NULL backfill queue.
 fn embeddings_fixture() -> rusqlite::Connection {
     let c = rusqlite::Connection::open_in_memory().unwrap();
@@ -574,11 +574,19 @@ async fn query_timeout_interrupts_a_running_recursive_cte() {
 // ------------------------------------------------ demo: memory-hive schema
 
 /// Build a `cell.db` from the memory hive template's OWN `params.schema` — the
-/// file is read, not transcribed, so a schema change in the template surfaces
-/// here instead of silently drifting apart from the ops.
+/// schema is read from a config file, not transcribed into this test, so the
+/// demo exercises the shipped shape rather than a hand-kept copy of it.
+///
+/// Fixture: `tests/fixtures/memory_hive_store_config.json` — a snapshot of
+/// `builder/templates/memory-hive/store/config.json`, deliberately beside the
+/// crate: `builder/` is private and never exported, so reading the template
+/// directly made this test unrunnable in the public repo (same defect class as
+/// the P10 export fix, `b20bbe5`). The copy is a snapshot on purpose — it does
+/// NOT track the template, so a template schema change no longer surfaces here
+/// by itself. Refresh the snapshot by hand when the template moves.
 fn memory_hive_db() -> rusqlite::Connection {
     let cfg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../builder/templates/memory-hive/store/config.json");
+        .join("tests/fixtures/memory_hive_store_config.json");
     let raw: Value =
         meclaw_core::serde_json::from_str(&std::fs::read_to_string(&cfg).expect("template config"))
             .expect("template config is JSON");
