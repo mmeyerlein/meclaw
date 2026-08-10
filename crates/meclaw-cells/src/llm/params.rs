@@ -92,6 +92,12 @@ pub struct LlmParams {
     /// sends.
     #[serde(default)]
     pub oauth_originator: Option<String>,
+    /// P14: value of the `version` request header on the subscription lane.
+    /// `None` → the provider default (`DEFAULT_OAUTH_CLIENT_VERSION`). The
+    /// backend gates model availability on this value, so it is configuration,
+    /// not decoration — see the constant's doc comment.
+    #[serde(default)]
+    pub oauth_client_version: Option<String>,
     /// Optional override of the provider's base URL.
     #[serde(default)]
     pub base_url: Option<String>,
@@ -248,6 +254,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "oauth_token_endpoint",
     "oauth_client_id",
     "oauth_originator",
+    // P14 auth dimension.
+    "oauth_client_version",
 ];
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
@@ -266,6 +274,11 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "oauth_token_endpoint",
     "oauth_client_id",
     "oauth_originator",
+    // P14: frozen with the family. It feeds the same backend gate as
+    // `oauth_originator` and flows into the same `User-Agent`; a runtime
+    // overlay would also outlive — and silently override — a later
+    // `config.json` fix.
+    "oauth_client_version",
 ];
 
 /// β: the reject type now lives in the generic params-overlay core. Re-exported
@@ -509,6 +522,8 @@ mod tests {
             "oauth_token_endpoint",
             "oauth_client_id",
             "oauth_originator",
+            // P14: frozen with the family, see IMMUTABLE_PARAM_KEYS.
+            "oauth_client_version",
         ] {
             let update = json!({key: "whatever"}).as_object().unwrap().clone();
             let err = base.apply_update(&update).unwrap_err();
@@ -517,6 +532,42 @@ mod tests {
                 "key {key} must be immutable, got {err:?}"
             );
         }
+    }
+
+    /// P14 — the param exists, is optional, and carries no implicit value.
+    #[test]
+    fn parse_accepts_oauth_client_version_and_defaults_to_none() {
+        let raw = json!({"provider":"openai","model":"gpt-5.6-luna",
+                         "auth":"oauth_subscription","auth_ref":"/tmp/a.json"});
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(
+            p.oauth_client_version, None,
+            "no implicit version in params"
+        );
+
+        let raw = json!({"provider":"openai","model":"gpt-5.6-luna",
+                         "auth":"oauth_subscription","auth_ref":"/tmp/a.json",
+                         "oauth_client_version":"0.147.0"});
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.oauth_client_version.as_deref(), Some("0.147.0"));
+    }
+
+    /// P14 / R2 — immutable like the rest of the auth family. A runtime overlay
+    /// would live in `cell.db` and silently outrank a later `config.json` fix,
+    /// on exactly the value one fixes when the backend moves its version floor.
+    #[test]
+    fn oauth_client_version_update_is_rejected() {
+        let raw = json!({"provider":"openai","model":"gpt-5.6-luna",
+                         "auth":"oauth_subscription","auth_ref":"/tmp/a.json"});
+        let p = LlmParams::parse(&raw).unwrap();
+        let update = json!({"oauth_client_version":"0.148.0"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(
+            p.apply_update(&update).is_err(),
+            "the auth dimension is frozen as a family"
+        );
     }
 
     #[test]

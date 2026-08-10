@@ -26,6 +26,19 @@ pub const DEFAULT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 /// Default `originator` request header (reference: `default_client.rs:40`).
 pub const DEFAULT_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
 
+/// Default `version` request header on the subscription lane (P14).
+///
+/// This is not cosmetic. The subscription backend gates model availability on
+/// the reported client version: a request for a recent model carrying an
+/// unexpected version is answered with HTTP 400 and
+/// `"The '<model>' model requires a newer version of Codex."` Reporting this
+/// crate's own version therefore makes recent models unreachable.
+///
+/// Verified live on 2026-08-10 against `gpt-5.6-luna`. Overridable per cell via
+/// `params.oauth_client_version` so a backend-side bump of the floor can be
+/// answered by configuration instead of a release.
+pub const DEFAULT_OAUTH_CLIENT_VERSION: &str = "0.147.0";
+
 /// Default base URL of the subscription backend (reference:
 /// `model-provider-info/src/lib.rs:37`). Note: no `/v1` segment.
 pub const DEFAULT_SUBSCRIPTION_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";

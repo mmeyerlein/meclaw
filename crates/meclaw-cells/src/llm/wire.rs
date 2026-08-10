@@ -40,6 +40,26 @@ pub enum WireError {
     ModelNotFound,
     /// Other HTTP status (>= 400 not covered above).
     HttpStatus(u16),
+    /// P14: like `HttpStatus`, but the body carried a flat `detail` string.
+    ///
+    /// The subscription backend does NOT use the OpenAI `{"error": {...}}`
+    /// envelope for its own rejections — it answers `{"detail": "..."}`. Those
+    /// texts are the only actionable diagnosis the operator gets (e.g.
+    /// `"The '<model>' model requires a newer version of Codex."` → set
+    /// `params.oauth_client_version`, or `"Unsupported parameter: temperature"`).
+    /// Collapsing them into a bare `HttpStatus` threw away the one sentence
+    /// that says what to do, which is how P10's two defects stayed invisible
+    /// until they were reproduced outside the cell.
+    ///
+    /// Maps to the same `error_code` as `HttpStatus` (`provider_error`): the
+    /// spec enum stays closed, only the free-text detail gets richer.
+    HttpStatusWithDetail {
+        /// The HTTP status that carried the detail.
+        status: u16,
+        /// Verbatim `detail` string from the provider. Never a credential:
+        /// it is the provider's own prose about the request.
+        detail: String,
+    },
     /// Network/IO error wrapping a reqwest text — MUST NEVER include the api_key.
     Network(String),
     /// Response body could not be parsed as JSON in the expected shape.
@@ -80,6 +100,7 @@ pub(crate) fn wire_error_to_code(err: &WireError) -> &'static str {
         WireError::Unauthorized | WireError::AuthExpired | WireError::Auth(_) => "auth",
         WireError::ModelNotFound => "model_not_found",
         WireError::HttpStatus(_)
+        | WireError::HttpStatusWithDetail { .. }
         | WireError::Network(_)
         | WireError::BodyParse(_)
         | WireError::Transient(_) => "provider_error",
@@ -162,7 +183,16 @@ pub(crate) fn classify_responses_status(status: u16, body: &Value) -> WireError 
             _ => WireError::RateLimited,
         },
         500..=599 => WireError::Transient(format!("http {status}")),
-        _ => WireError::HttpStatus(status),
+        // P14: the subscription backend rejects with a flat `{"detail": ...}`
+        // and no `error` envelope, so nothing above matched and the actionable
+        // sentence would be dropped. Keep it.
+        _ => match body.get("detail").and_then(|v| v.as_str()) {
+            Some(detail) => WireError::HttpStatusWithDetail {
+                status,
+                detail: detail.to_string(),
+            },
+            None => WireError::HttpStatus(status),
+        },
     }
 }
 
@@ -397,6 +427,37 @@ mod tests {
 
         let plain = classify_responses_status(429, &serde_json::Value::Null);
         assert!(matches!(plain, WireError::RateLimited));
+    }
+
+    /// P14 — verbatim shape observed live on 2026-08-10. The subscription
+    /// backend sends no `error` envelope at all, just a flat `detail`; before
+    /// P14 this collapsed to a bare `HttpStatus(400)` and the one actionable
+    /// sentence was lost.
+    #[test]
+    fn flat_detail_payload_survives_classification() {
+        let body = json!({"detail":
+            "The 'gpt-5.6-luna' model requires a newer version of Codex."});
+        let e = classify_responses_status(400, &body);
+        match &e {
+            WireError::HttpStatusWithDetail { status, detail } => {
+                assert_eq!(*status, 400);
+                assert!(detail.contains("newer version of Codex"));
+            }
+            other => panic!("the diagnosable text was dropped: {other:?}"),
+        }
+        // The closed spec enum is unchanged; only the free text got richer.
+        assert_eq!(wire_error_to_code(&e), "provider_error");
+        // …and it reaches the operator, because meta.error.detail is built
+        // from the Debug rendering of this value (cell.rs:32).
+        assert!(format!("{e:?}").contains("newer version of Codex"));
+    }
+
+    #[test]
+    fn a_400_without_any_text_stays_a_plain_http_status() {
+        assert!(matches!(
+            classify_responses_status(400, &serde_json::Value::Null),
+            WireError::HttpStatus(400)
+        ));
     }
 
     #[test]

@@ -104,7 +104,7 @@ fn walk_collect(node: &Value, path: &str, out: &mut Vec<String>) -> Result<(), T
 /// }
 /// ```
 /// then `params.provider_extra` is overlaid at root (overlay wins per
-/// cell-types.md Z.95).
+/// cell-types.md:145).
 ///
 /// - `system_string` empty -> no leading system-message inserted.
 /// - `tools_extracted` empty -> no `tools` key in body.
@@ -155,7 +155,7 @@ pub(crate) fn build_openai_request(
     if !tools_extracted.is_empty() {
         body.insert("tools".into(), Value::Array(tools_extracted.to_vec()));
     }
-    // provider_extra overlay (wins on conflict per cell-types.md Z.95).
+    // provider_extra overlay (wins on conflict per cell-types.md:145).
     for (k, v) in &params.provider_extra {
         body.insert(k.clone(), v.clone());
     }

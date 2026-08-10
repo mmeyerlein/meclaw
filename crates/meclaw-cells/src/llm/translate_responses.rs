@@ -58,14 +58,21 @@ pub(crate) fn build_responses_request(
             Value::Array(vec![json!("reasoning.encrypted_content")]),
         );
     }
-    body.insert("temperature".into(), json!(params.temperature));
-    body.insert("max_output_tokens".into(), json!(params.max_tokens));
+    // P14: the subscription backend rejects both fields outright
+    // ("Unsupported parameter: temperature", verified live 2026-08-10). They
+    // ARE valid on the official Responses API, so the cut belongs on `auth`,
+    // not on `wire_dialect` — the metered lane keeps its sampling control.
+    if params.auth != AuthMode::OauthSubscription {
+        body.insert("temperature".into(), json!(params.temperature));
+        body.insert("max_output_tokens".into(), json!(params.max_tokens));
+    }
     if !tools_extracted.is_empty() {
         let tools: Vec<Value> = tools_extracted.iter().map(to_responses_tool).collect();
         body.insert("tools".into(), Value::Array(tools));
     }
-    // provider_extra overlay wins (cell-types.md Z.95), same rule as the
-    // chat-completions dialect.
+    // provider_extra overlay wins (cell-types.md:145), same rule as the
+    // chat-completions dialect. It runs AFTER the inserts above, so it stays
+    // the escape hatch for a caller who does need a sampling param.
     for (k, v) in &params.provider_extra {
         body.insert(k.clone(), v.clone());
     }
@@ -92,7 +99,7 @@ fn to_responses_tool(tool: &Value) -> Value {
 /// | `session-id` | fresh UUID per call (note the hyphen, not `session_id`) |
 /// | `originator` | `params.oauth_originator`, default `codex_cli_rs` |
 /// | `User-Agent` | `{originator}/{version} ({os}; {arch})` |
-/// | `version` | this crate's version |
+/// | `version` | subscription lane: `params.oauth_client_version`, default the Codex client version — the backend gates model availability on it (P14). Otherwise this crate's version. |
 /// | `ChatGPT-Account-ID` | token store's `account_id`, subscription lane only |
 ///
 /// `Authorization` is deliberately absent: it is not param-controllable and is
@@ -107,7 +114,17 @@ pub(crate) fn build_responses_headers(
         .as_deref()
         .unwrap_or(crate::llm::auth::DEFAULT_OAUTH_ORIGINATOR)
         .to_string();
-    let version = env!("CARGO_PKG_VERSION");
+    // P14: on the subscription lane this is a gate, not a label — the backend
+    // refuses models that require a newer client than the one reported. The
+    // metered lane has no such gate and keeps reporting the honest value.
+    let version = if params.auth == AuthMode::OauthSubscription {
+        params
+            .oauth_client_version
+            .as_deref()
+            .unwrap_or(crate::llm::auth::DEFAULT_OAUTH_CLIENT_VERSION)
+    } else {
+        env!("CARGO_PKG_VERSION")
+    };
     let mut out = vec![
         ("Accept".to_string(), "text/event-stream".to_string()),
         (
@@ -424,13 +441,103 @@ mod tests {
         assert_eq!(b["tool_choice"], "auto");
         assert_eq!(b["parallel_tool_calls"], false);
         assert_eq!(b["include"][0], "reasoning.encrypted_content");
-        assert_eq!(b["temperature"], 0.3);
-        assert_eq!(b["max_output_tokens"], 512);
+        // P14: the sampling assertions moved to
+        // `metered_responses_lane_keeps_its_sampling_params` — the ChatGPT
+        // backend rejects both fields, so pinning them here pinned a shape that
+        // cannot be sent.
         assert!(
             b.get("max_tokens").is_none(),
             "chat-completions field name leaked"
         );
         assert!(b.get("messages").is_none(), "chat-completions shape leaked");
+    }
+
+    // ───── P14: the sampling params the subscription backend rejects ─────
+
+    /// Live 2026-08-10: `{"detail":"Unsupported parameter: temperature"}`, and
+    /// the same for `max_output_tokens`. Both are valid on the official
+    /// Responses API — hence the cut is on `auth`, not on `wire_dialect`.
+    #[test]
+    fn subscription_lane_omits_the_sampling_params_the_backend_rejects() {
+        let b = build_responses_request(&params(true), "be terse", &[], &[]).unwrap();
+        assert!(
+            b.get("temperature").is_none(),
+            "ChatGPT backend answers 'Unsupported parameter: temperature'"
+        );
+        assert!(
+            b.get("max_output_tokens").is_none(),
+            "ChatGPT backend answers 'Unsupported parameter: max_output_tokens'"
+        );
+    }
+
+    #[test]
+    fn metered_responses_lane_keeps_its_sampling_params() {
+        let b = build_responses_request(&params(false), "be terse", &[], &[]).unwrap();
+        assert_eq!(b["temperature"], 0.3, "the official Responses API takes it");
+        assert_eq!(b["max_output_tokens"], 512);
+    }
+
+    /// Regression guard for the R3 escape hatch, green before AND after the
+    /// cut: the `provider_extra` overlay is applied after the body inserts.
+    #[test]
+    fn provider_extra_can_still_force_a_sampling_param_on_the_subscription_lane() {
+        let raw = json!({"provider":"openai","model":"gpt-5.6-luna",
+                         "auth":"oauth_subscription","auth_ref":"/tmp/a.json",
+                         "provider_extra":{"temperature":0.9}});
+        let p = LlmParams::parse(&raw).unwrap();
+        let b = build_responses_request(&p, "", &[], &[]).unwrap();
+        assert_eq!(
+            b["temperature"], 0.9,
+            "the provider_extra overlay still wins"
+        );
+    }
+
+    // ───── P14: the `version` header is a gate, not a label ─────
+
+    fn header<'a>(h: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        h.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+
+    /// Live 2026-08-10: reporting this crate's version made the backend answer
+    /// `"The 'gpt-5.6-luna' model requires a newer version of Codex."`
+    #[test]
+    fn subscription_headers_report_the_codex_client_version_not_meclaws() {
+        let h = build_responses_headers(&params(true), Some("acct"));
+        assert_eq!(
+            header(&h, "version"),
+            Some(crate::llm::auth::DEFAULT_OAUTH_CLIENT_VERSION)
+        );
+        assert_ne!(
+            header(&h, "version"),
+            Some(env!("CARGO_PKG_VERSION")),
+            "meclaw's own version makes recent models unreachable"
+        );
+        assert!(
+            header(&h, "User-Agent")
+                .unwrap()
+                .contains(crate::llm::auth::DEFAULT_OAUTH_CLIENT_VERSION),
+            "User-Agent is derived from the same version"
+        );
+    }
+
+    #[test]
+    fn oauth_client_version_param_overrides_the_default() {
+        let raw = json!({"provider":"openai","model":"gpt-5.6-luna",
+                         "auth":"oauth_subscription","auth_ref":"/tmp/a.json",
+                         "oauth_client_version":"9.9.9"});
+        let p = LlmParams::parse(&raw).unwrap();
+        let h = build_responses_headers(&p, Some("acct"));
+        assert_eq!(header(&h, "version"), Some("9.9.9"));
+    }
+
+    #[test]
+    fn metered_responses_lane_still_reports_meclaws_own_version() {
+        let h = build_responses_headers(&params(false), None);
+        assert_eq!(
+            header(&h, "version"),
+            Some(env!("CARGO_PKG_VERSION")),
+            "no gate there — keep the honest value"
+        );
     }
 
     #[test]

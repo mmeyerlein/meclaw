@@ -4,6 +4,53 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.13] — 2026-08-10
+
+The subscription lane shipped in 0.1.10 and had never completed a single real
+call. Fixture-green, live dead. This is the repair.
+
+### Fixed
+
+- **The subscription lane reports the Codex client version.** The backend gates
+  model availability on the `version` request header; the cell sent its own
+  crate version, so recent models answered HTTP 400 with
+  `"The '<model>' model requires a newer version of Codex."` Configurable per
+  cell via the new `oauth_client_version` param, because a backend-side bump of
+  the floor must be answerable by configuration, not by a release.
+- **The subscription lane no longer sends `temperature` and
+  `max_output_tokens`.** The ChatGPT backend rejects both outright
+  (`"Unsupported parameter: temperature"`). They remain valid on the official
+  Responses API, so the cut is on `auth`, not on `wire_dialect` — the metered
+  lane keeps its sampling control, and `provider_extra` stays the escape hatch
+  for a caller who needs one anyway.
+- **Provider rejections carry their text again.** `classify_responses_status`
+  only understood the OpenAI `{"error": {...}}` envelope, while the
+  subscription backend answers with a flat `{"detail": "..."}`. Every rejection
+  collapsed into a bare `HttpStatus(400)` and the one actionable sentence was
+  discarded — which is precisely why the two defects above stayed invisible
+  through a release. The new `HttpStatusWithDetail` variant carries it into
+  `meta.error.detail`; the closed `error_code` enum is unchanged.
+
+### Added
+
+- `llm` param **`oauth_client_version`** (`None` → provider default).
+  Immutable like the rest of the auth dimension: it feeds the same backend gate
+  as `oauth_originator` and flows into the same `User-Agent`, and a runtime
+  overlay in `cell.db` would silently outrank a later `config.json` fix.
+
+### Notes
+
+- Verified against the real backend, not against fixtures:
+  `plans/p14-fixtures/live-receipt.md`. The Cloudflare hazard documented in the
+  P10 plan (§ 3.2, residual risk R3) did **not** materialise — no 403 in any run.
+- A rare shutdown race (`DbConn` panics when the runtime cancels a
+  `spawn_blocking` job) was found, diagnosed and **not** fixed here: it did not
+  reproduce in 11 targeted runs, and a fix without a reliable reproduction is
+  not honest TDD. Registered in `docs/roadmap.md`, diagnosis in
+  `plans/p14-fixtures/panic-diagnose.md`.
+- Quota behaviour on a real subscription remains unmeasured — the measurement
+  deliberately exhausts the operator's plan and needs its own go-ahead.
+
 ## [0.1.12] — 2026-08-09
 
 Slack as the proxy cell's second platform — and a lesson from the real API.
