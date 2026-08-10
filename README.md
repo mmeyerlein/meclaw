@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](#)
-[![tests](https://img.shields.io/badge/tests-closing%20in%20on%202000-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-2206%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -113,9 +113,11 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `file` / `edit` | read, write, and patch files |
 | `store` | durable key/value and history |
 | `timer` | cron-style scheduling, fires messages |
-| `proxy` | a long-running bridge to the outside world (Telegram) |
+| `proxy` | a long-running bridge to the outside world (Telegram, or Slack over Socket Mode) |
 | `mcp` | speak the Model Context Protocol to external tools |
 | `web_fetch` / `web_search` | pull the web in |
+| `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
+| `subcolony` | a whole child colony, addressed as if it were a single cell |
 
 A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you.
 
@@ -123,19 +125,21 @@ A tool-loop is `llm → dispatcher → tools → collector → llm`, with the lo
 
 Reshaping the graph is a first-class runtime move. A cell emits a mutation diff (`add_nodes`, `add_edges`, `swap_nodes`, and the rest), the colony validates it and applies it atomically while everything keeps running. This part is real and tested today.
 
-The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it. The mutation engine is here now. The builder-hive, an `llm` plus `code` topology that writes those diffs straight from a plain-English request, is the next thing on the bench. Not shipped yet. See the roadmap.
+The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it.
+
+That part shipped. The **builder-hive** is an `llm` plus `code` topology that turns a plain-English request into a validated, deployed subtree — and it is itself pure DSL, not one line of new Rust. The rails are the interesting part, because they are measured substrate behaviour rather than a promise: a cell cannot even *address* the mutation lane without an edge, and no mutation whatsoever can create an edge onto the control plane — that one is bootstrap-only. Approval is classified by effect, not by name: a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or touching the control plane escalates to a human.
 
 ## Where it's at
 
-meclaw is **v0.1.0**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
+meclaw is **v0.1.12**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
 
-Real and tested today: the full actor substrate, every built-in cell type, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI. **Closing in on 2,000 tests. 0 fail. 0 ignored. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **2,206 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
-Not here yet: the builder-hive (plain English to topology) is next, not shipped. Single colony only, no federation. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
+Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
 ## Roadmap
 
-Next up: the builder-hive (requests in, graph mutations out). After that: federation across colonies, more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
+Next up: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 
 ## Contributing
 
