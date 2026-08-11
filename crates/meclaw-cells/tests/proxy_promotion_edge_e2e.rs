@@ -247,6 +247,253 @@ fn templates_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../builder/templates")
 }
 
+/// Reads a shipped template file, falling back to the embedded snapshot where
+/// the template root does not ship (see [`shipped_promotion_modifier`]). The
+/// snapshots mirror the shipped proxy configs with generic variable names; in
+/// the full source tree the real template stays the source, so template drift
+/// still fails the pin where templates live.
+fn shipped_or_snapshot(rel: &str, snapshot: &str) -> Value {
+    let path = templates_root().join(rel);
+    if path.exists() {
+        read_json(path)
+    } else {
+        meclaw_core::serde_json::from_str(snapshot)
+            .unwrap_or_else(|e| panic!("parse embedded snapshot for {rel}: {e}"))
+    }
+}
+
+const TELEGRAM_PROXY_SNAPSHOT: &str = r##"{
+  "cell": {
+    "type": "proxy",
+    "timeout": -1
+  },
+  "params": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "emit_to": "../persona",
+    "long_poll_timeout_ms": 35000,
+    "long_poll_request_secs": 30,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "base_url": "https://api.telegram.org"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${TELEGRAM_BOT_TOKEN}",
+        "description": "Telegram bot token (BotFather)"
+      },
+      "long_poll_request_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "Telegram-side getUpdates long-poll wait in seconds"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around sendMessage"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "platform": {
+          "type": "string",
+          "values": [
+            "telegram"
+          ],
+          "required": false
+        },
+        "chat_id": {
+          "type": "number",
+          "required": false
+        },
+        "user_id": {
+          "type": "number",
+          "required": false
+        },
+        "message_id": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "chat_id": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:proxy",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Bridges Telegram chats to the topology. Inbound chat messages emerge as one user-origin turn each; messages from the topology are written back to the chat.",
+    "use_when": "Whenever a hive needs a Telegram surface. One proxy cell per bot token.",
+    "not_in_scope": "Does not understand bot commands, does not keep chat history, does not transform messages beyond extracting text and identifiers.",
+    "emits_meaning": "Two emission shapes, hence no required hop fields: (a) source emission \u2014 one user-origin text turn per inbound Telegram message, hop carries chat_id/user_id/message_id/platform (promote chat_id to context on the out-edge, or it dies with the next cell emission); (b) inbound-error emission (missing_chat_id/missing_assistant_turn/send_failed/invalid_body) \u2014 empty messages[], hop carries error_code + msg_type 'proxy_inbound_error', targeted at reply_to. Declaring chat_id/platform as required breaks shape (b) against the substrate emits validation (run-1 finding 2026-06-11).",
+    "consumes_meaning": "messages[]: the last assistant turn is sent to the chat. context.chat_id selects the target Telegram chat (promoted by the proxy's out-edge).",
+    "examples": [
+      "Inbound Telegram 'Hi' -> emit body { messages: [{ origin: 'user', type: 'text', text: 'Hi' }] }, hop { platform: 'telegram', chat_id: 12345, user_id: 67890 }"
+    ]
+  }
+}"##;
+
+const SLACK_PROXY_SNAPSHOT: &str = r##"{
+  "cell": {
+    "type": "proxy",
+    "timeout": -1
+  },
+  "params": {
+    "platform": "slack",
+    "app_token": "${SLACK_APP_TOKEN}",
+    "bot_token": "${SLACK_BOT_TOKEN}",
+    "emit_to": "../persona",
+    "connect_timeout_ms": 15000,
+    "idle_timeout_ms": 120000,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "envelope_dedup_secs": 900,
+    "thread_follow": true,
+    "base_url": "https://slack.com/api"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "app_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${SLACK_APP_TOKEN}",
+        "description": "Slack app-level token (xapp-, scope connections:write) used to open the Socket Mode connection. Default is the Egon identity; a second bot instance overrides this with its own app-level token (e.g. SLACK_WALTER_APP_TOKEN)"
+      },
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${SLACK_BOT_TOKEN}",
+        "description": "Slack bot token (xoxb-, scope chat:write) \u2014 this token IS the bot's identity in the workspace. Default is the Egon identity; a second bot instance overrides this with its own bot token (e.g. SLACK_WALTER_BOT_TOKEN)"
+      },
+      "thread_follow": {
+        "type": "boolean",
+        "secret": false,
+        "default": true,
+        "description": "Keep answering in a thread the bot opened without needing to be mentioned again"
+      },
+      "envelope_dedup_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 900,
+        "description": "How long envelope ids are remembered so a Slack redelivery cannot emit twice"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around chat.postMessage"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "platform": {
+          "type": "string",
+          "values": [
+            "slack"
+          ],
+          "required": false
+        },
+        "chat_id": {
+          "type": "string",
+          "required": false
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "slack_channel": {
+          "type": "string",
+          "required": false
+        },
+        "slack_thread_ts": {
+          "type": "string",
+          "required": false
+        },
+        "slack_event_ts": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "chat_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:proxy",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Bridges a Slack workspace to the topology over Socket Mode (an outbound WebSocket \u2014 no public URL, no inbound HTTP surface). Mentions and DMs emerge as one user-origin turn each; answers from the topology are posted back into the originating thread.",
+    "use_when": "Whenever a hive needs a Slack surface. One proxy cell per Slack app \u2014 the bot token is the identity, so two bots means two cells with two apps.",
+    "not_in_scope": "Does not handle slash commands, interactive components, file uploads or reactions. Does not keep chat history. Does not transform messages beyond extracting text and identifiers.",
+    "emits_meaning": "Two emission shapes, hence NO required hop fields: (a) source emission \u2014 one user-origin text turn per addressed Slack message; hop carries chat_id/user_id/platform/slack_channel/slack_thread_ts/slack_event_ts. chat_id is a COMPOSITE STRING: '<channel>' for a DM, '<channel>:<thread_ts>' inside a thread. It MUST be promoted to context on the out-edge, or it dies with the next cell emission and the reply leg cannot address anything. (b) inbound-error emission (missing_chat_id/missing_assistant_turn/send_failed/invalid_body) \u2014 empty messages[], hop carries error_code + msg_type 'proxy_inbound_error', targeted at reply_to. Declaring chat_id or platform as required would break shape (b) against the substrate emits validation.",
+    "consumes_meaning": "messages[]: the last assistant turn is posted to Slack. context.chat_id selects channel and thread \u2014 its composite form is split back into channel plus thread_ts, so a reply always returns to the conversation it belongs to rather than to the channel root.",
+    "examples": [
+      "Mention '@bot how does routing work?' in C123 at ts 1700000000.000100 -> emit body { messages: [{ origin: 'user', type: 'text', text: '<@U0BOT> how does routing work?' }] }, hop { platform: 'slack', chat_id: 'C123:1700000000.000100', slack_channel: 'C123', slack_thread_ts: '1700000000.000100' } \u2014 the bot opens a thread on that message and every answer lands inside it."
+    ]
+  }
+}"##;
+
 /// Reads and parses a JSON file, naming the file in every failure.
 fn read_json(path: std::path::PathBuf) -> Value {
     let txt =
@@ -311,7 +558,7 @@ fn shipped_promotion_modifier(template: &str) -> Value {
 /// shipped value, `false` is the relaxed shape in which a lost promotion reaches
 /// the cell at all.
 fn telegram_proxy_config(base_url: &str, require_chat_id: bool) -> Value {
-    let mut cfg = read_json(templates_root().join("bot-basic/proxy/config.json"));
+    let mut cfg = shipped_or_snapshot("bot-basic/proxy/config.json", TELEGRAM_PROXY_SNAPSHOT);
     cfg["params"]["bot_token"] = json!(TELEGRAM_BOT_TOKEN);
     cfg["params"]["base_url"] = json!(base_url);
     cfg["params"]["emit_to"] = json!("../relay");
@@ -330,7 +577,7 @@ fn telegram_proxy_config(base_url: &str, require_chat_id: bool) -> Value {
 /// the composite string, so the contract type differs — which is exactly why
 /// both platforms are pinned instead of one standing in for the other.
 fn slack_proxy_config(base_url: &str, require_chat_id: bool) -> Value {
-    let mut cfg = read_json(templates_root().join("slack-agent/proxy/config.json"));
+    let mut cfg = shipped_or_snapshot("slack-agent/proxy/config.json", SLACK_PROXY_SNAPSHOT);
     cfg["params"]["app_token"] = json!(SLACK_APP_TOKEN);
     cfg["params"]["bot_token"] = json!(SLACK_BOT_TOKEN);
     cfg["params"]["base_url"] = json!(base_url);
