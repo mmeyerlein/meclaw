@@ -38,7 +38,7 @@
 //! | `cell.db` — birth-snapshot tables (`timer.schedules`, `store` seed) | seeded from `seed/` only, else at first spawn (covered by `a1` + `d2`) | **birth snapshot** — a `config.json` schedule edit is IGNORED → `b2`, `b3` | carried → live schedule state survives → `c2`; a DAMAGED one fails the boot loudly → `c6` | **reborn** — re-seeded from `config.json` → `d2` | probed, never opened for writing → `c6` (second half) | **kept** — a config-level restore does NOT restore behavior → `f2`; only a `cell.db` restore does → `f3` |
 //! | `colony.db` — `registry` (`cell_id`, status) | fresh `cell_id` per instantiated node (covered by `a1`) | **carried**, `cell_id` stable across reboot → `b1` | carried, `cell_id` identical to the source → `c1` | **reborn**, `cell_id` re-minted → `d1` | read-only overlay probe → `e1`, `e2` | carried; a restored node the registry does not know is **never adopted** → `f4` |
 //! | `colony.db` — `edges` + `hive_scopes` | mutation-applied (out of scope for this sweep; the `add_edges` path has its own suites) | **birth snapshot** — `params.graph` hints are ignored on reboot (pinned in `meclaw-testing/src/bootstrap_apply.rs::reboot_hydrates_edges_from_colony_db_and_ignores_hints`; no duplicate here) | carried → `c1` | **reborn** from `params.graph` → `d1` | plan-only static check → `e1`, `e2` | carried (same row as (c); no separate test needed) |
-//! | `colony.db` — `templates` (scan index) | read at resolve time (covered by `a1`) | scanned ONCE; re-scanned only when the table is empty or on `--rescan-templates` → `b5` | **carried with the SOURCE's `filesystem_path`** — stale after a restore until a rescan → `c3` | **reborn** by the boot scan → `d1` covers the boot; `c3` states the contrast | not rescanned by `--validate` (no test needed — `--validate` returns before the colony spawns; the scan runs in `run()` ahead of it and is already covered by `c3`) | same as (c) (no separate test needed) |
+//! | `colony.db` — `templates` (scan index) | read at resolve time (covered by `a1`) | scanned ONCE; re-scanned only when the table is empty, when its paths sit outside the booted root, or on `--rescan-templates` → `b5` | carried with the SOURCE's `filesystem_path`, then **re-anchored by the first boot** — the recorded paths are outside the booted root, so the boot scan rebuilds the index → `c3` | **reborn** by the boot scan → `d1` covers the boot; `c3` states the restore variant | not rescanned by `--validate` (no test needed — `--validate` returns before the colony spawns; the scan runs in `run()` ahead of it and is already covered by `c3`) | same as (c) (no separate test needed) |
 //! | `blobs/` (`DiskBlobStore`) | not involved (no test needed — instantiation never writes blobs) | live directory, never a snapshot (no test needed — the store is content-addressed by UUID and has no boot-time index) | carried as plain files → `c4` | **lost** — `BlobRef`s in a carried `message_log` would dangle; a config-only copy carries no `message_log` either, so the pair stays consistent → `c4` documents the carried case | not touched (no test needed) | same as (c) (no separate test needed) |
 //! | `templates/` + provenance of the copy | tree copied minus `template.json`; **no provenance is recorded anywhere** → `a1` | blacklisted from the bootstrap walk (no test needed — `walk_cell_directories` skips `templates/` at top level, covered by the whole sweep booting cleanly with a `templates/` dir present) | carried as plain files → `c3` | carried as plain files (same row) | blacklisted (no test needed) | same as (c) (no separate test needed) |
 //! | `.env` | substituted into `config.json` ONCE; `$${VAR}` survives as a literal `${VAR}` → `a2` | live-read every boot, in memory only → `b6` | carried; the baked values do NOT re-bind, the escaped ones DO → `a2` + `b6` cover both arms | same as (c) | live-read → `e1` | same as (c) |
@@ -64,8 +64,12 @@
 //!    *plausible* `cell.db` carrying stale content boots silently (`c5`). The
 //!    substrate defends against corruption, not against staleness.
 //! 4. **No provenance.** An instantiated node records nothing about the
-//!    template it came from (`a1`), and the carried template index keeps the
-//!    SOURCE machine's absolute paths until an explicit rescan (`c3`).
+//!    template it came from (`a1`). The template index is the one carried
+//!    artifact that is machine-specific — `templates.filesystem_path` is an
+//!    absolute path — so it is the one the boot repairs by itself: paths outside
+//!    the booted templates root mark the index as another root's and trigger a
+//!    full rescan (`c3`). Staleness INSIDE the right root stays the operator's
+//!    job (`b5`).
 
 use meclaw_cli::{Cli, StdioFormat, built_in_factories, run};
 use meclaw_colony::{
@@ -166,13 +170,27 @@ fn factories() -> CellFactoryRegistry {
     built_in_factories()
 }
 
+/// Unix seconds for the boot scan's `scanned_at`, same expression `run()` uses.
+fn boot_scan_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 // ────────────────────────────── boot harness ─────────────────────────────
 
-/// One boot against `root`: `colony_task` plus the filesystem bootstrap, both
-/// as join handles. Mirrors `meclaw-colony/tests/bootstrap_crash_recovery.rs`;
-/// `colony.db` deliberately lives INSIDE the tree, because that is what a
-/// backup/restore of `{root}` moves.
-fn boot(
+/// One boot against `root`: the templates boot scan, `colony_task` and the
+/// filesystem bootstrap, the last two as join handles. Mirrors
+/// `meclaw-colony/tests/bootstrap_crash_recovery.rs`; `colony.db` deliberately
+/// lives INSIDE the tree, because that is what a backup/restore of `{root}`
+/// moves.
+///
+/// The `boot_load_or_scan` call is the same one `meclaw_cli::run` makes ahead of
+/// spawning the colony, with the same argument shape (`{root}/templates`, no
+/// forced rescan). Without it a "plain boot" in this file would silently skip
+/// the one boot step the templates rows of the matrix are about.
+async fn boot(
     root: &std::path::Path,
 ) -> (
     mpsc::Sender<ColonyMsg>,
@@ -182,6 +200,14 @@ fn boot(
     let (inbox_tx, inbox_rx) = mpsc::channel(64);
     let (outputs_tx, outputs_rx) = mpsc::channel(64);
     let db = ColonyDb::open(&root.join("colony.db")).expect("open colony.db");
+    meclaw_colony::templates::boot_load_or_scan(
+        &root.join("templates"),
+        &db,
+        /*force_rescan=*/ false,
+        boot_scan_now(),
+    )
+    .await
+    .expect("boot template scan");
     let f = factories();
     let colony_join = tokio::spawn(colony_task(meclaw_colony::ColonyTaskConfig::new(
         inbox_tx.clone(),
@@ -225,7 +251,7 @@ async fn shutdown(inbox_tx: mpsc::Sender<ColonyMsg>, colony_join: tokio::task::J
 /// Boot, run the bootstrap to completion, shut down again. The workhorse of
 /// every reboot / restore assertion in this file.
 async fn boot_and_shutdown(root: &std::path::Path) -> meclaw_colony::BootstrapReport {
-    let (inbox, colony, apply) = boot(root);
+    let (inbox, colony, apply) = boot(root).await;
     let report = apply.await.expect("bootstrap apply join");
     shutdown(inbox, colony).await;
     report
@@ -449,7 +475,7 @@ async fn a1_instantiated_copy_strips_template_json_and_records_no_provenance() {
     let td = tempfile::TempDir::new().unwrap();
     write_tree(td.path(), "0 0 5 * * *");
 
-    let (inbox, colony, apply) = boot(td.path());
+    let (inbox, colony, apply) = boot(td.path()).await;
     apply.await.expect("bootstrap apply join");
     rescan_templates(&inbox, td.path().join("templates")).await;
 
@@ -545,7 +571,7 @@ async fn a2_instantiation_bakes_env_and_keeps_escaped_token_late_bound() {
     )
     .unwrap();
 
-    let (inbox, colony, apply) = boot(td.path());
+    let (inbox, colony, apply) = boot(td.path()).await;
     apply.await.expect("bootstrap apply join");
     rescan_templates(&inbox, td.path().join("templates")).await;
     let outcome = send_mutation(
@@ -769,14 +795,17 @@ async fn b4_cell_db_params_overlay_survives_reboot_and_config_json_is_not_rewrit
 }
 
 /// **b5** — the `colony.db` templates index is a scan snapshot, not a live
-/// read: a boot re-scans only when the table is empty.
+/// read: a boot against the SAME root re-scans only when the table is empty.
+/// (The other automatic trigger — an index anchored at a different root — is
+/// `c3`; here the root never moves, so a new template on disk stays invisible
+/// until an explicit rescan.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn b5_templates_index_is_scanned_once_and_not_refreshed_by_a_plain_boot() {
     let td = tempfile::TempDir::new().unwrap();
     write_tree(td.path(), "0 0 5 * * *");
     let db_path = td.path().join("colony.db");
 
-    let (inbox, colony, apply) = boot(td.path());
+    let (inbox, colony, apply) = boot(td.path()).await;
     apply.await.expect("bootstrap apply join");
     rescan_templates(&inbox, td.path().join("templates")).await;
     shutdown(inbox, colony).await;
@@ -803,7 +832,7 @@ async fn b5_templates_index_is_scanned_once_and_not_refreshed_by_a_plain_boot() 
          a snapshot until an explicit rescan"
     );
 
-    let (inbox, colony, apply) = boot(td.path());
+    let (inbox, colony, apply) = boot(td.path()).await;
     apply.await.expect("bootstrap apply join");
     rescan_templates(&inbox, td.path().join("templates")).await;
     shutdown(inbox, colony).await;
@@ -948,21 +977,30 @@ async fn c2_full_copy_carries_live_cell_db_state() {
     );
 }
 
-/// **c3** — the carried `templates` index still points at the SOURCE's
-/// filesystem path, and a plain boot does not correct it.
+/// **c3** — the carried `templates` index arrives holding the SOURCE's absolute
+/// paths, and the FIRST plain boot re-anchors it to the restored root.
 ///
 /// This is the one artifact in the matrix whose content is machine-specific:
-/// `templates.filesystem_path` is an absolute path captured at scan time. After
-/// a restore to a different location the index is stale until an explicit
-/// rescan re-anchors it.
+/// `templates.filesystem_path` is an absolute path captured at scan time. The
+/// boot scan therefore compares the recorded paths against the booted templates
+/// root; an index that sits outside it belongs to another root and is rebuilt by
+/// a full scan (issue #61) — the same repair `--rescan-templates` performs, just
+/// without having to know that a restore happened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c3_full_copy_carries_stale_template_paths_until_a_rescan() {
+async fn c3_full_copy_re_anchors_the_template_index_on_the_first_boot() {
     let src = tempfile::TempDir::new().unwrap();
     write_tree(src.path(), "0 0 5 * * *");
-    let (inbox, colony, apply) = boot(src.path());
-    apply.await.expect("bootstrap apply join");
-    rescan_templates(&inbox, src.path().join("templates")).await;
-    shutdown(inbox, colony).await;
+    boot_and_shutdown(src.path()).await;
+    let src_rows = template_rows(&src.path().join("colony.db"));
+    assert_eq!(
+        src_rows.len(),
+        1,
+        "the source index is populated by its own boot scan, got {src_rows:?}"
+    );
+    assert!(
+        src_rows[0].1.starts_with(src.path().to_str().unwrap()),
+        "precondition: the index records the SOURCE's absolute path, got {src_rows:?}"
+    );
 
     let dst = tempfile::TempDir::new().unwrap();
     let restored = dst.path().join("restored");
@@ -970,27 +1008,19 @@ async fn c3_full_copy_carries_stale_template_paths_until_a_rescan() {
     boot_and_shutdown(&restored).await;
 
     let rows = template_rows(&restored.join("colony.db"));
-    assert_eq!(rows.len(), 1, "the template index is carried, got {rows:?}");
-    assert!(
-        rows[0].1.starts_with(src.path().to_str().unwrap()),
-        "the carried filesystem_path still points at the SOURCE root — a plain \
-         boot does not re-anchor it (rows: {rows:?})"
+    assert_eq!(
+        rows.len(),
+        1,
+        "the template index is carried and rebuilt, got {rows:?}"
     );
     assert!(
-        !rows[0].1.starts_with(restored.to_str().unwrap()),
-        "and it does NOT point at the restored root (rows: {rows:?})"
+        rows[0].1.starts_with(restored.to_str().unwrap()),
+        "a plain boot re-anchors the carried index to the restored root \
+         (rows: {rows:?})"
     );
-
-    // The repair is an explicit rescan against the new root.
-    let (inbox, colony, apply) = boot(&restored);
-    apply.await.expect("bootstrap apply join");
-    rescan_templates(&inbox, restored.join("templates")).await;
-    shutdown(inbox, colony).await;
-    let rows = template_rows(&restored.join("colony.db"));
     assert!(
-        rows.iter()
-            .all(|(_, p)| p.starts_with(restored.to_str().unwrap())),
-        "an explicit rescan re-anchors the index to the new root, got {rows:?}"
+        !rows[0].1.starts_with(src.path().to_str().unwrap()),
+        "and no SOURCE path survives the first boot (rows: {rows:?})"
     );
 }
 

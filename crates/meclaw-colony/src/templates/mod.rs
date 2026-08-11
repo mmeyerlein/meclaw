@@ -114,8 +114,39 @@ pub fn apply_scan_result<'a>(
     }
 }
 
+/// Is the persisted template index anchored somewhere other than `templates_root`?
+///
+/// `templates.filesystem_path` is an absolute path captured at scan time, so a
+/// `colony.db` restored to a new location keeps the SOURCE machine's paths
+/// (issue #61). A row that does not sit under the booted templates root is the
+/// evidence; the plain prefix check covers the ordinary case and the
+/// canonicalised one absorbs symlinked or non-normalised roots. A row whose
+/// directory does not exist at all cannot be canonicalised and counts as
+/// foreign — which is exactly what a restore without the `templates/` tree is.
+///
+/// An empty index is never foreign; the empty-table branch already scans.
+fn index_is_foreign_to_root(templates_root: &std::path::Path, existing: &[TemplateRow]) -> bool {
+    let canonical_root = templates_root
+        .canonicalize()
+        .unwrap_or_else(|_| templates_root.to_path_buf());
+    existing.iter().any(|row| {
+        let p = std::path::Path::new(&row.filesystem_path);
+        !p.starts_with(templates_root)
+            && !p
+                .canonicalize()
+                .map(|c| c.starts_with(&canonical_root))
+                .unwrap_or(false)
+    })
+}
+
 /// Startup algorithm step 3 (overview Z.1368): load from DB; empty → auto-scan;
 /// `force_rescan=true` → always scan.
+///
+/// Issue #61 adds a third trigger: an index whose `filesystem_path` entries do
+/// not sit under `templates_root` belongs to another root (a restore to a new
+/// location) and is re-anchored by a full scan on the first boot, without an
+/// explicit `--rescan-templates`. A mixed index — some rows matching, some not —
+/// is treated like a wholly foreign one, so the outcome is deterministic.
 ///
 /// Called after `ColonyDb::open`, before bootstrap walk. Idempotent.
 ///
@@ -129,7 +160,15 @@ pub fn boot_load_or_scan<'a>(
     now: i64,
 ) -> impl std::future::Future<Output = Result<(), scanner::ScannerError>> + Send + 'a {
     let existing = db.read_templates().unwrap_or_default();
-    let needs_scan = force_rescan || existing.is_empty();
+    let foreign_index = index_is_foreign_to_root(templates_root, &existing);
+    if foreign_index {
+        tracing::info!(
+            templates_root = %templates_root.display(),
+            rows = existing.len(),
+            "templates index points outside the booted root — re-anchoring by a full rescan"
+        );
+    }
+    let needs_scan = force_rescan || existing.is_empty() || foreign_index;
     let scan_fut = if needs_scan {
         Some(apply_scan_result(templates_root, db, now))
     } else {
@@ -185,6 +224,105 @@ mod sync_tests {
         let rows = db.read_templates().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].scanned_at, 200);
+    }
+
+    /// Issue #61: a restored `colony.db` carries the SOURCE machine's absolute
+    /// template paths. The first boot under the new root must re-anchor them
+    /// without an explicit `--rescan-templates`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn boot_rescans_when_the_index_points_outside_the_booted_root() {
+        // Source root: one scan, so the index carries the source's paths.
+        let src = TempDir::new().unwrap();
+        make_template(&src, "a", "a", None);
+        let db = crate::ColonyDb::open(&src.path().join("c.db")).unwrap();
+        boot_load_or_scan(&src.path().join("templates"), &db, false, 100)
+            .await
+            .unwrap();
+
+        // The tree is restored under a different root and booted there — same
+        // colony.db content, new location, no `--rescan-templates`.
+        let dst = TempDir::new().unwrap();
+        make_template(&dst, "a", "a", None);
+        boot_load_or_scan(&dst.path().join("templates"), &db, false, 200)
+            .await
+            .unwrap();
+
+        let rows = db.read_templates().unwrap();
+        assert_eq!(rows.len(), 1, "got {rows:?}");
+        assert!(
+            std::path::Path::new(&rows[0].filesystem_path).starts_with(dst.path()),
+            "a foreign index must be re-anchored to the booted root, got {:?}",
+            rows[0].filesystem_path
+        );
+        assert_eq!(
+            rows[0].scanned_at, 200,
+            "the re-anchoring is a full rescan, not a patch"
+        );
+    }
+
+    /// Issue #61, mixed state: some rows already sit under the booted root,
+    /// others do not. One deterministic answer — a full rescan, same as for a
+    /// wholly foreign index.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn boot_rescans_when_only_part_of_the_index_is_foreign() {
+        let td = TempDir::new().unwrap();
+        make_template(&td, "a", "a", None);
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        let root = td.path().join("templates");
+        boot_load_or_scan(&root, &db, false, 100).await.unwrap();
+
+        // A second row from a foreign root, written through the production
+        // write op — the mixed state a partial restore leaves behind.
+        let (tx, rx) = std::sync::mpsc::channel();
+        send_op_via(
+            &db.writer_tx,
+            &db.queue_depth,
+            ColonyWriteOp::UpsertTemplate {
+                template_id: Uuid::now_v7().to_string(),
+                name: "b".into(),
+                version: None,
+                filesystem_path: "/former-root/templates/b".into(),
+                description_json: "{}".into(),
+                tags_json: "[]".into(),
+                author: None,
+                scanned_at: 100,
+                ack: Some(tx),
+            },
+        )
+        .await;
+        let _ = rx.recv();
+        assert_eq!(
+            db.read_templates().unwrap().len(),
+            2,
+            "precondition: the index is mixed"
+        );
+
+        boot_load_or_scan(&root, &db, false, 200).await.unwrap();
+        let rows = db.read_templates().unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a mixed index is rescanned like a foreign one, got {rows:?}"
+        );
+        assert_eq!(rows[0].name, "a");
+        assert_eq!(rows[0].scanned_at, 200);
+    }
+
+    /// The counter-case: same root, non-empty index → no scan. Guards the
+    /// re-anchoring against turning every boot into a rescan.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn boot_does_not_rescan_when_the_index_matches_the_booted_root() {
+        let td = TempDir::new().unwrap();
+        make_template(&td, "a", "a", None);
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        let root = td.path().join("templates");
+        boot_load_or_scan(&root, &db, false, 100).await.unwrap();
+        boot_load_or_scan(&root, &db, false, 200).await.unwrap();
+        assert_eq!(
+            db.read_templates().unwrap()[0].scanned_at,
+            100,
+            "an index that already sits under the booted root is left alone"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -23,12 +23,12 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding tokens in the books,
 [#11](https://github.com/mmeyerlein/meclaw/issues/11) DbConn shutdown panic,
 [#37](https://github.com/mmeyerlein/meclaw/issues/37) import/export matrix with the snapshot-versus-live spec section,
-[#60](https://github.com/mmeyerlein/meclaw/issues/60) WAL sidecars documented as part of the restore unit.
+[#60](https://github.com/mmeyerlein/meclaw/issues/60) WAL sidecars documented as part of the restore unit,
+[#61](https://github.com/mmeyerlein/meclaw/issues/61) foreign template index re-anchors on boot.
 
-1. [#61](https://github.com/mmeyerlein/meclaw/issues/61) restore: stale absolute template paths until a rescan
-2. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
-3. [#57](https://github.com/mmeyerlein/meclaw/issues/57) remaining expects on the store wake path
-4. [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn: reconnect after a dropped call future
+1. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
+2. [#57](https://github.com/mmeyerlein/meclaw/issues/57) remaining expects on the store wake path
+3. [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn: reconnect after a dropped call future
 
 ## Next: 0.2.0 memory quality
 
