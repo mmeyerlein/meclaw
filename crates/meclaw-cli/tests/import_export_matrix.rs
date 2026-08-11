@@ -304,6 +304,12 @@ async fn rescan_templates(inbox_tx: &mpsc::Sender<ColonyMsg>, templates_root: st
 
 /// Move path (c): a full `cp -r` of `{root}` — configs, `colony.db`, every
 /// `cell.db`, `templates/`, `blobs/`.
+///
+/// A file listed by `read_dir` may vanish before its `copy`: SQLite deletes
+/// the `-wal`/`-shm` sidecars when the last connection drops, and that drop
+/// can trail the shutdown await on a loaded runner. A real `cp -r` on a
+/// living directory hits the same race and skips, so the copy helpers do too.
+/// Tests that NEED a sidecar to survive hold a second connection open (c5).
 fn copy_full(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -311,8 +317,10 @@ fn copy_full(src: &std::path::Path, dst: &std::path::Path) {
         let to = dst.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
             copy_full(&entry.path(), &to);
-        } else {
-            std::fs::copy(entry.path(), &to).unwrap();
+        } else if let Err(e) = std::fs::copy(entry.path(), &to)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            panic!("copy {}: {e}", entry.path().display());
         }
     }
 }
@@ -327,8 +335,11 @@ fn copy_filtered(src: &std::path::Path, dst: &std::path::Path, keep: &dyn Fn(&st
         let to = dst.join(&name);
         if entry.file_type().unwrap().is_dir() {
             copy_filtered(&entry.path(), &to, keep);
-        } else if keep(&name_s) {
-            std::fs::copy(entry.path(), &to).unwrap();
+        } else if keep(&name_s)
+            && let Err(e) = std::fs::copy(entry.path(), &to)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            panic!("copy {}: {e}", entry.path().display());
         }
     }
 }
@@ -1034,6 +1045,21 @@ async fn c5_db_copy_without_wal_sidecars_silently_restores_stale_state() {
     boot_and_shutdown(src.path()).await;
     let tick = src.path().join("main/tick");
     assert_eq!(schedule_rows(&tick)[0].1, "0 0 5 * * *");
+
+    // The colony's own connections drop on a blocking pool thread that can
+    // trail the shutdown await. If the holder below opens BEFORE that last
+    // drop, the birth state never checkpoints into the main db file and the
+    // sidecar-less copy is corrupt instead of stale (seen once in 13 loaded
+    // runs). Wait for the checkpoint receipt: the WAL sidecar disappearing.
+    let birth_wal = tick.join("cell.db-wal");
+    let deadline = std::time::Instant::now() + MARKER;
+    while birth_wal.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "birth checkpoint did not land within the failure marker"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     // A holder connection stands in for the live colony: while it is open, a
     // closing writer connection does NOT checkpoint, so the new value stays in
