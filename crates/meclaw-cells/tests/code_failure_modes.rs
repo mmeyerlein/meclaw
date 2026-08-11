@@ -87,11 +87,17 @@ async fn run_capturing_warns(cell: &CodeCell) -> (Vec<meclaw_core::CellEmission>
     let lines = Arc::new(Mutex::new(Vec::<String>::new()));
     let (otx, mut orx) = mpsc::channel(8);
     let sink = make_sink(otx);
+    // `set_default` is thread-local, but on a multi_thread runtime the awaited
+    // handle() future can migrate to another worker via work stealing and lose
+    // the capture (seen as `captured: []` on the 2-core CI runner). Binding the
+    // subscriber to the FUTURE keeps it across polls on every thread.
     {
-        let _guard = tracing::subscriber::set_default(WarnCapture {
-            lines: Arc::clone(&lines),
-        });
-        cell.handle(mk_msg(), &sink).await;
+        use tracing::instrument::WithSubscriber;
+        cell.handle(mk_msg(), &sink)
+            .with_subscriber(WarnCapture {
+                lines: Arc::clone(&lines),
+            })
+            .await;
     }
     drop(sink);
     let mut outs = Vec::new();
