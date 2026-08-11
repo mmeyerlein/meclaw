@@ -16,6 +16,8 @@ roughly this order. The two watchdog items travel together.
 4. [#7](https://github.com/mmeyerlein/meclaw/issues/7) cell I/O liveness signal (the watchdog item's other half)
 5. [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding calls in token accounting
 6. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
+7. [#40](https://github.com/mmeyerlein/meclaw/issues/40) Windows build: cfg-gate the unix signal import
+8. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
 
 ## Next: 0.2.0 memory quality
 
@@ -40,7 +42,29 @@ panic, [#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob
 resolution, [#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops
 reachable from the API,
 [#20](https://github.com/mmeyerlein/meclaw/issues/20) secret materialization
-classes.
+classes, [#35](https://github.com/mmeyerlein/meclaw/issues/35) sandboxing for
+code and bash cells.
+
+## Then: meclaw-os, the organism
+
+A colony grown from a seed into a personal operating system. The epic
+[#26](https://github.com/mmeyerlein/meclaw/issues/26) leads and carries the settled principles and open forks; its
+sub-issues in intended order:
+[#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
+[#28](https://github.com/mmeyerlein/meclaw/issues/28) the talky/cogny split,
+[#29](https://github.com/mmeyerlein/meclaw/issues/29) one talky per channel,
+[#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
+[#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
+[#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
+Riding the same wave: [#36](https://github.com/mmeyerlein/meclaw/issues/36) the firewall hive,
+[#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public app store,
+[#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive built with the builder.
+
+## Alongside: surfaces
+
+New ways in and out, [#38](https://github.com/mmeyerlein/meclaw/issues/38) voice ingress first (dictation-style now,
+realtime speech when the APIs land), then [#39](https://github.com/mmeyerlein/meclaw/issues/39) the realtime HTML
+window.
 
 ## Ongoing: community templates
 
