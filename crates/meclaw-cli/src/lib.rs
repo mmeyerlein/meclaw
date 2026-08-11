@@ -623,6 +623,9 @@ pub async fn run_with_hooks(
     // shutdown as a signal. `--daemon` never reaches here (eof_rx is None →
     // the arm pends forever = EOF is ignored).
     let signal_future = async {
+        // Issue #40: SIGTERM exists only on unix. Elsewhere the arm below is
+        // compiled out and ctrl_c alone carries the shutdown.
+        #[cfg(unix)]
         let mut term =
             match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
                 Ok(t) => t,
@@ -650,9 +653,15 @@ pub async fn run_with_hooks(
                 None => std::future::pending::<()>().await,
             }
         };
+        // select! takes no cfg on branches, so the platform split lives in a
+        // pre-built future: unix awaits SIGTERM, everything else pends forever.
+        #[cfg(unix)]
+        let term_future = async move { term.recv().await };
+        #[cfg(not(unix))]
+        let term_future = std::future::pending::<Option<()>>();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},
-            _ = term.recv() => {},
+            _ = term_future => {},
             _ = shutdown_future => {},
             // Deep-Audit F3: the heartbeat-watchdog supervisor lost the colony →
             // drive the same graceful stop as a signal.
