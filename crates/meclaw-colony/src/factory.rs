@@ -138,6 +138,32 @@ pub trait CellFactory: Send + Sync {
     /// per-cell-type param errors before any cell is spawned.
     fn validate_params(&self, params: &JsonValue) -> Result<(), String>;
 
+    /// Pre-spawn validation of the cell's ON-DISK assets (issue #56).
+    ///
+    /// `validate_params` only sees the `params` block; a cell type whose
+    /// directory carries further **statically parseable** configuration (the
+    /// `store` cell's `seed/<table>.jsonl` files) overrides this hook so the
+    /// bootstrap plan-phase parses that content too. Without it a purely
+    /// syntactic mistake passes `meclaw --validate --strict` with exit 0 and
+    /// only surfaces on the first message — as a crash rather than a named
+    /// error, breaking the validate-equals-spawn invariant.
+    ///
+    /// Called by `plan_bootstrap` right after `validate_params`, with the
+    /// cell's absolute filesystem directory. Implementors MUST route this
+    /// through the same parse path their spawn/wake code uses (parser
+    /// invariant), and MUST NOT touch anything outside `cell_dir` or mutate
+    /// state — the plan phase is side-effect free.
+    ///
+    /// Default: `Ok(())` — most cell types have no on-disk assets.
+    fn validate_cell_dir(
+        &self,
+        params: &JsonValue,
+        cell_dir: &std::path::Path,
+    ) -> Result<(), String> {
+        let _ = (params, cell_dir);
+        Ok(())
+    }
+
     /// Spawn-kind discriminator for registration paths that must know the kind
     /// WITHOUT building a task (F1-KH2: boot-inactive rehydration, subtree
     /// merge). `true` = lazy stateful kind — `spawn_cell` returns `Dormant`

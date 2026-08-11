@@ -28,10 +28,25 @@ impl CellFactory for StoreCellFactory {
         StoreParams::parse(raw).map(|_| ())
     }
 
+    /// Issue #56: the on-disk half of the pre-spawn validation — `seed/<table>
+    /// .jsonl` is statically parseable configuration, so the bootstrap plan
+    /// phase (and therefore `meclaw --validate [--strict]`) parses it here
+    /// instead of letting the error strike at the cell's first wake.
+    ///
+    /// Same parse path as `spawn_cell` and the `WakeFn` loader
+    /// (`seed::check_seed_files` → `parse_seed_file` ← `load_seed_if_present`),
+    /// which is what keeps validate-equals-spawn honest.
+    fn validate_cell_dir(&self, raw: &JsonValue, cell_dir: &std::path::Path) -> Result<(), String> {
+        let params = StoreParams::parse(raw)?;
+        seed::check_seed_files(cell_dir, &params.schema)
+    }
+
     /// Spawn a `store` cell instance.
     ///
     /// Sequence (per brainstorm E1+E3+E4):
-    /// 1. Parse params (`StoreParams::parse`).
+    /// 1. Parse params (`StoreParams::parse`), then statically parse the seed
+    ///    files (`seed::check_seed_files`, issue #56) — a broken seed fails
+    ///    THIS CELL here instead of panicking at wake.
     /// 2. `open_or_create_cell_db_with_status` → `(Connection, OpenStatus)`,
     ///    then `hamming::register` (P4: the scalar function is per connection,
     ///    so both the wake and the respawn path install it).
@@ -60,7 +75,15 @@ impl CellFactory for StoreCellFactory {
         // Spawn-time validate (parser-invariant). The effective params are
         // rebuilt from the cell.db overlay at each wake/respawn (β restore);
         // the closures capture the BIRTH params Value (config.json snapshot).
-        let _params = StoreParams::parse(&raw_params)?;
+        let params = StoreParams::parse(&raw_params)?;
+
+        // Issue #56: the seed files are parsed HERE, on the spawn path, so a
+        // syntactically broken seed fails THIS CELL with a named factory error
+        // (handled like every other factory error: boot plan reject, mutation
+        // reject) instead of panicking later inside the colony task's wake.
+        // `schema` is an IMMUTABLE overlay key, so the birth schema checked
+        // here is the same schema the WakeFn seeds against.
+        seed::check_seed_files(&cell_dir, &params.schema).map_err(|e| format!("store: {e}"))?;
 
         // Phase-13-K-2: NO initial cell-task spawn — the mailbox pair goes to
         // Dormant. Seed-on-Created stays correct: WakeFn calls
@@ -159,9 +182,27 @@ impl CellFactory for StoreCellFactory {
             // FTS DDL runs BEFORE the seed, so seeded rows are indexed by the
             // triggers on the way in (and an existing cell.db catches up here).
             ddl::apply_fts_ddl(&conn, &effective.fts).expect("wake: apply_fts_ddl");
-            if status == OpenStatus::Created {
-                seed::load_seed_if_present(&conn, &wake_cell_dir, &effective.schema)
-                    .expect("wake: load_seed_if_present");
+            if status == OpenStatus::Created
+                && let Err(e) = seed::load_seed_if_present(&conn, &wake_cell_dir, &effective.schema)
+            {
+                // Issue #56: this closure runs INSIDE the colony task (the
+                // routing/dispatch path wakes a parked cell synchronously), so
+                // a panic here does not fail one cell, it takes the whole
+                // colony down (the panic-free colony hot path invariant,
+                // A1′ class). Every statically detectable seed defect is
+                // already rejected by `validate_cell_dir` (bootstrap plan /
+                // `--validate`) and by `check_seed_files` on the spawn path
+                // above, so reaching this arm means the seed file changed on
+                // disk after the cell was spawned, or an INSERT was rejected.
+                // Report loudly and continue with an unseeded (but
+                // schema-correct) table rather than killing the colony.
+                tracing::error!(
+                    path = wake_path.as_str(),
+                    error = %e,
+                    "store: seed load failed at wake — the cell starts WITHOUT its \
+                     seed rows (the colony is kept alive; fix the seed file and \
+                     re-create the cell.db)"
+                );
             }
             let to = effective
                 .query_timeout_ms

@@ -692,6 +692,19 @@ pub fn plan_bootstrap_with_env(
                 });
                 continue;
             }
+            // Issue #56: the on-disk half of the same pre-spawn validation.
+            // Statically parseable assets inside the cell directory (today: the
+            // `store` cell's `seed/<table>.jsonl` files) are parsed HERE, so a
+            // syntactic mistake is a named plan error — reported by
+            // `meclaw --validate [--strict]` with exit != 0 — instead of a
+            // crash on the cell's first message (validate-equals-spawn).
+            if let Err(reason) = factory.validate_cell_dir(&cfg.params, fs_path) {
+                errors.push(BootstrapError::InvalidCellDir {
+                    path: fs_path.clone(),
+                    reason,
+                });
+                continue;
+            }
 
             let cell_db_path = fs_path.join("cell.db");
             if let Err(reason) = probe_cell_db(&cell_db_path) {
@@ -980,6 +993,16 @@ pub enum BootstrapError {
     UnknownCellType { path: PathBuf, cell_type: String },
     /// Factory's `validate_params` rejected the params block.
     InvalidParams { path: PathBuf, reason: String },
+    /// Factory's `validate_cell_dir` rejected a statically parseable asset
+    /// inside the cell directory (issue #56 — e.g. a `store` cell's
+    /// `seed/<table>.jsonl` whose line 1 is not the `{"schema":{…}}` header, or
+    /// whose header does not cover every declared column).
+    InvalidCellDir {
+        /// Absolute filesystem path of the offending cell directory.
+        path: PathBuf,
+        /// Parse-error reason (names the offending file and line).
+        reason: String,
+    },
     /// CEL `condition` failed to parse (Phase 13.5-A1, replaces the Phase-4
     /// `EdgeCondition` strict-fail variant).
     EdgeConditionParse {
@@ -1207,6 +1230,44 @@ mod plan_tests {
         }
     }
 
+    /// Issue #56: a cell type that carries statically parseable ON-DISK assets
+    /// and therefore overrides `validate_cell_dir`. Generic stand-in for the
+    /// `store` cell's seed files (meclaw-colony must not depend on
+    /// meclaw-cells): a file named `asset.broken` in the cell directory is the
+    /// unparseable asset.
+    struct AssetFactory;
+    impl CellFactory for AssetFactory {
+        fn validate_params(&self, _: &JsonValue) -> Result<(), String> {
+            Ok(())
+        }
+        fn validate_cell_dir(
+            &self,
+            _: &JsonValue,
+            cell_dir: &std::path::Path,
+        ) -> Result<(), String> {
+            if cell_dir.join("asset.broken").exists() {
+                return Err("asset.broken: not parseable".into());
+            }
+            Ok(())
+        }
+        fn spawn_cell(
+            self: Arc<Self>,
+            _: McPath,
+            _: JsonValue,
+            _: tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
+            _cell_dir: std::path::PathBuf,
+            _contract: ContractView,
+            _colony_inbox_tx: tokio::sync::mpsc::Sender<crate::ColonyMsg>,
+            _idle_timeout: Option<std::time::Duration>,
+            _cell_timeout: i64,
+            _message_timeout: Option<std::time::Duration>,
+            _blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+            _mailbox_capacity: usize,
+        ) -> Result<SpawnedCellKind, String> {
+            unimplemented!("not used in plan tests")
+        }
+    }
+
     fn write(dir: &std::path::Path, rel: &str, body: &str) {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -1216,6 +1277,12 @@ mod plan_tests {
     fn factories_with_echo() -> CellFactoryRegistry {
         let mut r: CellFactoryRegistry = std::collections::HashMap::new();
         r.insert("echo".into(), Arc::new(OkFactory));
+        r
+    }
+
+    fn factories_with_assets() -> CellFactoryRegistry {
+        let mut r: CellFactoryRegistry = std::collections::HashMap::new();
+        r.insert("echo".into(), Arc::new(AssetFactory));
         r
     }
 
@@ -2179,6 +2246,45 @@ mod plan_tests {
                 .iter()
                 .any(|e| matches!(e, BootstrapError::CorruptCellDb { .. }))
         );
+    }
+
+    /// Issue #56: an unparseable on-disk asset is a NAMED plan error, so
+    /// `--validate` sees it instead of the cell's first wake.
+    #[test]
+    fn plan_bootstrap_rejects_unparseable_cell_dir_asset() {
+        let td = TempDir::new().unwrap();
+        write(td.path(), "main/config.json", r#"{"cell":{"type":"hive"}}"#);
+        write(
+            td.path(),
+            "main/a/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        write(td.path(), "main/a/asset.broken", "");
+        let err =
+            plan_bootstrap(td.path(), &factories_with_assets(), &empty_overlay()).unwrap_err();
+        assert!(
+            err.items().iter().any(|e| matches!(
+                e,
+                BootstrapError::InvalidCellDir { reason, .. } if reason.contains("asset.broken")
+            )),
+            "expected InvalidCellDir naming the asset, got: {:?}",
+            err.items()
+        );
+    }
+
+    /// Control: the same tree without the broken asset plans clean — the hook
+    /// must not reject every cell directory.
+    #[test]
+    fn plan_bootstrap_accepts_parseable_cell_dir_asset() {
+        let td = TempDir::new().unwrap();
+        write(td.path(), "main/config.json", r#"{"cell":{"type":"hive"}}"#);
+        write(
+            td.path(),
+            "main/a/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        let plan = plan_bootstrap(td.path(), &factories_with_assets(), &empty_overlay()).unwrap();
+        assert_eq!(plan.cells.len(), 1);
     }
 
     #[test]
