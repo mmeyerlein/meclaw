@@ -40,6 +40,20 @@ async fn phase_10_a_demo_mailbox_message_reaches_handle() {
         .send(MessageBuilder::new(Path::new("/lr")).build())
         .await
         .unwrap();
+    // Wait for the dispatch BEFORE ending the I/O side. When run_io ends, the
+    // outer select aborts the surviving handler task, mailbox and all — the
+    // known #18 boundary (mailbox preservation). Dropping `_inject` right
+    // after the send races the handler's first poll against that abort, and
+    // on a loaded runner the abort can win (seen once on the 2-core CI). This
+    // test pins dispatch, not that boundary, so it sequences the two.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while counter.load(Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "handle() was never dispatched within the failure marker"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     drop(in_tx);
     drop(_inject);
 
