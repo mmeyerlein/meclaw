@@ -54,6 +54,9 @@ searcher in parallel, the `collector` holds them in `memory` until every result 
 fires the rebuilt thread back to the `planner` over one edge. Multi-tool fan-out, fan-in, and
 loopback, all drawn in the tree.
 
+For the row-by-row protocol, including the expected-ID check and atomic fired-once guard, read
+the [store-backed tool-loop walkthrough](../../docs/store-backed-tool-loop.md).
+
 ## Set up the Telegram bot
 
 1. In Telegram, open a chat with **@BotFather**.
