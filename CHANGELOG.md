@@ -4,6 +4,153 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.14] — 2026-08-11
+
+Which version of a remembered fact holds is now decided when the fact is read,
+not when a nightly job gets around to it. Two sentences carry the release, and
+both are a test now instead of an intention: **dreaming is garbage collection,
+not conflict resolution**, and **facts dumped in during the day answer exactly
+like facts that have been tidied up — only slower**.
+
+### Added
+
+- **Supersession is derived at read time.** Which version of a
+  `(subject, predicate)` axis is current follows from the chain of its
+  `valid_from` values at the moment of the query. `expired_at` is demoted from
+  truth-bearer to cache: the dream run still writes it, but nothing on the read
+  path depends on it having run. The invariance criterion that follows — the
+  same question returns the same answer before and after a dream run — is
+  enforced by a scenario gate rather than argued in a design document.
+- **A superseded hit is annotated, not filtered away.** It projects onto the
+  current fact of its axis and attaches to it as `history`. The old guarantee
+  survives (no stale claim is presented as current truth) and the question
+  "and what was it before?" becomes answerable — out of a single recall,
+  without a second round trip.
+- **Coexistence is distinguished from replacement, and the distinction is
+  learned from the data.** Two facts sharing one `valid_from` do not supersede
+  each other; only a strictly later start closes a span. And once an axis has
+  demonstrated coexistence, the whole axis is treated as multivalued from then
+  on, monotonically: a third value arriving months later does not end the two
+  already there. "Has a son" is not "lives in" and the store finds that out by
+  itself instead of being told per predicate. The design pass behind this is
+  backed by a literature review (OWL functional properties, Wikidata ranking,
+  PARIS/AMIE functionality degree, SQL:2011 system-versioning); what shipped is
+  its conservative recommendation, with statement identity noted on the roadmap
+  as the target picture.
+- **Window retrieval with an explicit reject lane.** The temporal leg takes
+  `recall_window_from` / `recall_window_to` through port and context in addition
+  to the as-of point mode, and cuts a real interval instead of a snapshot. A
+  half-open window (exactly one bound set) is rejected as invalid input rather
+  than silently completed with a default — a wrong window is worse than a
+  refused one. Who derives the window is deliberately the consumer's job: the
+  memory lane does not guess a time range from prose.
+- **Prefix matching in the keyword leg, at word end only,** so a query term can
+  grow but cannot leak into unrelated stems — and **`predicate` in the full-text
+  index**, so the relation is searchable, not only the claim.
+- **Fusion rules decided from measurements, not from taste.** An exact score tie
+  is broken by the temporal leg instead of by whichever UUID happened to sort
+  first (identical RRF sums are genuinely reachable with symmetric ranks, and a
+  freshly minted UUID is not a tiebreak, it is a coin flip); in window mode the
+  temporal order binds. And in point mode the temporal leg no longer votes at
+  all — see below.
+
+### Fixed
+
+- **The FTS index can migrate additively instead of refusing to boot.** If the
+  declared column list grows at the end and the existing columns are a proper
+  prefix of it, the index is dropped and rebuilt from the base table; every
+  other drift (a column removed, columns reordered) stays a loud spawn error.
+  An FTS index is a rebuildable projection over source text that is never
+  deleted, so dropping it destroys nothing — while silently serving a stale
+  index shape would.
+  **The lesson that nearly shipped a silent defect:** `DROP TABLE "<t>_fts"`
+  does **not** remove the three external-content triggers, and the following
+  `CREATE TRIGGER IF NOT EXISTS` would then have kept the old column list
+  alive. The rebuild would have looked correct — rows written *after* the
+  migration would simply never have reached the new column, forever and
+  quietly. The triggers are now dropped explicitly, and the test proves it with
+  a row inserted after the migration, not with the backfill alone.
+- **An as-of query still filtered on the cache it was built to replace.** The
+  temporal leg's select carried `expired_at IS NULL`, so after a dream run it
+  shrank from two rows to one and the surviving candidate's fusion score moved
+  — the same recall, a different answer, depending only on whether the nightly
+  job had already run. Exactly what the invariance criterion forbids. The
+  window branch a few lines below was already correct; both now state it
+  literally: `expired_at` does not appear in a `where` clause.
+- **Axis collapse silently dropped the retrieval legs of the hits it
+  swallowed.** When two hits of one axis collapse into a single candidate, the
+  survivor now carries the **union** of all collapsed hits' legs, deduplicated
+  and in canonical order. Score, rank and fusion order remain those of the first
+  winner — this is attribution, not re-ranking: "found by leg X" is a statement
+  about discovery and belongs to the axis, not to whichever hit happened to
+  place first. The defect was pre-existing and had been masked by a weighting
+  that made the right hit win by accident.
+
+### Measured
+
+- **LongMemEval, medium stage (50 questions, stratified across question types):
+  R@1 84.0 · R@5 98.0 · R@10 100.0** in the shipped configuration. This is a
+  measurement of one retrieval lane at one corpus size, not a claim about the
+  substrate.
+- **The finding that changed the configuration: across 100 runs the temporal leg
+  never once found a hit on its own.** Its value is the as-of/window *cut*, not
+  its vote in the fusion; what its vote did was displace better candidates. The
+  proof is a *paired* comparison on identical extractions — two separate runs
+  produce different extractions, so an unpaired number says nothing about which
+  leg produced it. Paired, the weightless arm stands at **R@1 84.0 vs 74.0** and
+  **R@5 98.0 vs 96.0**, with **11 flips to 1** in its favour (sign test
+  p = 0.0063). Hence: no temporal weight in point mode (new knob, default off),
+  full weight retained in window mode, where the temporal order is the answer
+  rather than an opinion.
+- **The benchmark harness grew three capabilities, each born from a failed
+  run:** stratified sampling (the dataset is sorted in blocks by question type,
+  so a naive first-n slice measured one type fifty times and said nothing about
+  the rest), per-run environment overrides with a separate output directory
+  (so an ablation cannot overwrite its own baseline, and every override is
+  echoed into start log, per-question record and report — a run with changed
+  settings and an unchanged-looking report is the one silent mismeasurement this
+  harness must not produce), and a boot post-mortem with retry (a daemon that
+  dies during boot is now reported dead with its exit code and the tail of its
+  log, instead of timing out 120 seconds later as "never came up").
+
+### Known limitations
+
+- **Chain projection starves where the extractor drifts.** In every
+  knowledge-update case examined, the old and the new version of a fact sat side
+  by side *unchained*, because the extractor had assigned them divergent
+  predicates — so the projection never fired, and in a quarter of them the
+  outdated version ranked first. The read path is correct; the axis it needs is
+  not always produced. Entity and predicate deduplication is registered on the
+  roadmap as its own package, now with harder evidence than the anchor-rate
+  estimate it previously rested on.
+- **The byte-equality promise holds only modulo the remote embedding.** The same
+  query text embedded repeatedly yields different vectors and therefore
+  different semantic orderings. Everything downstream of the embedding is
+  deterministic; the embedding itself is not, and no assurance in this repo
+  should be read as covering it.
+- **Four substrate findings from the benchmark are registered, not fixed:** the
+  heartbeat watchdog exits 0 (an emergency stop is indistinguishable from a
+  clean SIGTERM for any supervisor above it), it is armed before boot finishes
+  (enough parallel boots and it declares a healthy bootstrap dead), embedding
+  calls are missing from token accounting (`hop.tokens_*` only comes into
+  existence in the `llm` cell, so an embedding's cost is a list-price estimate
+  in a field named `usd_measured`), and episodes structurally reach fewer
+  retrieval legs than facts while the fusion rewards leg count.
+
+### Notes
+
+- **The public surface of this release is the FTS drift migration above.** The
+  memory lane this package works on is a topology, not substrate: it lives in a
+  private template tree and is not part of the published clone, as with the
+  builder hive in 0.1.11. What ships publicly is the store-side migration, its
+  unit receipts, and the documentation of the new drift semantics. The
+  integration tests that pin the template's own scripts run against that private
+  tree and are therefore excluded from the export by name, each with its reason
+  recorded in the export script — the same treatment the Slack template smokes
+  already receive.
+- Both frozen routing corridors are untouched, no dependency was added, no new
+  `error_code` was introduced, and the cell type registry still holds 13 types.
+
 ## [0.1.13] — 2026-08-10
 
 The subscription lane shipped in 0.1.10 and had never completed a single real

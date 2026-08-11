@@ -77,8 +77,10 @@ pub fn apply_schema_ddl(
 /// no rebuild on every boot.
 ///
 /// A pre-existing index whose column list differs from the declaration is a loud
-/// error: silently serving a stale index shape would be worse, and dropping it
-/// is not this function's call.
+/// error — with one explicit exception: if the existing columns are a proper
+/// prefix of the declared ones the drift is **additive**, and the index is
+/// dropped and rebuilt instead (P15/R8). Every other drift (removal, reordering)
+/// stays loud: silently serving a stale index shape would be worse.
 ///
 /// Identifiers come from `params.schema`, which is syntax-gated by
 /// [`check_new_identifier`] at parse time.
@@ -90,13 +92,33 @@ pub fn apply_fts_ddl(
         let index = format!("{table}_fts");
         let existing = existing_fts_columns(conn, &index).map_err(|e| e.to_string())?;
         if let Some(found) = existing {
-            if found != *cols {
+            if found == *cols {
+                continue;
+            }
+            // An FTS index is a rebuildable projection over never-deleted source
+            // text -- the same property the embedding generations rely on.
+            // Dropping it destroys no truth, so a purely additive declaration may
+            // rebuild instead of failing. Any other drift (removal, reordering)
+            // stays loud: it would silently lose searchability.
+            //
+            // The triggers go with the table: `DROP TABLE` does not remove them,
+            // and the `CREATE TRIGGER IF NOT EXISTS` below would keep the stale
+            // column list alive -- rows written after the migration would never
+            // reach the new column.
+            if found.len() < cols.len() && cols[..found.len()] == found[..] {
+                conn.execute_batch(&format!(
+                    "DROP TRIGGER IF EXISTS \"{index}_ai\";
+                     DROP TRIGGER IF EXISTS \"{index}_ad\";
+                     DROP TRIGGER IF EXISTS \"{index}_au\";
+                     DROP TABLE \"{index}\";"
+                ))
+                .map_err(|e| e.to_string())?;
+            } else {
                 return Err(format!(
                     "fts column drift on {index}: declared {cols:?}, existing {found:?} — \
-                     resolve manually (P3 does not drop or migrate index tables)"
+                     not additive, refusing to rebuild"
                 ));
             }
-            continue;
         }
         let col_list = cols
             .iter()
@@ -262,13 +284,59 @@ mod tests {
     }
 
     #[test]
-    fn fts_ddl_fails_loudly_on_column_drift() {
+    fn fts_ddl_rebuilds_on_additive_column_drift() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute("CREATE TABLE facts (id TEXT, claim TEXT, note TEXT)", [])
-            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT PRIMARY KEY, claim TEXT, predicate TEXT);
+             INSERT INTO facts VALUES ('1','Helix','has preferred editor');",
+        )
+        .unwrap();
         apply_fts_ddl(&conn, &fts_decl("facts", &["claim"])).unwrap();
-        let e = apply_fts_ddl(&conn, &fts_decl("facts", &["claim", "note"])).unwrap_err();
-        assert!(e.contains("fts column drift"), "got {e}");
+        // the declaration grows by one column -> rebuild instead of failing
+        apply_fts_ddl(&conn, &fts_decl("facts", &["claim", "predicate"])).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"preferred\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the new column must be searchable after the rebuild");
+
+        // Trigger receipt: DROP TABLE leaves the base table's triggers in place,
+        // and `CREATE TRIGGER IF NOT EXISTS` would then keep the OLD column list
+        // alive. A row written AFTER the migration must reach the new column, so
+        // the rebuild alone is not proof.
+        conn.execute(
+            "INSERT INTO facts VALUES ('2','Zed','has favorite editors')",
+            [],
+        )
+        .unwrap();
+        let fresh: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"favorite\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            fresh, 1,
+            "the insert trigger must maintain the new column too"
+        );
+    }
+
+    #[test]
+    fn fts_ddl_still_fails_loudly_on_non_additive_drift() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE facts (id TEXT PRIMARY KEY, claim TEXT, predicate TEXT);")
+            .unwrap();
+        apply_fts_ddl(&conn, &fts_decl("facts", &["claim", "predicate"])).unwrap();
+        // dropping a column is NOT additive drift
+        let err = apply_fts_ddl(&conn, &fts_decl("facts", &["claim"])).unwrap_err();
+        assert!(err.contains("fts column drift"), "got: {err}");
+        // neither is reordering
+        let err2 = apply_fts_ddl(&conn, &fts_decl("facts", &["predicate", "claim"])).unwrap_err();
+        assert!(err2.contains("fts column drift"), "got: {err2}");
     }
 
     #[test]
