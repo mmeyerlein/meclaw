@@ -55,7 +55,7 @@ async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
 
 /// Wait up to 30 s for `sink_rx` to receive at least one message.  Returns the
 /// received message, or `None` on timeout (generous 30 s failure-marker per
-/// CLAUDE.md coding-standards).
+/// CONTRIBUTING.md coding-standards).
 async fn wait_for_sink(
     sink_rx: &mut mpsc::Receiver<meclaw_core::Message>,
 ) -> Option<meclaw_core::Message> {

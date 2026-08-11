@@ -6,7 +6,7 @@
 //!   - `shutdown`: terminate Colony and wait for it
 //!
 //! The wrapper uses `multi_thread` Tokio runtime in tests — never `current_thread`,
-//! per CLAUDE.md rule 11 + the test-infrastructure section.
+//! per CONTRIBUTING.md rule 11 + the test-infrastructure section.
 
 use meclaw_colony::{
     CellFactoryRegistry, ColonyDb, ColonyMsg, DeadLetter, RespawnFn, SpawnedCellKind, cell_task,

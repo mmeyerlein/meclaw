@@ -8,7 +8,7 @@
 //! a type mismatches.
 //!
 //! These demos prove that contract POSITIVELY-and-deeply per the project's demo
-//! discipline (CLAUDE.md "Hohle / mehrdeutige Demo-Asserts kosten Runden"):
+//! discipline (CONTRIBUTING.md "Hohle / mehrdeutige Demo-Asserts kosten Runden"):
 //! - (a) a probe flows through the WHOLE merged tree to a `CaptureCell` sink
 //!   (positive receipt ⟺ every cell on the path is live) PLUS a fresh-rusqlite
 //!   message_log hop-chain probe (deep), with byte-equal existing-node receipts

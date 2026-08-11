@@ -1,4 +1,4 @@
-//! Deep-Audit F3 — Colony-Hot-Path panic-free invariant lock (CLAUDE.md A1′).
+//! Deep-Audit F3 — Colony-Hot-Path panic-free invariant lock (CONTRIBUTING.md A1′).
 //!
 //! `route()` and the routing/dispatch path must NEVER panic on pathological
 //! routing input — a panic there tears the whole colony task (every cell), a

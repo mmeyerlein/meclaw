@@ -1,4 +1,4 @@
-//! Phase-12-A TDD anchor: top-level flags (CLAUDE.md R9 — no subcommands).
+//! Phase-12-A TDD anchor: top-level flags (CONTRIBUTING.md R9 — no subcommands).
 //! --validate takes precedence, with a one-line stderr note when --api/--daemon
 //! stand alongside it (no error). --daemon without --api is allowed.
 

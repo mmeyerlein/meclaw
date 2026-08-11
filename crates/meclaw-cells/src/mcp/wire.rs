@@ -1,6 +1,6 @@
 //! Phase-10-D: `McpClient`. A reqwest-based HTTP+JSON-RPC wrapper for MCP.
 //! POC scope: `initialize`, `list_tools`, `call_tool`. An A timeout per op via
-//! `tokio::time::timeout` (CLAUDE.md rule 12). TLS gate: reqwest with
+//! `tokio::time::timeout` (CONTRIBUTING.md rule 12). TLS gate: reqwest with
 //! `rustls-tls` + `default-features = false` (phase-7 gate).
 
 use crate::mcp::db::DiscoveredTool;
@@ -94,7 +94,7 @@ impl McpClient {
 
     /// Perform the MCP `initialize` handshake. POC: no capability match;
     /// the server response is discarded after confirming no RPC error.
-    /// The A timeout is applied per CLAUDE.md rule 12.
+    /// The A timeout is applied per CONTRIBUTING.md rule 12.
     pub async fn initialize(&self, timeout: Duration) -> Result<(), McpError> {
         let _ = self
             .call_rpc("initialize", build_initialize_params(), timeout)
@@ -109,7 +109,7 @@ impl McpClient {
     /// `result` object from the server response. The caller (cell handler)
     /// serialises this into the `tool_result` turn via
     /// `emit::emit_tool_result_success`. A-Timeout is applied per
-    /// CLAUDE.md Regel 12.
+    /// CONTRIBUTING.md Regel 12.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -131,7 +131,7 @@ impl McpClient {
     /// Each tool object is stored as-is in `DiscoveredTool::schema_json`
     /// (full object, not just `inputSchema`) so downstream consumers also
     /// receive `description` and other metadata. A-Timeout is applied per
-    /// CLAUDE.md Regel 12.
+    /// CONTRIBUTING.md Regel 12.
     pub async fn list_tools(&self, timeout: Duration) -> Result<Vec<DiscoveredTool>, McpError> {
         let result = self.call_rpc("tools/list", json!({}), timeout).await?;
         tools_from_result(&result)

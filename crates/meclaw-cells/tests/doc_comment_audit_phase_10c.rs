@@ -1,5 +1,5 @@
 //! Phase-10-C phase-close audit: every pub item + LongRunningCell impl method in
-//! `src/proxy/**` carries `///` doc comments (CLAUDE.md
+//! `src/proxy/**` carries `///` doc comments (CONTRIBUTING.md
 //! § Coding-Standards). Pattern analog `doc_comment_audit_phase_10b.rs`.
 
 use std::fs;
@@ -56,7 +56,7 @@ fn all_proxy_source_files_pass_doc_comment_audit() {
     }
     assert!(
         missing.is_empty(),
-        "Missing doc-comments (CLAUDE.md § Coding-Standards):\n  {}",
+        "Missing doc-comments (CONTRIBUTING.md § Coding-Standards):\n  {}",
         missing.join("\n  ")
     );
 }

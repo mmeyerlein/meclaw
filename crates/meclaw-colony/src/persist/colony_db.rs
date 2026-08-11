@@ -141,7 +141,7 @@ impl ColonyDb {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         // Phase 12-Pre: bounded tokio::sync::mpsc(1000). A hard cap, no config
-        // knob (CLAUDE.md rules 1+7). Rationale: HTTP load is the phase-12 risk
+        // knob (CONTRIBUTING.md rules 1+7). Rationale: HTTP load is the phase-12 risk
         // surface; ~1s of burst headroom at realistic routing throughput. NOT
         // derived from the mailbox default.
         let (writer_tx, writer_rx) = tokio::sync::mpsc::channel::<ColonyWriteOp>(1000);

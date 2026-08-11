@@ -1,4 +1,4 @@
-//! Phase-10-B doc-comment audit (CLAUDE.md § Coding standards). Checks that
+//! Phase-10-B doc-comment audit (CONTRIBUTING.md § Coding standards). Checks that
 //! every public item in `crates/meclaw-cells/src/timer/**/*.rs` carries a
 //! `///` doc or a `#[doc(...)]` attribute. Symmetric to
 //! `doc_comment_audit_phase_9.rs` (Phase-9-Audit-Test).
@@ -19,7 +19,7 @@ fn check_file(path: &StdPath, missing: &mut Vec<String>) {
         if !is_public {
             continue;
         }
-        // Spec intent (CLAUDE.md § Coding standards): "every public item has
+        // Spec intent (CONTRIBUTING.md § Coding standards): "every public item has
         // doc comments." Standard Rust ordering: `///` →
         // `#[derive(...)]`/`#[allow(...)]`/`#[cfg(...)]` → `pub …`. Wir
         // we skip attributes (lines starting with `#[`) and blank lines, and

@@ -6,7 +6,7 @@
 //!
 //! Sampling strategy: queue_depth() inline after every .await (no observer, no
 //! Arc<ColonyDb> — ColonyDb is !Sync via rusqlite). multi_thread per the
-//! CLAUDE.md topology-test convention (worker_threads = 4).
+//! CONTRIBUTING.md topology-test convention (worker_threads = 4).
 
 use meclaw_colony::persist::colony_db::ColonyDb;
 use meclaw_colony::persist::writer::ColonyWriteOp;

@@ -2,7 +2,7 @@
 //!
 //! Hives are **not** actors — no task, no mailbox, no `cell.db`, no
 //! `ActorHandle` entry. This struct is pure data. Anyone about to bolt a sender or
-//! task reference onto it has walked into anti-pattern no. 1 (see CLAUDE.md).
+//! task reference onto it has walked into anti-pattern no. 1 (see CONTRIBUTING.md).
 
 use meclaw_core::Path;
 use std::collections::HashMap;

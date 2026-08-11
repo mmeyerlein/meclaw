@@ -250,7 +250,7 @@ async fn mutation_disconnect_of_hop_consumer_is_committed() {
 }
 
 /// Good case: an add_edges with modifier.set_hop that supplies the required key
-/// → committed; afterwards a POSITIVE capture receipt (CLAUDE.md discipline): a
+/// → committed; afterwards a POSITIVE capture receipt (CONTRIBUTING.md discipline): a
 /// probe flows over the new edge `t → c` (set_hop supplies h1) through the
 /// consumer `/c` to `/sink` — the receipt body carries the echo turns of `/t`
 /// AND `/c` and proves that `/c` received the message ("message flow intact

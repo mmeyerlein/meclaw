@@ -56,7 +56,7 @@ use std::time::Duration;
 static TERM_TIMEOUT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Tight death-ack term-timeout (semantic timing discriminator — kept short +
-/// justified per CLAUDE.md). It is SMALLER than `MESSAGE_TIMEOUT_MS` so the
+/// justified per CONTRIBUTING.md). It is SMALLER than `MESSAGE_TIMEOUT_MS` so the
 /// survivor is created BEFORE the backstop heals it.
 const TERM_TIMEOUT_MS: u64 = 400;
 

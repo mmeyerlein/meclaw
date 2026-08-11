@@ -1,6 +1,6 @@
 //! Pre-14 Pass-2 backstop A3 — stateless-dispatcher amplification + supervision.
 //!
-//! Substrate contract (docs § Stateless-Cell-Dispatcher, CLAUDE.md Phase-7
+//! Substrate contract (docs § Stateless-Cell-Dispatcher, CONTRIBUTING.md Phase-7
 //! lesson): `stateless_dispatcher` is the supervised actor task; it spawns ONE
 //! ephemeral detached worker per message (capped at `params.max_concurrency`).
 //! A worker panic ends silently with its message and is NOT seen by the

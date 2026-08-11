@@ -41,7 +41,7 @@ pub type WakeFn = Box<
 ///
 /// Extended in Paket 7 (P13/D-010a) with `emits` and `validate_emits`.
 /// Earlier fields (`tools`, `tags`, `is_collector`, `consumes`, `capabilities`)
-/// are added only when a runtime consumer exists (CLAUDE.md Regel 1).
+/// are added only when a runtime consumer exists (CONTRIBUTING.md Regel 1).
 #[derive(Debug, Clone, Default)]
 pub struct ContractView {
     /// Whether this cell is allowed to emit multiple output messages per input.

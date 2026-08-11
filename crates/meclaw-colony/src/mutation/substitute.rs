@@ -259,7 +259,7 @@ fn replace_full(
 ) -> Result<String, MutationError> {
     // `expand` takes `impl Fn`; the uuid7 cache needs interior mutability so the
     // closure can mint-and-store a UUID per label. RefCell is single-threaded
-    // (one cell task), no lock contention — CLAUDE.md concurrency model holds.
+    // (one cell task), no lock contention — CONTRIBUTING.md concurrency model holds.
     let cache = std::cell::RefCell::new(cache);
     expand(s, |inner| {
         if let Some(key) = inner.strip_prefix("ctx.") {

@@ -1,6 +1,6 @@
 //! Pre-14 Pass-2 backstop A1 — per-form blob-resolution at the delivery boundary.
 //!
-//! Substrate contract (CLAUDE.md harte Regel 14 + spec Z.1363): the ONLY
+//! Substrate contract (CONTRIBUTING.md harte Regel 14 + spec Z.1363): the ONLY
 //! `Body::Blob` a cell can be routed is the substrate's whole-body offload of an
 //! oversized inline body (`offload_oversized` on the way out, serialized length
 //! `>= blob_inline_max_bytes`). Every `cell_task` resolves that `Body::Blob` back

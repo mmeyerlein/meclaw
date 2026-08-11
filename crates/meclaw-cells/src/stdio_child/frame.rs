@@ -75,7 +75,7 @@ pub(crate) async fn next_frame(lines: &mut ChildLines) -> Result<Option<Frame>, 
 impl StdioChild {
     /// Write one JSON frame to the child's stdin.
     ///
-    /// Wrapped in an A-timeout (CLAUDE.md rule 12): a child that never drains
+    /// Wrapped in an A-timeout (CONTRIBUTING.md rule 12): a child that never drains
     /// its stdin would otherwise block the writer once the pipe buffer fills.
     pub async fn write_frame(
         &mut self,

@@ -98,6 +98,32 @@ teeth, durability hardening), open an issue first so we can talk shape before yo
 - Match the surrounding voice in any prose. Confident, credible, no hype. And no spaced
   em-dashes, they read as machine-written.
 
+## Named conventions
+
+Code comments across the tree cite house rules by name. The short registry, so the
+citations resolve without the private process docs:
+
+- **Rule 12 (timeouts, two layers):** every I/O operation in cell code carries its own
+  `tokio::time::timeout` (params-driven, precise); the substrate's per-message timeout is
+  a generous backstop, never the primary shield. A timeout that covers only part of the
+  operation is not a timeout.
+- **Rule 14 (in-message blob pointers):** nothing may emit `text_id`/`messages_id`
+  pointers inside `messages[]` until recursive resolution lands (issue #19). Whole-body
+  blobs resolve at the delivery boundary; `attachments[]` refs are reserved, unresolved.
+- **R9 (CLI shape):** flags only, nginx style. No subcommands.
+- **A1' (panic-free hot path):** the colony routing/dispatch path never panics on
+  pathological input; it answers with errors, skips, or dead letters. A panic there takes
+  the whole colony, not one cell.
+- **30s failure markers:** generous timeouts (30s convention) for failure markers in
+  tests, robust under parallel cargo load; tight timing discriminators only where the
+  test explains why.
+- **Topology tests:** `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]` for
+  anything that boots a real topology.
+- **Coding standards:** no `unwrap()`/`panic!()` outside tests, `thiserror` errors in
+  libraries, doc comments on public items, no blocking sync I/O in async.
+- **Demo discipline:** a test that claims to prove X proves it through a positive
+  receipt signal, never through negative side effects.
+
 ## License
 
 By contributing, you agree your work is dual-licensed under MIT or Apache-2.0, the same terms

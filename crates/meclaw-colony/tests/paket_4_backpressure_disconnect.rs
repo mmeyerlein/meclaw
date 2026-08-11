@@ -90,7 +90,7 @@ static TERM_TIMEOUT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 const FLOOD: usize = 1100;
 
 /// Tight death-ack term-timeout for the wedged path (semantic timing
-/// discriminator — kept short + justified per CLAUDE.md coding standards). The
+/// discriminator — kept short + justified per CONTRIBUTING.md coding standards). The
 /// release-after-stall sleep (100 ms) fits comfortably inside this budget, so the
 /// colony is still in death-ack-await when the flood begins.
 const TERM_TIMEOUT_MS: u64 = 800;

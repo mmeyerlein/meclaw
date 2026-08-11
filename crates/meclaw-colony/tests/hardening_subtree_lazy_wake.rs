@@ -13,7 +13,7 @@
 //! trace. Severity class: silent loss + false-positive liveness.
 //!
 //! These tests pin the fixed contract POSITIVELY (CaptureCell receipt ⟺ the
-//! lazy cells actually ran — CLAUDE.md demo discipline):
+//! lazy cells actually ran — CONTRIBUTING.md demo discipline):
 //! - (a) K-H2 repro shape: ONE mutation (`add_nodes` subtree with two lazy
 //!   cells + activating `add_edges` port) → first delivery arrives end-to-end,
 //!   status is truthful, DLQ empty;

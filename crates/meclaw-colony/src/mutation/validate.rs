@@ -587,7 +587,7 @@ pub fn validate_post_state_with_templates_scoped(
                 .ok_or_else(|| MutationError::TemplateMissing(template.into()))?;
             // Phase-13.5 a5-subtree T8b-1: a SUBTREE template's ROOT cell.type is
             // `hive` — a scope marker, never an actor, so it has NO factory by
-            // design (CLAUDE.md: "a hive is not an actor"). Skip the level-2
+            // design (CONTRIBUTING.md: "a hive is not an actor"). Skip the level-2
             // factory check for a hive root; the spawnable nested cells are
             // staged + registered by `stage_subtree` (their own cell-types are
             // validated by bootstrap-side factory presence at spawn time).

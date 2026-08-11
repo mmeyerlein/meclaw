@@ -45,7 +45,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-/// Generous failure-marker timeout (CLAUDE.md 30s-convention, robust under
+/// Generous failure-marker timeout (CONTRIBUTING.md 30s-convention, robust under
 /// cargo-parallel load).
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 

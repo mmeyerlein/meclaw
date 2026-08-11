@@ -6,7 +6,7 @@
 
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
-[![build](https://img.shields.io/badge/build-passing-brightgreen)](#)
+[![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-2251%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
