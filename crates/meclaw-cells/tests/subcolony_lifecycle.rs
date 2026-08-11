@@ -86,11 +86,16 @@ fn ask(text: &str) -> Message {
         .build()
 }
 
-/// Await one message at `/sink`. Failure-marker timeout, generous per convention.
+/// Await one message at `/sink`. Failure-marker timeout, generous per
+/// convention — and wider than the usual 30s here (GH #58): these tests boot a
+/// real child colony process, the heaviest fixture in the repo, and a shared
+/// 2-core CI runner once starved a green run past 30s. The marker is a failure
+/// detector, not a timing discriminator, so width costs nothing; the semantic
+/// timing checks below stay tight.
 async fn captured(rx: &mut mpsc::Receiver<Message>) -> Message {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    tokio::time::timeout(Duration::from_secs(120), rx.recv())
         .await
-        .expect("no message reached /sink within 30s")
+        .expect("no message reached /sink within 120s")
         .expect("capture channel closed")
 }
 
