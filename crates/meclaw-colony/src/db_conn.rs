@@ -7,6 +7,10 @@
 /// `tokio::task::spawn_blocking`. The Connection is single-owned (taken
 /// for the duration of each `call`) — no Arc, no Mutex.
 pub struct DbConn {
+    /// `None` while a call is in flight (the connection lives inside the
+    /// blocking closure) and permanently once runtime shutdown cancelled a
+    /// blocking task before it ran — that drops the closure and the connection
+    /// with it. See [`connection_lost`].
     conn: Option<rusqlite::Connection>,
     /// Timeout applied by `call_with_timeout`; ignored by `call`.
     query_timeout: Option<std::time::Duration>,
@@ -39,21 +43,64 @@ impl DbConn {
     /// Run `f` on the wrapped connection via `spawn_blocking`.
     /// `f` is `Send + 'static`; output is `Send + 'static`. Cell-Code
     /// materializes owned inputs/outputs across this boundary.
+    ///
+    /// A panic inside `f` propagates to the caller. If runtime shutdown
+    /// cancels the blocking task before it runs, the call never resolves
+    /// instead of panicking — see [`connection_lost`].
     pub async fn call<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let mut conn = self.conn.take().expect("DbConn: conn already taken");
-        let (conn, out) = tokio::task::spawn_blocking(move || {
+        let Some(mut conn) = self.conn.take() else {
+            return connection_lost().await;
+        };
+        let joined = tokio::task::spawn_blocking(move || {
             let out = f(&mut conn);
             (conn, out)
         })
-        .await
-        .expect("DbConn: spawn_blocking task panicked");
+        .await;
+        let Some((conn, out)) = join_blocking(joined) else {
+            return connection_lost().await;
+        };
         self.conn = Some(conn);
         out
     }
+}
+
+/// Join a `spawn_blocking` handle that carried the connection.
+///
+/// * `Ok` — the closure ran; connection and result come back.
+/// * panic — a real panic inside the DB closure keeps propagating unchanged
+///   (`resume_unwind`), exactly as the previous `expect` did.
+/// * cancelled — the blocking pool dropped the task *before* it ran, which
+///   only happens while the runtime is shutting down. The closure owned the
+///   connection, so it was dropped with the closure: `None` means the
+///   connection is gone for good, and there is nothing to restore.
+fn join_blocking<T>(joined: Result<T, tokio::task::JoinError>) -> Option<T> {
+    match joined {
+        Ok(value) => Some(value),
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(_cancelled) => None,
+    }
+}
+
+/// The connection was lost to runtime shutdown, so the call can neither run
+/// nor produce a result.
+///
+/// This future never resolves. The only way to reach it is a cancelled
+/// blocking task, i.e. a runtime whose blocking pool is shutting down — the
+/// task awaiting here is being torn down by that same shutdown and is dropped
+/// at this await point. Never resolving is what "this call has no future"
+/// means; panicking here is precisely the shutdown crash this guards against,
+/// and `call` has no error channel to report into (its result type is the
+/// caller's `R`, and changing that signature would touch every call site).
+/// A `DbConn` that reached this state stays in it: every later call parks the
+/// same way instead of panicking on the missing connection, and the cell's
+/// `message_timeout` backstop is what turns a lingering handler into a
+/// supervised restart.
+async fn connection_lost<R>() -> R {
+    std::future::pending().await
 }
 
 /// Error from `call_with_timeout` when the timer fires before the
@@ -77,6 +124,11 @@ impl DbConn {
     /// `tokio::time::sleep(query_timeout)` task that calls
     /// `interrupt()` on elapse. Returns `Err(Interrupted)` if the
     /// timer fired.
+    ///
+    /// Shares `call`'s shutdown contract: a blocking task cancelled by
+    /// runtime shutdown parks the call forever rather than panicking (see
+    /// [`connection_lost`]). `Interrupted` stays reserved for a real query
+    /// timeout, so the cell-side match arms keep their meaning.
     pub async fn call_with_timeout<F, R>(&mut self, f: F) -> Result<R, QueryTimeout>
     where
         F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
@@ -85,7 +137,9 @@ impl DbConn {
         let Some(timeout) = self.query_timeout else {
             return Ok(self.call(f).await);
         };
-        let mut conn = self.conn.take().expect("DbConn: conn already taken");
+        let Some(mut conn) = self.conn.take() else {
+            return connection_lost().await;
+        };
         // InterruptHandle: Send. Single handle, moved into the timer task.
         // No Clone needed — once moved, only the timer can call interrupt().
         let interrupt = conn.get_interrupt_handle();
@@ -94,12 +148,15 @@ impl DbConn {
             interrupt.interrupt();
             true // fired
         });
-        let (conn, out) = tokio::task::spawn_blocking(move || {
+        let joined = tokio::task::spawn_blocking(move || {
             let out = f(&mut conn);
             (conn, out)
         })
-        .await
-        .expect("DbConn: spawn_blocking task panicked");
+        .await;
+        let Some((conn, out)) = join_blocking(joined) else {
+            timer.abort();
+            return connection_lost().await;
+        };
         self.conn = Some(conn);
         // Race-window (benign, accepted): the query may finish a few
         // nanoseconds before the timer fires `interrupt()`. We detect
@@ -119,6 +176,116 @@ impl DbConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::task::Poll;
+
+    /// A handle to a runtime that is already shut down. `spawn_blocking` on
+    /// such a handle hands back a `JoinHandle` that resolves to a cancelled
+    /// `JoinError` without ever running the closure — deterministically the
+    /// same shape as the shutdown race, with no timing assumption.
+    fn shut_down_runtime_handle() -> tokio::runtime::Handle {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("build helper runtime");
+        let handle = rt.handle().clone();
+        rt.shutdown_background();
+        handle
+    }
+
+    /// Polls `fut` exactly once and reports the `Poll` — no timing assumption,
+    /// and a panic inside the polled future surfaces as a test failure.
+    macro_rules! poll_once {
+        ($fut:expr) => {
+            std::future::poll_fn(|cx| Poll::Ready($fut.as_mut().poll(cx))).await
+        };
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_does_not_panic_when_blocking_task_is_cancelled() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let dead = shut_down_runtime_handle();
+        let mut fut = std::pin::pin!(db.call(|_c| ()));
+        let first = {
+            let _entered = dead.enter();
+            poll_once!(fut)
+        };
+        assert!(
+            first.is_pending(),
+            "a cancelled blocking task must not panic; the call must never resolve instead, got {first:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_after_cancelled_blocking_task_does_not_panic_on_missing_conn() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let dead = shut_down_runtime_handle();
+        {
+            let mut fut = std::pin::pin!(db.call(|_c| ()));
+            let _entered = dead.enter();
+            let _ = poll_once!(fut);
+        }
+        // The connection went down with the cancelled closure. The follow-up
+        // access must not panic on the missing connection either.
+        let mut fut = std::pin::pin!(db.call(|_c| ()));
+        let next = poll_once!(fut);
+        assert!(
+            next.is_pending(),
+            "a call on a connection lost to shutdown must not panic, got {next:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_with_timeout_does_not_panic_when_blocking_task_is_cancelled() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, Some(std::time::Duration::from_secs(5)));
+        let dead = shut_down_runtime_handle();
+        let mut fut = std::pin::pin!(db.call_with_timeout(|_c| ()));
+        let first = {
+            let _entered = dead.enter();
+            poll_once!(fut)
+        };
+        assert!(
+            first.is_pending(),
+            "a cancelled blocking task must not panic in call_with_timeout either, got {first:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_with_timeout_after_cancelled_blocking_task_does_not_panic_on_missing_conn() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, Some(std::time::Duration::from_secs(5)));
+        let dead = shut_down_runtime_handle();
+        {
+            let mut fut = std::pin::pin!(db.call_with_timeout(|_c| ()));
+            let _entered = dead.enter();
+            let _ = poll_once!(fut);
+        }
+        let mut fut = std::pin::pin!(db.call_with_timeout(|_c| ()));
+        let next = poll_once!(fut);
+        assert!(
+            next.is_pending(),
+            "call_with_timeout on a connection lost to shutdown must not panic, got {next:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_still_propagates_a_panic_from_the_closure() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let joined = tokio::spawn(async move {
+            db.call(|_c| panic!("closure blew up")).await;
+        })
+        .await;
+        let err = joined.expect_err("a panicking DB closure must not be swallowed");
+        assert!(
+            err.is_panic(),
+            "a real panic in the DB closure must keep propagating, got {err:?}"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_executes_closure_on_connection() {

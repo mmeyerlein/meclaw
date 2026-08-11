@@ -20,11 +20,13 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#50](https://github.com/mmeyerlein/meclaw/issues/50) Slack idle deadline,
 [#44](https://github.com/mmeyerlein/meclaw/issues/44) stderr warn line for successful scripts,
 [#49](https://github.com/mmeyerlein/meclaw/issues/49) chat_id promotion pinned end to end,
-[#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding tokens in the books.
+[#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding tokens in the books,
+[#11](https://github.com/mmeyerlein/meclaw/issues/11) DbConn shutdown panic.
 
-1. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
-2. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
-3. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
+1. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
+2. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
+3. [#57](https://github.com/mmeyerlein/meclaw/issues/57) remaining expects on the store wake path
+4. [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn: reconnect after a dropped call future
 
 ## Next: 0.2.0 memory quality
 
