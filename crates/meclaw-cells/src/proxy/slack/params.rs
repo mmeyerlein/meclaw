@@ -8,7 +8,9 @@
 //! Timeout discipline (hard rule 12): every external op carries its own
 //! A-timeout. `connect_timeout_ms` wraps `apps.connections.open` and the
 //! WebSocket connect; `send_timeout_ms` wraps `chat.postMessage`;
-//! `query_timeout_ms` wraps `cell.db` ops via `DbConn`.
+//! `query_timeout_ms` wraps `cell.db` ops via `DbConn`. The Socket Mode read
+//! loop has no operation boundary to wrap, so it carries the one deadline that
+//! fits a stream instead: `idle_timeout_ms`, reset by every arriving frame.
 
 use meclaw_core::Path;
 use serde_json::Value as JsonValue;
@@ -32,6 +34,31 @@ pub struct SlackParams {
     pub base_url: String,
     /// A-timeout around `apps.connections.open` and the WebSocket connect.
     pub connect_timeout_ms: u64,
+    /// Idle deadline for the Socket Mode read loop (issue #50).
+    ///
+    /// The stream analogue of an A-timeout: not a budget for one operation, but
+    /// the longest silence an open connection may show before it is presumed
+    /// dead. Every arriving frame resets it — events, `hello`, `disconnect`,
+    /// and the WebSocket ping/pong control frames alike, because any of them is
+    /// proof the path still carries traffic.
+    ///
+    /// Derivation of the 120 000 ms default. Slack keeps a Socket Mode
+    /// connection audible on its own: it sends WebSocket pings on a regular
+    /// cadence (roughly one every 10–30 s) and additionally recycles the
+    /// connection every few minutes with a `disconnect` frame. A healthy lane
+    /// is therefore never quiet for long, even in a workspace that produces no
+    /// events at all — which is what makes silence a usable death signal here
+    /// and would make it a useless one on a stream without keepalives. 120 s is
+    /// four missed pings at the slowest documented cadence (4 × 30 s): wide
+    /// enough that a hiccup, a scheduler stall or a single lost ping cannot
+    /// tear down a working socket, narrow enough to bound a blackholed path
+    /// (NAT idle timeout, dropped route, no FIN, no RST) to two minutes instead
+    /// of forever.
+    ///
+    /// On elapse the connection ends as `ConnectionEnd::Transient` and the
+    /// ordinary reconnect machinery takes over. It is not a panic and not a
+    /// cell death.
+    pub idle_timeout_ms: u64,
     /// A-timeout around `chat.postMessage`.
     pub send_timeout_ms: u64,
     /// A-timeout for `cell.db` calls via `DbConn`.
@@ -59,6 +86,7 @@ impl std::fmt::Debug for SlackParams {
             .field("emit_to", &self.emit_to)
             .field("base_url", &self.base_url)
             .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("send_timeout_ms", &self.send_timeout_ms)
             .field("query_timeout_ms", &self.query_timeout_ms)
             .field("envelope_dedup_secs", &self.envelope_dedup_secs)
@@ -98,6 +126,10 @@ impl SlackParams {
             .get("connect_timeout_ms")
             .and_then(|x| x.as_u64())
             .unwrap_or(15000);
+        let idle_timeout_ms = obj
+            .get("idle_timeout_ms")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(120_000);
         let send_timeout_ms = obj
             .get("send_timeout_ms")
             .and_then(|x| x.as_u64())
@@ -125,6 +157,7 @@ impl SlackParams {
             emit_to: Path::new(emit_to_s),
             base_url,
             connect_timeout_ms,
+            idle_timeout_ms,
             send_timeout_ms,
             query_timeout_ms,
             envelope_dedup_secs,

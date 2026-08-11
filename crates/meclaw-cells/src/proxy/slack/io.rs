@@ -79,6 +79,9 @@ pub struct SlackIoConfig {
     pub bot_user_id: Option<String>,
     /// A-timeout for `apps.connections.open` and the WebSocket handshake.
     pub connect_timeout_ms: u64,
+    /// Issue #50: idle deadline for the read loop, reset by every frame. See
+    /// `SlackParams::idle_timeout_ms` for the derivation of the default.
+    pub idle_timeout_ms: u64,
     /// How long a connection must survive before it counts as healthy and
     /// clears the backoff. Without this floor, a peer that accepts and
     /// immediately drops would reset the backoff on every cycle and turn the
@@ -113,6 +116,7 @@ pub async fn run_slack_io(
     let mut backoff = Backoff::new();
     let mut own_app_id: Option<String> = None;
     let connect_timeout = Duration::from_millis(cfg.connect_timeout_ms);
+    let idle_timeout = Duration::from_millis(cfg.idle_timeout_ms);
     // Issue #7: announce before the first connect — a socket that never opens is
     // visibly "never succeeded" rather than invisible.
     let liveness = cfg.liveness.clone();
@@ -154,6 +158,7 @@ pub async fn run_slack_io(
                 &mut own_app_id,
                 cfg.bot_user_id.as_deref(),
                 connect_timeout,
+                idle_timeout,
                 &liveness,
             ) => end,
         };
@@ -215,6 +220,11 @@ pub enum ConnectionEnd {
 /// `own_app_id` is written from the `hello` frame and read by loop rule R3, so
 /// it is an in/out parameter rather than a return value: the identity has to be
 /// known before the first event is filtered.
+///
+/// Two deadlines, two shapes (issue #50). `connect_timeout` is an ordinary
+/// A-timeout around a bounded operation — the handshake either completes or it
+/// does not. The read loop that follows has no such boundary, so it carries
+/// `idle_timeout` instead: the longest silence tolerated between two frames.
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_and_run(
     client: &SlackClient,
@@ -222,6 +232,7 @@ pub async fn connect_and_run(
     own_app_id: &mut Option<String>,
     bot_user_id: Option<&str>,
     connect_timeout: Duration,
+    idle_timeout: Duration,
     liveness: &meclaw_colony::IoLivenessMark,
 ) -> ConnectionEnd {
     let url = match client.apps_connections_open().await {
@@ -243,7 +254,27 @@ pub async fn connect_and_run(
     // completed the WebSocket handshake, a full external round trip.
     liveness.mark_success();
 
-    while let Some(msg) = read.next().await {
+    loop {
+        // Issue #50: the idle deadline. `timeout` is re-created on every
+        // iteration, so any arriving frame resets the clock — that is the whole
+        // mechanism. On a blackholed path (NAT idle timeout, dropped route, no
+        // FIN, no RST) nothing arrives at all: no frame, no ping, no error. The
+        // bare `read.next().await` parked there forever and never reached any
+        // of the `ConnectionEnd` returns that drive the reconnect, so the lane
+        // looked idle from the outside while it was dead.
+        let msg = match tokio::time::timeout(idle_timeout, read.next()).await {
+            Err(_) => {
+                // Transient, not fatal: silence says nothing about the
+                // credentials, only about this socket. Backoff plus reconnect
+                // is the whole response — no panic, no cell death.
+                return ConnectionEnd::Transient(format!(
+                    "ws read: idle for {idle_timeout:?}, no frame and no ping — \
+                     socket presumed dead"
+                ));
+            }
+            Ok(None) => break,
+            Ok(Some(msg)) => msg,
+        };
         // Issue #7: every frame — including the pings and the `hello` — is proof
         // that this connection is still carrying traffic. A Socket Mode lane is
         // frame-driven, so frame arrival is its round trip; the marks stay fresh

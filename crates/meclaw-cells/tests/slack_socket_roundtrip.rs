@@ -83,6 +83,9 @@ async fn open_connect_receive_ack_is_one_continuous_path() {
             &mut own_app_id,
             None,
             Duration::from_secs(5),
+            // Issue #50: far above anything these short scripts need, so the
+            // idle guard cannot interfere with what they are actually proving.
+            Duration::from_secs(30),
             &meclaw_colony::IoLivenessMark::disabled(),
         )
         .await
@@ -141,6 +144,9 @@ async fn dropped_bot_events_are_still_acknowledged() {
             &mut own_app_id,
             None,
             Duration::from_secs(5),
+            // Issue #50: far above anything these short scripts need, so the
+            // idle guard cannot interfere with what they are actually proving.
+            Duration::from_secs(30),
             &meclaw_colony::IoLivenessMark::disabled(),
         )
         .await
@@ -192,6 +198,9 @@ async fn own_app_id_from_hello_drives_r3() {
             &mut own_app_id,
             None,
             Duration::from_secs(5),
+            // Issue #50: far above anything these short scripts need, so the
+            // idle guard cannot interfere with what they are actually proving.
+            Duration::from_secs(30),
             &meclaw_colony::IoLivenessMark::disabled(),
         )
         .await
@@ -229,6 +238,9 @@ async fn disconnect_frame_ends_the_connection_with_its_reason() {
             &mut own_app_id,
             None,
             Duration::from_secs(5),
+            // Issue #50: far above anything these short scripts need, so the
+            // idle guard cannot interfere with what they are actually proving.
+            Duration::from_secs(30),
             &meclaw_colony::IoLivenessMark::disabled(),
         ),
     )
@@ -271,6 +283,9 @@ async fn malformed_frame_does_not_kill_the_connection() {
             &mut own_app_id,
             None,
             Duration::from_secs(5),
+            // Issue #50: far above anything these short scripts need, so the
+            // idle guard cannot interfere with what they are actually proving.
+            Duration::from_secs(30),
             &meclaw_colony::IoLivenessMark::disabled(),
         )
         .await

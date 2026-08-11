@@ -43,6 +43,10 @@ pub enum ServerAction {
     },
     /// Send a `disconnect` frame with this reason.
     SendDisconnect(String),
+    /// Send a WebSocket ping. Slack keeps a Socket Mode connection audible this
+    /// way even when the workspace produces no events, which is what makes an
+    /// idle deadline on the read loop calibratable at all (issue #50).
+    SendPing,
     /// Wait before the next action.
     Delay(Duration),
     /// Close the socket from the server side.
@@ -86,6 +90,11 @@ impl SlackScript {
     pub fn disconnect(mut self, reason: &str) -> Self {
         self.actions
             .push(ServerAction::SendDisconnect(reason.to_string()));
+        self
+    }
+    /// Queue a WebSocket ping — Slack's own keepalive on a quiet connection.
+    pub fn ping(mut self) -> Self {
+        self.actions.push(ServerAction::SendPing);
         self
     }
     /// Queue a pause.
@@ -454,6 +463,16 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>) {
             ServerAction::CloseWs => {
                 let _ = write.close().await;
                 break;
+            }
+            ServerAction::SendPing => {
+                if write
+                    .send(WsMessage::Ping(Vec::new().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
             }
             ServerAction::SendRaw(raw) => raw,
             ServerAction::SendDisconnect(reason) => json!({

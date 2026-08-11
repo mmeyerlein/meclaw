@@ -28,6 +28,9 @@ fn parses_minimal_config_with_defaults() {
     // Defaults.
     assert_eq!(p.base_url, "https://slack.com/api");
     assert_eq!(p.connect_timeout_ms, 15000);
+    // Issue #50: idle deadline for the Socket Mode read loop — four missed
+    // pings at Slack's slowest documented cadence.
+    assert_eq!(p.idle_timeout_ms, 120_000);
     assert_eq!(p.send_timeout_ms, 10000);
     assert_eq!(p.query_timeout_ms, 5000);
     assert_eq!(p.envelope_dedup_secs, 900);
@@ -71,6 +74,7 @@ fn optional_fields_are_read_when_present() {
         "app_token": "a", "bot_token": "b", "emit_to": "/x",
         "base_url": "http://127.0.0.1:9/api",
         "connect_timeout_ms": 1234,
+        "idle_timeout_ms": 4567,
         "send_timeout_ms": 2345,
         "query_timeout_ms": 3456,
         "envelope_dedup_secs": 60,
@@ -80,6 +84,7 @@ fn optional_fields_are_read_when_present() {
     let p = SlackParams::parse(&v).unwrap();
     assert_eq!(p.base_url, "http://127.0.0.1:9/api");
     assert_eq!(p.connect_timeout_ms, 1234);
+    assert_eq!(p.idle_timeout_ms, 4567);
     assert_eq!(p.send_timeout_ms, 2345);
     assert_eq!(p.query_timeout_ms, 3456);
     assert_eq!(p.envelope_dedup_secs, 60);

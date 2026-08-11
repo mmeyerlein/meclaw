@@ -62,6 +62,7 @@ impl SlackCell {
                 client: io_client,
                 bot_user_id: params.bot_user_id.clone(),
                 connect_timeout_ms: params.connect_timeout_ms,
+                idle_timeout_ms: params.idle_timeout_ms,
                 min_uptime_ms: 5_000,
                 // Replaced by the substrate via `attach_liveness`.
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
