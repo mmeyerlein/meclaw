@@ -8,7 +8,9 @@
 //! the Telegram variant cannot make that promise because its token sits in the
 //! URL path, which is precisely why the two clients stay separate.
 //!
-//! Every call carries its own A-timeout (hard rule 12).
+//! Every call carries its own A-timeout (hard rule 12), and that deadline
+//! covers the COMPLETE operation — send, status and body read — not merely the
+//! header phase (issue #8, see `with_deadline`).
 
 use super::params::SlackParams;
 use serde_json::{Value as JsonValue, json};
@@ -53,6 +55,45 @@ fn is_permanent(code: &str) -> bool {
             | "restricted_action"
             | "cannot_reply_to_message"
     )
+}
+
+/// Hard rule 12 envelope: bounds the WHOLE external operation, not just its
+/// header phase.
+///
+/// A `tokio::time::timeout` around `send()` alone ends when the response
+/// headers are in. The body read that follows (`resp.json().await`) then runs
+/// with no deadline, and `reqwest::Client::builder().build()` sets none of its
+/// own. A peer that answers with a head and then goes silent (NAT idle timeout,
+/// blackholed path: no FIN, no RST) parks the call forever — no log line, no
+/// progress, and the message-timeout backstop cannot see it because this call
+/// lives in the long-running cell's I/O task, not in `handle()`. The Telegram
+/// twin of this bug was measured in production on 2026-08-11; this is the same
+/// fix in the same shape.
+///
+/// The budget is the call's existing A-timeout param — it simply covers the
+/// whole operation now instead of half of it. Elapsed is classified
+/// `Transient`, so the backoff ladder takes it and the lane keeps living.
+async fn with_deadline<T>(
+    budget: Duration,
+    op_name: &str,
+    op: impl std::future::Future<Output = Result<T, SlackError>>,
+) -> Result<T, SlackError> {
+    match tokio::time::timeout(budget, op).await {
+        Ok(res) => res,
+        Err(_) => {
+            // Own, greppable line: this is the operation deadline, not a
+            // connect error and not a Slack-side rejection.
+            tracing::warn!(
+                op = op_name,
+                deadline_ms = budget.as_millis() as u64,
+                "slack: call hung - killed by the operation deadline (transient)"
+            );
+            Err(SlackError::Transient(format!(
+                "{op_name}: timeout after {} ms (whole operation)",
+                budget.as_millis()
+            )))
+        }
+    }
 }
 
 /// Web API client for one bot identity.
@@ -106,47 +147,48 @@ impl SlackClient {
     /// is an error on Slack's side, not merely bad style.
     pub async fn apps_connections_open(&self) -> Result<String, SlackError> {
         let url = format!("{}/apps.connections.open", self.base_url);
-        let req = self
-            .inner
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.app_token))
-            .header("Content-Type", "application/json")
-            .body("{}")
-            .send();
-        let resp = tokio::time::timeout(self.connect_timeout, req)
-            .await
-            .map_err(|_| SlackError::Transient("apps.connections.open: timeout".into()))?
-            .map_err(|e| SlackError::Transient(format!("apps.connections.open: {e}")))?;
+        let op = async {
+            let resp = self
+                .inner
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.app_token))
+                .header("Content-Type", "application/json")
+                .body("{}")
+                .send()
+                .await
+                .map_err(|e| SlackError::Transient(format!("apps.connections.open: {e}")))?;
 
-        let status = resp.status();
-        let body: JsonValue = resp
-            .json()
-            .await
-            .map_err(|e| SlackError::Transient(format!("apps.connections.open: body: {e}")))?;
-        if status.as_u16() == 429 {
-            return Err(SlackError::Transient(
-                "apps.connections.open: ratelimited".into(),
-            ));
-        }
-        if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            return body
-                .get("url")
+            let status = resp.status();
+            let body: JsonValue = resp
+                .json()
+                .await
+                .map_err(|e| SlackError::Transient(format!("apps.connections.open: body: {e}")))?;
+            if status.as_u16() == 429 {
+                return Err(SlackError::Transient(
+                    "apps.connections.open: ratelimited".into(),
+                ));
+            }
+            if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return body
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        SlackError::Transient("apps.connections.open: ok without url".into())
+                    });
+            }
+            let code = body
+                .get("error")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .ok_or_else(|| {
-                    SlackError::Transient("apps.connections.open: ok without url".into())
-                });
-        }
-        let code = body
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let msg = format!("apps.connections.open: {code}");
-        Err(if is_permanent(code) {
-            SlackError::Permanent(msg)
-        } else {
-            SlackError::Transient(msg)
-        })
+                .unwrap_or("unknown");
+            let msg = format!("apps.connections.open: {code}");
+            Err(if is_permanent(code) {
+                SlackError::Permanent(msg)
+            } else {
+                SlackError::Transient(msg)
+            })
+        };
+        with_deadline(self.connect_timeout, "apps.connections.open", op).await
     }
 
     /// Posts a message. `thread_ts` set means the reply lands in that thread.
@@ -161,42 +203,43 @@ impl SlackClient {
         if let Some(t) = thread_ts {
             payload["thread_ts"] = json!(t);
         }
-        let req = self
-            .inner
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.bot_token))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send();
-        let resp = tokio::time::timeout(self.send_timeout, req)
-            .await
-            .map_err(|_| SlackError::Transient("chat.postMessage: timeout".into()))?
-            .map_err(|e| SlackError::Transient(format!("chat.postMessage: {e}")))?;
+        let op = async {
+            let resp = self
+                .inner
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.bot_token))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| SlackError::Transient(format!("chat.postMessage: {e}")))?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Err(SlackError::Transient(
-                "chat.postMessage: ratelimited".into(),
-            ));
-        }
-        let body: JsonValue = resp
-            .json()
-            .await
-            .map_err(|e| SlackError::Transient(format!("chat.postMessage: body: {e}")))?;
-        if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            return Ok(());
-        }
-        // Slack spells its rate limit two ways: `rate_limited` on the app tier
-        // and `ratelimited` on the HTTP 429 path. Both are transient.
-        let code = body
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let msg = format!("chat.postMessage: {code}");
-        Err(if is_permanent(code) {
-            SlackError::Permanent(msg)
-        } else {
-            SlackError::Transient(msg)
-        })
+            let status = resp.status();
+            if status.as_u16() == 429 {
+                return Err(SlackError::Transient(
+                    "chat.postMessage: ratelimited".into(),
+                ));
+            }
+            let body: JsonValue = resp
+                .json()
+                .await
+                .map_err(|e| SlackError::Transient(format!("chat.postMessage: body: {e}")))?;
+            if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return Ok(());
+            }
+            // Slack spells its rate limit two ways: `rate_limited` on the app
+            // tier and `ratelimited` on the HTTP 429 path. Both are transient.
+            let code = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let msg = format!("chat.postMessage: {code}");
+            Err(if is_permanent(code) {
+                SlackError::Permanent(msg)
+            } else {
+                SlackError::Transient(msg)
+            })
+        };
+        with_deadline(self.send_timeout, "chat.postMessage", op).await
     }
 }

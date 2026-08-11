@@ -10,14 +10,20 @@ Milestones mirror these streams.
 Defects found by running the system in production, shipped as patch releases in
 roughly this order. The two watchdog items travel together.
 
-1. [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh clone: cargo test must be green without the private tree
-2. [#8](https://github.com/mmeyerlein/meclaw/issues/8) Slack proxy: full-operation deadline for the long poll
-3. [#6](https://github.com/mmeyerlein/meclaw/issues/6) watchdog: no arming during boot, nonzero exit on trip
-4. [#7](https://github.com/mmeyerlein/meclaw/issues/7) cell I/O liveness signal (the watchdog item's other half)
-5. [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding calls in token accounting
-6. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
-7. [#40](https://github.com/mmeyerlein/meclaw/issues/40) Windows build: cfg-gate the unix signal import
-8. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
+Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone tests, [#40](https://github.com/mmeyerlein/meclaw/issues/40) Windows build,
+[#41](https://github.com/mmeyerlein/meclaw/issues/41) CI, [#42](https://github.com/mmeyerlein/meclaw/issues/42) releases with notes.
+
+1. [#8](https://github.com/mmeyerlein/meclaw/issues/8) Slack HTTP calls: full-operation deadline (send plus body read)
+2. [#54](https://github.com/mmeyerlein/meclaw/issues/54) chat split cell: a malformed memory tag leaks the private extraction block
+3. [#56](https://github.com/mmeyerlein/meclaw/issues/56) store factory: schema-less seed passes --validate, panics on wake
+4. [#6](https://github.com/mmeyerlein/meclaw/issues/6) watchdog: no arming during boot, nonzero exit on trip
+5. [#7](https://github.com/mmeyerlein/meclaw/issues/7) cell I/O liveness signal (the watchdog item's other half)
+6. [#50](https://github.com/mmeyerlein/meclaw/issues/50) Slack socket mode: idle deadline for the read loop (follows the #8 pattern)
+7. [#44](https://github.com/mmeyerlein/meclaw/issues/44) code cell: persist stderr of successful scripts as promised
+8. [#49](https://github.com/mmeyerlein/meclaw/issues/49) proxy: end-to-end pin for the chat_id promotion edge
+9. [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding calls in token accounting
+10. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
+11. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
 
 ## Next: 0.2.0 memory quality
 
