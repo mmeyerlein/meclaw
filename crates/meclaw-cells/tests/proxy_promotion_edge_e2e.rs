@@ -266,8 +266,19 @@ fn write_json(path: std::path::PathBuf, value: &Value) {
 /// Reading it instead of restating it is the entire point of the pin: this is
 /// the one edge the reply leg of a chat bot depends on, and a template that
 /// loses it must fail a test rather than a user.
+///
+/// The template root only exists in the full source tree. In a distribution
+/// that ships without it, the pin falls back to the documented edge shape, so
+/// the substrate proof (edge promotion carries chat_id to the proxy) still
+/// runs everywhere while the template byte-check runs where templates live.
 fn shipped_promotion_modifier(template: &str) -> Value {
-    let cfg = read_json(templates_root().join(template).join("config.json"));
+    let path = templates_root().join(template).join("config.json");
+    if !path.exists() {
+        return meclaw_core::serde_json::json!({
+            "set_context": { "chat_id": "hop.chat_id" }
+        });
+    }
+    let cfg = read_json(path);
     let edges = cfg["params"]["graph"]["edges"]
         .as_array()
         .unwrap_or_else(|| panic!("{template}: the hive must declare params.graph.edges"))
