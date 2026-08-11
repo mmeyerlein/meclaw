@@ -1948,7 +1948,7 @@ HTTP endpoints are 1:1 the `/colony/*` paths (see "/colony as a virtual endpoint
 | `/colony/trace` | GET | `/colony/trace?trace_id=...&...` |
 | `/colony/events` | GET (WS upgrade) | `/colony/events` (subscribe) |
 | `/ui/*` | GET | (an HTML render layer over the same data, see "Web UI") |
-| `/health` | GET | a health check of the HTTP layer itself (no routing through colony) |
+| `/health` | GET | health check: always `200`, JSON with `status` and `io_liveness` (age of each long-running cell's last successful external round trip; a short-deadline read from the colony task, `null` when the colony does not answer — no routing through `route()`) |
 
 `POST /messages` is the only HTTP endpoint that can inject a message with an arbitrary target. All other routes are 1:1 their internal `/colony/*` paths (the symmetry statement in the section "/colony as a virtual endpoint").
 
