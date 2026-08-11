@@ -180,6 +180,35 @@ pub async fn start_mock_server_capturing_with_validator(
     response_sequence: Vec<MockResponse>,
     validator: Option<RequestValidator>,
 ) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
+    start_mock_server_capturing_inner(response_sequence, validator, 0).await
+}
+
+/// `start_mock_server_capturing` variant that models a **half-dead peer**: the
+/// first `hang_after_head` connections receive the response HEAD (status line +
+/// `Content-Type` + `Content-Length`) and then **nothing** — the announced body
+/// is never written, and the socket is held open for the lifetime of the server
+/// task (no FIN, no RST, no error).
+///
+/// This is the shape a NAT idle-timeout or a silently blackholed path produces,
+/// and it is the only shape that separates a header-phase timeout from a
+/// full-operation timeout: a client that bounds only `send()` completes the
+/// header phase here and then waits on the body read forever.
+///
+/// The request is still captured, and the hung connection still consumes one
+/// entry of `response_sequence` (its head is taken from that entry) — so the
+/// sequence is read the same way regardless of hanging.
+pub async fn start_mock_server_capturing_hanging_body(
+    hang_after_head: usize,
+    response_sequence: Vec<MockResponse>,
+) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
+    start_mock_server_capturing_inner(response_sequence, None, hang_after_head).await
+}
+
+async fn start_mock_server_capturing_inner(
+    response_sequence: Vec<MockResponse>,
+    validator: Option<RequestValidator>,
+    hang_after_head: usize,
+) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
     let addr = listener.local_addr().expect("local_addr failed");
     let captured: Arc<Mutex<Vec<CapturedRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -189,11 +218,14 @@ pub async fn start_mock_server_capturing_with_validator(
         next: 0,
     }));
     let join = tokio::spawn(async move {
+        let mut accepted = 0usize;
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(p) => p,
                 Err(_) => break,
             };
+            accepted += 1;
+            let hang = accepted <= hang_after_head;
             let captured_for_conn = captured_for_task.clone();
             let responses_for_conn = responses.clone();
             let validator_for_conn = validator.clone();
@@ -203,6 +235,7 @@ pub async fn start_mock_server_capturing_with_validator(
                     captured_for_conn,
                     responses_for_conn,
                     validator_for_conn,
+                    hang,
                 )
                 .await;
             });
@@ -235,6 +268,7 @@ async fn handle_capturing_connection(
     captured: Arc<Mutex<Vec<CapturedRequest>>>,
     responses: Arc<Mutex<ResponseSequence>>,
     validator: Option<RequestValidator>,
+    hang_after_head: bool,
 ) -> std::io::Result<()> {
     // Read until end of header block (\r\n\r\n).
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -316,6 +350,14 @@ async fn handle_capturing_connection(
     if let Some(d) = response.delay {
         tokio::time::sleep(d).await;
     }
+    if hang_after_head {
+        // Half-dead peer: head out, body never. The socket stays open (this task
+        // owns it and never returns), so the client sees neither FIN nor RST — it
+        // simply waits on a body that will not arrive.
+        write_response_head(&mut stream, &response).await?;
+        std::future::pending::<()>().await;
+        return Ok(());
+    }
     write_response(&mut stream, &response).await
 }
 
@@ -324,6 +366,19 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 async fn write_response(stream: &mut TcpStream, response: &MockResponse) -> std::io::Result<()> {
+    write_response_head(stream, response).await?;
+    stream.write_all(&response.body).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Writes only the response head (status line + headers + blank line). The
+/// announced `Content-Length` is the real body length — a client that trusts it
+/// blocks until the body arrives.
+async fn write_response_head(
+    stream: &mut TcpStream,
+    response: &MockResponse,
+) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         response.status,
@@ -331,10 +386,7 @@ async fn write_response(stream: &mut TcpStream, response: &MockResponse) -> std:
         response.content_type,
         response.body.len(),
     );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&response.body).await?;
-    stream.shutdown().await?;
-    Ok(())
+    stream.write_all(head.as_bytes()).await
 }
 
 fn status_reason(status: u16) -> &'static str {

@@ -59,7 +59,11 @@ pub struct RunIoConfig {
     pub initial_offset: i64,
     /// Telegram-side long-poll request duration (`timeout` query param).
     pub long_poll_request_secs: u64,
-    /// Client-side `tokio::time::timeout` envelope around the HTTP call.
+    /// Client-side `tokio::time::timeout` envelope around the HTTP call. Two
+    /// roles: inside `get_updates` it bounds the header phase (`send()`), and in
+    /// `run_io` it is the margin of the outer hang-deadline
+    /// (`long_poll_request_secs * 1000 + long_poll_timeout_ms`) that bounds the
+    /// complete operation including the body read.
     pub long_poll_timeout_ms: u64,
 }
 
@@ -129,6 +133,13 @@ impl BackoffState {
 /// is `!Unpin`, and a completed future is not re-awaitable — every
 /// iteration needs a fresh `work`-future.
 ///
+/// P15-Nachtrag (hard rule 12): the poll inside `work` carries an OUTER
+/// `tokio::time::timeout` over the whole `get_updates` operation. The client
+/// timeout inside `get_updates` covers the header phase only; the body read was
+/// uncovered, which let a half-dead socket stall the lane silently and forever
+/// (production incident 2026-08-11). Elapsed is classified `Transient` — the
+/// backoff ladder takes it and the loop keeps living.
+///
 /// `+ Send` is load-bearing (see `TimerCell::run_io` doc / 10-A trait doc).
 #[allow(clippy::manual_async_fn)]
 pub fn run_io(
@@ -176,13 +187,43 @@ pub fn run_io(
             // select! against reconfig_rx.recv() cancels the entire
             // work-future on shutdown (W10: abort-during-sleep or
             // abort-during-poll).
+            // Hard rule 12 envelope around the WHOLE `getUpdates` operation.
+            // The `client_timeout` inside `get_updates` bounds only `send()`,
+            // i.e. the header phase — the body read runs uncovered, so a peer
+            // that answers with a head and then goes silent (NAT idle-timeout,
+            // blackholed path: no FIN, no RST) hangs the lane forever. Measured
+            // in production on 2026-08-11: silent proxy, zero log events, ESTAB
+            // socket, updates waiting at Telegram.
+            //
+            // Budget = the server-side wait plus one full client envelope as
+            // margin. The W7 tripwire guarantees `long_poll_timeout_ms >
+            // long_poll_request_secs * 1000`, so the margin is always larger
+            // than the legitimate wait — the deadline can never cut a valid
+            // long poll, and it is always finite (defaults: 30 s + 35 s = 65 s).
+            let hang_deadline = Duration::from_millis(
+                req_secs
+                    .saturating_mul(1000)
+                    .saturating_add(long_poll_timeout_ms),
+            );
             let work = async {
                 if !sleep_for.is_zero() {
                     tokio::time::sleep(sleep_for).await;
                 }
-                poll_client
-                    .get_updates(poll_offset, req_secs, client_timeout)
-                    .await
+                let call = poll_client.get_updates(poll_offset, req_secs, client_timeout);
+                match tokio::time::timeout(hang_deadline, call).await {
+                    Ok(res) => res,
+                    Err(_) => {
+                        // Own, greppable message: this is NOT the ordinary
+                        // client timeout (that one is a `Transient` from inside
+                        // `get_updates`) — it is the backstop that fires when
+                        // the call itself stopped making progress.
+                        tracing::warn!(
+                            deadline_ms = hang_deadline.as_millis() as u64,
+                            "get_updates hung - killed by the outer deadline (transient, lane continues)"
+                        );
+                        Err(TelegramError::Transient("get_updates hung".into()))
+                    }
+                }
             };
             tokio::pin!(work);
 

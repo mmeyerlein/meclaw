@@ -4,6 +4,94 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.15] — 2026-08-11
+
+Four defects, none of them found by the test suite. All four came out of a
+memory lane running in production, and each one had been invisible in a
+different way: an answer that was computed and then not printed, a poll that
+hung behind a healthy heartbeat, an extractor that wrote down the conversation
+instead of the world, and a retrieval that drowned the answer in copies of the
+question. **A timeout that covers only half the operation is not a timeout** —
+that is the lesson of the one Rust change in this release.
+
+### Fixed
+
+- **A superseded fact's history reached the JSON but not the rendered text.**
+  Chain projection produced the candidate correctly, with `history` attached —
+  and the text block handed to the model printed the claim alone. Asked which
+  editors it had seen over the last seven days, the agent answered with the
+  current one and dropped the switch it was holding. Point mode now appends the
+  prior versions (`vscode (previously: Helix until 2026-08-08)`), window mode
+  renders the derived span (`[from -> until]`, an open end as `-> open`), and a
+  candidate without history or span renders byte-identically to before. The
+  scenario runner captures the rendered block from now on, so an assertion can
+  pin the **presentation** and not only the computation: this defect was a
+  correct bundle with a lossy text.
+- **The Telegram long poll was covered by a header-phase timeout only.** In
+  production the proxy went quiet for 15 minutes and 42 seconds — connection
+  established, updates waiting on the other side, colony heartbeat normal, not
+  one log line. The `tokio::time::timeout` wrapped `.send()`, so it expired on
+  the response head; the body read behind it ran uncapped, and the HTTP client
+  carried no timeout of its own. A peer that sends headers and then falls silent
+  (no FIN, no RST) therefore hangs the colony's only outbound connection
+  indefinitely, and hangs it *silently* — the watchdog sees a live cell, because
+  the cell is alive, merely stuck in an await. The rule-12 deadline now covers
+  the **whole** operation, budgeted as `long_poll_request_secs * 1000 +
+  long_poll_timeout_ms` so that it can never cut a legitimate long poll and is
+  still finite; expiry is transient (the backoff ladder keeps the lane alive)
+  and gets its own greppable warning rather than a debug line. Proven by a
+  fixture server that writes the response head and never the body — a half-dead
+  peer is the only shape that tells a header deadline apart from an operation
+  deadline.
+- **The extractor minted facts out of the conversation about facts.** It wrote
+  an axis from the *question* (`user | asked | …`) and another from the agent's
+  own previous *answer* — a self-reference loop, and a fourth spelling of an
+  axis that already existed three times. Both flooded the recency-sorted
+  temporal leg and pushed the fact that actually answered the question out of
+  the bundle. The extraction prompt now states the distinction up front: turns
+  are already stored as episodes, so *that* something was asked, answered or
+  discussed is never a fact, and a turn carrying no world state correctly yields
+  an empty list. An assistant turn is a previous answer of one's own and
+  contributes only genuinely new material; a user turn that confirms or corrects
+  very much carries world state.
+- **The often-asked question drowned its own answer.** In a measured live
+  recall, 12 of 20 fused slots were near-verbatim copies of earlier questions,
+  while the carrying fact was keyword-invisible (the question in plural, the
+  index holding the singular), arrived over the temporal leg alone at rank 13 of
+  14, and fell off at the top-k cut — every repetition of the question made it
+  worse by one episode. Fusion now cuts by **composition** instead of taking a
+  prefix of the order: episodes receive at most a configurable budget of the
+  slots (default 6) and keep it against a wall of facts, and whichever side
+  cannot fill its share is backfilled by the other, so the bundle never gets
+  shorter. This closes the starvation side of the registered one-leg episode cap
+  as well. The ordering itself is untouched — this is a membership filter, not a
+  re-ranking, and the existing tie-break and attribution rules read exactly the
+  list they read before.
+
+### Measured
+
+- **The fusion change is proven paired, on 50 retained evaluation colonies with
+  identical extractions:** **0 flips**, and R@1 84.0 · R@5 98.0 · R@10 100.0
+  byte-stable across every question class. That it does anything at all is shown
+  by the other half of the same comparison: **23 of 27** pairs with an identical
+  query vector came out with a different list composition. Composition moves,
+  quality does not — which is precisely the claim, since the defect it repairs
+  only bites once a question has been asked many times.
+
+### Notes
+
+- **The public surface of this release is the proxy timeout.** Everything else
+  is the private `memory-hive` template — its recall script and its extraction
+  prompt — which lives outside the published tree, as in 0.1.14. What ships
+  publicly is the long-poll deadline, its test, and the new hanging-body mock
+  server in `meclaw-testing`.
+- Both frozen routing corridors are untouched, no dependency was added, no new
+  `error_code` was introduced, and the cell type registry is unchanged.
+- Two findings are registered rather than fixed: cell I/O liveness is invisible
+  to the heartbeat watchdog (the silent poll above ran for sixteen minutes
+  behind a healthy heartbeat), and a dream run cannot be triggered from outside
+  a colony — three routes were tried and all three are closed by design.
+
 ## [0.1.14] — 2026-08-11
 
 Which version of a remembered fact holds is now decided when the fact is read,
