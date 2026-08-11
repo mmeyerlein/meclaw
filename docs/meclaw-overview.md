@@ -1215,6 +1215,8 @@ The dispatcher hive decomposes the LLM output into several typed messages (e.g. 
 
 **Routing conditions** on the edges use regular CEL expressions on `context.*`/`hop.*` keys (e.g. `hop.msg_type == "tool_call"`). Such header conventions are **application conventions**, meclaw-core does not know them as a special case.
 
+For a complete store-backed implementation, follow the [examples/telegram-research protocol walkthrough](store-backed-tool-loop.md), which traces a two-tool round through the dispatcher, store, collector, and loopback edge.
+
 ---
 
 ## Template system
