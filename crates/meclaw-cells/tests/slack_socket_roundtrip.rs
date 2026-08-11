@@ -77,7 +77,15 @@ async fn open_connect_receive_ack_is_one_continuous_path() {
     let (tx, mut rx) = mpsc::channel(8);
     let mut own_app_id = None;
     let runner = tokio::spawn(async move {
-        connect_and_run(&client, &tx, &mut own_app_id, None, Duration::from_secs(5)).await
+        connect_and_run(
+            &client,
+            &tx,
+            &mut own_app_id,
+            None,
+            Duration::from_secs(5),
+            &meclaw_colony::IoLivenessMark::disabled(),
+        )
+        .await
     });
 
     let inbound = recv_one(&mut rx).await;
@@ -127,7 +135,15 @@ async fn dropped_bot_events_are_still_acknowledged() {
     let (tx, mut rx) = mpsc::channel(8);
     let mut own_app_id = None;
     let runner = tokio::spawn(async move {
-        connect_and_run(&client, &tx, &mut own_app_id, None, Duration::from_secs(5)).await
+        connect_and_run(
+            &client,
+            &tx,
+            &mut own_app_id,
+            None,
+            Duration::from_secs(5),
+            &meclaw_colony::IoLivenessMark::disabled(),
+        )
+        .await
     });
 
     // The human event is the ONLY one that reaches the handler.
@@ -170,7 +186,15 @@ async fn own_app_id_from_hello_drives_r3() {
     let (tx, mut rx) = mpsc::channel(8);
     let mut own_app_id = None;
     let runner = tokio::spawn(async move {
-        connect_and_run(&client, &tx, &mut own_app_id, None, Duration::from_secs(5)).await
+        connect_and_run(
+            &client,
+            &tx,
+            &mut own_app_id,
+            None,
+            Duration::from_secs(5),
+            &meclaw_colony::IoLivenessMark::disabled(),
+        )
+        .await
     });
 
     let inbound = recv_one(&mut rx).await;
@@ -199,7 +223,14 @@ async fn disconnect_frame_ends_the_connection_with_its_reason() {
     let mut own_app_id = None;
     let end = tokio::time::timeout(
         Duration::from_secs(30),
-        connect_and_run(&client, &tx, &mut own_app_id, None, Duration::from_secs(5)),
+        connect_and_run(
+            &client,
+            &tx,
+            &mut own_app_id,
+            None,
+            Duration::from_secs(5),
+            &meclaw_colony::IoLivenessMark::disabled(),
+        ),
     )
     .await
     .expect("connection must end promptly on disconnect");
@@ -234,7 +265,15 @@ async fn malformed_frame_does_not_kill_the_connection() {
     let (tx, mut rx) = mpsc::channel(8);
     let mut own_app_id = None;
     let runner = tokio::spawn(async move {
-        connect_and_run(&client, &tx, &mut own_app_id, None, Duration::from_secs(5)).await
+        connect_and_run(
+            &client,
+            &tx,
+            &mut own_app_id,
+            None,
+            Duration::from_secs(5),
+            &meclaw_colony::IoLivenessMark::disabled(),
+        )
+        .await
     });
 
     let inbound = recv_one(&mut rx).await;

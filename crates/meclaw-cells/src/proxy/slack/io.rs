@@ -84,6 +84,9 @@ pub struct SlackIoConfig {
     /// immediately drops would reset the backoff on every cycle and turn the
     /// reconnect path into a hot loop.
     pub min_uptime_ms: u64,
+    /// Issue #7: progress mark, set on every frame this connection receives.
+    /// Default = disabled (reports nowhere).
+    pub liveness: meclaw_colony::IoLivenessMark,
 }
 
 /// Live-updatable I/O settings (β params overlay, path B).
@@ -110,6 +113,10 @@ pub async fn run_slack_io(
     let mut backoff = Backoff::new();
     let mut own_app_id: Option<String> = None;
     let connect_timeout = Duration::from_millis(cfg.connect_timeout_ms);
+    // Issue #7: announce before the first connect — a socket that never opens is
+    // visibly "never succeeded" rather than invisible.
+    let liveness = cfg.liveness.clone();
+    liveness.announce();
 
     loop {
         let sleep_for = backoff.next_sleep();
@@ -147,6 +154,7 @@ pub async fn run_slack_io(
                 &mut own_app_id,
                 cfg.bot_user_id.as_deref(),
                 connect_timeout,
+                &liveness,
             ) => end,
         };
 
@@ -207,12 +215,14 @@ pub enum ConnectionEnd {
 /// `own_app_id` is written from the `hello` frame and read by loop rule R3, so
 /// it is an in/out parameter rather than a return value: the identity has to be
 /// known before the first event is filtered.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_and_run(
     client: &SlackClient,
     tx: &mpsc::Sender<SlackInbound>,
     own_app_id: &mut Option<String>,
     bot_user_id: Option<&str>,
     connect_timeout: Duration,
+    liveness: &meclaw_colony::IoLivenessMark,
 ) -> ConnectionEnd {
     let url = match client.apps_connections_open().await {
         Ok(u) => u,
@@ -229,8 +239,16 @@ pub async fn connect_and_run(
             Ok(Ok((ws, _resp))) => ws,
         };
     let (mut write, mut read) = ws.split();
+    // Issue #7: the socket is open — Slack answered `apps.connections.open` and
+    // completed the WebSocket handshake, a full external round trip.
+    liveness.mark_success();
 
     while let Some(msg) = read.next().await {
+        // Issue #7: every frame — including the pings and the `hello` — is proof
+        // that this connection is still carrying traffic. A Socket Mode lane is
+        // frame-driven, so frame arrival is its round trip; the marks stay fresh
+        // on a quiet channel and go stale on a dead one.
+        liveness.mark_success();
         let text = match msg {
             Ok(WsMessage::Text(t)) => t.to_string(),
             Ok(WsMessage::Close(_)) => return ConnectionEnd::Closed,

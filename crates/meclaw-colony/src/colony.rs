@@ -403,6 +403,27 @@ pub enum ColonyMsg {
         path: Path,
         ack: oneshot::Sender<()>,
     },
+    /// Issue #7: a long-running cell's I/O sub-task reporting on itself.
+    ///
+    /// Sent with `try_send` from the I/O task (see
+    /// [`crate::io_liveness::IoLivenessMark`]), so it can never backpressure the
+    /// very task whose stall it is meant to expose. The colony owns the
+    /// resulting map — no lock, no shared state.
+    IoLiveness {
+        /// Cell whose I/O sub-task this is.
+        path: Path,
+        /// `Some(t)`: a successful external round trip completed at `t`.
+        /// `None`: this I/O task has started and has no round trip yet (sent
+        /// once at `run_io` entry; it also clears a predecessor's mark after a
+        /// restart).
+        at: Option<std::time::SystemTime>,
+    },
+    /// Issue #7: read the per-I/O-task liveness marks (in-memory, no DB).
+    /// Answers `GET /health`.
+    ReadLiveness {
+        /// Reply channel; dropped on Shutdown-drain.
+        ack: oneshot::Sender<crate::api_dto::ReadLivenessReply>,
+    },
     /// **Phase-2 test hook** for inspecting the dead-letter queue.
     ///
     /// This is NOT the final design. The spec-symmetric read path is a `Message`
@@ -1195,6 +1216,31 @@ impl ColonyTaskConfig {
     }
 }
 
+/// Issue #7: project the colony-owned I/O-liveness map into the read DTO.
+///
+/// `now` is passed in rather than read here so the projection is a pure function
+/// (testable without sleeping). A mark in the future — a clock step backwards
+/// between marking and reading — reports as `0` rather than wrapping into a
+/// gigantic age.
+fn build_liveness_reply(
+    marks: &HashMap<Path, Option<std::time::SystemTime>>,
+    now: std::time::SystemTime,
+) -> crate::api_dto::ReadLivenessReply {
+    let mut entries: Vec<crate::api_dto::IoLivenessDto> = marks
+        .iter()
+        .map(|(path, at)| crate::api_dto::IoLivenessDto {
+            path: path.as_str().to_string(),
+            last_success_secs: at.map(|t| {
+                now.duration_since(t)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default()
+            }),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    crate::api_dto::ReadLivenessReply { entries }
+}
+
 /// Colony task: runs indefinitely, processing `ColonyMsg`s and cell output envelopes.
 pub async fn colony_task(cfg: ColonyTaskConfig) {
     let ColonyTaskConfig {
@@ -1220,6 +1266,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     let mut node_contracts: HashMap<Path, NodeContract> = HashMap::new();
     let mut edges: EdgeTable = EdgeTable::new();
     let mut hive_scopes: HiveScopeTable = HiveScopeTable::new();
+    // Issue #7: per-I/O-task progress marks, owned by this task alone. Key = the
+    // cell's path, value = when its I/O sub-task last completed a successful
+    // external round trip (`None` = announced, none yet). Written only by the
+    // `IoLiveness` arm, read only by the `ReadLiveness` arm.
+    let mut io_liveness: HashMap<Path, Option<std::time::SystemTime>> = HashMap::new();
     // W6d (A6): transient hand-off buffer only — flushed to the durable
     // `dead_letters` table after every handled event (`persist_dead_letters`).
     // Not a store, not bounded (no drop-oldest), never a second source of truth.
@@ -1329,6 +1380,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 ColonyMsg::AddHiveScope { path, ack: scope_ack } => {
                                     hive_scopes.register(HiveScope { path });
                                     let _ = scope_ack.send(());
+                                }
+                                ColonyMsg::IoLiveness { path, at } => {
+                                    io_liveness.insert(path, at);
+                                }
+                                ColonyMsg::ReadLiveness { ack: lv_ack } => {
+                                    // Shutdown-drain: Read is best-effort; drop ack silently.
+                                    drop(lv_ack);
                                 }
                                 ColonyMsg::Route { sender_path, msg } => {
                                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
@@ -1571,6 +1629,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     ColonyMsg::AddHiveScope { path, ack } => {
                         hive_scopes.register(HiveScope { path });
                         let _ = ack.send(());
+                    }
+                    // Issue #7: an I/O sub-task reports on itself. Pure in-memory
+                    // upsert — no DB, no await, so a marking cell never competes
+                    // with routing for loop time.
+                    ColonyMsg::IoLiveness { path, at } => {
+                        io_liveness.insert(path, at);
+                    }
+                    ColonyMsg::ReadLiveness { ack } => {
+                        let _ = ack.send(build_liveness_reply(&io_liveness, std::time::SystemTime::now()));
                     }
                     ColonyMsg::Route { sender_path, msg } => {
                         let mut work: VecDeque<(Path, Message)> = VecDeque::new();

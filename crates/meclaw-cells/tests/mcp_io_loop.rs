@@ -31,6 +31,7 @@ async fn run_io_emits_discovery_ready_then_blocks() {
     let cfg = RunIoConfig {
         client,
         external_timeout_ms: 2_000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
 
     let h = tokio::spawn(run_io(McpIo::Http(cfg), ev_tx, rc_rx));
@@ -70,6 +71,7 @@ async fn run_io_terminates_when_events_receiver_dropped_after_discovery() {
     let cfg = RunIoConfig {
         client,
         external_timeout_ms: 2_000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let h = tokio::spawn(run_io(McpIo::Http(cfg), ev_tx, rc_rx));
 

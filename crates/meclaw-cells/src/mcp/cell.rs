@@ -61,6 +61,8 @@ impl McpCell {
             initial_io_cfg: Some(McpIo::Http(RunIoConfig {
                 client: io_client,
                 external_timeout_ms,
+                // Replaced by the substrate via `attach_liveness`.
+                liveness: meclaw_colony::IoLivenessMark::disabled(),
             })),
         }
     }
@@ -82,6 +84,8 @@ impl McpCell {
             initial_io_cfg: Some(McpIo::Stdio(StdioIoConfig {
                 spec,
                 external_timeout_ms,
+                // Replaced by the substrate via `attach_liveness`.
+                liveness: meclaw_colony::IoLivenessMark::disabled(),
             })),
         }
     }
@@ -94,6 +98,14 @@ impl LongRunningCell for McpCell {
 
     fn split_io(&mut self) -> Self::Io {
         self.initial_io_cfg.take().expect("split_io called twice")
+    }
+
+    /// Issue #7: take the mark for whichever transport this cell runs.
+    fn attach_liveness(io: &mut Self::Io, mark: meclaw_colony::IoLivenessMark) {
+        match io {
+            McpIo::Http(cfg) => cfg.liveness = mark,
+            McpIo::Stdio(cfg) => cfg.liveness = mark,
+        }
     }
 
     /// I/O sub-task — delegates to `crate::mcp::io::run_io`.

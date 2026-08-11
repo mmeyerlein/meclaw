@@ -16,7 +16,10 @@ use tokio::sync::mpsc;
 async fn run_io_on_empty_active_stays_pending_then_reacts_to_setactive_with_future_at() {
     let (events_tx, mut events_rx) = mpsc::channel::<TimerEvent>(64);
     let (rc_tx, rc_rx) = mpsc::channel::<TimerReconfig>(8);
-    let io = TimerIo { active: vec![] };
+    let io = TimerIo {
+        active: vec![],
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
+    };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
     // NO event within 100 ms (active empty → sleep_until = pending).
@@ -60,6 +63,7 @@ async fn run_io_emits_fire_for_every_second_cron_and_keeps_active() {
             schedule_id: id,
             kind: ScheduleKind::Cron("*/1 * * * * *".into()),
         }],
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -90,6 +94,7 @@ async fn run_io_drops_once_locally_after_fire() {
             schedule_id: id,
             kind: ScheduleKind::At(when),
         }],
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
 
@@ -123,6 +128,7 @@ async fn run_io_terminates_when_events_channel_consumer_drops() {
             schedule_id: Uuid::now_v7(),
             kind: ScheduleKind::Cron("*/1 * * * * *".into()),
         }],
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(io, events_tx, rc_rx));
     drop(events_rx);

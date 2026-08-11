@@ -47,6 +47,7 @@ async fn run_io_survives_a_half_dead_poll_and_delivers_the_next_update() {
         initial_offset: 0,
         long_poll_request_secs: 0,
         long_poll_timeout_ms: 500,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 
@@ -103,6 +104,7 @@ async fn run_io_outer_deadline_does_not_cut_a_legitimate_long_poll() {
         initial_offset: 0,
         long_poll_request_secs: 1,
         long_poll_timeout_ms: 2000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 

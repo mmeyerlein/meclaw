@@ -58,6 +58,10 @@ pub fn run_io(
     async move {
         let parser = CronParser::builder().seconds(Seconds::Required).build();
         let mut active = io.active;
+        let liveness = io.liveness;
+        // Issue #7: announce before the first sleep — a timer that has not fired
+        // yet is visibly "no tick yet", not invisible.
+        liveness.announce();
         loop {
             let next = compute_next_occurrence(&active, &parser, Utc::now());
             tokio::select! {
@@ -79,6 +83,9 @@ pub fn run_io(
                             // Handler channel closed → shutdown.
                             break;
                         }
+                        // Issue #7: a due schedule was delivered — this loop is
+                        // demonstrably still turning.
+                        liveness.mark_success();
                         if is_once {
                             // Drop a one-shot locally after firing; a repeating
                             // one stays in the Vec, the next iteration computes

@@ -65,6 +65,10 @@ pub struct RunIoConfig {
     /// (`long_poll_request_secs * 1000 + long_poll_timeout_ms`) that bounds the
     /// complete operation including the body read.
     pub long_poll_timeout_ms: u64,
+    /// Issue #7: progress mark, set after every long poll that actually came
+    /// back from Telegram. Default = disabled (reports nowhere), which is what
+    /// every hand-built config in a test gets.
+    pub liveness: meclaw_colony::IoLivenessMark,
 }
 
 /// Backoff state for `run_io`. Transient: exponential 1s → 60s; Permanent:
@@ -155,7 +159,11 @@ pub fn run_io(
             initial_offset,
             long_poll_request_secs,
             long_poll_timeout_ms,
+            liveness,
         } = cfg;
+        // Issue #7: announce first, so a lane that never manages a single poll
+        // is visibly "never succeeded" rather than invisible.
+        liveness.announce();
         let mut running_offset = initial_offset;
         // β (path B): poll config + base_url are mutable at runtime via
         // `ProxyReconfig::SetPolling`. The client is rebuilt live on a base_url
@@ -247,6 +255,11 @@ pub fn run_io(
                 },
                 result = &mut work => match result {
                     Ok(events) => {
+                        // Issue #7: the far side answered. This is the ONLY
+                        // place with proof of a completed round trip — a poll
+                        // that returns zero updates is a success too, which is
+                        // exactly why event traffic cannot stand in for it.
+                        liveness.mark_success();
                         backoff.reset();
                         for ev in events {
                             let ProxyEvent::UserMessage { update_id, .. } = ev;

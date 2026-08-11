@@ -63,6 +63,8 @@ impl SlackCell {
                 bot_user_id: params.bot_user_id.clone(),
                 connect_timeout_ms: params.connect_timeout_ms,
                 min_uptime_ms: 5_000,
+                // Replaced by the substrate via `attach_liveness`.
+                liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
         }
     }
@@ -129,6 +131,13 @@ impl LongRunningCell for SlackCell {
                 .take()
                 .expect("split_io called twice — the colony calls it exactly once"),
         }
+    }
+
+    /// Issue #7: a Socket Mode lane is frame-driven, so the mark tracks frame
+    /// arrival — a silent socket that nobody closed is precisely the failure
+    /// that used to be invisible.
+    fn attach_liveness(io: &mut Self::Io, mark: meclaw_colony::IoLivenessMark) {
+        io.cfg.liveness = mark;
     }
 
     /// I/O sub-task. `+ Send` is load-bearing (AFIT does not bind Send and

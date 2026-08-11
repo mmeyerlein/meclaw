@@ -19,6 +19,7 @@ fn run_io_config_constructible() {
     let _cfg = RunIoConfig {
         client: c,
         external_timeout_ms: 30_000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
 }
 

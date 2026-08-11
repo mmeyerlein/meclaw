@@ -59,6 +59,9 @@ pub struct RunIoConfig {
     /// A timeout per HTTP op (initialize, tools/list). From
     /// `params.external_timeout_ms`.
     pub external_timeout_ms: u64,
+    /// Issue #7: progress mark, set once the provider has answered the
+    /// discovery handshake. Default = disabled (reports nowhere).
+    pub liveness: meclaw_colony::IoLivenessMark,
 }
 
 /// Configuration for the stdio I/O sub-task.
@@ -67,9 +70,18 @@ pub struct StdioIoConfig {
     pub spec: ChildSpec,
     /// A timeout per provider op (handshake requests, writes).
     pub external_timeout_ms: u64,
+    /// Issue #7: progress mark, set once the child has answered the discovery
+    /// handshake. Default = disabled (reports nowhere).
+    pub liveness: meclaw_colony::IoLivenessMark,
 }
 
 /// The owned I/O state handed to the sub-task, one variant per transport.
+///
+/// Issue #7 (honest limit): the mark below covers the discovery handshake, which
+/// on the `http` transport is the whole external life of this task — it parks
+/// afterwards. On `stdio` the shared `serve_child` loop keeps exchanging frames
+/// past the handshake and does not mark them yet, so a stdio mark reads as "the
+/// child answered at start", not "the child answered recently".
 pub enum McpIo {
     /// HTTP + JSON-RPC.
     Http(RunIoConfig),
@@ -130,8 +142,12 @@ async fn run_http_io(
     let RunIoConfig {
         client,
         external_timeout_ms,
+        liveness,
     } = cfg;
     let timeout = Duration::from_millis(external_timeout_ms);
+    // Issue #7: announce before the first call — a provider that never answers
+    // is visibly "never succeeded" rather than invisible.
+    liveness.announce();
 
     if let Err(e) = client.initialize(timeout).await {
         panic!("mcp init failed (initialize): {e:?}");
@@ -140,6 +156,8 @@ async fn run_http_io(
         Ok(t) => t,
         Err(e) => panic!("mcp init failed (tools/list): {e:?}"),
     };
+    // Issue #7: the provider answered both handshake calls.
+    liveness.mark_success();
     if events_tx
         .send(McpEvent::DiscoveryReady { tools })
         .await

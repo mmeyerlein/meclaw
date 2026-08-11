@@ -45,6 +45,9 @@ impl TimerCell {
 pub struct TimerIo {
     /// Working copy of the active schedules (cron + future-at).
     pub active: Vec<ActiveSchedule>,
+    /// Issue #7: progress mark, set after every schedule this loop actually
+    /// fired. Default = disabled (reports nowhere).
+    pub liveness: meclaw_colony::IoLivenessMark,
 }
 
 impl LongRunningCell for TimerCell {
@@ -55,7 +58,17 @@ impl LongRunningCell for TimerCell {
     fn split_io(&mut self) -> Self::Io {
         TimerIo {
             active: self.initial_io.take().unwrap_or_default(),
+            // Replaced by the substrate via `attach_liveness` when the cell is
+            // spawned inside a colony.
+            liveness: meclaw_colony::IoLivenessMark::disabled(),
         }
+    }
+
+    /// Issue #7: a timer's round trip is its own clock — the mark says when this
+    /// loop last delivered a due tick. Read it against the cell's cadence: a
+    /// daily cron is legitimately quiet for a day.
+    fn attach_liveness(io: &mut Self::Io, mark: meclaw_colony::IoLivenessMark) {
+        io.liveness = mark;
     }
 
     /// I/O sub-task — delegates to `crate::timer::io::run_io` (T8 correction B).

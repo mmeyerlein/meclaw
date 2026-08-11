@@ -4,7 +4,8 @@
 
 use crate::ColonyHandle;
 use crate::handlers::{
-    dead_letters, events, graph, message_log, messages, mutations, registry, templates, trace,
+    dead_letters, events, graph, health, message_log, messages, mutations, registry, templates,
+    trace,
 };
 use crate::ui;
 use axum::Router;
@@ -65,7 +66,10 @@ pub fn build_router(
         message_default_ttl,
     };
     Router::new()
-        .route("/health", get(|| async { "ok" }))
+        // Issue #7: still the HTTP layer's own health check (always 200, no
+        // message routed through the colony) — plus the per-I/O-task liveness
+        // marks, read from the colony's in-memory map.
+        .route("/health", get(health::get_health))
         .route("/colony/registry", get(registry::get_registry))
         .route(
             "/colony/dead_letters",

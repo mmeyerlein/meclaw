@@ -43,8 +43,12 @@ pub async fn run_stdio_io(
     let StdioIoConfig {
         spec,
         external_timeout_ms,
+        liveness,
     } = cfg;
     let timeout = Duration::from_millis(external_timeout_ms);
+    // Issue #7: announce before the spawn — a child that never handshakes is
+    // visibly "never succeeded" rather than invisible.
+    liveness.announce();
 
     let mut child = match StdioChild::spawn(&spec) {
         Ok(c) => c,
@@ -62,6 +66,8 @@ pub async fn run_stdio_io(
         },
         Err(e) => panic!("mcp init failed (tools/list): {e:?}"),
     };
+    // Issue #7: the child answered both handshake calls.
+    liveness.mark_success();
     if events_tx
         .send(McpEvent::DiscoveryReady { tools })
         .await

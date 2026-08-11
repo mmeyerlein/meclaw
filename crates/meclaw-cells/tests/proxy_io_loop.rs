@@ -40,6 +40,7 @@ async fn run_io_pushes_first_update_then_loops() {
         initial_offset: 0,
         long_poll_request_secs: 1,
         long_poll_timeout_ms: 2000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 
@@ -90,6 +91,7 @@ async fn run_io_backoff_recovers_after_transient_failures_no_livelock() {
         initial_offset: 0,
         long_poll_request_secs: 0,
         long_poll_timeout_ms: 500,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 
@@ -142,6 +144,7 @@ async fn run_io_backoff_starts_after_first_failure_not_immediately() {
         initial_offset: 0,
         long_poll_request_secs: 0,
         long_poll_timeout_ms: 500,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let t0 = Instant::now();
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
@@ -182,6 +185,7 @@ async fn run_io_handles_multiple_updates_in_single_response() {
         initial_offset: 0,
         long_poll_request_secs: 0,
         long_poll_timeout_ms: 2000,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 
@@ -225,6 +229,7 @@ async fn run_io_abort_during_backoff_sleep_terminates_promptly() {
         initial_offset: 0,
         long_poll_request_secs: 0,
         long_poll_timeout_ms: 500,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     };
     let join = tokio::spawn(run_io(cfg, events_tx, rc_rx));
 

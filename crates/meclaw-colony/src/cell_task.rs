@@ -424,7 +424,14 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
     let (events_tx, events_rx) = mpsc::channel::<L::Event>(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel::<L::Reconfig>(8);
 
-    let io_state = cell.split_io();
+    let mut io_state = cell.split_io();
+    // Issue #7: the I/O sub-task gets a liveness mark before it starts, so a
+    // stall on the external side becomes visible instead of looking like idle.
+    // Cell types that report nothing use the trait's default no-op.
+    L::attach_liveness(
+        &mut io_state,
+        crate::io_liveness::IoLivenessMark::new(own_path.clone(), colony_inbox_tx.clone()),
+    );
     let origin_sink =
         meclaw_core::OriginSink::new(outputs_tx.clone(), own_path.clone(), default_origin_ttl);
 

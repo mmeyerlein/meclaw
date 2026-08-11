@@ -35,6 +35,7 @@ fn io_config(base_url: &str, min_uptime_ms: u64) -> SlackIoConfig {
         bot_user_id: None,
         connect_timeout_ms: params.connect_timeout_ms,
         min_uptime_ms,
+        liveness: meclaw_colony::IoLivenessMark::disabled(),
     }
 }
 

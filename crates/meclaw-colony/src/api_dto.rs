@@ -57,6 +57,30 @@ mod tests {
     }
 }
 
+/// Reply for [`crate::ColonyMsg::ReadLiveness`] (issue #7).
+///
+/// One entry per long-running cell whose I/O sub-task announced itself, sorted
+/// by path so the response is stable between reads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadLivenessReply {
+    /// Per-I/O-task progress marks.
+    pub entries: Vec<IoLivenessDto>,
+}
+
+/// Age of one I/O sub-task's last successful external round trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IoLivenessDto {
+    /// Registry path of the cell, e.g. `"/main/telegram"`.
+    pub path: String,
+    /// Seconds since that cell's I/O task last completed a successful external
+    /// round trip. `null` = the task is running but has not had one yet.
+    ///
+    /// Deliberately an age and not a verdict: a `timer` whose next schedule is
+    /// tomorrow is quiet on purpose, so the threshold that separates "idle" from
+    /// "hung" belongs to whoever knows the cell's cadence.
+    pub last_success_secs: Option<u64>,
+}
+
 /// Reply for [`crate::ColonyMsg::ReadDeadLetters`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadDeadLettersReply {

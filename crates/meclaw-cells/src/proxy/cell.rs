@@ -64,6 +64,9 @@ impl ProxyCell {
                 initial_offset,
                 long_poll_request_secs,
                 long_poll_timeout_ms,
+                // Replaced by the substrate via `attach_liveness` when the cell
+                // is spawned inside a colony.
+                liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
         }
     }
@@ -84,6 +87,12 @@ impl LongRunningCell for ProxyCell {
         ProxyIo {
             cfg: self.initial_io_cfg.take().expect("split_io called twice"),
         }
+    }
+
+    /// Issue #7: the long poll is this colony's only outside connection, and a
+    /// hung one is what started the issue. Take the mark.
+    fn attach_liveness(io: &mut Self::Io, mark: meclaw_colony::IoLivenessMark) {
+        io.cfg.liveness = mark;
     }
 
     /// I/O sub-task — delegates to `crate::proxy::io::run_io`.

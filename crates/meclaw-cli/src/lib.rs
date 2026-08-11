@@ -213,6 +213,30 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     run_with_hooks(cli, None, None).await
 }
 
+/// Supervisor deadline of the Deep-Audit F3 heartbeat watchdog.
+///
+/// Production uses [`WatchdogTuning::default`] (5 consecutive silent periods of
+/// 100 ms ≈ 0.5 s, against a colony that beats every 100 ms — a 5× margin).
+/// The values are parameters of `run_watchdog` itself; they are injectable here
+/// so a test can put the supervisor deadline under the colony's own heartbeat
+/// period and observe a REAL trip of the real supervisor.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchdogTuning {
+    /// Consecutive silent periods before the watchdog trips.
+    pub threshold: u32,
+    /// Length of one supervisor period.
+    pub period: std::time::Duration,
+}
+
+impl Default for WatchdogTuning {
+    fn default() -> Self {
+        Self {
+            threshold: 5,
+            period: std::time::Duration::from_millis(100),
+        }
+    }
+}
+
 /// Lifecycle implementation: bind → serve → graceful shutdown.
 ///
 /// `addr_hook`: an optional oneshot, filled with the real `SocketAddr` resolved
@@ -230,6 +254,20 @@ pub async fn run_with_hooks(
     cli: Cli,
     addr_hook: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
     shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> anyhow::Result<()> {
+    run_with_hooks_tuned(cli, addr_hook, shutdown_hook, WatchdogTuning::default()).await
+}
+
+/// [`run_with_hooks`] with the watchdog deadline made explicit.
+///
+/// Same lifecycle, one extra knob: `watchdog` decides how much colony silence is
+/// a trip. `run_with_hooks` passes [`WatchdogTuning::default`] — the production
+/// values — so every existing caller is unaffected.
+pub async fn run_with_hooks_tuned(
+    cli: Cli,
+    addr_hook: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+    shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
+    watchdog: WatchdogTuning,
 ) -> anyhow::Result<()> {
     let db_path = cli.root.join("colony.db");
     let colony_db = meclaw_colony::ColonyDb::open(&db_path)
@@ -476,16 +514,25 @@ pub async fn run_with_hooks(
     let colony_join = tokio::spawn(meclaw_colony::colony_task(colony_cfg));
 
     // Deep-Audit F3: heartbeat-watchdog supervisor. Lives OUTSIDE the colony task
-    // so a colony panic (loop gone → heartbeats stop) is observable. 5 consecutive
-    // missed periods (~0.5 s of silence) → clean stop (NO restart: a Tokio task's
-    // state is not revivable; Ops/boot-supervisor restarts MeClaw). Fires the same
-    // graceful shutdown path as SIGTERM via `wd_stop`.
+    // so a colony panic (loop gone → heartbeats stop) is observable. `threshold`
+    // consecutive missed periods → stop (NO restart: a Tokio task's state is not
+    // revivable; Ops/boot-supervisor restarts MeClaw). Fires the same graceful
+    // shutdown path as SIGTERM via `wd_stop` — but, unlike a signal, it ends the
+    // process with a NON-ZERO exit code (issue #6).
+    //
+    // Issue #6, defect 1: the supervisor task is spawned here but stays DISARMED
+    // until `wd_arm_tx` fires, which happens only after the filesystem bootstrap
+    // has completed. Boot is not a steady state — the colony task hydrates its
+    // tables before its select-loop emits its first heartbeat — so a boot that
+    // ran long under parallel load used to trip a watchdog armed at spawn time.
     let (wd_stop_tx, wd_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let (wd_arm_tx, wd_arm_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(meclaw_colony::watchdog::run_watchdog(
         heartbeat_rx,
         wd_stop_tx,
-        5,
-        std::time::Duration::from_millis(100),
+        watchdog.threshold,
+        watchdog.period,
+        wd_arm_rx,
     ));
 
     // Bootstrap from filesystem (reads config.json files, plans + applies).
@@ -514,6 +561,10 @@ pub async fn run_with_hooks(
                 edges = report.edge_count,
                 "filesystem bootstrap applied"
             );
+            // Issue #6: boot is over — from here on, silence from the colony
+            // loop is a fault and not a slow start. This is the ONLY arming
+            // site; the failure branch below returns without arming.
+            let _ = wd_arm_tx.send(());
         }
         Err(e) => {
             eprintln!("bootstrap_from_filesystem failed: {e:?}");
@@ -622,7 +673,21 @@ pub async fn run_with_hooks(
     // Step 5.6 — Direct-Mode EOF arm: stdin-EOF triggers the same graceful
     // shutdown as a signal. `--daemon` never reaches here (eof_rx is None →
     // the arm pends forever = EOF is ignored).
+    // Issue #6, defect 2: the trip REASON has to leave the shutdown future, and
+    // that future must stay `Output = ()` for axum's graceful-shutdown contract.
+    // So it travels on its own one-slot channel, read after the drain below.
+    let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<String>(1);
+    // Built out here: the future below must own everything it touches (axum's
+    // `with_graceful_shutdown` demands `'static`).
+    let trip_reason = format!(
+        "colony heartbeat lost for {} consecutive supervisor periods of {} ms",
+        watchdog.threshold,
+        watchdog.period.as_millis()
+    );
     let signal_future = async {
+        // Explicit binding: capture by value, not by reference (see above).
+        let trip_tx = trip_tx;
+        let trip_reason = trip_reason;
         // Issue #40: SIGTERM exists only on unix. Elsewhere the arm below is
         // compiled out and ctrl_c alone carries the shutdown.
         #[cfg(unix)]
@@ -664,9 +729,18 @@ pub async fn run_with_hooks(
             _ = term_future => {},
             _ = shutdown_future => {},
             // Deep-Audit F3: the heartbeat-watchdog supervisor lost the colony →
-            // drive the same graceful stop as a signal.
+            // drive the same graceful stop as a signal, but end the process as a
+            // FAULT (issue #6, defect 2 — a trip used to exit 0, so a supervisor
+            // saw a clean stop and neither restarted nor alerted).
             _ = wd_stop_rx => {
-                tracing::warn!("watchdog-triggered shutdown (colony heartbeat lost)");
+                let reason = trip_reason;
+                // Issue #6, defect 3: `tracing` writes to the structured JSON log
+                // file, so the plain daemon log (journalctl, systemd's captured
+                // stderr) stayed EMPTY on exactly the death that mattered. stderr
+                // is the one stream an operator gets without configuring anything.
+                eprintln!("meclaw: watchdog trip — {reason}");
+                tracing::error!(reason = %reason, "watchdog-triggered shutdown");
+                let _ = trip_tx.try_send(reason);
             },
             // Step 5.6: stdin-EOF in Direct-Mode → graceful shutdown.
             _ = eof_future => {
@@ -723,6 +797,13 @@ pub async fn run_with_hooks(
     }
     if let Some(h) = egress_task_handle {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), h).await;
+    }
+
+    // Issue #6, defect 2: the shutdown itself was graceful, its CAUSE was not.
+    // A watchdog trip leaves the process with a non-zero exit code so that a
+    // supervisor restarts and an alert fires; every other cause still exits 0.
+    if let Ok(reason) = trip_rx.try_recv() {
+        return Err(anyhow::anyhow!("watchdog trip: {reason}"));
     }
 
     Ok(())

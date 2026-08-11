@@ -44,6 +44,22 @@ pub trait LongRunningCell: Send + Sized {
     /// (RespawnFn corridor stays await-free per Phase-5 tripwire).
     fn split_io(&mut self) -> Self::Io;
 
+    /// Issue #7 — hand the I/O sub-task its liveness mark.
+    ///
+    /// Called by `cell_task_long_running` between [`Self::split_io`] and the
+    /// `tokio::spawn` of `run_io`, so a cell type that talks to the outside world
+    /// can store the mark in its own `Io` state and call
+    /// [`crate::io_liveness::IoLivenessMark::mark_success`] after every
+    /// successful external round trip. Without such a mark, an I/O task that
+    /// merely STALLS is indistinguishable from one that is idle: the dual-task
+    /// `select!` only ever reports a side that DIES.
+    ///
+    /// Default: drop the mark (opt-out). Cell types with no external round trip
+    /// to report — and every fixture — keep working unchanged.
+    fn attach_liveness(io: &mut Self::Io, mark: crate::io_liveness::IoLivenessMark) {
+        let _ = (io, mark);
+    }
+
     /// I/O loop. Takes the owned `Io` state by value, pushes events,
     /// receives reconfigure hints. No cell-state access, no `outputs_tx`,
     /// no `cell.db`. Static-style: not a method on `self`.
