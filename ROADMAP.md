@@ -27,9 +27,10 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#61](https://github.com/mmeyerlein/meclaw/issues/61) foreign template index re-anchors on boot,
 [#58](https://github.com/mmeyerlein/meclaw/issues/58) a wider marker for the child-process fixture,
 [#57](https://github.com/mmeyerlein/meclaw/issues/57) a panic-free store wake path,
-[#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn reconnects after a dropped call future.
+[#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn reconnects after a dropped call future,
+[#63](https://github.com/mmeyerlein/meclaw/issues/63) a panic-free store respawn path.
 
-1. [#63](https://github.com/mmeyerlein/meclaw/issues/63) store respawn path: the same five expects, mirrored fix
+The queue is empty. New defects found in production land here first.
 
 ## Next: 0.2.0 memory quality
 
