@@ -143,7 +143,7 @@ Next up: cutting the fixed cost of a `code` cell invocation. We measured it inst
 
 ## Contributing
 
-Issues, discussions, PRs, all open. Easy wins: example colonies, new template cells, docs. The spec in `docs/` is the source of truth, so read `docs/meclaw-overview.md` before anything big.
+Issues, discussions, PRs, all open. Easy wins: example colonies, new template cells, docs. The spec in `docs/` is the source of truth, so read `docs/meclaw-overview.md` before anything big. What comes next and in which order lives in [ROADMAP.md](ROADMAP.md); the issue tracker carries the substance.
 
 ## License
 
