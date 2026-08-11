@@ -19,12 +19,12 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#7](https://github.com/mmeyerlein/meclaw/issues/7) I/O liveness marks on /health,
 [#50](https://github.com/mmeyerlein/meclaw/issues/50) Slack idle deadline,
 [#44](https://github.com/mmeyerlein/meclaw/issues/44) stderr warn line for successful scripts,
-[#49](https://github.com/mmeyerlein/meclaw/issues/49) chat_id promotion pinned end to end.
+[#49](https://github.com/mmeyerlein/meclaw/issues/49) chat_id promotion pinned end to end,
+[#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding tokens in the books.
 
-1. [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding calls in token accounting
-2. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
-3. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
-4. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
+1. [#11](https://github.com/mmeyerlein/meclaw/issues/11) rare shutdown panic in DbConn
+2. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
+3. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
 
 ## Next: 0.2.0 memory quality
 

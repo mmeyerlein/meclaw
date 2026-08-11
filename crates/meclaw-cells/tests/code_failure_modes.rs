@@ -81,33 +81,45 @@ impl Visit for LineVisitor {
     }
 }
 
-/// Drive one `handle()` call under the WARN-capturing subscriber; returns the
-/// emissions plus every WARN line emitted during the call.
+/// Process-wide WARN capture. Scoped dispatchers (`set_default`,
+/// `WithSubscriber`) both lost the capture on the 2-core CI runner while
+/// passing locally, so this binary installs ONE global subscriber and filters
+/// per run by trace id instead of scoping the dispatch at all. The global
+/// default cannot be un-set, which is fine: every test in this binary shares
+/// the same sink and selects its own lines.
+fn global_warn_lines() -> &'static Arc<Mutex<Vec<String>>> {
+    static LINES: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> = std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let _ = tracing::subscriber::set_global_default(WarnCapture {
+            lines: Arc::clone(&lines),
+        });
+        lines
+    })
+}
+
+/// Drive one `handle()` call under the process-wide WARN capture; returns the
+/// emissions plus every WARN line carrying this call's trace id.
 async fn run_capturing_warns(cell: &CodeCell) -> (Vec<meclaw_core::CellEmission>, Vec<String>) {
-    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let lines = global_warn_lines();
     let (otx, mut orx) = mpsc::channel(8);
     let sink = make_sink(otx);
-    // `set_default` is thread-local, but on a multi_thread runtime the awaited
-    // handle() future can migrate to another worker via work stealing and lose
-    // the capture (seen as `captured: []` on the 2-core CI runner). Binding the
-    // subscriber to the FUTURE keeps it across polls on every thread.
-    {
-        use tracing::instrument::WithSubscriber;
-        cell.handle(mk_msg(), &sink)
-            .with_subscriber(WarnCapture {
-                lines: Arc::clone(&lines),
-            })
-            .await;
-    }
+    let msg = mk_msg();
+    let trace_id = msg.trace_id.to_string();
+    cell.handle(msg, &sink).await;
     drop(sink);
     let mut outs = Vec::new();
     while let Some(em) = orx.recv().await {
         outs.push(em);
     }
-    // Read via the lock, NOT `Arc::try_unwrap` — under parallel cargo load the
-    // tracing dispatch's Arc clone can briefly outlive the guard scope
-    // (colony_config.rs lesson). The Vec is fully populated synchronously.
-    let captured = lines.lock().unwrap().clone();
+    // The warn line records `trace_id = %msg.trace_id`, so selecting by the
+    // trace id isolates this run from every parallel test in the binary.
+    let all = lines.lock().unwrap();
+    let captured = all
+        .iter()
+        .filter(|l| l.contains(&trace_id))
+        .cloned()
+        .collect();
     (outs, captured)
 }
 
@@ -316,10 +328,15 @@ sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","te
         outs[0].content["header"]["had_stderr"], true,
         "stderr produced → had_stderr must be true"
     );
-    // (b) The stderr CONTENT is persisted as a warn line.
+    // (b) The stderr CONTENT is persisted as a warn line. On failure, dump the
+    // full process-wide capture and the static level filter so a CI-only red
+    // shows WHERE the line was lost (not emitted vs. not captured).
     assert!(
         warns.iter().any(|l| l.contains("CODE_STDERR_MARKER_ALPHA")),
-        "stderr content must be logged at warn level; captured: {warns:?}"
+        "stderr content must be logged at warn level; captured for this run: {warns:?}; \
+         all warn lines in the process: {:?}; static max level: {:?}",
+        global_warn_lines().lock().unwrap(),
+        tracing::level_filters::STATIC_MAX_LEVEL,
     );
 }
 
