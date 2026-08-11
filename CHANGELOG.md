@@ -4,6 +4,66 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.1.16] — 2026-08-11
+
+The hardening release: the whole 0.1.x queue, emptied in one sweep. Ten issues
+closed, six of them found while fixing the other four. The theme is a single
+sentence: **a failure inside the colony task must cost one cell, never the
+process** — and its corollary, a failure outside the process (a blackholed
+socket, a lost connection, a moved tree) must cost one reconnect, never a cell.
+
+### Fixed
+
+- **A malformed seed file passed validate and killed the colony on first wake.**
+  Seed parsing now runs in the validate path (header line, columns against the
+  declared schema, every data line a JSON object), guards the spawn, and the
+  wake path logs instead of panicking (#56).
+- **The watchdog armed during boot and exited 0 on trip.** It now waits for an
+  arming signal sent only after a successful bootstrap, discards boot-buffered
+  heartbeats, and reports a trip on stderr with a nonzero exit (#6).
+- **A silently hung proxy looked like idle.** Long-running cells report a
+  last-successful-round-trip mark over the existing heartbeat mechanics, and
+  `/health` lists the age of each mark (#7).
+- **The Slack socket mode read loop had no idle deadline.** Every read now sits
+  under `idle_timeout_ms` (default 120s, four missed pings at Slack's slowest
+  documented cadence); an elapsed deadline is a transient connection end
+  feeding the reconnect machinery (#50).
+- **stderr of a successful code script was dropped.** It lands in the log as
+  the promised warn line, capped at 8 KiB on a char boundary (#44).
+- **The chat_id promotion edge had no end-to-end pin.** Six tests boot a real
+  colony around the shipped bot templates; the silent missing_chat_id death
+  turned out to require two mistakes at once, and both shapes are pinned (#49).
+- **Embedding calls were missing from token accounting.** The embed lane books
+  `tokens_prompt` the way llm cells do; a batch backfill books exactly once (#9).
+- **A cancelled DbConn blocking task panicked the process at shutdown** (#11),
+  and **a call future dropped by a timeout wrapper lost the connection for
+  good** (#59). The first parks safely, the second reconnects lazily from the
+  remembered path, replaying the standard cell-db setup plus the store's
+  scalar-function hook.
+- **The store wake and respawn paths carried eleven expects between them.**
+  Both are panic-free now: a database that will not open starts or respawns
+  the cell degraded, answering every message with a named `sql_error`; the
+  soft failures log loudly and the cell runs without that one feature
+  (#57, #63).
+- **A restored template index kept pointing at the source machine.** An index
+  with any row outside the booted templates root is treated as foreign and
+  re-anchored by a full rescan on the first boot (#61).
+
+### Added
+
+- **An import/export matrix**: six move paths crossed with nine artifact
+  classes, 23 pins, and a new spec section — *Snapshot versus live-read* — in
+  `docs/config.md` stating what boots live, what seeds exactly once, and why
+  the restore unit of a colony is the root directory including the WAL
+  sidecars (#37, #60).
+
+### Changed
+
+- `/health` returns JSON (`status` plus `io_liveness`) instead of a bare `ok`;
+  the status code semantics are unchanged (always 200).
+- CI markers for the child-process fixture widened to 120s: a failure marker
+  is a detector, not a discriminator (#58).
+
 ## [0.1.15] — 2026-08-11
 
 Four defects, none of them found by the test suite. All four came out of a
