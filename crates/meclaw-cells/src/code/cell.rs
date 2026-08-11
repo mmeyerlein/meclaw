@@ -75,6 +75,28 @@ fn inject_standard_headers(
     content
 }
 
+/// Byte cap for the stderr content copied into the `log.jsonl` warn line.
+///
+/// A script's stderr is unbounded foreign content (compiler output, stack
+/// traces). The repo has no shared truncation convention for logged foreign
+/// content, so `code` caps at 8 KiB — large enough for a full Python traceback,
+/// small enough that one noisy run cannot flood `log.jsonl`.
+const STDERR_LOG_MAX_BYTES: usize = 8 * 1024;
+
+/// Cap `s` at [`STDERR_LOG_MAX_BYTES`], cutting on a UTF-8 char boundary and
+/// appending an explicit marker with the original byte length. Truncation must
+/// be visible — a silently shortened diagnostic is worse than a marked one.
+fn truncate_stderr_for_log(s: &str) -> String {
+    if s.len() <= STDERR_LOG_MAX_BYTES {
+        return s.to_string();
+    }
+    let mut end = STDERR_LOG_MAX_BYTES;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… [truncated, {} bytes total]", &s[..end], s.len())
+}
+
 /// Emit an `invalid_input` error body to `target`.
 async fn emit_invalid_input(sink: &OutputSink, target: &Path, msg: String) {
     let body = json!({
@@ -291,6 +313,23 @@ impl StatelessCell for CodeCell {
                 return;
             }
 
+            // cell-types.md § code: on a successful run (exit 0) stderr is NOT
+            // injected into the script output; `header.had_stderr` flags it and
+            // the stderr CONTENT lands in `log.jsonl` at warn level. This
+            // warn line IS that persistence (the tracing subscriber writes
+            // `log.jsonl`). The exit != 0 path carries stderr inside the error
+            // message instead (`emit_script_failed`), so it returns above and
+            // never reaches this line.
+            if had_stderr {
+                tracing::warn!(
+                    path = %msg.target.as_str(),
+                    trace_id = %msg.trace_id,
+                    exit_code = out.exit_code,
+                    stderr = %truncate_stderr_for_log(&String::from_utf8_lossy(&out.stderr)),
+                    "code script wrote to stderr on a successful run"
+                );
+            }
+
             let stdout_text = String::from_utf8_lossy(&out.stdout).to_string();
             let parsed = match wire::parse_stdout_json(&stdout_text) {
                 Ok(p) => p,
@@ -373,6 +412,29 @@ mod tests {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
         }
+    }
+
+    #[test]
+    fn truncate_stderr_for_log_passes_short_input_through() {
+        assert_eq!(truncate_stderr_for_log("short stderr"), "short stderr");
+        let exact = "x".repeat(STDERR_LOG_MAX_BYTES);
+        assert_eq!(truncate_stderr_for_log(&exact), exact);
+    }
+
+    #[test]
+    fn truncate_stderr_for_log_caps_on_a_char_boundary_with_marker() {
+        // Multi-byte chars straddling the cap: cutting at the raw byte index
+        // would panic, so the helper walks back to a char boundary.
+        let long = "é".repeat(STDERR_LOG_MAX_BYTES); // 2 bytes each
+        let out = truncate_stderr_for_log(&long);
+        assert!(out.contains("[truncated,"), "cut must be marked: {out}");
+        assert!(
+            out.contains(&format!("{} bytes total", long.len())),
+            "marker must name the original byte length: {out}"
+        );
+        // Kept prefix stays under the cap and is valid UTF-8 (it is a &str).
+        let kept = out.split('…').next().unwrap();
+        assert!(kept.len() <= STDERR_LOG_MAX_BYTES);
     }
 
     #[test]
