@@ -58,6 +58,13 @@ impl CellFactory for StoreCellFactory {
     ///
     /// `RespawnFn` replays steps 2/3/5/6 (NEVER step 4 — fresh-only seed,
     /// brainstorm E4). DDL is idempotent (`CREATE TABLE IF NOT EXISTS`).
+    ///
+    /// Issue #57 — the `WakeFn` runs steps 2–6 INSIDE the colony task, so no step
+    /// there may panic. Step 2's connection is the hard class (no DB → no cell):
+    /// the wake starts the cell degraded via [`wake_degraded`]. Everything else is
+    /// soft: `hamming::register`, the params-overlay restore, `apply_schema_ddl`,
+    /// `apply_fts_ddl` and the seed each log loudly and the cell starts without
+    /// that one feature.
     fn spawn_cell(
         self: Arc<Self>,
         path: Path,
@@ -169,19 +176,107 @@ impl CellFactory for StoreCellFactory {
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
-            let (conn, status) = open_or_create_cell_db_with_status(&wake_cell_dir.join("cell.db"))
-                .expect("wake: open_or_create_cell_db_with_status failed");
+            // Issue #57: NOTHING on this path may panic. The closure runs
+            // synchronously inside the colony task, so a panic here does not
+            // fail one cell — it takes the colony task and with it every cell in
+            // the process (the panic-free colony hot path invariant, A1′ class).
+            // Two failure classes, two treatments:
+            //   HARD (no `cell.db`) → start DEGRADED (`wake_degraded`): the cell
+            //     answers every message with a named error. No in-memory
+            //     substitute DB — that would mask write loss.
+            //   SOFT (one feature could not be installed) → loud log + continue
+            //     without that feature, exactly like the #56 seed treatment.
+            let (conn, status) =
+                match open_or_create_cell_db_with_status(&wake_cell_dir.join("cell.db")) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::error!(
+                            path = wake_path.as_str(),
+                            error = %e,
+                            "store: cell.db could not be opened at wake — the cell starts \
+                             DEGRADED and answers every message with an error (the colony \
+                             is kept alive; NO in-memory substitute DB is installed, so no \
+                             write is silently lost)"
+                        );
+                        return wake_degraded(
+                            wake_path.clone(),
+                            recv,
+                            wake_outputs.clone(),
+                            wake_inbox_tx.clone(),
+                            message_timeout,
+                            wake_blob.clone(),
+                            format!("cell.db could not be opened at wake: {e}"),
+                        );
+                    }
+                };
             // P4: same registration on the wake path — every wake builds a new
             // connection and therefore re-registers the function.
-            crate::store::query::hamming::register(&conn)
-                .expect("wake: register hamming scalar function");
+            if let Err(e) = crate::store::query::hamming::register(&conn) {
+                tracing::error!(
+                    path = wake_path.as_str(),
+                    error = %e,
+                    "store: hamming registration failed at wake — the cell starts \
+                     WITHOUT vector similarity (`similar` ops answer with a SQL error); \
+                     every other op is unaffected"
+                );
+            }
             // β restore: replay the cell.db params-overlay over birth-params.
-            let effective = crate::params_overlay::restore::<StoreParams>(&conn, &wake_birth)
-                .expect("wake: restore params from cell.db overlay");
-            ddl::apply_schema_ddl(&conn, &effective.schema).expect("wake: apply_schema_ddl");
+            let effective = match crate::params_overlay::restore::<StoreParams>(&conn, &wake_birth)
+            {
+                Ok(effective) => effective,
+                Err(e) => {
+                    tracing::error!(
+                        path = wake_path.as_str(),
+                        error = %e,
+                        "store: the cell.db params overlay could not be replayed at wake \
+                         — the cell starts on its BIRTH params (config.json) and every \
+                         runtime params update is lost"
+                    );
+                    // The birth params parsed cleanly at spawn time, so this is
+                    // an unreachable second failure — handled anyway, because an
+                    // `.expect` here would be the very panic this issue removes.
+                    match StoreParams::parse(&wake_birth) {
+                        Ok(birth) => birth,
+                        Err(e2) => {
+                            tracing::error!(
+                                path = wake_path.as_str(),
+                                error = %e2,
+                                "store: the birth params no longer parse at wake — the \
+                                 cell starts DEGRADED"
+                            );
+                            return wake_degraded(
+                                wake_path.clone(),
+                                recv,
+                                wake_outputs.clone(),
+                                wake_inbox_tx.clone(),
+                                message_timeout,
+                                wake_blob.clone(),
+                                format!("params unusable at wake: {e2}"),
+                            );
+                        }
+                    }
+                }
+            };
+            if let Err(e) = ddl::apply_schema_ddl(&conn, &effective.schema) {
+                tracing::error!(
+                    path = wake_path.as_str(),
+                    error = %e,
+                    "store: schema DDL failed at wake — declared tables may be MISSING; \
+                     ops against them answer with `unknown_table` (the colony is kept \
+                     alive; fix the cell.db and re-wake the cell)"
+                );
+            }
             // FTS DDL runs BEFORE the seed, so seeded rows are indexed by the
             // triggers on the way in (and an existing cell.db catches up here).
-            ddl::apply_fts_ddl(&conn, &effective.fts).expect("wake: apply_fts_ddl");
+            if let Err(e) = ddl::apply_fts_ddl(&conn, &effective.fts) {
+                tracing::error!(
+                    path = wake_path.as_str(),
+                    error = %e,
+                    "store: FTS DDL failed at wake — the cell starts WITHOUT its \
+                     full-text index (`search` ops answer with `unknown_table`); every \
+                     other op is unaffected"
+                );
+            }
             if status == OpenStatus::Created
                 && let Err(e) = seed::load_seed_if_present(&conn, &wake_cell_dir, &effective.schema)
             {
@@ -253,6 +348,50 @@ impl CellFactory for StoreCellFactory {
             respawn,
         })
     }
+}
+
+/// Issue #57: build the DEGRADED replacement for a `store` cell whose wake could
+/// not produce a usable `cell.db`, and return the wake wiring the colony expects.
+///
+/// `WakeFn` must hand back a live `(stop_tx, death_ack_rx)` pair — the colony has
+/// already flipped the registry entry to `Awake` when it calls the closure — so
+/// "give up" is not an available answer. What IS available: spawn a cell that
+/// owns the mailbox and answers every message with a named error
+/// ([`crate::store::DegradedStoreCell`]). The stateless dispatcher is the right
+/// carrier because it needs no `DbConn` — the very thing that is missing.
+///
+/// The watcher is wired exactly as on the healthy path. A degraded cell can only
+/// ever die `Normal` (it never panics, and the stateless backstop is per-worker),
+/// so this never drives `handle_cell_died` into a respawn.
+///
+/// `consumes` is deliberately NOT enforced for the degraded cell: every message
+/// must come back with the database defect, not with a contract verdict that
+/// hides it.
+fn wake_degraded(
+    path: Path,
+    receiver: mpsc::Receiver<Message>,
+    outputs_tx: mpsc::Sender<CellEmission>,
+    colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
+    message_timeout: Option<std::time::Duration>,
+    blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+    reason: String,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = meclaw_colony::build_stateless_task(
+        path.clone(),
+        receiver,
+        outputs_tx,
+        Arc::new(crate::store::DegradedStoreCell::new(reason)),
+        1, // one worker: the answer is a single push, ordering costs nothing
+        message_timeout,
+        Some(colony_inbox_tx.clone()),
+        blob_store,
+        None,
+    );
+    meclaw_colony::spawn_watcher(&colony_inbox_tx, path, join, peace_rx, backstop_rx);
+    (stop_tx, death_ack_rx)
 }
 
 #[cfg(test)]

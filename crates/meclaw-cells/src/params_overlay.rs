@@ -166,8 +166,21 @@ pub(crate) fn read_params_overlay(
     let mut out = Vec::new();
     for row in rows {
         let (key, raw_value) = row?;
-        let value: Value = serde_json::from_str(&raw_value)
-            .expect("params.value must be parseable JSON (written by upsert_param_overlay)");
+        // Issue #57: a non-JSON value can only come from a corrupted or
+        // hand-edited `cell.db`, never from `upsert_param_overlay` — but this
+        // runs inside the wake path, which the colony task executes
+        // synchronously. A panic here would kill every cell in the process, so
+        // the corruption is reported as an error and the caller decides
+        // (the `store` WakeFn falls back to its birth params).
+        let value: Value = serde_json::from_str(&raw_value).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::other(format!(
+                    "params.{key}: value is not parseable JSON ({e})"
+                ))),
+            )
+        })?;
         out.push((key, value));
     }
     Ok(out)
