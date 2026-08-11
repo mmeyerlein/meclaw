@@ -12,6 +12,18 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+/// Wrap a `store` connection for the cell task.
+///
+/// P4: `hamming` is bound to the CONNECTION, so it is registered wherever a
+/// store connection is born. Issue #59 added one more birth place that is not
+/// a factory path: `DbConn` re-opens a connection lost to a dropped call future
+/// on the next access, and it knows nothing about store specifics. So the
+/// registration is handed to it as re-open setup — otherwise the re-opened
+/// connection would serve every op except `similar`.
+fn wrap_store_db(conn: rusqlite::Connection, query_timeout: Option<std::time::Duration>) -> DbConn {
+    DbConn::wrap(conn, query_timeout).with_reopen_setup(crate::store::query::hamming::register)
+}
+
 /// Phase-9 `store` cell factory. Unit struct (no fields) — all
 /// per-instance config lives in `params`.
 pub struct StoreCellFactory;
@@ -135,7 +147,7 @@ impl CellFactory for StoreCellFactory {
                 let to = effective
                     .query_timeout_ms
                     .map(std::time::Duration::from_millis);
-                let db = DbConn::wrap(conn, to);
+                let db = wrap_store_db(conn, to);
                 let cell = StoreCell::new(effective);
                 let (s, r) = mpsc::channel::<Message>(respawn_mailbox_capacity);
                 let (j, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateful_task_with_peace(
@@ -302,7 +314,7 @@ impl CellFactory for StoreCellFactory {
             let to = effective
                 .query_timeout_ms
                 .map(std::time::Duration::from_millis);
-            let db = DbConn::wrap(conn, to);
+            let db = wrap_store_db(conn, to);
             let cell = StoreCell::new(effective);
             let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
                 build_stateful_task_with_peace(
@@ -400,6 +412,49 @@ mod tests {
     use meclaw_colony::CellFactory;
     use meclaw_core::Path;
     use std::sync::Arc;
+
+    /// Issue #59 companion of the P4 registration: `hamming` is bound to the
+    /// CONNECTION, and `DbConn` reopens a connection lost to a dropped call
+    /// future. The reopened connection has to carry the function again —
+    /// otherwise the cell keeps serving every op except `similar`, which starts
+    /// answering with a plain SQL error until the next respawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn store_db_reopen_reregisters_hamming() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (conn, _status) =
+            open_or_create_cell_db_with_status(&td.path().join("cell.db")).unwrap();
+        crate::store::query::hamming::register(&conn).unwrap();
+        let mut db = wrap_store_db(conn, None);
+        // Drop the call future while its closure is parked: the connection goes
+        // down with the orphaned closure.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            db.call(move |_c| {
+                let _ = release_rx.recv();
+            }),
+        )
+        .await;
+        assert!(
+            elapsed.is_err(),
+            "the call has to be still in flight when the timeout drops its future"
+        );
+        release_tx.send(()).unwrap();
+        // 30s is a generous failure marker, not a semantic discriminator.
+        let bits = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.call(|c| {
+                c.query_row::<i64, _, _>("SELECT hamming('/w==','AA==')", [], |r| r.get(0))
+            }),
+        )
+        .await
+        .expect("the reopened connection must be usable");
+        assert_eq!(
+            bits.unwrap(),
+            8,
+            "`hamming` must be re-registered on the reopened connection"
+        );
+    }
 
     /// Phase-13-K-2: factory returns `Dormant` — invoke the WakeFn directly to
     /// drive the open/DDL/seed pipeline, then verify the fresh `items` count.

@@ -8,22 +8,63 @@
 /// for the duration of each `call`) — no Arc, no Mutex.
 pub struct DbConn {
     /// `None` while a call is in flight (the connection lives inside the
-    /// blocking closure) and permanently once runtime shutdown cancelled a
-    /// blocking task before it ran — that drops the closure and the connection
-    /// with it. See [`connection_lost`].
+    /// blocking closure) and after the closure took it down with itself — a
+    /// dropped caller future or a cancelled blocking task. A file-backed
+    /// connection is re-opened from [`DbConn::path`] on the next access
+    /// ([`DbConn::ensure_connection`]); an in-memory one has nothing to
+    /// re-open and parks. See [`connection_lost`].
     conn: Option<rusqlite::Connection>,
     /// Timeout applied by `call_with_timeout`; ignored by `call`.
     query_timeout: Option<std::time::Duration>,
+    /// Database file the wrapped connection was opened from, remembered at
+    /// `wrap` time. `None` for in-memory and temporary databases — their
+    /// content lives in the connection, so there is nothing to re-open.
+    path: Option<std::path::PathBuf>,
+    /// Per-connection state a cell type installs on top of the cell.db base
+    /// setup when a connection is re-opened. See [`DbConn::with_reopen_setup`].
+    reopen_setup: Option<ReopenSetup>,
 }
+
+/// Per-connection setup a cell type re-installs on a re-opened connection —
+/// everything that lives on the connection instead of in the database file
+/// (registered scalar functions, temporary tables, connection pragmas beyond
+/// the cell.db base setup).
+pub type ReopenSetup = fn(&rusqlite::Connection) -> rusqlite::Result<()>;
 
 impl DbConn {
     /// Wrap a connection. `query_timeout` is consulted by
     /// `call_with_timeout`; `call` itself is unbounded.
+    ///
+    /// The database file the connection points at is remembered here (via
+    /// `rusqlite::Connection::path`) so a connection lost to a dropped call
+    /// future can be re-opened on the next access. In-memory and temporary
+    /// databases report an empty filename and are therefore not re-openable.
     pub fn wrap(conn: rusqlite::Connection, query_timeout: Option<std::time::Duration>) -> Self {
+        let path = conn
+            .path()
+            .filter(|p| !p.is_empty() && *p != ":memory:")
+            .map(std::path::PathBuf::from);
         Self {
             conn: Some(conn),
             query_timeout,
+            path,
+            reopen_setup: None,
         }
+    }
+
+    /// Install per-connection setup that a re-open has to repeat.
+    ///
+    /// A re-opened connection always gets the cell.db base setup
+    /// (`crate::persist::setup_cell_db` — the same pragmas and idempotent DDL
+    /// `open_or_create_cell_db` applies). Anything on top of that is cell-type
+    /// knowledge `DbConn` does not have: the `store` cell registers its
+    /// `hamming` scalar function on every connection it opens, and hands that
+    /// registration here so a re-opened connection is equipped identically.
+    /// The hook runs AFTER the base setup. Default: no extra setup.
+    #[must_use]
+    pub fn with_reopen_setup(mut self, setup: ReopenSetup) -> Self {
+        self.reopen_setup = Some(setup);
+        self
     }
 
     /// Update the query timeout live (β, path C). `DbConn` is single-owned by
@@ -47,11 +88,15 @@ impl DbConn {
     /// A panic inside `f` propagates to the caller. If runtime shutdown
     /// cancels the blocking task before it runs, the call never resolves
     /// instead of panicking — see [`connection_lost`].
+    ///
+    /// A connection lost to an earlier dropped call future is re-opened first
+    /// — see [`DbConn::ensure_connection`].
     pub async fn call<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
         R: Send + 'static,
     {
+        self.ensure_connection().await;
         let Some(mut conn) = self.conn.take() else {
             return connection_lost().await;
         };
@@ -65,6 +110,61 @@ impl DbConn {
         };
         self.conn = Some(conn);
         out
+    }
+
+    /// Re-open the database if the connection was lost, so the next access has
+    /// one to work with. No-op while a connection is present.
+    ///
+    /// The connection is gone whenever the closure that owned it went down with
+    /// itself: a caller future dropped mid-call (a `tokio::time::timeout`
+    /// wrapper on elapse — rule 12 prescribes those around every I/O), a
+    /// blocking task cancelled by runtime shutdown, or a panic inside the
+    /// closure. Without this, `conn` stayed `None` for good and every later
+    /// access parked (see [`connection_lost`]), degrading the cell into a
+    /// restart loop that hits the same dead `DbConn` after each respawn.
+    ///
+    /// Only a file-backed database can be re-opened. In-memory and temporary
+    /// databases live IN their connection — a fresh one would be a silently
+    /// EMPTY database, so those keep parking.
+    ///
+    /// The `open` is file I/O and therefore runs in `spawn_blocking` (rule 13),
+    /// not inline on the async worker. A failed re-open parks the call like a
+    /// lost connection does; the next access tries again.
+    async fn ensure_connection(&mut self) {
+        if self.conn.is_some() {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        tracing::warn!(
+            path = %path.display(),
+            "DbConn: connection was lost to a dropped call future or a cancelled task; \
+             reopening the database"
+        );
+        let setup = self.reopen_setup;
+        let opened = tokio::task::spawn_blocking(move || {
+            let conn = rusqlite::Connection::open(&path)?;
+            // Identical equipment to `open_or_create_cell_db`: the same pragmas
+            // and the same idempotent base DDL.
+            crate::persist::setup_cell_db(&conn)?;
+            if let Some(setup) = setup {
+                setup(&conn)?;
+            }
+            Ok::<rusqlite::Connection, rusqlite::Error>(conn)
+        })
+        .await;
+        match join_blocking(opened) {
+            Some(Ok(conn)) => self.conn = Some(conn),
+            Some(Err(e)) => tracing::error!(
+                error = %e,
+                "DbConn: reopening the lost connection failed; this access parks and the \
+                 next one retries"
+            ),
+            // Runtime shutdown cancelled the re-open — the awaiting task is
+            // being torn down anyway.
+            None => {}
+        }
     }
 }
 
@@ -85,20 +185,25 @@ fn join_blocking<T>(joined: Result<T, tokio::task::JoinError>) -> Option<T> {
     }
 }
 
-/// The connection was lost to runtime shutdown, so the call can neither run
+/// The connection is gone and cannot be replaced, so the call can neither run
 /// nor produce a result.
 ///
-/// This future never resolves. The only way to reach it is a cancelled
-/// blocking task, i.e. a runtime whose blocking pool is shutting down — the
-/// task awaiting here is being torn down by that same shutdown and is dropped
-/// at this await point. Never resolving is what "this call has no future"
-/// means; panicking here is precisely the shutdown crash this guards against,
-/// and `call` has no error channel to report into (its result type is the
-/// caller's `R`, and changing that signature would touch every call site).
-/// A `DbConn` that reached this state stays in it: every later call parks the
-/// same way instead of panicking on the missing connection, and the cell's
-/// `message_timeout` backstop is what turns a lingering handler into a
-/// supervised restart.
+/// This future never resolves. It is reached in three shapes, all of them past
+/// [`DbConn::ensure_connection`], i.e. after a re-open was impossible or
+/// failed:
+///
+/// * a cancelled blocking task, i.e. a runtime whose blocking pool is shutting
+///   down — the task awaiting here is being torn down by that same shutdown and
+///   is dropped at this await point;
+/// * an in-memory or temporary database, whose content lives in the connection
+///   and therefore cannot be re-opened at all;
+/// * a re-open that failed on I/O (the next access retries).
+///
+/// Never resolving is what "this call has no future" means; panicking here is
+/// precisely the shutdown crash this guards against, and `call` has no error
+/// channel to report into (its result type is the caller's `R`, and changing
+/// that signature would touch every call site). The cell's `message_timeout`
+/// backstop is what turns a lingering handler into a supervised restart.
 async fn connection_lost<R>() -> R {
     std::future::pending().await
 }
@@ -137,6 +242,9 @@ impl DbConn {
         let Some(timeout) = self.query_timeout else {
             return Ok(self.call(f).await);
         };
+        // Re-open before the interrupt handle is taken: the handle belongs to
+        // the connection this call is about to use.
+        self.ensure_connection().await;
         let Some(mut conn) = self.conn.take() else {
             return connection_lost().await;
         };
@@ -348,6 +456,127 @@ mod tests {
         assert!(
             matches!(res, Err(QueryTimeout::Interrupted)),
             "the live-set timeout must apply to the next call, got {res:?}"
+        );
+    }
+
+    /// A file-backed cell.db with one row, ready to prove that a reopened
+    /// connection points at the SAME file (and not at a fresh empty database).
+    fn file_backed_db(dir: &std::path::Path) -> rusqlite::Connection {
+        let conn = crate::persist::open_or_create_cell_db(&dir.join("cell.db")).unwrap();
+        conn.execute("CREATE TABLE t (n INTEGER)", []).unwrap();
+        conn.execute("INSERT INTO t VALUES (42)", []).unwrap();
+        conn
+    }
+
+    /// Drops the passed future while its blocking closure is still parked —
+    /// exactly what a `tokio::time::timeout` wrapper (rule 12) does on elapse.
+    /// Returns the sender that releases the now-orphaned closure.
+    macro_rules! lose_connection_to_a_dropped_future {
+        ($db:expr, $call:ident) => {{
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let elapsed = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                $db.$call(move |_c| {
+                    let _ = release_rx.recv();
+                }),
+            )
+            .await;
+            assert!(
+                elapsed.is_err(),
+                "the call has to be still in flight when the timeout drops its future"
+            );
+            release_tx
+        }};
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_reopens_a_file_backed_connection_lost_to_a_dropped_future() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut db = DbConn::wrap(file_backed_db(td.path()), None);
+        let release_tx = lose_connection_to_a_dropped_future!(db, call);
+        release_tx.send(()).unwrap();
+        // 30s is a generous failure marker, not a semantic discriminator: without
+        // the reopen the call parks forever and the test would hang instead of
+        // failing with a name.
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.call(|c| {
+                c.query_row("SELECT n FROM t", [], |r| r.get::<_, i64>(0))
+                    .unwrap()
+            }),
+        )
+        .await
+        .expect("a connection lost to a dropped future must be reopened, not parked forever");
+        assert_eq!(
+            n, 42,
+            "the reopened connection must point at the same cell.db file"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_with_timeout_reopens_a_file_backed_connection_lost_to_a_dropped_future() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut db = DbConn::wrap(
+            file_backed_db(td.path()),
+            Some(std::time::Duration::from_secs(30)),
+        );
+        let release_tx = lose_connection_to_a_dropped_future!(db, call_with_timeout);
+        release_tx.send(()).unwrap();
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.call_with_timeout(|c| c.query_row("SELECT n FROM t", [], |r| r.get::<_, i64>(0))),
+        )
+        .await
+        .expect("call_with_timeout must reopen a lost connection too, not park forever");
+        assert!(
+            matches!(res, Ok(Ok(42))),
+            "the reopened connection must serve the query, got {res:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopen_reinstalls_per_connection_state_from_the_setup_hook() {
+        // A cell type whose connection carries per-connection state (the store
+        // registers its `hamming` scalar function on every connection it opens)
+        // hands that setup to `with_reopen_setup`, so a reopened connection is
+        // equipped exactly like the one the factory built. A TEMP table stands in
+        // for it here: same per-connection lifetime, no extra rusqlite feature.
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = file_backed_db(td.path());
+        conn.execute_batch("CREATE TEMP TABLE marker (n INTEGER); INSERT INTO marker VALUES (7)")
+            .unwrap();
+        let mut db = DbConn::wrap(conn, None).with_reopen_setup(|c| {
+            c.execute_batch("CREATE TEMP TABLE marker (n INTEGER); INSERT INTO marker VALUES (7)")
+        });
+        let release_tx = lose_connection_to_a_dropped_future!(db, call);
+        release_tx.send(()).unwrap();
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.call(|c| {
+                c.query_row("SELECT n FROM marker", [], |r| r.get::<_, i64>(0))
+                    .unwrap()
+            }),
+        )
+        .await
+        .expect("the reopened connection must be usable");
+        assert_eq!(n, 7, "the reopen setup hook must run on the new connection");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_on_a_lost_in_memory_connection_still_parks() {
+        // An in-memory database lives IN its connection: there is no file to
+        // reopen, and a fresh in-memory connection would be a silently EMPTY
+        // database. So the in-memory case keeps the #11 parking behavior — the
+        // cell's message_timeout backstop turns it into a supervised restart.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut db = DbConn::wrap(conn, None);
+        let release_tx = lose_connection_to_a_dropped_future!(db, call);
+        release_tx.send(()).unwrap();
+        let mut fut = std::pin::pin!(db.call(|_c| ()));
+        let next = poll_once!(fut);
+        assert!(
+            next.is_pending(),
+            "a lost in-memory connection has nothing to reopen and must park, got {next:?}"
         );
     }
 
