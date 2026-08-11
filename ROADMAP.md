@@ -23,10 +23,12 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#9](https://github.com/mmeyerlein/meclaw/issues/9) embedding tokens in the books,
 [#11](https://github.com/mmeyerlein/meclaw/issues/11) DbConn shutdown panic.
 
-1. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: a dedicated test pass
-2. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
-3. [#57](https://github.com/mmeyerlein/meclaw/issues/57) remaining expects on the store wake path
-4. [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn: reconnect after a dropped call future
+1. [#37](https://github.com/mmeyerlein/meclaw/issues/37) import and export of colonies: tests landed, the spec paragraph awaits the docs pass
+2. [#60](https://github.com/mmeyerlein/meclaw/issues/60) backup: WAL sidecars are part of the restore unit
+3. [#61](https://github.com/mmeyerlein/meclaw/issues/61) restore: stale absolute template paths until a rescan
+4. [#58](https://github.com/mmeyerlein/meclaw/issues/58) CI: widen the 30s failure marker for the heaviest topology tests
+5. [#57](https://github.com/mmeyerlein/meclaw/issues/57) remaining expects on the store wake path
+6. [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn: reconnect after a dropped call future
 
 ## Next: 0.2.0 memory quality
 
@@ -52,7 +54,9 @@ resolution, [#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops
 reachable from the API,
 [#20](https://github.com/mmeyerlein/meclaw/issues/20) secret materialization
 classes, [#35](https://github.com/mmeyerlein/meclaw/issues/35) sandboxing for
-code and bash cells.
+code and bash cells,
+[#62](https://github.com/mmeyerlein/meclaw/issues/62) provenance for
+instantiated nodes.
 
 ## Then: meclaw-os, the organism
 
