@@ -101,12 +101,15 @@ demanded and 0.2.0 never bought: the same eight LongMemEval haystacks, **one
 consolidation round first**, then the same eight knowledge-update questions
 again, judged by a model from a different vendor family than the one answering.
 
-- **The mechanism works and was seen working on a real judge.** On the first
-  judged round the judge produced **two closures, both correct and both with a
-  reason** ("a person lives in one place at a time"), refused every enumeration
-  trap it was offered, merged 15 rewordings while refusing 21, and answered 64
-  cardinality questions. No row was destroyed, no written value was rewritten,
-  and every verdict carries the run that made it.
+- **The mechanism works and was seen working on a real judge.** Over the eight
+  nights the round produced **two closures, both correct and each carrying its
+  reason and its author**, merged 15 rewordings while refusing 21, and answered
+  64 cardinality questions. The scenario cases of the track add the shapes a
+  haystack does not offer, each on a live model answer: a replacement closed
+  with the reason "a person lives in one place at a time", an enumeration trap
+  refused in the same call, two wordings merged while the quantity between them
+  was refused twice. No row was destroyed, no written value was rewritten, and
+  every verdict carries the run that made it.
 - **Enumeration now carries a source.** The share of multi-version axes read as
   enumerations went from 20.2 % to 52.5 % over one night, and the composition is
   the point: **40 seeded, 64 judged, 0 learned**. The learned half, which was the
