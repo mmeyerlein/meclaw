@@ -53,6 +53,20 @@ async fn topology(extra: serde_json::Value) -> (ColonyHandle, mpsc::Receiver<Mes
         }
     }
 
+    // The edge FIRST, before the child process exists (GH #70). The protocol
+    // fixture writes its unsolicited frame as its second action, right after the
+    // ready handshake and before it reads a request, so a lane wired after the
+    // spawn is a race the loaded runner wins: a frame with no matching edge is
+    // dropped, not queued, and the case then waits out its whole marker for a
+    // message that no longer exists. An edge to a path that is not registered
+    // yet is legal, only its delivery needs the cell.
+    h.add_edge(
+        meclaw_core::Uuid::now_v7(),
+        Path::new("/child"),
+        Path::new("/sink"),
+    )
+    .await;
+
     let spawned = Arc::new(SubcolonyCellFactory)
         .spawn_cell(
             Path::new("/child"),
@@ -69,12 +83,6 @@ async fn topology(extra: serde_json::Value) -> (ColonyHandle, mpsc::Receiver<Mes
         )
         .expect("spawn subcolony cell");
     h.register_spawned(Path::new("/child"), spawned).await;
-    h.add_edge(
-        meclaw_core::Uuid::now_v7(),
-        Path::new("/child"),
-        Path::new("/sink"),
-    )
-    .await;
     (h, recv_rx, td)
 }
 
@@ -87,15 +95,17 @@ fn ask(text: &str) -> Message {
 }
 
 /// Await one message at `/sink`. Failure-marker timeout, generous per
-/// convention — and wider than the usual 30s here (GH #58): these tests boot a
-/// real child colony process, the heaviest fixture in the repo, and a shared
-/// 2-core CI runner once starved a green run past 30s. The marker is a failure
-/// detector, not a timing discriminator, so width costs nothing; the semantic
-/// timing checks below stay tight.
+/// convention, and back at the usual 30s (GH #70): the width bought under GH #58
+/// was paying for the wrong diagnosis. Both CI reds were an unsolicited frame
+/// dropped for want of an edge, not a starved runner, which the runtime of the
+/// binary said out loud both times by landing exactly on the marker. With the
+/// edge wired before the child exists there is nothing left for width to buy,
+/// and a narrow marker reports the next real hang in half a minute instead of
+/// two. The semantic timing checks below stay tight either way.
 async fn captured(rx: &mut mpsc::Receiver<Message>) -> Message {
-    tokio::time::timeout(Duration::from_secs(120), rx.recv())
+    tokio::time::timeout(Duration::from_secs(30), rx.recv())
         .await
-        .expect("no message reached /sink within 120s")
+        .expect("no message reached /sink within 30s")
         .expect("capture channel closed")
 }
 
