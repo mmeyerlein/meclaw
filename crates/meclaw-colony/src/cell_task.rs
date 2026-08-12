@@ -216,7 +216,7 @@ pub async fn cell_task<C: Cell + Send + 'static>(
 #[allow(clippy::too_many_arguments)]
 pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
     own_path: Path,
-    mut mailbox: mpsc::Receiver<Message>,
+    mailbox: mpsc::Receiver<Message>,
     outputs_tx: mpsc::Sender<CellEmission>,
     mut cell: C,
     db: crate::DbConn,
@@ -238,6 +238,15 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
     let _term_guard = crate::TermAckGuard::new(death_ack);
     // Re-bind `db` into a body-local so it drops BEFORE `_term_guard`.
     let mut db = db;
+    // GH #18: the mailbox lives in a guard from here on. Declared AFTER `db` so
+    // it drops BEFORE it — the rescue reaches the colony ahead of the cell.db
+    // close and ahead of the death-ack. On a panic the unwind runs this drop;
+    // on the peaceful exits below `release()` disarms it.
+    let mut mailbox = crate::mailbox_rescue::MailboxGuard::new(
+        own_path.clone(),
+        mailbox,
+        colony_inbox_tx.clone(),
+    );
     // Phase-13.5 Lifecycle-3b (F2/A2): colony-initiated peace-stop receiver,
     // fused so it can be polled inside the loop's `select!`. `None` → `pending`
     // (behavior-neutral: no stop arm ever fires).
@@ -275,12 +284,13 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                 }
                 // Return the mailbox Receiver to the colony so the remainder
                 // can be drained to the DLQ (Task 4). `Stopped` ≠ `Sleep`:
-                // Disconnect, not idle.
-                if let Some(tx) = &colony_inbox_tx {
+                // Disconnect, not idle. GH #18: `release()` disarms the guard —
+                // this path routes the remainder itself.
+                if let (Some(tx), Some(receiver)) = (&colony_inbox_tx, mailbox.release()) {
                     let _ = tx
                         .send(crate::ColonyMsg::Stopped {
                             path: own_path.clone(),
-                            receiver: mailbox,
+                            receiver,
                         })
                         .await;
                 }
@@ -345,11 +355,12 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                     if let Some(p) = peace_tx.take() {
                         let _ = p.send(());
                     }
-                    if let Some(tx) = &colony_inbox_tx {
+                    // GH #18: peaceful park — `release()` disarms the guard.
+                    if let (Some(tx), Some(receiver)) = (&colony_inbox_tx, mailbox.release()) {
                         let _ = tx
                             .send(crate::ColonyMsg::Sleep {
                                 path: own_path.clone(),
-                                receiver: mailbox,
+                                receiver,
                             })
                             .await;
                     }
@@ -361,11 +372,12 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                     if let Some(p) = peace_tx.take() {
                         let _ = p.send(());
                     }
-                    if let Some(tx) = &colony_inbox_tx {
+                    // GH #18: peaceful park — `release()` disarms the guard.
+                    if let (Some(tx), Some(receiver)) = (&colony_inbox_tx, mailbox.release()) {
                         let _ = tx
                             .send(crate::ColonyMsg::Sleep {
                                 path: own_path.clone(),
-                                receiver: mailbox,
+                                receiver,
                             })
                             .await;
                     }
@@ -531,7 +543,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
 #[allow(clippy::too_many_arguments)]
 async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
     own_path: meclaw_core::Path,
-    mut mailbox: mpsc::Receiver<meclaw_core::Message>,
+    mailbox: mpsc::Receiver<meclaw_core::Message>,
     outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
     origin_sink: meclaw_core::OriginSink,
     mut events_rx: mpsc::Receiver<L::Event>,
@@ -551,6 +563,15 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
     let _term_guard = crate::TermAckGuard::new(death_ack);
     // Re-bind `db` into a body-local so it drops BEFORE `_term_guard`.
     let mut db = db;
+    // GH #18: the mailbox lives in a guard from here on. This is the frame the
+    // outer `select!` ABORTS when the I/O sub-task ends first — dropping the
+    // aborted future runs this guard's `Drop`, so the buffered remainder
+    // reaches the colony instead of vanishing with the task.
+    let mut mailbox = crate::mailbox_rescue::MailboxGuard::new(
+        own_path.clone(),
+        mailbox,
+        colony_inbox_tx.clone(),
+    );
     // Fuse the stop receiver so it can be polled in the `select!`. `None` →
     // `pending` (no stop arm ever fires).
     let mut stop_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
@@ -579,11 +600,13 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
             // mailbox Receiver via ColonyMsg::Stopped, break with `true`.
             biased;
             _ = &mut stop_fut => {
-                if let Some(tx) = &colony_inbox_tx {
+                // GH #18: peaceful stop — `release()` disarms the guard, this
+                // path routes the remainder itself.
+                if let (Some(tx), Some(receiver)) = (&colony_inbox_tx, mailbox.release()) {
                     let _ = tx
                         .send(crate::ColonyMsg::Stopped {
                             path: own_path.clone(),
-                            receiver: mailbox,
+                            receiver,
                         })
                         .await;
                 }

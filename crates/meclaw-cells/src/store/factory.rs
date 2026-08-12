@@ -860,6 +860,250 @@ mod tests {
         assert_eq!(indexed, 1, "the keyword leg reads the canonical column");
     }
 
+    /// Statement identity W2 (GitHub #13, ruling Q1 + ruling Q4): a `cell.db`
+    /// written by the 0.2.0 release gains the THIRD identity dimension on the
+    /// next wake, mechanically and without a migration tool.
+    ///
+    /// The starting state is the shipped 0.2.0 shape: `facts` carries the two
+    /// entity dimensions and the written claim, and nothing else. One wake has to
+    /// produce three effects, and the package is worthless without any one of
+    /// them: `canonical_claim` and `closure_source` are added (`ALTER TABLE`),
+    /// the claim dimension is backfilled from the written claim (byte identity is
+    /// the day-one canonical value), and the alias plus refusal tables of the new
+    /// dimension exist so the judged aliases have somewhere to land.
+    ///
+    /// Ruling Q4 calls the existing store contents worthless and the migration is
+    /// built anyway: meclaw is a public framework and the pattern is a free
+    /// generic declaration, so the path has to exist and be proven.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_migrates_itself_onto_the_claim_dimension() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        {
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            crate::store::query::install_connection_extensions(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, canonical_subject TEXT,
+                                     predicate TEXT, canonical_predicate TEXT, claim TEXT,
+                                     expired_at TEXT, superseded_by TEXT);
+                 INSERT INTO facts VALUES
+                   ('f1','user','user','practices','practices','yoga twice a week',NULL,NULL);
+                 INSERT INTO facts VALUES
+                   ('f2','user','user','practices','practices','yoga three times a week',
+                    '2026-06-05T00:00:00Z','f1');",
+            )
+            .unwrap();
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","canonical_subject":"text",
+                                 "predicate":"text","canonical_predicate":"text",
+                                 "claim":"text","canonical_claim":"text",
+                                 "expired_at":"text","superseded_by":"text",
+                                 "closure_source":"text"}},
+            "canonical": {"facts": [
+                {"source":"predicate","target":"canonical_predicate",
+                 "aliases":"predicate_aliases"},
+                {"source":"subject","target":"canonical_subject",
+                 "aliases":"subject_aliases","normalize":true},
+                {"source":"claim","target":"canonical_claim",
+                 "aliases":"claim_aliases","rejected":"claim_rejected_pairs"}
+            ]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        let rows: Vec<(String, Option<String>, Option<String>)> = conn
+            .prepare("SELECT claim, canonical_claim, closure_source FROM facts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "yoga twice a week".to_string(),
+                    Some("yoga twice a week".into()),
+                    None
+                ),
+                (
+                    "yoga three times a week".to_string(),
+                    Some("yoga three times a week".into()),
+                    None
+                ),
+            ],
+            "every row keeps its written claim and gains the byte-identical canonical one, \
+             and the migration attributes no closure to anybody"
+        );
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('claim_aliases','claim_rejected_pairs')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tables, 2,
+            "the judged claim aliases and their refusal log need somewhere to land"
+        );
+        let judged: i64 = conn
+            .query_row("SELECT count(*) FROM claim_aliases", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(judged, 0, "a migration writes no judgements");
+        let kept: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts WHERE expired_at = '2026-06-05T00:00:00Z' \
+                 AND superseded_by = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            kept, 1,
+            "the wake is MECHANICAL: it adds columns and derives identities, and it \
+             touches no closure at all. Withdrawing the ones the new rule rejects is the \
+             re-derive of the nightly round (ruling Q4), never a boot effect"
+        );
+    }
+
+    /// Statement identity W5 (GitHub #13, ruling Q3 option C): a `cell.db`
+    /// written before the judged cardinality table gains it on the next wake,
+    /// with no migration tool and without a single fact being touched.
+    ///
+    /// The table is an ordinary declared table, so the additive path that adds a
+    /// COLUMN adds it as a whole — that is the point of the receipt rather than a
+    /// shortcut: the pattern is generic and W5 buys it by declaring, not by
+    /// writing Rust. What has to be proven is that it lands EMPTY (a migration
+    /// states no verdict about any predicate), that the four columns the ruling
+    /// names exist, and that the facts of the old store come through unchanged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_migrates_itself_onto_the_cardinality_table() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        {
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            crate::store::query::install_connection_extensions(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, canonical_subject TEXT,
+                                     predicate TEXT, canonical_predicate TEXT, claim TEXT,
+                                     canonical_claim TEXT);
+                 INSERT INTO facts VALUES
+                   ('f1','user','user','collects','collects','collects vinyl','collects vinyl');",
+            )
+            .unwrap();
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {
+                "facts": {"id":"text","subject":"text","canonical_subject":"text",
+                          "predicate":"text","canonical_predicate":"text",
+                          "claim":"text","canonical_claim":"text"},
+                "predicate_cardinality": {"canonical_predicate":"text","verdict":"text",
+                                          "source":"text","decided_at":"text"}
+            },
+            "canonical": {"facts": [
+                {"source":"predicate","target":"canonical_predicate",
+                 "aliases":"predicate_aliases"},
+                {"source":"claim","target":"canonical_claim",
+                 "aliases":"claim_aliases","rejected":"claim_rejected_pairs"}
+            ]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('predicate_cardinality') ORDER BY name")
+            .expect("the cardinality table must exist after the wake")
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            vec![
+                "canonical_predicate".to_string(),
+                "decided_at".into(),
+                "source".into(),
+                "verdict".into()
+            ],
+            "ruling Q3 names four columns and `source` is the mandatory one: \
+             'why does this axis enumerate' has to be answerable from the data"
+        );
+        let verdicts: i64 = conn
+            .query_row("SELECT count(*) FROM predicate_cardinality", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(verdicts, 0, "a migration writes no judgements");
+        let facts: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts WHERE claim = 'collects vinyl'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(facts, 1, "the wake adds a table and touches no fact");
+    }
+
     /// 0.2.0 P3 (issue #14, ruling Q6): a `cell.db` whose FTS index was built
     /// WITHOUT the stemming tokenizer migrates itself on the next wake — no
     /// migration tool, no lost row, no loud failure.

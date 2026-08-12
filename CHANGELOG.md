@@ -4,6 +4,150 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.3.0] — 2026-08-12
+
+The statement identity wave. 0.2.0 answered *when are two remembered things the
+same thing* on the write side, and left the follow-up question standing: once
+both versions of a fact finally sit on one axis, which of them is still true?
+Answering it by ordering is what a memory does when it has nothing better, and
+it is wrong on every axis that legitimately holds more than one value at a time.
+**The value becomes part of the identity, and an interval closes only because
+someone said so, with their name on it.** Nothing supersedes by arithmetic any
+more.
+
+### Added
+
+- **Statement identity.** The supersession unit moved down from the axis
+  `(canonical_subject, canonical_predicate)` to the statement
+  `(canonical_subject, canonical_predicate, canonical_claim)`. The claim rides
+  the same generic canonical binding 0.2.0 built for subjects and predicates, so
+  it costs one declaration row and no new Rust: the written claim is never
+  modified, the derived column is filled by the store on every write, and a
+  revert is a `delete` on the alias row plus one `canonicalize`. The axis stays
+  what retrieval groups on and what the bundle renders. Correctness moved down
+  to the statement, recall stayed coarse on the axis (#13).
+- **Explicit closures, with attribution.** Ordering arithmetic now supersedes
+  only a re-assertion of the *same* statement. Everything else needs a closure,
+  and a closure is one attributed `update`: `expired_at`, `superseded_by` and
+  `closure_source`, never a rewrite of a written value and never a delete. Two
+  producers write them and each signs its work. The nightly judge closes what it
+  can argue about (`judge:<run_id>`, reason in the run receipt of the same
+  round), and the extractor closes in the turn (`extract:<batch_id>`) when the
+  fact it just wrote replaces one it was shown. A wrong closure of either kind
+  reverts with one `delete ... where source`, and the values come back untouched
+  because none was overwritten on the way in.
+- **The replacement window, and a guard rail on it.** Before the extractor mints
+  anything it is shown the open statements of the axes its subject already
+  carries, ranked by recency, one page per axis and an axis too long skipped
+  rather than truncated. An extracted fact may carry `replaces: <id>`, and only
+  an id that was provably in that window becomes a closure. The window is parked
+  under the batch key and checked again at write time, and a judged closure can
+  never be overwritten by the lane. The night validates the other producer in
+  turn: recently extract-closed statements travel back into the axis page, and a
+  contradiction clears the attribution instead of arguing with it.
+- **Cardinality as a judged property of the predicate.** Whether an axis
+  enumerates or replaces is now read with a fixed precedence: the seeded core
+  list first, a judged verdict second, the learned rule last. Verdicts land in an
+  additive table with a mandatory `source`, so *why does this axis enumerate* is
+  answerable from data. The round only offers relations neither the seed owns nor
+  the store has decided, and a verdict about a seeded relation is discarded
+  outright, so the precedence can never become a contradiction in the rows. The
+  effect stays presentation: no closure is ever derived from a cardinality.
+- **A session guard on the learned rule.** Coexistence evidence only counts
+  across different sessions now. The old rule read two facts sharing a
+  `valid_from` as proof that an axis enumerates, which on a corpus that stamps
+  one instant per conversation is not evidence at all. It shipped first and on
+  its own because it addressed the majority of the measured defect by itself.
+- **Claim aliases for rewordings.** The same axes the currency question reads are
+  read a second time with a different question: do two open statements say the
+  same thing? A yes becomes an alias on the claim dimension, the existing
+  `canonicalize` pulls the derived column behind it, and the re-assertion
+  arithmetic finishes the job, so a rewording becomes history of one statement
+  while a real change stays a statement of its own. Numbers and quantities are
+  never a rewording (a prompt rule with a scenario trap behind it), refusals are
+  persisted and travel back into the next payload as `known_different`, and the
+  keyword index deliberately stays on the *written* claim, so recall on the
+  original wording survives the merge.
+- **A currency marker in the bundle.** A superseded candidate carries
+  `superseded by: <claim>` on its rendered line, the inverse of the existing
+  `previously:` mechanism. Closed statements stay in the bundle rather than
+  dropping out of it: dropping them would destroy history questions and hide the
+  store's own uncertainty from the model reading it.
+- **A dying cell hands over its mailbox.** Messages queued for a cell that panics
+  are no longer lost. A guard owns the mailbox receiver for the lifetime of the
+  task; its drop runs on unwind and on task abort, drains what is left into a
+  colony message, and the successor receives it before the death is acknowledged.
+  The peaceful exits are unchanged and disarm the guard themselves. The frozen
+  routing corridors were not touched (#18).
+
+### Changed
+
+- The bundle contract gained the `superseded by:` marker on a rendered candidate
+  line and nothing else. No new field, no field changed shape.
+- `axis_is_multivalued` is a presentation tie-breaker now, not a decider. The
+  error direction of a wrong verdict is therefore the harmless one: it can fail
+  to mark an outdated value, it can no longer end a true one.
+- `apply_fts_ddl` substitutes each bound column independently instead of all or
+  nothing, so an index written before a second identity dimension existed
+  migrates in one wake even across a skipped release. Migration stays a wake
+  everywhere: the added columns, the cardinality table and the alias and refusal
+  tables of the claim dimension all land on the first spawn after the upgrade,
+  additively and idempotently, with no tool and no manual step.
+
+### Measured
+
+One paid run at the end of the track, 1.26 USD, in the shape the design ruling
+demanded and 0.2.0 never bought: the same eight LongMemEval haystacks, **one
+consolidation round first**, then the same eight knowledge-update questions
+again, judged by a model from a different vendor family than the one answering.
+
+- **The mechanism works and was seen working on a real judge.** On the first
+  judged round the judge produced **two closures, both correct and both with a
+  reason** ("a person lives in one place at a time"), refused every enumeration
+  trap it was offered, merged 15 rewordings while refusing 21, and answered 64
+  cardinality questions. No row was destroyed, no written value was rewritten,
+  and every verdict carries the run that made it.
+- **Enumeration now carries a source.** The share of multi-version axes read as
+  enumerations went from 20.2 % to 52.5 % over one night, and the composition is
+  the point: **40 seeded, 64 judged, 0 learned**. The learned half, which was the
+  entire defect a wave ago, contributes nothing after the session guard. That
+  counter has stopped measuring a defect and started measuring how much of the
+  vocabulary the store has an answer for, which means it should be re-stated as
+  *enumerations without a source* versus *with one* before the next wave uses it.
+- **Judged answers went from 6 of 8 to 7 of 8** across the round. The honest
+  reading of the one that flipped: nothing chained on that store. The round's
+  rewrites re-ranked the candidates and moved the current value inside the window
+  the answering model actually counted. The right answer, for a reason nobody
+  designed.
+- **The two flanks, stated as flanks.** Chain fire stayed at 0.0 % of candidates
+  before and after, and the run measured why rather than arguing about it. First,
+  **72 of 185 axes with more than one open statement carry more than six of them
+  and are skipped rather than truncated** by the per-axis page rule, and on this
+  corpus those are exactly the bucket axes the track was opened for; the nightly
+  budget is the smaller problem (8 axes a night already reach 57 % of the
+  reachable ones). That is #66. Second, the one wrong answer of the previous wave
+  is **still wrong**, and the round proves the cause is upstream of every
+  judgement this wave built: one fact was minted as an experience and its update
+  as a plan, on two different predicates, so the currency question can never see
+  them in one axis entry. The failure is stable across two independent extraction
+  runs, which makes it a property of the extraction lane. That is #67, and it is
+  extraction identity, not garbage collection.
+
+### Notes
+
+- **The public surface of this release is again the store cell**: the third
+  canonical binding is a declaration over the ops 0.2.0 shipped, plus the wake
+  migrations that carry an existing `cell.db` onto the claim dimension and the
+  judged cardinality table. The memory hive itself, its extraction prompt, its
+  recall script and its dream glue live outside the published tree, as they have
+  since 0.1.14.
+- Two flanks the track opened on its own account are tracked rather than
+  swallowed: the extraction lane's vocabulary read is still uncapped on the store
+  side and each row grew threefold (#68), and the night's instruction block has
+  tripled to about 8 kB, paid by every judge call including the quiet ones (#69).
+- Both frozen routing corridors are untouched, no dependency was added, and no
+  new `error_code` was introduced.
+
 ## [0.2.0] — 2026-08-12
 
 The memory quality wave: seven issues, one epic, and a single question

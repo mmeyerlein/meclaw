@@ -5,7 +5,7 @@ source of truth for everything actionable. This file only orders it: what comes
 next, what comes after, and why. Content lives in the issues, never here twice.
 Milestones mirror these streams.
 
-## Now: 0.1.x hardening
+## Shipped: 0.1.x hardening
 
 Defects found by running the system in production, shipped as patch releases in
 roughly this order. The two watchdog items travel together.
@@ -30,7 +30,8 @@ Done so far: [#10](https://github.com/mmeyerlein/meclaw/issues/10) fresh-clone t
 [#59](https://github.com/mmeyerlein/meclaw/issues/59) DbConn reconnects after a dropped call future,
 [#63](https://github.com/mmeyerlein/meclaw/issues/63) a panic-free store respawn path.
 
-The queue is empty. New defects found in production land here first.
+The queue emptied with v0.1.16. New substrate defects found in production land
+here first.
 
 ## Shipped: 0.2.0 memory quality
 
@@ -51,15 +52,48 @@ an index-time stemmer,
 dedup, [#16](https://github.com/mmeyerlein/meclaw/issues/16) tier 0 window
 honesty.
 
-Still open, its own track:
-[#13](https://github.com/mmeyerlein/meclaw/issues/13) statement identity, the
-next design pass, now with benchmark data behind it instead of an argument.
+## Shipped: 0.3.0 statement identity
+
+The follow-up pass on the same question, released as v0.3.0: once both versions
+of a fact sit on one axis, which of them is still true?
+
+Done: [#13](https://github.com/mmeyerlein/meclaw/issues/13) statement identity,
+which moved the supersession unit down to
+`(canonical_subject, canonical_predicate, canonical_claim)`, made every closure
+an explicit attributed one (the nightly judge and the extractor in the turn,
+both revertible by a single `where`), made cardinality a judged property of the
+predicate with seed precedence and a session guard under the learned rule, added
+judged claim aliases for rewordings, and put a currency marker on superseded
+candidates in the bundle. Riding the same release:
+[#18](https://github.com/mmeyerlein/meclaw/issues/18) mailbox preservation on
+panic.
+
+## Now: 0.3.x memory quality follow-ups
+
+What the track-end measurement found, in the order it matters. The first two are
+what bounds the version chain today, the other two are cost flanks the wave
+opened on its own account.
+
+[#66](https://github.com/mmeyerlein/meclaw/issues/66) the currency question
+skips the bucket axes it exists for (the per-axis page rule, 39 % of the
+multi-version axes on the benchmark),
+[#67](https://github.com/mmeyerlein/meclaw/issues/67) extraction identity across
+a predicate boundary, one fact minted as an experience and its update as a plan,
+[#68](https://github.com/mmeyerlein/meclaw/issues/68) an uncapped vocabulary read
+whose rows grew threefold,
+[#69](https://github.com/mmeyerlein/meclaw/issues/69) the fixed prompt cost of
+the night call.
+
+Riding alongside from the same lane:
+[#64](https://github.com/mmeyerlein/meclaw/issues/64) the consolidation log
+undercounts model calls,
+[#65](https://github.com/mmeyerlein/meclaw/issues/65) future-dated plans dropped
+from the tier 0 foresight leg.
 
 ## Next: pre-MVP substrate
 
 Substrate invariants that must land before an MVP claim, no order committed yet:
-[#18](https://github.com/mmeyerlein/meclaw/issues/18) mailbox preservation on
-panic, [#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob
+[#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob
 resolution, [#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops
 reachable from the API,
 [#20](https://github.com/mmeyerlein/meclaw/issues/20) secret materialization

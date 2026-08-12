@@ -41,11 +41,18 @@ async fn phase_10_a_demo_mailbox_message_reaches_handle() {
         .await
         .unwrap();
     // Wait for the dispatch BEFORE ending the I/O side. When run_io ends, the
-    // outer select aborts the surviving handler task, mailbox and all — the
-    // known #18 boundary (mailbox preservation). Dropping `_inject` right
-    // after the send races the handler's first poll against that abort, and
-    // on a loaded runner the abort can win (seen once on the 2-core CI). This
-    // test pins dispatch, not that boundary, so it sequences the two.
+    // outer select aborts the surviving handler task, mailbox and all.
+    // Dropping `_inject` right after the send races the handler's first poll
+    // against that abort, and on a loaded runner the abort can win (seen once
+    // on the 2-core CI).
+    //
+    // The mailbox-loss half of that race is closed since GH #18: the aborted
+    // handler hands its buffered remainder to the colony (`MailboxGuard`). The
+    // sequencing stays anyway, and deliberately — this task is spawned WITHOUT
+    // a colony inbox (`colony_inbox_tx: None`), so there is nowhere to hand the
+    // message to, and the assert below pins DISPATCH ("handle() ran exactly
+    // once"), which no preservation mechanism can win for it. Preservation has
+    // its own pins in `gh18_mailbox_preservation.rs`.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while counter.load(Ordering::SeqCst) == 0 {
         assert!(

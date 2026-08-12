@@ -585,6 +585,24 @@ pub enum ColonyMsg {
         path: Path,
         receiver: mpsc::Receiver<Message>,
     },
+    /// GH #18: a cell task is dying (panic, I/O-end abort, B-backstop) with
+    /// messages still buffered in its mailbox. Its `MailboxGuard` drained them
+    /// on the way out and hands them here.
+    ///
+    /// Distinct from `Stopped`/`Sleep`, which return the whole `Receiver` on a
+    /// deliberate, peaceful exit: a death cannot hand over a receiver (it is
+    /// unwound or aborted with the task), so the messages travel on their own.
+    /// The colony holds them until the matching `CellDied` has been handled and
+    /// then delivers them to the successor — or dead-letters them if the death
+    /// left no successor. Ordering is what makes that work: the guard's
+    /// `try_send` runs while the task is being dropped, i.e. strictly before
+    /// the join handle resolves and the watcher can send `CellDied`.
+    MailboxRescued {
+        /// Path of the dying cell.
+        path: Path,
+        /// The unread remainder, oldest first.
+        messages: Vec<Message>,
+    },
     /// Phase-13.5 Lifecycle-3b Task 3 (F2): a cell-task has finished its
     /// colony-initiated **peace-stop** (Disconnect, NOT idle) and is returning
     /// its mailbox `Receiver` so the remainder can be drained to the DLQ.
@@ -1014,6 +1032,76 @@ fn park_entry_non_running(entry: &mut RegistryEntry, path: &Path) {
     entry.status = CellStatus::NotYetSpawned { receiver: new_rx };
 }
 
+/// GH #18: preserve a rescued mailbox that found no successor.
+///
+/// Same shape and same reason as the disconnect drain in `handle_stopped`: the
+/// remainder is kept in the DLQ, in order, rather than dropped silently.
+fn dead_letter_rescued(
+    dead_letters: &mut VecDeque<DeadLetter>,
+    path: &Path,
+    messages: impl IntoIterator<Item = Message>,
+) {
+    for msg in messages {
+        let sender_path = msg.reply_to.clone().unwrap_or_else(|| Path::new("/"));
+        push_dead_letter(
+            dead_letters,
+            DeadLetter {
+                sender_path,
+                original_target: msg.target.clone(),
+                resolved_target: path.clone(),
+                message: msg,
+                reason: crate::dead_letter::DeadLetterReason::CellInactive,
+            },
+        );
+    }
+}
+
+/// GH #18: hand the mailbox rescued from a dying cell to its successor.
+///
+/// Called at the `CellDied` call-site **after** the byte-frozen
+/// `handle_cell_died` corridor returned, which is what makes the delivery
+/// possible at all: only then does `entry.handle` carry the fresh mailbox
+/// sender of the respawned task. `restarted == false` means the death left no
+/// successor (normal end → entry removed, or the restart limit was exhausted)
+/// and the remainder goes to the DLQ.
+///
+/// Order is preserved, and a failing send stops the delivery: everything from
+/// that point on is dead-lettered rather than re-ordered behind later traffic.
+async fn deliver_rescued_mailbox(
+    registry: &HashMap<Path, RegistryEntry>,
+    rescued: &mut HashMap<Path, Vec<Message>>,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    path: &Path,
+    restarted: bool,
+) {
+    let Some(messages) = rescued.remove(path) else {
+        return;
+    };
+    let mut queue: VecDeque<Message> = messages.into();
+    if restarted && let Some(handle) = registry.get(path).map(|e| e.handle.clone()) {
+        let total = queue.len();
+        while let Some(msg) = queue.pop_front() {
+            if let Err(e) = handle.send(msg).await {
+                queue.push_front(e.0);
+                break;
+            }
+        }
+        tracing::info!(
+            path = %path.as_str(),
+            delivered = total - queue.len(),
+            "rescued mailbox messages handed to the respawned cell"
+        );
+    }
+    if !queue.is_empty() {
+        tracing::warn!(
+            path = %path.as_str(),
+            count = queue.len(),
+            "rescued mailbox messages have no successor — dead-lettering"
+        );
+        dead_letter_rescued(dead_letters, path, queue);
+    }
+}
+
 /// Phase-13.5 Slice 4 T5: `ColonyMsg::StopWiringRestored` arm handler.
 ///
 /// Puts a fresh `(stop_tx, death_ack_rx)` pair back onto the cell's
@@ -1275,6 +1363,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // `dead_letters` table after every handled event (`persist_dead_letters`).
     // Not a store, not bounded (no drop-oldest), never a second source of truth.
     let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+    // GH #18: mailboxes rescued from dying cell tasks, keyed by cell path. A
+    // `MailboxRescued` always arrives BEFORE the matching `CellDied` (the guard
+    // hands over while the task is being dropped, the watcher only speaks once
+    // the join handle resolved), so an entry lives here for exactly the span
+    // between the two events and is emptied by `deliver_rescued_mailbox`.
+    let mut rescued_mailboxes: HashMap<Path, Vec<Message>> = HashMap::new();
     // Reboot hydration: classify the boot state, load from DB on a reboot.
     let is_reboot: bool = match colony_db.boot_state() {
         Ok(crate::bootstrap::BootState::FirstBoot) => {
@@ -1439,7 +1533,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     }
                                 }
                                 ColonyMsg::CellDied { path, death_kind } => {
-                                    if let CellDiedOutcome::Failed { path } = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await {
+                                    // GH #18: keep the path — the corridor consumes it,
+                                    // and the mailbox rescue is keyed on it.
+                                    let died = path.clone();
+                                    let outcome = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await;
+                                    let restarted = matches!(outcome, CellDiedOutcome::Restarted);
+                                    if let CellDiedOutcome::Failed { path } = outcome {
                                         let now = std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .expect("system time")
@@ -1456,6 +1555,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                             park_entry_non_running(e, &path);
                                         }
                                     }
+                                    deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &died, restarted).await;
                                 }
                                 ColonyMsg::DrainDeadLetters { ack: dl_ack } => {
                                     // W6d (A6): shutdown-drain has no post-select
@@ -1598,7 +1698,19 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 ColonyMsg::StopWiringRestored { path, stop_tx, death_ack_rx } => {
                                     handle_stop_wiring_restored(&mut registry, path, stop_tx, death_ack_rx);
                                 }
+                                ColonyMsg::MailboxRescued { path, messages } => {
+                                    // Shutdown-drain: no successor is coming, so
+                                    // the rescue goes straight to the DLQ (the
+                                    // flush below this loop still catches it).
+                                    dead_letter_rescued(&mut dead_letters, &path, messages);
+                                }
                             }
+                        }
+                        // GH #18: a rescue whose `CellDied` never arrived (shutdown
+                        // cut in between) has no successor to wait for — preserve it
+                        // rather than let the map die with the task.
+                        for (path, messages) in rescued_mailboxes.drain() {
+                            dead_letter_rescued(&mut dead_letters, &path, messages);
                         }
                         // W6d (A6): flush any DLQ pushes from the shutdown-drain
                         // loop BEFORE the writer is torn down — the Shutdown arm
@@ -1690,7 +1802,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         }
                     }
                     ColonyMsg::CellDied { path, death_kind } => {
-                        if let CellDiedOutcome::Failed { path } = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await {
+                        // GH #18: keep the path — the corridor consumes it, and the
+                        // mailbox rescue is keyed on it.
+                        let died = path.clone();
+                        let outcome = handle_cell_died(&mut registry, &inbox_self_tx, path, death_kind).await;
+                        let restarted = matches!(outcome, CellDiedOutcome::Restarted);
+                        if let CellDiedOutcome::Failed { path } = outcome {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .expect("system time")
@@ -1707,6 +1824,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 park_entry_non_running(e, &path);
                             }
                         }
+                        deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &died, restarted).await;
                     }
                     ColonyMsg::DrainDeadLetters { ack } => {
                         // W6d (A6): drain from the DB (source of truth). Fence so
@@ -1879,6 +1997,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::StopWiringRestored { path, stop_tx, death_ack_rx } => {
                         handle_stop_wiring_restored(&mut registry, path, stop_tx, death_ack_rx);
+                    }
+                    ColonyMsg::MailboxRescued { path, messages } => {
+                        // GH #18: park until the matching `CellDied` decided whether
+                        // there IS a successor. Delivery happens there, never here —
+                        // at this moment `entry.handle` still points at the dead
+                        // task's channel.
+                        rescued_mailboxes.entry(path).or_default().extend(messages);
                     }
                 }
             }

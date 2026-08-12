@@ -254,16 +254,32 @@ pub fn apply_fts_ddl(
             // Every binding of the table substitutes its own source for its
             // target, so a store that gained a SECOND identity dimension migrates
             // in one step (0.2.0 P4) instead of needing an intermediate release.
-            let substituted: Vec<String> = found
-                .iter()
-                .map(|c| {
-                    canonical
-                        .get(table)
-                        .and_then(|specs| specs.iter().find(|s| &s.source == c))
-                        .map(|s| s.target.clone())
-                        .unwrap_or_else(|| c.clone())
-                })
-                .collect();
+            //
+            // Each column substitutes INDEPENDENTLY (statement identity W2): a
+            // declaration may move one dimension onto its canonical twin and keep
+            // another written, and it does — the claim binding exists for identity,
+            // while the keyword leg keeps indexing the written claim, because the
+            // claim IS the text a question searches. Substituting all or nothing
+            // would refuse a store that skipped the release in between. The variant
+            // count is 2^k over the bound columns of one index, a handful at most.
+            let variants: Vec<Vec<String>> = found.iter().fold(vec![Vec::new()], |acc, col| {
+                let target = canonical
+                    .get(table)
+                    .and_then(|specs| specs.iter().find(|s| &s.source == col))
+                    .map(|s| s.target.clone());
+                let mut next = Vec::with_capacity(acc.len() * 2);
+                for prefix in acc {
+                    if let Some(t) = &target {
+                        let mut swapped = prefix.clone();
+                        swapped.push(t.clone());
+                        next.push(swapped);
+                    }
+                    let mut kept = prefix;
+                    kept.push(col.clone());
+                    next.push(kept);
+                }
+                next
+            });
             // An FTS index is a rebuildable projection over never-deleted source
             // text -- the same property the embedding generations rely on.
             // Dropping it destroys no truth, so a purely additive declaration may
@@ -280,10 +296,7 @@ pub fn apply_fts_ddl(
             // column list has to be migratable on its own, and only then does a
             // missing tokenizer add its own reason to rebuild.
             let additive = |from: &[String]| from.len() < cols.len() && cols[..from.len()] == *from;
-            let columns_migratable = found == *cols
-                || substituted == *cols
-                || additive(&found)
-                || additive(&substituted);
+            let columns_migratable = variants.iter().any(|v| v == cols || additive(v.as_slice()));
             if !columns_migratable {
                 return Err(format!(
                     "fts column drift on {index}: declared {cols:?}, existing {found:?} — \
@@ -619,6 +632,83 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fresh, 1);
+    }
+
+    /// Statement identity W2 (GitHub #13, ruling Q1): the claim gains a canonical
+    /// binding, and the FTS declaration deliberately keeps indexing the WRITTEN
+    /// claim — the claim IS the text a keyword question searches, so replacing it
+    /// with its alias-resolved twin would cost recall on the original wording.
+    ///
+    /// That combination is what this test exists for. The substitution rule maps
+    /// EVERY binding's source onto its target when it compares an existing index
+    /// against the declaration, so a store still carrying the P15 index
+    /// (`claim, predicate`) now substitutes to `canonical_claim,
+    /// canonical_predicate` and matches neither the declaration nor its additive
+    /// prefix. The migration has to keep working across the skipped release, so
+    /// the rule considers each column's substitution on its own rather than all
+    /// of them at once.
+    #[test]
+    fn fts_ddl_migrates_a_p15_index_onto_a_three_dimension_declaration() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT PRIMARY KEY, claim TEXT, canonical_claim TEXT,
+                                 predicate TEXT, canonical_predicate TEXT,
+                                 subject TEXT, canonical_subject TEXT);
+             INSERT INTO facts VALUES ('1','Helix','Helix','Lieblingseditor',
+                                       'favorite_editor','user','user');",
+        )
+        .unwrap();
+        // the P15 state: the index carries the written spellings and nothing else
+        apply_fts_ddl(
+            &conn,
+            &fts_decl("facts", &["claim", "predicate"]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let spec = |source: &str, target: &str, aliases: &str| crate::store::CanonicalSpec {
+            source: source.to_string(),
+            target: target.to_string(),
+            aliases: aliases.to_string(),
+            normalize: false,
+            rejected: None,
+        };
+        let canonical = BTreeMap::from([(
+            "facts".to_string(),
+            vec![
+                spec("predicate", "canonical_predicate", "predicate_aliases"),
+                spec("subject", "canonical_subject", "subject_aliases"),
+                spec("claim", "canonical_claim", "claim_aliases"),
+            ],
+        )]);
+        apply_fts_ddl(
+            &conn,
+            &fts_decl(
+                "facts",
+                &["claim", "canonical_predicate", "canonical_subject"],
+            ),
+            &canonical,
+        )
+        .expect("a store that skipped a release must migrate, not refuse to come up");
+        let hit: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"favorite\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1, "the canonical predicate must be searchable");
+        let claim: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"Helix\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            claim, 1,
+            "the WRITTEN claim stays indexed: the claim binding exists for identity, \
+             not for search"
+        );
     }
 
     /// 0.2.0 P3 (ruling Q6): every index this function builds declares the

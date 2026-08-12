@@ -20,6 +20,7 @@ pub mod factory;
 pub mod hive_scope;
 pub mod io_liveness;
 pub mod long_running_cell;
+mod mailbox_rescue;
 pub mod mutation;
 pub mod path_truth;
 pub mod persist;
