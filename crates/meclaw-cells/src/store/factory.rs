@@ -20,8 +20,14 @@ use tokio::task::JoinHandle;
 /// on the next access, and it knows nothing about store specifics. So the
 /// registration is handed to it as re-open setup — otherwise the re-opened
 /// connection would serve every op except `similar`.
+///
+/// 0.2.0 P3 put the `meclaw_stem` FTS5 tokenizer into the same hook, where it
+/// matters more: a connection that does not know the tokenizer cannot open an
+/// index declaring it at all, so a re-open without it would take out `search`
+/// entirely rather than one op.
 fn wrap_store_db(conn: rusqlite::Connection, query_timeout: Option<std::time::Duration>) -> DbConn {
-    DbConn::wrap(conn, query_timeout).with_reopen_setup(crate::store::query::hamming::register)
+    DbConn::wrap(conn, query_timeout)
+        .with_reopen_setup(crate::store::query::install_connection_extensions)
 }
 
 /// Phase-9 `store` cell factory. Unit struct (no fields) — all
@@ -396,6 +402,32 @@ fn effective_params_or_degrade(
              op is unaffected"
         );
     }
+    // 0.2.0 P4: same connection-scoped story for `meclaw_norm`, and it has to
+    // happen BEFORE the canonical DDL below — the backfill of a normalising
+    // binding computes the normal form inside its UPDATE, so without the function
+    // the derived column stays NULL and every identity-sensitive read goes blind.
+    if let Err(e) = crate::store::query::normalize::register(conn) {
+        tracing::error!(
+            path = path.as_str(),
+            error = %e,
+            "store: meclaw_norm registration failed at {phase} — a normalising canonical \
+             binding cannot derive its column (`canonicalize` and the boot backfill answer \
+             with a SQL error); every other op is unaffected"
+        );
+    }
+    // 0.2.0 P3: same connection-scoped story for the stemming FTS5 tokenizer,
+    // and it has to happen BEFORE the FTS DDL below — that DDL reads and writes
+    // an index which declares the tokenizer by name.
+    if let Err(e) = crate::store::query::fts_tokenizer::register(conn) {
+        tracing::error!(
+            path = path.as_str(),
+            error = %e,
+            "store: FTS tokenizer registration failed at {phase} — the cell starts \
+             WITHOUT its full-text index (an index declaring `meclaw_stem` cannot be \
+             opened without it, so `search` ops answer with a SQL error); every other \
+             op is unaffected"
+        );
+    }
     // β restore: replay the cell.db params-overlay over birth-params.
     let effective = match crate::params_overlay::restore::<StoreParams>(conn, birth) {
         Ok(effective) => effective,
@@ -433,7 +465,19 @@ fn effective_params_or_degrade(
              the cell.db and re-wake the cell)"
         );
     }
-    if let Err(e) = ddl::apply_fts_ddl(conn, &effective.fts) {
+    // Order is load-bearing: the alias table and the backfill run BEFORE the FTS
+    // declaration, so the index is built over an already-derived canonical column
+    // rather than over NULLs.
+    if let Err(e) = ddl::apply_canonical_ddl(conn, &effective.canonical) {
+        tracing::error!(
+            path = path.as_str(),
+            error = %e,
+            "store: canonical DDL failed at {phase} — the alias table or the derived column \
+             may be MISSING; identity-sensitive reads fall back to whatever the column \
+             carries (the colony is kept alive; fix the cell.db and re-wake the cell)"
+        );
+    }
+    if let Err(e) = ddl::apply_fts_ddl(conn, &effective.fts, &effective.canonical) {
         tracing::error!(
             path = path.as_str(),
             error = %e,
@@ -589,6 +633,60 @@ mod tests {
         );
     }
 
+    /// 0.2.0 P3: the same #59 property for the FTS5 tokenizer, and it bites
+    /// harder than `hamming` does. A connection without `meclaw_stem` cannot
+    /// even OPEN an index that declares it — FTS5 resolves the tokenizer name
+    /// when the virtual table is opened — so a re-opened connection that lost
+    /// the registration would answer every `search` with a tokenizer error
+    /// instead of merely losing one op.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn store_db_reopen_reregisters_the_stemming_tokenizer() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (conn, _status) =
+            open_or_create_cell_db_with_status(&td.path().join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE t USING fts5(body, tokenize='meclaw_stem');
+             INSERT INTO t(body) VALUES ('hat lieblingseditor helix');",
+        )
+        .unwrap();
+        let mut db = wrap_store_db(conn, None);
+        // Drop the call future while its closure is parked: the connection goes
+        // down with the orphaned closure.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            db.call(move |_c| {
+                let _ = release_rx.recv();
+            }),
+        )
+        .await;
+        assert!(
+            elapsed.is_err(),
+            "the call has to be still in flight when the timeout drops its future"
+        );
+        release_tx.send(()).unwrap();
+        // 30s is a generous failure marker, not a semantic discriminator.
+        let hits = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.call(|c| {
+                c.query_row::<i64, _, _>(
+                    "SELECT count(*) FROM t WHERE t MATCH '\"lieblingseditoren\"*'",
+                    [],
+                    |r| r.get(0),
+                )
+            }),
+        )
+        .await
+        .expect("the reopened connection must be usable");
+        assert_eq!(
+            hits.unwrap(),
+            1,
+            "the reopened connection must know `meclaw_stem` — and fold the plural query \
+             onto the singular row through it"
+        );
+    }
+
     /// Phase-13-K-2: factory returns `Dormant` — invoke the WakeFn directly to
     /// drive the open/DDL/seed pipeline, then verify the fresh `items` count.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -652,6 +750,461 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("seed not loaded on fresh within 500 ms");
+    }
+
+    /// 0.2.0 P2: a `cell.db` written by the PREVIOUS release must migrate itself on
+    /// the next wake — no migration tool, no lost row, no loud failure.
+    ///
+    /// The starting state is the shipped P15 shape: `facts` without the derived
+    /// column, an FTS index over `claim, predicate`, no alias table. Three things
+    /// have to happen in one wake, and each of them fails on its own without the
+    /// other two: the column is added (`ALTER TABLE`), it is backfilled from the
+    /// originals, and the index is swapped onto it (canonical drift class — a
+    /// same-length swap, which the additive rule would have refused).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_migrates_itself_onto_the_canonical_column() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        {
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            crate::store::query::install_connection_extensions(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, predicate TEXT, claim TEXT);
+                 INSERT INTO facts VALUES ('f1','user:m','Lieblingseditor','Helix');
+                 INSERT INTO facts VALUES ('f2','user:m','favorite_editor','vscode');",
+            )
+            .unwrap();
+            crate::store::ddl::apply_fts_ddl(
+                &conn,
+                &std::collections::BTreeMap::from([(
+                    "facts".to_string(),
+                    vec!["claim".to_string(), "predicate".to_string()],
+                )]),
+                &std::collections::BTreeMap::new(),
+            )
+            .unwrap();
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","predicate":"text",
+                                 "canonical_predicate":"text","claim":"text"}},
+            "canonical": {"facts": {"source":"predicate","target":"canonical_predicate",
+                                    "aliases":"predicate_aliases"}},
+            "fts": {"facts": ["claim", "canonical_predicate"]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        // Reading the FTS index needs the tokenizer, exactly as the running cell
+        // does — an index declaring `meclaw_stem` cannot be opened without it.
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        let rows: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT predicate, canonical_predicate FROM facts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "Lieblingseditor".to_string(),
+                    Some("Lieblingseditor".into())
+                ),
+                (
+                    "favorite_editor".to_string(),
+                    Some("favorite_editor".into())
+                ),
+            ],
+            "every row keeps its original and gains a derived value"
+        );
+        let aliases: i64 = conn
+            .query_row("SELECT count(*) FROM predicate_aliases", [], |r| r.get(0))
+            .expect("the alias table must exist after the wake");
+        assert_eq!(aliases, 0, "a migration writes no judgements");
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"favorite\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the index must have been swapped onto the canonical column");
+        assert_eq!(indexed, 1, "the keyword leg reads the canonical column");
+    }
+
+    /// 0.2.0 P3 (issue #14, ruling Q6): a `cell.db` whose FTS index was built
+    /// WITHOUT the stemming tokenizer migrates itself on the next wake — no
+    /// migration tool, no lost row, no loud failure.
+    ///
+    /// The starting state is the shipped P2 shape: the columns are already the
+    /// declared ones, only the tokenizer is missing. That is precisely the case
+    /// neither existing drift class sees — the additive rule compares lists and
+    /// finds them equal, the canonical rule finds nothing to substitute — so
+    /// without the tokenizer class this store would keep an unstemmed index
+    /// while every query arrived folded, which is worse than no package at all.
+    ///
+    /// The receipt is the issue's own sentence: before the wake the plural
+    /// question scores zero against the singular fact, after it, one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_migrates_its_index_onto_the_stemming_tokenizer() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        let plural = "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH \
+                      '\"lieblingseditoren\"*'";
+        {
+            // The pre-P3 index, written the way `apply_fts_ddl` wrote it before
+            // this package — spelled out rather than produced by that function,
+            // because that function now declares the tokenizer.
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, predicate TEXT,
+                                     canonical_predicate TEXT, claim TEXT);
+                 INSERT INTO facts VALUES ('f1','user:m','hat Lieblingseditor',
+                                           'hat Lieblingseditor','Helix');
+                 CREATE VIRTUAL TABLE facts_fts USING fts5(claim, canonical_predicate,
+                     content='facts', content_rowid='rowid');
+                 CREATE TRIGGER facts_fts_ai AFTER INSERT ON facts BEGIN
+                   INSERT INTO facts_fts(rowid, claim, canonical_predicate)
+                     VALUES (new.rowid, new.claim, new.canonical_predicate);
+                 END;
+                 INSERT INTO facts_fts(facts_fts) VALUES ('rebuild');",
+            )
+            .unwrap();
+            let before: i64 = conn.query_row(plural, [], |r| r.get(0)).unwrap();
+            assert_eq!(
+                before, 0,
+                "this is the live defect of issue #14: the fact is keyword-invisible \
+                 for exactly the question it answers"
+            );
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","predicate":"text",
+                                 "canonical_predicate":"text","claim":"text"}},
+            "canonical": {"facts": {"source":"predicate","target":"canonical_predicate",
+                                    "aliases":"predicate_aliases"}},
+            "fts": {"facts": ["claim", "canonical_predicate"]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        let after: i64 = conn
+            .query_row(plural, [], |r| r.get(0))
+            .expect("the index must be readable through the migrated tokenizer");
+        assert_eq!(
+            after, 1,
+            "after the wake the plural question reaches the singular fact"
+        );
+        // The row itself was never touched — the fold lives in the index, the
+        // truth in the table. This is where ruling Q2's byte-faithful entity
+        // promise actually holds.
+        let (predicate, claim): (String, String) = conn
+            .query_row(
+                "SELECT predicate, claim FROM facts WHERE id='f1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(predicate, "hat Lieblingseditor");
+        assert_eq!(claim, "Helix");
+        // The triggers were re-declared with the index: a row written AFTER the
+        // migration is folded too. `DROP TABLE` leaves triggers behind, so the
+        // rebuild alone would not prove this.
+        conn.execute(
+            "INSERT INTO facts VALUES ('f2','user:m','hat Katzen','hat Katzen','Minka')",
+            [],
+        )
+        .unwrap();
+        let fresh: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"katze\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fresh, 1, "the insert trigger indexes through the tokenizer");
+    }
+
+    /// 0.2.0 P4 (issue #23, ruling Q5): a `cell.db` that never saw P2 gains BOTH
+    /// identity dimensions in one wake — no migration tool, no intermediate
+    /// release, no lost row.
+    ///
+    /// The starting state is the shipped P15 shape, which is what a store in the
+    /// field actually carries: no derived column at all, an index over `claim,
+    /// predicate`, no alias table. The declared index is `claim,
+    /// canonical_predicate, canonical_subject`, so the column list has to migrate
+    /// through BOTH drift classes at once — first the canonical substitution
+    /// (`predicate` → `canonical_predicate`), then the additive extension (the
+    /// entity column appended). Either class alone refuses this list, which is a
+    /// spawn failure rather than a migration.
+    ///
+    /// The second half is the automatic merge of ruling Q5: the two rows were
+    /// written under two spellings of one subject, and the backfill puts them on
+    /// ONE canonical subject without an alias, a judgement or a model.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_gains_the_entity_dimension_in_one_wake() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        {
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            crate::store::query::install_connection_extensions(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, predicate TEXT, claim TEXT);
+                 INSERT INTO facts VALUES ('f1','User:U1','lives_in','Sonnenhof');
+                 INSERT INTO facts VALUES ('f2','  user:u1 ','favorite_editor','Helix');",
+            )
+            .unwrap();
+            crate::store::ddl::apply_fts_ddl(
+                &conn,
+                &std::collections::BTreeMap::from([(
+                    "facts".to_string(),
+                    vec!["claim".to_string(), "predicate".to_string()],
+                )]),
+                &std::collections::BTreeMap::new(),
+            )
+            .unwrap();
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","canonical_subject":"text",
+                                 "predicate":"text","canonical_predicate":"text","claim":"text"}},
+            "canonical": {"facts": [
+                {"source":"predicate","target":"canonical_predicate",
+                 "aliases":"predicate_aliases"},
+                {"source":"subject","target":"canonical_subject",
+                 "aliases":"subject_aliases","normalize":true}]},
+            "fts": {"facts": ["claim", "canonical_predicate", "canonical_subject"]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        let rows: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT subject, canonical_subject FROM facts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("User:U1".to_string(), Some("user:u1".into())),
+                ("  user:u1 ".to_string(), Some("user:u1".into())),
+            ],
+            "two spellings, one identity — and both originals byte-identical"
+        );
+        let aliases: i64 = conn
+            .query_row("SELECT count(*) FROM subject_aliases", [], |r| r.get(0))
+            .expect("the entity alias table must exist after the wake");
+        assert_eq!(
+            aliases, 0,
+            "the merge came from normalisation, not a judgement"
+        );
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH '\"user\"*'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the index must carry the entity column after the rebuild");
+        assert_eq!(indexed, 2, "the keyword leg now sees the canonical subject");
+    }
+
+    /// 0.2.0 P5: a `cell.db` that already ran through P4 — derived columns, alias
+    /// tables, judged aliases on disk — gains the REFUSAL log in one wake.
+    ///
+    /// This is the migration the nightly canonicalisation round needs before it
+    /// runs for the first time: without the table `reject_pair` has nowhere to
+    /// write and the GC re-judges the same pairs every night. Additive like every
+    /// other step of this wave — no existing row is read, moved or rewritten, and
+    /// the aliases the store already carried keep working untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_existing_cell_db_gains_the_refusal_log_in_one_wake() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cell_dir = td.path().to_path_buf();
+        {
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+            crate::store::query::install_connection_extensions(&conn).unwrap();
+            // the P4 shape: both dimensions derived, both alias tables present,
+            // one judgement already written, and no refusal log anywhere
+            conn.execute_batch(
+                "CREATE TABLE facts (id TEXT, subject TEXT, canonical_subject TEXT,
+                                     predicate TEXT, canonical_predicate TEXT, claim TEXT);
+                 CREATE TABLE predicate_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL,
+                                                 recorded_at TEXT);
+                 CREATE TABLE subject_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL,
+                                               recorded_at TEXT);
+                 INSERT INTO subject_aliases VALUES ('user','user:u1','2026-08-11T03:00:00Z');
+                 INSERT INTO facts VALUES ('f1','user','user:u1','lives_in','lives_in','Sonnenhof');
+                 INSERT INTO facts VALUES ('f2','elvse','elvse','lives_in','lives_in','Elvse');",
+            )
+            .unwrap();
+        }
+        let raw = meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","canonical_subject":"text",
+                                 "predicate":"text","canonical_predicate":"text","claim":"text"}},
+            "canonical": {"facts": [
+                {"source":"predicate","target":"canonical_predicate",
+                 "aliases":"predicate_aliases","rejected":"predicate_rejected_pairs"},
+                {"source":"subject","target":"canonical_subject","aliases":"subject_aliases",
+                 "normalize":true,"rejected":"subject_rejected_pairs"}]}
+        });
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(StoreCellFactory)
+            .spawn_cell(
+                Path::new("/store"),
+                raw,
+                otx,
+                cell_dir.clone(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let (sender, receiver, wake) = match spawned {
+            SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                ..
+            } => (sender, receiver, wake),
+            SpawnedCellKind::Active { .. } => unreachable!("stateful factory yields Dormant"),
+        };
+        wake(receiver);
+        drop(sender);
+
+        let conn = rusqlite::Connection::open(cell_dir.join("cell.db")).unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
+        for table in ["predicate_rejected_pairs", "subject_rejected_pairs"] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
+                    r.get(0)
+                })
+                .unwrap_or_else(|e| panic!("{table} must exist after the wake: {e}"));
+            assert_eq!(n, 0, "{table} starts empty — the migration judges nothing");
+        }
+        // the judgement the store already carried is untouched by the migration
+        let alias: String = conn
+            .query_row(
+                "SELECT canonical FROM subject_aliases WHERE alias='user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias, "user:u1");
+        // and the new table is immediately usable through the op, on the real
+        // bindings the factory parsed
+        let canonical = crate::store::params::StoreParams::parse(&meclaw_core::serde_json::json!({
+            "schema": {"facts": {"id":"text","subject":"text","canonical_subject":"text",
+                                 "predicate":"text","canonical_predicate":"text",
+                                 "claim":"text"}},
+            "canonical": {"facts": [
+                {"source":"subject","target":"canonical_subject",
+                 "aliases":"subject_aliases","normalize":true,
+                 "rejected":"subject_rejected_pairs"}]}
+        }))
+        .unwrap()
+        .canonical;
+        let out = crate::store::ops::dispatch_with(
+            &conn,
+            &meclaw_core::serde_json::json!({"operation":"reject_pair","table":"facts",
+                "column":"subject","left":"elvse","right":"user:u1",
+                "recorded_at":"2026-08-12T03:00:00Z"}),
+            &canonical,
+        )
+        .unwrap();
+        assert_eq!(out.rows_affected, 1);
+        assert!(out.error_code.is_none(), "{:?}", out.error_text);
     }
 
     /// Phase-13-K-2: two consecutive Dormant-Spawn-+-Wake cycles against the same

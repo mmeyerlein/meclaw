@@ -61,6 +61,28 @@ pub fn json_to_sql_value(v: Option<&Value>) -> rusqlite::types::Value {
 /// `tool_result` with `error_code`, NOT `finish_reason:"error"`; see
 /// brainstorm E5).
 pub fn dispatch(conn: &rusqlite::Connection, args: &Value) -> Result<OpOutcome, String> {
+    dispatch_with(conn, args, &CanonicalMap::new())
+}
+
+/// The canonical bindings of a store, keyed by the table they belong to.
+///
+/// A table carries one binding per identity dimension (0.2.0 P4): the relation
+/// (`predicate`) and the entity (`subject`) are separate mappings over the same
+/// rows.
+pub type CanonicalMap = std::collections::BTreeMap<String, Vec<crate::store::CanonicalSpec>>;
+
+/// [`dispatch`] with the store's canonical bindings in hand (0.2.0 P2, ruling Q3).
+///
+/// The bindings are what makes the derived column store-owned: `insert` and
+/// `update` fill it from the alias table on every write, `canonicalize` re-derives
+/// it wholesale, and `set_alias` maintains the mapping. Without a binding for the
+/// table in question every op behaves exactly as it did before — [`dispatch`] is
+/// that case, and the two production call sites pass `params.canonical`.
+pub fn dispatch_with(
+    conn: &rusqlite::Connection,
+    args: &Value,
+    canonical: &CanonicalMap,
+) -> Result<OpOutcome, String> {
     let obj = args.as_object().ok_or("args must be JSON object")?;
     // B.1: the input field is canonically `operation` (cell-types.md Z.65),
     // matching the `operation` output header — not `op`.
@@ -69,21 +91,150 @@ pub fn dispatch(conn: &rusqlite::Connection, args: &Value) -> Result<OpOutcome, 
         .and_then(|v| v.as_str())
         .ok_or("missing operation")?;
     match op {
-        "insert" => op_insert(conn, obj),
+        "insert" => op_insert(conn, obj, canonical),
         "select" => op_select(conn, obj),
-        "update" => op_update(conn, obj),
+        "update" => op_update(conn, obj, canonical),
         "delete" => op_delete(conn, obj),
         "create_table" => op_create_table(conn, obj),
         "search" => op_search(conn, obj),
         "traverse" => op_traverse(conn, obj),
         "similar" => op_similar(conn, obj),
+        "set_alias" => op_set_alias(conn, obj, canonical),
+        "reject_pair" => op_reject_pair(conn, obj, canonical),
+        "canonicalize" => op_canonicalize(conn, obj, canonical),
+        "alias_candidates" => op_alias_candidates(conn, obj, canonical),
         other => Err(format!("unknown op {other:?}")),
     }
+}
+
+/// Resolve one written value through the alias table — the ONE hop the store does.
+///
+/// Deliberately not transitive: `a -> b -> c` resolves to `b`, never to `c`. The
+/// judgement that writes an alias (the nightly GC) knows the whole picture and is
+/// expected to write it already resolved; a store that chased chains would have to
+/// decide what a cycle means, and would answer differently depending on how a
+/// mapping happened to be split.
+fn resolve_alias(
+    conn: &rusqlite::Connection,
+    aliases: &str,
+    written: &str,
+) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        &format!("SELECT \"canonical\" FROM \"{aliases}\" WHERE \"alias\" = ?1"),
+        [written],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// The key one written value is looked up and stored under: the value itself, or
+/// its normal form when the binding normalises (0.2.0 P4, ruling Q5).
+///
+/// One function for the write path (`set_alias`) and the read path
+/// (`derive_target`), because an alias is only ever found again if both sides
+/// agree on the key.
+fn alias_key(spec: &crate::store::CanonicalSpec, value: &str) -> String {
+    if spec.normalize {
+        crate::store::query::normalize::normalize(value)
+    } else {
+        value.to_string()
+    }
+}
+
+/// The canonical value a written row implies, or `None` when the row carries no
+/// usable source value (then the target stays NULL — nothing is invented).
+///
+/// Two steps, in this order: the alias table wins (the GC's judgement), and the
+/// key itself is the fallback. Under a normalising binding both are normal forms,
+/// which is exactly the automatic merge of ruling Q5 — two spellings that
+/// normalise onto each other reach the same identity without any alias at all.
+fn derive_target(
+    conn: &rusqlite::Connection,
+    spec: &crate::store::CanonicalSpec,
+    written: Option<&Value>,
+) -> rusqlite::Result<Option<String>> {
+    let Some(s) = written.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let key = alias_key(spec, s);
+    if key.is_empty() {
+        return Ok(None);
+    }
+    let hit = resolve_alias(conn, &spec.aliases, &key)?;
+    Ok(Some(match hit {
+        Some(c) => alias_key(spec, &c),
+        None => key,
+    }))
+}
+
+/// The bindings of the table an op names, narrowed by the optional `column`
+/// selector (0.2.0 P4).
+///
+/// `column` names the binding's SOURCE column — the dimension the caller means
+/// (`"subject"`, `"predicate"`). Omitting it means "every binding of the table",
+/// which is what keeps P2's `{"operation": "canonicalize", "table": "facts"}`
+/// meaning the whole row's identity.
+fn bindings_of<'a>(
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &'a CanonicalMap,
+    op: &str,
+) -> Result<(String, Vec<&'a crate::store::CanonicalSpec>), String> {
+    let table = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("missing table")?;
+    let specs = canonical
+        .get(table)
+        .ok_or_else(|| format!("{op}: table {table:?} declares no params.canonical binding"))?;
+    let column = match args.get("column") {
+        None => None,
+        Some(v) => Some(
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{op}: column must be a non-empty string"))?,
+        ),
+    };
+    let picked: Vec<&crate::store::CanonicalSpec> = match column {
+        None => specs.iter().collect(),
+        Some(col) => specs.iter().filter(|s| s.source == col).collect(),
+    };
+    if picked.is_empty() {
+        return Err(format!(
+            "{op}: table {table:?} has no canonical binding for column {:?}",
+            column.unwrap_or_default()
+        ));
+    }
+    Ok((table.to_string(), picked))
+}
+
+/// The ONE binding an op needs that speaks about a single dimension
+/// (`set_alias`, `alias_candidates`).
+///
+/// A table with several bindings has to be told which one, because an alias is a
+/// statement about one dimension and guessing would write it into the wrong
+/// mapping. A table with exactly one binding needs no selector — that is P2's
+/// shape and it keeps working unchanged.
+fn one_binding_of<'a>(
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &'a CanonicalMap,
+    op: &str,
+) -> Result<&'a crate::store::CanonicalSpec, String> {
+    let (table, picked) = bindings_of(args, canonical, op)?;
+    if picked.len() > 1 {
+        return Err(format!(
+            "{op}: table {table:?} carries {} canonical bindings — name the dimension via \
+             \"column\"",
+            picked.len()
+        ));
+    }
+    Ok(picked[0])
 }
 
 fn op_insert(
     conn: &rusqlite::Connection,
     args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
 ) -> Result<OpOutcome, String> {
     let table = args
         .get("table")
@@ -93,16 +244,40 @@ fn op_insert(
         .get("row")
         .and_then(|v| v.as_object())
         .ok_or("missing row object")?;
-    let cols: Vec<&String> = row.keys().collect();
-    if cols.is_empty() {
+    if row.is_empty() {
         return Err("row must declare at least one column".into());
     }
     let cat = match Catalog::load(conn, table) {
         Ok(c) => c,
         Err(e) => return Ok(catalog_error_outcome("insert", e)),
     };
-    let wanted: Vec<String> = cols.iter().map(|c| (*c).clone()).collect();
-    let resolved = match resolve_columns(&cat, &wanted) {
+    // The derived column is STORE-OWNED: a caller-supplied value is dropped and
+    // replaced by the one the alias table implies, so the invariant "target is
+    // always derived from source" holds for every writer without exception.
+    let specs = canonical.get(cat.table()).map(Vec::as_slice).unwrap_or(&[]);
+    let mut cols: Vec<String> = row
+        .keys()
+        .filter(|c| !specs.iter().any(|s| *c == &s.target))
+        .cloned()
+        .collect();
+    let mut vals: Vec<rusqlite::types::Value> = cols
+        .iter()
+        .map(|c| json_to_sql_value(row.get(c.as_str())))
+        .collect();
+    for spec in specs {
+        match derive_target(conn, spec, row.get(&spec.source)) {
+            Ok(Some(v)) => {
+                cols.push(spec.target.clone());
+                vals.push(rusqlite::types::Value::Text(v));
+            }
+            Ok(None) => {}
+            Err(e) => return Ok(sql_error_outcome("insert", &e)),
+        }
+    }
+    if cols.is_empty() {
+        return Err("row must declare at least one column".into());
+    }
+    let resolved = match resolve_columns(&cat, &cols) {
         Ok(c) => c,
         Err(e) => return Ok(catalog_error_outcome("insert", e)),
     };
@@ -116,10 +291,6 @@ fn op_insert(
         "INSERT INTO \"{}\" ({col_list}) VALUES ({placeholders})",
         cat.table()
     );
-    let vals: Vec<rusqlite::types::Value> = cols
-        .iter()
-        .map(|c| json_to_sql_value(row.get(c.as_str())))
-        .collect();
     let bind: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     match conn.execute(&stmt, bind.as_slice()) {
         Ok(rows) => Ok(OpOutcome {
@@ -555,6 +726,7 @@ fn resolve_columns<'a>(cat: &'a Catalog, wanted: &[String]) -> Result<Vec<&'a st
 fn op_update(
     conn: &rusqlite::Connection,
     args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
 ) -> Result<OpOutcome, String> {
     let table = args
         .get("table")
@@ -571,7 +743,39 @@ fn op_update(
         Ok(c) => c,
         Err(e) => return Ok(catalog_error_outcome("update", e)),
     };
-    let set_cols: Vec<String> = set.keys().cloned().collect();
+    // Same ownership rule as the insert path: a write that moves the source moves
+    // the derived column WITH it, and a direct write to the derived column is not
+    // a thing a caller can do. Without this a predicate rewrite would leave a
+    // stale identity behind, which is the one failure mode that would make a read
+    // answer differently than the data says.
+    let specs = canonical.get(cat.table()).map(Vec::as_slice).unwrap_or(&[]);
+    let mut set_cols: Vec<String> = set
+        .keys()
+        .filter(|c| !specs.iter().any(|s| *c == &s.target))
+        .cloned()
+        .collect();
+    let mut vals: Vec<rusqlite::types::Value> = set_cols
+        .iter()
+        .map(|c| json_to_sql_value(set.get(c.as_str())))
+        .collect();
+    for spec in specs {
+        let Some(written) = set.get(&spec.source) else {
+            continue;
+        };
+        match derive_target(conn, spec, Some(written)) {
+            Ok(derived) => {
+                set_cols.push(spec.target.clone());
+                vals.push(match derived {
+                    Some(v) => rusqlite::types::Value::Text(v),
+                    None => rusqlite::types::Value::Null,
+                });
+            }
+            Err(e) => return Ok(sql_error_outcome("update", &e)),
+        }
+    }
+    if set_cols.is_empty() {
+        return Err("set must declare at least one column".into());
+    }
     let resolved = match resolve_columns(&cat, &set_cols) {
         Ok(c) => c,
         Err(e) => return Ok(catalog_error_outcome("update", e)),
@@ -581,8 +785,6 @@ fn op_update(
         .map(|c| format!("\"{c}\" = ?"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut vals: Vec<rusqlite::types::Value> =
-        set.values().map(|v| json_to_sql_value(Some(v))).collect();
     let (where_clause, where_vals) = match build_where(args.get("where"), &cat)? {
         Ok(w) => w,
         Err(e) => return Ok(catalog_error_outcome("update", e)),
@@ -600,6 +802,371 @@ fn op_update(
         }),
         Err(e) => Ok(sql_error_outcome("update", &e)),
     }
+}
+
+/// 0.2.0 P2 `set_alias`: state that one written spelling MEANS another (ruling Q3).
+///
+/// An upsert, not an insert: the nightly GC re-judges the same pair on every run
+/// and the invariance gate may make it run twice over the same store, so writing
+/// the same alias again has to be a no-op rather than a second row. Nothing is
+/// derived here — ruling Q3 orders the dream run as `set_alias` … then
+/// `canonicalize`, so that the aliases of one run land as ONE consistent set
+/// before any column moves.
+///
+/// The reverse is the ordinary `delete` op on the alias table plus a
+/// `canonicalize`: that is the revert path, and it destroys no fact — the written
+/// predicate has been sitting untouched next to the derived one the whole time.
+fn op_set_alias(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
+) -> Result<OpOutcome, String> {
+    let spec = one_binding_of(args, canonical, "set_alias")?;
+    let alias = args
+        .get("alias")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("set_alias: missing non-empty alias")?;
+    let target = args
+        .get("canonical")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("set_alias: missing non-empty canonical")?;
+    // Under a normalising binding the alias table is keyed on the NORMAL form
+    // (0.2.0 P4): one judgement then covers every spelling of the alias that
+    // differs only in case, whitespace or Unicode composition, instead of the GC
+    // having to write one row per variant it happens to have seen.
+    let alias = &alias_key(spec, alias);
+    let target = &alias_key(spec, target);
+    let recorded_at = args.get("recorded_at").and_then(|v| v.as_str());
+    let aliases = &spec.aliases;
+    let stmt = format!(
+        "INSERT INTO \"{aliases}\" (\"alias\", \"canonical\", \"recorded_at\") VALUES (?1, ?2, ?3) \
+         ON CONFLICT(\"alias\") DO UPDATE SET \"canonical\" = excluded.\"canonical\", \
+         \"recorded_at\" = excluded.\"recorded_at\""
+    );
+    match conn.execute(&stmt, rusqlite::params![alias, target, recorded_at]) {
+        Ok(rows) => Ok(OpOutcome {
+            operation: "set_alias",
+            rows_affected: rows as i64,
+            payload: Value::Null,
+            error_code: None,
+            error_text: None,
+        }),
+        Err(e) => Ok(sql_error_outcome("set_alias", &e)),
+    }
+}
+
+/// The two values of an unordered pair, keyed the way the binding keys identities
+/// and put into a fixed order (0.2.0 P5).
+///
+/// Ordering here is what makes the pair ONE row: the GC hands a pair over the way
+/// [`op_alias_candidates`] served it, and a refusal must not depend on which side
+/// it happened to name first.
+fn pair_key(
+    spec: &crate::store::CanonicalSpec,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+) -> Result<(String, String), String> {
+    let side = |name: &str| -> Result<String, String> {
+        let raw = args
+            .get(name)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("reject_pair: missing non-empty {name}"))?;
+        let key = alias_key(spec, raw);
+        if key.is_empty() {
+            return Err(format!("reject_pair: {name} is empty after normalisation"));
+        }
+        Ok(key)
+    };
+    let (a, b) = (side("left")?, side("right")?);
+    if a == b {
+        return Err(
+            "reject_pair: left and right are the same identity — there is nothing to refuse".into(),
+        );
+    }
+    Ok(if a < b { (a, b) } else { (b, a) })
+}
+
+/// 0.2.0 P5 `reject_pair`: remember that two candidates are NOT the same identity.
+///
+/// The counterpart of `set_alias` and the one P4 left open: only ACCEPTED pairs
+/// disappeared from the candidate feed, so every night the GC paid a top-tier
+/// model to turn the same handful of pairs down again. An alias row cannot carry
+/// the refusal (`canonical` is `NOT NULL`, and a NULL there would read as
+/// "resolves to nothing"), so the negative judgement gets a table of its own.
+///
+/// An upsert on the ordered pair, like `set_alias` is on the alias: re-judging
+/// writes no second row, which is what lets a dream run be replayed. The revert
+/// is the ordinary `delete` on that table — after which the pair is a question
+/// again, and nothing else in the store has changed, because a refusal never
+/// touched a fact in the first place.
+fn op_reject_pair(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
+) -> Result<OpOutcome, String> {
+    let spec = one_binding_of(args, canonical, "reject_pair")?;
+    let rejected = spec.rejected.as_deref().ok_or_else(|| {
+        "reject_pair: this binding declares no params.canonical.rejected table".to_string()
+    })?;
+    let (left, right) = pair_key(spec, args)?;
+    let recorded_at = args.get("recorded_at").and_then(|v| v.as_str());
+    let stmt = format!(
+        "INSERT INTO \"{rejected}\" (\"left_value\", \"right_value\", \"recorded_at\") \
+         VALUES (?1, ?2, ?3) ON CONFLICT(\"left_value\", \"right_value\") DO UPDATE SET \
+         \"recorded_at\" = excluded.\"recorded_at\""
+    );
+    match conn.execute(&stmt, rusqlite::params![left, right, recorded_at]) {
+        Ok(rows) => Ok(OpOutcome {
+            operation: "reject_pair",
+            rows_affected: rows as i64,
+            payload: Value::Null,
+            error_code: None,
+            error_text: None,
+        }),
+        Err(e) => Ok(sql_error_outcome("reject_pair", &e)),
+    }
+}
+
+/// 0.2.0 P2 `canonicalize`: re-derive the whole target column (ruling Q3).
+///
+/// This is both the follow-up step of a dream run (aliases written, column pulled
+/// after) and the REVERT path (alias row deleted, column falls back to the
+/// original). The originals are read, never written, so the operation is
+/// idempotent and reversible by construction.
+///
+/// `rows_affected` counts only the rows whose value actually CHANGED — a second
+/// run over unchanged data reports 0, which is what makes it usable as a receipt
+/// for the invariance gate.
+fn op_canonicalize(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
+) -> Result<OpOutcome, String> {
+    let (table, specs) = bindings_of(args, canonical, "canonicalize")?;
+    // Catalog first: on a `cell.db` whose migration did not run, the caller gets
+    // `unknown_table` / `unknown_column` instead of a raw SQL error.
+    let cat = match Catalog::load(conn, &table) {
+        Ok(c) => c,
+        Err(e) => return Ok(catalog_error_outcome("canonicalize", e)),
+    };
+    let mut moved = 0i64;
+    for spec in specs {
+        if let Err(e) = resolve_columns(&cat, &[spec.source.clone(), spec.target.clone()]) {
+            return Ok(catalog_error_outcome("canonicalize", e));
+        }
+        let expr = crate::store::ddl::canonical_derive_expr(cat.table(), spec);
+        let target = &spec.target;
+        let stmt = format!(
+            "UPDATE \"{}\" SET \"{target}\" = {expr} WHERE \"{target}\" IS NOT {expr}",
+            cat.table()
+        );
+        match conn.execute(&stmt, []) {
+            // One statement per dimension, summed: `rows_affected` is the receipt
+            // "the run moved N identities", and a row whose subject AND predicate
+            // both moved is two of them.
+            Ok(rows) => moved += rows as i64,
+            Err(e) => return Ok(sql_error_outcome("canonicalize", &e)),
+        }
+    }
+    Ok(OpOutcome {
+        operation: "canonicalize",
+        rows_affected: moved,
+        payload: Value::Null,
+        error_code: None,
+        error_text: None,
+    })
+}
+
+/// Default similarity below which a pair is not worth the GC's attention.
+const CANDIDATE_MIN_SCORE: f64 = 0.5;
+/// Default number of pairs returned.
+const CANDIDATE_LIMIT: i64 = 20;
+/// Default and ceiling for the number of DISTINCT identities compared.
+///
+/// The comparison is quadratic in this number, and it is the only knob that can
+/// make the op expensive — hence a bound the caller may lower but not raise. Even
+/// at the ceiling this is a few million short string comparisons in one op, which
+/// is a nightly job, not a hot path.
+const CANDIDATE_MAX_VALUES: i64 = 500;
+const CANDIDATE_MAX_VALUES_CAP: i64 = 5000;
+
+/// One caller-supplied numeric argument of `alias_candidates`, bounded.
+fn candidate_number(
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    key: &str,
+    default: i64,
+    max: i64,
+) -> Result<i64, String> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(v) => {
+            let n = v
+                .as_i64()
+                .ok_or_else(|| format!("alias_candidates: {key} must be an integer"))?;
+            if n < 1 || n > max {
+                return Err(format!("alias_candidates: {key} must be 1..={max}"));
+            }
+            Ok(n)
+        }
+    }
+}
+
+/// 0.2.0 P4 `alias_candidates`: pairs of identities that MIGHT be the same entity
+/// (ruling Q5).
+///
+/// The feed of the nightly GC, and it is deliberately only that: the op reads,
+/// scores and sorts — it merges nothing, writes nothing and decides nothing.
+/// Ruling Q5 puts the judgement at the GC with a top-tier model and both nodes in
+/// context, because a similarity threshold that merges on its own is wrong
+/// exactly where it matters (sibling names, one-letter place names). What the GC
+/// then persists is an ordinary `set_alias` — additive, revertible, behind the
+/// invariance gate.
+///
+/// Pairs already SETTLED are excluded, in both directions (0.2.0 P5): a pair the
+/// GC accepted maps onto one identity through the alias table, and a pair it
+/// turned down sits in the binding's rejected-pair table. Re-proposing either
+/// would bury the open questions under the settled ones — and, for the refusals,
+/// pay a top-tier model nightly for an answer that is already on disk.
+///
+/// Candidates are drawn from the DERIVED column, so what is compared is the axes
+/// that actually exist — two spellings that the normalisation already merged are
+/// one value here and never show up as a pair.
+fn op_alias_candidates(
+    conn: &rusqlite::Connection,
+    args: &meclaw_core::serde_json::Map<String, Value>,
+    canonical: &CanonicalMap,
+) -> Result<OpOutcome, String> {
+    let spec = one_binding_of(args, canonical, "alias_candidates")?;
+    let limit = candidate_number(args, "limit", CANDIDATE_LIMIT, i64::MAX)?;
+    let max_values = candidate_number(
+        args,
+        "max_values",
+        CANDIDATE_MAX_VALUES,
+        CANDIDATE_MAX_VALUES_CAP,
+    )?;
+    let min_score = match args.get("min_score") {
+        None => CANDIDATE_MIN_SCORE,
+        Some(v) => {
+            let f = v
+                .as_f64()
+                .ok_or("alias_candidates: min_score must be a number")?;
+            if !(0.0..=1.0).contains(&f) {
+                return Err("alias_candidates: min_score must be 0.0..=1.0".into());
+            }
+            f
+        }
+    };
+    let named = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("missing table")?;
+    let table = match Catalog::load(conn, named) {
+        Ok(c) => c,
+        Err(e) => return Ok(catalog_error_outcome("alias_candidates", e)),
+    };
+    if let Err(e) = resolve_columns(&table, std::slice::from_ref(&spec.target)) {
+        return Ok(catalog_error_outcome("alias_candidates", e));
+    }
+    let target = &spec.target;
+    let values: Vec<String> = match conn
+        .prepare(&format!(
+            "SELECT DISTINCT \"{target}\" FROM \"{}\" WHERE \"{target}\" IS NOT NULL \
+             AND \"{target}\" <> '' ORDER BY \"{target}\" LIMIT ?1",
+            table.table()
+        ))
+        .and_then(|mut st| {
+            st.query_map([max_values], |r| r.get::<_, String>(0))?
+                .collect()
+        }) {
+        Ok(v) => v,
+        Err(e) => return Ok(sql_error_outcome("alias_candidates", &e)),
+    };
+    let aliases: std::collections::BTreeMap<String, String> = match conn
+        .prepare(&format!(
+            "SELECT \"alias\", \"canonical\" FROM \"{}\"",
+            spec.aliases
+        ))
+        .and_then(|mut st| {
+            st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect()
+        }) {
+        Ok(m) => m,
+        Err(e) => return Ok(sql_error_outcome("alias_candidates", &e)),
+    };
+    // 0.2.0 P5: the pairs a previous run judged to be DIFFERENT. Without this the
+    // feed re-proposes every refusal every night and the GC pays a top-tier model
+    // to answer the same question again.
+    let refused: std::collections::BTreeSet<(String, String)> = match &spec.rejected {
+        None => Default::default(),
+        Some(rejected) => match conn
+            .prepare(&format!(
+                "SELECT \"left_value\", \"right_value\" FROM \"{rejected}\""
+            ))
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect()
+            }) {
+            Ok(s) => s,
+            Err(e) => return Ok(sql_error_outcome("alias_candidates", &e)),
+        },
+    };
+    // One hop, exactly like the derivation: whoever writes an alias writes it
+    // already resolved.
+    let resolved = |v: &str| -> String {
+        let key = alias_key(spec, v);
+        aliases.get(&key).cloned().unwrap_or(key)
+    };
+    let mut pairs: Vec<(String, String, f64)> = Vec::new();
+    for (i, left) in values.iter().enumerate() {
+        for right in &values[i + 1..] {
+            if resolved(left) == resolved(right) {
+                continue;
+            }
+            let (a, b) = (alias_key(spec, left), alias_key(spec, right));
+            let ordered = if a < b { (a, b) } else { (b, a) };
+            if refused.contains(&ordered) {
+                continue;
+            }
+            let score = crate::store::query::trigram::similarity(
+                &crate::store::query::normalize::normalize(left),
+                &crate::store::query::normalize::normalize(right),
+            );
+            if score + f64::EPSILON < min_score {
+                continue;
+            }
+            // Four decimals: enough to order pairs, few enough that the payload
+            // is byte-stable across runs and platforms.
+            pairs.push((
+                left.clone(),
+                right.clone(),
+                (score * 10_000.0).round() / 10_000.0,
+            ));
+        }
+    }
+    // Best first, then alphabetical — a total order, so two runs over the same
+    // store hand the GC the same list.
+    pairs.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    pairs.truncate(limit as usize);
+    let payload: Vec<Value> = pairs
+        .into_iter()
+        .map(|(left, right, score)| {
+            meclaw_core::serde_json::json!({"left": left, "right": right, "score": score})
+        })
+        .collect();
+    Ok(OpOutcome {
+        operation: "alias_candidates",
+        rows_affected: payload.len() as i64,
+        payload: Value::Array(payload),
+        error_code: None,
+        error_text: None,
+    })
 }
 
 fn op_create_table(
@@ -730,6 +1297,817 @@ fn classify_by_message(msg: &str) -> (&'static str, String) {
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    // ---- 0.2.0 P2: canonical column, alias table, re-derive (ruling Q3) ----
+
+    fn canon_map() -> CanonicalMap {
+        CanonicalMap::from([("facts".to_string(), vec![predicate_binding()])])
+    }
+
+    fn predicate_binding() -> crate::store::CanonicalSpec {
+        crate::store::CanonicalSpec {
+            source: "predicate".to_string(),
+            target: "canonical_predicate".to_string(),
+            aliases: "predicate_aliases".to_string(),
+            normalize: false,
+            rejected: Some("predicate_rejected_pairs".to_string()),
+        }
+    }
+
+    /// The entity dimension of 0.2.0 P4: same binding shape, normalising.
+    fn subject_binding() -> crate::store::CanonicalSpec {
+        crate::store::CanonicalSpec {
+            source: "subject".to_string(),
+            target: "canonical_subject".to_string(),
+            aliases: "subject_aliases".to_string(),
+            normalize: true,
+            rejected: Some("subject_rejected_pairs".to_string()),
+        }
+    }
+
+    /// Both dimensions on `facts`, the shape the memory hive ships after P4.
+    fn two_dimension_map() -> CanonicalMap {
+        CanonicalMap::from([(
+            "facts".to_string(),
+            vec![predicate_binding(), subject_binding()],
+        )])
+    }
+
+    /// A `cell.db` carrying BOTH derived columns and both alias tables.
+    fn two_dimension_fixture() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::query::normalize::register(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT, subject TEXT, canonical_subject TEXT, predicate TEXT,
+                                 claim TEXT, canonical_predicate TEXT);
+             CREATE TABLE predicate_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL,
+                                             recorded_at TEXT);
+             CREATE TABLE subject_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL,
+                                           recorded_at TEXT);
+             CREATE TABLE predicate_rejected_pairs (left_value TEXT NOT NULL,
+                 right_value TEXT NOT NULL, recorded_at TEXT,
+                 PRIMARY KEY (left_value, right_value));
+             CREATE TABLE subject_rejected_pairs (left_value TEXT NOT NULL,
+                 right_value TEXT NOT NULL, recorded_at TEXT,
+                 PRIMARY KEY (left_value, right_value));",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// A `cell.db` after the P2 migration: the derived column and the alias table
+    /// exist, both empty.
+    fn canon_fixture() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT, subject TEXT, predicate TEXT, claim TEXT,
+                                 canonical_predicate TEXT);
+             CREATE TABLE predicate_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL,
+                                             recorded_at TEXT);
+             CREATE TABLE predicate_rejected_pairs (left_value TEXT NOT NULL,
+                 right_value TEXT NOT NULL, recorded_at TEXT,
+                 PRIMARY KEY (left_value, right_value));",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn row_of(conn: &rusqlite::Connection, id: &str) -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT predicate, canonical_predicate FROM facts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn mint(conn: &rusqlite::Connection, id: &str, predicate: &str) -> OpOutcome {
+        dispatch_with(
+            conn,
+            &json!({"operation":"insert","table":"facts",
+                    "row":{"id":id,"subject":"user:m","predicate":predicate,"claim":"Helix"}}),
+            &canon_map(),
+        )
+        .unwrap()
+    }
+
+    // ---- 0.2.0 P4: the entity dimension, normalisation, candidates (ruling Q5) ----
+
+    fn mint_subject(conn: &rusqlite::Connection, id: &str, subject: &str) -> OpOutcome {
+        dispatch_with(
+            conn,
+            &json!({"operation":"insert","table":"facts",
+                    "row":{"id":id,"subject":subject,"predicate":"lives_in","claim":"x"}}),
+            &two_dimension_map(),
+        )
+        .unwrap()
+    }
+
+    fn subject_row(conn: &rusqlite::Connection, id: &str) -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT subject, canonical_subject FROM facts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// Ruling Q5's automatic half, and the ONLY merge the store performs alone:
+    /// two spellings equal after normalisation are one entity at MINT time, with
+    /// no alias, no judgement and no model involved.
+    #[test]
+    fn normalisation_equality_merges_two_spellings_at_mint() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "Sonnenhof");
+        mint_subject(&conn, "f2", "  sonnenhof ");
+        mint_subject(&conn, "f3", "SONNEN\tHOF");
+        assert_eq!(
+            subject_row(&conn, "f1"),
+            ("Sonnenhof".into(), Some("sonnenhof".into()))
+        );
+        assert_eq!(
+            subject_row(&conn, "f2"),
+            ("  sonnenhof ".into(), Some("sonnenhof".into())),
+            "case and whitespace never make two entities"
+        );
+        assert_eq!(
+            subject_row(&conn, "f3").1.as_deref(),
+            Some("sonnen hof"),
+            "an inner whitespace run collapses but does not vanish — that would be \
+             a different name"
+        );
+        // Unicode composition: the same name in NFD and NFC is one identity
+        mint_subject(&conn, "f4", "Elve\u{0301}se");
+        mint_subject(&conn, "f5", "elv\u{00E9}se");
+        assert_eq!(subject_row(&conn, "f4").1, subject_row(&conn, "f5").1);
+    }
+
+    /// The protection direction of ruling Q5: similarity is NOT identity. Two
+    /// short names that a threshold would happily merge stay apart, because the
+    /// store never merges on similarity at all.
+    #[test]
+    fn a_fuzzy_neighbour_is_never_merged_automatically() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "Leroy");
+        mint_subject(&conn, "f2", "Leon");
+        mint_subject(&conn, "f3", "elvese");
+        mint_subject(&conn, "f4", "elvse");
+        let axes: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT canonical_subject) FROM facts",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            axes, 4,
+            "four names, four identities — nothing merged itself"
+        );
+    }
+
+    /// The GC's judgement on the entity dimension, end to end: `set_alias` +
+    /// `canonicalize` puts two spellings of one subject on ONE axis, and the
+    /// relation dimension of the same rows is untouched by it.
+    #[test]
+    fn an_alias_on_the_subject_unifies_the_axis() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "user");
+        mint_subject(&conn, "f2", "user:alpha");
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts","column":"subject",
+                    "alias":"user:alpha","canonical":"user",
+                    "recorded_at":"2026-08-12T03:00:00Z"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(out.rows_affected, 1);
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(out.rows_affected, 1, "exactly one identity moved");
+        assert_eq!(
+            subject_row(&conn, "f2"),
+            ("user:alpha".into(), Some("user".into())),
+            "the written subject is untouched — that is what makes this revertible"
+        );
+        let axes: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT canonical_subject) FROM facts",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(axes, 1);
+        // and the relation dimension is not collateral damage
+        assert_eq!(
+            row_of(&conn, "f2"),
+            ("lives_in".into(), Some("lives_in".into()))
+        );
+
+        // revert: drop the alias row, re-derive — the axis splits again and no
+        // fact was destroyed on the way
+        dispatch_with(
+            &conn,
+            &json!({"operation":"delete","table":"subject_aliases",
+                    "where":{"alias":"user:alpha"}}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts","column":"subject"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(subject_row(&conn, "f2").1.as_deref(), Some("user:alpha"));
+    }
+
+    /// The alias table of a normalising binding is keyed on the NORMAL form, so
+    /// one judgement covers every spelling of the alias — otherwise the GC would
+    /// have to enumerate the variants it happened to see.
+    #[test]
+    fn an_alias_covers_every_spelling_that_normalises_onto_it() {
+        let conn = two_dimension_fixture();
+        dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts","column":"subject",
+                    "alias":"User:Alpha","canonical":"User"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        mint_subject(&conn, "f1", "  USER:alpha  ");
+        assert_eq!(
+            subject_row(&conn, "f1").1.as_deref(),
+            Some("user"),
+            "the alias was written in one spelling and hits in another"
+        );
+    }
+
+    /// A table with two dimensions cannot be told an alias without being told
+    /// WHICH dimension — guessing would write a subject judgement into the
+    /// predicate mapping.
+    #[test]
+    fn a_two_dimension_table_demands_the_column_for_set_alias() {
+        let conn = two_dimension_fixture();
+        let err = dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts",
+                    "alias":"user:alpha","canonical":"user"}),
+            &two_dimension_map(),
+        )
+        .unwrap_err();
+        assert!(err.contains("column"), "got: {err}");
+        // an unknown dimension is a refusal, never a silent no-op
+        let err = dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts","column":"claim"}),
+            &two_dimension_map(),
+        )
+        .unwrap_err();
+        assert!(err.contains("no canonical binding"), "got: {err}");
+    }
+
+    /// `canonicalize` without a `column` re-derives the whole row identity, which
+    /// is what keeps P2's dream-run order (`set_alias` … then `canonicalize`)
+    /// correct for a store that has since grown a second dimension.
+    #[test]
+    fn canonicalize_covers_every_dimension_of_the_table() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "user:alpha");
+        for (col, alias, canonical) in [
+            ("subject", "user:alpha", "user"),
+            ("predicate", "lives_in", "resides_in"),
+        ] {
+            dispatch_with(
+                &conn,
+                &json!({"operation":"set_alias","table":"facts","column":col,
+                        "alias":alias,"canonical":canonical}),
+                &two_dimension_map(),
+            )
+            .unwrap();
+        }
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.rows_affected, 2,
+            "one row, two identities moved — the receipt counts dimensions"
+        );
+        assert_eq!(subject_row(&conn, "f1").1.as_deref(), Some("user"));
+        assert_eq!(row_of(&conn, "f1").1.as_deref(), Some("resides_in"));
+        // idempotent: a second run over unchanged data reports 0
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(out.rows_affected, 0);
+    }
+
+    fn candidates(conn: &rusqlite::Connection, args: Value) -> Vec<(String, String)> {
+        let out = dispatch_with(conn, &args, &two_dimension_map()).unwrap();
+        assert_eq!(out.operation, "alias_candidates");
+        out.payload
+            .as_array()
+            .expect("candidate array")
+            .iter()
+            .map(|p| {
+                (
+                    p["left"].as_str().unwrap().to_string(),
+                    p["right"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// The candidate feed of ruling Q5: it FINDS the typo pair, and finding is
+    /// all it does — the store is unchanged after the call.
+    #[test]
+    fn the_candidate_feed_reports_a_typo_pair_and_merges_nothing() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "elvese");
+        mint_subject(&conn, "f2", "elvse");
+        mint_subject(&conn, "f3", "helix");
+        let got = candidates(
+            &conn,
+            json!({"operation":"alias_candidates","table":"facts","column":"subject"}),
+        );
+        assert_eq!(got, vec![("elvese".to_string(), "elvse".to_string())]);
+        let axes: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT canonical_subject) FROM facts",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(axes, 3, "the feed proposes, it never merges");
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM subject_aliases", [], |r| r.get(0))
+                .unwrap(),
+            0,
+            "and it writes nothing at all"
+        );
+    }
+
+    /// A pair the GC has already judged must not come back every night: once the
+    /// alias exists both sides resolve onto one identity and the pair is gone.
+    #[test]
+    fn an_already_aliased_pair_is_not_proposed_again() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "elvese");
+        mint_subject(&conn, "f2", "elvse");
+        let args = json!({"operation":"alias_candidates","table":"facts","column":"subject"});
+        assert_eq!(candidates(&conn, args.clone()).len(), 1);
+        dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts","column":"subject",
+                    "alias":"elvse","canonical":"elvese"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert!(
+            candidates(&conn, args.clone()).is_empty(),
+            "a settled pair stays settled — even BEFORE the re-derive has run"
+        );
+        dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert!(candidates(&conn, args).is_empty());
+    }
+
+    /// 0.2.0 P5: a NEGATIVE judgement has to survive the night too, or the GC
+    /// pays a top-tier model to turn the same pair down again every run. The
+    /// refusal is a row of its own — the alias table cannot carry it, its
+    /// `canonical` column is NOT NULL and would also mean "resolves to nothing".
+    #[test]
+    fn a_rejected_pair_is_not_proposed_again() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "elvese");
+        mint_subject(&conn, "f2", "elvse");
+        let args = json!({"operation":"alias_candidates","table":"facts","column":"subject"});
+        assert_eq!(candidates(&conn, args.clone()).len(), 1);
+
+        // The pair is UNORDERED: the GC hands it over the way the feed served it,
+        // and the answer must not depend on which side it names first.
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"reject_pair","table":"facts","column":"subject",
+                    "left":"elvse","right":"elvese","recorded_at":"2026-08-12T03:00:00Z"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(out.operation, "reject_pair");
+        assert_eq!(out.rows_affected, 1);
+        assert!(
+            candidates(&conn, args.clone()).is_empty(),
+            "a pair the GC turned down is not a question any more"
+        );
+
+        // Re-judging is an upsert, not a second row — the same property that lets
+        // the invariance gate re-run a whole dream run.
+        dispatch_with(
+            &conn,
+            &json!({"operation":"reject_pair","table":"facts","column":"subject",
+                    "left":"elvese","right":"elvse","recorded_at":"2026-08-13T03:00:00Z"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        let rows: Vec<(String, String, String)> = conn
+            .prepare("SELECT left_value, right_value, recorded_at FROM subject_rejected_pairs")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "elvese".to_string(),
+                "elvse".to_string(),
+                "2026-08-13T03:00:00Z".to_string()
+            )],
+            "stored in a fixed order, so the pair has ONE key"
+        );
+
+        // The revert path is the ordinary delete, exactly like the alias table's.
+        dispatch_with(
+            &conn,
+            &json!({"operation":"delete","table":"subject_rejected_pairs",
+                    "where":{"left_value":"elvese"}}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert_eq!(
+            candidates(&conn, args).len(),
+            1,
+            "a deleted refusal makes the pair a question again"
+        );
+    }
+
+    /// A refusal is a statement about the IDENTITIES the feed serves, so it is
+    /// keyed the way those identities are: under a normalising binding, on the
+    /// normal form. Otherwise the GC turns down `Elvese`/`elvse` and the feed
+    /// keeps offering `elvese`/`elvse`.
+    #[test]
+    fn a_rejection_is_keyed_like_the_identity_it_speaks_about() {
+        let conn = two_dimension_fixture();
+        mint_subject(&conn, "f1", "elvese");
+        mint_subject(&conn, "f2", "elvse");
+        dispatch_with(
+            &conn,
+            &json!({"operation":"reject_pair","table":"facts","column":"subject",
+                    "left":"  ELVESE ","right":"Elvse"}),
+            &two_dimension_map(),
+        )
+        .unwrap();
+        assert!(
+            candidates(
+                &conn,
+                json!({"operation":"alias_candidates","table":"facts","column":"subject"})
+            )
+            .is_empty()
+        );
+    }
+
+    /// The op is refused where it cannot mean anything, instead of writing into
+    /// a table nobody declared.
+    #[test]
+    fn reject_pair_refuses_an_undeclared_log_and_a_missing_dimension() {
+        let conn = two_dimension_fixture();
+        let mut no_log = two_dimension_map();
+        for spec in no_log.get_mut("facts").unwrap() {
+            spec.rejected = None;
+        }
+        assert!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"reject_pair","table":"facts","column":"subject",
+                        "left":"a","right":"b"}),
+                &no_log,
+            )
+            .is_err(),
+            "without a declared table there is nowhere to remember it"
+        );
+        for bad in [
+            // the dimension is mandatory on a two-binding table
+            json!({"operation":"reject_pair","table":"facts","left":"a","right":"b"}),
+            json!({"operation":"reject_pair","table":"facts","column":"subject","left":"a"}),
+            json!({"operation":"reject_pair","table":"facts","column":"subject",
+                   "left":"a","right":""}),
+            // a value is not a candidate of itself
+            json!({"operation":"reject_pair","table":"facts","column":"subject",
+                   "left":"a","right":"a"}),
+        ] {
+            assert!(
+                dispatch_with(&conn, &bad, &two_dimension_map()).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
+
+    /// Deterministic output: best first, then alphabetical. The GC reads the head
+    /// of this list, so two runs over one store must hand it the same head.
+    #[test]
+    fn the_candidate_feed_is_ordered_and_bounded() {
+        let conn = two_dimension_fixture();
+        for (i, name) in ["helix", "helox", "sonnenhof", "sonnehof", "zzz"]
+            .iter()
+            .enumerate()
+        {
+            mint_subject(&conn, &format!("f{i}"), name);
+        }
+        let all = candidates(
+            &conn,
+            json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                   "min_score":0.4}),
+        );
+        assert_eq!(
+            all,
+            vec![
+                ("sonnehof".to_string(), "sonnenhof".to_string()),
+                ("helix".to_string(), "helox".to_string()),
+            ],
+            "the longer pair shares more trigrams and therefore ranks first"
+        );
+        let capped = candidates(
+            &conn,
+            json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                   "min_score":0.4,"limit":1}),
+        );
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0], all[0], "a limit cuts the tail, not the order");
+        // a threshold nobody can reach yields an empty feed, not an error
+        assert!(
+            candidates(
+                &conn,
+                json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                       "min_score":0.99}),
+            )
+            .is_empty()
+        );
+    }
+
+    /// Every bound is validated, because this op is the one that can be made
+    /// expensive from the outside.
+    #[test]
+    fn the_candidate_feed_refuses_impossible_bounds() {
+        let conn = two_dimension_fixture();
+        for bad in [
+            json!({"operation":"alias_candidates","table":"facts","column":"subject","limit":0}),
+            json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                   "max_values":100000}),
+            json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                   "min_score":2.0}),
+            json!({"operation":"alias_candidates","table":"facts","column":"subject",
+                   "min_score":"high"}),
+            // the dimension is mandatory on a two-binding table
+            json!({"operation":"alias_candidates","table":"facts"}),
+        ] {
+            assert!(
+                dispatch_with(&conn, &bad, &two_dimension_map()).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mint_without_a_known_alias_derives_the_written_predicate() {
+        // "otherwise identical to the predicate": with nothing to say
+        // otherwise, the canonical value IS the original. No NULL, because all
+        // three read legs consume the derived column and a NULL there is an
+        // invisible fact.
+        let conn = canon_fixture();
+        assert_eq!(mint(&conn, "f1", "favorite_editor").rows_affected, 1);
+        assert_eq!(
+            row_of(&conn, "f1"),
+            ("favorite_editor".into(), Some("favorite_editor".into()))
+        );
+    }
+
+    #[test]
+    fn a_mint_resolves_a_known_alias_and_leaves_the_original_alone() {
+        let conn = canon_fixture();
+        dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts",
+                    "alias":"Lieblingseditor","canonical":"favorite_editor"}),
+            &canon_map(),
+        )
+        .unwrap();
+        mint(&conn, "f1", "Lieblingseditor");
+        assert_eq!(
+            row_of(&conn, "f1"),
+            ("Lieblingseditor".into(), Some("favorite_editor".into())),
+            "the written spelling stays byte-identical next to the derived one"
+        );
+    }
+
+    #[test]
+    fn the_derived_column_is_store_owned_on_insert_and_update() {
+        // A caller cannot write the identity of a row: whatever it puts in the
+        // target column is replaced by what the alias table implies. Without this
+        // rule one careless writer could make a fact answer under an identity its
+        // own predicate does not carry.
+        let conn = canon_fixture();
+        dispatch_with(
+            &conn,
+            &json!({"operation":"insert","table":"facts",
+                    "row":{"id":"f1","predicate":"favorite_editor",
+                           "canonical_predicate":"something_else"}}),
+            &canon_map(),
+        )
+        .unwrap();
+        assert_eq!(row_of(&conn, "f1").1.as_deref(), Some("favorite_editor"));
+
+        dispatch_with(
+            &conn,
+            &json!({"operation":"update","table":"facts",
+                    "set":{"canonical_predicate":"hijacked"},"where":{"id":"f1"}}),
+            &canon_map(),
+        )
+        .unwrap_err();
+
+        // an update that MOVES the source moves the derived column with it
+        dispatch_with(
+            &conn,
+            &json!({"operation":"update","table":"facts",
+                    "set":{"predicate":"preferred_editor"},"where":{"id":"f1"}}),
+            &canon_map(),
+        )
+        .unwrap();
+        assert_eq!(
+            row_of(&conn, "f1"),
+            ("preferred_editor".into(), Some("preferred_editor".into()))
+        );
+    }
+
+    #[test]
+    fn set_alias_is_an_upsert_so_a_second_dream_run_is_a_no_op() {
+        let conn = canon_fixture();
+        let args = json!({"operation":"set_alias","table":"facts",
+                          "alias":"Lieblingseditor","canonical":"favorite_editor",
+                          "recorded_at":"2026-08-12T03:00:00Z"});
+        assert_eq!(
+            dispatch_with(&conn, &args, &canon_map())
+                .unwrap()
+                .rows_affected,
+            1
+        );
+        dispatch_with(&conn, &args, &canon_map()).unwrap();
+        // the GC may change its mind: the same alias points somewhere else, still one row
+        dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts",
+                    "alias":"Lieblingseditor","canonical":"editor"}),
+            &canon_map(),
+        )
+        .unwrap();
+        let (n, canonical): (i64, String) = conn
+            .query_row(
+                "SELECT count(*), max(canonical) FROM predicate_aliases WHERE alias='Lieblingseditor'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "an alias is a mapping, never a log of judgements");
+        assert_eq!(canonical, "editor");
+
+        // shape guards
+        assert!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"set_alias","table":"facts","alias":"","canonical":"x"}),
+                &canon_map()
+            )
+            .is_err()
+        );
+        assert!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"set_alias","table":"episodes","alias":"a","canonical":"b"}),
+                &canon_map()
+            )
+            .is_err(),
+            "a table without a binding has no alias table to write to"
+        );
+    }
+
+    #[test]
+    fn canonicalize_re_derives_the_column_and_reverts_with_the_alias() {
+        // The whole point of ruling Q3 in one test: aliases arrive AFTER the facts,
+        // `canonicalize` pulls the column to them, and deleting the alias row plus a
+        // second `canonicalize` puts every row back on its original — because the
+        // original was never rewritten.
+        let conn = canon_fixture();
+        mint(&conn, "f1", "Lieblingseditor");
+        mint(&conn, "f2", "favorite_editor");
+        assert_eq!(row_of(&conn, "f1").1.as_deref(), Some("Lieblingseditor"));
+
+        dispatch_with(
+            &conn,
+            &json!({"operation":"set_alias","table":"facts",
+                    "alias":"Lieblingseditor","canonical":"favorite_editor"}),
+            &canon_map(),
+        )
+        .unwrap();
+        let out = dispatch_with(
+            &conn,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &canon_map(),
+        )
+        .unwrap();
+        assert_eq!(out.operation, "canonicalize");
+        assert_eq!(out.rows_affected, 1, "only the row that MOVED is counted");
+        assert_eq!(row_of(&conn, "f1").1.as_deref(), Some("favorite_editor"));
+
+        // idempotent: the second run over unchanged data is the receipt for the
+        // invariance gate
+        assert_eq!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"canonicalize","table":"facts"}),
+                &canon_map()
+            )
+            .unwrap()
+            .rows_affected,
+            0
+        );
+
+        // revert: drop the judgement, re-derive
+        dispatch_with(
+            &conn,
+            &json!({"operation":"delete","table":"predicate_aliases",
+                    "where":{"alias":"Lieblingseditor"}}),
+            &canon_map(),
+        )
+        .unwrap();
+        assert_eq!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"canonicalize","table":"facts"}),
+                &canon_map()
+            )
+            .unwrap()
+            .rows_affected,
+            1
+        );
+        assert_eq!(
+            row_of(&conn, "f1"),
+            ("Lieblingseditor".into(), Some("Lieblingseditor".into())),
+            "no truth was destroyed on the way out"
+        );
+    }
+
+    #[test]
+    fn canonicalize_needs_a_binding_and_a_migrated_table() {
+        let conn = canon_fixture();
+        assert!(
+            dispatch_with(
+                &conn,
+                &json!({"operation":"canonicalize","table":"episodes"}),
+                &canon_map()
+            )
+            .is_err(),
+            "a table without a binding cannot be canonicalised"
+        );
+        // a cell.db whose column migration did not run answers with a named code,
+        // not with a raw SQL failure
+        let bare = rusqlite::Connection::open_in_memory().unwrap();
+        bare.execute("CREATE TABLE facts (id TEXT, predicate TEXT)", [])
+            .unwrap();
+        let out = dispatch_with(
+            &bare,
+            &json!({"operation":"canonicalize","table":"facts"}),
+            &canon_map(),
+        )
+        .unwrap();
+        assert_eq!(out.error_code, Some("unknown_column"));
+    }
+
+    /// Without a binding every op behaves exactly as it did before P2 — that is
+    /// what keeps the store a general-purpose cell rather than a memory-hive part.
+    #[test]
+    fn a_store_without_a_binding_is_untouched() {
+        let conn = canon_fixture();
+        dispatch(
+            &conn,
+            &json!({"operation":"insert","table":"facts",
+                    "row":{"id":"f1","predicate":"favorite_editor"}}),
+        )
+        .unwrap();
+        assert_eq!(row_of(&conn, "f1"), ("favorite_editor".into(), None));
+    }
 
     #[test]
     fn insert_one_row() {
@@ -1028,7 +2406,11 @@ mod tests {
     // ── P3: search op (FTS5 + bm25) ──
 
     fn search_fixture() -> rusqlite::Connection {
+        // Equipped the way the factory equips a store connection: since 0.2.0 P3
+        // the FTS index declares the `meclaw_stem` tokenizer and cannot be
+        // opened on a connection that does not know it.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::query::install_connection_extensions(&conn).unwrap();
         conn.execute("CREATE TABLE facts (id TEXT, claim TEXT, subject TEXT)", [])
             .unwrap();
         conn.execute(
@@ -1040,6 +2422,7 @@ mod tests {
         crate::store::ddl::apply_fts_ddl(
             &conn,
             &std::collections::BTreeMap::from([("facts".to_string(), vec!["claim".to_string()])]),
+            &std::collections::BTreeMap::new(),
         )
         .unwrap();
         conn

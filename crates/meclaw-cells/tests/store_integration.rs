@@ -21,6 +21,7 @@ async fn insert_then_select_round_trip() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);
@@ -86,6 +87,7 @@ async fn sql_error_emits_tool_result_with_error_code_header_not_finish_reason() 
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
 
     let (otx, mut orx) = mpsc::channel(8);

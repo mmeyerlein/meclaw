@@ -4,6 +4,143 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.2.0] — 2026-08-12
+
+The memory quality wave: seven issues, one epic, and a single question
+underneath all of them. When are two remembered things the same thing? A memory
+that answers that question badly does not forget, it *splits*, and a split axis
+carries no version chain, so the same memory hands out last year's value next to
+this year's and presents both as current. **Identity is decided when a fact is
+minted, and repaired afterwards by a judgement, never by a threshold.** That
+sentence is the release.
+
+### Added
+
+- **Predicates are keys now, and the extractor knows it.** Canonical predicates
+  are English snake_case, seeded by a curated core list of 29 relations (each
+  with its cardinality and a gloss) and reinforced by a vocabulary round trip:
+  before it mints anything, the extractor is shown the axes the subject already
+  carries and has to reuse a spelling that means the same thing. The opposite
+  rule protects everything that is not a relation. **Entities are verbatim**:
+  subjects, objects, values and proper names are never translated and never
+  "corrected when unknown", so a village nobody has heard of reaches the store
+  byte-identical (#21, #22).
+- **Entity aliasing with an automatic half and a judged half.** The only
+  automatic merge is normalization equality (Unicode composition, case fold,
+  whitespace collapse), computed in Rust and mirrored as the SQL function
+  `meclaw_norm`. Two spellings equal after that are provably one entity, no
+  model involved. Everything fuzzier is a trigram Dice score served by the new
+  `alias_candidates` op, which reads, scores, sorts, and decides nothing.
+  No similarity threshold merges anything, because thresholds lie on short
+  names, on sibling names, and on one-letter differences between two real
+  places (#23).
+- **An alias table plus store-owned canonical columns, feeding all three read
+  legs.** `params.canonical` binds `{source, target, aliases, normalize,
+  rejected}` per table. The written value is never modified, which is what makes
+  the whole mechanism revertible; the derived column is filled by the store on
+  every write, so no writer can forget it. The keyword leg indexes that column,
+  the axis anchor filters on it, and chain derivation groups by it: one
+  alias-aware place instead of three. Reverting a judgement is a `delete` on the
+  alias row plus one `canonicalize`, and every fact falls back onto its
+  untouched original because none was overwritten on the way in (#24, #22, #23).
+- **An index-time stemming tokenizer, German and English in one table.**
+  `meclaw_stem` wraps `unicode61` through the FTS5 extension API (no loadable
+  extension, no new dependency) and folds each token to a conservative stem: two
+  ordered steps, each firing at most once, minimum stem three characters, `-s`
+  stripped only after a consonant that actually takes one. FTS5 runs a table's
+  tokenizer over the index text *and* over the query text, so the plural
+  question meets the singular fact without anyone expanding a query. The defect
+  behind the issue was a fact that scored exactly zero for the question it
+  answers (#14).
+- **The canonicalization dream round.** Once a night, one model call of the top
+  tier carries both questions in one payload: which of these relation keys are
+  the same relation, and which of these entity spellings are the same entity.
+  Accepted pairs become aliases, refusals become rows in a refusal log so the
+  same pair is not bought again the next night, and one `canonicalize` pulls the
+  derived columns behind them. The round sits in *front* of the supersession
+  arithmetic rather than after it, because that arithmetic groups on exactly
+  those columns, and a merge landing a night late would leave the materialized
+  cache disagreeing with the read path for 24 hours.
+- **The invariance gate, split in two.** A consolidation run is now measured
+  from both sides: an *invariance set* of uninvolved questions must answer
+  byte-identically before and after the round (the 0.1.14 criterion, unchanged),
+  and an *improvement set* has to move measurably toward truth. A regression
+  anywhere discards the run.
+- **Verbatim repeated episodes collapse inside the bundle.** Copies that are
+  identical under the same normal form take one slot instead of one each. The
+  best-ranked copy keeps rank and score, the newest copy keeps the wording and
+  the identity, the legs of the swallowed copies merge into the survivor, and
+  the rendered line carries `(seen: N)`. Nothing is deleted and nothing is
+  judged: level 0 stays append-only (#15).
+- **Tier 0 says so when it ignores a window.** A complete recall window on a
+  tier-0 request used to be dropped in silence. It is now marked in all three
+  places a consumer might look: `bundle.window_ignored` in the body, a
+  `- window_ignored: <from> -> <until>` line in the rendered text that the model
+  actually reads, and `hop.window_ignored` for a router. No window, no marker,
+  nothing changed (#16).
+
+### Changed
+
+- The bundle contract gained two additive fields: `seen` on every episode
+  candidate (always present, `1` when nothing collapsed) and `window_ignored` on
+  a tier-0 bundle (present only when a window was sent). No existing field
+  changed shape.
+- `apply_fts_ddl` learned two drift classes next to the additive one: a
+  *canonical* swap (the declared list is the existing one with a binding's
+  source substituted by its target) and a *tokenizer* rebuild (the column list
+  is identical and only the tokenizer differs, which neither of the other
+  classes can see). The two compose, so a store still carrying the 0.1.x shape
+  reaches the new one in a single wake.
+- Migration is a wake, everywhere. Added columns, alias tables, refusal logs and
+  the rebuilt index all happen on the first spawn after the upgrade, additively
+  and idempotently, with no tool and no manual step.
+
+### Measured
+
+One paid measurement run, 0.42 USD in total, on eight LongMemEval haystacks
+against the documented pre-wave baseline.
+
+- **Axis identity at mint time improved by a factor of two and a half.**
+  Distinct predicate keys went from **2472 to 734**, and predicates that are not
+  keys at all (capitals, spaces, whole sentences of prose) went from **247 to
+  0**. Distinct axes went 2723 to 844, facts per axis 1.18 to 2.91, and the
+  share of facts sitting on a multi-version axis went from 22.7 % to 73.2 %.
+- **Retrieval improved and answers followed.** R@1 on the knowledge-update slice
+  went from **87.5 % to 100 %**, R@5 held at 100 %, and **7 of 8 judged answers
+  carry the new version** of the fact.
+- **The headline counter did not move, and the run says precisely why.** Chain
+  fire stayed where it was (1.9 % against a 2.1 % baseline on the same slice),
+  for two measured reasons, neither of them the extractor being sloppy. First,
+  **143 of 187 multi-version axes are classified as enumerations**: the
+  coexistence heuristic reads two facts sharing a `valid_from` as proof that an
+  axis enumerates, and this corpus stamps one instant per *session*, which every
+  turn of a conversation inherits. The heuristic is doing exactly what it was
+  written to do, on a signal the corpus cannot provide. That is statement
+  identity (#13), and it now has data behind it instead of an argument. Second,
+  the pairs that still sit on different keys are exactly what the nightly round
+  exists to merge, and the benchmark harness disables the dream cron by design
+  so that a consolidation run can never interfere with a measurement. The wave's
+  answer to that half is therefore structurally absent from this number.
+
+### Notes
+
+- **The public surface of this release is the store cell**: `params.canonical`
+  and its bindings, the ops `set_alias`, `canonicalize`, `alias_candidates` and
+  `reject_pair`, the alias and refusal tables, the `meclaw_stem` tokenizer and
+  the `meclaw_norm` function, and the migration paths that carry an existing
+  `cell.db` onto all of it. The memory hive itself, its extraction prompt, its
+  recall script and its dream glue, lives outside the published tree, as it has
+  since 0.1.14.
+- **A price carried on purpose:** the tokenizer lives on the SQLite connection,
+  so an external tool opening a `cell.db` directly can no longer read the
+  `<table>_fts` index (`no such tokenizer: meclaw_stem`). The base tables are
+  untouched, which covers everything an operator normally asks of that file.
+- **A judged slice after a dream run is the missing measurement**, and it is the
+  cheap one: the same eight colonies, one consolidation round each, the same
+  questions again. This release deliberately bought a single judged run.
+- Both frozen routing corridors are untouched, no dependency was added, and no
+  new `error_code` was introduced.
+
 ## [0.1.16] — 2026-08-11
 
 The hardening release: the whole 0.1.x queue, emptied in one sweep. Ten issues

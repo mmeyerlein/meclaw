@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-2351%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-2470%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -111,7 +111,7 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `bash` | run a shell command, hand back stdout / stderr / exit code |
 | `code` | run a script (Python), emit one message or many |
 | `file` / `edit` | read, write, and patch files |
-| `store` | durable key/value and history |
+| `store` | durable key/value and history, with full-text search, graph traversal, vector similarity, and canonical identity that folds drifted spellings onto one axis |
 | `timer` | cron-style scheduling, fires messages |
 | `proxy` | a long-running bridge to the outside world (Telegram, or Slack over Socket Mode) |
 | `mcp` | speak the Model Context Protocol to external tools |
@@ -131,15 +131,15 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 ## Where it's at
 
-meclaw is **v0.1.16**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
+meclaw is **v0.2.0**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
 
-Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **2,351 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **2,470 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
 ## Roadmap
 
-Next up: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
+In the queue: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 
 ## Contributing
 

@@ -17,7 +17,9 @@
         "id": "text",
         "episode_id": "text",
         "subject": "text",
+        "canonical_subject": "text",
         "predicate": "text",
+        "canonical_predicate": "text",
         "claim": "text",
         "claim_hash": "text",
         "fact_kind": "text",
@@ -118,12 +120,29 @@
         "created_at": "text"
       }
     },
+    "canonical": {
+      "facts": [
+        {
+          "source": "predicate",
+          "target": "canonical_predicate",
+          "aliases": "predicate_aliases"
+        },
+        {
+          "source": "subject",
+          "target": "canonical_subject",
+          "aliases": "subject_aliases",
+          "normalize": true
+        }
+      ]
+    },
     "fts": {
       "episodes": [
         "content"
       ],
       "facts": [
-        "claim"
+        "claim",
+        "canonical_predicate",
+        "canonical_subject"
       ]
     },
     "query_timeout_ms": 5000
@@ -166,13 +185,16 @@
     ]
   },
   "description": {
-    "purpose": "The single durable surface of the hive: the three-level memory ladder (episodes -> facts/entities/edges -> beliefs) with bi-temporal validity, plus the embedding generations and the four machine tables the lanes keep their state in (pending_extraction, consolidation_log, recall_scratch, scratch).",
+    "purpose": "The single durable surface of the hive: the three-level memory ladder (episodes -> facts/entities/edges -> beliefs) with bi-temporal validity, plus the embedding generations, the predicate identity (canonical_predicate + the store-owned predicate_aliases table) and the four machine tables the lanes keep their state in (pending_extraction, consolidation_log, recall_scratch, scratch).",
     "use_when": "Every lane of the hive writes and reads here; no cell keeps private state (code cells have none by design).",
-    "not_in_scope": "No joins, no aggregates and no graph/vector legs (traverse and similar are P4). Nothing is ever deleted: supersession sets expired_at + superseded_by, belief retraction sets active=0. FTS indexes exist only for tables declared in params.schema — a table created at runtime via create_table cannot carry one.",
+    "not_in_scope": "No joins, no aggregates and no graph/vector legs (traverse and similar are P4). Nothing is ever deleted: supersession sets expired_at + superseded_by, belief retraction sets active=0. FTS indexes exist only for tables declared in params.schema \u2014 a table created at runtime via create_table cannot carry one. Alias resolution is ONE hop and never transitive: whoever writes an alias writes it already resolved.",
     "emits_meaning": "messages[]: one tool_result per op; select and search return the projected row array as JSON text, search adds a bm25 `rank` per row (smaller is better). hop.operation drives the lane state machines, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another worker won), hop.error_code surfaces SQL failures as normal results.",
-    "consumes_meaning": "messages[]: tool_call turns with store-native args {operation, table, ...}; select and search need an explicit columns array. where accepts comparison operators (eq/neq/lt/lte/gt/gte/in/is_null/or_null) besides bare equality, plus order_by and limit. The lane that a reply belongs to is carried by context.store_origin ('episode' | 'extract' | 'inline' | 'recall' | 'dream'), promoted by the edge that sent the op.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args {operation, table, ...}; select and search need an explicit columns array. where accepts comparison operators (eq/neq/lt/lte/gt/gte/in/is_null/or_null) besides bare equality, plus order_by and limit. set_alias and canonicalize name the BOUND table (facts), never the alias table \u2014 the binding in params.canonical resolves the rest. The lane that a reply belongs to is carried by context.store_origin ('episode' | 'extract' | 'inline' | 'recall' | 'dream'), promoted by the edge that sent the op.",
     "examples": [
       "{operation: insert, table: episodes, row: {...}} -> tool_result 'ok', hop {operation: 'insert', rows_affected: 1}",
+      "predicate identity: facts.predicate is what was written, facts.canonical_predicate is what it MEANS \u2014 store-owned, derived on every write from predicate_aliases, and the only column the keyword / axis / chain legs consume",
+      "{operation: set_alias, table: facts, alias: 'Lieblingseditor', canonical: 'favorite_editor'} -> upsert into predicate_aliases; then {operation: canonicalize, table: facts} pulls the column, rows_affected = rows that MOVED",
+      "revert: {operation: delete, table: predicate_aliases, where: {alias: '...'}} + canonicalize -> every row falls back onto its untouched original",
       "as-of query: {operation: select, table: facts, columns: [...], where: {valid_from: {lte: T}, valid_until: {or_null: {gt: T}}}} -> only the facts true at T",
       "{operation: update, table: pending_extraction, set: {status: 'claimed', batch_id: 'b1'}, where: {status: 'pending'}} -> hop.rows_affected > 0 means this worker owns the batch",
       "NULL means open: facts.expired_at NULL = live, facts.valid_until NULL = currently true, embeddings.blob NULL = not embedded yet (queued via status)",

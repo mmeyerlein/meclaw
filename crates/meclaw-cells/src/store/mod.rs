@@ -12,4 +12,4 @@ pub mod seed;
 pub use cell::StoreCell;
 pub use degraded::DegradedStoreCell;
 pub use factory::StoreCellFactory;
-pub use params::StoreParams;
+pub use params::{CanonicalSpec, StoreParams};

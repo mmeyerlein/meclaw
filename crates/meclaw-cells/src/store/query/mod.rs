@@ -7,11 +7,35 @@
 //! the catalog's own spelling is ever formatted into a statement.
 
 pub mod catalog;
+pub mod fts_tokenizer;
 pub mod hamming;
+pub mod normalize;
 pub mod parse;
 pub mod sql;
+pub mod stem;
+pub mod trigram;
 
 use rusqlite::types::Value as SqlValue;
+
+/// Everything the `store` cell installs on a `cell.db` CONNECTION rather than
+/// into the database file: the `hamming` scalar function (P4), the
+/// `meclaw_stem` FTS5 tokenizer (0.2.0 P3) and the `meclaw_norm` scalar function
+/// (0.2.0 P4).
+///
+/// One function, because every birth place of a store connection needs all of
+/// them and `DbConn::with_reopen_setup` takes exactly one hook. The order matters
+/// only in that the tokenizer must be there before any FTS table is opened —
+/// FTS5 resolves the name at open time, and an index that declares a tokenizer
+/// the connection does not know cannot be read at all.
+///
+/// The first error wins and stops the strip; the caller decides how loud that
+/// is. On the factory paths each registration is reported separately, because
+/// the failures cost different features.
+pub fn install_connection_extensions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    hamming::register(conn)?;
+    normalize::register(conn)?;
+    fts_tokenizer::register(conn)
+}
 
 /// Name of the computed rank column of the `similar` op (smaller is better,
 /// like `rank` in `search`). A closed-set literal, never caller text.

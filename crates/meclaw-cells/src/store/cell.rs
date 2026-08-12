@@ -210,8 +210,14 @@ impl StatefulCell for StoreCell {
                     return;
                 }
             };
+            // The canonical bindings ride along into the DB task: they are what
+            // makes the derived column store-owned on every write (0.2.0 P2).
+            let canonical = self.params.canonical.clone();
             let outcome = if self.query_timeout().is_some() {
-                match db.call_with_timeout(move |c| ops::dispatch(c, &args)).await {
+                match db
+                    .call_with_timeout(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .await
+                {
                     Ok(Ok(o)) => o,
                     Ok(Err(e)) => {
                         emit_invalid_input(sink, &reply_target, e, started).await;
@@ -223,7 +229,10 @@ impl StatefulCell for StoreCell {
                     }
                 }
             } else {
-                match db.call(move |c| ops::dispatch(c, &args)).await {
+                match db
+                    .call(move |c| ops::dispatch_with(c, &args, &canonical))
+                    .await
+                {
                     Ok(o) => o,
                     Err(e) => {
                         emit_invalid_input(sink, &reply_target, e, started).await;

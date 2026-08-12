@@ -78,6 +78,7 @@ async fn store_code_unknown_table() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     // No table created → SELECT hits "no such table".
     let em = run_store_op(
@@ -106,6 +107,7 @@ async fn store_code_unknown_column() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     // Column "nosuch" is not declared → "table t has no column named nosuch".
     let em = run_store_op(
@@ -131,6 +133,7 @@ async fn store_code_constraint_violation() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     // Duplicate PK → SQLITE_CONSTRAINT.
     let em = run_store_op(
@@ -156,6 +159,7 @@ async fn store_code_type_mismatch() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -178,6 +182,7 @@ async fn store_code_sql_error_backstop() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     // TRIGGER CHANGED IN P3 (behaviour of the backstop is unchanged).
     // Until P3 this test reached the backstop by injecting a dangling clause via
@@ -230,6 +235,7 @@ async fn store_code_malformed_table_name_is_rejected_by_the_catalog() {
         schema: Default::default(),
         query_timeout_ms: None,
         fts: Default::default(),
+        canonical: Default::default(),
     });
     let em = run_store_op(
         &mut cell,
@@ -276,6 +282,7 @@ async fn store_code_query_timeout() {
         schema: Default::default(),
         query_timeout_ms: Some(timeout.as_millis() as u64),
         fts: Default::default(),
+        canonical: Default::default(),
     });
 
     // A full-table SELECT over 400k rows — interruptible inside SQLite, far

@@ -326,10 +326,14 @@ fn fts_is_backfilled_into_an_existing_cell_db_on_next_open() {
 
     {
         let conn = meclaw_colony::persist::open_or_create_cell_db(&path).unwrap();
+        // 0.2.0 P3: the FTS index declares the `meclaw_stem` tokenizer, so every
+        // connection that touches it has to be equipped the way the factory
+        // equips one.
+        meclaw_cells::store::query::install_connection_extensions(&conn).unwrap();
         let p =
             StoreParams::parse(&json!({"schema":{"facts":{"id":"text","claim":"text"}}})).unwrap();
         apply_schema_ddl(&conn, &p.schema).unwrap();
-        apply_fts_ddl(&conn, &p.fts).unwrap();
+        apply_fts_ddl(&conn, &p.fts, &p.canonical).unwrap();
         let args = json!({"operation":"insert","table":"facts",
                           "row":{"id":"f1","claim":"acme ships v1"}});
         assert_eq!(dispatch(&conn, &args).unwrap().rows_affected, 1);
@@ -346,13 +350,14 @@ fn fts_is_backfilled_into_an_existing_cell_db_on_next_open() {
     }
 
     let conn = meclaw_colony::persist::open_or_create_cell_db(&path).unwrap();
+    meclaw_cells::store::query::install_connection_extensions(&conn).unwrap();
     let p = StoreParams::parse(&json!({
         "schema": {"facts": {"id":"text","claim":"text"}},
         "fts": {"facts": ["claim"]}
     }))
     .unwrap();
     apply_schema_ddl(&conn, &p.schema).unwrap();
-    apply_fts_ddl(&conn, &p.fts).unwrap();
+    apply_fts_ddl(&conn, &p.fts, &p.canonical).unwrap();
 
     let out = dispatch(
         &conn,
