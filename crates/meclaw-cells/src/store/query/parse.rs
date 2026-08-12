@@ -135,6 +135,21 @@ pub fn parse_limit(v: Option<&Value>) -> Result<Option<i64>, String> {
     }
 }
 
+/// Parse the optional `distinct` argument: a bare boolean, default `false`.
+///
+/// The flag speaks about the PROJECTION: two rows that agree on every requested
+/// column are one answer. It is the only way a caller whose interest is the SET
+/// of values a few columns carry (rather than the rows carrying them) can bound
+/// the read at the store instead of after it: a read deduplicated by the reader
+/// has already travelled the mailbox in full (GH #68).
+pub fn parse_distinct(v: Option<&Value>) -> Result<bool, String> {
+    match v {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        _ => Err("distinct must be a boolean".into()),
+    }
+}
+
 /// Parse the mandatory `columns` projection shared by `select`/`search`/`similar`.
 fn parse_columns(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     let arr = args
@@ -523,6 +538,18 @@ mod tests {
         assert!(parse_limit(Some(&json!(-1))).is_err());
         assert!(parse_limit(Some(&json!("50"))).is_err());
         assert!(parse_limit(Some(&json!("1; DROP TABLE keep"))).is_err());
+    }
+
+    #[test]
+    fn distinct_defaults_to_false_and_takes_a_boolean_only() {
+        assert!(!parse_distinct(None).unwrap());
+        assert!(parse_distinct(Some(&json!(true))).unwrap());
+        assert!(!parse_distinct(Some(&json!(false))).unwrap());
+        // A truthy string or number is a caller mistake, not a flag: silently
+        // reading it as "true" would change a read's row count on a typo.
+        assert!(parse_distinct(Some(&json!("true"))).is_err());
+        assert!(parse_distinct(Some(&json!(1))).is_err());
+        assert!(parse_distinct(Some(&json!(["subject"]))).is_err());
     }
 
     #[test]

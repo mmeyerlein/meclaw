@@ -5,7 +5,7 @@
 
 use crate::store::query::catalog::{Catalog, CatalogError};
 use crate::store::query::parse::{
-    parse_filters, parse_limit, parse_order_by, parse_similar, parse_traverse,
+    parse_distinct, parse_filters, parse_limit, parse_order_by, parse_similar, parse_traverse,
 };
 use crate::store::query::sql::{
     render_similar, render_tail, render_tail_qualified, render_traverse, render_where,
@@ -346,12 +346,34 @@ fn op_select(
     };
     let order_by = parse_order_by(args.get("order_by"))?;
     let limit = parse_limit(args.get("limit"))?;
+    let distinct = parse_distinct(args.get("distinct"))?;
+    if distinct {
+        // A `DISTINCT` read may only be ordered by a column it actually projects.
+        // SQLite accepts the other form and answers *something*: it sorts by a
+        // value that several deduplicated rows disagree on, so the row that
+        // survives and the position it lands in are both unspecified. A caller
+        // that pairs `distinct` with a `limit` is asking for a defined PREFIX,
+        // and a prefix of an undefined order is not one.
+        for term in &order_by {
+            let col = match cat.column(&term.col) {
+                Ok(c) => c,
+                Err(e) => return Ok(catalog_error_outcome("select", e)),
+            };
+            if !resolved.contains(&col) {
+                return Err(format!(
+                    "order_by column {col:?} is not projected: a distinct select can only be \
+                     ordered by a column it returns"
+                ));
+            }
+        }
+    }
     let tail = match render_tail(&order_by, limit, &cat, &mut where_vals) {
         Ok(t) => t,
         Err(e) => return Ok(catalog_error_outcome("select", e)),
     };
     let stmt = format!(
-        "SELECT {col_list} FROM \"{}\"{where_clause}{tail}",
+        "SELECT {}{col_list} FROM \"{}\"{where_clause}{tail}",
+        if distinct { "DISTINCT " } else { "" },
         cat.table()
     );
 
@@ -2250,6 +2272,70 @@ mod tests {
             "no stale catalog may reject a fresh table"
         );
         assert_eq!(out.rows_affected, 1);
+    }
+
+    #[test]
+    fn distinct_deduplicates_the_projection_at_the_store() {
+        // GH #68: a read whose interest is the SET of value pairs a table carries
+        // must not have to travel every row to find out. The dedup happens where
+        // the rows are, and the cap that follows it counts ANSWERS, not rows.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE facts (subject TEXT, predicate TEXT)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO facts VALUES ('user','likes'),('user','likes'),('user','lives_in'),
+                                      ('cat','has_pet')",
+            [],
+        )
+        .unwrap();
+        let args = json!({"operation":"select","table":"facts",
+                          "columns":["subject","predicate"],"distinct":true,
+                          "order_by":[{"col":"subject"},{"col":"predicate"}]});
+        let out = dispatch(&conn, &args).unwrap();
+        assert_eq!(out.error_code, None);
+        assert_eq!(out.payload.as_array().unwrap().len(), 3);
+        assert_eq!(out.rows_affected, 3);
+        let capped = dispatch(
+            &conn,
+            &json!({"operation":"select","table":"facts",
+                    "columns":["subject","predicate"],"distinct":true,
+                    "order_by":[{"col":"subject"},{"col":"predicate"}],"limit":2}),
+        )
+        .unwrap();
+        let rows = capped.payload.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "the limit counts deduplicated rows");
+        assert_eq!(rows[0]["subject"], "cat");
+        assert_eq!(rows[1]["predicate"], "likes");
+    }
+
+    #[test]
+    fn a_distinct_select_refuses_an_order_it_cannot_define() {
+        // The prefix a `distinct` + `limit` read returns has to be the same one
+        // on every run. Ordered by a column that is not projected, which of the
+        // deduplicated rows carries the sort value is unspecified, so the cap
+        // would cut a different set each time. Rejected at the args, not answered.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE facts (subject TEXT, predicate TEXT, valid_from TEXT)",
+            [],
+        )
+        .unwrap();
+        let out = dispatch(
+            &conn,
+            &json!({"operation":"select","table":"facts","columns":["subject","predicate"],
+                    "distinct":true,"order_by":[{"col":"valid_from","dir":"desc"}],"limit":5}),
+        );
+        assert!(out.is_err(), "an undefined order was rendered: {out:?}");
+        // Without `distinct` the very same order is legal: the flag is what
+        // narrows it, and nothing else about `select` changes.
+        assert!(
+            dispatch(
+                &conn,
+                &json!({"operation":"select","table":"facts","columns":["subject","predicate"],
+                    "order_by":[{"col":"valid_from","dir":"desc"}],"limit":5}),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

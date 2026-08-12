@@ -4,6 +4,174 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.3.1] — 2026-08-12
+
+The follow-up wave on 0.3.0. Six defects the statement identity track named as
+flanks when it shipped, fixed in one pass, and then a seventh: the paid
+measurement that was supposed to close the wave found a live regression the wave
+itself had made visible, and the wave stayed open until that was fixed too.
+Nothing here is a new mechanism. This is the release where the machinery of
+0.3.0 gets the edges filed off that a single measured run could still find.
+
+### Fixed
+
+- **The extraction lane's vocabulary read has an order and a bound.** One
+  uncapped `select` over `facts` served two consumers with different needs, and
+  its projection had grown from two columns to ten across two releases, so a
+  store with 20,000 facts shipped roughly 5.9 MB over the mailbox to answer a
+  question about its vocabulary. It is two reads now: the axis hint is a
+  store-side deduplicated read of the axes a subject already carries, and the
+  replacement window is ordered by recency and limited. Both consumers were
+  already budgeted; what was unbounded was only the answer (#68).
+- **An end date is not an invalidity.** The nightly supersession pass mirrored
+  `valid_until` into `expired_at`, so a plan with a deadline in the *future* fell
+  out of the tier 0 foresight leg on the first night after it was written, not on
+  the way in. The same rule sat above the attributed closures and could overwrite
+  a judgement with arithmetic. The mirror is gone. The two questions the
+  foresight leg asks (has anyone closed this, and has the deadline passed) are
+  answered by their own two columns again (#65).
+- **The books of a night count every model call.** `consolidation_log` wrote
+  `llm_calls` as a hardcoded 0 or 1, and the canonicalization judge, the second
+  model call of every round that has an identity question to ask, was not
+  represented anywhere: no field, no row, no path it could have arrived on. There
+  is a receipt per model call now, read from the usage of the hop that answered,
+  and the row carries prompt and completion tokens. Verified against an
+  independent source: judge 10,389 plus dreamer 40,210 equals the 50,599 the row
+  books for that night (#64).
+- **A night describes the questions it actually has.** The instruction block of
+  the nightly round was rendered whole every night, including on the nights that
+  had none of those questions to ask, and it had grown from about 5.1 kB to 8.3
+  kB across the statement identity wave. One set derived once now decides three
+  things that used to be maintained separately: whether the round calls at all,
+  which paragraphs render, and which keys the answer form declares. A call
+  without a question and a question without its data section are the same
+  impossibility now, not two rules. The round stays one call with all of the
+  night's questions, which was always deliberate (#69).
+- **The currency question reaches the axes it exists for.** An axis carrying more
+  than one page of open statements was skipped rather than truncated, and on the
+  benchmark corpus those skipped axes were exactly the bucket axes the whole
+  track had been opened for. The skipped rule is right and was not weakened: a
+  judge shown six of seventy plans cannot tell that it is looking at a bucket.
+  What changed is the question such an axis gets. Over-cap axes are triaged by
+  the cheap cardinality question first: a `multi` verdict is terminal (the values
+  coexist, the axis is never asked for currency again), a `single` verdict puts
+  the axis into a paged currency question across nights, and an undecided
+  relation already stands at the head of the next night's cardinality question by
+  construction. The page is the recency prefix of the *open* statements, so the
+  carry between two pages is the same rule that builds the page: there is no
+  cursor table and no page index, and a judgement never compares two statements
+  that were not in one prompt together. Pages come out of the nightly axis
+  budget, not on top of it (#66).
+- **A predicate names the subject matter, not the speech act.** One fact was
+  minted as `has_experience` and its own update as `plans_to_beat`, on two
+  canonical predicates, so the currency question could never see them in one
+  axis entry. The failure was stable across two independent extraction runs,
+  which made it a property of the lane rather than a bad model day. The intention
+  moved off the predicate and onto the statement, where the marker already
+  existed: `fact_kind` has carried `world`/`experience`/`foresight` since the
+  tier 0 foresight leg was built, so the speech act in the predicate was never
+  the source of the plan/fact distinction, only its duplication, and that
+  duplication is what split the axis. No new column, no migration. The two
+  readers that used to tell a plan from a fact by its predicate say so
+  explicitly now (`(planned)` on a rendered bundle line, `"intent": "planned"` on
+  a statement in the night payload), and both markers are absent when they say
+  nothing, so a world statement renders byte for byte as it did before. The
+  night gained the rule that keeps the shared axis honest: an intention never
+  closes something that happened, and something that happened never closes an
+  intention. Alongside it, the extractor's replacement window stopped being the
+  eight most recently touched axes and became a subject-matter selection over a
+  larger recency pool, because recency is a good guess at which axes matter and a
+  bad guess at what *this turn* is about. The selection is deterministic and
+  model-free (#67).
+- **A replacement points forwards in time, never backwards.** The extractor names
+  which statement in its window a new fact `replaces`, and nothing checked which
+  of the two was younger. On the measurement corpus one of three live extractor
+  closures ended a statement three days *newer* than the fact replacing it, and
+  it cost the run its only wrong answer. Two guards now, neither of them a model
+  call: the write path refuses a replacement whose target was last asserted after
+  the replacing fact begins (the fact is still minted, both statements stay open,
+  and the refused pair is receipted under the batch key, because a silent drop
+  moves no counter), and the night takes back an inverted extractor closure by
+  arithmetic before it asks anything, since an end that precedes its own start
+  needs no opinion. A judged closure is never touched by the direction check
+  (#71).
+
+### Added
+
+- **`distinct` on the store cell's `select`.** A boolean, default `false`, that
+  deduplicates *the projection*: two rows agreeing on every requested column are
+  one answer, and a `limit` then counts answers instead of rows. It lets a set
+  question ("which column combinations does this table carry?") be settled where
+  the rows are instead of shipping all of them first. Under `distinct` every
+  `order_by` column has to be projected, otherwise `invalid_input`: SQLite
+  accepts the other form and sorts by a value the deduplicated rows disagree on,
+  and a prefix of an unspecified order is not one. This is the only public
+  surface this release adds, and it is what #68 is built on.
+
+### Measured
+
+One paid run at the end of the wave, 1.58 USD against a 4.00 cap, in the same
+shape as the track-end run of 0.3.0 so the columns continue that table: the same
+eight LongMemEval knowledge-update haystacks, fresh extraction, one consolidation
+round per store, the same eight questions again, judged by a model from a
+different vendor family than the one answering.
+
+- **The one wrong answer that survived the entire statement identity track is
+  right.** The 5K case now sits on one canonical predicate instead of two, the
+  new value was minted as a fact rather than as a plan, the night closed the old
+  value with attribution, and no fact anywhere in the corpus was ended by an
+  intention. The answer went from "your personal best time in the charity 5K run
+  was 27:12" to "your personal best time was 25:50, an earlier charity 5K
+  personal best was 27:12, which was later superseded". Judged false to true.
+- **The speech-act vocabulary collapsed.** Across the eight stores, 307 rows over
+  57 distinct `plans_to_*` keys became 9 rows over 2. Those buckets were the
+  over-cap axes, which is why the over-cap count fell without anything removing
+  an axis.
+- **Nothing is silently skipped any more.** Axes carrying more than one open
+  statement went 185 to 205, of which the over-cap ones went 72 (38.9 %) to 49
+  (23.9 %), and all 47 over-cap axes the eight nights actually saw were triaged:
+  24 answered terminally as enumerations in a single night, 23 still owing a
+  cardinality verdict and standing at the head of the next night's question. The
+  pool bound was never close to binding.
+- **The judged slice moved 6 of 8 to 7 of 8**, and it is a different question
+  that is wrong: the run found the inverted extractor closure that became #71,
+  fixed in the same wave.
+- **Every model call of a night is booked with its tokens**, cross-checked
+  against the colony message log to the token.
+- **The night got slightly more expensive, as designed.** Judge prompt tokens
+  over eight nights went 73,659 to 77,133, a 4.7 % increase for the conditional
+  sections plus a page marker that was never rendered at all, because no axis on
+  this corpus needed one. On a quiet night the instruction block is down to about
+  a quarter of what it was. Extraction prompt cost went up 9.9 % per call, which
+  is the naming rule of #67 measured, and cheaper than that package's own worst
+  case.
+- **The honest limits of this run.** Chain fire moved 0.0 % to 1.3 % of
+  candidates, which is small but is no longer zero, and it is non-zero *before*
+  the round, which is only possible because the extractor closed something.
+  Retrieval R@1 stayed at 8 of 8, unchanged. And the paged currency path of #66,
+  the expensive half of that fix, is pinned by 16 crate tests and a scenario but
+  **has not fired on a live corpus**: not one over-cap axis here is a
+  single-valued relation, so `functional = 0` and `paged = 0`. Correct by
+  construction and vacuously so. Whether paging works against a live judge is
+  still unbought.
+
+### Notes
+
+- The wave opened three flanks of its own and all three are tracked rather than
+  swallowed: the extraction lane claims about 1.5 times the turn count under
+  sustained ingest, because the new extraction cycle outruns the eval harness's
+  stall detector and pays for reclaimed batches twice with no effect on
+  correctness (#72); a closure written across two spellings of one relation hides
+  the spelling that needs merging, because the night's identity questions read
+  open rows only, which predates this wave and surfaced here for the first time
+  (#73); and the scenario runner rotates eight ports across 46 cases and
+  occasionally collides with TIME_WAIT (#74).
+- The memory hive itself, its extraction prompt, its recall script and its dream
+  glue live outside the published tree, as they have since 0.1.14. The public
+  surface of this release is the store cell's `distinct` flag and nothing else.
+- Both frozen routing corridors are untouched, no dependency was added, and no
+  new `error_code` was introduced.
+
 ## [0.3.0] — 2026-08-12
 
 The statement identity wave. 0.2.0 answered *when are two remembered things the

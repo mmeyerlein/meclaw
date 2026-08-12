@@ -68,27 +68,46 @@ candidates in the bundle. Riding the same release:
 [#18](https://github.com/mmeyerlein/meclaw/issues/18) mailbox preservation on
 panic.
 
-## Now: 0.3.x memory quality follow-ups
+## Shipped: 0.3.1 memory quality follow-ups
 
-What the track-end measurement found, in the order it matters. The first two are
-what bounds the version chain today, the other two are cost flanks the wave
-opened on its own account.
+Everything the track-end measurement of 0.3.0 named as a flank, fixed in one
+pass and re-measured by one paid run at the end. The 5K case, the one wrong
+answer that had survived the whole statement identity track, is right.
 
-[#66](https://github.com/mmeyerlein/meclaw/issues/66) the currency question
-skips the bucket axes it exists for (the per-axis page rule, 39 % of the
-multi-version axes on the benchmark),
-[#67](https://github.com/mmeyerlein/meclaw/issues/67) extraction identity across
-a predicate boundary, one fact minted as an experience and its update as a plan,
-[#68](https://github.com/mmeyerlein/meclaw/issues/68) an uncapped vocabulary read
-whose rows grew threefold,
-[#69](https://github.com/mmeyerlein/meclaw/issues/69) the fixed prompt cost of
-the night call.
+Done: [#66](https://github.com/mmeyerlein/meclaw/issues/66) the currency
+question reaches the bucket axes it exists for, through a cardinality-first
+triage and a paged currency question,
+[#67](https://github.com/mmeyerlein/meclaw/issues/67) a predicate names the
+subject matter and the intention moved onto the statement, so one fact and its
+update land on one axis,
+[#68](https://github.com/mmeyerlein/meclaw/issues/68) the vocabulary read has an
+order and a bound, [#69](https://github.com/mmeyerlein/meclaw/issues/69) the
+night renders only the sections that carry data,
+[#64](https://github.com/mmeyerlein/meclaw/issues/64) every model call of a
+night is booked with its tokens,
+[#65](https://github.com/mmeyerlein/meclaw/issues/65) an end date is no longer
+mirrored into an invalidity.
 
-Riding alongside from the same lane:
-[#64](https://github.com/mmeyerlein/meclaw/issues/64) the consolidation log
-undercounts model calls,
-[#65](https://github.com/mmeyerlein/meclaw/issues/65) future-dated plans dropped
-from the tier 0 foresight leg.
+Found by the wave's own measurement and fixed inside it:
+[#71](https://github.com/mmeyerlein/meclaw/issues/71) an extractor replacement
+points forwards in time, never backwards.
+
+## Now: meclaw-os, the organism
+
+A colony grown from a seed into a personal operating system. This is the stream
+now, because the gate for a public showcase is a provably better agent, not more
+memory machinery. The epic
+[#26](https://github.com/mmeyerlein/meclaw/issues/26) leads and carries the settled principles and open forks; its
+sub-issues in intended order, collector hives first:
+[#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
+[#28](https://github.com/mmeyerlein/meclaw/issues/28) the talky/cogny split,
+[#29](https://github.com/mmeyerlein/meclaw/issues/29) one talky per channel,
+[#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
+[#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
+[#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
+Riding the same wave: [#36](https://github.com/mmeyerlein/meclaw/issues/36) the firewall hive,
+[#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public app store,
+[#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive built with the builder.
 
 ## Next: pre-MVP substrate
 
@@ -102,20 +121,31 @@ code and bash cells,
 [#62](https://github.com/mmeyerlein/meclaw/issues/62) provenance for
 instantiated nodes.
 
-## Then: meclaw-os, the organism
+Suite hygiene rides in this stream because it is infrastructure rather than
+product: [#74](https://github.com/mmeyerlein/meclaw/issues/74) the scenario
+runner rotates eight ports across 46 cases and occasionally collides with
+TIME_WAIT.
 
-A colony grown from a seed into a personal operating system. The epic
-[#26](https://github.com/mmeyerlein/meclaw/issues/26) leads and carries the settled principles and open forks; its
-sub-issues in intended order:
-[#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
-[#28](https://github.com/mmeyerlein/meclaw/issues/28) the talky/cogny split,
-[#29](https://github.com/mmeyerlein/meclaw/issues/29) one talky per channel,
-[#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
-[#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
-[#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
-Riding the same wave: [#36](https://github.com/mmeyerlein/meclaw/issues/36) the firewall hive,
-[#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public app store,
-[#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive built with the builder.
+## Later: memory hive continued
+
+**The memory hive rests until after the showcase launch.** Nothing below is
+abandoned and nothing below blocks the streams above; the hive is simply not
+where the next measurable win is.
+
+Waiting: [#72](https://github.com/mmeyerlein/meclaw/issues/72) the extraction
+lane claims 1.5x the turn count under sustained ingest,
+[#73](https://github.com/mmeyerlein/meclaw/issues/73) a closure across two
+spellings hides the merge the night would have made,
+[#51](https://github.com/mmeyerlein/meclaw/issues/51) extraction batch gate
+defaults tuned for cost over freshness,
+[#52](https://github.com/mmeyerlein/meclaw/issues/52) the batch lane re-extracts
+episodes inline extraction already covered,
+[#53](https://github.com/mmeyerlein/meclaw/issues/53) inline extraction lacks the
+batch lane's world-state discipline,
+[#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
+recall window, so time-range questions run as point recalls,
+[#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
+drain.
 
 ## Alongside: surfaces
 
