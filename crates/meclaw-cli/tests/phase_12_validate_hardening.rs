@@ -8,8 +8,9 @@
 //! T28 extends --validate additively with:
 //!   1. plan_bootstrap (Filesystem-Bootstrap-Plan: MultipleRootDirs / NoRootDir
 //!      / InvalidParams / CorruptCellDb).
-//!   2. probe_boot_state (colony.db-Consistency: registry/edges/hive_scopes
-//!      mixed counts -> Inconsistent).
+//!   2. probe_boot_state (colony.db-Consistency; since GH #89 the probe flags
+//!      only unreadable persistence tables as Inconsistent — count-level
+//!      "mixed" states are legitimate Reboots, see Ruling F2-R1).
 //!
 //! Every error aggregates + plain text on stderr; exit !=0 when ANY check
 //! fails. exit 0 only when all three (templates + plan + colony.db) are clean.
@@ -52,6 +53,7 @@ fn cli_validate(root: PathBuf, api: Option<SocketAddr>) -> Cli {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: meclaw_cli::StdioFormat::Text,
     }
 }
@@ -99,9 +101,19 @@ async fn validate_with_multiple_root_dirs_returns_err() {
     );
 }
 
+/// GH #89 (Ruling F2-R3): this test replaces the old
+/// `validate_with_inconsistent_colony_db_returns_err` pin. Its expectation was
+/// WRONG: a count-level "mixed" colony.db (here edges-only) is not corruption
+/// — edge-less and cell-less table shapes are legitimate persisted states
+/// (single-cell colonies, hive-only roots), and the probe classifies any
+/// non-empty, marker-less state as Reboot. --validate must PASS. Probe-level
+/// corruption (unreadable tables) stays a loud validate failure and is pinned
+/// unit-side (`boot_state_unreadable_tables_returns_inconsistent`); data
+/// corruption inside readable tables stays loud at the hydration layer
+/// (`phase_16_hive_scope_hydration_hard_fail`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn validate_with_inconsistent_colony_db_returns_err() {
-    // Build a colony.db with mixed table counts → BootState::Inconsistent.
+async fn validate_with_edges_only_colony_db_passes_as_reboot() {
+    // Build a colony.db with only the edges table populated.
     // Direct rusqlite-write into the persistence tables; bypasses Colony.
     let td = tempfile::TempDir::new().unwrap();
     write_valid_fixture(td.path());
@@ -109,7 +121,8 @@ async fn validate_with_inconsistent_colony_db_returns_err() {
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         meclaw_colony::persist::setup_colony_db(&conn).unwrap();
-        // Only edges has data → mixed (registry=0, edges=1, hive_scopes=0).
+        // Only edges has data (registry=0, edges=1, hive_scopes=0) — formerly
+        // misread as Inconsistent, now a Reboot.
         conn.execute(
             "INSERT INTO edges (id, from_path, to_path, created_at) VALUES ('id1', '/a', '/b', 0)",
             [],
@@ -117,14 +130,9 @@ async fn validate_with_inconsistent_colony_db_returns_err() {
         .unwrap();
     }
     let cli = cli_validate(td.path().into(), None);
-    let err = run(cli)
+    run(cli)
         .await
-        .expect_err("inconsistent colony.db must fail validate");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.to_lowercase().contains("validate"),
-        "error should mention validate; got: {msg}"
-    );
+        .expect("edges-only colony.db is a legitimate Reboot; validate passes");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

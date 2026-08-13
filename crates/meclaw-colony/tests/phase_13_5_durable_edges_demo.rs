@@ -8,10 +8,11 @@
 //! reboots, and shows the `condition`/`modifier` still applies.
 //!
 //! Topology:
-//!   td/main/config.json       — root hive (persists the hive_scope `/`, so a
-//!                               populated colony.db classifies as Reboot, not
-//!                               Inconsistent — boot_state needs all three
-//!                               tables non-empty).
+//!   td/main/config.json       — root hive (persists the hive_scope `/`;
+//!                               historical rationale: the pre-GH-#89
+//!                               boot-state heuristic needed all three tables
+//!                               non-empty for a Reboot — since #89 any
+//!                               non-empty, marker-less state is a Reboot).
 //!   td/main/a/config.json     — `/a`: echo cell, `echo_to = /a` (self-loop).
 //!                               The mutation edge /a -> /sink overrides the
 //!                               emit target when it fires; the self-loop is

@@ -131,6 +131,24 @@ A denial is `EPERM`, not a kill: the program sees an ordinary permission error a
 
 **Fail-closed.** A `restricted` profile that cannot be enforced (no Landlock in the kernel, no namespaces on this host, a declared path that does not exist) makes the spawn fail; the cell emits `error_code: "io_error"` with `sandbox not applied: <reason>`. There is no path on which a `restricted` cell quietly keeps running unsandboxed.
 
+**Ask before it hurts: `meclaw --sandbox-probe` (GH #97).** Fail-closed means an unenforceable profile only shows up *in production*, as the `io_error` of a live cell. So that this need not be the first contact, the flag answers the same question up front, about **the host**, without running a cell: it needs no colony root, creates neither `colony.db` nor `log.jsonl`, and **always exits 0** — the report *is* the answer, and a host that can enforce nothing is not a failure of the asking. One line per `params.sandbox` property, a verdict from the closed set `yes` / `no` / `skipped`, then the reason:
+
+```
+sandbox probe: which params.sandbox properties this host can enforce
+  filesystem  yes      Landlock ABI 4
+  network     yes      an unprivileged CLONE_NEWUSER|CLONE_NEWNET child ran
+  limits      no       the sub-cgroup was created but moving a child into it was refused
+                       (Permission denied (os error 13)). The kernel can do this, the launch
+                       cannot: the daemon must run as a systemd user unit (user@<uid>.service);
+                       an ssh session scope cannot move processes, because the common ancestor
+                       user-<uid>.slice is root-owned
+  syscalls    yes      seccomp filter mode is present for this architecture
+```
+
+The `limits` line is the reason the flag exists: its answer is **not a property of the kernel but of the launch** (see the operating requirement above). A bare "no" would send the operator hunting for a kernel feature that is already there, so the text separates two cases: an **absent mechanism** ("this host delegates no writable cgroup v2 directory …", which no other launch changes) and a **wrong launch** (`EACCES` at the common ancestor, naming the user-unit requirement).
+
+The same report is appended to **`--validate`** (on stderr, like every other validate diagnostic). There it is **strictly informative** — it never changes the validate verdict: `--validate` checks the tree, enforceability is a question about the machine, and the fail-closed refusal happens at spawn time. Two of the four probes (`network`, `limits`) fork `/bin/sh -c :`; in the validate appendix they run **only when the tree declares a `restricted` profile at all** — otherwise the line reads `skipped` with the reason `no restricted profile in tree`. A `trust: "trusted"` is no cause; an unreadable `sandbox` block is (whoever wrote it wanted enforcement).
+
 **`sandbox` is not runtime-changeable.** The block is read from the birth params only. For `bash` and `code` that holds structurally: both are stateless, have no `cell.db` and therefore no runtime param overlay at all. `harness` has one, and there `sandbox` is listed immutable explicitly: an update touching it is rejected as `Immutable` rather than swallowed as an unknown key. A security boundary that a message can move is not a boundary.
 
 Cell-type-specific. Each cell type defines its own `params` structure (see `cell-types.md`). The colony hands this block to the cell at startup; afterwards param updates via message are possible (last-write-wins, persisted in `cell.db`). **Form** (W4b): the update message carries a **top-level `params` body slot** (1:1 this `params` block, partial), pure cell content, no header gate; the cell merges + persists it itself and replays the overlay at wake/respawn over the birth params (`config.json` stays untouched). Which fields are runtime-changeable or immutable (e.g. credentials, security boundaries) is cell-type-specific (see `cell-types.md`, e.g. `llm` § Runtime param updates).

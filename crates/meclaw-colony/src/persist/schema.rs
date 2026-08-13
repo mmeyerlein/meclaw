@@ -3,6 +3,34 @@
 //! **Mandatory helpers**: no write path may open rusqlite directly — always go
 //! through `setup_cell_db(conn)` (phase 5) or `setup_colony_db(conn)` (T6).
 //! A forgotten call = silent FULL sync = 10× slower.
+//!
+//! **Busy budget (GH #98)**: every connection additionally carries the explicit
+//! meclaw busy timeout — read-only opens (which never run the setup DDL) call
+//! [`apply_busy_timeout`] directly after `Connection::open*`.
+
+/// GH #98: connection-level busy budget for every meclaw database connection.
+///
+/// rusqlite installs an implicit 5000 ms busy timeout on every connection it
+/// opens (`inner_connection.rs`), and the #98 boot failure happened DESPITE
+/// that — under full parallel workspace load the boot-time race partner (the
+/// template-scan writer thread winding down) was starved past five seconds,
+/// and the spawn re-open of `colony.db` died with "database is locked".
+///
+/// 30 000 ms is the suite's generous-failure-marker convention: contention
+/// (moments to seconds, e.g. a WAL close-checkpoint or a starved writer batch)
+/// is waited out; a lock held longer than 30 s is a real wedge and still
+/// fails loudly. Explicit and owned by meclaw so the behaviour does not ride
+/// on a third-party default.
+pub const DB_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(30_000);
+
+/// Install [`DB_BUSY_TIMEOUT`] on a connection (GH #98).
+///
+/// Called first by `setup_cell_db`/`setup_colony_db` (so even the WAL
+/// journal-mode conversion of a first boot runs under the budget) and directly
+/// by every read-only open, which never runs the setup functions.
+pub fn apply_busy_timeout(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(DB_BUSY_TIMEOUT)
+}
 
 const CELL_DB_DDL: &str = "
 CREATE TABLE IF NOT EXISTS system (
@@ -32,6 +60,7 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
 /// PRAGMA order: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`.
 /// The DDL is idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`).
 pub fn setup_cell_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    apply_busy_timeout(conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -134,6 +163,7 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '5');
 /// **FIX 1 (review 2026-05-20)**: `message_log` carries `correlation_id`,
 /// `ttl`, `reply_to` — load-bearing for phase 8/10 request/response correlation.
 pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    apply_busy_timeout(conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;

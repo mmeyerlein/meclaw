@@ -207,7 +207,10 @@ pub enum ColonyWriteOp {
     /// starts. The matching clear runs inside the `InitialApply` arm — same
     /// transaction as the edges/hive_scopes bundle, so a crash anywhere
     /// mid-apply leaves the marker behind and `probe_boot_state` classifies the
-    /// next boot as a resumable `FirstBoot` instead of `Inconsistent`.
+    /// next boot as a resumable `FirstBoot`. Since GH #89 the classification
+    /// cut is "InitialApply traces (edges/hive_scopes) = Reboot"; the marker
+    /// stays the explicit resume signal and defensively wins even over states
+    /// WITH bundle traces (constructionally unreachable, but resume-safe).
     SetBootstrapInFlight {
         /// Unix seconds at apply start (forensic value of the marker).
         created_at: i64,

@@ -8,6 +8,14 @@ pub struct BashCell {
     /// Optional process sandbox for the shell (S4, GH #35). `None` means the
     /// legacy unsandboxed behaviour: the shell keeps the daemon's rights.
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
+    /// Size cap on the combined output handed to the caller, in bytes (GH #83).
+    ///
+    /// A command with runaway stdout has the same multiplying effect inside a
+    /// tool loop as an uncapped `web_fetch` body: the tool result becomes a
+    /// thread row and is re-sent on every subsequent round. The cap applies to
+    /// the combined `text` (stdout plus the stderr sentinel block); a trim is
+    /// marked, never silent, and `header.bytes` keeps the full pre-cut size.
+    pub max_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -144,13 +152,19 @@ impl meclaw_colony::StatelessCell for BashCell {
                     } else {
                         stdout_str
                     };
+                    // GH #83: `bytes` reports the full combined output, so a
+                    // trimmed reply still says how big the run really was.
                     let bytes = text.len() as u64;
+                    let (text, truncated) = crate::web_fetch::truncate_body(text, self.max_bytes);
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String("bash".into()));
                     header.insert("exit_code".into(), Value::from(out.exit_code));
                     header.insert("had_stderr".into(), Value::from(had_stderr));
                     header.insert("duration_ms".into(), Value::from(duration_ms));
                     header.insert("bytes".into(), Value::from(bytes));
+                    if truncated {
+                        header.insert("truncated".into(), Value::Bool(true));
+                    }
                     let body = build_tool_result_body(text, id, header);
                     tracing::info!(
                         operation = "bash",
@@ -158,6 +172,7 @@ impl meclaw_colony::StatelessCell for BashCell {
                         had_stderr,
                         duration_ms,
                         bytes,
+                        truncated,
                         "bash op ok"
                     );
                     let _ = sink
@@ -173,6 +188,12 @@ impl meclaw_colony::StatelessCell for BashCell {
                     header.insert("operation".into(), Value::String("bash".into()));
                     // B.1: every bash output carries `had_stderr`; error paths set false.
                     header.insert("had_stderr".into(), Value::from(false));
+                    // Spec conformance (GH #104 track T): a timed-out child WAS
+                    // killed, so the `-1` abnormal-termination convention applies
+                    // here too — the timeout error carries `exit_code: -1` next
+                    // to `error_code: "timeout"` (cell-types.md § bash). The
+                    // pre-spawn error paths stay without exit_code: no child ran.
+                    header.insert("exit_code".into(), Value::from(-1));
                     header.insert("duration_ms".into(), Value::from(duration_ms));
                     let body = build_error_body(ERR_TIMEOUT, text, id, header);
                     tracing::info!(
@@ -256,11 +277,17 @@ pub struct BashCellFactory;
 
 const DEFAULT_BASH_MAX_CONCURRENCY: usize = 4;
 const DEFAULT_BASH_EXTERNAL_TIMEOUT_MS: u64 = 60_000;
+/// Default output cap: 256 KiB (GH #83) — the same generous-but-finite value
+/// `web_fetch` uses, so the tool cells share one consistent default. It passes
+/// a full compiler log or test run whole and stops a runaway `yes`-style
+/// stdout from entering a tool loop, where every round would pay for it again.
+const DEFAULT_BASH_MAX_BYTES: usize = 256 * 1024;
 
 struct ParsedBashParams {
     external_timeout: Duration,
     max_concurrency: usize,
     sandbox: Option<crate::sandbox::SandboxProfile>,
+    max_bytes: usize,
 }
 
 fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, String> {
@@ -283,11 +310,22 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, S
     if ms == 0 {
         return Err("params.external_timeout_ms must be >= 1".into());
     }
+    let mb = match raw.get("max_bytes") {
+        None => DEFAULT_BASH_MAX_BYTES,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
+            as usize,
+    };
+    if mb == 0 {
+        return Err("params.max_bytes must be >= 1".into());
+    }
     let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
     Ok(ParsedBashParams {
         external_timeout: Duration::from_millis(ms),
         max_concurrency: mc,
         sandbox,
+        max_bytes: mb,
     })
 }
 
@@ -317,11 +355,13 @@ impl CellFactory for BashCellFactory {
         let external_timeout = parsed.external_timeout;
         let max_concurrency = parsed.max_concurrency;
         let sandbox = parsed.sandbox;
+        let max_bytes = parsed.max_bytes;
 
         let cell = std::sync::Arc::new(BashCell {
             external_timeout,
             max_concurrency,
             sandbox: sandbox.clone(),
+            max_bytes,
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: the initial dispatcher
@@ -355,6 +395,7 @@ impl CellFactory for BashCellFactory {
                 // The boundary survives a restart: a respawned shell is as
                 // restricted as the one it replaces.
                 sandbox: respawn_sandbox.clone(),
+                max_bytes,
             });
             let (tx, rx) =
                 tokio::sync::mpsc::channel::<meclaw_core::Message>(respawn_mailbox_capacity);
@@ -416,6 +457,7 @@ impl CellFactory for BashCellFactory {
             external_timeout: parsed.external_timeout,
             max_concurrency,
             sandbox: parsed.sandbox,
+            max_bytes: parsed.max_bytes,
         });
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
@@ -521,6 +563,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
+            max_bytes: DEFAULT_BASH_MAX_BYTES,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -568,6 +611,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
+            max_bytes: DEFAULT_BASH_MAX_BYTES,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -608,6 +652,7 @@ mod tests {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
             sandbox: None,
+            max_bytes: DEFAULT_BASH_MAX_BYTES,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -650,6 +695,7 @@ mod tests {
             external_timeout: std::time::Duration::from_millis(100),
             max_concurrency: 4,
             sandbox: None,
+            max_bytes: DEFAULT_BASH_MAX_BYTES,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -792,6 +838,130 @@ mod tests {
     #[test]
     fn parse_bash_args_rejects_empty_command() {
         assert!(parse_bash_args(&json!({"command": ""})).is_err());
+    }
+
+    // ───── GH #83: the size cap ─────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_runaway_stdout_arrives_trimmed_and_marked() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{
+            Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, serde_json::json,
+        };
+        use tokio::sync::mpsc;
+
+        let cell = BashCell {
+            external_timeout: std::time::Duration::from_secs(5),
+            max_concurrency: 4,
+            sandbox: None,
+            max_bytes: 1000,
+        };
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+        let sink = OutputSink::new(
+            out_tx,
+            Path::new("/bash"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            10,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        // 20,000 bytes of stdout: 2,000 lines of "xxxxxxxxx" (9+1 bytes each).
+        let msg = MessageBuilder::new(Path::new("/bash"))
+            .reply_to(Path::new("/caller"))
+            .body(Body::Inline(json!({
+                "messages": [{
+                    "origin": "assistant", "type": "tool_call",
+                    "text": r#"{"command": "yes xxxxxxxxx | head -n 2000"}"#, "id": "call-cap"
+                }]
+            })))
+            .build();
+        cell.handle(msg, &sink).await;
+        let em = out_rx.recv().await.unwrap();
+        let text = em.content["messages"][0]["text"].as_str().unwrap();
+        assert!(
+            text.len() < 20_000,
+            "the cap must bite: {} bytes arrived",
+            text.len()
+        );
+        assert!(
+            text.contains("[truncated, 20000 bytes total]"),
+            "cut marked, full size named: ...{}",
+            &text[text.len().saturating_sub(60)..]
+        );
+        assert_eq!(
+            em.content["header"]["truncated"], true,
+            "the declared `truncated` header finally has a producer"
+        );
+        assert_eq!(
+            em.content["header"]["bytes"], 20_000,
+            "`bytes` reports the full output size, not what survived the cap"
+        );
+        assert_eq!(em.content["header"]["exit_code"], 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_output_under_the_cap_is_untouched_and_unmarked() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{
+            Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, serde_json::json,
+        };
+        use tokio::sync::mpsc;
+
+        let cell = BashCell {
+            external_timeout: std::time::Duration::from_secs(5),
+            max_concurrency: 4,
+            sandbox: None,
+            max_bytes: DEFAULT_BASH_MAX_BYTES,
+        };
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+        let sink = OutputSink::new(
+            out_tx,
+            Path::new("/bash"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            10,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        let msg = MessageBuilder::new(Path::new("/bash"))
+            .reply_to(Path::new("/caller"))
+            .body(Body::Inline(json!({
+                "messages": [{
+                    "origin": "assistant", "type": "tool_call",
+                    "text": r#"{"command": "echo small"}"#, "id": "call-s"
+                }]
+            })))
+            .build();
+        cell.handle(msg, &sink).await;
+        let em = out_rx.recv().await.unwrap();
+        assert_eq!(em.content["messages"][0]["text"], "small\n");
+        assert!(
+            em.content["header"].get("truncated").is_none(),
+            "no cut, no marker"
+        );
+        assert_eq!(em.content["header"]["bytes"], 6);
+    }
+
+    #[test]
+    fn factory_validate_params_rejects_max_bytes_zero() {
+        use meclaw_colony::CellFactory;
+        assert!(
+            BashCellFactory
+                .validate_params(&meclaw_core::serde_json::json!({"max_bytes": 0}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn factory_defaults_max_bytes_to_the_web_fetch_cap() {
+        let p = parse_params_pure(&meclaw_core::serde_json::json!({})).unwrap();
+        assert_eq!(p.max_bytes, DEFAULT_BASH_MAX_BYTES);
+        assert_eq!(
+            DEFAULT_BASH_MAX_BYTES,
+            256 * 1024,
+            "one consistent default across the tool cells"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

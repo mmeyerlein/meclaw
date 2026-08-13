@@ -159,6 +159,14 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub strict: bool,
 
+    /// GH #97: report which `params.sandbox` properties THIS HOST can enforce
+    /// and exit. A question about the machine, not about a colony: it needs no
+    /// root, opens no `colony.db`, spawns no cell, and exits 0 whatever the
+    /// answer — the report IS the answer, and a host that can enforce nothing
+    /// is not a failure of the asking. Takes precedence over every other mode.
+    #[arg(long = "sandbox-probe", default_value_t = false)]
+    pub sandbox_probe: bool,
+
     /// Blob storage directory. Default: `<root>/blobs`.
     #[arg(long, value_name = "PATH")]
     pub blobs: Option<PathBuf>,
@@ -302,6 +310,23 @@ pub async fn run_with_hooks_tuned(
     shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
     watchdog_override: Option<WatchdogTuning>,
 ) -> anyhow::Result<()> {
+    // GH #97: --sandbox-probe answers before anything colony-shaped happens.
+    // It is a question about the HOST, so it must work in a directory that is
+    // not a colony at all — no colony.db, no bootstrap plan, no cell.
+    if cli.sandbox_probe {
+        if cli.validate || cli.api.is_some() || cli.daemon {
+            eprintln!("note: --sandbox-probe has precedence; --validate/--api/--daemon ignored");
+        }
+        print!(
+            "{}",
+            meclaw_cells::sandbox::probe::probe_host(
+                &meclaw_cells::sandbox::probe::SpawningProbes::Run
+            )
+            .render()
+        );
+        return Ok(());
+    }
+
     let db_path = cli.root.join("colony.db");
     let colony_db = meclaw_colony::ColonyDb::open(&db_path)
         .map_err(|e| anyhow::anyhow!("open colony.db: {e}"))?;
@@ -327,7 +352,17 @@ pub async fn run_with_hooks_tuned(
         std::process::exit(1);
     }
 
-    drop(colony_db);
+    // GH #98 (Track-Ruling N1, 2026-08-13): a graceful shutdown instead of a
+    // plain `drop`. `drop` only releases the writer sender — the writer thread
+    // then drains, commits and CLOSES its connection asynchronously (a WAL
+    // close-checkpoint takes exclusive locks), racing the spawn re-open below;
+    // under full parallel load that race exhausted even a 5 s busy wait and
+    // killed the boot with "database is locked". `shutdown_async` sends the
+    // explicit shutdown op, awaits the post-commit ack and joins the thread,
+    // so the re-open never races the template-scan writer of the SAME process.
+    // Cross-process contention stays covered by the explicit 30 s busy budget
+    // (`meclaw_colony::persist::DB_BUSY_TIMEOUT`).
+    colony_db.shutdown_async().await;
 
     // --validate: Dry-Run-Vorrang (Spec Z.430).
     //
@@ -336,8 +371,10 @@ pub async fn run_with_hooks_tuned(
     // (--validate returns before the `colony_task::spawn` at Z.~210):
     //   1. `plan_bootstrap` — the filesystem bootstrap plan (MultipleRootDirs /
     //      NoRootDir / InvalidParams / CorruptCellDb).
-    //   2. `probe_boot_state` — colony.db consistency (registry/edges/
-    //      hive_scopes mixed counts → `BootState::Inconsistent`).
+    //   2. `probe_boot_state` — colony.db consistency. Since GH #89 the probe
+    //      flags only unreadable persistence tables as
+    //      `BootState::Inconsistent`; count-level "mixed" states are
+    //      legitimate Reboots (edge-less colonies, hive-only roots).
     //      Called DIRECTLY (a read-only connection probe, no panic),
     //      NOT via the `colony_task` panic path in `colony.rs:386`
     //      (phase-5 legacy, its own robustness pass after phase 13/14).
@@ -353,6 +390,11 @@ pub async fn run_with_hooks_tuned(
             eprintln!("note: --validate has precedence; --api/--daemon ignored");
         }
         let mut had_error = false;
+        // GH #97: does anything in this tree ask to be sandboxed? Decides
+        // whether the appendix below may fork the two spawning probes. A tree
+        // whose plan did not even come together answers "no" — there is
+        // nothing to spawn on behalf of.
+        let mut tree_declares_restricted = false;
 
         // 1. Filesystem-Bootstrap-Plan (additiv).
         let factories = built_in_factories();
@@ -380,6 +422,10 @@ pub async fn run_with_hooks_tuned(
                 had_error = true;
             }
             Ok(plan) => {
+                tree_declares_restricted = plan
+                    .cells
+                    .iter()
+                    .any(|c| declares_restricted_sandbox(&c.params));
                 // A8 (Phase-16 W1a, Ruling 2026-06-12): static endpoint-existence
                 // check. `--validate` has no running colony, so it cannot see
                 // runtime-spawned cells — an unresolved `params.graph` endpoint
@@ -439,6 +485,29 @@ pub async fn run_with_hooks_tuned(
             eprintln!("validate: colony.json invalid: {e}");
             had_error = true;
         }
+
+        // 4. GH #97: the host-capability appendix. STRICTLY informative — it
+        //    never touches `had_error`. `--validate` checks the tree; whether
+        //    this machine can enforce what the tree declares is a different
+        //    question, and the fail-closed refusal that answers it happens at
+        //    spawn time. Printing it here means an operator who runs the usual
+        //    pre-flight check sees the host answer without asking for it.
+        //
+        //    The two probes that fork `/bin/sh -c :` run only when the tree
+        //    declares a `restricted` profile at all: a configuration check
+        //    spawns nothing without cause. On stderr, with every other
+        //    `--validate` diagnostic (`--sandbox-probe` is the stdout surface).
+        eprint!(
+            "{}",
+            meclaw_cells::sandbox::probe::probe_host(&if tree_declares_restricted {
+                meclaw_cells::sandbox::probe::SpawningProbes::Run
+            } else {
+                meclaw_cells::sandbox::probe::SpawningProbes::Skip(
+                    "no restricted profile in tree".to_string(),
+                )
+            })
+            .render()
+        );
 
         if had_error {
             return Err(anyhow::anyhow!(
@@ -892,10 +961,63 @@ pub async fn run_with_hooks_tuned(
     Ok(())
 }
 
+/// Whether a cell's birth params ask for an ENFORCED sandbox (GH #97).
+///
+/// The `--validate` appendix uses this as the cause for forking the two
+/// spawning probes. Deliberately conservative in one direction: a `sandbox`
+/// block this parser cannot read counts as a declaration, because whoever
+/// wrote it wanted enforcement and deserves to see what the host can do —
+/// and a malformed block fails the boot on its own anyway.
+///
+/// `trust: "trusted"` is the declared escape hatch and asks for nothing, so it
+/// is not a cause.
+pub fn declares_restricted_sandbox(params: &meclaw_core::JsonValue) -> bool {
+    use meclaw_cells::sandbox::SandboxProfile;
+    match SandboxProfile::parse(params) {
+        Ok(Some(SandboxProfile::Restricted { .. })) => true,
+        Ok(_) => false,
+        Err(_) => params.get("sandbox").is_some(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // ---- GH #97: what counts as a cause for the spawning probes ----
+
+    #[test]
+    fn a_restricted_profile_is_a_cause_and_a_trusted_one_is_not() {
+        let restricted: meclaw_core::JsonValue = serde_json::from_str(
+            r#"{"sandbox":{"trust":"restricted","filesystem":{"read":["/usr"]}}}"#,
+        )
+        .unwrap();
+        assert!(declares_restricted_sandbox(&restricted));
+
+        let trusted: meclaw_core::JsonValue =
+            serde_json::from_str(r#"{"sandbox":{"trust":"trusted"}}"#).unwrap();
+        assert!(
+            !declares_restricted_sandbox(&trusted),
+            "the escape hatch asks for no enforcement, so it is no cause to spawn"
+        );
+    }
+
+    #[test]
+    fn no_sandbox_block_is_no_cause() {
+        let plain: meclaw_core::JsonValue =
+            serde_json::from_str(r#"{"external_timeout_ms":1000}"#).unwrap();
+        assert!(!declares_restricted_sandbox(&plain));
+    }
+
+    #[test]
+    fn an_unreadable_sandbox_block_still_counts_as_asking() {
+        // Whoever wrote it wanted enforcement; reporting the host's answer is
+        // more useful than silently treating the typo as "no sandbox".
+        let broken: meclaw_core::JsonValue =
+            serde_json::from_str(r#"{"sandbox":{"trust":"restrictd"}}"#).unwrap();
+        assert!(declares_restricted_sandbox(&broken));
+    }
 
     #[test]
     fn parse_defaults() {

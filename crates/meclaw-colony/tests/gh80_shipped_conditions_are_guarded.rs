@@ -7,9 +7,11 @@
 //! reference, so the sweep walks every shipped `config.json` and requires each
 //! `hop.<key>` an edge condition reads to be guarded by `has()`.
 //!
-//! Exempt: `builder/templates/collector/**` is frozen pending design review, so
-//! it is named here rather than silently skipped -- an exemption nobody can see
-//! is an exemption nobody removes.
+//! No exemptions. `builder/templates/collector/**` used to carry one while the
+//! hive was frozen pending design review; the review happened, the collector
+//! ships publicly since v0.5.0, and a shipped topology that teaches the noisy
+//! form is exactly what this sweep exists to prevent. The one unguarded
+//! condition it held was guarded in the same change.
 //!
 //! `context.*` is deliberately NOT swept. Context keys are the promoted,
 //! carried-along compartment (`builder/cookbook/cel-condition-guards.md`); the
@@ -25,8 +27,15 @@ fn repo_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// The one frozen tree (pending design review), by path fragment.
-const EXEMPT: &[&str] = &["builder/templates/collector/"];
+/// Only a template that never ships may hide from this sweep. The list is
+/// empty on purpose: an exemption nobody can see is an exemption nobody removes.
+const EXEMPT: &[&str] = &[];
+
+/// A template that stays private, used to tell the two trees apart. Since
+/// v0.5.0 the export carries a SUBSET of `builder/templates`, so the presence
+/// of the templates root no longer says which tree the sweep is walking --
+/// the presence of a private-only template does.
+const PRIVATE_ONLY_MARKER: &str = "builder/templates/memory-hive";
 
 fn json_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
@@ -68,13 +77,15 @@ fn hop_keys(expr: &str) -> Vec<String> {
 fn every_shipped_edge_condition_guards_the_hop_keys_it_reads() {
     let mut files = Vec::new();
     json_files(&repo_path("examples"), &mut files);
-    // builder/ is not part of the export subset; in the public tree the sweep
-    // holds the examples alone (same guard class as proxy_promotion_edge_e2e's
+    // Only a SUBSET of builder/templates is part of the export (six public
+    // templates since v0.5.0); the rest stays private. Both trees are swept,
+    // each for what it carries (same guard class as proxy_promotion_edge_e2e's
     // templates_root(), GH #49).
     let builder_templates = repo_path("builder/templates");
     if builder_templates.exists() {
         json_files(&builder_templates, &mut files);
     }
+    let private_tree = repo_path(PRIVATE_ONLY_MARKER).exists();
     assert!(files.len() > 20, "the sweep found almost nothing to read");
 
     let mut checked = 0usize;
@@ -104,10 +115,9 @@ fn every_shipped_edge_condition_guards_the_hop_keys_it_reads() {
         }
     }
 
-    // The floor tracks what the tree offers: with builder/templates present
-    // (private tree) the sweep must see the lot; the public export subset
-    // carries the examples alone.
-    let floor = if builder_templates.exists() { 50 } else { 15 };
+    // The floor tracks what the tree offers: the private tree must be swept in
+    // full, the public export subset carries the examples plus six templates.
+    let floor = if private_tree { 50 } else { 25 };
     assert!(
         checked > floor,
         "only {checked} conditions swept, expected more than {floor}"

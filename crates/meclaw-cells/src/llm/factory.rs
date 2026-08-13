@@ -6,8 +6,11 @@
 
 use crate::llm::cell::LlmCell;
 use crate::llm::params::LlmParams;
+use crate::llm::seed;
 use crate::llm::state::check_schema_version;
-use meclaw_colony::persist::open_or_create_cell_db;
+use meclaw_colony::persist::{
+    OpenStatus, open_or_create_cell_db, open_or_create_cell_db_with_status,
+};
 use meclaw_colony::{
     CellFactory, RespawnFn, SpawnedCellKind, WakeFn, build_stateful_task_with_peace,
     renotify_stop_wiring,
@@ -49,6 +52,17 @@ impl CellFactory for LlmCellFactory {
         LlmParams::parse(raw).map(|_| ())
     }
 
+    /// Pre-spawn validation of the cell's on-disk assets (GH #99): the optional
+    /// `seed/system.jsonl`. Routes through the SAME parse path `spawn_cell`
+    /// uses (`seed::check_system_seed` → `parse_system_seed` ←
+    /// `load_system_seed_if_present`), so `meclaw --validate` and the spawn
+    /// agree on every syntactic verdict — the store's validate-equals-spawn
+    /// invariant (issue #56), applied to the llm seed.
+    fn validate_cell_dir(&self, raw: &JsonValue, cell_dir: &std::path::Path) -> Result<(), String> {
+        let _ = raw;
+        seed::check_system_seed(cell_dir).map_err(|e| format!("llm: {e}"))
+    }
+
     /// Spawn an `llm`-Cell instance. Phase-7.5 substrate hands us
     /// `cell_dir`; we join `cell.db` underneath. Reqwest client is built
     /// ONCE (Phase-7-Pattern) and cloned into the RespawnFn — no rebuild
@@ -85,14 +99,35 @@ impl CellFactory for LlmCellFactory {
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
 
+        // GH #99: the seed file is parsed HERE, BEFORE `cell.db` is opened. Two
+        // reasons, both load-bearing:
+        //   * a syntactically broken seed (or a `{text_id}` leaf) fails THIS CELL
+        //     with a named factory error — boot-plan reject, mutation reject —
+        //     instead of a half-configured agent;
+        //   * failing before the open means no `cell.db` file exists yet. Were it
+        //     created first, the next spawn against the FIXED seed would see
+        //     `Resumed` and skip the seed forever.
+        seed::check_system_seed(&cell_dir).map_err(|e| format!("llm: {e}"))?;
+
         // Phase-13-K-2: NO initial cell-task spawn. The initial open of cell.db is
         // still needed — `check_schema_version` is the ONLY check site (WakeFn and
         // RespawnFn are sync and skip the schema check intentionally: db:own →
         // schema_version does not drift over the cell's lifetime). The connection
         // is closed again immediately; WakeFn opens fresh on the first wake.
-        let init_conn = open_or_create_cell_db(&cell_dir.join("cell.db"))
+        //
+        // GH #99: this open is also the cell's ONE `OpenStatus` observation. It
+        // is the first open of the cell's lifetime — the WakeFn always finds the
+        // file already there — so `Created` here IS "fresh cell.db", and the
+        // overview's no-re-seed-on-resume rule (§ Seed-Konzept) falls out of it:
+        // every later spawn/wake/respawn sees `Resumed` and leaves the
+        // accumulated `system.*` identity untouched.
+        let (mut init_conn, status) = open_or_create_cell_db_with_status(&cell_dir.join("cell.db"))
             .map_err(|e| format!("open cell.db: {e}"))?;
         check_schema_version(&init_conn)?;
+        if status == OpenStatus::Created {
+            seed::load_system_seed_if_present(&mut init_conn, &cell_dir)
+                .map_err(|e| format!("llm: {e}"))?;
+        }
         drop(init_conn);
 
         // GH #87: the attachments[] read handle. A function of two things this

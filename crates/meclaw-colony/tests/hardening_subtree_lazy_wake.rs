@@ -298,8 +298,9 @@ async fn mutation_subtree_lazy_cell_follow_up_delivery_arrives() {
 /// Write the BOOT tree: root hive `main` with edges ./a -> ./s and ./w -> ./v
 /// (all lazy cells). `s` forwards to `/capture`; the unrelated `w -> v` pair
 /// keeps the persisted edge table non-empty when test (e) disconnects `s`
-/// (the boot-state heuristic classifies registry>0 + edges==0 as
-/// Inconsistent — out of scope here).
+/// (historical rationale: the pre-GH-#89 boot-state heuristic classified
+/// registry>0 + edges==0 as Inconsistent; since #89 that shape is a legitimate
+/// Reboot — the extra pair stays, it does not hurt).
 fn write_boot_tree(root: &std::path::Path) {
     write(
         root,

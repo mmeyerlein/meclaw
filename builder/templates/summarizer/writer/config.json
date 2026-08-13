@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${ctx.model}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.2,
+    "max_tokens": 1024,
+    "system_order": [
+      "instructions"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "Provider model id; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal; the MODEL_* literal lane resolves only at the next boot (documented behavior)."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "${OPENROUTER_API_KEY}",
+        "description": "Provider API key"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The writer half of the summarizer: one provider call per close batch, prose in, prose out. It is offered no tools and holds no identity of its own - its system state is the instructions the prep sends fresh with every batch.",
+    "use_when": "Inside the summarizer hive only. finish_reason drives the two internal return edges: stop/length back to prep as the answer, error/content_filter back to prep as the failure.",
+    "not_in_scope": "No tool round (no tools are offered; a tool_calls answer would die unrouted). No retry - retry is edge business. Not the agent's brain: this cell never sees a live turn, only closed sessions.",
+    "emits_meaning": "finish_reason 'stop'/'length' -> ./prep in_answer (a 'length' summary is truncated but real - better a cut handover than none); 'error'/'content_filter' -> ./prep in_error (MUST stay wired).",
+    "consumes_meaning": "messages[] one prompt document per batch; body.system upserted pre-call (system.instructions, sent by prep).",
+    "examples": [
+      "prompt document -> one assistant turn with the handover prose, finish_reason stop"
+    ]
+  }
+}

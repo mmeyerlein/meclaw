@@ -34,6 +34,7 @@
 //! performing the whole sequence on a real child instead of by reading modes
 //! off a directory.
 
+use super::probe::CgroupDelegation;
 use super::profile::ResourceLimits;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -188,12 +189,34 @@ fn has_enabled_controllers(path: &Path) -> bool {
 /// attempt. Blocking, so this belongs in a test or a validation pass, never in
 /// an async hot path.
 pub fn cgroup_delegation_supported() -> bool {
+    matches!(delegation_probe(), CgroupDelegation::Delegated { .. })
+}
+
+/// The same probe, but keeping what it learned (GH #97).
+///
+/// `cgroup_delegation_supported` throws the reason away, and the reason is the
+/// interesting half: an absent mechanism and a wrong launch both answer
+/// `false`, and only one of them is fixed by starting the daemon differently.
+/// Every failing step of the sequence therefore gets its own variant. See
+/// [`CgroupDelegation`] and the module docs for the measurement behind it.
+///
+/// Blocking, and it forks a child: a validation path or a test, never an async
+/// hot path.
+pub fn delegation_probe() -> CgroupDelegation {
+    let Some(root) = delegated_root() else {
+        return CgroupDelegation::NoDelegatedRoot;
+    };
     let limits = ResourceLimits {
         pids_max: Some(64),
         ..ResourceLimits::default()
     };
-    let Ok((_scope, fd)) = create(&limits) else {
-        return false;
+    let (_scope, fd) = match create(&limits) {
+        Ok(v) => v,
+        Err(e) => {
+            return CgroupDelegation::SetupFailed {
+                reason: e.to_string(),
+            };
+        }
     };
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c")
@@ -209,7 +232,23 @@ pub fn cgroup_delegation_supported() -> bool {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(move || join_via(raw));
     }
-    matches!(cmd.status(), Ok(st) if st.success())
+    match cmd.status() {
+        Ok(st) if st.success() => CgroupDelegation::Delegated {
+            root: root.display().to_string(),
+        },
+        // A `pre_exec` that returns `Err` travels back to the parent as the
+        // spawn error, so THIS is where the common-ancestor `EACCES` surfaces.
+        Err(e) => CgroupDelegation::MoveRefused {
+            permission_denied: matches!(e.raw_os_error(), Some(libc::EACCES) | Some(libc::EPERM)),
+            reason: e.to_string(),
+        },
+        // The child started but did not exit cleanly. Nothing in `/bin/sh -c :`
+        // can do that, so it is reported rather than folded into a success.
+        Ok(st) => CgroupDelegation::MoveRefused {
+            permission_denied: false,
+            reason: format!("the probe child exited {st}"),
+        },
+    }
 }
 
 /// Create a sub-cgroup carrying `limits` and return it together with a write

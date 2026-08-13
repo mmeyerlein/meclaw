@@ -278,9 +278,11 @@ The wire is pinned against the reference implementation `github.com/openai/codex
 
 This way an LLM consumer reads the full tool output naturally (stdout first, stderr explicitly marked), and edges can route quickly via `header.had_stderr` before the `text` parse. Rejected were: stderr as its own header string (would break the "headers = small" discipline with large compiler outputs / stack traces), stderr as its own top-level body slot (breaks the natural LLM-consumer model "reading tool output means reading `text`" and increases slot inflation), and stderr always as a JSON struct in `text` (`{stdout, stderr, exit_code}`, not directly LLM-readable without a parse step).
 
-**Output header** (`hop` compartment, expires on the next cell emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (mandatory, always set), `bytes` (length of the `text`), optional `truncated` (on long stdout).
+**Output header** (`hop` compartment, expires on the next cell emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (mandatory, always set), `bytes` (**full** length of the combined output before a cut), optional `truncated` (`true` when `max_bytes` cut — GH #83, see below).
 
-**`params`**: typically the command to execute or the script-path convention. Optional `sandbox` (S4/GH #35, completed in GH #85; schema in `config.md` § `params`), the process sandbox block for the spawned shell.
+**`params`**: typically the command to execute or the script-path convention. `max_bytes` (byte cap on the returned output, default `262144` = 256 KiB, GH #83). Optional `sandbox` (S4/GH #35, completed in GH #85; schema in `config.md` § `params`), the process sandbox block for the spawned shell.
+
+**Size cap (`max_bytes`, GH #83).** A command with runaway stdout has the same multiplying effect inside a tool loop as an uncapped `web_fetch` body: the tool result becomes a thread row and re-enters the prompt on **every** subsequent round. `max_bytes` (default 256 KiB — the same generous-but-finite value `web_fetch` uses) cuts the **combined** `text` (stdout plus the stderr sentinel block, if any) on a UTF-8 boundary. A trim is visible, never silent: `text` ends in `… [truncated, <N> bytes total]`, `header.truncated: true`, and `header.bytes` reports the **full** size before the cut. A cut may clip the stderr block — the marker and `header.had_stderr` stay the reliable signals. Inside an agent loop the value belongs much lower.
 
 **Phase-7 conventions** (Slice-2 decisions):
 - **`exit ≠ 0` is a NORMAL tool_result**: `exit_code` always in the header (even =0). The LLM/caller reads the code and decides. Consistent with Claude Code's Bash tool.
@@ -299,7 +301,7 @@ This way an LLM consumer reads the full tool output naturally (stdout first, std
 - **Shell**: `/bin/sh -c <command>`. `cwd`/`shell` as params deferred (operator sets via `cd /x && cmd` inline).
 - **No persistent bash** (`cell.timeout: -1`): by-design dropped (architecture ruling 2026-06-08). `bash` is one-shot only, not a deferred option.
 - **Input minimal**: `{"command": "..."}`.
-- **Defaults**: `max_concurrency: 4`, `external_timeout_ms: 60000`.
+- **Defaults**: `max_concurrency: 4`, `external_timeout_ms: 60000`, `max_bytes: 262144`.
 
 ---
 
@@ -404,11 +406,13 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Body format of the response**: `messages[]` with a `tool_result` turn whose `text` contains the search results as a JSON list (title, URL, snippet per hit). On large result lists (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer.
 
-**Output header**: `operation` (= `"web_search"`), `result_count`, `duration_ms`, `bytes`.
+**Output header**: `operation` (= `"web_search"`), `result_count` (**full** provider count, even when the list was cut), `duration_ms`, `bytes` (**full** size of the provider response), optional `truncated` (`true` when `max_results` or `max_bytes` cut — GH #83, see below).
 
 **error_codes**: `io_error` (DNS/connect error), `timeout` (external_timeout elapsed), `invalid_input` (missing/invalid `query`). A merely non-conformant provider response is **not** an error (see Phase-7 conventions: `result_count=0`, body passed through).
 
-**`params`**: typically provider `base_url` and API token (via `${VAR}` substitution).
+**`params`**: typically provider `base_url` and API token (via `${VAR}` substitution). `max_results` (list cap, default `10`, GH #83) and `max_bytes` (byte backstop on the `text`, default `262144` = 256 KiB, GH #83).
+
+**List cap (`max_results`) + byte backstop (`max_bytes`), GH #83.** A result list is a tool result, and inside a tool loop it re-enters the prompt on **every** subsequent round. A conforming list with more than `max_results` hits (default 10 — a full first page) is trimmed in place: the JSON stays valid and carries the cut **visibly where the model reads** (`"truncated": true`, `"total_results": <N>` in the object — the hop header does not travel into the thread row). `header.result_count` keeps the full provider count, `header.bytes` the full response size. `max_bytes` is the backstop for what the list cap cannot catch (a non-conforming pass-through body, absurdly large snippets) — the identical `web_fetch` convention: cut on a UTF-8 boundary, `… [truncated, <N> bytes total]` marker in `text`. When neither cap bites, the provider body passes through **byte-identical** (no re-serialization).
 
 **Phase-7 conventions** (Slice-3 decisions):
 - **Generic JSON wrapper**: the cell does GET `<params.endpoint>?q=<query>` with optional `params.api_key` as bearer token. Expects response `{"results":[{"title","url","snippet"}]}`.
@@ -416,9 +420,9 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - **Input**: `{"query": "..."}`.
 - **Graceful on non-conformant response**: `result_count=0` when the `results` key is missing or not an array. The body is ALWAYS passed through in `text`, **no hard error**.
 - **Header**: `operation: "web_search"`, `result_count: u64`, `duration_ms`, `bytes`. (The `http_status` header is deferred here, parity with web_fetch would be more consistent, but is post-Slice-3.)
-- **Truncation/blob**: deferred (Phase 12).
+- **Truncation**: `max_results` + `max_bytes` (GH #83, see above) cut visibly; below them large result lists stay inline in `text` and are offloaded as a whole-body blob when needed (Phase 12).
 - **`reqwest::Client` per cell instance** (analogous to web_fetch). Build error at spawn → spawn error. RespawnFn clones the client.
-- **Defaults**: `max_concurrency: 8`, `external_timeout_ms: 15000`.
+- **Defaults**: `max_concurrency: 8`, `external_timeout_ms: 15000`, `max_results: 10`, `max_bytes: 262144`.
 
 ---
 

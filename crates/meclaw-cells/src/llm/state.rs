@@ -23,7 +23,8 @@ use meclaw_core::serde_json::{self, Value};
 /// the whole class into `{"text": …}` at the delivery boundary. The key stays in
 /// the stop condition so this walk keeps agreeing with the resolver's leaf
 /// definition and with `read_system_tree`, which can still read a row written
-/// before that boundary existed (GH #95).
+/// before that boundary existed — such residue fails the call loudly at read
+/// via [`check_text_id_residue`] (GH #95).
 ///
 /// Output order is unspecified (HashMap iteration). Caller should sort if stable
 /// order matters (tests do).
@@ -47,6 +48,45 @@ fn walk(node: &Value, path: &str, out: &mut Vec<(String, Value)>) {
         };
         walk(v, &next_path, out);
     }
+}
+
+/// GH #95 guard — reject a system tree read back from `cell.db` while it
+/// still holds unresolved `{text_id}` leaves (pre-#86 residue).
+///
+/// Since GH #86 the substrate resolves the `{text_id}` pointer class at the
+/// delivery boundary, so no such leaf arrives from a delivery any more. A row
+/// written BEFORE that boundary existed never crosses it again, and
+/// `concat_system_prompt` (which stops at `text`) would silently drop its
+/// content from the system prompt. Loud-at-read (GH #95 ruling): the call
+/// fails with a regular cell error naming every offending slot, instead of a
+/// silently shortened prompt. No panic, no restart — the row stays in
+/// `cell.db` and is overwritten by re-sending the slot with inline text.
+///
+/// The leaf definition is shared with the resolver via [`flatten_to_leaves`];
+/// a leaf carrying `text_id` NEXT TO `text` is residue too (the resolver
+/// never produced that shape). Offending slots are reported sorted.
+pub(crate) fn check_text_id_residue(tree: &Value) -> Result<(), String> {
+    let mut offenders: Vec<String> = flatten_to_leaves(tree, "")
+        .into_iter()
+        .filter(|(_, leaf)| leaf.as_object().is_some_and(|o| o.contains_key("text_id")))
+        .map(|(slot, _)| slot)
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    offenders.sort();
+    let slots = offenders
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "system slot(s) {slots}: unresolved {{text_id}} leaf in cell.db — pre-#86 residue \
+         (GH #95). The substrate resolves this pointer class at the delivery boundary since \
+         GH #86; a row persisted before that boundary existed never crosses it again, and \
+         its content would silently drop out of the system prompt. Re-send the slot with \
+         inline text to overwrite the row"
+    ))
 }
 
 /// UPSERT a single system-leaf into cell.db.system. Idempotent.
@@ -177,8 +217,8 @@ pub(crate) fn check_schema_version(conn: &rusqlite::Connection) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::{
-        check_schema_version, flatten_to_leaves, read_system_tree, replace_last_input,
-        system_first_persist, upsert_system_leaf,
+        check_schema_version, check_text_id_residue, flatten_to_leaves, read_system_tree,
+        replace_last_input, system_first_persist, upsert_system_leaf,
     };
     use meclaw_colony::persist::open_or_create_cell_db;
     use meclaw_core::serde_json::json;
@@ -197,8 +237,9 @@ mod tests {
     /// The `text_id` stop condition is retained for pre-GH-#86 rows: no such
     /// leaf can arrive from a delivery any more, but a `cell.db` written before
     /// the boundary resolved that class may still hold one, and the walk must
-    /// keep treating it as a leaf rather than descending into it. What such a
-    /// residual row should DO is open on GH #95.
+    /// keep treating it as a leaf rather than descending into it. Such a
+    /// residual row fails the call loudly at read (`check_text_id_residue`,
+    /// GH #95 ruling) instead of silently dropping out of the prompt.
     #[test]
     fn flatten_two_leaves_under_identity() {
         let tree = json!({"identity": {"soul": {"text":"A"}, "body": {"text_id":"01H"}}});
@@ -224,6 +265,60 @@ mod tests {
                 json!({"text":"{\"name\":\"calc\"}"})
             )]
         );
+    }
+
+    // ───── GH #95: pre-#86 {text_id} residue is loud at read ─────
+
+    #[test]
+    fn residue_check_passes_a_pure_text_tree() {
+        let tree = json!({"identity": {"soul": {"text": "S"}, "body": {"text": "B"}}});
+        check_text_id_residue(&tree).unwrap();
+    }
+
+    #[test]
+    fn residue_check_flags_a_text_id_only_leaf_with_its_slot_path() {
+        let tree = json!({"identity": {"soul": {"text": "S"}, "body": {"text_id": "01H"}}});
+        let err = check_text_id_residue(&tree).unwrap_err();
+        assert!(err.contains("'identity.body'"), "must name the slot: {err}");
+        assert!(
+            err.contains("pre-#86 residue"),
+            "must name the origin: {err}"
+        );
+        assert!(err.contains("GH #95"), "must name the issue: {err}");
+    }
+
+    /// A leaf carrying `text_id` NEXT TO `text` is residue too — the resolver
+    /// never produced that shape, and silently preferring the `text` half
+    /// would hide the unresolved rest.
+    #[test]
+    fn residue_check_flags_a_mixed_leaf_carrying_a_text_id_rest() {
+        let tree = json!({"identity": {"body": {"text": "a", "text_id": "01H"}}});
+        let err = check_text_id_residue(&tree).unwrap_err();
+        assert!(err.contains("'identity.body'"), "must name the slot: {err}");
+    }
+
+    /// The tools sub-slot is NOT exempt (mirrors the resolver, GH #86): a
+    /// residual pointer under `tools` must get the same story, not the
+    /// misleading `extract_tools` "leaf has no text field".
+    #[test]
+    fn residue_check_scans_the_tools_subtree_too() {
+        let tree = json!({"tools": {"calc": {"text_id": "01H"}}});
+        let err = check_text_id_residue(&tree).unwrap_err();
+        assert!(err.contains("'tools.calc'"), "must name the slot: {err}");
+    }
+
+    #[test]
+    fn residue_check_names_every_offending_slot_sorted() {
+        let tree = json!({
+            "b": {"text_id": "x"},
+            "a": {"text_id": "y"},
+            "c": {"text": "ok"},
+        });
+        let err = check_text_id_residue(&tree).unwrap_err();
+        let pos_a = err.find("'a'").expect("slot a named");
+        let pos_b = err.find("'b'").expect("slot b named");
+        assert!(pos_a < pos_b, "slots must be sorted: {err}");
+        assert!(!err.contains("'c'"), "clean slot must not be named: {err}");
     }
 
     #[test]

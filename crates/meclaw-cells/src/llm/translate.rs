@@ -33,6 +33,10 @@ pub(crate) enum TranslateError {
 /// `BlobUnsupported`, because nothing resolved that pointer class; the substrate
 /// now expands it at the delivery boundary, so every leaf that arrives here is
 /// an inline `{"text": …}` container and there is no failure left to report.
+/// The one shape that still stops at neither key — a pre-#86 residue row read
+/// back out of `cell.db` — never reaches this function: the handle path
+/// rejects it loudly right after `read_system_tree`
+/// (`state::check_text_id_residue`, GH #95).
 pub(crate) fn concat_system_prompt(tree: &Value, system_order: &[String]) -> String {
     let Some(obj) = tree.as_object() else {
         return String::new();

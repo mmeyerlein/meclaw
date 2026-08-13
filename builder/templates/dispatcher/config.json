@@ -1,0 +1,91 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json\n\n# --- per-answer call budget ------------------------------------------------\n# One brain answer may carry N calls in ONE bundle. The ITERATION cap lives at\n# the seam that starts a round (the collector); the CALL cap lives here,\n# because only this cell ever sees the whole bundle.\nMAX_CALLS = int(\"${DISPATCHER_MAX_CALLS:-16}\")\n\nd = json.load(sys.stdin)\nhop = (d.get(\"header\") or {}).get(\"hop\") or {}\nfinish = str(hop.get(\"finish_reason\", \"\") or \"\")\nmsgs = d.get(\"messages\", [])\ncalls = [m for m in msgs if m.get(\"type\") == \"tool_call\"]\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\ndef error_result(call_id, text, code):\n    \"\"\"A synthetic tool_result in place of a call that will never run. It keeps\n    the original tool_call_id, so the round stays fan-in-complete: the brain\n    sees the failure and has to answer it instead of waiting for it. Dropping\n    the call silently would stall the fan-in until the TTL runs out, and TTL\n    expiry emits nothing at all towards the surface.\"\"\"\n    return {\"header\": {\"route\": \"result\", \"tool_call_id\": call_id, \"error_code\": code},\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                          \"text\": text}]}\n\n\ndef parts_of(call, i):\n    \"\"\"(id, name, raw arguments) of one OpenAI-form tool_call turn, whose text\n    is the stringified function object. `name` is None when the turn cannot be\n    read that way -- an unroutable call, not a tool.\"\"\"\n    call_id = str(call.get(\"id\") or \"call-%d\" % i)\n    try:\n        fn = json.loads(call.get(\"text\") or \"{}\")\n    except Exception:\n        return call_id, None, None\n    if not isinstance(fn, dict) or not fn.get(\"name\"):\n        return call_id, None, None\n    args = fn.get(\"arguments\", \"{}\")\n    if not isinstance(args, str):\n        args = json.dumps(args)\n    return call_id, str(fn[\"name\"]), args\n\n\nif not calls:\n    # No bundle. The final answer travels; anything else stops here. The llm\n    # error path echoes the INPUT conversation back with finish_reason \"error\",\n    # and putting that on the answer lane would file the prompt as the agent's\n    # own words -- an error lane belongs on the brain's edge, not in this cell.\n    if finish == \"stop\":\n        emit([{\"header\": {\"route\": \"answer\", \"finish_reason\": finish}, \"messages\": msgs}])\n    emit([])\n\n# PLAIN order: the expectation set FIRST, the calls after it. A tool that\n# answers instantly must not reach the fan-in before the round exists there.\nout = [{\"header\": {\"route\": \"calls\", \"call_count\": str(len(calls))}, \"messages\": msgs}]\n\nif len(calls) > MAX_CALLS:\n    reason = \"call budget exceeded: %d calls in one answer, limit %d\" % (len(calls), MAX_CALLS)\n    for i, c in enumerate(calls):\n        out.append(error_result(parts_of(c, i)[0], reason, \"call_budget_exceeded\"))\n    emit(out)\n\nfor i, c in enumerate(calls):\n    call_id, name, args = parts_of(c, i)\n    if name is None:\n        out.append(error_result(call_id,\n                                \"malformed tool_call: text is not a JSON object with a name\",\n                                \"malformed_tool_call\"))\n        continue\n    # No topology knowledge: this cell names the TOOL, an edge knows the CELL.\n    out.append({\"header\": {\"route\": \"tool\", \"tool_name\": name, \"tool_call_id\": call_id},\n                \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": call_id,\n                              \"text\": args}]})\nemit(out)\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "max_calls": {
+        "type": "number",
+        "secret": false,
+        "default": 16,
+        "description": "Per-answer call budget (DISPATCHER_MAX_CALLS): how many tool calls one brain answer may fan out. A bundle above the budget runs NO tool; every expected call is answered with a synthetic error tool_result instead, so the round stays fan-in-complete. The iteration cap of the loop is a different knob and lives at the seam that starts a round."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "calls",
+            "tool",
+            "result",
+            "answer"
+          ],
+          "required": true
+        },
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "call_count": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Fan-OUT of one brain answer: it splits a bundle of tool_calls into one message per call and lets a final answer through. The assistant turn goes to the fan-in first (route 'calls'), then each call leaves with hop.tool_name and hop.tool_call_id and nothing else -- which cell that name belongs to is decided by an edge, so the split works in any topology.",
+    "use_when": "Directly behind an agent's llm cell, in front of the tool cells and the collector's in_calls / in_tool / in_answer ports. One per brain.",
+    "not_in_scope": "No fan-IN (that is the collector's: expectation sets, round completeness, re-entry). No tool execution, no argument validation, no knowledge of which tools exist. No iteration counting and no restore_ttl: the loop is bounded on the re-entry edge, not here. No error routing for a failed inference -- a turn that is neither a bundle nor a final answer is terminal.",
+    "emits_meaning": "route 'calls': the assistant turn verbatim, the expectation set of the round, ALWAYS first (PLAIN order). route 'tool': one call, hop.tool_name for the edge condition, hop.tool_call_id for the fan-in, body = one tool_call turn carrying the RAW arguments. route 'result': a synthetic error tool_result for a call that will never run (budget exceeded, or a call that cannot be read), hop.error_code names which, and the tool_call_id is preserved so the round stays complete. route 'answer': the brain's final turn, passed through with hop.finish_reason. A turn that is neither a bundle nor a final answer emits NOTHING (empty multi-send, terminal by design).",
+    "consumes_meaning": "messages[]: the assistant turn as the llm cell emits it -- tool_call turns whose text is the stringified OpenAI function object ({name, arguments}), a text turn, or both. hop.finish_reason: 'stop' releases the answer; a bundle of tool_calls is dispatched whatever the finish reason says.",
+    "examples": [
+      "2 calls -> 3 emissions: calls(the assistant turn) , tool{tool_name: web_search, tool_call_id: c1}, tool{tool_name: web_fetch, tool_call_id: c2}",
+      "17 calls with DISPATCHER_MAX_CALLS=16 -> 18 emissions: calls + 17 results 'call budget exceeded', no tool runs and no id is lost",
+      "finish_reason stop -> 1 emission on route 'answer', the turn unchanged"
+    ]
+  }
+}

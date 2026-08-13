@@ -4,6 +4,132 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.5.0] — 2026-08-14
+
+The agent wave. Two waves in one night — the start-Egon wave and night wave 3 —
+each built on parallel tracks in isolated worktrees and merged one by one behind
+full gates. The theme is the first full agent on top of the substrate: almost
+everything below is topology, not Rust. Five new templates ship, the collector
+hive becomes public, and the tool cells get the contract batteries that a coding
+agent will lean on.
+
+A minor bump rather than a patch: new templates, new knobs, and four sanctioned
+behaviour changes (the boot probe's truth table, attachment consumption on the
+responses dialect, truncation on `bash`/`web_search`, and a formerly silent
+`{text_id}` residue that is now a loud call error).
+
+### Added
+
+- **`--sandbox-probe` answers the sandbox question before the first cell.** A
+  flags-only CLI surface for the four host capability probes
+  (`filesystem`/`network`/`limits`/`syscalls` — the `params.sandbox` keys); the
+  cgroup line names the launch requirement (a systemd user unit vs. an ssh
+  session scope) instead of a bare "no". The same report rides along on
+  `--validate`, where the spawning probes only run if the tree declares a
+  `restricted` profile (#97).
+- **The collector hive ships.** `collector@1` — the context orchestrator that
+  decides what enters an agent's context window and what leaves it — is now a
+  public template instead of a private one. Eight entry lanes, five exit routes,
+  one seam, and no model judgement anywhere in the eviction policy (#27).
+- **Four more templates, all pure topology.** `session-keeper@1` gives a
+  conversation the lifecycle of a phone call: a lazy start per channel, an idle
+  clock, a nightly sweep that seals a generation with a guarded update, and no
+  LLM anywhere in it. `dispatcher@1` is the fan-out half of a tool loop whose
+  fan-in half is the collector — routing, never assembly. `summarizer@1` turns a
+  closed generation into one recency-weighted handover summary that an `llm` cell
+  consumes as a `system.*` upsert without a provider call, so the next generation
+  wakes up with yesterday instead of with nothing (#100). `retry@1` re-emits the
+  original call on a failure reply while the *edge* does the counting, and
+  `archive-bridge@1` lifts the append-only archive out of the example colony into
+  a template (#3, #4).
+- **Caps at the brain seam.** The tool round and the memory bundle used to reach
+  the model verbatim and unbounded: one large tool result walked past every
+  eviction knob there was. `COLLECTOR_TOOL_CHARS` caps a tool result per item,
+  `COLLECTOR_ROUND_BYTES` caps the whole round from the newest iteration
+  backwards, `COLLECTOR_MEMORY_CHARS` caps the rendered bundle. The cut travels
+  on the hop (`round_capped`, `round_dropped`, `memory_capped`) and the full text
+  stays readable in the round store — a cap is a preview, not a delete (#91).
+- **The seam ends its own loop.** `COLLECTOR_MAX_ITER` (default 8): at the cap
+  the assembled context leaves on the answer lane with `hop.round_capped`
+  instead of asking the brain again. The round begins at the seam, so the seam
+  is what ends it — no dispatcher, no edge condition and no expiring TTL is
+  needed to stop a runaway loop, and the turn leaves on a lane the topology can
+  react to instead of dying in the DLQ (#77).
+- **A close lane and a pruning policy for the window store.** A session close
+  hands the whole day out as ONE batch on route `write` (turns in order, tool
+  rounds as a raw top-level slot), and writes a ledger row as it does. The prune
+  lane then deletes only what has provably left the collector and is older than
+  `COLLECTOR_PRUNE_AFTER_MS` (default 7 days), reporting the cut per session on
+  the hop. No ledger row, no prune — the store would rather grow than lose
+  quietly. There is no built-in schedule; the parent tree wires a timer if it
+  wants one (#76).
+- **A tool round survives a lost result.** A fan-in that waits for a result that
+  never arrives used to park forever. `COLLECTOR_ROUND_IDLE_MS` (default 2 min)
+  closes such a round at the next occasion with a synthetic error `tool_result`
+  per missing call, then hands back to the existing machinery with
+  `hop.round_stale`. A user turn arriving mid-round is parked and stamped
+  (`hop.round_deferred`) rather than starting a second assembly: at most one open
+  brain call per session (#103).
+- **The `llm` cell reads a JSONL seed.** `<cell>/seed/system.jsonl` upserts
+  `system` leaves on first open, in one transaction, with the exact semantics of
+  `upsert_system_leaf`. A resumed cell is never re-seeded, a `{text_id}` leaf in
+  a seed is a loud spawn-time configuration error, and a missing file is not an
+  error at all (#99).
+- **`bash` and `web_search` learned the size cap `web_fetch` already had.**
+  `params.max_bytes` (default 256 KiB on both) trims the emitted text at a UTF-8
+  boundary with a visible marker, sets `header.truncated`, and reports the full
+  pre-cut size in `header.bytes`. The declared `truncated` header finally has a
+  producer everywhere it is declared (#83).
+
+### Changed
+
+- **The boot probe stops guessing from row counts.** An edge-less but perfectly
+  healthy workspace booted exactly once: the second boot classified the state the
+  first one had written as `Inconsistent` and panicked. The count heuristic is
+  replaced by a truth table whose discriminator is whether the initial-apply
+  bundle has ever committed (`edges > 0` or `hive_scopes > 0`), which makes
+  edge-less single cells and hive-only roots the first-class states the spec
+  always said they were. Real corruption stays loud, and gets louder: a COUNT
+  that errors on an existing file is now `Inconsistent` instead of a silent
+  `FirstBoot` via `unwrap_or(0)`. The two drifting copies of the probe are one
+  (#89).
+- **Attachments cross the responses wire dialect.** A cell on
+  `wire_dialect: "responses"` that declares `consumes.body.attachments` used to
+  reject loudly; it now translates `image/*` attachments into `input_image` items
+  on the typed `input[]`, folded onto the last user message, with the same data
+  URL as the chat-completions path (#94).
+- **A pre-#86 `{text_id}` row is loud instead of silent.** A `system` row
+  persisted before the delivery boundary resolved pointers would silently drop
+  out of the system prompt. Reading one is now a regular cell error naming every
+  affected slot path, its origin and the way out — no panic, no restart loop, and
+  no provider call with a shortened prompt (#95).
+
+### Fixed
+
+- **`colony.db` "database is locked" under parallel load.** Not a missing
+  `busy_timeout` — rusqlite installs one implicitly — but a same-process race:
+  boot opened the database twice with an asynchronous writer-thread close in
+  between, whose WAL checkpoint took exclusive locks against the re-open. The
+  double open is gone and every open path now carries an explicit 30 s budget
+  (#98).
+
+### Tooling fitness
+
+- **Contract batteries for every tool cell** (#104). Ten test files covering
+  `bash`, `file`, `edit`, `code`, `store`, `timer`, `mcp`, `harness`,
+  `web_fetch` and `web_search` against their production factory paths: exit codes
+  as data, byte-exact sentinel layout, path-traversal and symlink escapes with
+  exact error codes, UTF-8 boundaries under truncation, the `code` cell's stdin
+  contract in full, multi-send ordering, and operation timeouts. Plus a workshop
+  scenario that drives a real coding task through all ten cells over the
+  unmodified `dispatcher@1` and `collector@1` templates — the templates are the
+  cells under test, not a copy of them.
+
+### Docs
+
+- **README and roadmap on the current release** (#92), including what the
+  meclaw-os stream has actually delivered rather than what it promised.
+
 ## [0.4.1] — 2026-08-13
 
 The pre-MVP finish line. The three remaining substrate items of the pre-MVP

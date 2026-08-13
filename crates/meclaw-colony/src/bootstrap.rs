@@ -329,6 +329,8 @@ fn probe_cell_db(path: &std::path::Path) -> Result<(), String> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| format!("open: {e}"))?;
+    // GH #98: boot-path read — carry the busy budget.
+    crate::persist::apply_busy_timeout(&conn).map_err(|e| format!("busy_timeout: {e}"))?;
     let qc: String = conn
         .query_row("PRAGMA quick_check", [], |r| r.get(0))
         .map_err(|e| format!("quick_check: {e}"))?;
@@ -915,27 +917,37 @@ pub fn plan_bootstrap_with_env(
     errors.into_result(plan)
 }
 
-/// Boot-state classification for colony.db (T20, E9).
+/// Boot-state classification for colony.db (T20, E9; truth table re-cut for
+/// GH #89, Ruling F2-R1).
 ///
-/// - `FirstBoot`: all persistence tables empty (or the file absent).
-/// - `Reboot`: all persistence tables non-empty — a re-boot, hydrate instead of InitialApply.
-/// - `Inconsistent`: mixed state — STRICT-FAIL, externe Korruption.
+/// - `FirstBoot`: file absent, a durable `bootstrap_in_flight` marker
+///   (interrupted first apply — idempotent resume), or no InitialApply traces
+///   yet (edges AND hive_scopes empty; registry rows alone may stem from
+///   runtime spawns before the first filesystem bootstrap).
+/// - `Reboot`: the InitialApply bundle has committed at least once (edges OR
+///   hive_scopes non-empty, marker-less) — hydrate instead of InitialApply.
+///   Edge-less and cell-less shapes are legitimate persisted states
+///   (single-cell colonies, hive-only roots, staged builds); the old
+///   "mixed counts = corruption" heuristic misclassified them.
+/// - `Inconsistent`: the file exists but its persistence tables are unreadable
+///   — not a colony.db. STRICT-FAIL. Real DATA corruption inside readable
+///   tables is caught loudly at the schema/read layer instead (edge and
+///   hive-scope hydration hard-fail, cell.db quick_check).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootState {
-    /// All tables empty or the file absent.
+    /// File absent, no InitialApply traces, or resumable first apply (marker).
     FirstBoot,
-    /// All tables non-empty.
+    /// InitialApply bundle traces present (edges/hive_scopes, marker-less).
     Reboot,
-    /// Mischzustand — externe Korruption.
+    /// Persistence tables unreadable — the file is not a colony.db.
     Inconsistent {
         /// Diagnose-String.
         reason: String,
     },
 }
 
-/// Inspects the three persistence tables (registry/edges/hive_scopes) and classifies.
-///
-/// A read-only connection probe; performs no write.
+/// Shared classification core for `probe_boot_state` (path-based) and
+/// `ColonyDb::boot_state` (read_conn-based) — one truth table, no drift.
 ///
 /// **Bootstrap-Recovery (Run-5/5b-Befund)**: a durable `bootstrap_in_flight`
 /// marker in the `meta` table means the last FIRST apply was interrupted
@@ -944,8 +956,60 @@ pub enum BootState {
 /// state classifies as `FirstBoot`: the apply path is idempotent (registry
 /// upserts are cell_id-stable via the identity overlay, `InitialApply` is
 /// INSERT OR IGNORE), so the boot simply resumes the rebuild from the
-/// filesystem — the FS is the source. A mixed table state WITHOUT the marker
-/// stays `Inconsistent` (external corruption, strict-fail).
+/// filesystem — the FS is the source.
+///
+/// **GH #89 (Ruling F2-R1)**: without the marker, `Reboot` means "the
+/// InitialApply bundle has committed at least once" — edges OR hive_scopes
+/// non-empty. Count-level "mixed" states (registry>0/edges=0,
+/// hive_scopes-only, …) are legitimate persisted shapes, not corruption.
+///
+/// **GH #89 (Ruling F2-R4)**: registry rows ALONE are not a reboot proof.
+/// Runtime-spawned cells (`ColonyMsg::Register`) persist registry upserts
+/// before the first `bootstrap_from_filesystem` ever runs; that state
+/// classifies `FirstBoot` — the walk stays the source, re-adoption is
+/// idempotent (cell_ids stable via the identity overlay).
+///
+/// **GH #89 (Ruling F2-R2)**: a count query that FAILS (missing table,
+/// "file is not a database") is the only probe-detectable external corruption
+/// and classifies `Inconsistent` — previously it was silently swallowed into
+/// an all-empty `FirstBoot`.
+pub(crate) fn classify_boot_state(conn: &rusqlite::Connection) -> BootState {
+    let marker: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key='bootstrap_in_flight'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if marker > 0 {
+        return BootState::FirstBoot;
+    }
+    let mut counts: Vec<i64> = Vec::with_capacity(3);
+    for table in &["registry", "edges", "hive_scopes"] {
+        let q = format!("SELECT COUNT(*) FROM {table}");
+        match conn.query_row(&q, [], |r| r.get(0)) {
+            Ok(c) => counts.push(c),
+            Err(e) => {
+                return BootState::Inconsistent {
+                    reason: format!("persistence table {table} unreadable: {e}"),
+                };
+            }
+        }
+    }
+    let (edges_n, scopes_n) = (counts[1], counts[2]);
+    if edges_n > 0 || scopes_n > 0 {
+        BootState::Reboot
+    } else {
+        BootState::FirstBoot
+    }
+}
+
+/// Inspects the `bootstrap_in_flight` marker and the three persistence tables
+/// (registry/edges/hive_scopes) and classifies — truth table in
+/// [`classify_boot_state`].
+///
+/// A read-only connection probe; performs no write. An absent file is a
+/// `FirstBoot`; a file that cannot be opened is a hard `Err` (loud).
 pub fn probe_boot_state(db_path: &std::path::Path) -> Result<BootState, BootstrapError> {
     if !db_path.exists() {
         return Ok(BootState::FirstBoot);
@@ -955,36 +1019,13 @@ pub fn probe_boot_state(db_path: &std::path::Path) -> Result<BootState, Bootstra
             .map_err(|e| BootstrapError::InconsistentColonyDb {
                 reason: format!("open: {e}"),
             })?;
-    let marker: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM meta WHERE key='bootstrap_in_flight'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if marker > 0 {
-        return Ok(BootState::FirstBoot);
-    }
-    let mut counts: Vec<i64> = Vec::with_capacity(3);
-    for table in &["registry", "edges", "hive_scopes"] {
-        let q = format!("SELECT COUNT(*) FROM {table}");
-        let c: i64 = conn.query_row(&q, [], |r| r.get(0)).unwrap_or(0);
-        counts.push(c);
-    }
-    let all_empty = counts.iter().all(|&c| c == 0);
-    let all_full = counts.iter().all(|&c| c > 0);
-    if all_empty {
-        Ok(BootState::FirstBoot)
-    } else if all_full {
-        Ok(BootState::Reboot)
-    } else {
-        Ok(BootState::Inconsistent {
-            reason: format!(
-                "table counts mixed (registry={}, edges={}, hive_scopes={})",
-                counts[0], counts[1], counts[2]
-            ),
-        })
-    }
+    // GH #98: boot-path read — carry the busy budget.
+    crate::persist::apply_busy_timeout(&conn).map_err(|e| {
+        BootstrapError::InconsistentColonyDb {
+            reason: format!("busy_timeout: {e}"),
+        }
+    })?;
+    Ok(classify_boot_state(&conn))
 }
 
 /// Deep-Audit F2 (b): true iff `colony.db` carries at least one `in_flight`
@@ -1001,6 +1042,11 @@ fn has_in_flight_mutation(root: &std::path::Path) -> bool {
     let Ok(conn) = rusqlite::Connection::open(&db_path) else {
         return false;
     };
+    // GH #98: boot-path read — carry the busy budget. A failure here is
+    // treated like an open failure (walk-as-source keeps its behaviour).
+    if crate::persist::apply_busy_timeout(&conn).is_err() {
+        return false;
+    }
     conn.query_row(
         "SELECT COUNT(*) FROM mutation_log WHERE status='in_flight'",
         [],
@@ -1084,11 +1130,13 @@ pub enum BootstrapError {
         /// Diagnostic string (the quick_check result or the schema_version value).
         reason: String,
     },
-    /// colony.db is in a mixed state across the persistence tables
-    /// (registry/edges/hive_scopes). Detected via probe_boot_state (T20). A STRICT
-    /// FAIL against external corruption.
+    /// colony.db exists but cannot be opened as a database (probe_boot_state,
+    /// T20). A STRICT FAIL against external corruption. Since GH #89,
+    /// count-level "mixed" table states are NOT this error — they classify as
+    /// `BootState::Reboot`; unreadable tables classify as
+    /// `BootState::Inconsistent`.
     InconsistentColonyDb {
-        /// Diagnostic string (which tables are empty vs. non-empty).
+        /// Diagnostic string (the sqlite open error).
         reason: String,
     },
     /// config.json contains a `cell.*` field not supported in phase 5
@@ -2699,13 +2747,23 @@ mod boot_state_tests {
         assert!(matches!(bs, BootState::Reboot));
     }
 
+    /// GH #89 (Ruling F2-R1): the old pin here
+    /// (`boot_state_mixed_returns_inconsistent`) expected mixed table counts
+    /// to classify as `Inconsistent`. That expectation was WRONG: count-level
+    /// "mixed" states are legitimate persisted shapes (edge-less single-cell
+    /// colonies, hive-only roots, staged builds before wiring — the spec
+    /// itself grants edge-less single cells their instantiation activity,
+    /// § Startup-Algorithmus step 4). Any non-empty, marker-less state is a
+    /// `Reboot`; real corruption is caught loudly at the schema/read layer
+    /// (edge/hive_scope hydration hard-fails) and, probe-level, only when the
+    /// tables are unreadable (pin below).
     #[test]
-    fn boot_state_mixed_returns_inconsistent() {
+    fn boot_state_edges_only_without_marker_returns_reboot() {
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("colony.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         crate::persist::setup_colony_db(&conn).unwrap();
-        // Only edges has data — a mixed state.
+        // Only edges has data — formerly "mixed → Inconsistent", now Reboot.
         conn.execute(
             "INSERT INTO edges (id, from_path, to_path, created_at) VALUES ('id1', '/a', '/b', 0)",
             [],
@@ -2713,9 +2771,114 @@ mod boot_state_tests {
         .unwrap();
         drop(conn);
         let bs = probe_boot_state(&db_path).unwrap();
+        assert_eq!(
+            bs,
+            BootState::Reboot,
+            "edges-only without marker is a persisted state → Reboot, never Inconsistent"
+        );
+    }
+
+    /// GH #89 core shape: cells + hive scopes but zero edges (registry>0,
+    /// edges=0, hive_scopes>0) — exactly what the first boot of an edge-less
+    /// topology writes. The second boot must classify it as `Reboot`.
+    #[test]
+    fn boot_state_cells_and_scopes_without_edges_returns_reboot() {
+        use meclaw_core::Uuid;
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("colony.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at)
+             VALUES ('/solo', ?, 'echo', 'active', 0, 0)",
+            rusqlite::params![Uuid::now_v7().to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hive_scopes (path, created_at) VALUES ('/', 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let bs = probe_boot_state(&db_path).unwrap();
+        assert_eq!(
+            bs,
+            BootState::Reboot,
+            "edge-less but healthy workspace (registry>0/edges=0/hive_scopes>0) → Reboot"
+        );
+    }
+
+    /// GH #89 hive-only shape: a colony of nothing but a hive marker persists
+    /// registry=0, edges=0, hive_scopes=1 on its first boot. The second boot
+    /// must classify it as `Reboot`.
+    #[test]
+    fn boot_state_hive_scope_only_returns_reboot() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("colony.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO hive_scopes (path, created_at) VALUES ('/', 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let bs = probe_boot_state(&db_path).unwrap();
+        assert_eq!(
+            bs,
+            BootState::Reboot,
+            "hive-only workspace (0/0/1) → Reboot"
+        );
+    }
+
+    /// GH #89 (Ruling F2-R4): registry rows alone are NOT a reboot proof.
+    /// Runtime-spawned cells (`ColonyMsg::Register`, e.g. test sinks spawned
+    /// BEFORE the first `bootstrap_from_filesystem`) persist registry upserts
+    /// into colony.db while the InitialApply bundle (edges + hive_scopes) has
+    /// never run. That state must classify `FirstBoot` so the walk stays the
+    /// source (re-adoption is idempotent, cell_ids stay stable via the
+    /// identity overlay). Empirical pin: the collector_colony suite boots
+    /// exactly this way and broke under a "any non-empty table = Reboot" cut.
+    #[test]
+    fn boot_state_registry_only_without_marker_returns_first_boot() {
+        use meclaw_core::Uuid;
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("colony.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        for p in ["/sink", "/park"] {
+            conn.execute(
+                "INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at)
+                 VALUES (?, ?, 'capture', 'active', 0, 0)",
+                rusqlite::params![p, Uuid::now_v7().to_string()],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let bs = probe_boot_state(&db_path).unwrap();
+        assert_eq!(
+            bs,
+            BootState::FirstBoot,
+            "registry-only (runtime spawns, no InitialApply traces) → FirstBoot"
+        );
+    }
+
+    /// GH #89 (Ruling F2-R2): the only probe-detectable external corruption is
+    /// a file whose persistence tables cannot even be counted — that is not a
+    /// colony.db. Previously this state was silently swallowed
+    /// (`unwrap_or(0)` → all-empty → FirstBoot); now it is loud.
+    #[test]
+    fn boot_state_unreadable_tables_returns_inconsistent() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db_path = td.path().join("colony.db");
+        // A valid SQLite file WITHOUT the colony schema (no tables at all).
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        drop(conn);
+        assert!(db_path.exists(), "open must have materialized the file");
+        let bs = probe_boot_state(&db_path).unwrap();
         assert!(
             matches!(bs, BootState::Inconsistent { .. }),
-            "mixed edges-non-empty + registry-empty → Inconsistent"
+            "existing file with unreadable persistence tables → Inconsistent, got: {bs:?}"
         );
     }
 

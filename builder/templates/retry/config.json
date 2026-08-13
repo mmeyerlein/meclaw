@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json\n\nd = json.load(sys.stdin)\nheader = d.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\nctx = header.get(\"context\") or {}\nmsgs = d.get(\"messages\", [])\ncalls = [m for m in msgs if m.get(\"type\") == \"tool_call\"]\nresults = [m for m in msgs if m.get(\"type\") == \"tool_result\"]\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\n# --- call pass -------------------------------------------------------------\n# The call travels verbatim AND rides along as hop.call (the turn as JSON).\n# The wiring's call edge promotes it into context (\"call\": \"hop.call\") -- the\n# only place a stateless cell can keep it across the tool hop.\nif len(calls) == 1:\n    turn = calls[0]\n    emit([{\"header\": {\"route\": \"call\", \"call\": json.dumps(turn),\n                      \"tool_call_id\": str(turn.get(\"id\") or \"\")},\n           \"messages\": [turn]}])\n\nif len(calls) > 1:\n    # This unit retries ONE call; bundles are the dispatcher's job. Refuse\n    # loudly with every id answered, instead of parking an ambiguous call\n    # that a later retry could not rebuild.\n    note = \"retry unit takes one call per message; put a dispatcher in front\"\n    emit([{\"header\": {\"route\": \"error\", \"error_code\": \"bundle_not_supported\"},\n           \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                         \"id\": str(c.get(\"id\") or \"\"), \"text\": note}\n                        for c in calls]}])\n\n# --- reply pass ------------------------------------------------------------\nerror_code = str(hop.get(\"error_code\", \"\") or \"\")\nif error_code:\n    turn = None\n    parked = ctx.get(\"call\")\n    if isinstance(parked, str):\n        try:\n            t = json.loads(parked)\n            if isinstance(t, dict) and t.get(\"type\") == \"tool_call\":\n                turn = t\n        except Exception:\n            pass\n    if turn is not None:\n        # The ORIGINAL call re-enters the tool. Whether it MAY is the retry\n        # edge's decision (int(context.attempt) < RETRY_MAX) -- this cell\n        # neither reads nor writes the counter.\n        emit([{\"header\": {\"route\": \"retry\", \"error_code\": error_code,\n                          \"tool_call_id\": str(turn.get(\"id\") or \"\")},\n               \"messages\": [turn]}])\n    # No (or no rebuildable) parked call: a retry is impossible. Hand the\n    # error over as-is instead of looping garbage into the tool.\n    emit([{\"header\": {\"route\": \"error\", \"error_code\": error_code},\n           \"messages\": msgs}])\n\nif results:\n    emit([{\"header\": {\"route\": \"ok\",\n                      \"tool_call_id\": str(results[0].get(\"id\") or \"\")},\n           \"messages\": msgs}])\n\n# Neither a call nor a reply: terminal (empty multi-send by design).\nemit([])\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "retry_max": {
+        "type": "number",
+        "secret": false,
+        "default": 3,
+        "description": "Retry budget (RETRY_MAX): how many times a failed call re-enters the tool before the give-up lane fires. The knob lives in the WIRING, not in this cell -- the retry edge's condition (int(context.attempt) < ${RETRY_MAX:-3}) bounds the loop and its modifier counts (set_context attempt = int(context.attempt) + 1). The cell neither reads nor writes the counter."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "call",
+            "retry",
+            "ok",
+            "error"
+          ],
+          "required": true
+        },
+        "call": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "context": {
+        "call": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Retry router around ONE tool: routes a call towards the tool, watches the reply, and re-emits the ORIGINAL call on an error reply -- bounded by the wiring's retry edge, never by the cell. At the cap the give-up lane hands the last error to an error sink with the original error_code intact.",
+    "use_when": "Between a caller and a tool cell whose failures are worth a bounded second try (network tools, busy stores). Wire five lanes in the SAME mutation that instantiates it: call (parks the call in context and seeds the counter), the tool's reply lane back in, retry (counts and bounds), ok, and the give-up lane onto the error sink.",
+    "not_in_scope": "No counting (context.attempt is written only by the retry edge), no backoff timing (a routing hop is the delay; a real timer belongs to a timer cell), no bundles (one call per message -- put a dispatcher in front), no state, no cell.db, no knowledge of which cell the tool is.",
+    "emits_meaning": "route 'call': the call verbatim towards the tool; hop.call carries the turn as JSON so the call edge can park it (set_context call = hop.call). route 'retry': the ORIGINAL call rebuilt from context.call, hop.error_code says why; the retry edge decides whether it re-enters the tool. route 'ok': the successful tool_result, passed through. route 'error': the terminal lane -- an error with no rebuildable parked call, or a refused bundle (error_code bundle_not_supported, one synthetic tool_result per id). A turn that is neither a call nor a reply emits NOTHING (empty multi-send, terminal).",
+    "consumes_meaning": "messages[]: either ONE tool_call turn (the call pass) or the tool's reply turns (the reply pass). hop.error_code: set on the reply pass marks the reply as failed -- store/bash/code error replies carry it. context.call: the parked call, written by the wiring's call edge, read to rebuild the retry.",
+    "examples": [
+      "call {id: c1} -> route 'call' with hop.call parked; tool fails (hop.error_code io_error) -> route 'retry' rebuilds c1; retry edge attempt 0 -> 1; tool succeeds -> route 'ok'",
+      "tool fails forever, RETRY_MAX 3: attempts 0..3, then the give-up edge hands the LAST error reply to the sink with hop {route: 'error', error_code: io_error, attempt: 3}",
+      "a two-call bundle -> route 'error', error_code bundle_not_supported, both ids answered"
+    ]
+  }
+}

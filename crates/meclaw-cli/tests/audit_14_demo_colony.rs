@@ -59,6 +59,7 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
     let join =

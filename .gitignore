@@ -28,6 +28,17 @@
 /examples/**/.staging/
 /examples/**/.env
 
+# Runtime state from running a shipped template in place. builder/.gitignore
+# covers this in the full source tree, but that file is not part of the public
+# export while builder/templates/<public> is — so the rule has to exist here too.
+/builder/templates/**/colony.db
+/builder/templates/**/colony.db-*
+/builder/templates/**/cell.db
+/builder/templates/**/cell.db-*
+/builder/templates/**/log.jsonl
+/builder/templates/**/blobs/
+/builder/templates/**/.staging/
+
 # Runtime state from running any fixture colony in place (tests copy to tmp,
 # but emit-dot / ad-hoc runs may still touch these).
 /tests/fixtures/**/colony.db

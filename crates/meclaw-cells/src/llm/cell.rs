@@ -227,9 +227,10 @@ impl LlmCell {
         self
     }
 
-    /// Resolve the `attachments[]` slot into OpenAI image content parts
-    /// (GH #87). Returns `(error_code, detail)` on failure — every detail names
-    /// the attachment and the reason.
+    /// Resolve the `attachments[]` slot into provider-native image parts —
+    /// `image_url` content parts on chat-completions (GH #87), `input_image`
+    /// items on the responses dialect (GH #94). Returns `(error_code, detail)`
+    /// on failure — every detail names the attachment and the reason.
     ///
     /// No declaration (no reader) or no slot ⇒ `Ok(vec![])`, and the caller's
     /// request stays byte-identical to the pre-GH-#87 one. The declared MIME
@@ -250,14 +251,13 @@ impl LlmCell {
         if entries.is_empty() {
             return Ok(Vec::new());
         }
-        if self.params.effective_wire_dialect() == WireDialect::Responses {
-            return Err((
-                "invalid_input",
-                "attachments[] consumption is implemented for the chat-completions \
-                 wire dialect only (see docs/roadmap.md)"
-                    .to_string(),
-            ));
-        }
+        // GH #94: both dialects consume attachments — only the provider-native
+        // shape differs, so the shape is the ONLY thing chosen here and the
+        // read loop below stays shared (one failure taxonomy, one timeout).
+        let to_part: fn(&str, &[u8]) -> Value = match self.params.effective_wire_dialect() {
+            WireDialect::ChatCompletions => translate::image_content_part,
+            WireDialect::Responses => translate_responses::input_image_item,
+        };
         let timeout = std::time::Duration::from_millis(self.params.attachment_timeout_ms);
         let mut parts = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -285,7 +285,7 @@ impl LlmCell {
             if !is_image_mime(&blob.mime_type) {
                 return Err(("invalid_input", non_image_detail(blob_id, &blob.mime_type)));
             }
-            parts.push(translate::image_content_part(&blob.mime_type, &blob.bytes));
+            parts.push(to_part(&blob.mime_type, &blob.bytes));
         }
         Ok(parts)
     }
@@ -611,6 +611,33 @@ impl StatefulCell for LlmCell {
                 }
             };
 
+            // 5a.2 (GH #95): a cell.db written before GH #86 may still hold an
+            // unresolved `{text_id}` leaf — nothing resolves a persisted row
+            // any more (the resolver runs at the delivery boundary, and a row
+            // read back out of cell.db never crosses it again), and
+            // `concat_system_prompt` would silently drop its content from the
+            // prompt. Loud-at-read ruling: regular cell error naming the
+            // slot(s), no panic, no restart, no provider call. Sits BEFORE
+            // extract_tools (uniform story for `tools.*` residue) and before
+            // the P10 dialect fork (covers both wires).
+            if let Err(detail) = state::check_text_id_residue(&system_tree) {
+                output::emit_error(
+                    sink,
+                    reply_target,
+                    "provider_error",
+                    &detail,
+                    "translate",
+                    input_messages,
+                    started_at_unix_ms,
+                    (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+                return;
+            }
+
             // 5b: extract OpenAI tool objects from system.tools.*.
             let tools = match extract_tools(&system_tree) {
                 Ok(t) => t,
@@ -640,11 +667,11 @@ impl StatefulCell for LlmCell {
             let system_string =
                 translate::concat_system_prompt(&system_tree, &self.params.system_order);
 
-            // 5c.2 (GH #87): resolve declared `attachments[]` into image
-            // content parts. A cell without the declaration holds no reader,
-            // gets an empty vector here and stays byte-identical to pre-#87.
-            // The read is I/O and carries its own operation timeout (A) inside
-            // `AttachmentReader::read`.
+            // 5c.2 (GH #87 / GH #94): resolve declared `attachments[]` into
+            // dialect-native image parts. A cell without the declaration holds
+            // no reader, gets an empty vector here and stays byte-identical to
+            // pre-#87. The read is I/O and carries its own operation timeout
+            // (A) inside `AttachmentReader::read`.
             let image_parts = match self
                 .resolve_image_attachments(content_obj.get("attachments"))
                 .await
@@ -681,7 +708,12 @@ impl StatefulCell for LlmCell {
                     &input_messages,
                     &tools,
                 ) {
-                    Ok(request_json) => run_responses_lane(self, &request_json, timeout).await,
+                    Ok(mut request_json) => {
+                        // GH #94: fold the resolved images into the typed
+                        // input[]. No-op for an empty vector.
+                        translate_responses::attach_input_images(&mut request_json, image_parts);
+                        run_responses_lane(self, &request_json, timeout).await
+                    }
                     Err(e) => Err(LaneFailure::from_translate(&e, "translate")),
                 };
                 let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;

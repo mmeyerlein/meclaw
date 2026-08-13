@@ -41,6 +41,13 @@ pub fn cgroup_delegation_supported() -> bool {
     false
 }
 
+/// Always "no delegated root" (GH #97): off Linux the MECHANISM is missing, so
+/// the answer is the absent-mechanism one and never the wrong-launch one. No
+/// way of starting the daemon changes it.
+pub fn delegation_probe() -> super::probe::CgroupDelegation {
+    super::probe::CgroupDelegation::NoDelegatedRoot
+}
+
 /// Always `false`: seccomp-bpf is a Linux mechanism.
 pub fn seccomp_supported() -> bool {
     false

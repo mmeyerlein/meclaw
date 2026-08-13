@@ -193,7 +193,9 @@ Two places bound that, and they are different decisions:
 
 - **At the tool.** `web_fetch` takes `params.max_bytes` (default 256 KiB, GH #83) and marks a trim
   in the payload (`… [truncated, N bytes total]`, `header.truncated: true`, `header.bytes` = the
-  full size). Inside a loop that value belongs much lower —
+  full size). `bash` shares the same knob and default for runaway stdout, and `web_search` trims
+  its result list at `params.max_results` (default 10, visible inside the JSON) with the same byte
+  backstop. Inside a loop those values belong much lower —
   [`examples/telegram-research`](../examples/telegram-research/) sets 32 KiB on its `reader`. A cap
   is a bound on the worst case, not a policy.
 - **At the collector.** What leaves the assembled context again is the collector's decision, and it

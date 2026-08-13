@@ -1,0 +1,31 @@
+{
+  "name": "collector",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "Context assembly as a hive: the orchestrator that decides what enters an LLM's context window and what leaves it. A rolling short-term conversation window (user and assistant turns, session-scoped, store-backed), the memory bundle, the tool round fanned back in, and a cap over every one of those three legs that is deterministic configuration rather than a model judgement. Everything the brain sees leaves through ONE message on one route - and the same seam ends a runaway tool round and hands a closed session on as one batch, so a later split of the agent behind that seam does not re-cut the collector. A round that loses a tool result exits deterministically past an idle window (synthetic error results, round_stale=1), and a user turn arriving mid-round defers instead of opening a second brain call - decided behaviour where there used to be accident. Housekeeping is evidence-gated: the close batch writes a delivery ledger row, and only ledger-named, aged sessions are ever pruned - on an operator lane the template never fires itself.",
+    "use_when": "One per agent brain, between the inbound surface and the LLM. It replaces the pattern where a persona cell injects the system prompt, a prep cell mints the turn id and a third cell fans tool results in: those are one concern and this is it. Wire the eight entry lanes and the five exit routes in the SAME mutation that instantiates it - an island without a crossing edge stays inactive.",
+    "not_in_scope": "No inference and no persona (identity is not context assembly). No tool fan-OUT: routing a tool_call to the right tool stays a dispatcher's job, the collector only fans the results back in. No session lifecycle: a keeper decides when a generation begins and ends, the collector consumes the session_id and answers the close request. No memory judgement: the collector READS the recall bundle and hands a closed session on unfiltered, but what is extracted and what is kept belongs to the receiver of the write batch. No LLM judgement anywhere - every cap is a number. No cap deletes: every cut is a read-time cut and the full value stays in the store; rows fall only on the in_prune lane, only for sessions whose close batch already left (the batched ledger row is the evidence) and only behind COLLECTOR_PRUNE_AFTER_MS - without that evidence the store grows rather than loses a turn, and the collector never schedules a prune itself.",
+    "examples": [
+      "PORTS - Entry (into ./assemble, the parent edge names the lane via set_hop route and promotes session_id): in_turn (an inbound user turn), in_bundle (the memory hive's recall bundle), in_calls (the assistant tool_call turn from a dispatcher), in_tool (one tool result), in_answer (the brain's final turn), in_close (a session keeper's close request, hop.route == 'close'), in_prune (a timer's or operator's housekeeping request, hop.route == 'prune'), in_round_sweep (a timer's or operator's stuck-round re-check, hop.route == 'sweep'). Exit (from ./assemble, on hop.route): 'brain' -> the agent LLM (promote hop.iter and hop.turn_id to context on that edge), 'answer' -> the reply sink, 'recall' -> the memory hive's recall port (only when COLLECTOR_MEMORY_TIER is set; promote recall_query / memory_tier / session_id / turn_id), 'write' -> wherever a closed session belongs, 'prune' -> a log sink or the operator surface (one report per pruned session).",
+      "turn 3 of a session references turn 1: the window carries turns 1..3 into the context, so the answer does not depend on retrieval luck",
+      "COLLECTOR_WINDOW_TURNS=5 over a 40-turn session: the store returns the 5 newest, hop.window_capped=1; a byte cap that cannot afford the oldest of them drops it and everything older, hop.window_dropped counts them",
+      "2 parallel tool calls: 1 assistant row + 2 tool rows in the round table, the guarded update wins once, and the re-entry carries the window AND the tool round through the same seam",
+      "a 100 KB tool result: COLLECTOR_TOOL_CHARS of it reach the seam with hop.round_capped=1, all of it stays readable in the round table",
+      "a model that will not stop asking for tools: at COLLECTOR_MAX_ITER the seam emits route 'answer' with what it collected instead of a further brain call",
+      "the keeper closes a generation: one message on route 'write' with every turn of the session in order and every round row beside it, and the delivery ledger row written in the same multi-send",
+      "a timer fires the prune lane a week later: the delivered session's rows fall up to its close boundary, the living session keeps every byte, and the cut is reported on route 'prune' - without a ledger row the same request cuts nothing and says so",
+      "a tool dies mid-flight and one result never arrives: the round parks, and the next turn, the next result or an in_round_sweep request after COLLECTOR_ROUND_IDLE_MS closes it - the missing call is answered synthetically under its own tool_call_id and the round fires with round_stale=1",
+      "a user turn lands while a round is running: it enters the window, defers (no second brain call on the session), and rides with the next regular assembly marked round_deferred=1"
+    ]
+  },
+  "tags": [
+    "collector",
+    "context",
+    "orchestration",
+    "conversation-window",
+    "tool-loop",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

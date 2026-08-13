@@ -144,6 +144,9 @@ impl ColonyDb {
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
+        // GH #98: read-only opens never run `setup_colony_db` — install the
+        // busy budget directly.
+        crate::persist::apply_busy_timeout(&read_conn)?;
         // Phase 12-Pre: bounded tokio::sync::mpsc(1000). A hard cap, no config
         // knob (CONTRIBUTING.md rules 1+7). Rationale: HTTP load is the phase-12 risk
         // surface; ~1s of burst headroom at realistic routing throughput. NOT
@@ -238,45 +241,15 @@ impl ColonyDb {
     }
 
     /// Classifies the boot state via `read_conn` (instead of a separate db-path probe).
+    ///
+    /// GH #89: delegates to the shared `bootstrap::classify_boot_state` core —
+    /// one truth table for the path-based probe and this handle-based one, no
+    /// drift. See the classifier for the marker semantics (Run-5/5b resume)
+    /// and the Reboot/Inconsistent cut.
     pub fn boot_state(
         &self,
     ) -> Result<crate::bootstrap::BootState, crate::bootstrap::BootstrapError> {
-        // Bootstrap-Recovery (Run-5/5b): mirror of the marker check in
-        // `bootstrap::probe_boot_state` (path-based probe) — a durable
-        // `bootstrap_in_flight` marker means an interrupted FIRST apply;
-        // classify as resumable FirstBoot, never Inconsistent (the apply path
-        // is idempotent, the filesystem is the source).
-        let marker: i64 = self
-            .read_conn
-            .query_row(
-                "SELECT COUNT(*) FROM meta WHERE key='bootstrap_in_flight'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        if marker > 0 {
-            return Ok(crate::bootstrap::BootState::FirstBoot);
-        }
-        let mut counts: Vec<i64> = Vec::with_capacity(3);
-        for table in &["registry", "edges", "hive_scopes"] {
-            let q = format!("SELECT COUNT(*) FROM {table}");
-            let c: i64 = self.read_conn.query_row(&q, [], |r| r.get(0)).unwrap_or(0);
-            counts.push(c);
-        }
-        let all_empty = counts.iter().all(|&c| c == 0);
-        let all_full = counts.iter().all(|&c| c > 0);
-        if all_empty {
-            Ok(crate::bootstrap::BootState::FirstBoot)
-        } else if all_full {
-            Ok(crate::bootstrap::BootState::Reboot)
-        } else {
-            Ok(crate::bootstrap::BootState::Inconsistent {
-                reason: format!(
-                    "table counts: registry={}, edges={}, hive_scopes={}",
-                    counts[0], counts[1], counts[2]
-                ),
-            })
-        }
+        Ok(crate::bootstrap::classify_boot_state(&self.read_conn))
     }
 
     /// Reads all persisted edges from colony.db (for reboot hydration).
@@ -682,6 +655,9 @@ pub fn read_registry_overlay(db_path: &std::path::Path) -> rusqlite::Result<Regi
     }
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // GH #98: boot-path read — carry the busy budget instead of dying on a
+    // momentarily locked colony.db.
+    crate::persist::apply_busy_timeout(&conn)?;
     let mut stmt = conn.prepare("SELECT path, cell_id, status FROM registry")?;
     let rows = stmt.query_map([], |r| {
         let path_str: String = r.get(0)?;

@@ -36,6 +36,8 @@ pub use profile::{
     FilesystemProfile, NetworkPolicy, ResourceLimits, SandboxProfile, SyscallPolicy,
 };
 
+pub mod probe;
+
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(target_os = "linux")]
@@ -43,7 +45,7 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod seccomp;
 #[cfg(target_os = "linux")]
-pub use cgroup::{SandboxScope, cgroup_delegation_supported, delegated_root};
+pub use cgroup::{SandboxScope, cgroup_delegation_supported, delegated_root, delegation_probe};
 #[cfg(target_os = "linux")]
 pub use linux::{apply, landlock_abi, network_isolation_supported};
 #[cfg(target_os = "linux")]
@@ -53,6 +55,6 @@ pub use seccomp::seccomp_supported;
 mod other;
 #[cfg(not(target_os = "linux"))]
 pub use other::{
-    SandboxScope, apply, cgroup_delegation_supported, delegated_root, landlock_abi,
-    network_isolation_supported, seccomp_supported,
+    SandboxScope, apply, cgroup_delegation_supported, delegated_root, delegation_probe,
+    landlock_abi, network_isolation_supported, seccomp_supported,
 };

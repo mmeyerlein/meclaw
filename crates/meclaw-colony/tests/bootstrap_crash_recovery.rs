@@ -12,8 +12,12 @@
 //! `bootstrap_in_flight` marker (colony.db `meta`) before the first spawn,
 //! cleared atomically in the `InitialApply` transaction; `probe_boot_state`
 //! classifies marker states as `FirstBoot` (idempotent resume).
-//! A mixed state WITHOUT the marker stays `Inconsistent` (external corruption,
-//! pin: `boot_state_mixed_returns_inconsistent` in `bootstrap.rs`).
+//! Since GH #89 the marker-less cut is: InitialApply traces (edges OR
+//! hive_scopes non-empty) classify `Reboot`; registry-only states classify
+//! `FirstBoot` (runtime spawns / apply torso — idempotent re-adoption). Pins:
+//! `boot_state_edges_only_without_marker_returns_reboot`,
+//! `boot_state_registry_only_without_marker_returns_first_boot` in
+//! `bootstrap.rs`.
 
 use meclaw_colony::{
     BootState, CellFactory, CellFactoryRegistry, ColonyConfig, ColonyDb, ColonyMsg, ColonyRuntime,

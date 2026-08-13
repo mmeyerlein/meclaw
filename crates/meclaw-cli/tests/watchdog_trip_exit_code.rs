@@ -36,6 +36,7 @@ fn cli_for(root: &std::path::Path) -> Cli {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: meclaw_cli::StdioFormat::Text,
     }
 }

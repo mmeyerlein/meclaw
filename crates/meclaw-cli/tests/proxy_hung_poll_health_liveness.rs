@@ -125,6 +125,7 @@ async fn a_hung_proxy_poll_is_visible_on_health_while_a_healthy_one_stays_fresh(
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
     let join =

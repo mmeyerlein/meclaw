@@ -230,6 +230,9 @@ pub async fn handle_read_messages(
                 &db_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             )?;
+            // GH #98: read-only opens never run the setup functions — install
+            // the busy budget directly.
+            crate::persist::apply_busy_timeout(&conn)?;
             const COLUMNS: &str = "id, trace_id, parent_message_id, correlation_id, ttl,
                  from_path, to_path, reply_to, headers, body_kind, body_payload, created_at";
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -431,6 +434,9 @@ pub async fn handle_read_trace(
                 &db_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             )?;
+            // GH #98: read-only opens never run the setup functions — install
+            // the busy budget directly.
+            crate::persist::apply_busy_timeout(&conn)?;
             // Build WHERE clauses incrementally.
             let mut sql = String::from(
                 "SELECT id, trace_id, parent_message_id, correlation_id, ttl,

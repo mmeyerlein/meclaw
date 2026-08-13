@@ -202,6 +202,63 @@ fn message_item(role: &str, content_type: &str, text: &str) -> Value {
     })
 }
 
+/// Build one Responses-wire image content item from an attachment's bytes and
+/// its (sidecar-authoritative) MIME type — GH #94.
+///
+/// Shape per the pinned reference (`protocol/src/models.rs:716-734`,
+/// `ContentItem::InputImage`): `{"type": "input_image", "image_url": "<url>"}`
+/// — `image_url` is a plain **string** on this wire, unlike the
+/// chat-completions object form. The URL itself is the same self-contained
+/// base64 data URL the chat-completions path builds, so no blob ever leaves
+/// the colony as a dereferenceable link.
+pub(crate) fn input_image_item(mime_type: &str, bytes: &[u8]) -> Value {
+    serde_json::json!({
+        "type": "input_image",
+        "image_url": format!(
+            "data:{mime_type};base64,{}",
+            crate::llm::translate::encode_base64(bytes)
+        ),
+    })
+}
+
+/// Fold resolved image items into a built Responses request — GH #94.
+///
+/// Mirror of `translate::attach_image_parts`, adapted to the typed `input[]`:
+/// the images join the content array of the **last user message item**;
+/// without one they become an appended user message item of their own — an
+/// attachment always has to reach the model as user input.
+///
+/// **Empty `image_items` is a no-op**: a cell that declares no attachment
+/// consumption produces the pre-GH-#94 request byte for byte.
+pub(crate) fn attach_input_images(request: &mut Value, image_items: Vec<Value>) {
+    use serde_json::json;
+    if image_items.is_empty() {
+        return;
+    }
+    let Some(input) = request.get_mut("input").and_then(|i| i.as_array_mut()) else {
+        return;
+    };
+    let last_user = input
+        .iter_mut()
+        .rposition(|item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("message")
+                && item.get("role").and_then(|r| r.as_str()) == Some("user")
+        })
+        .map(|idx| &mut input[idx]);
+    match last_user {
+        Some(item) => {
+            if let Some(content) = item.get_mut("content").and_then(|c| c.as_array_mut()) {
+                content.extend(image_items);
+            } else {
+                item["content"] = Value::Array(image_items);
+            }
+        }
+        None => input.push(json!({
+            "type": "message", "role": "user", "content": image_items,
+        })),
+    }
+}
+
 /// Parse a Responses SSE body into UBF turns + meta.
 ///
 /// Follows the reference's rule: the deltas
@@ -764,6 +821,63 @@ mod tests {
         ]);
         let err = parse_responses_sse(&body).unwrap_err();
         assert!(matches!(err, TranslateError::ResponseShape(_)), "{err:?}");
+    }
+
+    // ───── GH #94: attachments → input_image items ─────
+
+    #[test]
+    fn input_image_item_is_a_typed_string_url_item() {
+        let item = input_image_item("image/png", b"\x89PNG\r\n\x1a\nGH87");
+        assert_eq!(
+            item,
+            json!({"type": "input_image",
+                   "image_url": "data:image/png;base64,iVBORw0KGgpHSDg3"})
+        );
+        assert!(
+            item["image_url"].is_string(),
+            "a plain string on this wire, not the chat-completions object form"
+        );
+    }
+
+    #[test]
+    fn attach_input_images_extends_the_last_user_message() {
+        let turns = vec![
+            json!({"origin":"user","type":"text","text":"first"}),
+            json!({"origin":"assistant","type":"text","text":"answer"}),
+            json!({"origin":"user","type":"text","text":"look at this"}),
+        ];
+        let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
+        attach_input_images(&mut b, vec![input_image_item("image/png", b"x")]);
+        let input = b["input"].as_array().unwrap();
+        let content = input[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(
+            input[0]["content"].as_array().unwrap().len(),
+            1,
+            "the earlier user message stays untouched — only the LAST one grows"
+        );
+    }
+
+    #[test]
+    fn attach_input_images_without_user_message_appends_one() {
+        let turns = vec![json!({"origin":"assistant","type":"text","text":"a"})];
+        let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
+        attach_input_images(&mut b, vec![input_image_item("image/jpeg", b"j")]);
+        let input = b["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "the images become their own user message");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(input[1]["content"][0]["type"], "input_image");
+    }
+
+    #[test]
+    fn attach_input_images_empty_is_a_noop() {
+        let turns = vec![json!({"origin":"user","type":"text","text":"hi"})];
+        let mut b = build_responses_request(&params(false), "", &turns, &[]).unwrap();
+        let before = b.clone();
+        attach_input_images(&mut b, Vec::new());
+        assert_eq!(b, before, "no images ⇒ byte-identical request");
     }
 
     #[test]

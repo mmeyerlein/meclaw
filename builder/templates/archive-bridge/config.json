@@ -1,0 +1,66 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, uuid\nfrom datetime import datetime, timezone\n\nd = json.load(sys.stdin)\nmsgs = d.get(\"messages\", [])\n\n# The FINAL answer: the LAST non-empty assistant text turn. Everything else --\n# most importantly the store's insert reply echoing back over the echo lane\n# (a tool_result under this cell's own 'archive-' id) -- is swallowed ON\n# PURPOSE with an empty multi-send: the echo has no other place to go, and\n# dying here quietly is what keeps it out of the dead-letter queue.\nanswer = \"\"\nfor m in msgs:\n    if m.get(\"origin\") == \"assistant\" and m.get(\"type\") == \"text\" and m.get(\"text\"):\n        answer = m[\"text\"]\n\nif not answer:\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n# Stores are driven by tool_call args, not by headers: one store-native insert.\nrow_id = str(uuid.uuid4())\ncall_id = \"archive-\" + row_id[:8]\nargs = {\"operation\": \"insert\", \"table\": \"${ARCHIVE_TABLE:-archive}\",\n        \"row\": {\"id\": row_id, \"text\": answer,\n                \"recorded_at\": datetime.now(timezone.utc).isoformat()}}\nout = [{\"header\": {\"route\": \"store\", \"tool_call_id\": call_id},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": call_id, \"text\": json.dumps(args)}]}]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "archive_table": {
+        "type": "string",
+        "secret": false,
+        "default": "archive",
+        "description": "Target table (ARCHIVE_TABLE) of the insert. The store cell behind the store lane must own this table (params.schema with the columns id/text/recorded_at, all text) -- an insert into a table the store does not know is answered with error_code unknown_table, and that echo dies in the bridge like every other reply."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "store"
+          ],
+          "required": true
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Bridge from an llm's final answer to a store: the LAST non-empty assistant text turn becomes a store-native {operation: insert, table, row: {id, text, recorded_at}} tool_call on route 'store'. Stores are driven by tool_call args, not by headers -- this cell is the translation.",
+    "use_when": "Between an llm cell's answer lane and a store cell. Wire two lanes in the SAME mutation that instantiates it: route 'store' into the store, and the store's reply UNCONDITIONALLY back into this cell (the echo lane) -- the bridge doubles as the quiet drain for the insert reply.",
+    "not_in_scope": "No deduplication, no update semantics (append-only archiving), no querying, no schema creation -- the store must already own the table. No routing decisions beyond the one store lane.",
+    "emits_meaning": "route 'store': ONE tool_call turn whose text is the JSON args object {operation: 'insert', table: ${ARCHIVE_TABLE:-archive}, row: {id: uuid4, text: <answer>, recorded_at: <ISO-8601 UTC>}}; turn id and hop.tool_call_id are the same fresh 'archive-<uuid8>' id. Everything else emits NOTHING (empty multi-send, terminal) -- deliberately including the store's own reply echo, so it never dead-letters.",
+    "consumes_meaning": "messages[]: a conversation whose LAST non-empty assistant text turn is the answer to archive. Inputs without one -- user turns, tool rounds, and in particular the store's insert reply (tool_result under this cell's own 'archive-' id) coming back over the echo lane -- are swallowed silently.",
+    "examples": [
+      "assistant 'CEL is an expression language.' -> tool_call {operation: insert, table: archive, row: {id, text: 'CEL is...', recorded_at}} on route 'store'",
+      "store reply tool_result {id: 'archive-0a1b2c3d', rows_affected: 1} -> nothing (the echo dies here, that is the point)",
+      "ARCHIVE_TABLE=notes -> the same insert into table 'notes'"
+    ]
+  }
+}

@@ -59,6 +59,7 @@ async fn slice_12b_demo_e2e_full_loop() {
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
 

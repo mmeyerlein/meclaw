@@ -93,6 +93,7 @@ fn cli_for(root: &std::path::Path, blobs: &std::path::Path, bind: SocketAddr) ->
         blobs: Some(blobs.into()),
         tokio_console: false,
         tokio_console_port: 6669,
+        sandbox_probe: false,
         stdio_format: StdioFormat::Text,
     }
 }
