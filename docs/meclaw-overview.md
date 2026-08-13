@@ -398,7 +398,11 @@ The colony-wide configuration file in `{root}`. Contains exclusively **behavior 
 
   "strict_validation":          false,
 
-  "log_default_level":          "info"
+  "log_default_level":          "info",
+
+  "watchdog_threshold":              5,
+  "watchdog_period_ms":            100,
+  "watchdog_on_trip":           "exit"
 }
 ```
 
@@ -416,6 +420,9 @@ The colony-wide configuration file in `{root}`. Contains exclusively **behavior 
 | `blob_max_recursion_depth` | Hard limit for recursive blob reference resolution (see "Blob storage"). **The `colony.json` override of this field is parsed-but-not-applied today**; recursive blob resolution itself is roadmap defer D-025 (0 producers, § Routing errors `blob_recursion_too_deep`); the depth limit **and** its `colony.json` wiring arise with D-025. |
 | `strict_validation` | Release-build default: whether JSON schema validation against `emits`/`consumes` is active (debug build: always `true`) |
 | `log_default_level` | Tracing default level. **This `colony.json` field is parsed-but-not-applied today:** the effective default comes from the `--log-level` flag or `info`; `colony.json` does not (yet) feed the log level; the wiring is post-16. |
+| `watchdog_threshold` | Number of consecutive silent supervisor periods after which the heartbeat watchdog trips (default **5**). Must be `>= 1`; `0` is a hard parse error. See "Heartbeat watchdog". |
+| `watchdog_period_ms` | Length of one supervisor period in ms (default **100**, the same rate as the colony loop's heartbeat). Must be `>= 1`; `0` is a hard parse error. Together with `watchdog_threshold` the default gives the limit **5 x 100 ms = 500 ms**. |
+| `watchdog_on_trip` | What a trip does: `"exit"` (default, the production contract from issue #6: graceful shutdown plus a **non-zero exit**, so a supervisor restarts and an alert fires) or `"log-only"` (the trip is logged loudly and structured, the colony keeps running). Any other value is a hard parse error. **`log-only` covers silence only**: a colony task that is GONE (heartbeat channel closed) ends the process under both policies. See "Heartbeat watchdog". |
 
 Cells can override individual values via their `config.json` `params` or their `contract.settings`; then the local value applies.
 
@@ -960,6 +967,8 @@ enum Body {
 
 **TTL semantics (flat)**: `ttl` is a protective limit against uncontrolled routing loops. Colony decrements on every routing decision, so once per cell-to-cell hop. At `ttl == 0` the message goes **directly** into the dead-letter queue (`ttl_expired`, direct-to-DLQ, **not** via the routing-error cascade with its step-1 `reply_to` reply attempt; an expired TTL is terminal, see "Routing algorithm"). Default in `colony.json` via `message_default_ttl` (recommendation: 64). Builders can set the value per initial message (`ttl` field in `POST /messages`, only positive integers, otherwise `422 invalid_ttl`). **Hierarchy**: an explicit `ttl` field of the initial message > `colony.json` `message_default_ttl` > the const seed `MESSAGE_DEFAULT_TTL` (=64); cells never set `ttl` (envelope setter authority). Not to be confused with `message_timeout_default_ms`, which addresses the maximum processing time _within_ a cell.
 
+**Sizing (GH #82)**: the recommendation of 64 is for flat topologies. A loop whose round is itself made of routing spends a multiple of that per user-visible round — the store-backed tool loop costs about **12 hops per tool round** (measured: six rounds = 76 hops), because the collector's read-modify-write conversation with the `store` is routing. On 64 an agent stops after **five** rounds. Rule of thumb for that shape: `message_default_ttl >= 4 + rounds * 12` (hop table and derivation in `docs/store-backed-tool-loop.md`). **And**: because an expired TTL is terminal and deliberately skips the `reply_to` cascade, a death inside a fan-in is **silent** from the topology's point of view — nothing is emitted that an edge could react to. It is observable only as a dead-letter row plus an `ERROR` log line naming the message. A loop is therefore **not** bounded by TTL but by an iteration counter in `context` on the loopback edge; TTL stays the substrate guard against uncontrolled routing.
+
 ### Envelope setter authority
 
 Envelope fields (`id`, `trace_id`, `parent_message_id`, `correlation_id`, `reply_to`, `ttl`, `target`, `created_at`) are **set exclusively by colony during routing**. Cells cannot write them; the content JSON that a cell emits has no mechanism for envelope fields, and edge modifiers operate strictly on headers (see "Edge model"). Concretely:
@@ -1303,7 +1312,7 @@ Referenced in the graph via:
 3. Copies `templates/<path>/` recursively into the staging directory (`.staging/<mutation_id>/<name>/`).
 4. Generates a new UUID v7 for all copied cells and edges.
 5. Patches `config.json` with the new UUIDs. **The name stays as in the template (or as given in `override_params`)**; on a collision with sibling names within the same scope the mutation is rejected, see "Naming collisions" below.
-6. Performs `${VAR}`, `${ctx.*}`, and `${uuid7:*}` substitution (see "Variable substitution").
+6. Resolves the instance class (`${ctx.*}`, `${uuid7:*}`); the environment class (`${VAR}`) stays literal in the written `config.json` and is resolved in memory only, for the cell being started (see "Variable substitution").
 7. Initializes `cell.db` from `seed/`, if present.
 8. Atomic `rename(2)` from staging to the target path.
 9. Registers the instance in colony's `HashMap<Path, ActorHandle>` and spawns the actor task: for **stateful** cells the `cell_task` loop, for **stateless** cells the `stateless_dispatcher` loop (with a `Semaphore` from `params.max_concurrency`), for **long-running** cells the double-task pattern (handler + I/O). In all three cases the mailbox is allocated as a bounded mpsc (default capacity 1000, overridable via `cell.mailbox_size` from phase 5).
@@ -1356,18 +1365,20 @@ meclaw knows **three substitution sources**, all with `${...}` syntax. Where eac
 
 | Token | Source | Who substitutes | When |
 |---|---|---|---|
-| `${ENV_VAR}` | from `.env` in the root | Colony | when reading `config.json` (instantiation) and in mutation diffs (mutation validation) |
-| `${ctx.<key>}` | from the header/body of the **mutation message** itself | Colony | on mutation application |
-| `${uuid7:label}` | freshly generated per label | Colony | on mutation application |
+| `${ENV_VAR}` | from `.env` in the root | Colony | at **every** read of `config.json` (boot **and** instantiation) and in mutation diffs -- in memory only, never on disk |
+| `${ctx.<key>}` | from the header/body of the **mutation message** itself | Colony | on mutation application, **once**; the value is written to disk |
+| `${uuid7:label}` | freshly generated per label | Colony | on mutation application, **once**; the value is written to disk |
 
 All three sources are substituted exclusively by colony, the flat substrate has no intermediate layer that would have its own tokens.
+
+**Two classes, two owners.** `${ctx.*}` and `${uuid7:*}` belong to the **instance**: they are part of its identity, are resolved exactly once at instantiation, and stand as values in the `config.json` afterwards. `${ENV_VAR}` belongs to the **environment**: the token survives instantiation literally and is re-bound at every read. Instantiation therefore materializes **no** secret -- an API key referenced as `${VAR}` lives in `.env` and in no instantiated file, `contract.settings.*.default` included. The price is a standing dependency: if the variable disappears later, the boot fails loudly (`env_var_missing`) instead of silently with an empty value. Instances already materialized are **not** rewritten -- the rule applies forward, from the next instantiation on.
 
 ### `${ENV_VAR}` from `.env`
 
 - `.env` file in the root: classic key=value format.
-- Substitution by colony, before `params` are passed to the cell. The cell sees only the substituted value.
+- Substitution by colony **in memory**, before `params` are passed to the cell. The cell sees only the substituted value; the file on disk keeps the token.
 - **POSIX-style default** supported: `${VAR:-fallback}` provides `fallback` when `VAR` is empty or unset. `${VAR}` without a default is strict, if the variable is missing there is an error (see error behavior below).
-- **Escape:** `$${...}` escapes to literal `${...}`; substitution runs exclusively on instantiation.
+- **Escape:** `$${...}` escapes to literal `${...}`. The escape survives instantiation unchanged and is consumed only at read time -- the result is the literal text `${...}`, which binds to nothing.
 - The strict variant `${VAR:?error_msg}` (bash-style) is **not** supported; any other `${VAR<op>...}` form besides `${VAR}` and `${VAR:-fallback}` is rejected with `unsupported_substitution` (no silent pass-through).
 
 ### `${ctx.<key>}` from the mutation context
@@ -1872,8 +1883,45 @@ The `llm` A-timeout wraps the whole provider roundtrip **including the complete 
 
 ### Hanger detection
 
-- **No explicit heartbeat.** The message timeout covers this implicitly, a cell that is too long in `handle()` is aborted.
-- Watchdog mechanisms only post-roadmap, if needed then.
+- **Cell level: no explicit heartbeat.** The message timeout covers this implicitly, a cell that is too long in `handle()` is aborted.
+- **Colony level: the heartbeat watchdog** (next section). A cell has a supervisor; the colony task itself has none, and it is the one task whose death takes every cell with it. That is exactly what the watchdog exists for.
+
+### Heartbeat watchdog
+
+The colony loop emits a liveness tick **at the top of every iteration** on a bounded channel (`try_send`, never blocks); an interval arm at the very bottom of the `biased select!` wakes it ~10x/s for that purpose even when there is nothing to do. A supervisor task **outside** the colony task drains that channel once per `watchdog_period_ms` and counts empty periods. After `watchdog_threshold` consecutive empty periods that is a **trip**.
+
+**What the watchdog sees, and what it does not.** It detects a colony task that is **gone** (panic -> loop gone -> heartbeat channel closed) and one that does **not iterate** for the full limit (wedged in an `.await`, or with a single iteration that takes longer than the limit). It does **not** detect a live loop whose cells block each other; there the heartbeat keeps flowing.
+
+**Armed after boot (issue #6).** The supervisor counts nothing until the filesystem bootstrap has completed. A boot is not a steady state: the colony task hydrates its tables before its select loop sends its first heartbeat. A boot that fails never arms, so the report is the boot failure and never a trip.
+
+**The limit is a statement about a SINGLE iteration.** The default `5 x 100 ms = 500 ms` says: no iteration of the colony loop may take longer than half a second. In a release build that is ample for routing and ordinary message work, but it also covers the operations that run **synchronously inside the colony task**, because the colony is the only write authority: an instantiating mutation creates cell directories, opens `cell.db` files, runs migrations and spawns cells. On a debug build or a busy machine such a mutation can exceed 500 ms, and then the trip is **correctly measured and still not a defect**. The three `colony.json` fields exist for exactly those cases (GH #84).
+
+**What a trip does** (`watchdog_on_trip`):
+
+| Policy | Behaviour |
+|---|---|
+| `exit` (default) | The same graceful shutdown path as SIGTERM, but with a **non-zero exit** (issue #6): a supervisor does not see a clean stop, restarts and alerts. No self-restart; the state of a Tokio task is not revivable. |
+| `log-only` | The trip is logged loudly on **stderr** and via `tracing`, the colony keeps running and the supervisor keeps supervising (counter reset). For boxes on which a trip is more likely a measurement artefact than a fault: debug builds, test suites, developer machines. **Covers silence only**: a colony task that is gone ends the process here too. |
+
+**The trip line is structured** (GH #84), prefix unchanged since issue #6, diagnosis in brackets:
+
+```
+meclaw: watchdog trip - colony heartbeat lost for 5 consecutive supervisor periods of 100 ms
+  [starved=colony_loop silent_for=500ms nominal_window=500ms supervisor_lag=0ms
+   beats_seen=3 armed_for=801ms colony_task=alive cells_at_boot=3 on_trip=exit]
+```
+
+`supervisor_lag` is the discriminator: the supervisor is a Tokio task in the same process, so its **own** lateness says whether anyone got CPU at all. `starved` is derived from it:
+
+| `starved` | Meaning |
+|---|---|
+| `colony_task_gone` | The heartbeat channel is closed; the task is dead (panic), not slow. |
+| `process_scheduling` | The supervisor's own periods came in at least twice as slow as configured: the whole process was off CPU, and this observation says **nothing** against the colony loop. |
+| `colony_loop` | The supervisor kept its schedule; the colony loop alone stopped iterating. |
+
+`cells_at_boot` is deliberately the boot count and not "active cells now": the registry belongs to the colony, and at trip time the colony by definition is not answering.
+
+**Production keeps `exit`.** A trip in production is a process that can no longer be trusted; the non-zero exit is the contract Ops depends on.
 
 ---
 
@@ -1953,6 +2001,8 @@ HTTP endpoints are 1:1 the `/colony/*` paths (see "/colony as a virtual endpoint
 `POST /messages` is the only HTTP endpoint that can inject a message with an arbitrary target. All other routes are 1:1 their internal `/colony/*` paths (the symmetry statement in the section "/colony as a virtual endpoint").
 
 `POST /messages` is fire-and-forget in phase 12: a response of **202 Accepted** with `{message_id}`; any cell answer runs via the routing cascade, not back via HTTP. A synchronous request/response roundtrip (an ephemeral reply sink) is deferred to phase 13+. The JSON request body is `{target, body, headers?, ttl?}`: the optional `ttl` field sets the TTL of the initial message (only positive integers ≤ `u32::MAX`; any other value → `422 invalid_ttl`); without the field, `colony.json` `message_default_ttl` applies. The multipart path has no `ttl` form field (uploads, not conversation turns), there the `colony.json` default always applies.
+
+**Op bodies over `POST /messages`** (GitHub #17): `body` is validated against the UBF schema, so a pure control message too, a timer op, a `params` update, needs one of the three central slots. The honest one is `"messages": []`: an op message carries no conversation turns. The op fields themselves travel next to it as cell-specific top-level slots (`{"messages": [], "op": "trigger", "schedule_id": "…"}`), exactly as the body format provides for. Without a central slot the ingress answers `422 invalid_ubf_body`. There is deliberately **no** op route and no validation bypass: the HTTP layer checks the envelope, the cell checks the op. Every cell op surface is thereby reachable from outside without the API having to know cell types.
 
 HTTP status `/colony/mutations` (POST): **200** on `Committed`, **422 Unprocessable Entity** on `Rejected`, the full `MutationOutcome::Rejected` detail remains in the `mutation` slot of the body. (The status code is part of the HTTP data model; 422 is a faithful translation of the reject outcome, not a symmetry break.)
 

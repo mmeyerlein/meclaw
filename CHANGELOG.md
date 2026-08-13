@@ -4,6 +4,145 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.3.2] — 2026-08-13
+
+A reliability wave on the substrate. Seven defects, none of them inside a cell
+and all of them between cells: a gateway error that arrived as a parser
+complaint, a routing budget that ran out five rounds into an agent turn, a fetch
+that was paid for again on every round, a scheduled lane that could not be
+triggered from outside, a watchdog whose deadline was unreachable and whose trip
+said nothing, a test runner that blamed the wrong thing, and an instantiation
+that wrote secrets to disk. None of it was found by reading the code.
+
+### Fixed
+
+- **An error inside a 200 body is the error it names.** An OpenAI-compatible
+  gateway reports an upstream failure as a regular HTTP 200 whose body carries
+  `{"error": {...}}` and no `choices` at all. The translate step reached straight
+  for `choices[0]`, missed it, and reported a parse defect, so no failover edge
+  on `rate_limit` could ever fire and the provider's own sentence ("wait a
+  moment, then it works again") was replaced by a parser complaint. In a practice
+  run this killed 3 of 21 turns. The classification now sits at the wire
+  boundary, before `choices[0]` is read, and runs through the same table a real
+  HTTP status runs through, so an in-body 429 lands on exactly the lane a status
+  429 lands on: the same function call decides. The status is read from
+  `error.code`, `error.status` or `error.http_status`, then from the typed
+  strings, then from the prose, and the provider's message is carried into the
+  detail with a visible cap. The discriminator is narrow on purpose: a body with
+  `choices` still belongs to the translate step, and a body with neither
+  `choices` nor `error` is still a parse error naming `missing choices[0]` (#75).
+- **One tool round costs about a dozen hops, so the budget is sized for that.**
+  `ttl` is decremented on every routing decision, and one user-visible round of a
+  store-backed tool loop is not one hop: the collector's read-modify-write
+  conversation with the store is itself routing. Measured on the checked-in
+  fixture, six rounds cost 76 hops against a default budget of 64, so the default
+  holds five rounds and the sixth dies. The example colony now sizes its budget
+  for twelve rounds, the walkthrough carries the hop table per leg and the rule
+  of thumb, and the death is no longer silent: exactly one ERROR line per expiry
+  names the message, the sender, the target, the trace, the reason, and what has
+  to be sized. The frozen corridor keeps its terse warn line unchanged; the loud
+  one lives in the wrapper around it (#82).
+- **A fetched body has a bound, and a cut is visible.** `web_fetch` returned
+  whatever it got, with no cap and no producer for the `truncated` header its own
+  contract already declared. In a loop the thread is rebuilt cumulatively, so one
+  large result is not paid for once but on every remaining round of the turn
+  (measured: 172 KB became roughly 35k prompt tokens twice over). There is a
+  `params.max_bytes` now, default 256 KiB, generous enough that an ordinary
+  document passes whole and finite enough that a multi-megabyte payload cannot
+  enter a loop unbraked. The cut lands on a UTF-8 character boundary and says so
+  in the payload, `header.truncated` finally has a producer, and `header.bytes`
+  reports the full size the server sent rather than the remainder. The example
+  colony sets 32 KiB on its reader, which is the value a loop actually wants
+  (#83).
+- **A scheduled lane can be triggered once, from outside.** Two halves, and only
+  one of them was what the issue suspected. There was never a wall on the
+  ingress: an op body carries none of the three central slots, and the validator
+  requires one, which is the whole 422. Wrapping the op in `"messages": []` makes
+  it valid and it arrives, no new route and no bypass, and the docs now say that
+  for op bodies in general because the class is larger than the timer. That alone
+  does not make an external run indistinguishable from a scheduled one, so the
+  timer got the smallest honest op: `trigger`, carrying nothing but the
+  `schedule_id`, because everything else already stands in the row. It enters the
+  same frame the scheduler's own tick enters, with the same race check, the same
+  iteration counter, the same header set and the same body from the row. An
+  unknown or inactive id is refused by name (`schedule_not_found`) instead of
+  being silently skipped (#17).
+- **The watchdog deadline is reachable, a trip names its evidence, and a trip can
+  be survivable.** Three keys in `colony.json` (`watchdog_threshold`,
+  `watchdog_period_ms`, `watchdog_on_trip`), in the established idiom of
+  `message_default_ttl`, with defaults that are byte for byte the values that
+  used to be hard-wired: a missing file changes nothing, and that is pinned. A
+  zero and an unknown policy string are boot errors rather than clamps, so an
+  operator who mistypes finds out before a daemon runs. The trip line keeps the
+  prefix every log search greps for and appends what it used to withhold: which
+  side was starved, how long the silence was against the configured window, how
+  late the supervisor itself was, how many heartbeats arrived after arming, how
+  long it had been armed, whether the colony task is still alive, how many cells
+  booted, and which policy applies. It goes to stderr and to the structured log.
+  Production keeps `exit` and its non-zero code; `log-only` survives silence but
+  never a gone colony task, and it reports every trip it survives (#84).
+- **Every scenario case gets a port of its own, and a red line names its
+  reason.** The runner rotated eight ports across 46 cases, so a case inherited a
+  predecessor's number and whether its sockets had drained was left to chance.
+  Each case now binds a port probed immediately beforehand, deliberately without
+  `SO_REUSEADDR` so that a draining one is refused rather than inherited, never
+  reused within a run, with a retry that takes a fresh number instead of the same
+  one again. A failure now carries the daemon's exit state and the tail of its
+  log. That diagnosis turned out to be the more valuable half: the failures three
+  earlier packages had read as port collisions were watchdog trips, and the
+  control run proves it (the unchanged runner on rotated ports produced the same
+  numbers) (#74).
+- **Instantiation binds secrets late instead of writing them down.** A
+  placeholder belongs either to the environment or to the instance, and that
+  ownership, not its importance and not its content, decides when it resolves.
+  `${VAR}` and `${VAR:-default}` belong to the environment: they stay literal
+  tokens in the `config.json` that instantiation writes, and they resolve in
+  memory on every read, at boot and at instantiation alike. `${ctx.*}` and
+  `${uuid7:*}` are the identity of the node and still resolve once, at
+  instantiation, unchanged. The escape form survives the write and is consumed by
+  the read. Every surface that instantiates goes through the one writer that now
+  produces two views of the same configuration, a disk view and a runtime view,
+  so a freshly born cell sees exactly what the same cell sees after a reboot. The
+  price is spoken rather than hidden: an environment variable is a permanent
+  dependency of the instance now, and a missing one fails the next boot loudly
+  with the variable's name instead of letting an empty key through (#20).
+
+### Notes
+
+- **All seven came out of use, not review.** The findings are the ranked output
+  of a practice run of the tool cells against a test colony, plus the
+  measurements that run provoked. Three of them stopped an agent turn outright,
+  and the two that looked like infrastructure noise turned out to be the same
+  defect wearing two hats.
+- **The watchdog root cause contradicts the assumption the issue was written
+  with.** Nothing is being starved. The heartbeat is sent at the head of every
+  iteration of the colony loop, which makes the deadline a statement about how
+  long a *single* iteration may take. An instantiating mutation runs
+  synchronously in that task, because the colony is the only write authority, and
+  on a debug build with cold caches it crosses half a second: hand-measured at
+  280 ms warm against a 500 ms deadline, a factor of 1.8 that flips with cache
+  state. The evidence is in the trip line of all 35 observed trips: the
+  supervisor held its own tick to the millisecond, the colony task was alive, and
+  the trips happened on an idle machine 0.6 to 0.8 s after arming. A run under
+  the survivable policy, with the deadline left at its default, passed every
+  assertion of every case that had tripped. The architectural cut that would let
+  a watchdog tell a long legitimate iteration from a hung one is bigger than this
+  release and stays open on the issue.
+- **Secrets bind late going forwards only.** Nothing rewrites a tree that already
+  carries a resolved value: no migration, no touching of existing instances. The
+  rule applies from the next instantiation on, and cleaning up an older tree is
+  an operator's job.
+- The public surface this release adds is three watchdog keys in `colony.json`,
+  `params.max_bytes` on the `web_fetch` cell, and `trigger` in the timer's op
+  field. No new `error_code`, no dependency added, and both frozen routing
+  corridors are untouched.
+- Two halves are registered rather than built, both on their own issues: letting
+  a loopback edge refresh `ttl` would be the structural fix for the round budget,
+  but it is a spec change to a closed four-field form with three consequences
+  that have to be decided first (#82); and what leaves an assembled context again
+  is a policy question rather than a line of code, since an agent that has
+  fetched a document and not yet used it loses it with the line (#83).
+
 ## [0.3.1] — 2026-08-12
 
 The follow-up wave on 0.3.0. Six defects the statement identity track named as

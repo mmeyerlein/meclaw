@@ -27,6 +27,9 @@ pub const COLONY_CONFIG_SCHEMA_VERSION: u32 = 1;
 ///   outputs-arm stamps it on source emissions (timer/proxy/mcp origin) and the
 ///   HTTP ingress uses it as the per-message default (overridable per initial
 ///   message via the `ttl` request field).
+/// - `watchdog_threshold` / `watchdog_period_ms` / `watchdog_on_trip`: **now
+///   wired (GH #84)** — `meclaw-cli` resolves the heartbeat-watchdog supervisor
+///   from these unless a caller passes an explicit override (tests).
 /// - All other fields parse but are not yet consumed — the boot reader emits a
 ///   `tracing::warn` per such field set away from its default (see
 ///   `read_colony_config`). Full wiring is deferred per consumer slice.
@@ -55,6 +58,18 @@ pub struct ColonyConfig {
     pub strict_validation: bool,
     /// Tracing default level (overridable via `--log-level`).
     pub log_default_level: String,
+    /// Consecutive silent supervisor periods before the heartbeat watchdog trips.
+    ///
+    /// GH #84: the deadline used to be hard-wired in `meclaw-cli`, reachable only
+    /// from a test-facing entry point, so a box on which `5 × 100 ms` was too
+    /// tight had no way to say so. Must be `>= 1`.
+    pub watchdog_threshold: u32,
+    /// Length of one heartbeat-watchdog supervisor period, in ms. Must be `>= 1`.
+    pub watchdog_period_ms: u64,
+    /// What a watchdog trip does: end the process (`exit`, the default and the
+    /// production contract of issue #6) or report it and keep running
+    /// (`log-only`). See [`crate::watchdog::WatchdogOnTrip`].
+    pub watchdog_on_trip: crate::watchdog::WatchdogOnTrip,
 }
 
 impl Default for ColonyConfig {
@@ -76,6 +91,11 @@ impl Default for ColonyConfig {
             blob_max_recursion_depth: 64,
             strict_validation: false,
             log_default_level: "info".to_string(),
+            // GH #84: exactly the values `meclaw-cli` used to hard-wire. Making
+            // the knob reachable must not move the default by a single ms.
+            watchdog_threshold: 5,
+            watchdog_period_ms: 100,
+            watchdog_on_trip: crate::watchdog::WatchdogOnTrip::Exit,
         }
     }
 }
@@ -99,6 +119,14 @@ pub enum ConfigError {
     /// The file exists but could not be read (I/O error other than not-found).
     #[error("colony.json read error: {0}")]
     Io(std::io::Error),
+    /// A field parsed but carries a value the substrate cannot run with.
+    #[error("colony.json field `{field}` is invalid: {reason}")]
+    InvalidField {
+        /// The offending key.
+        field: &'static str,
+        /// Why the value cannot be used.
+        reason: String,
+    },
 }
 
 impl ColonyConfig {
@@ -112,7 +140,33 @@ impl ColonyConfig {
                 expected: COLONY_CONFIG_SCHEMA_VERSION,
             });
         }
+        // GH #84: both watchdog numbers reach `tokio::time::interval`, which
+        // panics on a zero period, and a threshold of 0 would trip on the first
+        // tick. Strict-fail here (the `colony.json` ruling) rather than clamp
+        // silently: a config that cannot mean what it says is a boot failure,
+        // and `--validate` surfaces it before the daemon ever runs.
+        if cfg.watchdog_threshold == 0 {
+            return Err(ConfigError::InvalidField {
+                field: "watchdog_threshold",
+                reason: "must be >= 1 (0 would trip on the first supervisor period)".to_string(),
+            });
+        }
+        if cfg.watchdog_period_ms == 0 {
+            return Err(ConfigError::InvalidField {
+                field: "watchdog_period_ms",
+                reason: "must be >= 1 ms (a zero-length supervisor period is not a period)"
+                    .to_string(),
+            });
+        }
         Ok(cfg)
+    }
+
+    /// The heartbeat-watchdog supervisor period as a [`std::time::Duration`].
+    ///
+    /// One conversion site for the whole substrate; [`ColonyConfig::parse_str`]
+    /// has already rejected `0`, so the value is always a real period.
+    pub fn watchdog_period(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.watchdog_period_ms)
     }
 
     /// Warn (via `tracing`) for each field that is parsed but **not yet applied**
@@ -374,6 +428,100 @@ mod tests {
         assert_eq!(c.message_default_ttl, 64);
         assert!(!c.strict_validation);
         assert_eq!(c.log_default_level, "info");
+    }
+
+    // --- GH #84: the watchdog knobs ---
+
+    /// The load-bearing half of "make the tuning reachable": reachable must not
+    /// mean changed. The defaults are the values `meclaw-cli` hard-wired, to the
+    /// millisecond, and the default policy is the issue-#6 process exit.
+    #[test]
+    fn watchdog_defaults_are_the_hard_wired_values_unchanged() {
+        let c = ColonyConfig::default();
+        assert_eq!(c.watchdog_threshold, 5);
+        assert_eq!(c.watchdog_period_ms, 100);
+        assert_eq!(c.watchdog_period(), Duration::from_millis(100));
+        assert_eq!(c.watchdog_on_trip, crate::watchdog::WatchdogOnTrip::Exit);
+        // And an absent file (the common case) means exactly the same thing.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_colony_config(dir.path()).unwrap(), c);
+    }
+
+    /// The three knobs parse from `colony.json`, including the kebab-case policy
+    /// spelling an operator actually writes.
+    #[test]
+    fn watchdog_knobs_parse_from_colony_json() {
+        let c = ColonyConfig::parse_str(
+            r#"{"watchdog_threshold": 20, "watchdog_period_ms": 250,
+                "watchdog_on_trip": "log-only"}"#,
+        )
+        .unwrap();
+        assert_eq!(c.watchdog_threshold, 20);
+        assert_eq!(c.watchdog_period(), Duration::from_millis(250));
+        assert_eq!(c.watchdog_on_trip, crate::watchdog::WatchdogOnTrip::LogOnly);
+        // Untouched neighbours keep their defaults.
+        assert_eq!(
+            c.message_default_ttl,
+            ColonyConfig::default().message_default_ttl
+        );
+    }
+
+    /// `exit` is spelled the obvious way and stays available explicitly.
+    #[test]
+    fn watchdog_on_trip_exit_parses() {
+        let c = ColonyConfig::parse_str(r#"{"watchdog_on_trip": "exit"}"#).unwrap();
+        assert_eq!(c.watchdog_on_trip, crate::watchdog::WatchdogOnTrip::Exit);
+    }
+
+    /// An unknown policy is a hard error, not a silent fallback to `exit`: an
+    /// operator who typed `log_only` must learn it, not run production semantics
+    /// while believing otherwise.
+    #[test]
+    fn an_unknown_trip_policy_is_rejected() {
+        assert!(ColonyConfig::parse_str(r#"{"watchdog_on_trip": "log_only"}"#).is_err());
+        assert!(ColonyConfig::parse_str(r#"{"watchdog_on_trip": "ignore"}"#).is_err());
+    }
+
+    /// Zero is not a period and zero is not a threshold. Both reach
+    /// `tokio::time::interval` / the miss counter, so both are refused at parse
+    /// time rather than at the first tick.
+    #[test]
+    fn zero_watchdog_values_are_refused() {
+        let err = ColonyConfig::parse_str(r#"{"watchdog_threshold": 0}"#).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::InvalidField {
+                    field: "watchdog_threshold",
+                    ..
+                }
+            ),
+            "was: {err:?}"
+        );
+        let err = ColonyConfig::parse_str(r#"{"watchdog_period_ms": 0}"#).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::InvalidField {
+                    field: "watchdog_period_ms",
+                    ..
+                }
+            ),
+            "was: {err:?}"
+        );
+    }
+
+    /// The knobs are wired, so they must not appear in the "parsed but not
+    /// applied" warning set — that diagnostic would be a lie.
+    #[test]
+    fn watchdog_fields_do_not_warn_as_unwired() {
+        let cfg = ColonyConfig::parse_str(
+            r#"{"watchdog_threshold": 50, "watchdog_period_ms": 200,
+                "watchdog_on_trip": "log-only"}"#,
+        )
+        .unwrap();
+        let warns = capture_unwired_warns(&cfg);
+        assert!(warns.is_empty(), "unexpected unwired-warns: {warns:?}");
     }
 
     #[test]

@@ -17,6 +17,34 @@ pub struct WebFetchCell {
     pub external_timeout: Duration,
     /// Max number of workers running in parallel for this cell.
     pub max_concurrency: usize,
+    /// Size cap on the response body handed to the caller, in bytes (GH #83).
+    ///
+    /// A fetched body is a tool result, and inside a tool loop a tool result is
+    /// re-sent to the model on every subsequent round — one large fetch is not a
+    /// one-time cost, it is a per-round one. The cap is generous by default and
+    /// finite always; a trim is marked, never silent.
+    pub max_bytes: usize,
+}
+
+/// Cap `text` at `max_bytes`, cutting on a UTF-8 char boundary and appending an
+/// explicit marker with the original byte length (GH #83).
+///
+/// Same visible-truncation convention the `code` cell uses for stderr: a
+/// silently shortened payload is worse than a marked one, because the model
+/// cannot tell that it is reasoning about a prefix.
+pub(crate) fn truncate_body(text: String, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let full = text.len();
+    (
+        format!("{}… [truncated, {full} bytes total]", &text[..end]),
+        true,
+    )
 }
 
 #[derive(Debug)]
@@ -92,19 +120,26 @@ impl meclaw_colony::StatelessCell for WebFetchCell {
             match result {
                 Ok(Ok((status, content_type, body))) => {
                     let text = String::from_utf8_lossy(&body).into_owned();
+                    // GH #83: `bytes` reports what the server sent, so a trimmed
+                    // reply still says how big the document really was.
                     let bytes_len = text.len() as u64;
+                    let (text, truncated) = truncate_body(text, self.max_bytes);
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String("web_fetch".into()));
                     header.insert("http_status".into(), Value::from(status));
                     header.insert("content_type".into(), Value::String(content_type));
                     header.insert("duration_ms".into(), Value::from(duration_ms));
                     header.insert("bytes".into(), Value::from(bytes_len));
+                    if truncated {
+                        header.insert("truncated".into(), Value::Bool(true));
+                    }
                     let body_json = build_tool_result_body(text, id, header);
                     tracing::info!(
                         operation = "web_fetch",
                         http_status = status,
                         duration_ms,
                         bytes = bytes_len,
+                        truncated,
                         "web_fetch ok"
                     );
                     let _ = sink
@@ -176,10 +211,18 @@ pub struct WebFetchCellFactory;
 
 const DEFAULT_WEB_FETCH_MAX_CONCURRENCY: usize = 32;
 const DEFAULT_WEB_FETCH_EXTERNAL_TIMEOUT_MS: u64 = 30_000;
+/// Default body cap: 256 KiB (GH #83).
+///
+/// Generous but finite. It clears an ordinary web page or specification
+/// document whole, and it stops a multi-megabyte payload from entering a tool
+/// loop, where every subsequent round would pay for it again. A cell inside an
+/// agent loop wants a much smaller value; that is what the knob is for.
+const DEFAULT_WEB_FETCH_MAX_BYTES: usize = 256 * 1024;
 
 struct ParsedWebFetchParams {
     external_timeout: Duration,
     max_concurrency: usize,
+    max_bytes: usize,
 }
 
 fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebFetchParams, String> {
@@ -202,9 +245,20 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebFetchParam
     if ms == 0 {
         return Err("params.external_timeout_ms must be >= 1".into());
     }
+    let mb = match raw.get("max_bytes") {
+        None => DEFAULT_WEB_FETCH_MAX_BYTES,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| "params.max_bytes must be a positive integer".to_string())?
+            as usize,
+    };
+    if mb == 0 {
+        return Err("params.max_bytes must be >= 1".into());
+    }
     Ok(ParsedWebFetchParams {
         external_timeout: Duration::from_millis(ms),
         max_concurrency: mc,
+        max_bytes: mb,
     })
 }
 
@@ -232,6 +286,7 @@ impl CellFactory for WebFetchCellFactory {
         let parsed = parse_params_pure(&params)?;
         let external_timeout = parsed.external_timeout;
         let max_concurrency = parsed.max_concurrency;
+        let max_bytes = parsed.max_bytes;
 
         let client = reqwest::Client::builder()
             .build()
@@ -241,6 +296,7 @@ impl CellFactory for WebFetchCellFactory {
             client: client.clone(),
             external_timeout,
             max_concurrency,
+            max_bytes,
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: initial dispatcher via
@@ -271,6 +327,7 @@ impl CellFactory for WebFetchCellFactory {
                 client: respawn_client.clone(),
                 external_timeout,
                 max_concurrency,
+                max_bytes,
             });
             let (tx, rx) =
                 tokio::sync::mpsc::channel::<meclaw_core::Message>(respawn_mailbox_capacity);
@@ -333,6 +390,7 @@ impl CellFactory for WebFetchCellFactory {
             client,
             external_timeout: parsed.external_timeout,
             max_concurrency,
+            max_bytes: parsed.max_bytes,
         });
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
@@ -389,6 +447,7 @@ mod tests {
             client: reqwest::Client::builder().build().unwrap(),
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
+            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -437,6 +496,7 @@ mod tests {
             client: reqwest::Client::builder().build().unwrap(),
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
+            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -481,6 +541,7 @@ mod tests {
             client: reqwest::Client::builder().build().unwrap(),
             external_timeout: std::time::Duration::from_secs(2),
             max_concurrency: 4,
+            max_bytes: DEFAULT_WEB_FETCH_MAX_BYTES,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -533,6 +594,113 @@ mod tests {
         let r = WebFetchCellFactory
             .validate_params(&meclaw_core::serde_json::json!({"external_timeout_ms": 0}));
         assert!(r.is_err());
+    }
+
+    // ───── GH #83: the size cap ─────
+
+    #[test]
+    fn truncate_body_leaves_a_body_under_the_cap_alone() {
+        let (out, cut) = truncate_body("small".to_string(), 1024);
+        assert_eq!(out, "small");
+        assert!(!cut);
+    }
+
+    #[test]
+    fn truncate_body_marks_the_cut_and_names_the_full_size() {
+        let (out, cut) = truncate_body("x".repeat(5000), 100);
+        assert!(cut);
+        assert!(
+            out.starts_with(&"x".repeat(100)),
+            "the prefix is the first max_bytes bytes"
+        );
+        assert!(
+            out.contains("[truncated, 5000 bytes total]"),
+            "the model must be able to see that it got a prefix: {}",
+            &out[out.len() - 40..]
+        );
+    }
+
+    #[test]
+    fn truncate_body_cuts_on_a_char_boundary() {
+        // 'ä' is two bytes; a cap of 3 lands inside the second one.
+        let (out, cut) = truncate_body("äää".to_string(), 3);
+        assert!(cut);
+        assert!(out.starts_with("ä"), "no broken code point: {out:?}");
+        assert!(out.contains("[truncated, 6 bytes total]"), "{out:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_body_over_the_cap_arrives_trimmed_and_marked() {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+        use tokio::sync::mpsc;
+
+        let huge = "y".repeat(20_000);
+        let (addr, _join) = start_mock_server(MockResponse::ok(huge.as_bytes())).await;
+        let cell = WebFetchCell {
+            client: reqwest::Client::builder().build().unwrap(),
+            external_timeout: std::time::Duration::from_secs(5),
+            max_concurrency: 4,
+            max_bytes: 1000,
+        };
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+        let sink = OutputSink::new(
+            out_tx,
+            Path::new("/web"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            10,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        let url = format!("http://{addr}/big");
+        let msg = MessageBuilder::new(Path::new("/web"))
+            .reply_to(Path::new("/caller"))
+            .body(Body::Inline(json!({
+                "messages": [{
+                    "origin": "assistant", "type": "tool_call",
+                    "text": format!(r#"{{"url":"{url}"}}"#), "id": "call-cap"
+                }]
+            })))
+            .build();
+        cell.handle(msg, &sink).await;
+        let em = out_rx.recv().await.unwrap();
+        let text = em.content["messages"][0]["text"].as_str().unwrap();
+        assert!(
+            text.len() < 20_000,
+            "the cap must bite: {} bytes arrived",
+            text.len()
+        );
+        assert!(
+            text.contains("[truncated, 20000 bytes total]"),
+            "cut marked"
+        );
+        assert_eq!(
+            em.content["header"]["truncated"], true,
+            "the declared `truncated` header finally has a producer"
+        );
+        assert_eq!(
+            em.content["header"]["bytes"], 20_000,
+            "`bytes` reports what the server sent, not what survived the cap"
+        );
+    }
+
+    #[test]
+    fn factory_validate_params_rejects_max_bytes_zero() {
+        use meclaw_colony::CellFactory;
+        assert!(
+            WebFetchCellFactory
+                .validate_params(&meclaw_core::serde_json::json!({"max_bytes": 0}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn factory_defaults_max_bytes_to_a_generous_but_finite_cap() {
+        let p = parse_params_pure(&meclaw_core::serde_json::json!({})).unwrap();
+        assert_eq!(p.max_bytes, DEFAULT_WEB_FETCH_MAX_BYTES);
+        assert!(p.max_bytes > 0, "finite means non-zero, not unbounded");
     }
 
     #[test]

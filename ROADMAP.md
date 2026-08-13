@@ -92,6 +92,38 @@ Found by the wave's own measurement and fixed inside it:
 [#71](https://github.com/mmeyerlein/meclaw/issues/71) an extractor replacement
 points forwards in time, never backwards.
 
+## Shipped: 0.3.2 substrate reliability
+
+Seven defects that all sit *between* cells, ranked by a practice run of the tool
+cells against a test colony rather than by reading the code, fixed in one wave
+and released as v0.3.2.
+
+Done: [#75](https://github.com/mmeyerlein/meclaw/issues/75) a gateway error
+inside a 200 body is classified at the wire, so an in-body 429 lands on the lane
+a status 429 lands on, [#82](https://github.com/mmeyerlein/meclaw/issues/82) a
+tool round is budgeted at the dozen routing hops it actually costs and a TTL
+death names itself instead of stalling in silence,
+[#83](https://github.com/mmeyerlein/meclaw/issues/83) a fetched body has a
+`max_bytes` bound and a visible cut,
+[#17](https://github.com/mmeyerlein/meclaw/issues/17) op bodies reach a cell over
+the HTTP API and a scheduled lane can be triggered once from outside,
+indistinguishably from its own tick,
+[#84](https://github.com/mmeyerlein/meclaw/issues/84) the watchdog deadline is
+reachable from `colony.json`, a trip names its evidence, and a trip can be
+survivable without being invisible,
+[#74](https://github.com/mmeyerlein/meclaw/issues/74) every scenario case binds a
+port of its own and a red line carries the daemon's state,
+[#20](https://github.com/mmeyerlein/meclaw/issues/20) instantiation keeps
+environment placeholders literal on disk and binds them late, on every read.
+
+The most useful result of the wave was a negative one: the boot failures three
+earlier packages had blamed on port collisions were watchdog trips, and the
+watchdog was measuring a legitimately long colony-loop iteration rather than a
+hang. Two structural questions stay open on their own issues, a `ttl` refresh on
+the loopback edge (#82) and an eviction policy for an assembled context (#83),
+and so does the architectural cut a watchdog would need to tell a long iteration
+from a hung one (#84).
+
 ## Now: meclaw-os, the organism
 
 A colony grown from a seed into a personal operating system. This is the stream
@@ -113,18 +145,19 @@ Riding the same wave: [#36](https://github.com/mmeyerlein/meclaw/issues/36) the 
 
 Substrate invariants that must land before an MVP claim, no order committed yet:
 [#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob
-resolution, [#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops
-reachable from the API,
-[#20](https://github.com/mmeyerlein/meclaw/issues/20) secret materialization
-classes, [#35](https://github.com/mmeyerlein/meclaw/issues/35) sandboxing for
+resolution, [#35](https://github.com/mmeyerlein/meclaw/issues/35) sandboxing for
 code and bash cells,
 [#62](https://github.com/mmeyerlein/meclaw/issues/62) provenance for
-instantiated nodes.
+instantiated nodes. Two of this stream's items shipped in 0.3.2:
+[#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops reachable from
+the API and [#20](https://github.com/mmeyerlein/meclaw/issues/20) secret
+materialization classes.
 
 Suite hygiene rides in this stream because it is infrastructure rather than
-product: [#74](https://github.com/mmeyerlein/meclaw/issues/74) the scenario
-runner rotates eight ports across 46 cases and occasionally collides with
-TIME_WAIT.
+product. [#74](https://github.com/mmeyerlein/meclaw/issues/74) shipped in 0.3.2:
+the port rotation is gone, and the diagnosis that came with it showed that the
+boot failures blamed on TIME_WAIT were watchdog trips
+([#84](https://github.com/mmeyerlein/meclaw/issues/84)).
 
 ## Later: memory hive continued
 

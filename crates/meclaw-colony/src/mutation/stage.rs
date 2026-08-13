@@ -384,6 +384,14 @@ pub(crate) fn copy_dir_recursive(
 
 /// Read + substitute + UUID-patch `config.json` inside the staging dir.
 ///
+/// Two views of the same config (GH #20): the DISK view resolves the instance
+/// class only (`${ctx.<key>}`, `${uuid7:label}`) and is what gets written, so
+/// environment placeholders -- secrets included -- stay tokens on the filesystem.
+/// The RUNTIME view applies the env pass in memory on top of it, exactly as the
+/// boot path does, and every returned value is derived from THAT. A cell born
+/// from a mutation therefore sees the same params as after a reboot, while the
+/// file on disk carries none of them.
+///
 /// Returns `(cell_type, params, contract_view, cell_timeout, idle_timeout_ms,
 /// message_timeout, mailbox_size, header_view)` for Factory-Lookup + the timeout
 /// mapping after rename. `contract_view` is extracted from the post-substitution
@@ -424,9 +432,14 @@ pub(crate) fn patch_and_substitute_config(
         .map_err(|e| MutationError::Schema(format!("read config.json: {e}")))?;
     let cfg: JsonValue = meclaw_core::serde_json::from_str(&raw)
         .map_err(|e| MutationError::Schema(format!("parse config.json: {e}")))?;
-    // Full substitution: ${ENV_VAR}, ${ctx.<key>}, ${uuid7:label}.
-    let mut cfg = super::substitute::substitute_full(&cfg, env, ctx)?;
-    // override_params merge (last-write-wins over copied values).
+    // GH #20 -- the DISK view: instance-class substitution only (`${ctx.<key>}`,
+    // `${uuid7:label}`). Environment-class tokens (`${VAR}`, `${VAR:-default}`)
+    // survive literally into the instance config and bind late, at every read.
+    // A secret referenced by a template therefore never reaches the filesystem.
+    let mut cfg = super::substitute::substitute_instance_only(&cfg, ctx)?;
+    // override_params merge (last-write-wins over copied values). The diff-side
+    // values arrive already instance-substituted and env-literal
+    // (`substitute_mutation_diff`), so this merge stays inside the disk view.
     if let Some(over) = add_node.get("override_params").and_then(|v| v.as_object())
         && let Some(params) = cfg.get_mut("params").and_then(|v| v.as_object_mut())
     {
@@ -436,15 +449,25 @@ pub(crate) fn patch_and_substitute_config(
     }
     // cell.id: always mint a fresh UUID v7 — every staged cell is a new
     // instance (add_nodes, swap_nodes with-side, subtree nodes).
-    let cell = cfg
+    let cell_block = cfg
         .get_mut("cell")
         .and_then(|v| v.as_object_mut())
         .ok_or_else(|| MutationError::Schema("config.json: cell-block missing".into()))?;
     let cell_id = meclaw_core::Uuid::now_v7();
-    cell.insert(
+    cell_block.insert(
         "id".into(),
         meclaw_core::serde_json::Value::String(cell_id.to_string()),
     );
+    // GH #20 -- the RUNTIME view: the same late binding the boot path applies
+    // (`plan_bootstrap` → `substitute_env_only`), in memory, over the disk view.
+    // Everything below is derived from it, so a cell spawned by a mutation sees
+    // exactly what it would see after a reboot -- and a `${VAR}` that cannot
+    // resolve rejects the mutation here, pre-destructively, as before.
+    let runtime = super::substitute::substitute_env_only(&cfg, env)?;
+    let cell = runtime
+        .get("cell")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| MutationError::Schema("config.json: cell-block missing".into()))?;
     let cell_type = cell
         .get("type")
         .and_then(|v| v.as_str())
@@ -472,7 +495,7 @@ pub(crate) fn patch_and_substitute_config(
             "cell.mailbox_size must be >= 1 (0 has no capacity semantics)".into(),
         ));
     }
-    let params = cfg
+    let params = runtime
         .get("params")
         .cloned()
         .unwrap_or(JsonValue::Object(Default::default()));
@@ -482,7 +505,7 @@ pub(crate) fn patch_and_substitute_config(
     // during staging, BEFORE the atomic rename — so the `.staging` dir is
     // discarded and the live filesystem is unchanged (handle_mutation step 1/2
     // discipline: reject pre-destructively, analog the mailbox_size:0 reject above).
-    let contract_block: crate::config::ContractBlock = match cfg.get("contract") {
+    let contract_block: crate::config::ContractBlock = match runtime.get("contract") {
         Some(c) => meclaw_core::serde_json::from_value(c.clone())
             .map_err(|e| MutationError::Schema(format!("config.json: invalid contract: {e}")))?,
         None => crate::config::ContractBlock::default(),
@@ -795,9 +818,21 @@ mod tests {
         .unwrap();
         assert_eq!(staged.len(), 1);
         let cfg_raw = std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap();
-        assert!(cfg_raw.contains("\"hi\""), "${{GREET}} must be substituted");
+        // GH #20: the env token stays on disk, the value does not.
+        assert!(
+            cfg_raw.contains("${GREET}"),
+            "the environment token survives instantiation literally: {cfg_raw}"
+        );
+        assert!(
+            !cfg_raw.contains("\"hi\""),
+            "the env VALUE is never written to disk: {cfg_raw}"
+        );
         assert!(cfg_raw.contains("\"id\""), "cell.id (UUID v7) must be set");
-        assert!(!cfg_raw.contains("${GREET}"), "no token may be left over");
+        // The runtime view handed to the factory IS resolved (boot-equivalent).
+        assert_eq!(
+            staged[0].params["greeting"], "hi",
+            "the spawned cell sees the resolved value"
+        );
     }
 
     #[test]

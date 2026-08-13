@@ -17,10 +17,16 @@
 //!      cell), the boot read the pinned source — had it read `<root>/.env`,
 //!      `BOOT_VAR` would be missing and `bootstrap_from_filesystem` would fail
 //!      (no HTTP).
-//!  (b) HTTP mutation (template instantiation) with `${MUT_VAR}`: committed +
-//!      the written config.json carries `alt_value` (NOT `default_value`).
-//!  (c) 2b adoption in the same process with `${MUT_VAR}`: committed + the
-//!      config.json of the adopted node carries `alt_value`.
+//!  (b) HTTP mutation (template instantiation) with `${BOOT_VAR}`: committed.
+//!      `BOOT_VAR` exists ONLY in alt.env, so a mutation that read the default
+//!      `<root>/.env` would reject with `env_var_missing` before the rename --
+//!      the commit IS the seam receipt. Since GH #20 the written config.json
+//!      carries the TOKEN, not the value, so the on-disk value is no longer a
+//!      usable discriminator; presence/absence of the variable is.
+//!  (c) 2b adoption in the same process, same discriminator.
+//!
+//! `MUT_VAR` (present in BOTH sources with different values) stays in the
+//! fixture as the negative control: neither of its values may appear on disk.
 //!
 //! Expectation GREEN ⇒ the seam carries through, the pin is the proof. RED ⇒ a
 //! genuine finding (incomplete seam) ⇒ STOP + escalate.
@@ -145,8 +151,10 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         "boot-substituted cell must be registered (proves boot read alt.env); registry: {registry}"
     );
 
-    // (b) HTTP mutation instantiates a cell with ${MUT_VAR} → committed, and the
-    // written config.json carries alt_value (the pinned source), not default_value.
+    // (b) HTTP mutation instantiates a cell with ${BOOT_VAR} -- alt-only. A
+    // mutation reading the default <root>/.env would reject with
+    // env_var_missing (pre-destructively, before the rename), so committing is
+    // the seam receipt. The written config.json keeps the token (GH #20).
     let (status, body) = post_mutation(
         &actual_addr,
         serde_json::json!({
@@ -155,22 +163,31 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
             "diff": {"add_nodes": [{
                 "name": "muta",
                 "template": "bashtpl",
-                "override_params": {"marker": "${MUT_VAR}"}
+                "override_params": {"marker": "${BOOT_VAR}"}
             }]}
         }),
     )
     .await;
-    assert_eq!(status, 200, "mutation must commit; body: {body}");
+    assert_eq!(
+        status, 200,
+        "mutation must commit -- a rejected one means the wrong env source; body: {body}"
+    );
     assert_eq!(body["mutation"]["outcome"], "committed", "body: {body}");
     let muta_params = read_cell_params(root, "muta").expect("muta config.json written");
     assert_eq!(
-        muta_params["marker"], "alt_value",
-        "HTTP-mutation cell must resolve ${{MUT_VAR}} from the pinned --env source, not the \
-         default <root>/.env; params: {muta_params}"
+        muta_params["marker"], "${BOOT_VAR}",
+        "GH #20: the instantiated config keeps the token, not the value; params: {muta_params}"
     );
+    let muta_raw = muta_params.to_string();
+    for leaked in ["alt_boot", "alt_value", "default_value"] {
+        assert!(
+            !muta_raw.contains(leaked),
+            "no env VALUE may appear in the instance config: {muta_raw}"
+        );
+    }
 
     // (c) 2b-adoption over the same process. Drop an UNREGISTERED node on disk
-    // (post-boot ⇒ not in the registry), then adopt it with ${MUT_VAR}.
+    // (post-boot ⇒ not in the registry), then adopt it with ${BOOT_VAR}.
     std::fs::create_dir_all(root.join("main/adopted")).unwrap();
     std::fs::write(
         root.join("main/adopted/config.json"),
@@ -185,7 +202,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
             "diff": {"add_nodes": [{
                 "name": "adopted",
                 "adopt": {"type": "bash", "version": "0.1.0"},
-                "override_params": {"marker": "${MUT_VAR}"}
+                "override_params": {"marker": "${BOOT_VAR}"}
             }]}
         }),
     )
@@ -195,9 +212,17 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
     let adopted_params =
         read_cell_params(root, "adopted").expect("adopted config.json (re-written)");
     assert_eq!(
-        adopted_params["marker"], "alt_value",
-        "2b-adoption must resolve ${{MUT_VAR}} from the pinned --env source; params: {adopted_params}"
+        adopted_params["marker"], "${BOOT_VAR}",
+        "2b-adoption commits only against the pinned --env source, and keeps the token on \
+         disk (GH #20); params: {adopted_params}"
     );
+    let adopted_raw = adopted_params.to_string();
+    for leaked in ["alt_boot", "alt_value", "default_value"] {
+        assert!(
+            !adopted_raw.contains(leaked),
+            "no env VALUE may appear in the adopted config: {adopted_raw}"
+        );
+    }
 
     // Graceful shutdown.
     shutdown_tx.send(()).unwrap();

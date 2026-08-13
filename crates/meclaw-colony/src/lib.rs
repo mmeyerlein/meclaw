@@ -79,7 +79,7 @@ pub use runtime::ColonyRuntime;
 pub use stateful_cell::StatefulCell;
 pub use stateless_cell::StatelessCell;
 pub use term_ack::TermAckGuard;
-pub use watchdog::{Watchdog, WatchdogAction};
+pub use watchdog::{Watchdog, WatchdogAction, WatchdogOnTrip, WatchdogTrip};
 
 #[cfg(test)]
 mod tests {

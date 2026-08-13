@@ -64,7 +64,11 @@ async fn handle_add_fresh_inserts_row_and_sends_setactive() {
         .await
         .expect("no SetActive within 1s")
         .unwrap();
-    let TimerReconfig::SetActive(snap) = rc;
+    // GH #17 added `FireNow` to the frame, so the binding names the variant it
+    // means. The assertion is unchanged: an `add` answers with a snapshot.
+    let TimerReconfig::SetActive(snap) = rc else {
+        panic!("an add op must answer with SetActive, got {rc:?}");
+    };
     assert!(
         snap.iter().any(|s| s.schedule_id == id),
         "the SetActive snapshot does not contain the id: {:?}",

@@ -37,6 +37,14 @@ pub enum TimerOp {
         /// PK of the row to remove.
         schedule_id: Uuid,
     },
+    /// Fire an existing schedule ONCE, now, without touching its plan (GH #17).
+    /// The handler checks that the row exists and is active, then hands the
+    /// firing to the I/O task, which pushes the same `Fire` frame the sleep arm
+    /// pushes. The schedule keeps its cron; a one-shot keeps its `at`.
+    Trigger {
+        /// PK of the row to fire.
+        schedule_id: Uuid,
+    },
 }
 
 impl TimerOp {
@@ -54,6 +62,10 @@ impl TimerOp {
         let schedule_id = Uuid::parse_str(id_s).map_err(|e| format!("schedule_id: {e}"))?;
         match op {
             "remove" => Ok(TimerOp::Remove { schedule_id }),
+            // `trigger` carries nothing but the id: it fires the schedule as it
+            // stands rather than describing a new one (GH #17). A trigger that
+            // took fields would be a modify with a different name.
+            "trigger" => Ok(TimerOp::Trigger { schedule_id }),
             "modify" => parse_modify(obj, schedule_id),
             "add" => parse_add(obj, schedule_id),
             other => Err(format!("op: unknown value {other:?}")),
@@ -176,6 +188,35 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(parsed, TimerOp::Remove { .. }));
+    }
+
+    #[test]
+    fn op_trigger_requires_only_id() {
+        let parsed = TimerOp::parse(&json!({
+            "op": "trigger",
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001"
+        }))
+        .unwrap();
+        assert!(matches!(parsed, TimerOp::Trigger { .. }));
+    }
+
+    /// GH #17: an op body that reaches the cell over the HTTP ingress carries a
+    /// central UBF slot (`messages: []`, the honest statement that a control
+    /// message has no turns) next to the op's own top-level slots. The parser
+    /// must read the op past that slot, otherwise the documented envelope shape
+    /// and the mailbox disagree.
+    #[test]
+    fn op_parses_next_to_a_central_ubf_slot() {
+        let body = json!({
+            "messages": [],
+            "op": "trigger",
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001"
+        });
+        meclaw_core::validate_ubf_body(&body).expect("the op envelope must be valid UBF");
+        assert!(matches!(
+            TimerOp::parse(&body).unwrap(),
+            TimerOp::Trigger { .. }
+        ));
     }
 
     #[test]

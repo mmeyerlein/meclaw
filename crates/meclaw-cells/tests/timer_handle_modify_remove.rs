@@ -164,7 +164,10 @@ async fn handle_modify_success_sends_setactive() {
         .await
         .expect("no SetActive")
         .unwrap();
-    let TimerReconfig::SetActive(snap) = rc;
+    // GH #17 added `FireNow` to the frame; the binding names the variant it means.
+    let TimerReconfig::SetActive(snap) = rc else {
+        panic!("a modify op must answer with SetActive, got {rc:?}");
+    };
     assert!(snap.iter().any(|s| s.schedule_id == id));
 
     let row = db
@@ -224,7 +227,10 @@ async fn handle_remove_success_marks_status_and_sends_setactive() {
         .await
         .expect("no SetActive")
         .unwrap();
-    let TimerReconfig::SetActive(snap) = rc;
+    // GH #17 added `FireNow` to the frame; the binding names the variant it means.
+    let TimerReconfig::SetActive(snap) = rc else {
+        panic!("a remove op must answer with SetActive, got {rc:?}");
+    };
     assert!(
         snap.iter().all(|s| s.schedule_id != id),
         "the removed id must NOT show up in SetActive"

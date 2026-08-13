@@ -193,8 +193,20 @@ Order within a message: the `params` slot is merged **first** + persisted in the
 | refresh token permanently dead | `auth` | `auth_permanent` | `re_login_required: true` |
 | token store missing/unreadable | `auth` | `auth_store_unavailable` | — |
 | 5xx / overload | `provider_error` | `transient` | — |
+| upstream error **inside a 200 body** (GH #75) | that of the stated status | that of the stated status, else coarse (`rate_limited` / `unauthorized` / `model_not_found` / `provider_error`) | `in_body: true`, `upstream_status` (when stated), `upstream_message` |
 
 Pre-P10 failure paths emit **no** `kind` — their message is unchanged.
+
+**An error inside a 200 body (GH #75).** An OpenAI-compatible gateway reports an upstream failure
+as a regular `HTTP 200` whose body carries **no** `choices` at all, only a top level `error`
+object (`{"error": {"message": …, "code": 429}}`). That is not a malformed body, it is the normal
+signal. The cell classifies this shape **before** it reads `choices[0]`, and through the **same**
+status table a real HTTP status goes through: a 429 in the body lands in exactly the lane an HTTP
+429 lands in (`rate_limit`), 401/403 in `auth`, 5xx in `provider_error` with `kind: transient`. If
+the body states no status, the prose decides (rate-limit shaped sentences ⇒ `rate_limit`),
+otherwise `provider_error`. `meta.error.source` is `wire` (not `parse`), and
+`meta.error.upstream_message` carries the provider's own sentence. `missing choices[0]` stays
+reserved for a body that has **neither** `choices` **nor** `error`.
 
 **Aggregation over loops** (total cost, cumulative tokens): **not a cell feature**. A separate aggregator hive in the topology groups over `correlation_id` and augments pass-through headers (`cost_total_usd`, `tokens_total`). Rationale in `meclaw-overview.md` section "Metadata aggregation is topology".
 
@@ -359,7 +371,9 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Output header**: `operation` (= `"web_fetch"`), `http_status`, `content_type`, `duration_ms`, `bytes`, optional `truncated`.
 
-**`params`**: typically `base_url`, default `headers`, optional auth configuration.
+**`params`**: `max_bytes` (byte cap on the returned body, default `262144` = 256 KiB, GH #83), `max_concurrency`, `external_timeout_ms`; later `base_url`, default `headers`, optional auth configuration.
+
+**Size cap (`max_bytes`, GH #83).** A fetched body is a tool result, and inside a tool loop a tool result is re-sent to the model on **every** subsequent round — one large fetch does not cost one prompt, it costs every remaining prompt of the turn. `max_bytes` is therefore **generous but finite**: the default passes an ordinary document whole and stops a multi-megabyte payload. A trim is visible, never silent: `text` ends in `… [truncated, <N> bytes total]`, `header.truncated: true` (the declared header finally has a producer), and `header.bytes` reports the **full** size the server sent, not the size of what survived. Inside an agent loop the value belongs much lower (the worked example uses 32 KiB).
 
 **Phase-7 conventions** (Slice-3 decisions):
 - **GET only** in Slice 3. `method`/`headers`/`body` deferred.
@@ -367,9 +381,9 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - **non-2xx HTTP status = NORMAL tool_result** with `http_status` header. The LLM/caller reads the status. Only DNS/connect/timeout/invalid input produce error messages (`io_error` / `timeout` / `invalid_input` on missing/invalid `url`).
 - **TLS**: rustls (`rustls-tls` feature of reqwest); no OpenSSL/native-tls in the tree.
 - **Header**: `operation: "web_fetch"`, `http_status: u16` (mandatory), `content_type: String`, `duration_ms`, `bytes`.
-- **Truncation/blob**: deferred (Phase 12), large bodies inline in `text`.
+- **Truncation**: `max_bytes` (GH #83, see above) cuts visibly; below it large bodies stay inline in `text` and are offloaded as a whole-body blob when needed.
 - **`reqwest::Client` per cell instance** (internally Arc, no Mutex). Build error at spawn → spawn error. RespawnFn clones the initially built client.
-- **Defaults**: `max_concurrency: 32`, `external_timeout_ms: 30000`.
+- **Defaults**: `max_concurrency: 32`, `external_timeout_ms: 30000`, `max_bytes: 262144`.
 
 ---
 
@@ -529,7 +543,7 @@ human-readable label** (may occur multiple times) and serves only readability + 
 fire header. Modification and deletion always address **via `schedule_id`**, never via
 `schedule_name`.
 
-**Operation per message** via the mandatory field `op: "add" | "modify" | "remove"`
+**Operation per message** via the mandatory field `op: "add" | "modify" | "remove" | "trigger"`
 (default `add`, if omitted):
 
 ```json
@@ -548,6 +562,10 @@ fire header. Modification and deletion always address **via `schedule_id`**, nev
 { "op": "remove", "schedule_id": "0190a3f2-...-v7" }
 ```
 
+```json
+{ "op": "trigger", "schedule_id": "0190a3f2-...-v7" }
+```
+
 `modify` carries `schedule_id` plus the fields to change (e.g. a new `cron`).
 
 **Semantics** (strict, no heuristic):
@@ -555,8 +573,38 @@ fire header. Modification and deletion always address **via `schedule_id`**, nev
 - `modify` = UPDATE of the carried fields; an unknown `schedule_id` → error.
 - `remove` = deactivate the schedule (status update in `cell.db`, **No-Delete-conformant**, no
   row deletion); an unknown `schedule_id` → error.
+- `trigger` = fire an existing schedule **once, now**, without changing its plan (GitHub #17).
+  The op carries nothing but the `schedule_id`; everything else, `emit_to`, `emit_body`,
+  `emit_headers`, comes from the row, because the schedule already IS the description of what
+  is to be fired. An unknown or non-active (`removed`/`completed`) `schedule_id` → error.
 
-**Validation & error surfacing**: on `add`/`modify` a `cron` expression is validated against the 6-field Quartz parser. Invalid expressions are rejected (no silently stored, never-firing schedule arises). All op errors are emitted as a message to the `reply_to` of the op message (`parent_message_id` = the consumed op message), with `header.error_code` for: `invalid_body` (body not inline-readable), `parse_error` (op message unparsable beyond the cron check), `schedule_id_exists` (add on an existing `schedule_id`), `schedule_not_found` (modify/remove on an unknown `schedule_id`), `kind_mismatch` (modify type switch once↔repeating), `invalid_cron` (invalid cron expression). Successful ops are not acked.
+**What `trigger` delivers, the firing itself rather than a similar one**: the handler checks
+only existence and status and hands the firing to the I/O task, which pushes the same fire frame
+the `sleep_until` arm pushes. Everything after that is identical: the same race check, the same
+state-before-emit (`iteration_n` bump resp. `mark_completed`), the same `OriginSink` emission
+with the full auto-header set. A triggered repeating schedule counts its `iteration_n` on as
+usual and keeps its next cron occurrence; a triggered one-off counts as `completed` afterwards
+and no longer fires at its own `at` (race check in `handle_event`). The op itself writes nothing
+to the schedule and emits nothing, which is why a triggered run is indistinguishable from a
+cron-fired one.
+
+**Validation & error surfacing**: on `add`/`modify` a `cron` expression is validated against the 6-field Quartz parser. Invalid expressions are rejected (no silently stored, never-firing schedule arises). All op errors are emitted as a message to the `reply_to` of the op message (`parent_message_id` = the consumed op message), with `header.error_code` for: `invalid_body` (body not inline-readable), `parse_error` (op message unparsable beyond the cron check), `schedule_id_exists` (add on an existing `schedule_id`), `schedule_not_found` (modify/remove/trigger on an unknown `schedule_id`, and trigger on a non-active one), `kind_mismatch` (modify type switch once↔repeating), `invalid_cron` (invalid cron expression). Successful ops are not acked.
+
+**Op messages over the HTTP API**: the op body is an ordinary UBF body, the op fields being
+cell-specific top-level slots. Whoever feeds an op in through `POST /messages` additionally
+declares the central slot the message honestly has: an op message carries no conversation turns,
+hence `"messages": []`. Without a central slot the ingress validation rejects it with
+`422 invalid_ubf_body` (overview § Schema validation, edge). Example:
+
+```json
+{ "target": "/main/nightly",
+  "body": { "messages": [], "op": "trigger", "schedule_id": "0190a3f2-...-v7" } }
+```
+
+The op stays colony-validated throughout: the HTTP layer checks the envelope, the cell checks
+the op (`schedule_not_found`, `invalid_cron`, …). A scheduled lane is therefore triggerable once
+from outside, without restarting the colony and without writing past the timer's `cell.db`
+(GitHub #17).
 
 **One-off vs. repeating**: a repeating schedule carries `cron` (6-field Quartz). A one-off one carries `at` instead (RFC-3339-Z, UTC) and **no** `cron`. The fields are exclusive (exactly one per schedule). `iteration_n` is emitted only on repeating schedules (omitted on once). `modify` may not switch the type (once↔repeating), for that `remove` + `add`.
 

@@ -30,14 +30,23 @@ pub enum TimerEvent {
     },
 }
 
-/// Handler → I/O: full snapshot of the active schedule set. After every
-/// successful `add`/`modify`/`remove` op the handler recomputes the snapshot
-/// fresh from `cell.db` and sends it to the I/O task, which replaces its working
-/// copy and recomputes the next `sleep_until`.
+/// Handler → I/O frames. After every successful `add`/`modify`/`remove` op the
+/// handler recomputes the active snapshot fresh from `cell.db` and sends it, and
+/// the I/O task replaces its working copy and recomputes the next `sleep_until`.
 #[derive(Debug, Clone)]
 pub enum TimerReconfig {
     /// Complete replacement of the I/O-local active set.
     SetActive(Vec<ActiveSchedule>),
+    /// Fire this schedule once, now (GH #17). Not a reconfiguration: the plan is
+    /// untouched and the working copy is not read. It travels on this channel
+    /// because this channel IS the handler-to-I/O direction, and the firing has
+    /// to originate in the I/O task: the handler holds no `OriginSink`, so an
+    /// emission it made itself could not be the one a cron tick makes.
+    FireNow {
+        /// PK of the schedule to fire. Resolved against `cell.db` by
+        /// `handle_event`, exactly as for a `sleep_until` firing.
+        schedule_id: Uuid,
+    },
 }
 
 /// I/O sub-task. Single-owner state (`TimerIo.active`), no mutex.
@@ -68,6 +77,23 @@ pub fn run_io(
                 biased;
                 maybe_rc = reconfig_rx.recv() => match maybe_rc {
                     Some(TimerReconfig::SetActive(snap)) => { active = snap; }
+                    Some(TimerReconfig::FireNow { schedule_id }) => {
+                        // GH #17: the operator's trigger enters through the SAME
+                        // frame the sleep arm below pushes, so the run that
+                        // follows is not "like" a cron-fired one, it IS one --
+                        // same event, same handle_event, same OriginSink emit.
+                        // `active` stays untouched: a triggered cron keeps its
+                        // next occurrence, and a triggered one-shot is dropped by
+                        // handle_event's status check when its own time comes.
+                        if events_tx
+                            .send(TimerEvent::Fire { schedule_id, scheduled_at: Utc::now() })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        liveness.mark_success();
+                    }
                     None => break,
                 },
                 _ = sleep_until_optional(next.map(|(_, t)| t)) => {

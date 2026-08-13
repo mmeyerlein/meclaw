@@ -163,6 +163,91 @@ If the next planner call emits more tool calls, their rows use iteration `1` and
 protocol repeats. If it finishes with `stop`, separate edges send the answer to the Telegram
 proxy and to `archive`; the tool loop is done.
 
+## A tool result is re-sent on every subsequent round
+
+The thread is rebuilt cumulatively (step 5), so a tool result does not enter the model's context
+once. It enters again on every round of the same turn. One 172 KB fetch in a two-round turn was
+measured at roughly 70k prompt tokens; in a five-round turn the same fetch is carried five times.
+
+Two places bound that, and they are different decisions:
+
+- **At the tool.** `web_fetch` takes `params.max_bytes` (default 256 KiB, GH #83) and marks a trim
+  in the payload (`… [truncated, N bytes total]`, `header.truncated: true`, `header.bytes` = the
+  full size). Inside a loop that value belongs much lower —
+  [`examples/telegram-research`](../examples/telegram-research/) sets 32 KiB on its `reader`. A cap
+  is a bound on the worst case, not a policy.
+- **At the collector.** What leaves the assembled context again is the collector's decision, and it
+  is the one that turns a large result from a per-round cost back into a one-time cost. The shape
+  is deterministic policy rather than a model judgement: whole turns leave on a turn cap and a byte
+  cap, never halves, and the turn being answered is never the one evicted. An eviction rule over
+  the tool rows of the round slate is that same shape one level down, and it is tracked on GH #83.
+
+For a genuinely large document the honest pattern is not a cap at all: fetch it to a file with a
+`file` cell and hand the model the path, so the payload never becomes a thread row.
+
+## The TTL budget of one round
+
+`ttl` is the routing-loop guard: colony decrements it on every routing decision and a message
+that reaches `0` is dead-lettered. One user-visible tool round in this shape is **not** one hop.
+It is about a dozen, because the collector's read-modify-write conversation with the store is
+itself routing:
+
+| Leg | Hops |
+|---|---|
+| planner -> dispatcher | 1 |
+| dispatcher -> tool | 1 |
+| tool -> collector | 1 |
+| collector -> store insert, and the reply back | 2 |
+| collector -> store select, and the reply back | 2 |
+| collector -> store guarded update, and the reply back | 2 |
+| collector -> store firing select, and the reply back | 2 |
+| collector -> planner (the loopback edge) | 1 |
+| **one round** | **~12** |
+
+Parallel tool calls do not multiply this: `ttl` lives on each message envelope, so the branches
+burn their own copies and the number above is the cost along the chain that re-enters the
+planner.
+
+Measured on the checked-in fixture (`tests/fixtures/14b-tool-loop-store`, pinned in
+`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`): six tool rounds end to end cost **76**
+routing hops. `message_default_ttl` defaults to **64**, so the default budget holds **five**
+rounds and the sixth runs out. Five rounds is not generous for an assistant — "write the file,
+read it back, fix it, verify, then summarise" is five.
+
+Size the budget on purpose, in `colony.json`:
+
+```json
+{ "schema_version": 1, "message_default_ttl": 160 }
+```
+
+Rule of thumb: `message_default_ttl >= 4 + rounds * 12` for a store-backed loop. The `160` above
+buys twelve rounds. Per initial message the HTTP ingress accepts a `ttl` field that overrides it.
+
+### TTL exhaustion is a silent stall, so bound the loop yourself
+
+TTL expiry is **terminal**: the message goes directly to the dead-letter queue and deliberately
+does **not** take the `reply_to` cascade (`meclaw-overview.md` § TTL semantics). Inside a fan-in
+that is invisible from the agent surface: the collector's fan-in never completes, so it parks by
+design, and **nothing is emitted toward the origin** — no answer, no error, nothing a topology
+can route on. The colony logs the death loudly (an `ERROR` line naming the message id, its
+target, and the trace id) and writes a `ttl_expired` dead-letter row; those are the operator's
+signals, and they are the only ones.
+
+So TTL is a substrate guard, not the loop's bound. Bound the loop where the loop lives — on the
+loopback edge, with the iteration counter the edge already owns:
+
+```json
+{
+  "from": "./collector",
+  "to": "./planner",
+  "condition": "hop.route == 'fire' && int(context.iter) < 12",
+  "modifier": { "set_context": { "iter": "int(context.iter) + 1", "firing": "''" } }
+}
+```
+
+A second edge with the inverse condition gives the runaway round a destination that answers
+(an apology turn, an error lane, a notifier) instead of a silence.
+
 ## Reading the collector script
 
 The branches in

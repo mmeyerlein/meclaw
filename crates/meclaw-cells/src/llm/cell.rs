@@ -98,7 +98,15 @@ async fn run_responses_lane(
         translate_responses::parse_responses_sse(&body_text)
     } else {
         match meclaw_core::serde_json::from_str::<Value>(&body_text) {
-            Ok(json) => translate_responses::parse_responses_response(&json),
+            Ok(json) => {
+                // GH #75: same shape on this dialect — a 2xx body that carries
+                // only an `error` object is the provider's failure signal, not
+                // a response the translate stage should try to read.
+                if let Some(e) = wire::classify_in_body_error(&json) {
+                    return Err(LaneFailure::from_wire(&e));
+                }
+                translate_responses::parse_responses_response(&json)
+            }
             Err(e) => Err(TranslateError::ResponseShape(format!(
                 "response was neither SSE nor JSON: {e}"
             ))),
@@ -667,7 +675,10 @@ impl StatefulCell for LlmCell {
                         (unix_ms_now() - started_at_unix_ms).max(0) as u64,
                         None,
                         None,
-                        None,
+                        // GH #75: the fine kind travels with the failure on this
+                        // lane too. `None` for every pre-P10 variant, so the
+                        // legacy emitted body stays byte-identical.
+                        wire::wire_error_meta(&err),
                     )
                     .await;
                     return;

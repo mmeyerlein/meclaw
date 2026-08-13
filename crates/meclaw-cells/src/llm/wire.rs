@@ -84,6 +84,27 @@ pub enum WireError {
     /// P10: 5xx or an overload signal — retryable in principle, but retrying
     /// is the topology's call, not the cell's.
     Transient(String),
+    /// GH #75: the gateway answered `HTTP 200` with a body that carries no
+    /// `choices` at all, only a top level `error` object.
+    ///
+    /// That is the normal way an OpenAI-compatible gateway surfaces an upstream
+    /// failure, and it is NOT a malformed response. Before #75 the translate
+    /// stage saw the missing `choices[0]` and reported a parse defect, so a
+    /// transient upstream 429 never reached the `rate_limit` lane and the
+    /// provider's own sentence was replaced by a parser complaint.
+    ///
+    /// `inner` is the classification a real HTTP response with the same status
+    /// would get — the identical table (`classify_responses_status`), so an
+    /// in-body 429 lands in exactly the lane an HTTP-level 429 lands in.
+    InBodyError {
+        /// Upstream status the body reported, when it reported one.
+        upstream_status: Option<u16>,
+        /// Classification of that status. Never `InBodyError` itself.
+        inner: Box<WireError>,
+        /// The provider's own sentence about what happened. Provider prose,
+        /// never a credential.
+        message: String,
+    },
 }
 
 /// Map `WireError` to the UBF `error_code`-Enum value (cell-types Z.112).
@@ -104,7 +125,123 @@ pub(crate) fn wire_error_to_code(err: &WireError) -> &'static str {
         | WireError::Network(_)
         | WireError::BodyParse(_)
         | WireError::Transient(_) => "provider_error",
+        // GH #75: an error inside a 200 body is the error it says it is. The
+        // lane is decided by the wrapped classification, so an in-body 429 and
+        // an HTTP-level 429 are indistinguishable to a failover edge.
+        WireError::InBodyError { inner, .. } => wire_error_to_code(inner),
     }
+}
+
+/// The coarse `meta.error.kind` for a variant the P10 table does not name.
+///
+/// Only used for the [`WireError::InBodyError`] wrapper (GH #75): the wrapped
+/// classification must always carry a `kind`, because that discriminator is the
+/// whole point of surfacing the in-body error instead of a parse complaint.
+/// The pre-P10 variants keep `None` on their own (byte-identity, see
+/// `pre_p10_variants_have_no_extra_meta`).
+fn coarse_kind(err: &WireError) -> &'static str {
+    match err {
+        WireError::Timeout => "timeout",
+        WireError::RateLimited => "rate_limited",
+        WireError::Unauthorized => "unauthorized",
+        WireError::ModelNotFound => "model_not_found",
+        _ => "provider_error",
+    }
+}
+
+/// Lowercase needles that mark a rate-limit sentence when the body carries no
+/// numeric status at all. Deliberately short and literal — a gateway that says
+/// this is saying 429 in prose.
+const RATE_LIMIT_NEEDLES: [&str; 4] = [
+    "rate limit",
+    "rate-limit",
+    "rate_limit",
+    "too many requests",
+];
+
+/// The upstream status an in-body `error` object reports, if any.
+///
+/// Gateways are not consistent: some put the HTTP status in `error.code` as a
+/// number, some as a string, some in `error.status`, and some only say it in
+/// prose. All four are read here so the classification below sees the same
+/// number a real HTTP response would have carried.
+fn in_body_status(err: &Value, message: &str) -> Option<u16> {
+    let numeric = |v: Option<&Value>| -> Option<u16> {
+        let v = v?;
+        if let Some(n) = v.as_u64() {
+            return u16::try_from(n).ok();
+        }
+        v.as_str()?.trim().parse::<u16>().ok()
+    };
+    if let Some(s) = numeric(err.get("code"))
+        .or_else(|| numeric(err.get("status")))
+        .or_else(|| numeric(err.get("http_status")))
+    {
+        return Some(s);
+    }
+    // No number anywhere: read the typed strings, then the prose.
+    let typed = err
+        .get("type")
+        .or_else(|| err.get("code"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if typed.contains("rate_limit") || typed == "insufficient_quota" {
+        return Some(429);
+    }
+    let lower = message.to_lowercase();
+    if RATE_LIMIT_NEEDLES.iter().any(|n| lower.contains(n)) {
+        return Some(429);
+    }
+    None
+}
+
+/// Longest provider sentence carried into `meta.error`. Bounded so a gateway
+/// that answers with a wall of text cannot flood the message log.
+const IN_BODY_MESSAGE_MAX: usize = 500;
+
+/// The provider's own sentence out of an in-body `error` value.
+fn in_body_message(err: &Value) -> String {
+    let raw = match err {
+        Value::String(s) => s.clone(),
+        _ => match err.get("message").and_then(|v| v.as_str()) {
+            Some(m) => m.to_string(),
+            None => serde_json::to_string(err).unwrap_or_default(),
+        },
+    };
+    if raw.len() <= IN_BODY_MESSAGE_MAX {
+        return raw;
+    }
+    let mut end = IN_BODY_MESSAGE_MAX;
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… [truncated, {} bytes total]", &raw[..end], raw.len())
+}
+
+/// Detect an upstream error returned INSIDE a 2xx body (GH #75).
+///
+/// Returns `None` for every body that is not that shape — in particular for a
+/// body that carries `choices`, and for a body that carries neither `choices`
+/// nor `error`. The second case stays a genuine parse failure: `missing
+/// choices[0]` remains reserved for a response that really has no shape.
+pub(crate) fn classify_in_body_error(body: &Value) -> Option<WireError> {
+    // A body with `choices` is a completion. Whatever else it carries, the
+    // translate stage owns it.
+    if body.get("choices").is_some_and(|c| !c.is_null()) {
+        return None;
+    }
+    let err = body.get("error").filter(|e| !e.is_null())?;
+    let message = in_body_message(err);
+    let upstream_status = in_body_status(err, &message);
+    // Same table as a real HTTP status of that number. `0` for "the gateway
+    // did not say" falls through to the generic provider_error bucket.
+    let inner = classify_responses_status(upstream_status.unwrap_or(0), body);
+    Some(WireError::InBodyError {
+        upstream_status,
+        inner: Box::new(inner),
+        message,
+    })
 }
 
 /// The fine-grained P10 failure kind, surfaced in `meta.error` (plan D10).
@@ -149,6 +286,24 @@ pub(crate) fn wire_error_meta(err: &WireError) -> Option<serde_json::Map<String,
         }
         WireError::Transient(_) => {
             m.insert("kind".into(), Value::String("transient".into()));
+        }
+        // GH #75: the wrapped classification decides the kind (so an in-body
+        // 429 says `rate_limited` and an in-body quota signal keeps its P10
+        // kind), and the provenance says the error came in a 200 body plus what
+        // the provider actually said.
+        WireError::InBodyError {
+            upstream_status,
+            inner,
+            message,
+        } => {
+            m = wire_error_meta(inner).unwrap_or_default();
+            m.entry("kind".to_string())
+                .or_insert_with(|| Value::String(coarse_kind(inner).into()));
+            m.insert("in_body".into(), Value::Bool(true));
+            if let Some(s) = upstream_status {
+                m.insert("upstream_status".into(), Value::from(*s));
+            }
+            m.insert("upstream_message".into(), Value::String(message.clone()));
         }
         _ => return None,
     }
@@ -246,7 +401,14 @@ pub async fn call_openai(
                     .json::<Value>()
                     .await
                     .map_err(|e| WireError::BodyParse(e.to_string()))?;
-                Ok(json)
+                // GH #75: a 2xx that carries an upstream `error` object instead
+                // of `choices` is a provider failure, not a response. Classify
+                // it here, at the wire boundary, so it reaches the same lane as
+                // the same failure delivered with a real HTTP status.
+                match classify_in_body_error(&json) {
+                    Some(e) => Err(e),
+                    None => Ok(json),
+                }
             }
             401 => Err(WireError::Unauthorized),
             404 => Err(WireError::ModelNotFound),
@@ -521,6 +683,152 @@ mod tests {
         let s = format!("{e:?}");
         assert!(s.contains("refresh_token_reused"), "{s}");
         assert!(!s.to_lowercase().contains("bearer"), "{s}");
+    }
+
+    // ───── GH #75: an upstream error inside a 200 body ─────
+
+    use super::classify_in_body_error;
+
+    /// Verbatim shape observed live on 2026-08-12: an OpenAI-compatible gateway
+    /// answers `HTTP 200`, the body has no `choices` at all, only `error`, and
+    /// the numeric code is the upstream status.
+    #[test]
+    fn in_body_429_lands_in_the_rate_limit_lane_like_a_real_429() {
+        let body = json!({"error": {
+            "message": "openai/gpt-x is temporarily rate-limited upstream. Please retry shortly.",
+            "code": 429
+        }});
+        let e = classify_in_body_error(&body).expect("an in-body error must be classified");
+        // Identical lane to the HTTP-level 429 (`call_openai`'s 429 arm).
+        assert_eq!(wire_error_to_code(&e), "rate_limit");
+        assert_eq!(
+            wire_error_to_code(&e),
+            wire_error_to_code(&WireError::RateLimited),
+            "in-body and HTTP-level 429 must be indistinguishable to a failover edge"
+        );
+        let m = wire_error_meta(&e).expect("in-body errors always carry meta");
+        assert_eq!(m["kind"], "rate_limited");
+        assert_eq!(m["in_body"], true);
+        assert_eq!(m["upstream_status"], 429);
+        assert!(
+            m["upstream_message"]
+                .as_str()
+                .unwrap()
+                .contains("rate-limited upstream"),
+            "the provider's own sentence must survive: {m:?}"
+        );
+        // …and it reaches meta.error.detail, which is built from the Debug form.
+        assert!(format!("{e:?}").contains("rate-limited upstream"));
+    }
+
+    #[test]
+    fn in_body_5xx_is_transient_provider_error() {
+        let body = json!({"error": {"message": "upstream is having a moment", "code": 503}});
+        let e = classify_in_body_error(&body).unwrap();
+        assert_eq!(wire_error_to_code(&e), "provider_error");
+        let m = wire_error_meta(&e).unwrap();
+        assert_eq!(m["kind"], "transient");
+        assert_eq!(m["upstream_status"], 503);
+    }
+
+    #[test]
+    fn in_body_auth_and_model_errors_keep_their_lanes() {
+        let auth =
+            classify_in_body_error(&json!({"error": {"message": "bad key", "code": 401}})).unwrap();
+        assert_eq!(wire_error_to_code(&auth), "auth");
+        assert_eq!(wire_error_meta(&auth).unwrap()["kind"], "unauthorized");
+
+        let missing =
+            classify_in_body_error(&json!({"error": {"message": "no such model", "code": "404"}}))
+                .unwrap();
+        assert_eq!(wire_error_to_code(&missing), "model_not_found");
+        assert_eq!(
+            wire_error_meta(&missing).unwrap()["upstream_status"],
+            404,
+            "a stringified status is still a status"
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_stated_only_in_prose_is_still_a_rate_limit() {
+        // No numeric code anywhere — the sentence is all the gateway gives.
+        let e = classify_in_body_error(&json!({"error": {
+            "message": "Too Many Requests: please slow down"
+        }}))
+        .unwrap();
+        assert_eq!(wire_error_to_code(&e), "rate_limit");
+        assert_eq!(wire_error_meta(&e).unwrap()["kind"], "rate_limited");
+    }
+
+    #[test]
+    fn an_in_body_quota_signal_keeps_its_p10_kind() {
+        let e = classify_in_body_error(&json!({"error": {
+            "type": "usage_limit_reached", "code": 429,
+            "plan_type": "plus", "resets_at": 1786000000i64
+        }}))
+        .unwrap();
+        assert_eq!(wire_error_to_code(&e), "rate_limit");
+        let m = wire_error_meta(&e).unwrap();
+        assert_eq!(m["kind"], "quota_exhausted");
+        assert_eq!(m["resets_at"], 1786000000i64);
+        assert_eq!(m["in_body"], true);
+    }
+
+    #[test]
+    fn an_untyped_in_body_error_is_a_provider_error_not_a_parse_failure() {
+        let e = classify_in_body_error(&json!({"error": {"message": "something went sideways"}}))
+            .unwrap();
+        assert_eq!(wire_error_to_code(&e), "provider_error");
+        let m = wire_error_meta(&e).unwrap();
+        assert_eq!(m["kind"], "provider_error");
+        assert!(m.get("upstream_status").is_none(), "no status was reported");
+        assert_eq!(m["upstream_message"], "something went sideways");
+    }
+
+    /// `missing choices[0]` stays reserved for a body that genuinely has no
+    /// shape. This is the discriminator the whole fix hangs on.
+    #[test]
+    fn a_body_without_choices_and_without_error_is_not_classified_here() {
+        assert!(classify_in_body_error(&json!({"id": "x", "object": "chat.completion"})).is_none());
+        assert!(classify_in_body_error(&json!({})).is_none());
+        assert!(
+            classify_in_body_error(&json!({"choices": [], "error": null})).is_none(),
+            "a null error next to choices is a normal completion"
+        );
+    }
+
+    #[test]
+    fn a_completion_that_also_carries_an_error_key_stays_a_completion() {
+        let body = json!({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                          "error": {"message": "trailing junk"}});
+        assert!(
+            classify_in_body_error(&body).is_none(),
+            "choices win — the translate stage owns a body that has them"
+        );
+    }
+
+    #[test]
+    fn an_error_given_as_a_bare_string_still_carries_its_text() {
+        let e = classify_in_body_error(&json!({"error": "rate limit exceeded"})).unwrap();
+        assert_eq!(wire_error_to_code(&e), "rate_limit");
+        assert_eq!(
+            wire_error_meta(&e).unwrap()["upstream_message"],
+            "rate limit exceeded"
+        );
+    }
+
+    #[test]
+    fn a_wall_of_provider_text_is_bounded_in_meta() {
+        let long = "x".repeat(5000);
+        let e = classify_in_body_error(&json!({"error": {"message": long, "code": 500}})).unwrap();
+        let m = wire_error_meta(&e).unwrap();
+        let carried = m["upstream_message"].as_str().unwrap();
+        assert!(
+            carried.len() < 700,
+            "message must be bounded: {}",
+            carried.len()
+        );
+        assert!(carried.contains("[truncated,"), "the cut must be marked");
     }
 
     #[test]

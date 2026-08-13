@@ -3,6 +3,9 @@
 pub mod bridge;
 pub mod factories;
 pub use factories::built_in_factories;
+/// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
+/// so the CLI re-exports the substrate's type instead of mirroring it.
+pub use meclaw_colony::watchdog::{WatchdogOnTrip, WatchdogTrip};
 
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -213,19 +216,27 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     run_with_hooks(cli, None, None).await
 }
 
-/// Supervisor deadline of the Deep-Audit F3 heartbeat watchdog.
+/// Supervisor deadline and trip policy of the Deep-Audit F3 heartbeat watchdog.
 ///
 /// Production uses [`WatchdogTuning::default`] (5 consecutive silent periods of
-/// 100 ms ≈ 0.5 s, against a colony that beats every 100 ms — a 5× margin).
-/// The values are parameters of `run_watchdog` itself; they are injectable here
-/// so a test can put the supervisor deadline under the colony's own heartbeat
-/// period and observe a REAL trip of the real supervisor.
+/// 100 ms ≈ 0.5 s, against a colony that beats every 100 ms — a 5× margin) with
+/// [`WatchdogOnTrip::Exit`]. The values are parameters of `run_watchdog` itself;
+/// they are injectable here so a test can put the supervisor deadline under the
+/// colony's own heartbeat period and observe a REAL trip of the real supervisor.
+///
+/// **GH #84**: an operator no longer needs this seam. The same three values live
+/// in `colony.json` (`watchdog_threshold`, `watchdog_period_ms`,
+/// `watchdog_on_trip`); [`run_with_hooks`] resolves them from there, and
+/// [`WatchdogTuning::from_colony_config`] is the single conversion.
+/// [`run_with_hooks_tuned`] keeps the explicit override for tests.
 #[derive(Debug, Clone, Copy)]
 pub struct WatchdogTuning {
     /// Consecutive silent periods before the watchdog trips.
     pub threshold: u32,
     /// Length of one supervisor period.
     pub period: std::time::Duration,
+    /// What a trip does — end the process, or report it and keep running.
+    pub on_trip: WatchdogOnTrip,
 }
 
 impl Default for WatchdogTuning {
@@ -233,6 +244,22 @@ impl Default for WatchdogTuning {
         Self {
             threshold: 5,
             period: std::time::Duration::from_millis(100),
+            on_trip: WatchdogOnTrip::Exit,
+        }
+    }
+}
+
+impl WatchdogTuning {
+    /// Read the tuning out of a parsed `colony.json` (GH #84).
+    ///
+    /// An absent `colony.json` deserialises to [`ColonyConfig::default`], whose
+    /// watchdog fields are exactly the values this struct's [`Default`] carries —
+    /// so a colony that says nothing gets the pre-#84 behaviour to the millisecond.
+    pub fn from_colony_config(cfg: &meclaw_colony::colony_config::ColonyConfig) -> Self {
+        Self {
+            threshold: cfg.watchdog_threshold,
+            period: cfg.watchdog_period(),
+            on_trip: cfg.watchdog_on_trip,
         }
     }
 }
@@ -255,19 +282,25 @@ pub async fn run_with_hooks(
     addr_hook: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
     shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> anyhow::Result<()> {
-    run_with_hooks_tuned(cli, addr_hook, shutdown_hook, WatchdogTuning::default()).await
+    run_with_hooks_tuned(cli, addr_hook, shutdown_hook, None).await
 }
 
 /// [`run_with_hooks`] with the watchdog deadline made explicit.
 ///
-/// Same lifecycle, one extra knob: `watchdog` decides how much colony silence is
-/// a trip. `run_with_hooks` passes [`WatchdogTuning::default`] — the production
-/// values — so every existing caller is unaffected.
+/// Same lifecycle, one extra knob: `watchdog_override` decides how much colony
+/// silence is a trip and what a trip does.
+///
+/// * `None` — resolve from `colony.json` (GH #84). This is what `run_with_hooks`
+///   passes, so the production path reads the operator's file and, when there is
+///   none, runs the pre-#84 values unchanged.
+/// * `Some(t)` — use `t` verbatim, ignoring `colony.json`. The test seam: a test
+///   puts the supervisor deadline under the colony's own heartbeat period and
+///   observes a REAL trip of the real supervisor.
 pub async fn run_with_hooks_tuned(
     cli: Cli,
     addr_hook: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
     shutdown_hook: Option<tokio::sync::oneshot::Receiver<()>>,
-    watchdog: WatchdogTuning,
+    watchdog_override: Option<WatchdogTuning>,
 ) -> anyhow::Result<()> {
     let db_path = cli.root.join("colony.db");
     let colony_db = meclaw_colony::ColonyDb::open(&db_path)
@@ -469,6 +502,12 @@ pub async fn run_with_hooks_tuned(
     let colony_config = meclaw_colony::colony_config::read_colony_config(&cli.root)
         .map_err(|e| anyhow::anyhow!("colony.json: {e}"))?;
 
+    // GH #84: the watchdog deadline is an operator knob now. An explicit override
+    // (tests) wins; otherwise `colony.json` decides — and an absent file carries
+    // the pre-#84 values, so nothing moves by default.
+    let watchdog =
+        watchdog_override.unwrap_or_else(|| WatchdogTuning::from_colony_config(&colony_config));
+
     // Phase-12-X T17 / phase-13.5 A8: the blob store is instantiated here.
     // Default path `<root>/blobs`; --blobs overrides it. It flows both into
     // `colony_task`/`runtime` (A8 — cell delivery-boundary resolution +
@@ -525,14 +564,23 @@ pub async fn run_with_hooks_tuned(
     // has completed. Boot is not a steady state — the colony task hydrates its
     // tables before its select-loop emits its first heartbeat — so a boot that
     // ran long under parallel load used to trip a watchdog armed at spawn time.
-    let (wd_stop_tx, wd_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    //
+    // GH #84: the supervisor reports a structured `WatchdogTrip` instead of a
+    // bare `()`. Every trip is logged (below, once the boot cell count is known);
+    // only a FATAL one — any trip under `on_trip: exit`, and a gone colony task
+    // under either policy — reaches `wd_fatal_rx` and ends the process.
+    let (wd_trip_tx, mut wd_trip_rx) =
+        tokio::sync::mpsc::channel::<meclaw_colony::watchdog::WatchdogTrip>(8);
+    let (wd_fatal_tx, wd_fatal_rx) =
+        tokio::sync::oneshot::channel::<meclaw_colony::watchdog::WatchdogTrip>();
     let (wd_arm_tx, wd_arm_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(meclaw_colony::watchdog::run_watchdog(
         heartbeat_rx,
-        wd_stop_tx,
+        wd_trip_tx,
         watchdog.threshold,
         watchdog.period,
         wd_arm_rx,
+        watchdog.on_trip,
     ));
 
     // Bootstrap from filesystem (reads config.json files, plans + applies).
@@ -546,6 +594,11 @@ pub async fn run_with_hooks_tuned(
         colony_config,
         blob_store: Some(blob_store.clone()),
     };
+    // GH #84: how many cells the boot registered. The watchdog cannot ask the
+    // colony how many are live AT trip time — the colony is the only authority on
+    // its registry and by definition it is not answering — so the trip line
+    // carries the honest number it can have: the one the boot produced.
+    let cells_at_boot;
     match meclaw_colony::bootstrap_from_filesystem_with_env(
         &root_path,
         &factories,
@@ -561,6 +614,7 @@ pub async fn run_with_hooks_tuned(
                 edges = report.edge_count,
                 "filesystem bootstrap applied"
             );
+            cells_at_boot = report.cell_count;
             // Issue #6: boot is over — from here on, silence from the colony
             // loop is a fault and not a slow start. This is the ONLY arming
             // site; the failure branch below returns without arming.
@@ -578,6 +632,40 @@ pub async fn run_with_hooks_tuned(
             return Err(anyhow::anyhow!("bootstrap failed: {e:?}"));
         }
     }
+
+    // GH #84, half 3: a trip becomes a reported event. This task is the single
+    // place a trip is written down — under both policies, so `log-only` can never
+    // be the quiet option — and the single place that decides whether it also
+    // ends the process.
+    //
+    // stderr AND `tracing`, deliberately (issue #6, defect 3): `tracing` goes to
+    // the structured JSON log file, stderr is the one stream an operator gets
+    // without configuring anything (journalctl, the scenario runner's daemon.log).
+    let on_trip = watchdog.on_trip;
+    tokio::spawn(async move {
+        let mut fatal_tx = Some(wd_fatal_tx);
+        while let Some(trip) = wd_trip_rx.recv().await {
+            let fatal = trip.is_fatal(on_trip);
+            let line = format!("{trip} cells_at_boot={cells_at_boot} on_trip={on_trip}");
+            if fatal {
+                eprintln!("meclaw: watchdog trip — {line}");
+            } else {
+                eprintln!("meclaw: watchdog trip (log-only, the colony keeps running) — {line}");
+            }
+            tracing::error!(
+                reason = %line,
+                starved = trip.starved(),
+                fatal = fatal,
+                "watchdog trip"
+            );
+            if fatal {
+                if let Some(tx) = fatal_tx.take() {
+                    let _ = tx.send(trip);
+                }
+                return;
+            }
+        }
+    });
 
     // Steps 5.4 + 5.5 — Direct-Mode stdin-reader and egress-writer tasks.
     // Spawned only when is_direct_mode; the Option variables hold their abort
@@ -677,17 +765,9 @@ pub async fn run_with_hooks_tuned(
     // that future must stay `Output = ()` for axum's graceful-shutdown contract.
     // So it travels on its own one-slot channel, read after the drain below.
     let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<String>(1);
-    // Built out here: the future below must own everything it touches (axum's
-    // `with_graceful_shutdown` demands `'static`).
-    let trip_reason = format!(
-        "colony heartbeat lost for {} consecutive supervisor periods of {} ms",
-        watchdog.threshold,
-        watchdog.period.as_millis()
-    );
     let signal_future = async {
         // Explicit binding: capture by value, not by reference (see above).
         let trip_tx = trip_tx;
-        let trip_reason = trip_reason;
         // Issue #40: SIGTERM exists only on unix. Elsewhere the arm below is
         // compiled out and ctrl_c alone carries the shutdown.
         #[cfg(unix)]
@@ -732,15 +812,13 @@ pub async fn run_with_hooks_tuned(
             // drive the same graceful stop as a signal, but end the process as a
             // FAULT (issue #6, defect 2 — a trip used to exit 0, so a supervisor
             // saw a clean stop and neither restarted nor alerted).
-            _ = wd_stop_rx => {
-                let reason = trip_reason;
-                // Issue #6, defect 3: `tracing` writes to the structured JSON log
-                // file, so the plain daemon log (journalctl, systemd's captured
-                // stderr) stayed EMPTY on exactly the death that mattered. stderr
-                // is the one stream an operator gets without configuring anything.
-                eprintln!("meclaw: watchdog trip — {reason}");
-                tracing::error!(reason = %reason, "watchdog-triggered shutdown");
-                let _ = trip_tx.try_send(reason);
+            // GH #84: only a FATAL trip arrives here — the reporter task above has
+            // already written every trip down. `Ok(..)` and not `_`: if the
+            // reporter ends without a fatal trip (log-only, colony still running)
+            // the sender drops and the pattern simply disables this arm, instead
+            // of firing a shutdown on a channel-closed.
+            Ok(trip) = wd_fatal_rx => {
+                let _ = trip_tx.try_send(format!("{trip}"));
             },
             // Step 5.6: stdin-EOF in Direct-Mode → graceful shutdown.
             _ = eof_future => {

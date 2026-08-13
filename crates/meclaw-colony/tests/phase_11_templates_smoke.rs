@@ -173,10 +173,15 @@ async fn instanziieren_aus_template_via_mutation() {
     assert!(cfg_path.exists(), "echo/config.json must have been written");
     let cfg_raw = std::fs::read_to_string(&cfg_path).unwrap();
 
-    // ${GREETING} must be substituted.
+    // GH #20: ${GREETING} is environment class -- it survives instantiation
+    // literally and binds late, at every read. The VALUE never reaches disk.
     assert!(
-        cfg_raw.contains("hello-templates"),
-        "${{GREETING}} must be substituted as 'hello-templates': {cfg_raw}"
+        cfg_raw.contains("${GREETING}"),
+        "${{GREETING}} must survive instantiation as a token: {cfg_raw}"
+    );
+    assert!(
+        !cfg_raw.contains("hello-templates"),
+        "the env VALUE must not be written into the instance: {cfg_raw}"
     );
     // cell.id (UUID v7) must be set.
     assert!(

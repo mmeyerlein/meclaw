@@ -268,3 +268,57 @@ async fn env_escape_yields_literal_via_mutation() {
 
     h.shutdown().await;
 }
+
+/// GH #20 -- a committed `add_nodes` leaves NO secret VALUE on disk, on either
+/// materialization path (`params.*` and `contract.settings.*.default`), while
+/// the spawned cell still receives the resolved value.
+///
+/// This is the end-to-end shape of the two production finds on the issue: one
+/// mutation used to leak one secret, a rebirth all of them. Here the real
+/// `handle_mutation` pipeline runs and the instantiated file is read back raw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn instantiation_writes_no_secret_value_into_config_json() {
+    const SENTINEL: &str = "sk-e2e-do-not-materialize";
+    let (h, td, last_params) = setup(&format!("SECRET_API_KEY={SENTINEL}\n"));
+    // The template references the secret on BOTH paths.
+    std::fs::write(
+        td.path().join("templates/recorder/config.json"),
+        r#"{"cell":{"type":"recorder"},"params":{"api_key":"${SECRET_API_KEY}"},
+            "contract":{"version":"0.1.0","consumes":{},
+              "settings":{"api_key":{"type":"string","default":"${SECRET_API_KEY}"}}}}"#,
+    )
+    .unwrap();
+    rescan_templates(&h, td.path().join("templates")).await;
+
+    let outcome = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name": "rec", "template": "recorder"}]}
+        }),
+    )
+    .await;
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "add_nodes must commit; got {outcome:?}"
+    );
+
+    let raw = std::fs::read_to_string(td.path().join("main/rec/config.json")).unwrap();
+    assert!(
+        !raw.contains(SENTINEL),
+        "the secret VALUE must appear nowhere in the instance config: {raw}"
+    );
+    assert_eq!(
+        raw.matches("${SECRET_API_KEY}").count(),
+        2,
+        "both references stay tokens (params + settings default): {raw}"
+    );
+
+    let params = last_params.lock().unwrap().clone().expect("cell spawned");
+    assert_eq!(
+        params["api_key"], SENTINEL,
+        "the cell itself is born with the resolved value; params: {params}"
+    );
+
+    h.shutdown().await;
+}

@@ -48,13 +48,14 @@ async fn a_watchdog_trip_ends_the_run_with_an_error_not_a_clean_exit() {
     let tuning = WatchdogTuning {
         threshold: 3,
         period: Duration::from_millis(20),
+        on_trip: meclaw_cli::WatchdogOnTrip::Exit,
     };
 
     // Generous failure marker (30 s convention): a trip is expected within
     // ~150 ms, the timeout only fences a hang.
     let res = tokio::time::timeout(
         Duration::from_secs(30),
-        run_with_hooks_tuned(cli, None, None, tuning),
+        run_with_hooks_tuned(cli, None, None, Some(tuning)),
     )
     .await
     .expect("the run must end on the watchdog trip, not hang");
@@ -88,11 +89,12 @@ async fn a_failed_boot_reports_the_boot_failure_and_never_a_watchdog_trip() {
     let tuning = WatchdogTuning {
         threshold: 1,
         period: Duration::from_millis(1),
+        on_trip: meclaw_cli::WatchdogOnTrip::Exit,
     };
 
     let res = tokio::time::timeout(
         Duration::from_secs(30),
-        run_with_hooks_tuned(cli, None, None, tuning),
+        run_with_hooks_tuned(cli, None, None, Some(tuning)),
     )
     .await
     .expect("a failing boot must end the run, not hang");
@@ -106,5 +108,129 @@ async fn a_failed_boot_reports_the_boot_failure_and_never_a_watchdog_trip() {
     assert!(
         !msg.contains("watchdog"),
         "the watchdog must stay disarmed until boot completes, was: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------- GH #84
+
+/// GH #84 half 1: the tuning is reachable from `colony.json`.
+///
+/// The receipt is deliberately the production entry point — `run_with_hooks`,
+/// the one `run()` calls, with NO override argument. The only thing this test
+/// writes is a file in the colony root; if the deadline still came from the
+/// hard-wired default, a colony that beats every 100 ms would never miss a
+/// 5 × 100 ms window and the run would hang until the failure marker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn colony_json_sets_the_watchdog_deadline_on_the_production_path() {
+    let td = tempfile::TempDir::new().unwrap();
+    let cli = cli_for(td.path());
+    // 3 × 20 ms = 60 ms, under the colony's own 100 ms heartbeat period.
+    std::fs::write(
+        td.path().join("colony.json"),
+        br#"{"watchdog_threshold": 3, "watchdog_period_ms": 20}"#,
+    )
+    .unwrap();
+
+    let res = tokio::time::timeout(
+        Duration::from_secs(30),
+        meclaw_cli::run_with_hooks(cli, None, None),
+    )
+    .await
+    .expect("colony.json must reach the watchdog, so the run must end on the trip");
+
+    let err = res.expect_err("a watchdog trip must exit non-zero (Err), not Ok(())");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("watchdog"),
+        "the error must name the watchdog as the cause, was: {msg}"
+    );
+    // GH #84 half 3: the trip carries evidence, not only a deadline.
+    for needle in ["starved=", "silent_for=", "supervisor_lag=", "colony_task="] {
+        assert!(
+            msg.contains(needle),
+            "the trip must be actionable and name {needle} — was: {msg}"
+        );
+    }
+}
+
+/// GH #84 half 1, the other half: reachable must not mean changed. A colony root
+/// with NO `colony.json` runs the pre-#84 deadline (5 × 100 ms against a 100 ms
+/// heartbeat), so a healthy colony must survive well past it and stop only when
+/// it is told to. This is the regression lock on "no behaviour change by
+/// default".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_colony_json_the_default_deadline_does_not_trip_a_healthy_colony() {
+    let td = tempfile::TempDir::new().unwrap();
+    let cli = cli_for(td.path());
+    assert!(!td.path().join("colony.json").exists());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let run = tokio::spawn(meclaw_cli::run_with_hooks(cli, None, Some(shutdown_rx)));
+    // Six times the default 500 ms window. A default that had moved would have
+    // tripped several times over inside this.
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    shutdown_tx.send(()).expect("the run must still be alive");
+
+    let res = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("the run must end on the shutdown hook")
+        .expect("the run task must not panic");
+    res.expect("a healthy colony under the DEFAULT deadline must exit Ok, not on a trip");
+}
+
+/// GH #84 half 3: `watchdog_on_trip: "log-only"` keeps the colony running.
+///
+/// Same deadline as the trip test above — the supervisor trips again and again —
+/// but the process must survive all of it and still end cleanly on its shutdown
+/// signal. The trips themselves are not silent (they go to stderr and to
+/// `tracing`); what this pins is that they no longer take the colony with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn log_only_reports_the_trip_and_keeps_the_colony_running() {
+    let td = tempfile::TempDir::new().unwrap();
+    let cli = cli_for(td.path());
+    std::fs::write(
+        td.path().join("colony.json"),
+        br#"{"watchdog_threshold": 3, "watchdog_period_ms": 20,
+             "watchdog_on_trip": "log-only"}"#,
+    )
+    .unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let run = tokio::spawn(meclaw_cli::run_with_hooks(cli, None, Some(shutdown_rx)));
+    // Long enough for many trip windows to come and go under `exit` semantics.
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    shutdown_tx
+        .send(())
+        .expect("log-only must have kept the run alive");
+
+    let res = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("the run must end on the shutdown hook, not hang")
+        .expect("the run task must not panic");
+    res.expect("under log-only a silence trip must not end the process");
+}
+
+/// A `colony.json` the substrate cannot run with is a boot failure, not a clamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zero_watchdog_period_is_a_boot_failure() {
+    let td = tempfile::TempDir::new().unwrap();
+    let cli = cli_for(td.path());
+    std::fs::write(
+        td.path().join("colony.json"),
+        br#"{"watchdog_period_ms": 0}"#,
+    )
+    .unwrap();
+
+    let res = tokio::time::timeout(
+        Duration::from_secs(30),
+        meclaw_cli::run_with_hooks(cli, None, None),
+    )
+    .await
+    .expect("an invalid colony.json must fail the boot, not hang");
+    let err = res.expect_err("a zero supervisor period must not boot");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("watchdog_period_ms"),
+        "the failure must name the offending key, was: {msg}"
     );
 }

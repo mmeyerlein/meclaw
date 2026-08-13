@@ -57,6 +57,16 @@ loopback, all drawn in the tree.
 For the row-by-row protocol, including the expected-ID check and atomic fired-once guard, read
 the [store-backed tool-loop walkthrough](../../docs/store-backed-tool-loop.md).
 
+### Why this colony ships a `colony.json`
+
+One tool round in this shape costs about a dozen routing hops, because the collector's
+conversation with the `memory` store is itself routing. `ttl` is decremented per hop and never
+refreshed, so the colony-wide default of 64 would cap this agent at **five** tool rounds and the
+sixth would run out mid fan-in — terminal, straight to the dead-letter queue, and nothing
+emitted back to the chat. `colony.json` therefore sizes the budget for this topology
+(`message_default_ttl: 160`, about twelve rounds). The walkthrough carries the hop table, the
+formula, and the iteration-counter bound that belongs on the loopback edge.
+
 ## Set up the Telegram bot
 
 1. In Telegram, open a chat with **@BotFather**.

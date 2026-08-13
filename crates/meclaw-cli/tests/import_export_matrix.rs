@@ -33,7 +33,7 @@
 //!
 //! | artifact | (a) instantiation | (b) reboot | (c) full copy | (d) config-only copy | (e) validate | (f) partial restore |
 //! |---|---|---|---|---|---|---|
-//! | `config.json` — node header + params | **written once**, `${VAR}` baked in, `cell.id` minted, `template.json` stripped → `a1`, `a2` | **live-read** every boot, never rewritten → `b1` | carried verbatim → `c1` | carried verbatim → `d1` | live-read, no side effect → `e1` | carried verbatim, but see the two `cell.db` rows → `f1` |
+//! | `config.json` -- node header + params | **written once**, `${VAR}` kept as a token, `cell.id` minted, `template.json` stripped → `a1`, `a2` | **live-read** every boot, never rewritten → `b1` | carried verbatim → `c1` | carried verbatim → `d1` | live-read, no side effect → `e1` | carried verbatim, but see the two `cell.db` rows → `f1` |
 //! | `cell.db` — params overlay (`params` table) | not created unless the template ships `seed/` (no test needed: `a1` already asserts the instance has no `cell.db` without `seed/`) | **survives**, wins over `config.json` for overlay keys → `b4` | carried → `c2` | **reborn** empty → `d2` | not touched (`--validate` spawns nothing; no test needed) | **kept** → overlay still wins over the restored `config.json` → `f2` |
 //! | `cell.db` — birth-snapshot tables (`timer.schedules`, `store` seed) | seeded from `seed/` only, else at first spawn (covered by `a1` + `d2`) | **birth snapshot** — a `config.json` schedule edit is IGNORED → `b2`, `b3` | carried → live schedule state survives → `c2`; a DAMAGED one fails the boot loudly → `c6` | **reborn** — re-seeded from `config.json` → `d2` | probed, never opened for writing → `c6` (second half) | **kept** — a config-level restore does NOT restore behavior → `f2`; only a `cell.db` restore does → `f3` |
 //! | `colony.db` — `registry` (`cell_id`, status) | fresh `cell_id` per instantiated node (covered by `a1`) | **carried**, `cell_id` stable across reboot → `b1` | carried, `cell_id` identical to the source → `c1` | **reborn**, `cell_id` re-minted → `d1` | read-only overlay probe → `e1`, `e2` | carried; a restored node the registry does not know is **never adopted** → `f4` |
@@ -41,7 +41,7 @@
 //! | `colony.db` — `templates` (scan index) | read at resolve time (covered by `a1`) | scanned ONCE; re-scanned only when the table is empty, when its paths sit outside the booted root, or on `--rescan-templates` → `b5` | carried with the SOURCE's `filesystem_path`, then **re-anchored by the first boot** — the recorded paths are outside the booted root, so the boot scan rebuilds the index → `c3` | **reborn** by the boot scan → `d1` covers the boot; `c3` states the restore variant | not rescanned by `--validate` (no test needed — `--validate` returns before the colony spawns; the scan runs in `run()` ahead of it and is already covered by `c3`) | same as (c) (no separate test needed) |
 //! | `blobs/` (`DiskBlobStore`) | not involved (no test needed — instantiation never writes blobs) | live directory, never a snapshot (no test needed — the store is content-addressed by UUID and has no boot-time index) | carried as plain files → `c4` | **lost** — `BlobRef`s in a carried `message_log` would dangle; a config-only copy carries no `message_log` either, so the pair stays consistent → `c4` documents the carried case | not touched (no test needed) | same as (c) (no separate test needed) |
 //! | `templates/` + provenance of the copy | tree copied minus `template.json`; **no provenance is recorded anywhere** → `a1` | blacklisted from the bootstrap walk (no test needed — `walk_cell_directories` skips `templates/` at top level, covered by the whole sweep booting cleanly with a `templates/` dir present) | carried as plain files → `c3` | carried as plain files (same row) | blacklisted (no test needed) | same as (c) (no separate test needed) |
-//! | `.env` | substituted into `config.json` ONCE; `$${VAR}` survives as a literal `${VAR}` → `a2` | live-read every boot, in memory only → `b6` | carried; the baked values do NOT re-bind, the escaped ones DO → `a2` + `b6` cover both arms | same as (c) | live-read → `e1` | same as (c) |
+//! | `.env` | never substituted onto disk; `${VAR}` and `$${VAR}` both survive the write → `a2` | live-read every boot, in memory only → `b6` | carried as tokens; every `${VAR}` re-binds in the new environment, `$${VAR}` stays inert text → `a2` + `b6` cover both arms | same as (c) | live-read → `e1` | same as (c) |
 //! | SQLite WAL sidecars (`*.db-wal` / `*.db-shm`) | n/a (no test needed — instantiation leaves no open connection behind, so nothing can sit in a WAL) | checkpointed by a clean shutdown, so a cold reboot never depends on them (no test needed — every reboot cell in column (b) exercises it) | **part of the artifact whenever the colony was live** — a `*.db`-only copy silently restores stale state → `c5` | excluded on purpose → `d1`, `d2` | not touched (no test needed) | the restore unit is the whole directory → `f3` |
 //!
 //! # The sharp edges this sweep exists for
@@ -550,14 +550,15 @@ async fn a1_instantiated_copy_strips_template_json_and_records_no_provenance() {
     );
 }
 
-/// **a2** — `${VAR}` is baked into the instance ONCE; `$${VAR}` stays a literal
-/// `${VAR}` on disk and is therefore the only late-bound (portable) form.
+/// **a2** -- `${VAR}` survives instantiation LITERALLY and binds late at every
+/// boot; `$${VAR}` is the escape and yields the literal text `${VAR}`.
 ///
-/// This is the export-hygiene cell of the matrix: an exported `{root}` carries
-/// the *resolved* value of every plain `${VAR}` — secrets included — while the
-/// escaped form re-binds per environment at boot.
+/// This is the export-hygiene cell of the matrix, and GH #20 turned it around:
+/// an exported `{root}` carries the *token* of every plain `${VAR}` -- so a
+/// secret referenced by a template is in `.env` and nowhere else -- while the
+/// escaped form is inert text that never binds to anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a2_instantiation_bakes_env_and_keeps_escaped_token_late_bound() {
+async fn a2_instantiation_keeps_env_token_late_bound_and_escape_is_literal() {
     let td = tempfile::TempDir::new().unwrap();
     write_tree(td.path(), "0 0 5 * * *");
     std::fs::write(td.path().join(".env"), "GREETING=baked-at-birth\n").unwrap();
@@ -594,15 +595,19 @@ async fn a2_instantiation_bakes_env_and_keeps_escaped_token_late_bound() {
     let raw = std::fs::read_to_string(td.path().join("main/clone/config.json")).unwrap();
     let cfg: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(&raw).unwrap();
     assert_eq!(
-        cfg["params"]["baked"], "baked-at-birth",
-        "a plain ${{VAR}} is substituted ONCE and written to disk: {raw}"
+        cfg["params"]["baked"], "${GREETING}",
+        "GH #20: a plain ${{VAR}} is NOT substituted onto disk: {raw}"
+    );
+    assert!(
+        !raw.contains("baked-at-birth"),
+        "the env VALUE never reaches the instance tree: {raw}"
     );
     assert_eq!(
-        cfg["params"]["late"], "${GREETING}",
-        "the escaped $${{VAR}} form survives to disk as a literal token: {raw}"
+        cfg["params"]["late"], "$${GREETING}",
+        "the escape survives to disk for the boot pass to consume: {raw}"
     );
 
-    // Late binding proof: change .env, re-plan. Only the escaped one moves.
+    // Late binding proof: change .env, re-plan. Only the unescaped one moves.
     std::fs::write(td.path().join(".env"), "GREETING=rebound-elsewhere\n").unwrap();
     let overlay = read_registry_overlay(&td.path().join("colony.db")).unwrap();
     let boot_state = probe_boot_state(&td.path().join("colony.db")).unwrap();
@@ -615,12 +620,12 @@ async fn a2_instantiation_bakes_env_and_keeps_escaped_token_late_bound() {
         .find(|c| c.path.as_str() == "/clone")
         .expect("/clone planned");
     assert_eq!(
-        clone.params["baked"], "baked-at-birth",
-        "the baked value does NOT re-bind to the new .env — it is plain data now"
+        clone.params["baked"], "rebound-elsewhere",
+        "the plain token IS re-resolved from .env at every boot"
     );
     assert_eq!(
-        clone.params["late"], "rebound-elsewhere",
-        "the escaped token IS re-resolved from .env at every boot"
+        clone.params["late"], "${GREETING}",
+        "the escaped form is inert text and binds to nothing"
     );
 }
 

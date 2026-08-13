@@ -314,6 +314,57 @@ impl LongRunningCell for TimerCell {
                         send_setactive_snapshot(db, reconfig_tx).await;
                     }
                 }
+                crate::timer::op::TimerOp::Trigger { schedule_id } => {
+                    // GH #17: fire an EXISTING schedule once, now. The handler
+                    // does the two checks it owns -- the row exists, the row is
+                    // active -- and then hands the firing over. It emits nothing
+                    // itself and writes nothing: `handle_event` does the
+                    // state-before-emit and the OriginSink emit, which is what
+                    // makes the run indistinguishable from a cron-fired one.
+                    let row = match db
+                        .call_with_timeout(move |c| crate::timer::db::load_schedule(c, schedule_id))
+                        .await
+                    {
+                        Ok(r) => r.unwrap_or(None),
+                        Err(meclaw_colony::QueryTimeout::Interrupted) => {
+                            crate::timer::emit::emit_op_error(
+                                sink,
+                                &msg,
+                                "query_timeout",
+                                "trigger: load exceeded query_timeout_ms",
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    let Some(row) = row else {
+                        crate::timer::emit::emit_op_error(
+                            sink,
+                            &msg,
+                            "schedule_not_found",
+                            &format!("trigger: id {schedule_id} unknown"),
+                        )
+                        .await;
+                        return;
+                    };
+                    // A removed or completed schedule is not a firing target.
+                    // Refused here rather than left to `handle_event`'s race
+                    // check: that check skips silently, and a trigger that
+                    // silently does nothing is the failure mode #17 was about.
+                    if row.status != "active" {
+                        crate::timer::emit::emit_op_error(
+                            sink,
+                            &msg,
+                            "schedule_not_found",
+                            &format!("trigger: id {schedule_id} is {}, not active", row.status),
+                        )
+                        .await;
+                        return;
+                    }
+                    let _ = reconfig_tx
+                        .send(crate::timer::io::TimerReconfig::FireNow { schedule_id })
+                        .await;
+                }
                 crate::timer::op::TimerOp::Remove { schedule_id } => {
                     let n = match db
                         .call_with_timeout(move |c| crate::timer::db::mark_removed(c, schedule_id))

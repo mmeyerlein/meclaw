@@ -2581,6 +2581,30 @@ async fn route_with_log(
         }
     }
 
+    // GH #82: TTL exhaustion is terminal by spec — `route()` puts the message
+    // straight into the dead-letter queue and deliberately bypasses the
+    // `reply_to` cascade, so NOTHING is emitted toward the turn's origin. Inside
+    // a fan-in that reads as a silent stall: the collector never completes, the
+    // caller waits out its own timeout, and the topology has nothing to route
+    // on. The corridor's own line is terse and frozen (`warn`, no message id);
+    // this pre-check is its loud, identifying twin, and it says what the budget
+    // is for. Pre-check before the call, nothing added inside the corridor —
+    // the `route()` gate stays byte-identical.
+    if msg.ttl == 0 {
+        tracing::error!(
+            message_id = %msg.id,
+            sender = %sender_path.as_str(),
+            target = %resolved_target.as_str(),
+            trace_id = %msg.trace_id,
+            reason = "TtlExpired",
+            "message died of TTL exhaustion — terminal, direct to the dead-letter \
+             queue, nothing reaches the origin. Size colony.json message_default_ttl \
+             to the hop cost of the topology (one store-backed tool round costs about \
+             a dozen routing hops) and bound a tool loop with an iteration counter in \
+             context, not with TTL"
+        );
+    }
+
     let next = route(registry, hive_scopes, dead_letters, sender_path, msg).await;
 
     if let Some(row) = log_row_opt {
@@ -2722,32 +2746,36 @@ pub(crate) async fn handle_mutation(
         }
     };
 
-    // Step 1: substitute.
-    let diff_subst = match crate::mutation::substitute::substitute_full(&diff_raw, &env, &ctx) {
-        Ok(d) => d,
-        Err(err) => {
-            send_eda_reject(
-                &id,
-                &err,
-                reply_to.as_ref(),
-                trace_id,
-                parent_message_id,
-                registry,
-                hive_scopes,
-                dead_letters,
-                log_tx,
-                &blob_store,
-                blob_inline_max_bytes,
-                &payload,
-            )
-            .await;
-            return MutationOutcome::Rejected {
-                id: Some(id),
-                error_code: err.error_code().into(),
-                details: format!("{err:?}"),
-            };
-        }
-    };
+    // Step 1: substitute. GH #20 -- class-split: the two slots that are written
+    // into an instance `config.json` (`add_nodes[].override_params`,
+    // `swap_nodes[].with.params`) keep their environment placeholders literally;
+    // the rest of the diff is fully substituted as before.
+    let diff_subst =
+        match crate::mutation::substitute::substitute_mutation_diff(&diff_raw, &env, &ctx) {
+            Ok(d) => d,
+            Err(err) => {
+                send_eda_reject(
+                    &id,
+                    &err,
+                    reply_to.as_ref(),
+                    trace_id,
+                    parent_message_id,
+                    registry,
+                    hive_scopes,
+                    dead_letters,
+                    log_tx,
+                    &blob_store,
+                    blob_inline_max_bytes,
+                    &payload,
+                )
+                .await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: err.error_code().into(),
+                    details: format!("{err:?}"),
+                };
+            }
+        };
 
     // Step 1a (Phase-13.5 Lifecycle-3a, Auflagen A1/A2): Resume-Detect + Awake-Guard.
     // `add_nodes` at an EXISTING path is a Reconnect/Resume (overview Z.170-180),
