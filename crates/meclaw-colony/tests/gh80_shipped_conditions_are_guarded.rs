@@ -104,9 +104,13 @@ fn every_shipped_edge_condition_guards_the_hop_keys_it_reads() {
         }
     }
 
+    // The floor tracks what the tree offers: with builder/templates present
+    // (private tree) the sweep must see the lot; the public export subset
+    // carries the examples alone.
+    let floor = if builder_templates.exists() { 50 } else { 15 };
     assert!(
-        checked > 50,
-        "only {checked} conditions swept, expected the lot"
+        checked > floor,
+        "only {checked} conditions swept, expected more than {floor}"
     );
     assert!(
         offenders.is_empty(),
