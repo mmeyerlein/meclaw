@@ -352,6 +352,7 @@ fn direct_code_cell(
         script: meclaw_cells::code::Script::Inline(script),
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
+        sandbox: None,
     };
     meclaw_cells::code::CodeCell::new(params, false, Some(compiled), validate)
 }

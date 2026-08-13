@@ -365,11 +365,15 @@ fn validate_edges_and_cycle(
                     for k in modif_obj.keys() {
                         if !matches!(
                             k.as_str(),
-                            "set_context" | "delete_context" | "set_hop" | "delete_hop"
+                            "set_context"
+                                | "delete_context"
+                                | "set_hop"
+                                | "delete_hop"
+                                | "restore_ttl"
                         ) {
                             return Err(MutationError::EdgeSchema(format!(
                                 "add_edges[].modifier unknown key '{k}' (valid: set_context, \
-                                 delete_context, set_hop, delete_hop)"
+                                 delete_context, set_hop, delete_hop, restore_ttl)"
                             )));
                         }
                     }
@@ -400,6 +404,27 @@ fn validate_edges_and_cycle(
                     {
                         return Err(MutationError::EdgeSchema(format!(
                             "add_edges[].modifier.{del_key} must be array"
+                        )));
+                    }
+                }
+                // GH #82 (ruling 2026-08-13): `restore_ttl` is a boolean
+                // declaration, not an expression — and a restoring edge opts its
+                // cycle out of the TTL loop guard, so it must carry a bound of its
+                // own. The mutation path enforces the same minimum as config load
+                // (`BootstrapError::EdgeTtlRestoreUnconditional`): a restoring edge
+                // without a `condition` is rejected.
+                if let Some(rt) = modif.get("restore_ttl") {
+                    let Some(rt) = rt.as_bool() else {
+                        return Err(MutationError::EdgeSchema(
+                            "add_edges[].modifier.restore_ttl must be boolean".into(),
+                        ));
+                    };
+                    if rt && e.get("condition").and_then(|v| v.as_str()).is_none() {
+                        return Err(MutationError::EdgeSchema(format!(
+                            "add_edges[] {from}->{to}: modifier.restore_ttl needs a condition — a \
+                             ttl-restoring edge is exempt from the TTL loop guard, so it must be \
+                             bounded by its own iteration condition (e.g. \
+                             \"int(context.iter) < 12\")"
                         )));
                     }
                 }
@@ -1666,6 +1691,94 @@ mod tests {
         match err {
             MutationError::EdgeSchema(msg) => {
                 assert!(msg.contains("delete"), "msg should mention delete: {msg}")
+            }
+            other => panic!("expected EdgeSchema, got {other:?}"),
+        }
+    }
+
+    /// GH #82 (ruling 2026-08-13): the mutation path enforces the same minimum
+    /// as config load — a `modifier.restore_ttl` edge is exempt from the TTL
+    /// loop guard, so it must carry a bound of its own. No `condition` → reject.
+    #[test]
+    fn validate_with_edges_rejects_ttl_restoring_edge_without_condition() {
+        let factories = factories_with(&["echo"]);
+        let registry_names: Vec<String> = vec!["a".into(), "b".into()];
+        let existing_edges: Vec<(String, String)> = vec![];
+        let diff = json!({
+            "add_edges": [{
+                "from": "a", "to": "b",
+                "modifier": {"restore_ttl": true}
+            }]
+        });
+        let err = validate_post_state_with_edges(
+            &diff,
+            &factories,
+            &registry_names,
+            &existing_edges,
+            &[],
+        )
+        .unwrap_err();
+        match err {
+            MutationError::EdgeSchema(msg) => {
+                assert!(
+                    msg.contains("restore_ttl") && msg.contains("condition"),
+                    "msg must name the field and the missing bound: {msg}"
+                );
+            }
+            other => panic!("expected EdgeSchema, got {other:?}"),
+        }
+    }
+
+    /// The counterpart: a restoring edge bounded by an iteration condition is a
+    /// legal `add_edges` entry — `restore_ttl` is a known modifier key, not an
+    /// unknown one.
+    #[test]
+    fn validate_with_edges_accepts_bounded_ttl_restoring_edge() {
+        let factories = factories_with(&["echo"]);
+        let registry_names: Vec<String> = vec!["a".into(), "b".into()];
+        let existing_edges: Vec<(String, String)> = vec![];
+        let diff = json!({
+            "add_edges": [{
+                "from": "a", "to": "b",
+                "condition": "int(context.iter) < 12",
+                "modifier": {
+                    "set_context": {"iter": "int(context.iter) + 1"},
+                    "restore_ttl": true
+                }
+            }]
+        });
+        validate_post_state_with_edges(&diff, &factories, &registry_names, &existing_edges, &[])
+            .expect("a restoring edge bounded by an iteration condition must validate");
+    }
+
+    /// `restore_ttl` is a declaration, not an expression: a non-boolean value is
+    /// a schema error rather than a silently ignored key.
+    #[test]
+    fn validate_with_edges_rejects_non_boolean_restore_ttl() {
+        let factories = factories_with(&["echo"]);
+        let registry_names: Vec<String> = vec!["a".into(), "b".into()];
+        let existing_edges: Vec<(String, String)> = vec![];
+        let diff = json!({
+            "add_edges": [{
+                "from": "a", "to": "b",
+                "condition": "int(context.iter) < 12",
+                "modifier": {"restore_ttl": "yes"}
+            }]
+        });
+        let err = validate_post_state_with_edges(
+            &diff,
+            &factories,
+            &registry_names,
+            &existing_edges,
+            &[],
+        )
+        .unwrap_err();
+        match err {
+            MutationError::EdgeSchema(msg) => {
+                assert!(
+                    msg.contains("restore_ttl") && msg.contains("boolean"),
+                    "msg must say restore_ttl is boolean: {msg}"
+                );
             }
             other => panic!("expected EdgeSchema, got {other:?}"),
         }

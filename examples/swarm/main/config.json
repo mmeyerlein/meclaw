@@ -17,27 +17,27 @@
         {
           "from": "./llm",
           "to": "./dispatch",
-          "condition": "hop.finish_reason == 'tool_calls'"
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
         },
         {
           "from": "./llm",
           "to": "./done",
-          "condition": "hop.finish_reason == 'stop' || hop.finish_reason == 'length' || hop.finish_reason == 'error'"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'length' || hop.finish_reason == 'error')"
         },
         {
           "from": "./dispatch",
           "to": "./lookup",
-          "condition": "hop.tool_name == 'lookup'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'lookup'"
         },
         {
           "from": "./dispatch",
           "to": "./calc",
-          "condition": "hop.tool_name == 'calc'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'calc'"
         },
         {
           "from": "./dispatch",
           "to": "./done",
-          "condition": "hop.tool_name == 'unknown'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'unknown'"
         },
         {
           "from": "./lookup",

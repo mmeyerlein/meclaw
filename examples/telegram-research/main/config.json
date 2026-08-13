@@ -17,7 +17,7 @@
         {
           "from": "./prep",
           "to": "./memory",
-          "condition": "hop.route == 'ustore'",
+          "condition": "has(hop.route) && hop.route == 'ustore'",
           "modifier": {
             "set_context": {
               "store_origin": "'prep'"
@@ -27,7 +27,7 @@
         {
           "from": "./prep",
           "to": "./planner",
-          "condition": "hop.route == 'ullm'",
+          "condition": "has(hop.route) && hop.route == 'ullm'",
           "modifier": {
             "set_context": {
               "question": "hop.question",
@@ -42,42 +42,42 @@
         {
           "from": "./planner",
           "to": "./dispatch",
-          "condition": "hop.finish_reason == 'tool_calls'"
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
         },
         {
           "from": "./planner",
           "to": "./proxy",
-          "condition": "hop.finish_reason == 'stop'"
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'"
         },
         {
           "from": "./planner",
           "to": "./archive",
-          "condition": "hop.finish_reason == 'stop'"
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'"
         },
         {
           "from": "./planner",
           "to": "./drain",
-          "condition": "hop.finish_reason == 'error'"
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'error'"
         },
         {
           "from": "./dispatch",
           "to": "./collector",
-          "condition": "hop.route == 'c_asst'"
+          "condition": "has(hop.route) && hop.route == 'c_asst'"
         },
         {
           "from": "./dispatch",
           "to": "./searcher",
-          "condition": "hop.tool_name == 'web_search'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"
         },
         {
           "from": "./dispatch",
           "to": "./reader",
-          "condition": "hop.tool_name == 'web_fetch'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'"
         },
         {
           "from": "./dispatch",
           "to": "./memory",
-          "condition": "hop.tool_name == 'remember'",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
           "modifier": {
             "set_context": {
               "store_origin": "'tool'"
@@ -87,7 +87,7 @@
         {
           "from": "./dispatch",
           "to": "./drain",
-          "condition": "hop.tool_name == 'unknown'"
+          "condition": "has(hop.tool_name) && hop.tool_name == 'unknown'"
         },
         {
           "from": "./searcher",
@@ -110,7 +110,7 @@
         {
           "from": "./collector",
           "to": "./memory",
-          "condition": "hop.route == 'cstore'",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
           "modifier": {
             "set_context": {
               "store_origin": "'collector'"
@@ -120,7 +120,7 @@
         {
           "from": "./collector",
           "to": "./memory",
-          "condition": "hop.route == 'cguard'",
+          "condition": "has(hop.route) && hop.route == 'cguard'",
           "modifier": {
             "set_context": {
               "store_origin": "'collector'",
@@ -131,12 +131,13 @@
         {
           "from": "./collector",
           "to": "./planner",
-          "condition": "hop.route == 'fire'",
+          "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 12",
           "modifier": {
             "set_context": {
               "iter": "int(context.iter) + 1",
               "firing": "''"
-            }
+            },
+            "restore_ttl": true
           }
         },
         {

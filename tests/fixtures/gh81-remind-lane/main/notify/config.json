@@ -1,0 +1,21 @@
+{
+  "cell": {
+    "type": "bash"
+  },
+  "params": {
+    "command": "true"
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  },
+  "description": {
+    "purpose": "The scheduled lane: where a firing schedule arrives.",
+    "use_when": "Stand-in for the real notification path (a proxy, a bot, a store).",
+    "not_in_scope": "Does nothing with the payload; the fixture reads the message log.",
+    "examples": [
+      "one message per firing"
+    ]
+  }
+}

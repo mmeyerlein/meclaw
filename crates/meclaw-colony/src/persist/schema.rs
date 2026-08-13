@@ -41,13 +41,17 @@ pub fn setup_cell_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 const COLONY_DB_DDL: &str = "
 CREATE TABLE IF NOT EXISTS registry (
-  path        TEXT PRIMARY KEY,
-  cell_id     TEXT NOT NULL,
-  cell_type   TEXT NOT NULL,
-  status      TEXT NOT NULL,
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  path             TEXT PRIMARY KEY,
+  cell_id          TEXT NOT NULL,
+  cell_type        TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  template         TEXT,
+  template_version TEXT,
+  instantiated_at  INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_registry_template ON registry(template);
 CREATE TABLE IF NOT EXISTS edges (
   id          TEXT PRIMARY KEY,
   from_path   TEXT NOT NULL,
@@ -119,7 +123,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '4');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '5');
 ";
 
 /// Setup a colony.db connection: PRAGMAs + DDL (all phase-5 tables + indexes).
@@ -133,6 +137,24 @@ pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // GH #90: an existing database migrates BEFORE the DDL batch. The batch
+    // creates indexes on columns that only a migration adds (v5: registry
+    // provenance), so on a pre-v5 database the index DDL would fail with
+    // "no such column" before migrate() ever ran. A fresh database has no
+    // `meta` table yet and skips this; the DDL bootstraps it at the target.
+    let has_meta: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='meta'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_meta > 0 {
+        super::migrations::migrate(conn).map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!("colony.db migration failed: {e}")),
+            )
+        })?;
+    }
     conn.execute_batch(COLONY_DB_DDL)?;
     super::migrations::migrate(conn).map_err(|e| {
         rusqlite::Error::SqliteFailure(
@@ -341,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_colony_db_seeds_schema_version_4() {
+    fn setup_colony_db_seeds_schema_version_5() {
         // Phase-16 W6d (A6): the persistent dead_letters table → schema v4.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
@@ -352,7 +374,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "4");
+        assert_eq!(v, "5");
     }
 
     #[test]
@@ -378,10 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn read_schema_version_returns_4_after_colony_setup() {
+    fn read_schema_version_returns_5_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(read_schema_version(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -502,7 +524,7 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(read_schema_version(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -525,7 +547,38 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(read_schema_version(&conn).unwrap(), 5);
+    }
+
+    /// GH #90: a pre-v5 database whose `registry` already exists without the
+    /// provenance columns must migrate BEFORE the DDL batch runs — the batch
+    /// creates `idx_registry_template` on `registry(template)`, and on such a
+    /// database that column only exists after the v4→v5 migration.
+    #[test]
+    fn setup_colony_db_on_v4_db_with_registry_migrates_before_the_ddl_batch() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta (key, value) VALUES ('schema_version', '4');
+             CREATE TABLE registry (
+               path       TEXT PRIMARY KEY,
+               cell_id    TEXT NOT NULL,
+               cell_type  TEXT NOT NULL,
+               status     TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        setup_colony_db(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), 5);
+        let idx: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "idx_registry_template missing after migration");
     }
 
     /// W6d (A6): a fresh colony.db has the persistent `dead_letters` table with

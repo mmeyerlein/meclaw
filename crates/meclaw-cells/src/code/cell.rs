@@ -259,13 +259,22 @@ impl StatelessCell for CodeCell {
             };
 
             let (cmd, args) = build_command(&self.params);
-            let mut child = match tokio::process::Command::new(&cmd)
+            let mut command = tokio::process::Command::new(&cmd);
+            command
                 .args(&args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
+                .stderr(std::process::Stdio::piped());
+            // S4 (GH #35): the sandbox is installed on the command, not around
+            // it. A profile that cannot be applied fails HERE, before a child
+            // exists — a `restricted` cell never falls back to unsandboxed.
+            if let Some(profile) = &self.params.sandbox
+                && let Err(e) = crate::sandbox::apply(profile, &mut command)
             {
+                emit_spawn_error(sink, &reply_target, format!("sandbox not applied: {e}")).await;
+                return;
+            }
+            let mut child = match command.spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     emit_spawn_error(sink, &reply_target, e.to_string()).await;
@@ -411,6 +420,7 @@ mod tests {
             script: Script::Inline("pass".into()),
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
+            sandbox: None,
         }
     }
 
@@ -484,6 +494,7 @@ mod tests {
             script: Script::Inline(script),
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
+            sandbox: None,
         };
         CodeCell::new(params, multi_send, Some(compiled), validate)
     }
@@ -596,6 +607,7 @@ mod tests {
                 ),
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
+                sandbox: None,
             },
             true,
             None,
@@ -625,6 +637,7 @@ mod tests {
                 ),
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
+                sandbox: None,
             },
             false,
             None,
@@ -655,6 +668,7 @@ mod tests {
                 ),
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
+                sandbox: None,
             },
             false,
             None,

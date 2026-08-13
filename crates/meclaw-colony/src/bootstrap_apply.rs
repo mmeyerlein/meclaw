@@ -225,6 +225,7 @@ pub async fn apply_bootstrap_plan(
             .await
             .expect("colony inbox closed");
         nc_ack_rx.await.expect("SetNodeContract ack");
+        index_provenance(runtime, c).await;
     }
     // FIX 3 — InitialApply bundle: hive_scopes + edges in ONE transaction (atomic).
     // The handler also enters both in memory (EdgeTable + HiveScopeTable).
@@ -252,6 +253,31 @@ pub async fn apply_bootstrap_plan(
         cell_count: plan.cells.len(),
         edge_count: plan.edges.len(),
     }
+}
+
+/// GH #62: copy the node's `cell.provenance` into the `colony.db` `registry`
+/// index, after its registration ack.
+///
+/// The file is the source of truth for a node's origin; the registry columns are
+/// the query index over it. Running this at every boot (not only at
+/// instantiation) is what makes a restored or imported tree re-index itself:
+/// its `config.json` files carry the provenance, its freshly minted `colony.db`
+/// does not. A node without provenance sends nothing and keeps NULL.
+async fn index_provenance(runtime: &ColonyRuntime, c: &crate::bootstrap::PlannedCell) {
+    let Some(provenance) = c.provenance.clone() else {
+        return;
+    };
+    let (ack_tx, ack_rx) = oneshot::channel();
+    runtime
+        .inbox_tx
+        .send(ColonyMsg::SetRegistryProvenance {
+            path: c.path.clone(),
+            provenance,
+            ack: ack_tx,
+        })
+        .await
+        .expect("colony inbox closed");
+    ack_rx.await.expect("SetRegistryProvenance ack");
 }
 
 /// Register a rehydrated **inactive** cell as a non-running registry entry
@@ -463,6 +489,7 @@ async fn register_inactive_non_spawned(
         .await
         .expect("colony inbox closed");
     nc_ack_rx.await.expect("SetNodeContract ack");
+    index_provenance(runtime, c).await;
 }
 
 /// Inert RespawnFn for the exceptional boot-inactive fallbacks (no factory /
@@ -661,6 +688,7 @@ mod tests {
             failed: false,
             mailbox_size: None,
             header_view: crate::mutation::validate::HeaderNodeView::default(),
+            provenance: None,
         }
     }
 

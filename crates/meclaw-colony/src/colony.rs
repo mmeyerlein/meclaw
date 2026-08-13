@@ -381,6 +381,20 @@ pub enum ColonyMsg {
         contract: NodeContract,
         ack: oneshot::Sender<()>,
     },
+    /// GH #62: fill the `registry` provenance columns of an already-registered
+    /// node from the `cell.provenance` block of its `config.json` (boot path).
+    ///
+    /// The mutation path writes the same columns directly through
+    /// `ColonyWriteOp::SetRegistryProvenance` inside `handle_mutation`, where the
+    /// staged provenance is already in hand. The boot path needs this hop
+    /// because `apply_bootstrap_plan` speaks `ColonyMsg` only — it holds no
+    /// writer handle. Sent AFTER the `Register`/`RegisterDormant` ack, so the
+    /// row it updates exists.
+    SetRegistryProvenance {
+        path: Path,
+        provenance: crate::config::NodeProvenance,
+        ack: oneshot::Sender<()>,
+    },
     /// Route a message to the registered cell at `msg.target`.
     ///
     /// `sender_path` is the originator of the message: an external/test sender
@@ -700,6 +714,29 @@ pub fn spawn_watcher(
             }
         }
     });
+}
+
+/// GH #62: enqueue the UPDATE-only provenance fill for an already-registered
+/// path.
+///
+/// Fire-and-forget like every other registry-column write: the channel is FIFO,
+/// so the `UpsertRegistry` that created the row is always ahead of this op, and
+/// a lost provenance index is a lost index, not lost truth — the authoritative
+/// record is `cell.provenance` in the node's own `config.json`.
+///
+/// Takes the raw sender + queue-depth counter rather than `&ColonyDb`, for the
+/// usual reason: `&ColonyDb` is !Send (rusqlite::Connection is !Sync) and must
+/// not live across an `.await` inside `colony_task`.
+async fn send_registry_provenance(
+    writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    queue_depth: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    path: Path,
+    provenance: crate::config::NodeProvenance,
+) {
+    queue_depth.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = writer_tx
+        .send(crate::persist::writer::ColonyWriteOp::SetRegistryProvenance { path, provenance })
+        .await;
 }
 
 /// Handle a `ColonyMsg::Register` message: insert the cell into the registry,
@@ -1471,6 +1508,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     node_contracts.insert(path, contract);
                                     let _ = nc_ack.send(());
                                 }
+                                ColonyMsg::SetRegistryProvenance { path, provenance, ack: prov_ack } => {
+                                    send_registry_provenance(&colony_db.writer_tx, &colony_db.queue_depth, path, provenance).await;
+                                    let _ = prov_ack.send(());
+                                }
                                 ColonyMsg::AddHiveScope { path, ack: scope_ack } => {
                                     hive_scopes.register(HiveScope { path });
                                     let _ = scope_ack.send(());
@@ -1527,7 +1568,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                             }
                                             RouteAction::HiveTransit { hive_path, msg } => {
-                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref());
+                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
                                             }
                                         }
                                     }
@@ -1738,6 +1779,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         node_contracts.insert(path, contract);
                         let _ = ack.send(());
                     }
+                    ColonyMsg::SetRegistryProvenance { path, provenance, ack } => {
+                        send_registry_provenance(&colony_db.writer_tx, &colony_db.queue_depth, path, provenance).await;
+                        let _ = ack.send(());
+                    }
                     ColonyMsg::AddHiveScope { path, ack } => {
                         hive_scopes.register(HiveScope { path });
                         let _ = ack.send(());
@@ -1796,7 +1841,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                 }
                                 RouteAction::HiveTransit { hive_path, msg } => {
-                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref());
+                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
                                 }
                             }
                         }
@@ -2225,7 +2270,14 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 let decisions: Vec<EdgeDecision> = matched;
 
                 for dec in decisions {
-                    let follow_up = build_follow_up_with(em.clone(), dec.target, dec.headers_out);
+                    let restores = dec.restore_ttl;
+                    let mut follow_up = build_follow_up_with(em.clone(), dec.target, dec.headers_out);
+                    // GH #82: a restoring edge lifts the follow-up's routing budget
+                    // back to `colony.json message_default_ttl`. Post-build, outside
+                    // the frozen corridor — Colony stays the sole envelope setter.
+                    if restores {
+                        follow_up.ttl = restore_edge_ttl(follow_up.ttl, colony_config.message_default_ttl);
+                    }
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((from.clone(), follow_up));
                     while let Some((s, m)) = work.pop_front() {
@@ -2270,7 +2322,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                             }
                             RouteAction::HiveTransit { hive_path, msg } => {
-                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref());
+                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
                             }
                         }
                     }
@@ -3801,6 +3853,18 @@ pub(crate) async fn handle_mutation(
                     updated_at: now_spawn,
                 })
                 .await;
+            // GH #62: index the instantiation's provenance (FIFO — the upsert
+            // above created the row).
+            if let Some(prov) = sd.provenance.clone() {
+                let _ = log_tx
+                    .send(
+                        crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                            path: sd.absolute_path.clone(),
+                            provenance: prov,
+                        },
+                    )
+                    .await;
+            }
             continue;
         }
 
@@ -3953,6 +4017,18 @@ pub(crate) async fn handle_mutation(
                 updated_at: now_spawn,
             })
             .await;
+        // GH #62: index the instantiation's provenance (FIFO — the upsert above
+        // created the row).
+        if let Some(prov) = sd.provenance.clone() {
+            let _ = log_tx
+                .send(
+                    crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                        path: sd.absolute_path.clone(),
+                        provenance: prov,
+                    },
+                )
+                .await;
+        }
     }
 
     // Apply sequence step 10 (A5 atomicity restructure): edge ops are NO LONGER
@@ -4301,6 +4377,18 @@ pub(crate) async fn handle_mutation(
                     updated_at: now_spawn,
                 })
                 .await;
+            // GH #62: every nested subtree cell indexes the subtree template it
+            // came from (FIFO — the upsert above created the row).
+            if let Some(prov) = cell.provenance.clone() {
+                let _ = log_tx
+                    .send(
+                        crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                            path: cell.absolute_path.clone(),
+                            provenance: prov,
+                        },
+                    )
+                    .await;
+            }
             involved.push(cell.absolute_path.clone());
         }
         // (2) MISSING hive-scope markers: in-memory + InsertHiveScope into the A5
@@ -4466,6 +4554,18 @@ pub(crate) async fn handle_mutation(
                 collect_set(obj, "set_hop", &mut spec.set_hop);
                 collect_delete(obj, "delete_context", &mut spec.delete_context);
                 collect_delete(obj, "delete_hop", &mut spec.delete_hop);
+                // GH #82: the fifth field. This spec is rebuilt field by field
+                // rather than deserialised, so a new field that is not picked up
+                // HERE would validate and then silently do nothing -- the exact
+                // foot-gun the modifier key allow-list exists to prevent.
+                spec.restore_ttl = obj
+                    .get("restore_ttl")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                // GH #82: the fifth field. This spec is rebuilt field by field
+                // rather than deserialised, so a new field that is not picked up
+                // HERE would validate and then silently do nothing — the exact
+                // foot-gun the modifier key allow-list exists to prevent.
                 crate::cel_eval::parse_modifier(&spec)
                     .expect("validate guaranteed add_edges[].modifier.set_* is valid CEL")
             });
@@ -5353,6 +5453,32 @@ fn build_follow_up_with(em: CellEmission, target: Path, headers_out: Headers) ->
         .build()
 }
 
+/// GH #82 (ruling 2026-08-13): apply a restoring edge's `modifier.restore_ttl`
+/// to a follow-up message that has already been built.
+///
+/// `ttl` is envelope, and the envelope setter is the colony alone — so the edge
+/// only DECLARES the restore (`EdgeDecision::restore_ttl`) and this is where the
+/// colony carries it out, outside the frozen `route()` corridor, exactly like
+/// the loud TTL-death pre-check above.
+///
+/// Two properties make this a reset rather than a hole in the loop guard:
+///
+/// - **never accumulates**: the result is `budget`, not `ttl + budget`. N
+///   restores and one restore leave the same ceiling, so a restoring cycle can
+///   never grow its own budget.
+/// - **never lowers**: a message that entered with MORE than the colony budget
+///   (an ingress that asked for a bigger one, `ttl` field of `POST /messages`)
+///   keeps what it has. So no restore ever lifts a message above the larger of
+///   its ingress budget and the colony default — "restore", not "grant".
+///
+/// What the restore does remove is TTL as the bound of that cycle. That is the
+/// point of the ruling: a restoring edge declares its loop legitimate, and the
+/// runaway guard for it is the iteration bound the same edge carries — which is
+/// why an unconditional restoring edge is rejected at config load.
+fn restore_edge_ttl(current: u32, budget: u32) -> u32 {
+    current.max(budget)
+}
+
 /// Build a transit follow-up for a hive out-edge match.
 ///
 /// A hive is a **transparent router**: the message is *forwarded*, not
@@ -5443,6 +5569,7 @@ fn enqueue_hive_transit(
     hive_path: Path,
     msg: Message,
     egress_tx: Option<&mpsc::Sender<Message>>,
+    ttl_budget: u32,
 ) {
     let decisions = apply_edges(edges, &hive_path, &msg.headers);
     if decisions.is_empty() {
@@ -5487,10 +5614,15 @@ fn enqueue_hive_transit(
         );
     } else {
         for dec in decisions {
-            work.push_back((
-                hive_path.clone(),
-                build_transit_follow_up(&msg, dec.target, dec.headers_out),
-            ));
+            let restores = dec.restore_ttl;
+            let mut transit = build_transit_follow_up(&msg, dec.target, dec.headers_out);
+            // GH #82: a hive out-edge may declare `restore_ttl` too — same edge
+            // schema, same semantics. Applied here rather than inside the
+            // builder so both edge kinds share one restore rule.
+            if restores {
+                transit.ttl = restore_edge_ttl(transit.ttl, ttl_budget);
+            }
+            work.push_back((hive_path.clone(), transit));
         }
     }
 }
@@ -5549,6 +5681,7 @@ mod tests {
             Path::new("/"),
             msg,
             Some(&egress_tx),
+            meclaw_core::MESSAGE_DEFAULT_TTL,
         );
         assert!(
             dead_letters.is_empty(),
@@ -5574,6 +5707,7 @@ mod tests {
             Path::new("/sub"),
             msg,
             Some(&egress_tx),
+            meclaw_core::MESSAGE_DEFAULT_TTL,
         );
         assert_eq!(
             dead_letters.len(),

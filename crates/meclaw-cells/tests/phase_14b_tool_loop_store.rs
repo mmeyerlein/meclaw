@@ -454,7 +454,7 @@ async fn phase_14b_fanin_correlation() {
     h.shutdown().await;
 }
 
-/// **Task 6 — A8 whole-body blob offload (D-025: never `messages_id`/`text_id`).**
+/// **Task 6 — A8 whole-body blob offload stays a whole-body copy.**
 /// The same topology as `14b-tool-loop-store`, but `tool-a` returns a ~40 KB
 /// `tool_result`. Across 2 tool iterations the accumulated thread on the
 /// `collector→/llm` fire hop grows past the `blob_inline_max_bytes` default
@@ -465,7 +465,9 @@ async fn phase_14b_fanin_correlation() {
 ///   1. `await_body_kind(<td>, "/llm") == "blob"` — the fire hop was offloaded as
 ///      a whole-body blob (`message_log.body_kind == "blob"`).
 ///   2. The offloaded blob is a FULL UBF body with `messages[]` inline and contains
-///      NOWHERE a `messages_id`/`text_id` pointer (D-025: 0 producers).
+///      NOWHERE a `messages_id`/`text_id` pointer. Since GH #19 the substrate CAN
+///      resolve such pointers, but it still never MINTS one: the offload writes the
+///      body verbatim, it does not rewrite a conversation into references.
 ///   3. Empty DLQ — no dead letter, no TtlExpired across the loop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_14b_blob_offload() {
@@ -509,8 +511,9 @@ async fn phase_14b_blob_offload() {
         "collector→/llm fire-hop offloaded whole body as Body::Blob"
     );
 
-    // (2) The offloaded blob is a FULL UBF body: `messages[]` inline,
-    // NIRGENDS ein `messages_id`/`text_id`-Pointer (D-025: 0 Producer).
+    // (2) The offloaded blob is a FULL UBF body: `messages[]` inline, with no
+    // `messages_id`/`text_id` pointer anywhere — the offload copies the body,
+    // it does not rewrite it into references (GH #19 does not change that).
     let blobs = read_blob_bodies(td.path());
     assert!(
         !blobs.is_empty(),
@@ -546,7 +549,7 @@ async fn phase_14b_blob_offload() {
     }
     assert!(
         !has_pointer_key(blob),
-        "D-025: no messages_id/text_id pointer anywhere in the offloaded blob: {blob:#}"
+        "the whole-body offload mints no pointer anywhere in the blob: {blob:#}"
     );
 
     // (3) Empty DLQ — a positive receipt, NOT a negative indicator.

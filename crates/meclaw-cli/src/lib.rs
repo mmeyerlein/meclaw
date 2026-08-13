@@ -516,7 +516,12 @@ pub async fn run_with_hooks_tuned(
     let blob_root = cli.blobs.clone().unwrap_or_else(|| cli.root.join("blobs"));
     let blob_store = std::sync::Arc::new(
         meclaw_colony::blob::DiskBlobStore::new(&blob_root)
-            .map_err(|e| anyhow::anyhow!("open blob store {}: {e}", blob_root.display()))?,
+            .map_err(|e| anyhow::anyhow!("open blob store {}: {e}", blob_root.display()))?
+            // GH #19: the bound for recursive in-message pointer resolution
+            // rides on the store, which is the handle the delivery boundary
+            // already holds. `blob_max_recursion_depth` stops being
+            // parsed-but-not-applied here.
+            .with_max_recursion_depth(colony_config.blob_max_recursion_depth),
     );
 
     let inbox_self_tx = inbox_tx.clone();

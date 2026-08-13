@@ -273,7 +273,7 @@ fn run_op(base: &StdPath, op: FileOp) -> OpOutcome {
                 text: e.to_string(),
             },
             Ok(p) => match std::fs::write(&p, &content) {
-                Err(e) => map_io_to_outcome(e),
+                Err(e) => map_write_io_to_outcome(e),
                 Ok(()) => OpOutcome::Ok {
                     text: format!("{{\"written\":{}}}", content.len()),
                     bytes: content.len() as u64,
@@ -390,6 +390,36 @@ fn map_io_to_outcome(e: std::io::Error) -> OpOutcome {
     OpOutcome::Err {
         code,
         text: e.to_string(),
+    }
+}
+
+/// GH #79: the write stage, after the parent resolved. A bare
+/// `Permission denied (os error 13)` does not say at which stage it happened
+/// nor which of the write path's several `io_error` causes it is — both are
+/// repairs an agent picks differently. Classification is unchanged
+/// (`map_io_to_outcome`'s taxonomy), only the text is named.
+fn map_write_io_to_outcome(e: std::io::Error) -> OpOutcome {
+    use std::io::ErrorKind;
+    let code = match e.kind() {
+        ErrorKind::NotFound => ERR_NOT_FOUND,
+        _ => ERR_IO_ERROR,
+    };
+    let reason = match e.kind() {
+        ErrorKind::PermissionDenied => Some("permission denied"),
+        ErrorKind::ReadOnlyFilesystem => Some("read-only filesystem"),
+        ErrorKind::IsADirectory => Some("target path is a directory"),
+        ErrorKind::NotADirectory => Some("a path component is not a directory"),
+        ErrorKind::StorageFull => Some("no space left on device"),
+        // The parent was resolved a moment ago, so this is a race, not a typo.
+        ErrorKind::NotFound => Some("path vanished between resolve and write"),
+        _ => None,
+    };
+    OpOutcome::Err {
+        code,
+        text: match reason {
+            Some(r) => format!("write failed: {r} ({e})"),
+            None => format!("write failed: {e}"),
+        },
     }
 }
 

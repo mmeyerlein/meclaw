@@ -15,7 +15,7 @@ Messages are atomic. Trace reconstruction lives in the central message log in `c
 ## Access
 
 - **Authority**: Only the colony reads and writes `config.json`. The **only writer is instantiation** (exactly once). **Read-once:** the running cell task **never re-reads** `config.json` after startup; `config.json` is the **instantiation snapshot**, not a live document.
-- **At instantiation**: colony copies the template, assigns a new UUID v7, resolves the **instance class** (`${ctx.*}`, `${uuid7:*}`) and writes the result into the instance's `config.json`. The **environment class** (`${VAR}`, `${VAR:-default}`) is **not** resolved here: it stays a token in the file and binds late, at every read (see `meclaw-overview.md`, section Variable substitution, and Snapshot versus live-read below). A secret a template references as `${VAR}` therefore never reaches the disk. **The node reference is the filesystem directory name** (the path segment under `{root}`), **not** a `cell.name` field. The `config.json` carries no `name`. When resolving the root chain, the `${...}` substitution wins over the `template.json` template name. Naming collisions with siblings inside the same hive scope are rejected by colony in the single-stage mutation validation, see `meclaw-overview.md` section "Naming collisions".
+- **At instantiation**: colony copies the template, assigns a new UUID v7, stamps the **origin** (`cell.provenance` — template name, template version, instantiation time), resolves the **instance class** (`${ctx.*}`, `${uuid7:*}`) and writes the result into the instance's `config.json`. The **environment class** (`${VAR}`, `${VAR:-default}`) is **not** resolved here: it stays a token in the file and binds late, at every read (see `meclaw-overview.md`, section Variable substitution, and Snapshot versus live-read below). A secret a template references as `${VAR}` therefore never reaches the disk. **The node reference is the filesystem directory name** (the path segment under `{root}`), **not** a `cell.name` field. The `config.json` carries no `name`. When resolving the root chain, the `${...}` substitution wins over the `template.json` template name. Naming collisions with siblings inside the same hive scope are rejected by colony in the single-stage mutation validation, see `meclaw-overview.md` section "Naming collisions".
 - **After instantiation**: `config.json` is semantically frozen, the bootstrap snapshot. No one writes into it anymore, neither colony nor the cell itself. **Dynamic cell state** (changed params) lives exclusively in `cell.db`; **colony state** (registry, edge table, `cell_id`, message log, mutations) lives in `colony.db`. After the snapshot, `config.json` carries neither of the two forward (see `meclaw-overview.md` section "Lifecycle of `config.json` and `cell.db`"). The graph of a topology lives centrally in colony's registry and `colony.db`, not in the `config.json` of the hive scope marker (its `params.graph` is only an initial bootstrap hint).
 - **Cells do not read `config.json`.** The colony hands the cell the `params` block at startup. Param updates come afterwards via message and are persisted by the cell in its `cell.db` (`config.json` diverges from the live state, by design; cell reset = `cell.db` wipe → cell starts again from the bootstrap state).
 
@@ -34,7 +34,7 @@ Messages are atomic. Trace reconstruction lives in the central message log in `c
 
 Two of the four blocks have fundamentally different authority. This separation is the root of the entire file:
 
-- **`cell` block = colony substrate.** These fields control **how the colony** instantiates, registers, and supervises the cell. They are **never** handed to the cell. The cell sees only its `params` block plus the message it is currently processing. Allowed keys: `id`, `type`, `timeout`, `restart_limit`, `idle_timeout_ms`, `mailbox_size`, `message_timeout` (details in the `cell` table below). A key declared in the `cell` block that is not allowed is a boot error.
+- **`cell` block = colony substrate.** These fields control **how the colony** instantiates, registers, and supervises the cell. They are **never** handed to the cell. The cell sees only its `params` block plus the message it is currently processing. Allowed keys: `id`, `type`, `timeout`, `restart_limit`, `idle_timeout_ms`, `mailbox_size`, `message_timeout`, `provenance` (details in the `cell` table below). A key declared in the `cell` block that is not allowed is a boot error.
 - **`params` block = handed 1:1 opaque to the cell.** After `${VAR}`/`${ctx.*}`/`${uuid7:*}` substitution, the colony passes it through to the cell **unchanged** and does **not** interpret its content. Cell-type-specific (each cell type defines its own `params` structure, see `cell-types.md`). **Sole exception:** at the hive scope marker, the colony reads `params.graph` as the initial desired graph (the hive is not an actor, so it does not get a `params` block "handed" to it).
 
 **Only `id` and `type` are immutable.** They identify the node instance and its cell type across the entire lifetime. **Effectiveness rule** for all other fields: changes to `cell` or `params` fields (via new instantiation at the path or a new template) take effect **at the next spawn/wake** of the cell. The running cell task does not re-read `config.json` (see § Access, "Read-once").
@@ -52,10 +52,60 @@ Two of the four blocks have fundamentally different authority. This separation i
 | `idle_timeout_ms` | *(optional, from Phase 13)* Idle duration in ms, after which a stateful cell with `cell.timeout: 0` despawns itself (Awake→Asleep). Overrides the colony default from `colony.json` `idle_timeout_default_ms`. Ignored if `cell.timeout != 0` (at `>0`, one-shot despawn after each message takes effect; at `-1`, the cell is persistent and never despawns). |
 | `message_timeout` | *(optional)* Substrate backstop per `handle()` call in ms, see `meclaw-overview.md` section "Timeouts" (concept B). Overrides the colony default from `colony.json` `message_timeout_default_ms`. `0` or `-1` = no backstop (for long-running cells). **Not** the primary timeout for I/O operations. `params.external_timeout_ms` (concept A) is responsible for that. `cell.message_timeout` should be considerably more generous than `params.external_timeout_ms`, so that normally A takes effect first. |
 | `mailbox_size` | *(optional, from Phase 5)* Bounded-mpsc capacity; overrides the colony default (`colony.json` `mailbox_default_capacity`, default 1000). See overview section "Mailbox size". |
+| `provenance` | *(optional, GH #62)* **Instantiation origin stamp** — an object carrying `template` (the resolved template name from `template.json`, **not** the `name@version` reference form), `template_version` (the resolved version; **absent exactly when the template declares none** — "has no version" is a different statement from "version unknown") and `instantiated_at` (unix seconds, the same unit as every `created_at` in `colony.db`). Written **exactly once**, in the same write as the fresh `cell.id`, and never again. **Absent** for every node not born from a template: a hand-written tree, an `adopt` entry (the adopted node keeps its own origin unchanged — adoption does not change where a node came from), and anything instantiated before the field existed. For a **subtree template**, **every** node of the instance — nested cells and hive markers included — carries the **subtree template's** stamp: the subtree template is the unit an update addresses. See § Origin below. |
 
 ### `params`
 
 **`max_concurrency`** (*optional, only for stateless cells, from Phase 7*) lives in the **`params`** block, not in the `cell` block: maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` section "Stateless-cell dispatcher"). Default: high value (effectively unbounded for typical load paths). Configurable per cell: e.g. `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
+
+**`sandbox`** (*optional, from S4 / GH #35*) also lives in the **`params`** block, not in the `cell` block: the `cell` key list is closed and describes how the **colony** runs the cell, whereas the sandbox describes the rights with which the **cell** starts its child process, a property of execution just like `external_timeout_ms`. The block is read by the cell types that start foreign code: **`bash`** and **`code`**. Other cell types ignore it today (`harness` follows, see below).
+
+```json
+"params": {
+  "sandbox": {
+    "trust": "restricted",
+    "network": "deny",
+    "filesystem": {
+      "read":    ["/srv/data"],
+      "write":   ["/srv/work"],
+      "runtime": true
+    }
+  }
+}
+```
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `trust` | `"restricted"` \| `"trusted"` | yes | `restricted` = the sandbox is enforced. `trusted` = the explicit escape hatch for local cells, **no** enforcement. |
+| `network` | `"deny"` \| `"allow"` | no, default `"deny"` | only under `restricted`. `deny` starts the child in a fresh network namespace (`unshare(CLONE_NEWUSER\|CLONE_NEWNET)`), which holds nothing but a `lo` in state DOWN, so even `127.0.0.1` is out of reach. |
+| `filesystem` | object | **yes** under `restricted` | the allowed filesystem view, enforced via Landlock. |
+| `filesystem.read` | array of absolute paths | no, default `[]` | readable and executable, recursively. |
+| `filesystem.write` | array of absolute paths | no, default `[]` | readable, writable and creatable, recursively. |
+| `filesystem.runtime` | bool | no, default `true` | adds the runtime set (see below). |
+| `limits` | object | — | **reserved, not enforced** — boot error, see below. |
+| `syscalls` | object | — | **reserved, not enforced** — boot error, see below. |
+
+**Both key sets are closed** (`sandbox` and `sandbox.filesystem`): an unknown key is a boot error. A `"netwrok": "deny"` must not pass as "no value given, so use the default". At a security boundary a forgiving parser is the worst property a parser can have.
+
+**Default profile (recommended baseline for template-sourced cells).** A template that brings foreign code declares this block, where `<cell-workspace>` is the only directory it may write:
+
+```json
+"sandbox": {
+  "trust": "restricted",
+  "network": "deny",
+  "filesystem": { "read": [], "write": ["<cell-workspace>"], "runtime": true }
+}
+```
+
+**An absent `sandbox` block still means "no sandbox"** today: the cell runs with the daemon's rights, as it did before S4. Flipping that to automatic default-deny for template-sourced cells is a breaking change for every existing topology and is tracked in GH #85. Until then the profile above is a recommendation, not a default.
+
+**The runtime set** (`filesystem.runtime: true`) grants read and execute on `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/proc`, `/sys` and read/write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`. Without it no interpreter starts, because even the dynamic loader would be unreachable. It is a convenience, **not a security statement**: it contains `/etc` (hence `/etc/passwd`) and `/proc` (hence `/proc/<pid>/cmdline` of other processes of the same user). Set `runtime: false` and enumerate the paths yourself if that is not acceptable.
+
+**`limits` and `syscalls` are named but not enforced.** Both keys belong to the schema so that the shape is fixed, and both are **rejected at config load** (the error names GH #85). Resource caps (cgroup v2) and the syscall filter (seccomp-bpf) are phase 2. A cap that nobody enforces would be worse than no cap: it would tell the operator a comforting lie.
+
+**Fail-closed.** A `restricted` profile that cannot be enforced (no Landlock in the kernel, no namespaces on this host, a declared path that does not exist) makes the spawn fail; the cell emits `error_code: "io_error"` with `sandbox not applied: <reason>`. There is no path on which a `restricted` cell quietly keeps running unsandboxed.
+
+**`sandbox` is not runtime-changeable.** The block is read from the birth params only. For today's consumers `bash` and `code` that holds structurally: both are stateless, have no `cell.db` and therefore no runtime param overlay at all. For any future consumer it stands as a rule: a security boundary that a message can move is not a boundary.
 
 Cell-type-specific. Each cell type defines its own `params` structure (see `cell-types.md`). The colony hands this block to the cell at startup; afterwards param updates via message are possible (last-write-wins, persisted in `cell.db`). **Form** (W4b): the update message carries a **top-level `params` body slot** (1:1 this `params` block, partial), pure cell content, no header gate; the cell merges + persists it itself and replays the overlay at wake/respawn over the birth params (`config.json` stays untouched). Which fields are runtime-changeable or immutable (e.g. credentials, security boundaries) is cell-type-specific (see `cell-types.md`, e.g. `llm` § Runtime param updates).
 
@@ -212,6 +262,19 @@ Six keys, **builder-enforced**, not substrate-enforced: the structure takes effe
 | `examples` | Concrete input/output examples; at least one. |
 
 **At hive scope markers** (`cell.type: "hive"`): `description` describes the scope purpose (what does this hive bundle? when does the builder use it? what does not belong in it?). `emits_meaning` and `consumes_meaning` are omitted, since hive scope markers do not participate in the message flow.
+
+## Origin (`cell.provenance`)
+
+An instantiated cell is a **detached copy**: `template.json` is dropped at staging, and the tree can be exported, backed up or moved to another machine. For a template to find its instances later (an app-store update), the node has to carry its origin **itself** — there is no colony to ask when only the tree arrives.
+
+**Two homes, one truth.**
+
+- **The source** is `cell.provenance` in the instance's `config.json`. It travels with the directory; a backup, a copy and an export carry it verbatim.
+- **The index** is the three `registry` columns `template`, `template_version`, `instantiated_at` in `colony.db` (schema v5). They answer "which nodes came from `sink-tpl@1.0.0`?" with **one** SQL statement instead of a tree walk.
+
+The index is filled in two places: at instantiation (the mutation knows the template) and **at every boot**, from the `config.json` that was read. The second one is the important one: a config-only copy brings no `colony.db`, so its index starts empty — and without the boot pass it would silently claim "no origin" while the files next to it say otherwise. A node without `cell.provenance` sends nothing and keeps `NULL`; origin is **recorded, never invented**.
+
+**What the stamp is not.** It is not a live binding to the template: the template may change, move or disappear without the instance noticing or changing (§ Access, "After instantiation"). It is also not a reference to a `templates` row — it names the name and the version, not the `template_id`. (Since GH #62 the `template_id` is **stable** across rescans, but it remains a colony-local surrogate key and is meaningless in an exported tree.)
 
 ## Snapshot versus live-read
 

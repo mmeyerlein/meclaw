@@ -271,7 +271,7 @@ This way an LLM consumer reads the full tool output naturally (stdout first, std
 
 **Output header** (`hop` compartment, expires on the next cell emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (mandatory, always set), `bytes` (length of the `text`), optional `truncated` (on long stdout).
 
-**`params`**: typically the command to execute or the script-path convention.
+**`params`**: typically the command to execute or the script-path convention. Optional `sandbox` (S4/GH #35, schema in `config.md` § `params`), the process sandbox block for the spawned shell.
 
 **Phase-7 conventions** (Slice-2 decisions):
 - **`exit ≠ 0` is a NORMAL tool_result**: `exit_code` always in the header (even =0). The LLM/caller reads the code and decides. Consistent with Claude Code's Bash tool.
@@ -286,7 +286,7 @@ This way an LLM consumer reads the full tool output naturally (stdout first, std
   ##meclaw-stderr-end##
   ```
 - **`had_stderr: bool`** header ALWAYS set (true/false).
-- **No security boundary**: bash has full FS access via the shell. Trust model: the bash cell runs only in trustworthy topologies. Sandbox build-out is post-roadmap.
+- **Security boundary: opt-in via `params.sandbox`** (S4, GH #35). **Without** a `sandbox` block bash still has full FS access via the shell and full network, and the phase-7 trust model applies unchanged to that case. **With** `sandbox: {"trust": "restricted", ...}` the shell starts under a Landlock filesystem allowlist and, when `network: "deny"`, inside a fresh network namespace. Schema, default profile and the fail-closed rule: `config.md` § `params`. Not enforced: resource caps and the syscall filter (phase 2, GH #85).
 - **Shell**: `/bin/sh -c <command>`. `cwd`/`shell` as params deferred (operator sets via `cd /x && cmd` inline).
 - **No persistent bash** (`cell.timeout: -1`): by-design dropped (architecture ruling 2026-06-08). `bash` is one-shot only, not a deferred option.
 - **Input minimal**: `{"command": "..."}`.
@@ -355,7 +355,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - script writes a JSON array without `multi_send_capable` → error with `error_code: "multi_send_not_declared"`.
 - script stdout valid, but `contract.emits` violated → error with `error_code: "contract_violation"`. This `code` validation runs **always-on** (unconditionally, independent of build profile and `colony.json` `strict_validation`, `code` is the only user-script-driven trust boundary; see `meclaw-overview.md` § "Schema validation: timing and scope" and `docs/config.md` § Schema format and validation).
 
-**`params`**: typically `runner` (canonically `"python3"` in Phase 9, `CodeParams::parse` rejects other values with `'params.runner: only "python3" is supported in Phase 9'`. Background: on the target platforms Ubuntu 24 / Python 3.12 the real binary is `/usr/bin/python3`, `python` deliberately does not exist there), script path or inline code, `external_timeout_ms` (concept A, see overview § Timeouts; default `60000`). **`multi_send_capable` is not (any longer) in `params`**. It comes from `contract.multi_send_capable` (see Multi-send above).
+**`params`**: typically `runner` (canonically `"python3"` in Phase 9, `CodeParams::parse` rejects other values with `'params.runner: only "python3" is supported in Phase 9'`. Background: on the target platforms Ubuntu 24 / Python 3.12 the real binary is `/usr/bin/python3`, `python` deliberately does not exist there), script path or inline code, `external_timeout_ms` (concept A, see overview § Timeouts; default `60000`). **`multi_send_capable` is not (any longer) in `params`**. It comes from `contract.multi_send_capable` (see Multi-send above). Optional `sandbox` (S4/GH #35, schema in `config.md` § `params`), the process sandbox block for the spawned runner. A script under `trust: "restricted"` reads only the declared paths, so a script delivered as `script_path` rather than `script_inline` must itself live under one of them.
 
 **`cell.db` for `code`** (Phase-9 brainstorm E9): **deferred** in Phase 9. DB access from script logic runs via topology (`code` → multi-send → `store`), not in-process. Whoever needs a collector/state pattern in `code` lifts that into a separate design pass.
 
@@ -367,7 +367,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Emission mode**: atomic-emitting. Per HTTP call one `tool_result` turn.
 
-**Body format of the response**: `messages[]` with one turn `{ origin: "tool", type: "tool_result", text: "<response body>", id: "<tool_call_id>" }`. On a large body the **entire** output message is offloaded (from Phase 12) as `Body::Blob`, **whole-body offload** at the delivery boundary (`blob_inline_max_bytes` threshold, `resolve_blob_for_delivery`), **not** an in-message `text_id` pointer. In-message pointers (`text_id`/`messages_id`) have **no producer** today (D-025 deferred).
+**Body format of the response**: `messages[]` with one turn `{ origin: "tool", type: "tool_result", text: "<response body>", id: "<tool_call_id>" }`. On a large body the **entire** output message is offloaded (from Phase 12) as `Body::Blob`, **whole-body offload** at the delivery boundary (`blob_inline_max_bytes` threshold, `resolve_blob_for_delivery`), **not** an in-message `text_id` pointer. This cell produces no in-message pointers; that the substrate can now **resolve** them (GH #19) does not change that: whole-body offload stays the form in which a large response leaves the wire.
 
 **Output header**: `operation` (= `"web_fetch"`), `http_status`, `content_type`, `duration_ms`, `bytes`, optional `truncated`.
 
@@ -393,7 +393,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Emission mode**: atomic-emitting. Per search request one `tool_result` turn.
 
-**Body format of the response**: `messages[]` with a `tool_result` turn whose `text` contains the search results as a JSON list (title, URL, snippet per hit). On large result lists (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer (D-025 deferred).
+**Body format of the response**: `messages[]` with a `tool_result` turn whose `text` contains the search results as a JSON list (title, URL, snippet per hit). On large result lists (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer.
 
 **Output header**: `operation` (= `"web_search"`), `result_count`, `duration_ms`, `bytes`.
 
@@ -419,7 +419,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Emission mode**: atomic-emitting. Per operation (`read`/`write`/`list`/`stat`) one `tool_result` turn.
 
-**Body format of the response**: `messages[]` with a `tool_result` turn. On `read`, `text` contains the file content (on large files from Phase 12 whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer, D-025 deferred). On `write`/`list`/`stat`, `text` contains a JSON-structured status (bytes written, file list, stat info).
+**Body format of the response**: `messages[]` with a `tool_result` turn. On `read`, `text` contains the file content (on large files from Phase 12 whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer). On `write`/`list`/`stat`, `text` contains a JSON-structured status (bytes written, file list, stat info).
 
 **Output header**: `operation` (`"read"`/`"write"`/`"list"`/`"stat"`), `bytes`, `duration_ms`.
 
@@ -429,6 +429,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - **`target = reply_to`**: FileCell emits to `msg.reply_to`; fallback `/colony/dead_letters` if `reply_to` is missing. Edges in the topology can override the target.
 - **`tool_call.text` is JSON args**: `{"op": "read"|"write"|"list"|"stat", "path": "<rel>", "content"?: "<str for write>"}`.
 - **`write` without auto-mkdir**: the parent dir MUST exist. Missing parent → `io_error`. Symlink-safe via parent canonicalize.
+- **`write` error texts are a contract (GitHub #79)**: `io_error` is ambiguous on the write path, so `text` names the condition and the parent as the caller wrote it — `parent directory does not exist: notes (write does not create directories)`, `parent path is not a directory: notes`, `parent directory not accessible: notes (permission denied)`. Failures of the write stage itself (after the parent resolved) carry the prefix `write failed:` plus the named reason (`permission denied`, `read-only filesystem`, `no space left on device`, …). The `error_code` stays `io_error` in every case — the texts are the distinction, not the taxonomy.
 - **Security boundary**: all paths canonicalized against `base_path` (symlinks resolved); traversal/absolute-rel/symlink-escape → `path_outside_boundary` or `invalid_input`.
 - **Default `max_concurrency`**: 8.
 - **error_codes**: `invalid_input`, `path_outside_boundary`, `not_found`, `not_a_directory`, `not_a_file`, `io_error`.
@@ -543,6 +544,15 @@ human-readable label** (may occur multiple times) and serves only readability + 
 fire header. Modification and deletion always address **via `schedule_id`**, never via
 `schedule_name`.
 
+**Where the op lives — two admitted places (GitHub #81)**: either as **top-level slots of the body**
+(the form for config-born ops, for the HTTP ingress, and for any cell feeding the timer directly) or
+as **structured JSON args in the `tool_call` turn** (analogous to `store` and `bash`, see there). If
+the body carries a `tool_call` turn, that turn wins — its own parse errors are reported rather than
+falling back to the top level and pointing at the wrong level of the message. This makes the timer
+**usable as a tool lane without a bridge cell**: the dispatcher unwraps `{name, arguments}` into a
+`tool_call` turn, the timer reads the args like every other tool cell, and answers with a
+`tool_result` on the same `id` (see "Ack" below).
+
 **Operation per message** via the mandatory field `op: "add" | "modify" | "remove" | "trigger"`
 (default `add`, if omitted):
 
@@ -588,7 +598,11 @@ and no longer fires at its own `at` (race check in `handle_event`). The op itsel
 to the schedule and emits nothing, which is why a triggered run is indistinguishable from a
 cron-fired one.
 
-**Validation & error surfacing**: on `add`/`modify` a `cron` expression is validated against the 6-field Quartz parser. Invalid expressions are rejected (no silently stored, never-firing schedule arises). All op errors are emitted as a message to the `reply_to` of the op message (`parent_message_id` = the consumed op message), with `header.error_code` for: `invalid_body` (body not inline-readable), `parse_error` (op message unparsable beyond the cron check), `schedule_id_exists` (add on an existing `schedule_id`), `schedule_not_found` (modify/remove/trigger on an unknown `schedule_id`, and trigger on a non-active one), `kind_mismatch` (modify type switch once↔repeating), `invalid_cron` (invalid cron expression). Successful ops are not acked.
+**Validation & error surfacing**: on `add`/`modify` a `cron` expression is validated against the 6-field Quartz parser. Invalid expressions are rejected (no silently stored, never-firing schedule arises). All op errors are emitted as a message to the `reply_to` of the op message (`parent_message_id` = the consumed op message), with `header.error_code` for: `invalid_body` (body not inline-readable), `parse_error` (op message unparsable beyond the cron check), `schedule_id_exists` (add on an existing `schedule_id`), `schedule_not_found` (modify/remove/trigger on an unknown `schedule_id`, and trigger on a non-active one), `kind_mismatch` (modify type switch once↔repeating), `invalid_cron` (invalid cron expression).
+
+Two `parse_error` forms are deliberately separated (GitHub #81): **"no op object at the body top level"** (the body carries only carrier slots such as `messages` — the message names them and the two admitted places) and **"the op object is there, its `schedule_id` is not"**. The first is the answer to a message in which the op never arrived; calling that a missing `schedule_id` points at the wrong field.
+
+**Ack (GitHub #81)**: if the op arrived as a `tool_call` turn, `add`/`modify`/`remove`/`trigger` answer on success with a message to `reply_to` (fallback `msg.target`) carrying exactly one `tool_result` turn with the **inbound `tool_call` `id`**; `header` carries `msg_type: "timer_op_ack"`, `op` and `schedule_id`. Errors on the same lane carry the same turn plus `finish_reason: "error"` — a tool loop closes on the failure path too, instead of waiting for a result that never comes. **Without** an inbound `tool_call` `id` nothing changes: successful ops on the raw-body path stay unacked, and its errors keep their shape (`messages: []` + `meta.detail`). The firing itself is untouched by this — it goes via `OriginSink` to `emit_to`, not to the caller. Runnable example: `tests/fixtures/gh81-remind-lane/` (dispatcher → timer → ack/fire lanes, pinned in `crates/meclaw-cli/tests/gh81_remind_lane_e2e.rs`).
 
 **Op messages over the HTTP API**: the op body is an ordinary UBF body, the op fields being
 cell-specific top-level slots. Whoever feeds an op in through `POST /messages` additionally
@@ -655,7 +669,7 @@ This way a long-running provider call never blocks the acceptance of new tool-ca
 
 **Emission mode**: atomic-emitting. Per MCP tool call one response message with the result as a turn.
 
-**Body format of the response**: `messages[]` with a `tool_result` turn, `text` contains the MCP tool answer (typically JSON-structured). On large answers (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer (D-025 deferred).
+**Body format of the response**: `messages[]` with a `tool_result` turn, `text` contains the MCP tool answer (typically JSON-structured). On large answers (from Phase 12) whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer.
 
 **Discovery**: MCP tools that this provider offers are made available via a discovery message. The cell can play out its `system.tools.*` slots to an `llm` cell, so that the latter presents the tools to the LLM. The exact mechanism is a Phase-10 detail.
 

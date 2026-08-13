@@ -67,6 +67,24 @@ pub enum ColonyWriteOp {
         /// Unix seconds of the status change.
         updated_at: i64,
     },
+    /// GH #62: UPDATE-only fill of the three `registry` provenance columns
+    /// (`template`, `template_version`, `instantiated_at`) for an existing row.
+    ///
+    /// Same shape and the same reason as [`Self::SetRegistryStatus`]: the row is
+    /// created by `UpsertRegistry`, and this op is the SOLE write-authority for
+    /// its provenance columns — it never inserts, never touches `cell_id`,
+    /// `cell_type` or `status`, and is always enqueued AFTER the `UpsertRegistry`
+    /// of the same path (the writer channel is FIFO, so the row exists by then).
+    ///
+    /// The columns are a query INDEX (`SELECT path FROM registry WHERE
+    /// template = ?`); the authoritative record is `cell.provenance` in the
+    /// node's own `config.json`, which travels with an exported tree.
+    SetRegistryProvenance {
+        /// Cell path (primary key of the row to update).
+        path: Path,
+        /// Template identity stamped into this node at instantiation.
+        provenance: crate::config::NodeProvenance,
+    },
     /// Message-log insert (FIX-1 fields anchored in T32).
     InsertMessageLog(MessageLogRow),
     /// Phase 6: insert in_flight row into mutation_log; ack fires after tx.commit().
@@ -420,6 +438,19 @@ fn apply_op(
                 rusqlite::params![status, updated_at, path.as_str()],
             )
             .expect("set registry status");
+        }
+        ColonyWriteOp::SetRegistryProvenance { path, provenance } => {
+            tx.execute(
+                "UPDATE registry SET template=?, template_version=?, instantiated_at=? \
+                 WHERE path=?",
+                rusqlite::params![
+                    provenance.template,
+                    provenance.template_version,
+                    provenance.instantiated_at,
+                    path.as_str()
+                ],
+            )
+            .expect("set registry provenance");
         }
         ColonyWriteOp::InsertMessageLog(row) => {
             tx.execute(
@@ -1055,6 +1086,104 @@ mod tests {
             "cell_id must NOT be reset by SetRegistryStatus (no UPSERT)"
         );
         assert_eq!(updated_at, 200, "updated_at must be bumped");
+    }
+
+    /// GH #62 — `SetRegistryProvenance` is UPDATE-only, like `SetRegistryStatus`:
+    /// it fills the three provenance columns of an EXISTING row and touches
+    /// nothing else. `cell_id`, `cell_type` and `status` must survive, because
+    /// the op is sent right after the registration that created the row.
+    #[test]
+    fn set_registry_provenance_fills_the_columns_without_touching_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::schema::setup_colony_db(&conn).unwrap();
+
+        let tx = conn.unchecked_transaction().unwrap();
+        apply_op(
+            &tx,
+            ColonyWriteOp::UpsertRegistry {
+                path: Path::new("/probe"),
+                cell_id: "cell-id-original".into(),
+                cell_type: "echo".into(),
+                created_at: 100,
+                updated_at: 100,
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        tx.commit().unwrap();
+
+        let tx = conn.unchecked_transaction().unwrap();
+        apply_op(
+            &tx,
+            ColonyWriteOp::SetRegistryProvenance {
+                path: Path::new("/probe"),
+                provenance: crate::config::NodeProvenance {
+                    template: "sink-tpl".into(),
+                    template_version: Some("1.0.0".into()),
+                    instantiated_at: 1_700_000_000,
+                },
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        tx.commit().unwrap();
+
+        let (tpl, ver, at, cell_id, status): (String, String, i64, String, String) = conn
+            .query_row(
+                "SELECT template, template_version, instantiated_at, cell_id, status \
+                 FROM registry WHERE path = ?",
+                ["/probe"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(tpl, "sink-tpl");
+        assert_eq!(ver, "1.0.0");
+        assert_eq!(at, 1_700_000_000);
+        assert_eq!(cell_id, "cell-id-original", "identity must be untouched");
+        assert_eq!(status, "active", "status must be untouched");
+    }
+
+    /// An unversioned template writes SQL NULL, not the empty string — "this
+    /// template declares no version" has to stay distinguishable from "".
+    #[test]
+    fn set_registry_provenance_writes_null_for_an_unversioned_template() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::schema::setup_colony_db(&conn).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        apply_op(
+            &tx,
+            ColonyWriteOp::UpsertRegistry {
+                path: Path::new("/probe"),
+                cell_id: "c".into(),
+                cell_type: "echo".into(),
+                created_at: 1,
+                updated_at: 1,
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        apply_op(
+            &tx,
+            ColonyWriteOp::SetRegistryProvenance {
+                path: Path::new("/probe"),
+                provenance: crate::config::NodeProvenance {
+                    template: "bare".into(),
+                    template_version: None,
+                    instantiated_at: 42,
+                },
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        tx.commit().unwrap();
+        let ver: Option<String> = conn
+            .query_row(
+                "SELECT template_version FROM registry WHERE path = ?",
+                ["/probe"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ver, None);
     }
 
     /// Phase-13.5 Task 4 — `InitialApply` persists `condition` and `modifier` per edge.

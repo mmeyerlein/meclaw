@@ -57,15 +57,35 @@ loopback, all drawn in the tree.
 For the row-by-row protocol, including the expected-ID check and atomic fired-once guard, read
 the [store-backed tool-loop walkthrough](../../docs/store-backed-tool-loop.md).
 
-### Why this colony ships a `colony.json`
+### The loopback edge restores the routing budget
 
 One tool round in this shape costs about a dozen routing hops, because the collector's
-conversation with the `memory` store is itself routing. `ttl` is decremented per hop and never
-refreshed, so the colony-wide default of 64 would cap this agent at **five** tool rounds and the
-sixth would run out mid fan-in — terminal, straight to the dead-letter queue, and nothing
-emitted back to the chat. `colony.json` therefore sizes the budget for this topology
-(`message_default_ttl: 160`, about twelve rounds). The walkthrough carries the hop table, the
-formula, and the iteration-counter bound that belongs on the loopback edge.
+conversation with the `memory` store is itself routing. `ttl` is decremented per hop, so a loop
+that never gets its budget back would cap this agent at **five** tool rounds on the colony-wide
+default of 64, and the sixth would run out mid fan-in: terminal, straight to the dead-letter
+queue, and nothing emitted back to the chat.
+
+So the `collector -> planner` edge declares `"restore_ttl": true`, next to the `iter` increment
+it already carries:
+
+```json
+{
+  "from": "./collector",
+  "to": "./planner",
+  "condition": "hop.route == 'fire' && int(context.iter) < 12",
+  "modifier": {
+    "set_context": { "iter": "int(context.iter) + 1", "firing": "''" },
+    "restore_ttl": true
+  }
+}
+```
+
+The loop then pays for one round at a time instead of all of them, which is why this colony
+needs no `colony.json`: it runs on the substrate default of 64, like every other example here.
+The two halves belong together: a restoring edge is exempt from the TTL guard, so its
+`condition` carries the bound instead (`int(context.iter) < 12`, twelve tool rounds per turn),
+and the substrate refuses a restoring edge that has no condition at all. The walkthrough carries
+the hop table, the restore semantics, and the sizing formula for shapes that do not restore.
 
 ## Set up the Telegram bot
 

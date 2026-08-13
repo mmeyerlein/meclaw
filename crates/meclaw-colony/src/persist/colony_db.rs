@@ -78,6 +78,10 @@ pub struct PersistedRegistryEntry {
     pub cell_type: String,
     /// Last persisted status string (e.g. `"active"`, `"idle"`).
     pub status: String,
+    /// GH #62: the template identity this node was instantiated from, or `None`
+    /// for a node whose origin was never recorded (hand-written tree, adopted
+    /// directory, anything born before the stamp existed).
+    pub provenance: Option<crate::config::NodeProvenance>,
 }
 
 /// Persisted template row from the `templates` table (phase 11 11-A).
@@ -510,14 +514,26 @@ impl ColonyDb {
     /// Fails hard on any SQL error or on a cell_id that cannot be parsed as UUID —
     /// corrupt identity data must never be silently ignored.
     pub fn read_registry(&self) -> rusqlite::Result<Vec<PersistedRegistryEntry>> {
-        let mut stmt = self
-            .read_conn
-            .prepare("SELECT path, cell_id, cell_type, status FROM registry ORDER BY path")?;
+        let mut stmt = self.read_conn.prepare(
+            "SELECT path, cell_id, cell_type, status, template, template_version, \
+                 instantiated_at FROM registry ORDER BY path",
+        )?;
         let rows = stmt.query_map([], |r| {
             let path_str: String = r.get(0)?;
             let cell_id_str: String = r.get(1)?;
             let cell_type: String = r.get(2)?;
             let status: String = r.get(3)?;
+            // GH #62: provenance is a triple that is either wholly there or
+            // wholly absent — a row without a `template` has no origin, and a
+            // half-filled row would be a lie.
+            let template: Option<String> = r.get(4)?;
+            let template_version: Option<String> = r.get(5)?;
+            let instantiated_at: Option<i64> = r.get(6)?;
+            let provenance = template.map(|template| crate::config::NodeProvenance {
+                template,
+                template_version,
+                instantiated_at: instantiated_at.unwrap_or(0),
+            });
             let cell_id = meclaw_core::Uuid::parse_str(&cell_id_str).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
                     1,
@@ -530,6 +546,7 @@ impl ColonyDb {
                 cell_id,
                 cell_type,
                 status,
+                provenance,
             })
         })?;
         rows.collect()
@@ -688,8 +705,8 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='4' (phase-16 W6d / A6:
-        // persistent dead_letters table).
+        // Schema check: the meta table has schema_version='5' (GH #62: the
+        // registry provenance columns, on top of the W6d dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -698,7 +715,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "4");
+        assert_eq!(v, "5");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

@@ -4,8 +4,10 @@
 //! way to signal that group afterwards — `Child::start_kill` reaches the direct
 //! child only. An agent harness spawns process trees (shells, ripgrep,
 //! sub-agents), so killing the leader alone leaves orphans burning quota. That
-//! gap is what `libc::killpg` fills here, and it is the ONLY place in the
-//! workspace that touches `libc`.
+//! gap is what `libc::killpg` fills here. One of two places in the workspace
+//! that touch `libc` — the other is `sandbox::linux` (S4, GH #35), which needs
+//! `unshare` and the Landlock syscalls for the same reason: `std` does not
+//! expose them.
 //!
 //! Signals, not the tokio reaper, are the mechanism: sending to `-pgid`
 //! reaches every descendant that has not left the group.

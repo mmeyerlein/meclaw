@@ -5,6 +5,9 @@ use std::time::Duration;
 pub struct BashCell {
     pub external_timeout: Duration,
     pub max_concurrency: usize,
+    /// Optional process sandbox for the shell (S4, GH #35). `None` means the
+    /// legacy unsandboxed behaviour: the shell keeps the daemon's rights.
+    pub sandbox: Option<crate::sandbox::SandboxProfile>,
 }
 
 #[derive(Debug)]
@@ -85,6 +88,24 @@ impl meclaw_colony::StatelessCell for BashCell {
                 .arg(&parsed.command)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+
+            // S4 (GH #35): the sandbox is installed on the command, not around
+            // it. A profile that cannot be applied fails HERE, before a child
+            // exists — a `restricted` cell never falls back to unsandboxed.
+            if let Some(profile) = &self.sandbox
+                && let Err(e) = crate::sandbox::apply(profile, &mut cmd)
+            {
+                self.emit_error(
+                    sink,
+                    reply_target,
+                    ERR_IO_ERROR,
+                    format!("sandbox not applied: {e}"),
+                    id,
+                    started,
+                )
+                .await;
+                return;
+            }
 
             let child = match cmd.spawn() {
                 Ok(c) => c,
@@ -231,6 +252,7 @@ const DEFAULT_BASH_EXTERNAL_TIMEOUT_MS: u64 = 60_000;
 struct ParsedBashParams {
     external_timeout: Duration,
     max_concurrency: usize,
+    sandbox: Option<crate::sandbox::SandboxProfile>,
 }
 
 fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, String> {
@@ -253,9 +275,11 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, S
     if ms == 0 {
         return Err("params.external_timeout_ms must be >= 1".into());
     }
+    let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
     Ok(ParsedBashParams {
         external_timeout: Duration::from_millis(ms),
         max_concurrency: mc,
+        sandbox,
     })
 }
 
@@ -284,10 +308,12 @@ impl CellFactory for BashCellFactory {
         let parsed = parse_params_pure(&params)?;
         let external_timeout = parsed.external_timeout;
         let max_concurrency = parsed.max_concurrency;
+        let sandbox = parsed.sandbox;
 
         let cell = std::sync::Arc::new(BashCell {
             external_timeout,
             max_concurrency,
+            sandbox: sandbox.clone(),
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: the initial dispatcher
@@ -313,10 +339,14 @@ impl CellFactory for BashCellFactory {
         let respawn_mailbox_capacity = mailbox_capacity;
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
+        let respawn_sandbox = sandbox;
         let respawn: RespawnFn = Box::new(move || {
             let cell = std::sync::Arc::new(BashCell {
                 external_timeout,
                 max_concurrency,
+                // The boundary survives a restart: a respawned shell is as
+                // restricted as the one it replaces.
+                sandbox: respawn_sandbox.clone(),
             });
             let (tx, rx) =
                 tokio::sync::mpsc::channel::<meclaw_core::Message>(respawn_mailbox_capacity);
@@ -377,6 +407,7 @@ impl CellFactory for BashCellFactory {
         let cell = std::sync::Arc::new(BashCell {
             external_timeout: parsed.external_timeout,
             max_concurrency,
+            sandbox: parsed.sandbox,
         });
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
@@ -481,6 +512,7 @@ mod tests {
         let cell = BashCell {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
+            sandbox: None,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -527,6 +559,7 @@ mod tests {
         let cell = BashCell {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
+            sandbox: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -566,6 +599,7 @@ mod tests {
         let cell = BashCell {
             external_timeout: std::time::Duration::from_secs(5),
             max_concurrency: 4,
+            sandbox: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -607,6 +641,7 @@ mod tests {
         let cell = BashCell {
             external_timeout: std::time::Duration::from_millis(100),
             max_concurrency: 4,
+            sandbox: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(

@@ -31,6 +31,9 @@ pub struct CodeParams {
     pub external_timeout_ms: Option<u64>,
     /// Optional maximum number of concurrent script executions.
     pub max_concurrency: Option<usize>,
+    /// Optional process sandbox for the script (S4, GH #35). `None` means the
+    /// legacy unsandboxed behaviour: the script keeps the daemon's rights.
+    pub sandbox: Option<crate::sandbox::SandboxProfile>,
 }
 
 impl CodeParams {
@@ -71,11 +74,13 @@ impl CodeParams {
             None => None,
             Some(v) => Some(v.as_u64().ok_or("max_concurrency must be integer")? as usize),
         };
+        let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
         Ok(CodeParams {
             runner: runner.to_string(),
             script,
             external_timeout_ms,
             max_concurrency,
+            sandbox,
         })
     }
 }

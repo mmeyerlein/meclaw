@@ -111,6 +111,7 @@ impl LongRunningCell for TimerCell {
                         &msg,
                         "invalid_body",
                         "expected inline json",
+                        None,
                     )
                     .await;
                     return;
@@ -130,6 +131,7 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "invalid_input",
                             "params slot: not a JSON object",
+                            None,
                         )
                         .await;
                         return;
@@ -154,6 +156,7 @@ impl LongRunningCell for TimerCell {
                                     &msg,
                                     "invalid_input",
                                     &format!("cell.db params write failed: {e}"),
+                                    None,
                                 )
                                 .await;
                                 return;
@@ -164,6 +167,7 @@ impl LongRunningCell for TimerCell {
                                     &msg,
                                     "query_timeout",
                                     "params write exceeded query_timeout_ms",
+                                    None,
                                 )
                                 .await;
                                 return;
@@ -176,15 +180,36 @@ impl LongRunningCell for TimerCell {
                         )));
                     }
                     Err(e) => {
-                        crate::timer::emit::emit_op_error(sink, &msg, "invalid_input", &e.detail())
-                            .await;
+                        crate::timer::emit::emit_op_error(
+                            sink,
+                            &msg,
+                            "invalid_input",
+                            &e.detail(),
+                            None,
+                        )
+                        .await;
                     }
                 }
                 // Standalone params-update → done (no schedule op in this message).
                 return;
             }
 
-            let op = match crate::timer::op::TimerOp::parse(&body_val) {
+            // GH #81: an op may arrive the way every other tool cell is driven
+            // — structured JSON args in a `tool_call` turn — or at the body's
+            // own top level (config-born ops, the #17 HTTP form). The turn also
+            // carries the id every answer below has to echo; on the raw-body
+            // path there is none, and that `None` is what keeps that path
+            // exactly as silent as it was.
+            let (op_val, tool_call_id) = match crate::timer::op::resolve_op_source(&msg, &body_val)
+            {
+                Ok(src) => (src.value, src.tool_call_id),
+                Err(e) => {
+                    crate::timer::emit::emit_op_error(sink, &msg, "parse_error", &e, None).await;
+                    return;
+                }
+            };
+
+            let op = match crate::timer::op::TimerOp::parse(&op_val) {
                 Ok(o) => o,
                 Err(e) => {
                     let code = if e.starts_with("cron:") {
@@ -192,7 +217,14 @@ impl LongRunningCell for TimerCell {
                     } else {
                         "parse_error"
                     };
-                    crate::timer::emit::emit_op_error(sink, &msg, code, &e).await;
+                    crate::timer::emit::emit_op_error(
+                        sink,
+                        &msg,
+                        code,
+                        &e,
+                        tool_call_id.as_deref(),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -204,14 +236,31 @@ impl LongRunningCell for TimerCell {
                             crate::timer::db::insert_schedule(c, &row_for_call)
                         })
                         .await;
+                    let schedule_id = row.schedule_id;
                     match inserted {
-                        Ok(Ok(())) => send_setactive_snapshot(db, reconfig_tx).await,
+                        Ok(Ok(())) => {
+                            send_setactive_snapshot(db, reconfig_tx).await;
+                            // GH #81: the answer a tool loop waits for. Only when
+                            // the op arrived as a `tool_call` -- the raw-body path
+                            // stays unacked, as it always was.
+                            if let Some(tcid) = tool_call_id.as_deref() {
+                                crate::timer::emit::emit_op_ack(
+                                    sink,
+                                    &msg,
+                                    "add",
+                                    schedule_id,
+                                    tcid,
+                                )
+                                .await;
+                            }
+                        }
                         Ok(Err(e)) => {
                             crate::timer::emit::emit_op_error(
                                 sink,
                                 &msg,
                                 "schedule_id_exists",
                                 &format!("add: {e}"),
+                                tool_call_id.as_deref(),
                             )
                             .await
                         }
@@ -221,6 +270,7 @@ impl LongRunningCell for TimerCell {
                                 &msg,
                                 "query_timeout",
                                 "add: query exceeded query_timeout_ms",
+                                tool_call_id.as_deref(),
                             )
                             .await
                         }
@@ -247,6 +297,7 @@ impl LongRunningCell for TimerCell {
                                 &msg,
                                 "query_timeout",
                                 "modify: load exceeded query_timeout_ms",
+                                tool_call_id.as_deref(),
                             )
                             .await;
                             return;
@@ -258,6 +309,7 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "schedule_not_found",
                             &format!("modify: id {schedule_id} unknown"),
+                            tool_call_id.as_deref(),
                         )
                         .await;
                         return;
@@ -273,6 +325,7 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "kind_mismatch",
                             "modify: cannot switch cron<->at (use remove+add)",
+                            tool_call_id.as_deref(),
                         )
                         .await;
                         return;
@@ -297,6 +350,7 @@ impl LongRunningCell for TimerCell {
                                 &msg,
                                 "query_timeout",
                                 "modify: update exceeded query_timeout_ms",
+                                tool_call_id.as_deref(),
                             )
                             .await;
                             return;
@@ -308,10 +362,24 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "schedule_not_found",
                             "modify: 0 rows updated",
+                            tool_call_id.as_deref(),
                         )
                         .await;
                     } else {
                         send_setactive_snapshot(db, reconfig_tx).await;
+                        // GH #81: the answer a tool loop waits for. Only when
+                        // the op arrived as a `tool_call` -- the raw-body path
+                        // stays unacked, as it always was.
+                        if let Some(tcid) = tool_call_id.as_deref() {
+                            crate::timer::emit::emit_op_ack(
+                                sink,
+                                &msg,
+                                "modify",
+                                schedule_id,
+                                tcid,
+                            )
+                            .await;
+                        }
                     }
                 }
                 crate::timer::op::TimerOp::Trigger { schedule_id } => {
@@ -332,6 +400,7 @@ impl LongRunningCell for TimerCell {
                                 &msg,
                                 "query_timeout",
                                 "trigger: load exceeded query_timeout_ms",
+                                tool_call_id.as_deref(),
                             )
                             .await;
                             return;
@@ -343,6 +412,7 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "schedule_not_found",
                             &format!("trigger: id {schedule_id} unknown"),
+                            tool_call_id.as_deref(),
                         )
                         .await;
                         return;
@@ -357,6 +427,7 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "schedule_not_found",
                             &format!("trigger: id {schedule_id} is {}, not active", row.status),
+                            tool_call_id.as_deref(),
                         )
                         .await;
                         return;
@@ -364,6 +435,13 @@ impl LongRunningCell for TimerCell {
                     let _ = reconfig_tx
                         .send(crate::timer::io::TimerReconfig::FireNow { schedule_id })
                         .await;
+                    // GH #81: the answer a tool loop waits for. Only when
+                    // the op arrived as a `tool_call` -- the raw-body path
+                    // stays unacked, as it always was.
+                    if let Some(tcid) = tool_call_id.as_deref() {
+                        crate::timer::emit::emit_op_ack(sink, &msg, "trigger", schedule_id, tcid)
+                            .await;
+                    }
                 }
                 crate::timer::op::TimerOp::Remove { schedule_id } => {
                     let n = match db
@@ -377,6 +455,7 @@ impl LongRunningCell for TimerCell {
                                 &msg,
                                 "query_timeout",
                                 "remove: query exceeded query_timeout_ms",
+                                tool_call_id.as_deref(),
                             )
                             .await;
                             return;
@@ -388,10 +467,24 @@ impl LongRunningCell for TimerCell {
                             &msg,
                             "schedule_not_found",
                             "remove: 0 rows updated",
+                            tool_call_id.as_deref(),
                         )
                         .await;
                     } else {
                         send_setactive_snapshot(db, reconfig_tx).await;
+                        // GH #81: the answer a tool loop waits for. Only when
+                        // the op arrived as a `tool_call` -- the raw-body path
+                        // stays unacked, as it always was.
+                        if let Some(tcid) = tool_call_id.as_deref() {
+                            crate::timer::emit::emit_op_ack(
+                                sink,
+                                &msg,
+                                "remove",
+                                schedule_id,
+                                tcid,
+                            )
+                            .await;
+                        }
                     }
                 }
             }

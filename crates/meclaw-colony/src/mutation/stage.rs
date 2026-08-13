@@ -58,6 +58,23 @@ pub struct StagedDir {
     /// directory + its `cell.db` (No-Delete-Policy violation). Only the freshly
     /// renamed-in residue of a non-adopt reject is swept.
     pub preexisting_target: bool,
+    /// GH #62: the template identity stamped into this instance's
+    /// `config.json`, carried on so the mutation-spawn arm can index it in
+    /// `colony.db`'s `registry` row. `None` for an `adopt` entry — adopting an
+    /// existing directory is not a template instantiation and invents no origin.
+    pub provenance: Option<crate::config::NodeProvenance>,
+}
+
+/// Unix seconds, the one time unit `colony.db` speaks.
+///
+/// GH #62 needs an instantiation timestamp in `meclaw-colony`, which
+/// deliberately carries no date/time crate (see `blob/disk.rs`), so the stamp
+/// is seconds since the epoch — the same unit as every `created_at` column.
+pub(crate) fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Phase-11 Slice 11-F T15: build staging tree from templates.
@@ -136,7 +153,7 @@ pub fn build_staging_tree_from_templates(
                 message_timeout,
                 mailbox_size,
                 header_view,
-            ) = patch_and_substitute_config(&staging_path, env, ctx, n)?;
+            ) = patch_and_substitute_config(&staging_path, env, ctx, n, None)?;
             let absolute_path = super::resolve_scoped_path(scope, name);
             out.push(StagedDir {
                 staging_path,
@@ -151,6 +168,10 @@ pub fn build_staging_tree_from_templates(
                 mailbox_size,
                 header_view,
                 preexisting_target: true,
+                // GH #62: an adopt names no template — the node's origin is
+                // whatever its own config.json already said, carried through
+                // by the copy above.
+                provenance: None,
             });
             continue;
         }
@@ -183,6 +204,10 @@ pub fn build_staging_tree_from_templates(
                 &tpl.filesystem_path,
                 env,
                 ctx,
+                // GH #62: one stamp for the whole subtree instance — every
+                // nested cell names the subtree template, which is the unit an
+                // update addresses.
+                Some(&provenance_of(tpl)),
             )?;
             subtrees.push(staged_subtree);
             continue;
@@ -204,6 +229,10 @@ pub fn build_staging_tree_from_templates(
         }
         let staging_path = staging_root.join(name);
         copy_dir_recursive(&tpl.filesystem_path, &staging_path)?;
+        // GH #62: the RESOLVED template identity (not the reference string —
+        // `echo` resolves to the highest version, and the instance has to name
+        // the version it actually got).
+        let provenance = provenance_of(tpl);
         // add_nodes: fresh `cell.id` minted inside patch_and_substitute_config.
         let (
             cell_type,
@@ -214,7 +243,7 @@ pub fn build_staging_tree_from_templates(
             message_timeout,
             mailbox_size,
             header_view,
-        ) = patch_and_substitute_config(&staging_path, env, ctx, n)?;
+        ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance))?;
         seed_cell_db_if_present(&staging_path)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
@@ -230,6 +259,7 @@ pub fn build_staging_tree_from_templates(
             mailbox_size,
             header_view,
             preexisting_target: false,
+            provenance: Some(provenance),
         });
     }
     // Paket-2 T4 (b1): graph-swap with-side template instantiation. Each
@@ -258,6 +288,9 @@ pub fn build_staging_tree_from_templates(
             .map_err(|_| MutationError::TemplateMissing(tpl_ref.into()))?;
         let staging_path = staging_root.join(name);
         copy_dir_recursive(&tpl.filesystem_path, &staging_path)?;
+        // GH #62: the with-side is a fresh instantiation → same provenance stamp
+        // as add_nodes.
+        let provenance = provenance_of(tpl);
         // Map `with.params` onto the substitution helper's `override_params`
         // contract so a swap can override copied template params just like
         // add_nodes. Fresh `cell.id` (`None`) — t3 is a brand-new instance.
@@ -277,7 +310,13 @@ pub fn build_staging_tree_from_templates(
             message_timeout,
             mailbox_size,
             header_view,
-        ) = patch_and_substitute_config(&staging_path, env, ctx, &override_node)?;
+        ) = patch_and_substitute_config(
+            &staging_path,
+            env,
+            ctx,
+            &override_node,
+            Some(&provenance),
+        )?;
         seed_cell_db_if_present(&staging_path)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
@@ -293,9 +332,26 @@ pub fn build_staging_tree_from_templates(
             mailbox_size,
             header_view,
             preexisting_target: false,
+            provenance: Some(provenance),
         });
     }
     Ok((out, subtrees))
+}
+
+/// GH #62: the provenance stamp for an instantiation from `tpl`, timestamped now.
+///
+/// Records the RESOLVED identity of the template entry, not the reference the
+/// mutation wrote: `template: "echo"` resolves to the highest known version, and
+/// an instance that only remembered `"echo"` could not tell an app-store update
+/// which version it is behind.
+pub(crate) fn provenance_of(
+    tpl: &crate::templates::TemplateEntry,
+) -> crate::config::NodeProvenance {
+    crate::config::NodeProvenance {
+        template: tpl.name.clone(),
+        template_version: tpl.version.clone(),
+        instantiated_at: unix_now(),
+    }
 }
 
 /// Read the persisted `cell.id` from a live cell directory's `config.json`.
@@ -405,6 +461,12 @@ pub(crate) fn copy_dir_recursive(
 /// for new instantiations (add_nodes, swap_nodes with-side, subtree nodes),
 /// never for in-place identity preservation.
 ///
+/// GH #62: `provenance` is the template identity of THIS instantiation. `Some`
+/// stamps `cell.provenance` into the written file (the disk view, next to the
+/// freshly minted `cell.id`); `None` writes nothing and leaves whatever the
+/// source config carried — the `adopt` case, which re-instantiates an existing
+/// on-disk node and therefore has no template to name.
+///
 /// `pub(crate)` so the subtree-staging path
 /// ([`crate::mutation::subtree::stage_subtree`]) reuses the identical
 /// config-patch + substitution + UUID-mint logic per nested cell.
@@ -414,6 +476,7 @@ pub(crate) fn patch_and_substitute_config(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     add_node: &JsonValue,
+    provenance: Option<&crate::config::NodeProvenance>,
 ) -> Result<
     (
         String,
@@ -532,6 +595,20 @@ pub(crate) fn patch_and_substitute_config(
     // Hardening Slice 1 (Task 1.4): 14-B projection of the SAME parsed block —
     // the mutation-spawn arm registers it in the colony's `node_contracts` map.
     let header_view = crate::mutation::validate::header_view_from_contract(&contract_block);
+    // GH #62 -- the provenance stamp, written into the DISK view only, and
+    // deliberately AFTER the runtime view was derived: the template identity is
+    // minted by the colony, carries no placeholders, and must not be walked by
+    // a substitution pass that could choke on a `${`-shaped template name. Same
+    // write, same once-only guarantee as the `cell.id` mint above.
+    if let Some(prov) = provenance
+        && let Some(cell_block) = cfg.get_mut("cell").and_then(|v| v.as_object_mut())
+    {
+        cell_block.insert(
+            "provenance".into(),
+            meclaw_core::serde_json::to_value(prov)
+                .map_err(|e| MutationError::Schema(format!("serialize provenance: {e}")))?,
+        );
+    }
     std::fs::write(
         &cfg_path,
         meclaw_core::serde_json::to_string_pretty(&cfg).unwrap(),
@@ -714,6 +791,206 @@ mod tests {
             filesystem_path: tpl.clone(),
         }]);
         (tpl, registry)
+    }
+
+    /// Like [`make_registry`], but the template declares a version — the shape
+    /// GH #62 has to record, because an app-store update addresses
+    /// `<name>@<version>`, not a bare name.
+    fn make_versioned_registry(
+        td: &TempDir,
+        dir: &str,
+        name: &str,
+        version: &str,
+    ) -> (PathBuf, TemplatesRegistry) {
+        let tpl = td.path().join("templates").join(dir);
+        std::fs::create_dir_all(&tpl).unwrap();
+        std::fs::write(
+            tpl.join("template.json"),
+            format!(r#"{{"name":"{name}","version":"{version}"}}"#),
+        )
+        .unwrap();
+        let registry = TemplatesRegistry::from_entries(vec![TemplateEntry {
+            template_id: "t1".into(),
+            name: name.into(),
+            version: Some(version.into()),
+            filesystem_path: tpl.clone(),
+        }]);
+        (tpl, registry)
+    }
+
+    // ── GH #62: provenance ──────────────────────────────────────────────
+
+    /// GH #62: an instantiated node names the template it came from.
+    ///
+    /// The template identity goes into the DISK view (`cell.provenance` of the
+    /// written `config.json`), because the instance is a detached copy: an
+    /// exported, backed-up or moved tree has to carry its own origin. The same
+    /// value is handed on in `StagedDir.provenance`, so the mutation-spawn arm
+    /// can index it in `colony.db`.
+    #[test]
+    fn build_staging_tree_records_template_provenance_in_the_instance_config() {
+        let td = TempDir::new().unwrap();
+        let (tpl, registry) = make_versioned_registry(&td, "echo@1.2.3", "echo", "1.2.3");
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let before = crate::mutation::stage::unix_now();
+        let diff = json!({"add_nodes": [{"name":"e1","template":"echo@1.2.3"}]});
+        let (staged, _subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-prov",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let cfg: JsonValue = meclaw_core::serde_json::from_str(
+            &std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        let prov = &cfg["cell"]["provenance"];
+        assert_eq!(
+            prov["template"], "echo",
+            "the instance records the RESOLVED template name: {cfg}"
+        );
+        assert_eq!(
+            prov["template_version"], "1.2.3",
+            "the instance records the RESOLVED template version: {cfg}"
+        );
+        let at = prov["instantiated_at"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("instantiated_at must be unix seconds: {cfg}"));
+        assert!(
+            at >= before,
+            "instantiated_at must be the time of THIS instantiation, got {at} < {before}"
+        );
+        let carried = staged[0]
+            .provenance
+            .as_ref()
+            .expect("StagedDir carries the provenance for the registry index");
+        assert_eq!(carried.template, "echo");
+        assert_eq!(carried.template_version.as_deref(), Some("1.2.3"));
+        assert_eq!(carried.instantiated_at, at);
+    }
+
+    /// An unversioned template records its name and NO version key — absence
+    /// means "this template declares no version", which is a different fact
+    /// from "version unknown".
+    #[test]
+    fn build_staging_tree_provenance_omits_the_version_of_an_unversioned_template() {
+        let td = TempDir::new().unwrap();
+        let (tpl, registry) = make_registry(&td, "echo", "echo");
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let diff = json!({"add_nodes": [{"name":"e1","template":"echo"}]});
+        let (staged, _subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-prov-nover",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let cfg: JsonValue = meclaw_core::serde_json::from_str(
+            &std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg["cell"]["provenance"]["template"], "echo");
+        assert!(
+            cfg["cell"]["provenance"].get("template_version").is_none(),
+            "an unversioned template writes no template_version key: {cfg}"
+        );
+        assert_eq!(
+            staged[0].provenance.as_ref().unwrap().template_version,
+            None
+        );
+    }
+
+    /// The swap with-side is an instantiation too — same machinery, same stamp.
+    #[test]
+    fn swap_with_side_records_template_provenance() {
+        let td = TempDir::new().unwrap();
+        let (tpl, registry) = make_versioned_registry(&td, "echo@2.0.0", "echo", "2.0.0");
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let diff =
+            json!({"swap_nodes": [{"name":"old","with":{"name":"new","template":"echo@2.0.0"}}]});
+        let (staged, _subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-prov-swap",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let cfg: JsonValue = meclaw_core::serde_json::from_str(
+            &std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg["cell"]["provenance"]["template"], "echo");
+        assert_eq!(cfg["cell"]["provenance"]["template_version"], "2.0.0");
+    }
+
+    /// An `adopt` entry has no template — it re-instantiates an existing
+    /// on-disk node. It must NOT invent a provenance, and it must not destroy
+    /// the one the adopted node already carried: the node's origin does not
+    /// change by being adopted.
+    #[test]
+    fn adopt_neither_invents_nor_destroys_provenance() {
+        let td = TempDir::new().unwrap();
+        let root_cell = td.path().join("main");
+        std::fs::create_dir_all(&root_cell).unwrap();
+        std::fs::write(
+            root_cell.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{}}"#,
+        )
+        .unwrap();
+        let existing = root_cell.join("kept");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(
+            existing.join("config.json"),
+            r#"{"cell":{"type":"echo_type","provenance":{"template":"older","template_version":"0.9.0","instantiated_at":1000}},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let (_tpl, registry) = make_registry(&td, "echo", "echo");
+        let diff = json!({"add_nodes": [{"name":"kept","adopt":{"cell_type":"echo_type"}}]});
+        let (staged, _subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-prov-adopt",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let cfg: JsonValue = meclaw_core::serde_json::from_str(
+            &std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg["cell"]["provenance"]["template"], "older",
+            "an adopt carries the node's existing provenance through verbatim: {cfg}"
+        );
+        assert_eq!(cfg["cell"]["provenance"]["instantiated_at"], 1000);
+        assert!(
+            staged[0].provenance.is_none(),
+            "an adopt is not a template instantiation — it stamps nothing new"
+        );
     }
 
     #[test]

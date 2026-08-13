@@ -44,14 +44,42 @@ pub struct BlobSidecar {
 /// an index).
 pub struct DiskBlobStore {
     root: PathBuf,
+    max_recursion_depth: u32,
 }
+
+/// Substrate default for `blob_max_recursion_depth` (spec § Blob references
+/// are universal). Mirrors [`crate::ColonyConfig`]'s default so a store built
+/// without an explicit override behaves like a colony without a `colony.json`.
+pub const DEFAULT_BLOB_MAX_RECURSION_DEPTH: u32 = 64;
 
 impl DiskBlobStore {
     /// Open or create the blob-store root directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, BlobError> {
         let root = root.as_ref().to_path_buf();
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            max_recursion_depth: DEFAULT_BLOB_MAX_RECURSION_DEPTH,
+        })
+    }
+
+    /// GH #19: set the hard bound for recursive in-message pointer resolution.
+    ///
+    /// The bound rides on the store rather than on `spawn_cell`, because the
+    /// store handle is ALREADY threaded to exactly the one place that resolves
+    /// pointers (the cell-delivery boundary) — and adding an eleventh parameter
+    /// to the `CellFactory` trait would touch every cell factory in the
+    /// workspace to move one number. Wired from `colony.json
+    /// blob_max_recursion_depth` where the store is constructed.
+    #[must_use]
+    pub fn with_max_recursion_depth(mut self, depth: u32) -> Self {
+        self.max_recursion_depth = depth;
+        self
+    }
+
+    /// The configured bound for recursive in-message pointer resolution.
+    pub fn max_recursion_depth(&self) -> u32 {
+        self.max_recursion_depth
     }
 
     /// Streams a body into `<root>/<uuid-v7>.<ext>` and writes the sidecar LAST

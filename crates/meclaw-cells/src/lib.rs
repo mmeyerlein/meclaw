@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod params_overlay;
 pub(crate) mod process;
 pub mod proxy;
+pub mod sandbox;
 pub mod stdio_child;
 pub mod store;
 pub mod subcolony;

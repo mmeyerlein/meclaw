@@ -4,7 +4,93 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
-## [0.3.2] — 2026-08-13
+## [0.4.0] — 2026-08-13
+
+The bug-and-substrate wave. Every open bug on the tracker and the remaining
+pre-MVP substrate items, built on five parallel tracks in isolated worktrees
+and merged one by one behind full gates. The wave's sharpest find was not on
+the list at all: the provenance schema change would have killed every existing
+colony on upgrade, and only a stale pre-v5 database lying around the main tree
+could prove it — fresh worktrees, fresh fixtures and green branch gates never
+saw it.
+
+### Added
+
+- **Code and bash cells take a sandbox profile.** `params.sandbox` declares
+  `trust` (`restricted`|`trusted`), `network` (deny by default) and a mandatory
+  `filesystem` allowlist under `restricted`. The filesystem view is enforced
+  with Landlock, the network deny with a network namespace — no container
+  runtime, no new dependency, and fail-closed: a profile that cannot be applied
+  fails the spawn instead of running open. The phase cut is honest and measured:
+  on a host with `apparmor_restrict_unprivileged_userns=1` the mount-namespace
+  route is closed to an unprivileged daemon, so Landlock carries the filesystem
+  view; cgroup resource caps and seccomp filters are schema-visible but rejected
+  at config load until they are enforced (#35, phase 2 tracked as #85).
+- **The loopback edge may restore `ttl`, as an explicit modifier.** A
+  store-backed tool round costs about a dozen routing hops; instead of inflating
+  the colony-wide budget, the re-entry edge of a deliberate loop now declares
+  `restore_ttl` next to its iteration counter. The declaration is the contract:
+  config load rejects a restoring edge that carries no condition, restore never
+  exceeds the initial budget, and everything that does not opt in still dies at
+  the sharp default of 64. The example colony runs on the default budget again;
+  its 160-hop override is gone (#82).
+- **Instantiated nodes know where they came from.** `cell.provenance` records
+  template, template version and instantiation time in the instance's own
+  `config.json` — the copy names its origin even without the colony that made
+  it — and the registry indexes the three columns (schema v5), re-derived from
+  the files at every boot so a config-only copy re-indexes itself. `template_id`
+  is stable across rescans. This is the hook the app-store stream needs: an
+  updated template can find its instances (#62).
+- **In-message blob pointers resolve at the delivery boundary.** `text_id` and
+  `messages_id` inside `messages[]` resolve recursively, bounded by
+  `blob_max_recursion_depth` (now actually wired) plus a per-path visited set;
+  both violations dead-letter as `blob_recursion_too_deep`, and a failed
+  resolution delivers nothing rather than a half-expanded body. The old
+  zero-producer prohibition is replaced by the guarantee and its tests;
+  `attachments[]` ownership is decided and documented (consuming cell, on
+  demand — wiring tracked as #87) (#19).
+- **A scheduled lane is a tool lane.** The timer reads its op from a
+  `tool_call` turn the way `bash` does, answers every op with a `tool_result`
+  carrying the caller's id, and its parse error now distinguishes "no op object
+  at the body's top level" from "op object missing a field". The raw-body path
+  keeps working byte-identically; a committed fixture drives the remind lane end
+  to end from an agent tool call (#81).
+
+### Fixed
+
+- **A batch lane no longer re-extracts what inline extraction already covered.**
+  The inline phase marks its episodes as covered in the extraction queue, and an
+  empty inline facts block covers its turn — it is the front model's verdict
+  that nothing was memorable, not an absence. The batch lane serves its real
+  purpose again: catching turns from models that emit no inline block (#52).
+- **The inline extraction contract ships with the hive.** It states what the
+  batch prompt always knew: the assistant's own answer is not a fact, a question
+  is not a fact, restating stored knowledge mints nothing, and deriving validity
+  windows from a question's date range is forbidden — the shape that minted
+  self-closing period facts out of history answers. Drift-locked in both
+  directions by tests (#53).
+- **A closure across two spellings proposes the alias instead of hiding it.**
+  The nightly identity questions read a bounded set of recently closed rows one
+  phase earlier and merge their spellings into the inventory as a pure union —
+  exactly the case where a closure just proved two spellings talk about the same
+  thing. The C6 scenario that was red on its first live run pins it green, and
+  the invariance set inside it holds across the round (#73).
+- **A write into a missing parent names the parent.** `parent directory does not
+  exist: notes (write does not create directories)` instead of `io error during
+  resolve`, with distinguishable texts for permission-denied, not-a-directory
+  and read-only causes; the `io_error` taxonomy is unchanged and the wording is
+  pinned as a contract (#79).
+- **A fan-out that matches nothing is not an alarm.** Every shipped dispatcher
+  and collector edge guards its key (`has(hop.tool_name) && ...`), and the
+  substrate now tells the two apart: a missing key on a valid expression logs at
+  debug, a genuine eval error stays at warn. A sweep test holds every shipped
+  config to the guarded form (#80).
+- **An existing database migrates before the DDL batch runs.** The v5 schema
+  creates an index on a column that only the v4→v5 migration adds, so opening
+  any pre-v5 `colony.db` died with "no such column: template" before the
+  migration ever ran. Migration now runs first on an existing database, the
+  older ALTER steps carry the same table-exists guard, and the rollback pin
+  proves its all-or-nothing promise against real step work (#90).
 
 A reliability wave on the substrate. Seven defects, none of them inside a cell
 and all of them between cells: a gateway error that arrived as a parser

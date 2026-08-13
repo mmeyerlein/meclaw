@@ -33,14 +33,14 @@
 //!
 //! | artifact | (a) instantiation | (b) reboot | (c) full copy | (d) config-only copy | (e) validate | (f) partial restore |
 //! |---|---|---|---|---|---|---|
-//! | `config.json` -- node header + params | **written once**, `${VAR}` kept as a token, `cell.id` minted, `template.json` stripped → `a1`, `a2` | **live-read** every boot, never rewritten → `b1` | carried verbatim → `c1` | carried verbatim → `d1` | live-read, no side effect → `e1` | carried verbatim, but see the two `cell.db` rows → `f1` |
+//! | `config.json` -- node header + params | **written once**, `${VAR}` kept as a token, `cell.id` minted, `cell.provenance` stamped, `template.json` stripped → `a1`, `a2` | **live-read** every boot, never rewritten → `b1` | carried verbatim → `c1` | carried verbatim, provenance re-indexed at boot → `d1`, `a3` | live-read, no side effect → `e1` | carried verbatim, but see the two `cell.db` rows → `f1` |
 //! | `cell.db` — params overlay (`params` table) | not created unless the template ships `seed/` (no test needed: `a1` already asserts the instance has no `cell.db` without `seed/`) | **survives**, wins over `config.json` for overlay keys → `b4` | carried → `c2` | **reborn** empty → `d2` | not touched (`--validate` spawns nothing; no test needed) | **kept** → overlay still wins over the restored `config.json` → `f2` |
 //! | `cell.db` — birth-snapshot tables (`timer.schedules`, `store` seed) | seeded from `seed/` only, else at first spawn (covered by `a1` + `d2`) | **birth snapshot** — a `config.json` schedule edit is IGNORED → `b2`, `b3` | carried → live schedule state survives → `c2`; a DAMAGED one fails the boot loudly → `c6` | **reborn** — re-seeded from `config.json` → `d2` | probed, never opened for writing → `c6` (second half) | **kept** — a config-level restore does NOT restore behavior → `f2`; only a `cell.db` restore does → `f3` |
-//! | `colony.db` — `registry` (`cell_id`, status) | fresh `cell_id` per instantiated node (covered by `a1`) | **carried**, `cell_id` stable across reboot → `b1` | carried, `cell_id` identical to the source → `c1` | **reborn**, `cell_id` re-minted → `d1` | read-only overlay probe → `e1`, `e2` | carried; a restored node the registry does not know is **never adopted** → `f4` |
+//! | `colony.db` — `registry` (`cell_id`, status, provenance) | fresh `cell_id` per instantiated node + the provenance index → `a1` | **carried**, `cell_id` stable across reboot → `b1` | carried, `cell_id` identical to the source → `c1` | **reborn**, `cell_id` re-minted → `d1` | read-only overlay probe → `e1`, `e2` | carried; a restored node the registry does not know is **never adopted** → `f4` |
 //! | `colony.db` — `edges` + `hive_scopes` | mutation-applied (out of scope for this sweep; the `add_edges` path has its own suites) | **birth snapshot** — `params.graph` hints are ignored on reboot (pinned in `meclaw-testing/src/bootstrap_apply.rs::reboot_hydrates_edges_from_colony_db_and_ignores_hints`; no duplicate here) | carried → `c1` | **reborn** from `params.graph` → `d1` | plan-only static check → `e1`, `e2` | carried (same row as (c); no separate test needed) |
 //! | `colony.db` — `templates` (scan index) | read at resolve time (covered by `a1`) | scanned ONCE; re-scanned only when the table is empty, when its paths sit outside the booted root, or on `--rescan-templates` → `b5` | carried with the SOURCE's `filesystem_path`, then **re-anchored by the first boot** — the recorded paths are outside the booted root, so the boot scan rebuilds the index → `c3` | **reborn** by the boot scan → `d1` covers the boot; `c3` states the restore variant | not rescanned by `--validate` (no test needed — `--validate` returns before the colony spawns; the scan runs in `run()` ahead of it and is already covered by `c3`) | same as (c) (no separate test needed) |
 //! | `blobs/` (`DiskBlobStore`) | not involved (no test needed — instantiation never writes blobs) | live directory, never a snapshot (no test needed — the store is content-addressed by UUID and has no boot-time index) | carried as plain files → `c4` | **lost** — `BlobRef`s in a carried `message_log` would dangle; a config-only copy carries no `message_log` either, so the pair stays consistent → `c4` documents the carried case | not touched (no test needed) | same as (c) (no separate test needed) |
-//! | `templates/` + provenance of the copy | tree copied minus `template.json`; **no provenance is recorded anywhere** → `a1` | blacklisted from the bootstrap walk (no test needed — `walk_cell_directories` skips `templates/` at top level, covered by the whole sweep booting cleanly with a `templates/` dir present) | carried as plain files → `c3` | carried as plain files (same row) | blacklisted (no test needed) | same as (c) (no separate test needed) |
+//! | `templates/` + provenance of the copy | tree copied minus `template.json`; the instance records template, version and instantiation time → `a1` | blacklisted from the bootstrap walk (no test needed — `walk_cell_directories` skips `templates/` at top level, covered by the whole sweep booting cleanly with a `templates/` dir present) | carried as plain files → `c3` | carried as plain files (same row) | blacklisted (no test needed) | same as (c) (no separate test needed) |
 //! | `.env` | never substituted onto disk; `${VAR}` and `$${VAR}` both survive the write → `a2` | live-read every boot, in memory only → `b6` | carried as tokens; every `${VAR}` re-binds in the new environment, `$${VAR}` stays inert text → `a2` + `b6` cover both arms | same as (c) | live-read → `e1` | same as (c) |
 //! | SQLite WAL sidecars (`*.db-wal` / `*.db-shm`) | n/a (no test needed — instantiation leaves no open connection behind, so nothing can sit in a WAL) | checkpointed by a clean shutdown, so a cold reboot never depends on them (no test needed — every reboot cell in column (b) exercises it) | **part of the artifact whenever the colony was live** — a `*.db`-only copy silently restores stale state → `c5` | excluded on purpose → `d1`, `d2` | not touched (no test needed) | the restore unit is the whole directory → `f3` |
 //!
@@ -63,13 +63,16 @@
 //!    the plan phase and fails the boot before a single spawn (`c6`), but a
 //!    *plausible* `cell.db` carrying stale content boots silently (`c5`). The
 //!    substrate defends against corruption, not against staleness.
-//! 4. **No provenance.** An instantiated node records nothing about the
-//!    template it came from (`a1`). The template index is the one carried
-//!    artifact that is machine-specific — `templates.filesystem_path` is an
-//!    absolute path — so it is the one the boot repairs by itself: paths outside
-//!    the booted templates root mark the index as another root's and trigger a
-//!    full rescan (`c3`). Staleness INSIDE the right root stays the operator's
-//!    job (`b5`).
+//! 4. **Provenance has two homes, and only one of them travels.** An
+//!    instantiated node records its origin twice: in its own `config.json`
+//!    (`cell.provenance`, GH #62) and in the `colony.db` `registry` row. Only
+//!    the file travels with a copy, so the registry columns are an index the
+//!    boot rebuilds from the files it finds (`a1`, `a3`). The template index is
+//!    the other carried artifact that is machine-specific —
+//!    `templates.filesystem_path` is an absolute path — so it too is repaired by
+//!    the boot: paths outside the booted templates root mark the index as
+//!    another root's and trigger a full rescan (`c3`). Staleness INSIDE the
+//!    right root stays the operator's job (`b5`).
 
 use meclaw_cli::{Cli, StdioFormat, built_in_factories, run};
 use meclaw_colony::{
@@ -461,17 +464,19 @@ fn cli_validate(root: &std::path::Path, strict: bool) -> Cli {
 // (a) template instantiation — templates/ → tree
 // ══════════════════════════════════════════════════════════════════════════
 
-/// **a1** — what an instantiated node carries, and what it does NOT carry.
+/// **a1** — what an instantiated node carries.
 ///
 /// The whole template tree is copied (`payload.txt` lands in the instance),
 /// `template.json` is deliberately stripped, a fresh `cell.id` is minted into
-/// the instance's `config.json` — and **no provenance is recorded**: neither
-/// the template name nor its version appears anywhere in the instance, and the
-/// `colony.db` `registry` row has no template column either. Instantiating
-/// without a `seed/` directory creates NO `cell.db`; that only happens on the
-/// first spawn.
+/// the instance's `config.json` — and **the origin is recorded**: GH #62 turned
+/// the old contract around. The instance names its template and version in
+/// `cell.provenance`, and the `colony.db` `registry` row carries the same three
+/// values as a query index. `template.json` stays stripped: it is the
+/// template's metadata, not the instance's, and the instance keeps only the
+/// three facts it needs to be found again. Instantiating without a `seed/`
+/// directory creates NO `cell.db`; that only happens on the first spawn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a1_instantiated_copy_strips_template_json_and_records_no_provenance() {
+async fn a1_instantiated_copy_strips_template_json_and_records_provenance() {
     let td = tempfile::TempDir::new().unwrap();
     write_tree(td.path(), "0 0 5 * * *");
 
@@ -525,29 +530,111 @@ async fn a1_instantiated_copy_strips_template_json_and_records_no_provenance() {
         cfg["cell"]["id"].is_string(),
         "instantiation mints a fresh cell.id into the instance config: {raw}"
     );
-    // Provenance receipt: the instance is a detached copy. Nothing in it names
-    // the template it came from — this is the CURRENT contract, pinned here so
-    // a future provenance field is a deliberate, visible change.
-    assert!(
-        !raw.contains("sink-tpl"),
-        "no template name is recorded in the instantiated config.json: {raw}"
+    // Provenance receipt (GH #62): the instance is a detached copy, so it has to
+    // carry its own origin — an exported tree has no colony behind it to ask.
+    assert_eq!(
+        cfg["cell"]["provenance"]["template"], "sink-tpl",
+        "the instance names the template it came from: {raw}"
     );
-    assert!(
-        !raw.contains("1.0.0"),
-        "no template version is recorded in the instantiated config.json: {raw}"
+    assert_eq!(
+        cfg["cell"]["provenance"]["template_version"], "1.0.0",
+        "the instance names the template VERSION it came from: {raw}"
     );
+    let stamped = cfg["cell"]["provenance"]["instantiated_at"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("instantiated_at must be unix seconds: {raw}"));
+    assert!(stamped > 1_700_000_000, "a plausible unix timestamp: {raw}");
+    // The template's own metadata file still never lands in the instance — the
+    // three provenance facts replace it, they do not re-import it.
+    assert!(
+        !raw.contains("\"author\""),
+        "template.json metadata (author) must not leak into the instance: {raw}"
+    );
+
+    // The registry row is the query index over the same three facts: "which
+    // nodes came from sink-tpl@1.0.0" must be one statement, not a tree walk.
     let conn = rusqlite::Connection::open(td.path().join("colony.db")).unwrap();
-    let cols: Vec<String> = conn
-        .prepare("SELECT name FROM pragma_table_info('registry')")
-        .unwrap()
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
+    let (tpl, ver, at): (String, String, i64) = conn
+        .query_row(
+            "SELECT template, template_version, instantiated_at FROM registry WHERE path = ?",
+            ["/clone"],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("the instantiated node has a registry provenance row");
+    assert_eq!(tpl, "sink-tpl");
+    assert_eq!(ver, "1.0.0");
+    assert_eq!(at, stamped, "file and index must agree on the stamp");
+    // The nodes of the hand-written tree were never instantiated from a
+    // template and must stay NULL — provenance is recorded, never invented.
+    let sink_tpl: Option<String> = conn
+        .query_row(
+            "SELECT template FROM registry WHERE path = ?",
+            ["/sink"],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(
-        !cols.iter().any(|c| c.contains("template")),
-        "the registry table records no template provenance either, got {cols:?}"
+    assert_eq!(
+        sink_tpl, None,
+        "a node that came from no template records no template"
     );
+}
+
+/// **a3** — provenance travels with the tree, and a fresh colony re-indexes it.
+///
+/// The `registry` columns are only an index; the record lives in the node's own
+/// `config.json`. A config-only copy carries no `colony.db` at all, so the new
+/// colony's index starts empty — and has to rebuild itself from the files at the
+/// first boot. If it did not, the index would silently claim "no origin" for a
+/// tree whose files say otherwise, which is worse than having no column.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a3_provenance_survives_a_config_only_copy_and_is_reindexed_at_boot() {
+    let src = tempfile::TempDir::new().unwrap();
+    write_tree(src.path(), "0 0 5 * * *");
+    {
+        let (inbox, colony, apply) = boot(src.path()).await;
+        apply.await.expect("bootstrap apply join");
+        rescan_templates(&inbox, src.path().join("templates")).await;
+        let outcome = send_mutation(
+            &inbox,
+            meclaw_core::serde_json::json!({
+                "scope": "/",
+                "diff": {
+                    "add_nodes": [{ "name": "clone", "template": "sink-tpl@1.0.0" }],
+                    "add_edges": [{"from": "clone", "to": "sink"}]
+                }
+            }),
+        )
+        .await;
+        assert!(
+            matches!(outcome, MutationOutcome::Committed { .. }),
+            "{outcome:?}"
+        );
+        shutdown(inbox, colony).await;
+    }
+
+    let dst = tempfile::TempDir::new().unwrap();
+    let restored = dst.path().join("restored");
+    copy_configs_only(src.path(), &restored);
+    assert!(!restored.join("colony.db").exists());
+
+    boot_and_shutdown(&restored).await;
+
+    let raw = std::fs::read_to_string(restored.join("main/clone/config.json")).unwrap();
+    let cfg: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        cfg["cell"]["provenance"]["template"], "sink-tpl",
+        "the copied file still names its template: {raw}"
+    );
+    let conn = rusqlite::Connection::open(restored.join("colony.db")).unwrap();
+    let (tpl, ver): (String, String) = conn
+        .query_row(
+            "SELECT template, template_version FROM registry WHERE path = ?",
+            ["/clone"],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the fresh colony re-indexed the provenance it found on disk");
+    assert_eq!(tpl, "sink-tpl");
+    assert_eq!(ver, "1.0.0");
 }
 
 /// **a2** -- `${VAR}` survives instantiation LITERALLY and binds late at every

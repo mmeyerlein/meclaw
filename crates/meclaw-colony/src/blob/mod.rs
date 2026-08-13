@@ -14,4 +14,5 @@
 //! Phase 13 (Cell-Konsumenten).
 
 pub mod disk;
+pub(crate) mod pointers;
 pub use disk::{BlobError, BlobSidecar, DiskBlobStore};

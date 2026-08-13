@@ -92,37 +92,48 @@ Found by the wave's own measurement and fixed inside it:
 [#71](https://github.com/mmeyerlein/meclaw/issues/71) an extractor replacement
 points forwards in time, never backwards.
 
-## Shipped: 0.3.2 substrate reliability
+## Shipped: 0.4.0 the bug-and-substrate wave
 
-Seven defects that all sit *between* cells, ranked by a practice run of the tool
-cells against a test colony rather than by reading the code, fixed in one wave
-and released as v0.3.2.
+Every open bug on the tracker plus the pre-MVP substrate items, built on five
+parallel tracks in isolated worktrees and merged one by one behind full gates,
+released as v0.4.0.
 
-Done: [#75](https://github.com/mmeyerlein/meclaw/issues/75) a gateway error
-inside a 200 body is classified at the wire, so an in-body 429 lands on the lane
-a status 429 lands on, [#82](https://github.com/mmeyerlein/meclaw/issues/82) a
-tool round is budgeted at the dozen routing hops it actually costs and a TTL
-death names itself instead of stalling in silence,
-[#83](https://github.com/mmeyerlein/meclaw/issues/83) a fetched body has a
-`max_bytes` bound and a visible cut,
-[#17](https://github.com/mmeyerlein/meclaw/issues/17) op bodies reach a cell over
-the HTTP API and a scheduled lane can be triggered once from outside,
-indistinguishably from its own tick,
-[#84](https://github.com/mmeyerlein/meclaw/issues/84) the watchdog deadline is
-reachable from `colony.json`, a trip names its evidence, and a trip can be
-survivable without being invisible,
-[#74](https://github.com/mmeyerlein/meclaw/issues/74) every scenario case binds a
-port of its own and a red line carries the daemon's state,
-[#20](https://github.com/mmeyerlein/meclaw/issues/20) instantiation keeps
-environment placeholders literal on disk and binds them late, on every read.
+Done: [#52](https://github.com/mmeyerlein/meclaw/issues/52) the batch lane skips
+episodes inline extraction already covered, and an empty inline block counts as
+a verdict, [#53](https://github.com/mmeyerlein/meclaw/issues/53) the inline
+extraction contract ships with the hive and carries the batch lane's world-state
+discipline, [#73](https://github.com/mmeyerlein/meclaw/issues/73) the nightly
+identity questions see the spellings of recently closed rows, so a closure
+across two spellings proposes the alias instead of hiding it,
+[#79](https://github.com/mmeyerlein/meclaw/issues/79) a write into a missing
+parent names the parent instead of the syscall,
+[#80](https://github.com/mmeyerlein/meclaw/issues/80) fan-out edges guard their
+keys with `has()` and a missing key logs at debug, so a healthy colony's log is
+no longer mostly warnings, [#81](https://github.com/mmeyerlein/meclaw/issues/81)
+the timer reads its op from a `tool_call` turn and acks it, making `remind` a
+tool lane like `bash`, [#82](https://github.com/mmeyerlein/meclaw/issues/82) the
+loopback edge may restore `ttl` as an explicit, condition-bound modifier, so the
+example runs on the default budget again,
+[#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob pointers
+resolve recursively with a depth limit and an all-or-nothing delivery,
+[#62](https://github.com/mmeyerlein/meclaw/issues/62) instantiated nodes record
+their template, version and instantiation time, re-indexed at every boot,
+[#35](https://github.com/mmeyerlein/meclaw/issues/35) code and bash cells take a
+sandbox profile: a Landlock filesystem view and a network-namespace deny,
+fail-closed, with an explicit trusted escape hatch, and
+[#90](https://github.com/mmeyerlein/meclaw/issues/90) an existing pre-v5
+database migrates before the DDL batch runs, instead of dying on the new index.
 
-The most useful result of the wave was a negative one: the boot failures three
-earlier packages had blamed on port collisions were watchdog trips, and the
-watchdog was measuring a legitimately long colony-loop iteration rather than a
-hang. Two structural questions stay open on their own issues, a `ttl` refresh on
-the loopback edge (#82) and an eviction policy for an assembled context (#83),
-and so does the architectural cut a watchdog would need to tell a long iteration
-from a hung one (#84).
+The wave's sharpest lesson came from its only red gate: #90 was invisible to
+every per-track run because fresh worktrees carry no old database — it took a
+pre-v5 `colony.db` lying around the main tree to prove that every existing
+colony would have died on upgrade. Follow-ups live on their own issues: sandbox
+phase 2 ([#85](https://github.com/mmeyerlein/meclaw/issues/85)), the `system`
+tree's unresolved `{text_id}` leaves
+([#86](https://github.com/mmeyerlein/meclaw/issues/86)), `attachments[]` wiring
+([#87](https://github.com/mmeyerlein/meclaw/issues/87)), and the boot probe's
+verdict on edge-less topologies
+([#89](https://github.com/mmeyerlein/meclaw/issues/89)).
 
 ## Now: meclaw-os, the organism
 
@@ -143,15 +154,14 @@ Riding the same wave: [#36](https://github.com/mmeyerlein/meclaw/issues/36) the 
 
 ## Next: pre-MVP substrate
 
-Substrate invariants that must land before an MVP claim, no order committed yet:
-[#19](https://github.com/mmeyerlein/meclaw/issues/19) in-message blob
-resolution, [#35](https://github.com/mmeyerlein/meclaw/issues/35) sandboxing for
-code and bash cells,
-[#62](https://github.com/mmeyerlein/meclaw/issues/62) provenance for
-instantiated nodes. Two of this stream's items shipped in 0.3.2:
-[#17](https://github.com/mmeyerlein/meclaw/issues/17) timer ops reachable from
-the API and [#20](https://github.com/mmeyerlein/meclaw/issues/20) secret
-materialization classes.
+The stream's core items all shipped: #17 and #20 in 0.3.2, then #19, #35
+(phase 1) and #62 in 0.4.0. What carries the stream now are their successors:
+[#85](https://github.com/mmeyerlein/meclaw/issues/85) sandbox phase 2 (cgroup
+resource caps, seccomp, default-deny for template-sourced cells),
+[#86](https://github.com/mmeyerlein/meclaw/issues/86) a resolver for `{text_id}`
+leaves in the `system` tree, and
+[#87](https://github.com/mmeyerlein/meclaw/issues/87) a first consumer for
+`attachments[]` blob refs.
 
 Suite hygiene rides in this stream because it is infrastructure rather than
 product. [#74](https://github.com/mmeyerlein/meclaw/issues/74) shipped in 0.3.2:
@@ -165,16 +175,12 @@ boot failures blamed on TIME_WAIT were watchdog trips
 abandoned and nothing below blocks the streams above; the hive is simply not
 where the next measurable win is.
 
-Waiting: [#72](https://github.com/mmeyerlein/meclaw/issues/72) the extraction
+The stall had one carve-out: the three hive *bugs* (#52, #53, #73) shipped in
+0.4.0, because a defect is not an enhancement. The enhancements keep waiting:
+[#72](https://github.com/mmeyerlein/meclaw/issues/72) the extraction
 lane claims 1.5x the turn count under sustained ingest,
-[#73](https://github.com/mmeyerlein/meclaw/issues/73) a closure across two
-spellings hides the merge the night would have made,
 [#51](https://github.com/mmeyerlein/meclaw/issues/51) extraction batch gate
 defaults tuned for cost over freshness,
-[#52](https://github.com/mmeyerlein/meclaw/issues/52) the batch lane re-extracts
-episodes inline extraction already covered,
-[#53](https://github.com/mmeyerlein/meclaw/issues/53) inline extraction lacks the
-batch lane's world-state discipline,
 [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
 recall window, so time-range questions run as point recalls,
 [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown

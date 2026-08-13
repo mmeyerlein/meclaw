@@ -46,9 +46,21 @@ async fn apply_scan_result_inner(
         .iter()
         .map(|s| (s.name.clone(), s.version.clone()))
         .collect();
+    // GH #62: `template_id` is a STABLE surrogate key. A rescan re-uses the id
+    // an entry already had for its `(name, version)` — re-minting it on every
+    // scan made the column useless as a reference: anything that recorded a
+    // template id would be pointing at a row that no longer exists after the
+    // next `--rescan-templates`. Only a genuinely new `(name, version)` mints.
+    let existing_ids: std::collections::HashMap<(String, Option<String>), String> = existing
+        .iter()
+        .map(|e| ((e.name.clone(), e.version.clone()), e.template_id.clone()))
+        .collect();
     // Upsert all scanned templates.
     for s in &scanned {
-        let template_id = Uuid::now_v7().to_string();
+        let template_id = existing_ids
+            .get(&(s.name.clone(), s.version.clone()))
+            .cloned()
+            .unwrap_or_else(|| Uuid::now_v7().to_string());
         let (tx, rx) = std::sync::mpsc::channel();
         send_op_via(
             &writer_tx,
@@ -208,6 +220,48 @@ mod sync_tests {
             .unwrap();
         let rows = db.read_templates().unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    /// GH #62: a rescan keeps `template_id` stable for an unchanged
+    /// `(name, version)`. Re-minting it made the surrogate key unusable as a
+    /// reference — a recorded id would dangle after the next rescan.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rescan_keeps_the_template_id_stable() {
+        let td = TempDir::new().unwrap();
+        make_template(&td, "a", "a", Some("1.0.0"));
+        make_template(&td, "b", "b", None);
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        let root = td.path().join("templates");
+        apply_scan_result(&root, &db, 100).await.unwrap();
+        let before: std::collections::HashMap<String, String> = db
+            .read_templates()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.name, r.template_id))
+            .collect();
+        apply_scan_result(&root, &db, 200).await.unwrap();
+        let after: std::collections::HashMap<String, String> = db
+            .read_templates()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.name, r.template_id))
+            .collect();
+        assert_eq!(
+            before, after,
+            "a rescan of unchanged templates must not re-mint their ids"
+        );
+
+        // A genuinely new (name, version) still mints a fresh id.
+        make_template(&td, "a@2.0.0", "a", Some("2.0.0"));
+        apply_scan_result(&root, &db, 300).await.unwrap();
+        let rows = db.read_templates().unwrap();
+        let ids: std::collections::HashSet<String> =
+            rows.iter().map(|r| r.template_id.clone()).collect();
+        assert_eq!(ids.len(), 3, "three distinct templates, three distinct ids");
+        assert!(
+            ids.contains(before.get("a").unwrap()),
+            "the 1.0.0 entry keeps its id when a 2.0.0 sibling appears"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

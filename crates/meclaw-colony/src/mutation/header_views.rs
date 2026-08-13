@@ -502,6 +502,7 @@ mod tests {
                 .map(|k| (k.to_string(), "'v'".to_string()))
                 .collect(),
             delete_hop: del_hop.iter().map(|s| s.to_string()).collect(),
+            restore_ttl: false,
         }
     }
 

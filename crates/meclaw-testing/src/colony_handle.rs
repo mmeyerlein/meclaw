@@ -253,8 +253,14 @@ impl ColonyHandle {
         for (name, factory) in factories {
             registry.insert(name, factory);
         }
+        // GH #19: the store carries the pointer-resolution bound, so a test
+        // colony sees the same `colony.json blob_max_recursion_depth` the
+        // production wiring in `meclaw-cli` applies.
+        let cfg = meclaw_colony::colony_config::read_colony_config(dir.path()).unwrap_or_default();
         let blob_store = Arc::new(
-            meclaw_colony::DiskBlobStore::new(dir.path().join("blobs")).expect("create blob store"),
+            meclaw_colony::DiskBlobStore::new(dir.path().join("blobs"))
+                .expect("create blob store")
+                .with_max_recursion_depth(cfg.blob_max_recursion_depth),
         );
         Self::build_with_blob_store(
             dir.path().to_path_buf(),

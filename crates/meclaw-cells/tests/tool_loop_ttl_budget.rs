@@ -8,10 +8,15 @@
 //! take, and the round that runs out dies mid fan-in — terminal, direct to the
 //! dead-letter queue, nothing emitted toward the origin.
 //!
-//! Three pins:
+//! Five pins:
 //! 1. six rounds on the default budget of 64 do NOT finish (the measured ceiling),
 //! 2. six rounds on a budget sized for the shape DO finish,
-//! 3. a TTL death is loud and names the message, instead of being silent.
+//! 3. a TTL death is loud and names the message, instead of being silent,
+//! 4. six rounds DO finish on the DEFAULT budget when the loopback edge carries
+//!    `modifier.restore_ttl` (GH #82, ruling 2026-08-13 — the loop pays for one
+//!    round at a time instead of all of them),
+//! 5. that restore is a reset, not an accumulation: after six of them the TTL is
+//!    still at or below the budget the message started with.
 //!
 //! The topology under test is the checked-in store-backed loop fixture, the same
 //! shape the walkthrough teaches, with a deterministic `MockOpenAI` as the brain.
@@ -158,6 +163,102 @@ async fn six_tool_rounds_complete_when_the_budget_is_sized_for_the_shape() {
     assert!(
         calls > ROUNDS,
         "six tool rounds plus the answering call = more than {ROUNDS} provider calls, saw {calls}"
+    );
+    h.shutdown().await;
+}
+
+// ───── the restoring loopback edge (GH #82, ruling 2026-08-13) ─────
+
+/// Turn the fixture's loopback edge into a ttl-restoring one.
+///
+/// The fixture's re-entry edge is `./collector -> /llm` under
+/// `hop.route == 'fire'`, the edge that already carries the iteration counter
+/// (`set_context.iter = int(context.iter) + 1`). The ruling puts the ttl
+/// restore exactly there: an explicit modifier field, visible in the topology
+/// JSON, next to the bound that makes the loop legitimate.
+///
+/// Patching the COPY in the TempDir (not the checked-in fixture) is deliberate:
+/// the two pins above measure the un-restored ceiling on the same fixture and
+/// must stay untouched.
+fn make_loopback_restore_ttl(root: &std::path::Path) {
+    let p = root.join("main/tool-loop/config.json");
+    let mut v: meclaw_core::serde_json::Value =
+        meclaw_core::serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    let edges = v["params"]["graph"]["edges"].as_array_mut().unwrap();
+    let fire = edges
+        .iter_mut()
+        .find(|e| e["condition"] == "hop.route == 'fire'")
+        .expect("the fixture must carry the `fire` loopback edge");
+    fire["modifier"]["restore_ttl"] = json!(true);
+    std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+/// The ruling, pinned: with `modifier.restore_ttl` on the loopback edge, six
+/// tool rounds complete on the SUBSTRATE DEFAULT budget of 64 — the budget that
+/// `six_tool_rounds_do_not_fit_the_default_ttl_budget` proves is one round too
+/// short without it. Same fixture, same brain, same number of rounds; the only
+/// difference is the modifier on the re-entry edge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn six_tool_rounds_complete_on_the_default_budget_when_the_loopback_edge_restores_ttl() {
+    let mock = six_round_brain().await;
+    let base_url = format!("{}/v1", mock.base_url);
+    let td = tempfile::TempDir::new().unwrap();
+    copy_tree_patch_base_url(&example_dir("14b-tool-loop-store"), td.path(), &base_url);
+    make_loopback_restore_ttl(td.path());
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+    h.send(user_probe_with_ttl(
+        "t-restore",
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+    ))
+    .await;
+
+    let fin = recv_bounded(&mut sink_rx)
+        .await
+        .expect("a restoring loopback edge must carry six tool rounds on the default budget of 64");
+    assert_eq!(
+        fin.headers.hop["finish_reason"], "stop",
+        "the loop ends on the brain's stop, not on TTL"
+    );
+    assert_eq!(
+        fin.headers.context["iter"], ROUNDS,
+        "the restoring edge is the same edge that counts the iteration — six rounds, six counts"
+    );
+    let calls = mock.recorded_requests().await.len();
+    assert!(
+        calls > ROUNDS,
+        "six tool rounds plus the answering call = more than {ROUNDS} provider calls, saw {calls}"
+    );
+    h.shutdown().await;
+}
+
+/// The guard the restore must not dissolve: a restore is a RESET to the budget,
+/// never an accumulation. Six restores on a message that started at the default
+/// budget of 64 must leave it at or below 64 — if the modifier added budget
+/// instead of resetting it, the surviving TTL would be a multiple of it and the
+/// loop guard would be gone for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restoring_loopback_edge_never_lifts_ttl_above_the_initial_budget() {
+    let mock = six_round_brain().await;
+    let base_url = format!("{}/v1", mock.base_url);
+    let td = tempfile::TempDir::new().unwrap();
+    copy_tree_patch_base_url(&example_dir("14b-tool-loop-store"), td.path(), &base_url);
+    make_loopback_restore_ttl(td.path());
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+    h.send(user_probe_with_ttl(
+        "t-ceiling",
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+    ))
+    .await;
+
+    let fin = recv_bounded(&mut sink_rx)
+        .await
+        .expect("the restoring loop must reach an answer");
+    assert!(
+        fin.ttl <= meclaw_core::MESSAGE_DEFAULT_TTL,
+        "after {ROUNDS} restores the TTL must still be at or below the initial budget of {} \
+         (saw {}) — restore resets to the budget, it never accumulates",
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+        fin.ttl
     );
     h.shutdown().await;
 }

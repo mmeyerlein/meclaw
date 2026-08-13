@@ -106,13 +106,24 @@ pub struct EdgeDecision {
     pub target: Path,
     /// The two-compartment headers after applying any modifier.
     pub headers_out: Headers,
+    /// GH #82: this edge's modifier declared `restore_ttl`. `ttl` is envelope,
+    /// so the edge only REPORTS the declaration here; the colony (the sole
+    /// envelope setter) applies it when it builds the follow-up message.
+    pub restore_ttl: bool,
 }
 
 /// Evaluate a single edge against the input headers.
 ///
 /// Phase 13.5-A1 T3: CEL `condition` is evaluated; `Ok(false)` skips the
-/// edge (`None` return). `Err(_)` is also a skip + `tracing::warn!` per
-/// spec F3 (CEL-Standard: undefined-header / eval-error → skip).
+/// edge (`None` return). `Err(_)` is also a skip per spec F3 (CEL-Standard:
+/// undefined-header / eval-error → skip).
+///
+/// GH #80: the skip is unchanged, the LEVEL follows the error class. A missing
+/// key ([`crate::cel_eval::CondErrorKind::MissingKey`]) is the normal steady
+/// state of a fan-out — one per non-matching lane per message — and logs at
+/// `debug`. A genuine eval error stays at `warn`, which is the condition the
+/// warning exists to catch. Topologies should still guard optional keys with
+/// `has(hop.k) && hop.k == '...'`; that form produces no line at all.
 ///
 /// Phase 13.5-A1 T7+T8: modifier `set` is applied to the headers between
 /// condition-check and `EdgeDecision`-build, per spec Z.832 (set before
@@ -126,14 +137,25 @@ pub fn evaluate_edge(edge: &Edge, headers: &Headers) -> Option<EdgeDecision> {
             Ok(true) => {}
             Ok(false) => return None,
             Err(e) => {
-                tracing::warn!(
-                    edge_id = %edge.id,
-                    from = %edge.from.as_str(),
-                    to = %edge.to.as_str(),
-                    condition = %cond.source,
-                    error = %e,
-                    "edge condition eval failed — skipping edge (spec F3: CEL-standard semantics)"
-                );
+                match e.kind {
+                    crate::cel_eval::CondErrorKind::MissingKey => tracing::debug!(
+                        edge_id = %edge.id,
+                        from = %edge.from.as_str(),
+                        to = %edge.to.as_str(),
+                        condition = %cond.source,
+                        error = %e,
+                        "edge condition reads a key this message does not carry — skipping edge \
+                         (spec F3; guard optional keys with has())"
+                    ),
+                    crate::cel_eval::CondErrorKind::Eval => tracing::warn!(
+                        edge_id = %edge.id,
+                        from = %edge.from.as_str(),
+                        to = %edge.to.as_str(),
+                        condition = %cond.source,
+                        error = %e,
+                        "edge condition eval failed — skipping edge (spec F3: CEL-standard semantics)"
+                    ),
+                }
                 return None;
             }
         }
@@ -161,6 +183,7 @@ pub fn evaluate_edge(edge: &Edge, headers: &Headers) -> Option<EdgeDecision> {
     Some(EdgeDecision {
         target: edge.to.clone(),
         headers_out,
+        restore_ttl: edge.modifier.as_ref().is_some_and(|m| m.restore_ttl),
     })
 }
 
@@ -275,6 +298,7 @@ mod tests {
             delete_context: vec![],
             set_hop: std::collections::BTreeMap::new(),
             delete_hop: vec![],
+            restore_ttl: false,
         };
         let e = Edge {
             id: Uuid::now_v7(),
@@ -607,6 +631,64 @@ mod hook_tests {
         assert!(
             result.is_none(),
             "F3-PIN: undefined header access in condition → edge skipped (CEL-standard)"
+        );
+    }
+
+    /// GH #82 (ruling 2026-08-13): a `modifier.restore_ttl` edge REPORTS the
+    /// declaration on its decision — `ttl` is envelope, so the edge never writes
+    /// it; the colony reads the flag off the decision and stamps the follow-up.
+    /// An edge without the flag (and an edge without a modifier at all) reports
+    /// `false`, so nothing restores by accident.
+    #[test]
+    fn evaluate_edge_reports_restore_ttl_from_the_modifier() {
+        let mut spec = crate::config::ModifierSpec::default();
+        spec.set_context
+            .insert("iter".into(), "int(context.iter) + 1".into());
+        spec.restore_ttl = true;
+        let restoring = Edge {
+            id: meclaw_core::Uuid::now_v7(),
+            from: meclaw_core::Path::new("/collector"),
+            to: meclaw_core::Path::new("/planner"),
+            condition: None,
+            modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
+        };
+        let mut ctx = meclaw_core::serde_json::Map::new();
+        ctx.insert("iter".into(), meclaw_core::serde_json::json!("0"));
+        let h = Headers::from_parts(ctx, meclaw_core::serde_json::Map::new());
+        let dec = evaluate_edge(&restoring, &h).expect("edge takes");
+        assert!(dec.restore_ttl, "the decision carries the declaration");
+
+        let plain = Edge {
+            id: meclaw_core::Uuid::now_v7(),
+            from: meclaw_core::Path::new("/collector"),
+            to: meclaw_core::Path::new("/planner"),
+            condition: None,
+            modifier: None,
+        };
+        assert!(
+            !evaluate_edge(&plain, &h).expect("edge takes").restore_ttl,
+            "an edge without the modifier must never restore"
+        );
+    }
+
+    /// GH #82: edge identity is the serde-JSON of the `ModifierSpec` source
+    /// (`contains_equal`, `EdgeMatchView`) and the durable-edge round-trip
+    /// re-parses exactly that. The new field must therefore be INVISIBLE when it
+    /// is false — otherwise every pre-existing edge silently changes identity.
+    #[test]
+    fn restore_ttl_default_is_omitted_from_the_serialised_modifier_source() {
+        let mut spec = crate::config::ModifierSpec::default();
+        spec.set_hop.insert("tier".into(), "'gold'".into());
+        let json = meclaw_core::serde_json::to_string(&spec).unwrap();
+        assert_eq!(
+            json, r#"{"set_hop":{"tier":"'gold'"}}"#,
+            "a non-restoring modifier must serialise exactly as before"
+        );
+        spec.restore_ttl = true;
+        assert_eq!(
+            meclaw_core::serde_json::to_string(&spec).unwrap(),
+            r#"{"set_hop":{"tier":"'gold'"},"restore_ttl":true}"#,
+            "a restoring modifier carries the declaration into its identity"
         );
     }
 

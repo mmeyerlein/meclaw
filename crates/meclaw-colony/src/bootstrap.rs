@@ -274,6 +274,12 @@ pub struct PlannedCell {
     /// colony's `node_contracts` map via `ColonyMsg::SetNodeContract` at
     /// apply-phase.
     pub header_view: crate::mutation::validate::HeaderNodeView,
+    /// GH #62: `cell.provenance` as read from this node's `config.json`. The
+    /// file is the source of truth for a node's origin; the apply-phase copies
+    /// it into the `colony.db` `registry` index via
+    /// `ColonyMsg::SetRegistryProvenance`, so a restored or imported tree
+    /// re-indexes itself on its first boot instead of silently reading NULL.
+    pub provenance: Option<crate::config::NodeProvenance>,
 }
 
 /// An edge discovered during planning, with scope-relative `from`/`to`
@@ -591,6 +597,21 @@ pub fn plan_bootstrap_with_env(
                         }
                     },
                 };
+                // GH #82 (ruling 2026-08-13): a ttl-restoring edge opts its cycle
+                // OUT of the TTL loop guard, so it has to bring a bound of its own.
+                // The minimum the substrate can check is that it is conditional at
+                // all: an unconditional restoring edge takes every message and would
+                // spin forever. The bound the docs demand is the iteration counter
+                // the same edge already carries in `set_context`.
+                if spec.modifier.as_ref().is_some_and(|m| m.restore_ttl) && spec.condition.is_none()
+                {
+                    errors.push(BootstrapError::EdgeTtlRestoreUnconditional {
+                        scope: mc_path.clone(),
+                        from: spec.from.clone(),
+                        to: spec.to.clone(),
+                    });
+                    continue;
+                }
                 let from_abs = McPath::resolve(&mc_path, &spec.from);
                 let to_abs = McPath::resolve(&mc_path, &spec.to);
                 // Slice 6: project this edge's `ModifierSpec` key-sets into a
@@ -646,6 +667,11 @@ pub fn plan_bootstrap_with_env(
                 "id",
                 "message_timeout",
                 "mailbox_size",
+                // GH #62: the instantiation stamp (`template`,
+                // `template_version`, `instantiated_at`). Written once by the
+                // instantiation, read here so a restored tree can re-index its
+                // own origin. See `docs/config.md` § `cell` → `provenance`.
+                "provenance",
             ];
             // Befund 4: reuse the already-parsed, env-substituted value (keys
             // are untouched by substitution; this check only inspects keys).
@@ -794,6 +820,7 @@ pub fn plan_bootstrap_with_env(
                 failed,
                 mailbox_size: cfg.cell.mailbox_size,
                 header_view,
+                provenance: cfg.cell.provenance,
             });
         }
     }
@@ -1028,6 +1055,20 @@ pub enum BootstrapError {
         key: String,
         /// CEL parse-error reason.
         reason: String,
+    },
+    /// GH #82 (ruling 2026-08-13): an edge declares `modifier.restore_ttl` but
+    /// carries no `condition`. A restoring edge is exempt from the TTL loop
+    /// guard, so it must bring its own bound — an unconditional one fires on
+    /// every message and would spin forever. The intended shape is the
+    /// iteration counter the same edge already carries in `set_context`, e.g.
+    /// `"condition": "int(context.iter) < 12"`.
+    EdgeTtlRestoreUnconditional {
+        /// Hive scope where the edge was declared.
+        scope: McPath,
+        /// Scope-relative `from` path.
+        from: String,
+        /// Scope-relative `to` path.
+        to: String,
     },
     /// More than one top-level cell directory under {root} (after blacklist).
     MultipleRootDirs { count: usize },
@@ -1534,6 +1575,74 @@ mod plan_tests {
         assert!(err.items().iter().any(
             |e| matches!(e, BootstrapError::EdgeModifierParse { key, .. } if key == "set_hop.tier")
         ));
+    }
+
+    /// GH #82 (ruling 2026-08-13): a `modifier.restore_ttl` edge opts its cycle
+    /// out of the TTL loop guard, so it must bring a bound of its own. An edge
+    /// that restores and carries NO condition fires on every message — config
+    /// load rejects it rather than booting a colony that can spin forever.
+    #[test]
+    fn plan_rejects_ttl_restoring_edge_without_condition() {
+        let td = TempDir::new().unwrap();
+        write(
+            td.path(),
+            "main/config.json",
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"./a","to":"./b","modifier":{"restore_ttl":true}}]}}}"#,
+        );
+        write(
+            td.path(),
+            "main/a/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        write(
+            td.path(),
+            "main/b/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        let err = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay()).unwrap_err();
+        assert!(
+            err.items().iter().any(|e| matches!(
+                e,
+                BootstrapError::EdgeTtlRestoreUnconditional { from, to, .. }
+                    if from == "./a" && to == "./b"
+            )),
+            "an unconditional ttl-restoring edge must fail config load: {err:?}"
+        );
+    }
+
+    /// The counterpart: the shape the docs demand — a restoring edge coupled to
+    /// the iteration counter it already increments — boots, and the flag reaches
+    /// the planned edge's compiled modifier.
+    #[test]
+    fn plan_accepts_ttl_restoring_edge_bounded_by_an_iteration_condition() {
+        let td = TempDir::new().unwrap();
+        write(
+            td.path(),
+            "main/config.json",
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"./a","to":"./b",
+               "condition":"int(context.iter) < 12",
+               "modifier":{"set_context":{"iter":"int(context.iter) + 1"},"restore_ttl":true}}]}}}"#,
+        );
+        write(
+            td.path(),
+            "main/a/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        write(
+            td.path(),
+            "main/b/config.json",
+            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        let plan = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay()).unwrap();
+        let edge = plan
+            .edges
+            .iter()
+            .find(|e| e.from.as_str() == "/a" && e.to.as_str() == "/b")
+            .expect("the bounded restoring edge must be planned");
+        assert!(
+            edge.modifier.as_ref().is_some_and(|m| m.restore_ttl),
+            "restore_ttl must survive parse into the compiled modifier"
+        );
     }
 
     #[test]

@@ -197,6 +197,7 @@ mod tests {
             mailbox_size: None,
             header_view: crate::mutation::validate::HeaderNodeView::default(),
             preexisting_target: false,
+            provenance: None,
         }
     }
 

@@ -42,6 +42,16 @@ pub enum DeadLetterReason {
     /// Phase-13.5 A8. Canonical string `blob_unavailable` — a new entry on the
     /// stable error_code list (spec Z.593; doc-sync is backlog).
     BlobUnavailable,
+    /// GH #19 (D-025): an in-message pointer chain (`messages_id`/`text_id`
+    /// inside `messages[]`) either exceeded `colony.json
+    /// blob_max_recursion_depth` or revisited a blob already on its own path
+    /// (a mutual cycle A→B→A, which UUID immutability does NOT exclude). Both
+    /// are the same class of failure — a chain that does not terminate — and
+    /// both report the canonical string the spec has always promised for it.
+    /// The distinction between "too deep" and "cyclic" lives in the log line,
+    /// not on the wire. Canonical string `blob_recursion_too_deep`
+    /// (docs/meclaw-overview.md § Behavior on routing errors).
+    BlobRecursionTooDeep,
     /// A message failed the substrate-side required-`consumes` check at the
     /// cell-delivery boundary — the cell was not invoked (config.md § consumes;
     /// reply-path uses the SAME canonical token). Canonical string
@@ -78,6 +88,7 @@ impl DeadLetterReason {
             Self::InvalidUbfBody => "invalid_ubf_body",
             Self::CellInactive => "cell_inactive",
             Self::BlobUnavailable => "blob_unavailable",
+            Self::BlobRecursionTooDeep => "blob_recursion_too_deep",
             Self::ConsumesViolation => "consumes_violation",
             Self::ContractViolation => "contract_violation",
             Self::NoRoute => "no_route",
@@ -99,6 +110,7 @@ impl DeadLetterReason {
             "invalid_ubf_body" => Self::InvalidUbfBody,
             "cell_inactive" => Self::CellInactive,
             "blob_unavailable" => Self::BlobUnavailable,
+            "blob_recursion_too_deep" => Self::BlobRecursionTooDeep,
             "consumes_violation" => Self::ConsumesViolation,
             "contract_violation" => Self::ContractViolation,
             "no_route" => Self::NoRoute,

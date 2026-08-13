@@ -582,6 +582,11 @@ pub struct StagedCellMeta {
     /// `contract` block as `contract_view` — registered into the colony's
     /// `node_contracts` map by the subtree registration arm.
     pub header_view: crate::mutation::validate::HeaderNodeView,
+    /// GH #62: the SUBTREE template's identity, stamped identically into every
+    /// nested cell of this instance. The subtree template is the unit an
+    /// app-store update addresses, so every cell it produced names it — not the
+    /// per-cell config it happened to be cut from.
+    pub provenance: Option<crate::config::NodeProvenance>,
 }
 
 /// A subtree-internal edge, RESOLVED to absolute logical paths and verified to
@@ -642,6 +647,7 @@ pub fn stage_subtree(
     template_root: &std::path::Path,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
+    provenance: Option<&crate::config::NodeProvenance>,
 ) -> Result<StagedSubtree, MutationError> {
     // 1. Parse the template tree (reuse T3).
     let template = parse_subtree(template_root)?;
@@ -679,7 +685,13 @@ pub fn stage_subtree(
             message_timeout,
             mailbox_size,
             header_view,
-        ) = crate::mutation::stage::patch_and_substitute_config(&cell_staging, env, ctx, &empty)?;
+        ) = crate::mutation::stage::patch_and_substitute_config(
+            &cell_staging,
+            env,
+            ctx,
+            &empty,
+            provenance,
+        )?;
         // Seed inner store cells where a `seed/` dir is present.
         crate::mutation::stage::seed_cell_db_if_present(&cell_staging)?;
 
@@ -698,6 +710,7 @@ pub fn stage_subtree(
                 message_timeout,
                 mailbox_size,
                 header_view,
+                provenance: provenance.cloned(),
             });
         }
     }
@@ -878,6 +891,7 @@ pub fn rename_roots(partition: &SubtreePartition, subtree_root_abs: &Path) -> Ve
 /// # Errors
 /// Returns [`MutationError::Schema`] if the template cannot be parsed, copied,
 /// patched or seeded, or if any resolved edge endpoint escapes the subtree root.
+#[allow(clippy::too_many_arguments)]
 pub fn stage_subtree_merge(
     root: &std::path::Path,
     mutation_id: &str,
@@ -886,6 +900,7 @@ pub fn stage_subtree_merge(
     template_root: &std::path::Path,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
+    provenance: Option<&crate::config::NodeProvenance>,
 ) -> Result<StagedSubtreeMerge, MutationError> {
     let template = parse_subtree(template_root)?;
     let partition = classify_subtree_nodes(root, scope, name, template_root)?;
@@ -909,6 +924,7 @@ pub fn stage_subtree_merge(
             root_rel,
             env,
             ctx,
+            provenance,
         )?);
     }
 
@@ -944,6 +960,7 @@ fn stage_rename_root(
     root_rel: &str,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
+    provenance: Option<&crate::config::NodeProvenance>,
 ) -> Result<StagedRenameRoot, MutationError> {
     // Copy the rename-root's template sub-path into staging (drops template.json).
     let template_subdir = if root_rel.is_empty() {
@@ -986,7 +1003,13 @@ fn stage_rename_root(
             message_timeout,
             mailbox_size,
             header_view,
-        ) = crate::mutation::stage::patch_and_substitute_config(&cell_staging, env, ctx, &empty)?;
+        ) = crate::mutation::stage::patch_and_substitute_config(
+            &cell_staging,
+            env,
+            ctx,
+            &empty,
+            provenance,
+        )?;
         crate::mutation::stage::seed_cell_db_if_present(&cell_staging)?;
 
         if hive_set.contains(node.rel_path.as_str()) {
@@ -1004,6 +1027,7 @@ fn stage_rename_root(
                 message_timeout,
                 mailbox_size,
                 header_view,
+                provenance: provenance.cloned(),
             });
         }
     }
@@ -1262,6 +1286,75 @@ mod tests {
             .to_string()
     }
 
+    /// GH #62: a subtree instance stamps the SUBTREE template's identity into
+    /// every nested node — hive markers included. The subtree template is the
+    /// unit an update addresses, so a per-node origin that named something else
+    /// would be a lie about who owns the node.
+    #[test]
+    fn stage_subtree_stamps_every_nested_node_with_the_subtree_template() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        colony_root_with_root_cell(root, "main");
+
+        let tpl = root.join("tpl");
+        write_json(
+            &tpl.join("template.json"),
+            r#"{"name":"sub","version":"3.1.0"}"#,
+        );
+        write_json(
+            &tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        );
+        write_json(
+            &tpl.join("inner_a").join("config.json"),
+            r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+        write_json(
+            &tpl.join("inner_a").join("inner_b").join("config.json"),
+            r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        );
+
+        let prov = crate::config::NodeProvenance {
+            template: "sub".into(),
+            template_version: Some("3.1.0".into()),
+            instantiated_at: 1_700_000_000,
+        };
+        let staged = stage_subtree(
+            root,
+            "mid-prov",
+            "/main",
+            "m1",
+            &tpl,
+            &HashMap::new(),
+            &HashMap::new(),
+            Some(&prov),
+        )
+        .expect("stage_subtree should succeed");
+
+        for rel in ["", "inner_a", "inner_a/inner_b"] {
+            let cfg_path = if rel.is_empty() {
+                staged.root_staging_path.join("config.json")
+            } else {
+                staged.root_staging_path.join(rel).join("config.json")
+            };
+            let v: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+            assert_eq!(
+                v["cell"]["provenance"]["template"], "sub",
+                "node {rel:?} must name the subtree template: {v}"
+            );
+            assert_eq!(v["cell"]["provenance"]["template_version"], "3.1.0");
+            assert_eq!(v["cell"]["provenance"]["instantiated_at"], 1_700_000_000i64);
+        }
+        for cell in &staged.cells {
+            assert_eq!(
+                cell.provenance.as_ref(),
+                Some(&prov),
+                "every spawnable cell carries the stamp on for the registry index"
+            );
+        }
+    }
+
     #[test]
     fn stage_subtree_instantiates_nested_tree_with_fresh_uuids() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1292,6 +1385,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("stage_subtree should succeed");
 
@@ -1349,6 +1443,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("stage_subtree should succeed");
 
@@ -1399,6 +1494,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("stage_subtree should succeed");
 
@@ -1457,6 +1553,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect_err("escaping edge must be rejected");
         assert!(
@@ -1495,6 +1592,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("stage_subtree should succeed");
 
@@ -1880,6 +1978,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("merge-staging should succeed");
 
@@ -1949,6 +2048,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("merge should succeed");
 
@@ -2032,6 +2132,7 @@ mod tests {
             &tpl,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .expect("merge should succeed");
 

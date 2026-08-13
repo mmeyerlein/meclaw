@@ -74,6 +74,26 @@ When `planner` finishes with `tool_calls`, the edge routes its output to `dispat
 - one `c_asst` message containing both original tool-call turns, and
 - one message for each tool, selected by `hop.tool_name`.
 
+The lane edges guard the key they discriminate on:
+
+```json
+{ "from": "./dispatch", "to": "./collector",
+  "condition": "has(hop.route) && hop.route == 'c_asst'" },
+{ "from": "./dispatch", "to": "./searcher",
+  "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'" },
+{ "from": "./dispatch", "to": "./reader",
+  "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'" }
+```
+
+The `has()` is not decoration. `hop` is single-hop, so most messages passing a fan-out carry no
+`tool_name` at all: the `c_asst` emission, every store reply, every collector emission. A bare
+`hop.tool_name == 'web_search'` does not evaluate to `false` on those, it **errors** — CEL
+standard semantics — and the substrate skips the edge. Routing is right either way; the
+difference is one log line per non-matching lane per message, which at eight lanes is most of the
+log. Since GH #80 the substrate logs that class at `debug` instead of `warn`, and the guarded
+form above produces no line at all. Apply it to every condition that reads an optional `hop` key;
+`context.*` keys, which are carried along, do not need it.
+
 The collector stores the complete assistant turn in one row:
 
 ```text
@@ -146,7 +166,7 @@ The edge from `collector` to `planner` performs the state transition:
 
 ```json
 {
-  "condition": "hop.route == 'fire'",
+  "condition": "has(hop.route) && hop.route == 'fire'",
   "modifier": {
     "set_context": {
       "iter": "int(context.iter) + 1",
@@ -214,7 +234,50 @@ routing hops. `message_default_ttl` defaults to **64**, so the default budget ho
 rounds and the sixth runs out. Five rounds is not generous for an assistant — "write the file,
 read it back, fix it, verify, then summarise" is five.
 
-Size the budget on purpose, in `colony.json`:
+### The recommended form: let the loopback edge restore the budget
+
+Raising the colony-wide budget pays for every round of every turn up front, and it makes the
+number of rounds an agent may take a property of `colony.json` rather than of the loop. The
+loop can instead pay per round. An edge may declare that it restores the routing budget of the
+message it takes (GH #82, ruling 2026-08-13):
+
+```json
+{
+  "from": "./collector",
+  "to": "./planner",
+  "condition": "hop.route == 'fire' && int(context.iter) < 12",
+  "modifier": {
+    "set_context": { "iter": "int(context.iter) + 1", "firing": "''" },
+    "restore_ttl": true
+  }
+}
+```
+
+That is one edge: the re-entry edge, carrying the iteration counter and the restore together.
+When it takes a message, colony lifts the follow-up's `ttl` back to `message_default_ttl`. The
+loop then only ever has to fit **one** round into the budget instead of all of them, so
+[`examples/telegram-research`](../examples/telegram-research/) needs no `colony.json` at all:
+six rounds and more run on the substrate default of 64. Pinned in
+`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`
+(`six_tool_rounds_complete_on_the_default_budget_when_the_loopback_edge_restores_ttl`).
+
+What the restore is, precisely:
+
+- **A reset, not a grant.** `ttl` becomes the budget, never `ttl + budget`. Six restores and
+  one restore leave the same ceiling, so a restoring cycle can never inflate its own budget
+  (pinned: `a_restoring_loopback_edge_never_lifts_ttl_above_the_initial_budget`).
+- **Never a demotion.** A message ingested with a larger budget (the `ttl` field of
+  `POST /messages`) keeps what it has.
+- **Not a hole in the guard, a move of it.** A restoring edge declares its loop legitimate, so
+  the runaway guard for that loop is the iteration bound in its `condition`, not TTL. That is
+  why a restoring edge **without** a condition is refused at config load and at `add_edges`
+  validation instead of booting a colony that can spin forever. TTL keeps guarding everything
+  that did not opt in, and the substrate default stays 64.
+
+### Sizing the budget instead, for shapes without the modifier
+
+A shape whose re-entry edge does not restore still has to fit its whole run into one budget.
+Size it on purpose, in `colony.json`:
 
 ```json
 { "schema_version": 1, "message_default_ttl": 160 }
@@ -240,10 +303,16 @@ loopback edge, with the iteration counter the edge already owns:
 {
   "from": "./collector",
   "to": "./planner",
-  "condition": "hop.route == 'fire' && int(context.iter) < 12",
-  "modifier": { "set_context": { "iter": "int(context.iter) + 1", "firing": "''" } }
+  "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 12",
+  "modifier": {
+    "set_context": { "iter": "int(context.iter) + 1", "firing": "''" },
+    "restore_ttl": true
+  }
 }
 ```
+
+With `restore_ttl` that bound is not optional but mandatory: it is the only thing left
+that stops the loop, which is exactly why the substrate refuses an unconditional restoring edge.
 
 A second edge with the inverse condition gives the runaway round a destination that answers
 (an apology turn, an error lane, a notifier) instead of a silence.

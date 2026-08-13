@@ -106,6 +106,37 @@ pub struct CellHeader {
     /// colony.json mailbox_default_capacity at spawn (Paket 1).
     #[serde(default)]
     pub mailbox_size: Option<usize>,
+    /// GH #62: which template this node was instantiated from, and when.
+    /// Written exactly once, by the instantiation (`patch_and_substitute_config`),
+    /// and never again — the same write that mints `cell.id`. `None` for a node
+    /// that was not born from a template (a hand-written tree, an `adopt`ed
+    /// directory, anything instantiated before this field existed). See
+    /// `docs/config.md` § `cell` → `provenance`.
+    #[serde(default)]
+    pub provenance: Option<NodeProvenance>,
+}
+
+/// GH #62: the template identity an instantiated node carries with it.
+///
+/// Lives in the instance's own `config.json` (`cell.provenance`), because the
+/// instance is a **detached copy**: `template.json` is stripped at staging, and
+/// an exported or restored tree has to be able to name its own origin without
+/// the colony that created it. `colony.db`'s `registry` table carries the same
+/// three values as a query index (see `ColonyWriteOp::SetRegistryProvenance`);
+/// the file is the source, the table is the index.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NodeProvenance {
+    /// Resolved template name as declared in the template's `template.json`
+    /// (`echo`), NOT the reference the mutation used (`echo@1.2.3`).
+    pub template: String,
+    /// Resolved template version, or `None` when the template declares none.
+    /// Absent from the serialized form in that case — "this template has no
+    /// version" is a different fact from "the version is unknown".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_version: Option<String>,
+    /// Unix seconds at which this node was instantiated. Same unit as every
+    /// `created_at` in `colony.db`.
+    pub instantiated_at: i64,
 }
 
 /// Parsed representation of a hive cell's `config.json` `params` block.
@@ -153,6 +184,35 @@ pub struct ModifierSpec {
     /// `hop` keys to remove after `set_hop` (idempotent for non-existent keys).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete_hop: Vec<String>,
+    /// GH #82 (ruling 2026-08-13): when `true`, this edge RESTORES the routing
+    /// budget of the message it takes — the envelope's `ttl` is lifted back to
+    /// the colony's `message_default_ttl` (never lowered, so a message that was
+    /// ingested with a larger budget keeps it, and never accumulated, so N
+    /// restores and one restore leave the same ceiling).
+    ///
+    /// The fifth modifier field is the only one that touches the envelope
+    /// rather than a header compartment. Envelope-setter authority is not
+    /// broken by it: an edge is evaluated BY the colony, and the colony is
+    /// still the only writer — the edge merely declares, in the topology JSON,
+    /// that its loop is legitimate. Because a restoring edge makes its cycle
+    /// unbounded by TTL, the runaway guard moves to the loop's own bound, so a
+    /// restoring edge without a `condition` is rejected at config load
+    /// (`BootstrapError::EdgeTtlRestoreUnconditional`) and at `add_edges`
+    /// validation. The intended shape is the iteration counter the same edge
+    /// already carries in `set_context`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub restore_ttl: bool,
+}
+
+/// `skip_serializing_if` predicate for `ModifierSpec::restore_ttl`.
+///
+/// Load-bearing: edge identity per spec Z.265 compares the serde-JSON of the
+/// `ModifierSpec` source (`EdgeTable::contains_equal`, `EdgeMatchView`), and
+/// the durable-edge round-trip re-parses that same JSON. Omitting the default
+/// keeps every pre-existing edge's serialised form byte-identical, so no
+/// existing edge changes identity by the mere existence of this field.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A single directed edge between two cells.

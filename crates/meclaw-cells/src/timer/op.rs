@@ -47,18 +47,56 @@ pub enum TimerOp {
     },
 }
 
+/// The three central UBF slots plus the two envelope slots every body may
+/// carry. A body made only of these carries no op — see [`no_op_object`].
+const CARRIER_SLOTS: [&str; 5] = ["messages", "system", "attachments", "header", "meta"];
+
+/// GH #81: the sentence for "no op arrived", which is a different sentence from
+/// "the op is missing its id". The reported case had `schedule_id` present one
+/// level down, inside a `tool_call` turn, and got `schedule_id: required` back —
+/// which reads as "you forgot the id" when the message is "the op does not live
+/// here".
+fn no_op_object(obj: &serde_json::Map<String, JsonValue>) -> String {
+    let slots: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+    let named = if slots.is_empty() {
+        "nothing".to_string()
+    } else {
+        slots.join(", ")
+    };
+    if slots.iter().all(|s| CARRIER_SLOTS.contains(s)) {
+        format!(
+            "no op object at the body top level: the body carries only carrier slots ({named}). \
+             A timer op is either the body's own top-level fields (op, schedule_id, ...) or \
+             structured JSON args in a tool_call turn"
+        )
+    } else {
+        format!(
+            "no op object at the body top level: found {named}, but neither `op` nor \
+             `schedule_id`"
+        )
+    }
+}
+
 impl TimerOp {
     /// Parse + validate. On error: a string with a human-readable reason (the
     /// caller emits the error reply from it via `OutputSink`). Cron format errors
     /// carry the prefix `"cron:"` — the handler maps that to
     /// `error_code="invalid_cron"`.
+    ///
+    /// GH #81: `v` is the op object, which the caller resolved first — either
+    /// the body's top level or the JSON args of a `tool_call` turn. The shape
+    /// check below runs before any field check, so a body that never carried an
+    /// op says that rather than blaming a field.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("op-body: must be object")?;
+        if !obj.contains_key("op") && !obj.contains_key("schedule_id") {
+            return Err(no_op_object(obj));
+        }
         let op = obj.get("op").and_then(|x| x.as_str()).unwrap_or("add");
         let id_s = obj
             .get("schedule_id")
             .and_then(|x| x.as_str())
-            .ok_or("schedule_id: required")?;
+            .ok_or("schedule_id: required (the op object is there, its id is not)")?;
         let schedule_id = Uuid::parse_str(id_s).map_err(|e| format!("schedule_id: {e}"))?;
         match op {
             "remove" => Ok(TimerOp::Remove { schedule_id }),
@@ -148,6 +186,47 @@ fn parse_add(
     }))
 }
 
+/// GH #81: where an op arrived from, and what the answer has to echo.
+#[derive(Debug)]
+pub struct OpSource {
+    /// The op object itself — the body's top level, or a `tool_call` turn's args.
+    pub value: JsonValue,
+    /// The inbound `tool_call` id, when the op came in as a turn. `None` on the
+    /// legacy raw-body path, and that `None` is what keeps that path silent.
+    pub tool_call_id: Option<String>,
+}
+
+/// Resolves where the op lives in `msg`.
+///
+/// A body carrying a `tool_call` turn is driven the way every other tool cell
+/// is driven, so the turn wins and its parse errors are reported rather than
+/// swallowed — falling back to the top level there would answer a malformed
+/// turn with "no op object", which points at the wrong place.
+pub fn resolve_op_source(
+    msg: &meclaw_core::Message,
+    body_val: &JsonValue,
+) -> Result<OpSource, String> {
+    let carries_turn = body_val
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .is_some_and(|turns| {
+            turns
+                .iter()
+                .any(|t| t.get("type").and_then(|v| v.as_str()) == Some("tool_call"))
+        });
+    if !carries_turn {
+        return Ok(OpSource {
+            value: body_val.clone(),
+            tool_call_id: None,
+        });
+    }
+    let (args, id) = crate::tool::parse_tool_call_args(msg)?;
+    Ok(OpSource {
+        value: args,
+        tool_call_id: id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +294,97 @@ mod tests {
         meclaw_core::validate_ubf_body(&body).expect("the op envelope must be valid UBF");
         assert!(matches!(
             TimerOp::parse(&body).unwrap(),
+            TimerOp::Trigger { .. }
+        ));
+    }
+
+    /// GH #81: a body with no op at all says so, and names what it does carry.
+    #[test]
+    fn a_body_of_carrier_slots_only_reports_the_missing_op_object() {
+        let err = TimerOp::parse(&json!({
+            "messages": [{"origin": "user", "type": "text", "text": "remind me"}]
+        }))
+        .unwrap_err();
+        assert!(
+            err.starts_with("no op object at the body top level"),
+            "expected the shape, got: {err}"
+        );
+        assert!(err.contains("messages"), "got: {err}");
+        assert!(err.contains("tool_call turn"), "got: {err}");
+    }
+
+    /// GH #81: a body carrying cell-specific slots that are not an op says the
+    /// other sentence — nothing was recognised, and here is what was there.
+    #[test]
+    fn a_body_of_foreign_slots_lists_them() {
+        let err = TimerOp::parse(&json!({"messages": [], "reminder": "x"})).unwrap_err();
+        assert!(
+            err.starts_with("no op object at the body top level"),
+            "{err}"
+        );
+        assert!(err.contains("reminder"), "got: {err}");
+    }
+
+    /// GH #81: the op object is there, only its id is not — a different repair.
+    #[test]
+    fn an_op_object_without_an_id_blames_the_field() {
+        let err = TimerOp::parse(&json!({"op": "remove"})).unwrap_err();
+        assert!(err.starts_with("schedule_id:"), "got: {err}");
+    }
+
+    /// GH #81: a `tool_call` turn wins over the top level, and its own parse
+    /// errors are reported instead of being answered with "no op object" —
+    /// which would point at the wrong level of the message.
+    #[test]
+    fn resolve_op_source_prefers_the_tool_call_turn_and_keeps_its_errors() {
+        use meclaw_core::{Body, MessageBuilder, Path as CorePath};
+
+        let good = json!({
+            "messages": [{
+                "id": "call-1", "origin": "assistant", "type": "tool_call",
+                "text": "{\"op\":\"remove\",\"schedule_id\":\"0190a3f2-0000-7000-8000-000000000001\"}"
+            }]
+        });
+        let msg = MessageBuilder::new(CorePath::new("/t"))
+            .body(Body::Inline(good.clone()))
+            .build();
+        let src = resolve_op_source(&msg, &good).expect("resolve");
+        assert_eq!(src.tool_call_id.as_deref(), Some("call-1"));
+        assert!(matches!(
+            TimerOp::parse(&src.value).unwrap(),
+            TimerOp::Remove { .. }
+        ));
+
+        let broken = json!({
+            "messages": [{
+                "id": "call-2", "origin": "assistant", "type": "tool_call",
+                "text": "not json at all"
+            }]
+        });
+        let msg = MessageBuilder::new(CorePath::new("/t"))
+            .body(Body::Inline(broken.clone()))
+            .build();
+        let err = resolve_op_source(&msg, &broken).unwrap_err();
+        assert!(err.contains("not valid JSON"), "got: {err}");
+    }
+
+    /// And a body without any turn keeps going through the top level.
+    #[test]
+    fn resolve_op_source_falls_back_to_the_body_top_level() {
+        use meclaw_core::{Body, MessageBuilder, Path as CorePath};
+
+        let body = json!({
+            "messages": [],
+            "op": "trigger",
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001"
+        });
+        let msg = MessageBuilder::new(CorePath::new("/t"))
+            .body(Body::Inline(body.clone()))
+            .build();
+        let src = resolve_op_source(&msg, &body).expect("resolve");
+        assert!(src.tool_call_id.is_none());
+        assert!(matches!(
+            TimerOp::parse(&src.value).unwrap(),
             TimerOp::Trigger { .. }
         ));
     }

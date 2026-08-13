@@ -13,13 +13,19 @@
 //! serialized with the same primitives as `message_log` (ruling W6d:
 //! persist the envelope too → drain reconstructs the full `DeadLetter` from DB).
 //! `CREATE TABLE IF NOT EXISTS`, additive (no column change to existing tables).
+//! v5 (GH #62 instantiation provenance): `registry` gains `template`,
+//! `template_version` and `instantiated_at` as NULL-able columns — the query
+//! index over the provenance that every instantiated node now carries in its own
+//! `config.json` (`cell.provenance`). ALTER TABLE in-place; rows written before
+//! the stamp existed read NULL, which is the honest answer for a node whose
+//! origin was never recorded.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 4;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 5;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -47,10 +53,13 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=3 => {
+        1..=4 => {
             let tx = conn.unchecked_transaction()?;
-            // v1→v2: durable-edges CEL columns.
-            if current <= 1 {
+            // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
+            // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
+            // sparse old DB may lack the table entirely — the batch then
+            // creates it at the target shape, and there is nothing to ALTER.
+            if current <= 1 && table_exists(&tx, "edges")? {
                 if !column_exists(&tx, "edges", "condition")? {
                     tx.execute("ALTER TABLE edges ADD COLUMN condition TEXT", [])?;
                 }
@@ -58,8 +67,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     tx.execute("ALTER TABLE edges ADD COLUMN modifier TEXT", [])?;
                 }
             }
-            // v2→v3 (A6): mutation_log reject columns.
-            if current <= 2 {
+            // v2→v3 (A6): mutation_log reject columns. Same guard rationale
+            // as v1→v2 above.
+            if current <= 2 && table_exists(&tx, "mutation_log")? {
                 if !column_exists(&tx, "mutation_log", "error_code")? {
                     tx.execute("ALTER TABLE mutation_log ADD COLUMN error_code TEXT", [])?;
                 }
@@ -95,6 +105,23 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                     [],
                 )?;
             }
+            // v4→v5 (GH #62): registry provenance index. NULL-able, additive —
+            // an existing row keeps every value it had and reads NULL for the
+            // three new columns. Guarded by `column_exists` so an aborted
+            // earlier run re-runs cleanly, and by `table_exists` because the
+            // pure-`migrate` path (without the `setup_colony_db` DDL) may be
+            // handed a DB that has no `registry` table at all.
+            if current <= 4 && table_exists(&tx, "registry")? {
+                for (col, ty) in [
+                    ("template", "TEXT"),
+                    ("template_version", "TEXT"),
+                    ("instantiated_at", "INTEGER"),
+                ] {
+                    if !column_exists(&tx, "registry", col)? {
+                        tx.execute(&format!("ALTER TABLE registry ADD COLUMN {col} {ty}"), [])?;
+                    }
+                }
+            }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                 rusqlite::params![TARGET_SCHEMA_VERSION.to_string()],
@@ -104,6 +131,16 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
         }
         v => Err(MigrationError::UnknownVersion(v)),
     }
+}
+
+/// True when `table` exists in this database (`sqlite_master` lookup).
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// True when `table` already has the column `col` (PRAGMA table_info).
@@ -128,12 +165,82 @@ mod tests {
              CREATE TABLE edges (
                id TEXT PRIMARY KEY, from_path TEXT NOT NULL,
                to_path TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE registry (
+               path TEXT PRIMARY KEY, cell_id TEXT NOT NULL, cell_type TEXT NOT NULL,
+               status TEXT NOT NULL, created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL);
              CREATE TABLE mutation_log (
                id TEXT PRIMARY KEY, scope TEXT NOT NULL, payload_json TEXT NOT NULL,
                status TEXT NOT NULL, failure_reason TEXT NULL,
                created_at INTEGER NOT NULL, committed_at INTEGER NULL);",
         )
         .unwrap();
+    }
+
+    fn registry_columns(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("PRAGMA table_info(registry)").unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// GH #62 (v4→v5): the `registry` table gains the three provenance columns.
+    /// Additive `ADD COLUMN`s, so an existing colony keeps every row and reads
+    /// NULL for nodes born before the stamp existed.
+    #[test]
+    fn migrate_v1_to_v5_adds_the_registry_provenance_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        open_v1(&conn);
+        conn.execute(
+            "INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at) \
+             VALUES ('/a', 'id-a', 'echo', 'active', 1, 1)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        let cols = registry_columns(&conn);
+        for col in ["template", "template_version", "instantiated_at"] {
+            assert!(
+                cols.contains(&col.to_string()),
+                "{col} missing, got {cols:?}"
+            );
+        }
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        let (tpl, at): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT template, instantiated_at FROM registry WHERE path = '/a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tpl, None, "a pre-existing row keeps NULL provenance");
+        assert_eq!(at, None);
+    }
+
+    /// A colony.db that is already at v4 receives ONLY the v5 step.
+    #[test]
+    fn migrate_v4_to_v5_adds_only_the_registry_provenance_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        open_v1(&conn);
+        conn.execute_batch(
+            "ALTER TABLE edges ADD COLUMN condition TEXT;
+             ALTER TABLE edges ADD COLUMN modifier TEXT;
+             ALTER TABLE mutation_log ADD COLUMN error_code TEXT;
+             ALTER TABLE mutation_log ADD COLUMN trace_id TEXT;
+             UPDATE meta SET value='4' WHERE key='schema_version';",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let cols = registry_columns(&conn);
+        assert!(cols.contains(&"template".to_string()), "got {cols:?}");
+        assert!(cols.contains(&"template_version".to_string()));
+        assert!(cols.contains(&"instantiated_at".to_string()));
+        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
     }
 
     fn columns(conn: &Connection) -> Vec<String> {
@@ -179,7 +286,7 @@ mod tests {
             "error_code missing"
         );
         assert!(cols.contains(&"trace_id".to_string()), "trace_id missing");
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
     }
 
     /// Phase-16 W3 (A6): a v2 colony.db (edges already migrated) migrates to v3,
@@ -200,7 +307,7 @@ mod tests {
         let cols = mutation_log_columns(&conn);
         assert!(cols.contains(&"error_code".to_string()));
         assert!(cols.contains(&"trace_id".to_string()));
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
     }
 
     /// W6d (A6): the v1→v4 chain also creates the persistent `dead_letters`
@@ -218,7 +325,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1, "dead_letters table missing after v1→v4 migration");
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
     }
 
     /// W6d (A6): a v3 colony.db (mutation_log already migrated) migrates to v4,
@@ -245,7 +352,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -292,13 +399,26 @@ mod tests {
 
     #[test]
     fn migrate_failed_step_leaves_version_at_1_no_partial() {
+        // Since GH #90 an absent table is a legal skip (the DDL batch creates
+        // it at the target shape afterwards), so the failure is forced at the
+        // final version write instead — AFTER the edges ALTERs ran. The pin is
+        // the same all-or-nothing promise, now proven against real step work.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             INSERT INTO meta (key, value) VALUES ('schema_version', '1');",
+             INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+             CREATE TABLE edges (
+               id TEXT PRIMARY KEY, from_path TEXT NOT NULL,
+               to_path TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TRIGGER meta_locked BEFORE UPDATE ON meta
+             BEGIN SELECT RAISE(ABORT, 'meta locked by test'); END;",
         )
-        .unwrap(); // edges table intentionally absent
+        .unwrap();
         assert!(migrate(&conn).is_err());
         assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 1);
+        assert!(
+            !column_exists(&conn, "edges", "condition").unwrap(),
+            "the edges ALTER must roll back with the failed version write"
+        );
     }
 }

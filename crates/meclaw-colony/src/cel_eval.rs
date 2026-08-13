@@ -42,6 +42,11 @@ pub struct CompiledModifier {
     pub set_hop: BTreeMap<String, Arc<Program>>,
     /// `hop` keys to remove (idempotent for non-existent keys).
     pub delete_hop: Vec<String>,
+    /// GH #82: this edge restores the message's routing budget (`ttl`). Carried
+    /// verbatim from the spec — there is nothing to compile, the field is a
+    /// declaration, not an expression. Applied by the colony (the envelope
+    /// setter), never here: [`apply_modifier`] works on headers alone.
+    pub restore_ttl: bool,
 }
 
 /// Parse a CEL condition source string into a `CompiledCondition`.
@@ -80,6 +85,7 @@ pub fn parse_modifier(spec: &ModifierSpec) -> Result<CompiledModifier, (String, 
         delete_context: spec.delete_context.clone(),
         set_hop,
         delete_hop: spec.delete_hop.clone(),
+        restore_ttl: spec.restore_ttl,
     })
 }
 
@@ -167,33 +173,91 @@ fn cel_to_json(v: cel::Value) -> Value {
     }
 }
 
+/// GH #80: why a condition did not produce a boolean.
+///
+/// The two classes want different operator attention, and only one of them is a
+/// defect: a fan-out edge that discriminates on an optional `hop` key errors on
+/// every message that does not carry that key, which is most of them. That is
+/// the steady state, not a fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondErrorKind {
+    /// A key the expression reads is absent from the bound compartments. CEL
+    /// standard semantics: reading it is an error, and per spec F3 the edge is
+    /// skipped. Nothing is wrong with the colony.
+    ///
+    /// Note the honest limit: CEL cannot tell a legitimately absent key from a
+    /// mistyped one. `hop.toolname` and an absent `hop.tool_name` are the same
+    /// event here. What stays visible is the class below — a typo at the
+    /// compartment level (`hopp.tool_name`) or a shape error.
+    MissingKey,
+    /// Everything else: type mismatch, incomparable values, a reference to a
+    /// variable nobody bound, a non-boolean result, recursion limit. These are
+    /// builder errors and stay loud.
+    Eval,
+}
+
+/// A condition that failed to evaluate, with its class ([`CondErrorKind`]).
+///
+/// `Display` is the message alone, so call sites that only format the error
+/// read exactly as they did before the class existed.
+#[derive(Debug, Clone)]
+pub struct CondError {
+    /// Which of the two classes this is.
+    pub kind: CondErrorKind,
+    /// Human-readable reason, unchanged in wording from before GH #80.
+    pub message: String,
+}
+
+impl std::fmt::Display for CondError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CondError {}
+
+impl CondError {
+    fn eval(message: String) -> Self {
+        Self {
+            kind: CondErrorKind::Eval,
+            message,
+        }
+    }
+}
+
 /// Evaluate a `CompiledCondition` against a headers map.
 ///
-/// Returns `Ok(true)`/`Ok(false)` on successful eval, `Err(reason)` for
-/// genuine eval errors (undefined map access, type errors, recursion limit).
-/// Callers (e.g. `evaluate_edge`) skip the edge + warn-log on `Err`
-/// per spec F3 (CEL-Standard: undefined-header → skip).
+/// Returns `Ok(true)`/`Ok(false)` on successful eval, `Err(CondError)` for
+/// everything else (undefined map access, type errors, recursion limit).
+/// Callers (e.g. `evaluate_edge`) skip the edge on `Err` per spec F3
+/// (CEL-Standard: undefined-header → skip); GH #80 added the class so the log
+/// level can follow the class instead of treating every fan-out miss as a fault.
 pub fn evaluate_condition(
     cond: &CompiledCondition,
     context: &Map<String, Value>,
     hop: &Map<String, Value>,
-) -> Result<bool, String> {
+) -> Result<bool, CondError> {
     let mut ctx = cel::Context::default();
     // CEL surface is `context.*`/`hop.*`: bind both compartments as variables.
     // Serde-Path: `serde_json::Map<String, Value>` implements Serialize, and
     // `impl<T: serde::Serialize> TryIntoValue for T` (cel-0.13.0 objects.rs:506)
     // converts directly. No manual `json_to_cel` mapping needed.
     ctx.add_variable("context", context)
-        .map_err(|e| format!("cel ctx bind context: {e}"))?;
+        .map_err(|e| CondError::eval(format!("cel ctx bind context: {e}")))?;
     ctx.add_variable("hop", hop)
-        .map_err(|e| format!("cel ctx bind hop: {e}"))?;
-    let value = cond
-        .program
-        .execute(&ctx)
-        .map_err(|e| format!("cel eval: {e}"))?;
+        .map_err(|e| CondError::eval(format!("cel ctx bind hop: {e}")))?;
+    let value = cond.program.execute(&ctx).map_err(|e| CondError {
+        // The engine's own distinction: `NoSuchKey` is the absent key, every
+        // other variant is a defect in the expression or in the values.
+        kind: match e {
+            cel::ExecutionError::NoSuchKey(_) => CondErrorKind::MissingKey,
+            _ => CondErrorKind::Eval,
+        },
+        message: format!("cel eval: {e}"),
+    })?;
     match value {
         cel::Value::Bool(b) => Ok(b),
-        other => Err(format!("cel result not bool: {other:?}")),
+        other => Err(CondError::eval(format!("cel result not bool: {other:?}"))),
     }
 }
 

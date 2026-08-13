@@ -192,12 +192,11 @@ impl ColonyConfig {
         //     every spawn call-site.
         //   strict_validation (Paket 7 / B5) — `resolve_validate_emits` consumes it.
         //   blob_inline_max_bytes + idle_timeout_default_ms (Slice-6 / A7-A8).
-        // Only the three genuinely-unwired fields below remain forensic-only.
+        //   blob_max_recursion_depth (GH #19 / D-025) — carried on the blob
+        //     store and read at the cell-delivery boundary.
+        // Only the two genuinely-unwired fields below remain forensic-only.
         if self.restart_max_retries != d.restart_max_retries {
             warn("restart_max_retries");
-        }
-        if self.blob_max_recursion_depth != d.blob_max_recursion_depth {
-            warn("blob_max_recursion_depth");
         }
         if self.log_default_level != d.log_default_level {
             warn("log_default_level");
@@ -367,28 +366,38 @@ mod tests {
     /// The genuinely-unwired fields must continue to produce warnings when they
     /// deviate from their defaults. `message_timeout_default_ms` and
     /// `strict_validation` are NOT in this set — both are fully wired (Paket 3 /
-    /// Paket 7) and have their own no-warn pins below.
+    /// Paket 7) — and `blob_max_recursion_depth` left it with GH #19.
     #[test]
     fn other_unwired_fields_still_warn() {
         let cfg = ColonyConfig::parse_str(
             r#"{
                 "restart_max_retries": 1,
-                "blob_max_recursion_depth": 1,
                 "log_default_level": "debug"
             }"#,
         )
         .unwrap();
         let warns = capture_unwired_warns(&cfg);
-        for field in &[
-            "restart_max_retries",
-            "blob_max_recursion_depth",
-            "log_default_level",
-        ] {
+        for field in &["restart_max_retries", "log_default_level"] {
             assert!(
                 warns.contains(&(*field).to_owned()),
                 "expected unwired-warn for {field} but got: {warns:?}"
             );
         }
+    }
+
+    /// GH #19: `blob_max_recursion_depth` is wired — it rides on the blob store
+    /// and bounds in-message pointer resolution at the delivery boundary. A
+    /// config that deviates only in this field must NOT warn any more; a warn
+    /// here would be the lying "ignored" diagnostic the doc comment on
+    /// `warn_unwired_fields` warns about.
+    #[test]
+    fn blob_max_recursion_depth_no_unwired_warn() {
+        let cfg = ColonyConfig::parse_str(r#"{"blob_max_recursion_depth": 8}"#).unwrap();
+        let warns = capture_unwired_warns(&cfg);
+        assert!(
+            !warns.contains(&"blob_max_recursion_depth".to_owned()),
+            "unexpected unwired-warn for blob_max_recursion_depth: {warns:?}"
+        );
     }
 
     /// message_timeout_default_ms is fully wired (Paket 3 / U1, P3-B-plumb-2):
