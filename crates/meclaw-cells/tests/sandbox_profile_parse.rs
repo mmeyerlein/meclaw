@@ -53,6 +53,7 @@ fn restricted_parses_read_write_and_defaults_network_to_deny() {
         SandboxProfile::Restricted {
             network,
             filesystem,
+            ..
         } => {
             assert_eq!(
                 network,
@@ -85,6 +86,7 @@ fn restricted_honours_an_explicit_network_allow_and_runtime_false() {
         SandboxProfile::Restricted {
             network,
             filesystem,
+            ..
         } => {
             assert_eq!(network, NetworkPolicy::Allow);
             assert!(!filesystem.runtime);
@@ -168,37 +170,229 @@ fn trusted_with_restriction_fields_is_rejected() {
     }
 }
 
-// ---- phase 2 fields: named, reserved, rejected ---------------------------
+// ---- phase 2 fields: limits (GH #85) --------------------------------------
 
 #[test]
-fn limits_is_rejected_and_names_the_follow_up_issue() {
+fn limits_parses_all_three_caps() {
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "limits": {"memory_max_bytes": 268435456, "pids_max": 64, "cpu_max_percent": 50}
+        }
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted { limits, .. } => {
+            let l = limits.expect("limits parsed");
+            assert_eq!(l.memory_max_bytes, Some(268_435_456));
+            assert_eq!(l.pids_max, Some(64));
+            assert_eq!(l.cpu_max_percent, Some(50));
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+#[test]
+fn a_single_cap_is_enough_and_the_others_stay_unset() {
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "limits": {"pids_max": 8}
+        }
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted { limits, .. } => {
+            let l = limits.expect("limits parsed");
+            assert_eq!(l.pids_max, Some(8));
+            assert_eq!(l.memory_max_bytes, None, "an unset cap stays unset");
+            assert_eq!(l.cpu_max_percent, None);
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+#[test]
+fn an_empty_limits_block_is_rejected() {
     let e = SandboxProfile::parse(&json!({
         "sandbox": {
             "trust": "restricted",
             "filesystem": {"read": ["/srv"]},
-            "limits": {"memory_max_bytes": 1}
+            "limits": {}
         }
     }))
     .unwrap_err();
-    assert!(e.contains("params.sandbox.limits"), "{e}");
     assert!(
-        e.contains("#85"),
-        "a reserved key must point at where its enforcement is tracked: {e}"
+        e.contains("params.sandbox.limits"),
+        "a limits block that caps nothing is a lie, not a default: {e}"
     );
 }
 
 #[test]
-fn syscalls_is_rejected_and_names_the_follow_up_issue() {
+fn unknown_limits_key_is_rejected() {
     let e = SandboxProfile::parse(&json!({
         "sandbox": {
             "trust": "restricted",
             "filesystem": {"read": ["/srv"]},
-            "syscalls": {"deny": ["ptrace"]}
+            "limits": {"memory_max": 1}
+        }
+    }))
+    .unwrap_err();
+    assert!(e.contains("params.sandbox.limits"), "{e}");
+    assert!(e.contains("memory_max"), "{e}");
+}
+
+#[test]
+fn a_zero_or_negative_cap_is_rejected() {
+    for bad in [json!({"pids_max": 0}), json!({"memory_max_bytes": -1})] {
+        let e = SandboxProfile::parse(&json!({
+            "sandbox": {
+                "trust": "restricted",
+                "filesystem": {"read": ["/srv"]},
+                "limits": bad
+            }
+        }))
+        .unwrap_err();
+        assert!(e.contains("params.sandbox.limits"), "{bad}: {e}");
+    }
+}
+
+#[test]
+fn cpu_max_percent_above_the_core_count_is_still_a_number_not_a_ratio() {
+    // 200 percent means two whole cores; the cap is a percentage of ONE core,
+    // so a value above 100 is legal on a multi-core host.
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "limits": {"cpu_max_percent": 200}
+        }
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted { limits, .. } => {
+            assert_eq!(limits.unwrap().cpu_max_percent, Some(200));
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+// ---- phase 2 fields: syscalls (GH #85) ------------------------------------
+
+#[test]
+fn a_present_syscalls_block_denies_every_axis_it_does_not_mention() {
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "syscalls": {}
+        }
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted { syscalls, .. } => {
+            let s = syscalls.expect("syscalls parsed");
+            assert!(s.deny_ptrace, "naming the block means default-deny");
+            assert!(s.deny_raw_sockets);
+            assert!(s.deny_foreign_signals);
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+#[test]
+fn an_axis_can_be_opted_out_of_explicitly() {
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "syscalls": {"foreign_signals": "allow"}
+        }
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted { syscalls, .. } => {
+            let s = syscalls.expect("syscalls parsed");
+            assert!(!s.deny_foreign_signals, "an explicit allow is honoured");
+            assert!(s.deny_ptrace, "and it does not loosen the other axes");
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+#[test]
+fn a_syscalls_block_that_denies_nothing_is_rejected() {
+    let e = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "syscalls": {"ptrace": "allow", "raw_sockets": "allow", "foreign_signals": "allow"}
         }
     }))
     .unwrap_err();
     assert!(e.contains("params.sandbox.syscalls"), "{e}");
-    assert!(e.contains("#85"), "{e}");
+}
+
+#[test]
+fn unknown_syscalls_key_or_value_is_rejected() {
+    let e = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "syscalls": {"ptrce": "deny"}
+        }
+    }))
+    .unwrap_err();
+    assert!(e.contains("params.sandbox.syscalls"), "{e}");
+
+    let e = SandboxProfile::parse(&json!({
+        "sandbox": {
+            "trust": "restricted",
+            "filesystem": {"read": ["/srv"]},
+            "syscalls": {"ptrace": "maybe"}
+        }
+    }))
+    .unwrap_err();
+    assert!(e.contains("params.sandbox.syscalls.ptrace"), "{e}");
+}
+
+#[test]
+fn absent_phase_two_blocks_stay_absent() {
+    let p = SandboxProfile::parse(&json!({
+        "sandbox": {"trust": "restricted", "filesystem": {"read": ["/srv"]}}
+    }))
+    .unwrap()
+    .expect("profile");
+    match p {
+        SandboxProfile::Restricted {
+            limits, syscalls, ..
+        } => {
+            assert!(limits.is_none(), "no limits key means no caps");
+            assert!(syscalls.is_none(), "no syscalls key means no filter");
+        }
+        SandboxProfile::Trusted => panic!("expected restricted"),
+    }
+}
+
+#[test]
+fn trusted_tolerates_neither_limits_nor_syscalls() {
+    for key in ["limits", "syscalls"] {
+        let e = SandboxProfile::parse(&json!({
+            "sandbox": {"trust": "trusted", key: {}}
+        }))
+        .unwrap_err();
+        assert!(
+            e.contains(key),
+            "trust \"trusted\" is the no-enforcement hatch and must not carry {key}: {e}"
+        );
+    }
 }
 
 // ---- path shape -----------------------------------------------------------

@@ -19,6 +19,12 @@ use meclaw_core::serde_json::{self, Value};
 /// at the first such key. The `prefix` is empty for the root call; recursive calls
 /// extend it with `.`-separated path segments.
 ///
+/// Since GH #86 a `text_id` leaf can no longer ARRIVE: the substrate resolves
+/// the whole class into `{"text": …}` at the delivery boundary. The key stays in
+/// the stop condition so this walk keeps agreeing with the resolver's leaf
+/// definition and with `read_system_tree`, which can still read a row written
+/// before that boundary existed (GH #95).
+///
 /// Output order is unspecified (HashMap iteration). Caller should sort if stable
 /// order matters (tests do).
 pub(crate) fn flatten_to_leaves(tree: &Value, prefix: &str) -> Vec<(String, Value)> {
@@ -46,9 +52,10 @@ fn walk(node: &Value, path: &str, out: &mut Vec<(String, Value)>) {
 /// UPSERT a single system-leaf into cell.db.system. Idempotent.
 ///
 /// `slot_path` is the dotted leaf path (e.g. "identity.soul").
-/// `leaf_json` is the UBF-leaf object — either `{"text":"..."}` or
-/// `{"text_id":"..."}`. The full JSON object is serialized into the `value`
-/// column; the kind discriminator lives inside the JSON (Plan § 4 Q1-Mapping).
+/// `leaf_json` is the UBF-leaf object, `{"text":"..."}` since GH #86 resolved
+/// the `{"text_id":"..."}` form at the delivery boundary. The full JSON object
+/// is serialized into the `value` column; the kind discriminator lives inside
+/// the JSON (Plan § 4 Q1-Mapping).
 pub(crate) fn upsert_system_leaf(
     conn: &rusqlite::Connection,
     slot_path: &str,
@@ -187,6 +194,11 @@ mod tests {
         );
     }
 
+    /// The `text_id` stop condition is retained for pre-GH-#86 rows: no such
+    /// leaf can arrive from a delivery any more, but a `cell.db` written before
+    /// the boundary resolved that class may still hold one, and the walk must
+    /// keep treating it as a leaf rather than descending into it. What such a
+    /// residual row should DO is open on GH #95.
     #[test]
     fn flatten_two_leaves_under_identity() {
         let tree = json!({"identity": {"soul": {"text":"A"}, "body": {"text_id":"01H"}}});

@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-2913%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-3029%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -131,7 +131,7 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 ## Where it's at
 
-meclaw is **v0.4.0**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
+meclaw is **v0.4.1**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
 
 Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **2,782 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 

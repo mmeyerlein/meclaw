@@ -135,11 +135,15 @@ where
     // one `select!` — two methods on `&mut StdioChild` could not.
     // The guard travels with the loop: if this task is cancelled, dropping it
     // here is what reaps the child's descendants.
+    // `_sandbox` travels with the loop for the same reason the guard does: it
+    // owns the child's cgroup (GH #85), and dropping it here on a cancelled
+    // task is what takes that cgroup away again.
     let crate::stdio_child::spawn::StdioChild {
         mut child,
         mut stdin,
         mut stdout,
         mut guard,
+        _sandbox,
     } = child;
     let mut pending: std::collections::HashMap<
         CorrelationKey,
@@ -177,7 +181,13 @@ where
                 // An explicit shutdown and a dropped command channel mean the
                 // same thing: nobody will talk to this child again.
                 Some(ChildCommand::Shutdown) => {
-                    let reassembled = crate::stdio_child::spawn::StdioChild { child, stdin, stdout, guard };
+                    let reassembled = crate::stdio_child::spawn::StdioChild {
+                        child,
+                        stdin,
+                        stdout,
+                        guard,
+                        _sandbox,
+                    };
                     let exit = reassembled.terminate(cfg.kill_grace).await;
                     fail_pending(&mut pending, exit);
                     let _ = events.send(E::from(ChildEvent::Exited(exit))).await;

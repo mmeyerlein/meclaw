@@ -74,6 +74,10 @@ pub struct HarnessParams {
     pub query_timeout_ms: u64,
     /// Grace between "please stop" and SIGKILL for the child's process group.
     pub kill_grace_ms: u64,
+    /// Process sandbox for the harness child (GH #85). `None` means the
+    /// pre-#85 behaviour: the child keeps the daemon's rights, contained only
+    /// by `env_clear`, the passthrough allow-list and the cwd clamp.
+    pub sandbox: Option<crate::sandbox::SandboxProfile>,
 }
 
 /// β: the `harness` runtime-overlay projection — everything that may be tuned
@@ -120,6 +124,7 @@ impl crate::params_overlay::OverlayParams for HarnessOverlay {
         "extra_args",
         "approval",
         "kill_grace_ms",
+        "sandbox",
         "model",
         "max_turns",
         "max_budget_usd",
@@ -139,6 +144,9 @@ impl crate::params_overlay::OverlayParams for HarnessOverlay {
         "extra_args",
         "approval",
         "kill_grace_ms",
+        // A security boundary a message can move is not a boundary, so the
+        // sandbox is immutable by name rather than merely unknown (GH #85).
+        "sandbox",
     ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
@@ -223,6 +231,10 @@ impl HarnessParams {
             external_timeout_ms: u64_or(obj, "external_timeout_ms", 30_000),
             query_timeout_ms: u64_or(obj, "query_timeout_ms", 5_000),
             kill_grace_ms: u64_or(obj, "kill_grace_ms", 5_000),
+            // Read from the BIRTH params only: `parse` is the single path
+            // behind `validate_params` and `spawn_cell`, and the runtime
+            // overlay lists `sandbox` as immutable.
+            sandbox: crate::sandbox::SandboxProfile::parse(v)?,
         })
     }
 }

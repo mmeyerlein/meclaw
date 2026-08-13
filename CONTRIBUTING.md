@@ -107,13 +107,16 @@ citations resolve without the private process docs:
   `tokio::time::timeout` (params-driven, precise); the substrate's per-message timeout is
   a generous backstop, never the primary shield. A timeout that covers only part of the
   operation is not a timeout.
-- **Rule 14 (in-message blob pointers):** the substrate resolves `text_id`/`messages_id`
+- **Rule 14 (body blob pointers):** the substrate resolves `text_id`/`messages_id`
   pointers inside `messages[]` at the delivery boundary, recursively, bounded by
   `blob_max_recursion_depth` and a per-path visited set (issue #19). The former emission
-  ban is gone: a cell may emit them, and no cell ever sees one. `attachments[]` refs are a
-  different class and stay unresolved by the substrate on purpose: the consuming cell reads
-  them on demand. So are `{text_id}` leaves in the `system` tree, which still have no
-  resolver.
+  ban is gone: a cell may emit them, and no cell ever sees one. `{text_id}` leaves in the
+  `system` tree are resolved at the same boundary under the same guards (issue #86); only
+  the substitution differs, a leaf becomes `{"text": …}` rather than a turn. Both slots
+  resolve against one working copy per delivery, so a failure in either dead-letters the
+  body unchanged. `attachments[]` refs are a different class and stay unresolved by the
+  substrate on purpose: the consuming cell reads them on demand, through a read-only store
+  handle it only receives when its contract declares `consumes.body.attachments` (issue #87).
 - **R9 (CLI shape):** flags only, nginx style. No subcommands.
 - **A1' (panic-free hot path):** the colony routing/dispatch path never panics on
   pathological input; it answers with errors, skips, or dead letters. A panic there takes

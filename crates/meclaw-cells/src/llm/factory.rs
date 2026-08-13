@@ -95,6 +95,14 @@ impl CellFactory for LlmCellFactory {
         check_schema_version(&init_conn)?;
         drop(init_conn);
 
+        // GH #87: the attachments[] read handle. A function of two things this
+        // factory already holds — the contract (does the cell declare
+        // `consumes.body.attachments`?) and the blob store that already rides
+        // in for the delivery boundary. No eleventh `CellFactory` parameter.
+        // `None` for every cell that does not declare consumption.
+        let attachment_reader =
+            meclaw_colony::AttachmentReader::for_contract(&contract, blob_store.clone());
+
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
         // RespawnFn — crash-restart path, fresh channel + fresh connection.
@@ -108,6 +116,7 @@ impl CellFactory for LlmCellFactory {
         let respawn_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
+        let respawn_attachments = attachment_reader.clone();
         let respawn: RespawnFn = Box::new(
             move || -> (
                 mpsc::Sender<Message>,
@@ -121,7 +130,8 @@ impl CellFactory for LlmCellFactory {
                 let effective = restore_params(&conn, &respawn_birth)
                     .expect("respawn: restore params from cell.db overlay");
                 let db = meclaw_colony::DbConn::wrap(conn, None);
-                let cell = LlmCell::new(effective, respawn_client.clone());
+                let cell = LlmCell::new(effective, respawn_client.clone())
+                    .with_attachment_reader(respawn_attachments.clone());
                 let (s, r) = mpsc::channel::<Message>(respawn_mailbox_capacity);
                 let (j, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_stateful_task_with_peace(
                     respawn_path.clone(),
@@ -163,6 +173,7 @@ impl CellFactory for LlmCellFactory {
         let wake_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
+        let wake_attachments = attachment_reader.clone();
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             let conn = open_or_create_cell_db(&wake_cell_dir.join("cell.db"))
                 .expect("wake: open_or_create_cell_db failed");
@@ -170,7 +181,8 @@ impl CellFactory for LlmCellFactory {
             let effective = restore_params(&conn, &wake_birth)
                 .expect("wake: restore params from cell.db overlay");
             let db = meclaw_colony::DbConn::wrap(conn, None);
-            let cell = LlmCell::new(effective, wake_client.clone());
+            let cell = LlmCell::new(effective, wake_client.clone())
+                .with_attachment_reader(wake_attachments.clone());
             let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
                 build_stateful_task_with_peace(
                     wake_path.clone(),

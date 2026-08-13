@@ -4,6 +4,49 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.4.1] — 2026-08-13
+
+The pre-MVP finish line. The three remaining substrate items of the pre-MVP
+stream, built on three parallel tracks and merged behind full gates, hours
+after 0.4.0 closed the bug backlog.
+
+### Added
+
+- **Sandbox phase 2: the caps and filters are real.** `params.sandbox.limits`
+  (memory, pids, cpu) is enforced through a delegated cgroup-v2 sub-group per
+  sandboxed process, held as an RAII scope that tears down on every path —
+  including crash and restart — and swept if a dead daemon left one behind.
+  `params.sandbox.syscalls` is enforced through an in-tree seccomp-bpf filter
+  (raw `sock_filter` programs via libc, no new dependency), closing the gaps
+  Landlock does not cover: ptrace, signals to foreign PIDs, raw sockets. The
+  harness cell's stdio child runs under the same profile as `code` and `bash`,
+  with its process-group and reaping semantics untouched. And a cell freshly
+  instantiated from a template without an explicit profile now gets a
+  restricted default (network deny, runtime-only filesystem) — a prospective
+  cut in the GH #20 tradition: existing topologies on disk keep running
+  unchanged, `trust: "trusted"` stays the explicit escape hatch. Enforcement
+  tests carry controls and skip visibly where the kernel or the cgroup
+  delegation does not cooperate (#85; mcp/subcolony children tracked as #96,
+  a host capability probe as #97).
+- **The `system` tree resolves its pointers.** A `{text_id}` leaf becomes
+  `{"text": "..."}` at the same delivery boundary, under the same depth limit,
+  per-path cycle guard and error codes as the `messages[]` class — one shared
+  `text_id` document contract (exactly one turn), only the substitution
+  differs. Both slots resolve against one working copy per delivery, so a
+  failure in either dead-letters the body unchanged. The llm cell's loud
+  `BlobUnsupported` rejection is removed; its system-prompt concatenation is
+  now infallible (#86; pre-existing persisted rows tracked as #95).
+- **A cell can finally read its attachments.** A contract that declares
+  `consumes.body.attachments` yields a read-only `AttachmentReader` on the
+  colony's blob store — not a new factory parameter, but a function of the
+  contract view and the store handle the delivery boundary already holds.
+  Every read carries its own operation timeout. The llm cell is the first
+  consumer: `image/*` attachments become vision content parts (base64 data
+  URLs) of the outbound chat request; a non-image mime and a missing blob are
+  named cell errors, and a cell without the declaration behaves byte-identically
+  to before (#87; the responses wire dialect rejects loudly and is tracked
+  as #94).
+
 ## [0.4.0] — 2026-08-13
 
 The bug-and-substrate wave. Every open bug on the tracker and the remaining

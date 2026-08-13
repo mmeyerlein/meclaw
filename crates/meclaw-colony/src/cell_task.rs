@@ -23,17 +23,27 @@ use tokio::sync::mpsc;
 /// Resolve every blob reference a cell must not see, at the cell-delivery
 /// boundary (spec Z.1363), so every cell gets a transparent inline body.
 ///
-/// Two classes, in this order:
+/// Three classes, in this order:
 ///
 /// 1. **Whole-body `Body::Blob`** (Phase-13.5 A8) — the substrate's own
 ///    oversized-body offload, read back into `Body::Inline`.
 /// 2. **In-message pointers** (GH #19 / D-025) — `messages_id` and `text_id`
 ///    entries inside `messages[]`, expanded recursively and depth-bounded by
-///    [`crate::DiskBlobStore::max_recursion_depth`]. See
-///    [`crate::blob::pointers`] for the semantics and the rulings behind them.
+///    [`crate::DiskBlobStore::max_recursion_depth`].
+/// 3. **System-tree pointers** (GH #86) — `{text_id}` leaves anywhere in the
+///    `system` tree, each becoming the `{"text": …}` container it names, under
+///    the same limit and the same guards.
 ///
-/// Both run BEFORE `enforce_consumes_for_delivery`, which inspects the body's
-/// top-level slots and would otherwise validate an unexpanded conversation.
+/// See [`crate::blob::pointers`] for the semantics and the rulings behind them.
+///
+/// All of them run BEFORE `enforce_consumes_for_delivery`, which inspects the
+/// body's top-level slots and would otherwise validate an unexpanded body.
+///
+/// Classes 2 and 3 resolve against ONE working copy that is committed only if
+/// both succeed. Each pass is already all-or-nothing on its own; the working
+/// copy extends that across the pair, so a body whose `messages[]` resolves and
+/// whose `system` tree does not is dead-lettered as it arrived, never
+/// half-expanded.
 ///
 /// Returns `true` to deliver; `false` if a reference was unresolvable and the
 /// message was dead-lettered (caller must skip `handle()`). With no blob-store
@@ -67,29 +77,48 @@ pub(crate) async fn resolve_blob_for_delivery(
             }
         }
     }
-    // 2. In-message pointers, inside the (now) inline body. The pre-check keeps
-    // an ordinary conversation free of any resolution work: one scan of
-    // `messages[]` for the two pointer keys, no store access.
-    let meclaw_core::Body::Inline(body) = &mut msg.body else {
+    // 2. + 3. Body pointers, inside the (now) inline body. The two pre-checks
+    // keep an ordinary body free of any resolution work: one scan of
+    // `messages[]` for the two pointer keys, one walk of the `system` tree for
+    // pointer leaves, no store access either way.
+    let meclaw_core::Body::Inline(body) = &msg.body else {
         return true;
     };
-    if !crate::blob::pointers::has_in_message_pointer(body) {
+    let has_message_pointer = crate::blob::pointers::has_in_message_pointer(body);
+    let has_system_pointer = crate::blob::pointers::has_system_pointer(body);
+    if !has_message_pointer && !has_system_pointer {
         return true;
     }
     let limit = store.max_recursion_depth();
-    if let Err(e) = crate::blob::pointers::resolve_in_message_pointers(body, store, limit).await {
-        let reason = e.dead_letter_reason();
-        tracing::warn!(
-            msg_id = %msg.id,
-            msg_target = msg.target.as_str(),
-            error = %e,
-            error_code = reason.as_code(),
-            "in-message blob pointer resolution failed at cell delivery — dead-lettering"
-        );
-        dead_letter(msg, reason, colony_inbox_tx).await;
-        return false;
+    let mut working = body.clone();
+    let outcome = async {
+        if has_message_pointer {
+            crate::blob::pointers::resolve_in_message_pointers(&mut working, store, limit).await?;
+        }
+        if has_system_pointer {
+            crate::blob::pointers::resolve_system_pointers(&mut working, store, limit).await?;
+        }
+        Ok(())
     }
-    true
+    .await;
+    match outcome {
+        Ok(()) => {
+            msg.body = meclaw_core::Body::Inline(working);
+            true
+        }
+        Err(e) => {
+            let reason = crate::blob::pointers::PointerError::dead_letter_reason(&e);
+            tracing::warn!(
+                msg_id = %msg.id,
+                msg_target = msg.target.as_str(),
+                error = %e,
+                error_code = reason.as_code(),
+                "body blob pointer resolution failed at cell delivery — dead-lettering"
+            );
+            dead_letter(msg, reason, colony_inbox_tx).await;
+            false
+        }
+    }
 }
 
 /// Hand a message to the colony's dead-letter arm, if a colony inbox is wired.
@@ -2290,8 +2319,141 @@ mod tests {
         }
     }
 
-    /// A body with no pointers must not touch the store at all — the pre-check
-    /// is what keeps an ordinary conversation free of resolution work. Proven
+    // ── GH #86: system-tree `{text_id}` leaves at the same boundary ─────────
+
+    /// The boundary expands `system` leaves too, into the plain string
+    /// container the tree's consumers expect.
+    #[tokio::test]
+    async fn resolve_expands_system_text_id_leaves_of_an_inline_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::DiskBlobStore::new(dir.path()).unwrap());
+        let turn = meclaw_core::serde_json::json!({"origin":"user","type":"text","text":"persona"});
+        let id = put_body(&store, meclaw_core::serde_json::json!({"messages":[turn]})).await;
+        let mut msg = inline(meclaw_core::serde_json::json!({
+            "system": {"identity": {"body": {"text_id": id.to_string()}}}
+        }));
+        assert!(resolve_blob_for_delivery(&mut msg, &Some(store), &None).await);
+        let meclaw_core::Body::Inline(body) = &msg.body else {
+            panic!("body must stay inline")
+        };
+        assert_eq!(
+            body["system"]["identity"]["body"],
+            meclaw_core::serde_json::json!({"text": "persona"}),
+            "the leaf must be a {{\"text\": …}} container before handle(): {body}"
+        );
+    }
+
+    /// The whole-body offload and the system leaves compose, like the
+    /// `messages[]` class does.
+    #[tokio::test]
+    async fn resolve_expands_system_pointers_inside_a_whole_body_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::DiskBlobStore::new(dir.path()).unwrap());
+        let turn = meclaw_core::serde_json::json!({"origin":"user","type":"text","text":"nested"});
+        let inner = put_body(&store, meclaw_core::serde_json::json!({"messages":[turn]})).await;
+        let outer = put_body(
+            &store,
+            meclaw_core::serde_json::json!({
+                "system": {"facts": {"n": {"text_id": inner.to_string()}}}
+            }),
+        )
+        .await;
+        let mut msg = MessageBuilder::new(Path::new("/c")).build();
+        msg.body = meclaw_core::Body::Blob(outer);
+        assert!(resolve_blob_for_delivery(&mut msg, &Some(store), &None).await);
+        let meclaw_core::Body::Inline(body) = &msg.body else {
+            panic!("whole-body blob must resolve to inline")
+        };
+        assert_eq!(body["system"]["facts"]["n"]["text"], "nested");
+    }
+
+    /// An unresolvable system leaf reports the same code the other classes use.
+    #[tokio::test]
+    async fn resolve_unresolvable_system_pointer_dead_letters_as_blob_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::DiskBlobStore::new(dir.path()).unwrap());
+        let (dlq_tx, mut dlq_rx) = mpsc::channel::<crate::ColonyMsg>(8);
+        let mut msg = inline(meclaw_core::serde_json::json!({
+            "system": {"identity": {"body": {"text_id": meclaw_core::Uuid::now_v7().to_string()}}}
+        }));
+        let deliver = resolve_blob_for_delivery(&mut msg, &Some(store), &Some(dlq_tx)).await;
+        assert!(!deliver, "unresolvable system leaf → skip handle()");
+        match dlq_rx.recv().await {
+            Some(crate::ColonyMsg::DeadLetterMessage { reason, .. }) => {
+                assert_eq!(reason.as_code(), "blob_unavailable");
+            }
+            _ => panic!("expected a DeadLetterMessage on the colony inbox channel"),
+        }
+    }
+
+    /// A system-leaf chain past the limit reports the canonical recursion code.
+    #[tokio::test]
+    async fn resolve_too_deep_system_chain_dead_letters_as_recursion_too_deep() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::DiskBlobStore::new(dir.path())
+                .unwrap()
+                .with_max_recursion_depth(1),
+        );
+        let turn = meclaw_core::serde_json::json!({"origin":"user","type":"text","text":"leaf"});
+        let leaf = put_body(&store, meclaw_core::serde_json::json!({"messages":[turn]})).await;
+        let top = put_body(
+            &store,
+            meclaw_core::serde_json::json!({"messages":[{"text_id": leaf.to_string()}]}),
+        )
+        .await;
+        let (dlq_tx, mut dlq_rx) = mpsc::channel::<crate::ColonyMsg>(8);
+        let probe = meclaw_core::serde_json::json!({
+            "system": {"identity": {"body": {"text_id": top.to_string()}}}
+        });
+        let mut msg = inline(probe.clone());
+        let deliver = resolve_blob_for_delivery(&mut msg, &Some(store), &Some(dlq_tx)).await;
+        assert!(!deliver, "a runaway system chain → skip handle()");
+        match dlq_rx.recv().await {
+            Some(crate::ColonyMsg::DeadLetterMessage { reason, message }) => {
+                assert_eq!(reason.as_code(), "blob_recursion_too_deep");
+                assert!(
+                    matches!(&message.body, meclaw_core::Body::Inline(b) if *b == probe),
+                    "the dead letter carries the ORIGINAL tree, not a half-expanded one"
+                );
+            }
+            _ => panic!("expected a DeadLetterMessage on the colony inbox channel"),
+        }
+    }
+
+    /// The all-or-nothing promise across the PAIR of pointer classes: a body
+    /// whose `messages[]` resolves fine and whose `system` tree does not is
+    /// dead-lettered exactly as it arrived. Each pass is already atomic on its
+    /// own; this pins that the boundary does not commit the first one's result
+    /// when the second fails.
+    #[tokio::test]
+    async fn resolve_dead_letters_the_original_body_when_only_the_system_half_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::DiskBlobStore::new(dir.path()).unwrap());
+        let turn = meclaw_core::serde_json::json!({"origin":"user","type":"text","text":"good"});
+        let good = put_body(&store, meclaw_core::serde_json::json!({"messages":[turn]})).await;
+        let (dlq_tx, mut dlq_rx) = mpsc::channel::<crate::ColonyMsg>(8);
+        let probe = meclaw_core::serde_json::json!({
+            "system": {"identity": {"body": {"text_id": meclaw_core::Uuid::now_v7().to_string()}}},
+            "messages": [{"messages_id": good.to_string()}]
+        });
+        let mut msg = inline(probe.clone());
+        let deliver = resolve_blob_for_delivery(&mut msg, &Some(store), &Some(dlq_tx)).await;
+        assert!(!deliver, "a failing half → skip handle()");
+        match dlq_rx.recv().await {
+            Some(crate::ColonyMsg::DeadLetterMessage { reason, message }) => {
+                assert_eq!(reason.as_code(), "blob_unavailable");
+                assert!(
+                    matches!(&message.body, meclaw_core::Body::Inline(b) if *b == probe),
+                    "the resolved messages[] half must NOT survive the failed system half"
+                );
+            }
+            _ => panic!("expected a DeadLetterMessage on the colony inbox channel"),
+        }
+    }
+
+    /// A body with no pointers must not touch the store at all — the pre-checks
+    /// are what keep an ordinary conversation free of resolution work. Proven
     /// with a store rooted at a path that would fail every read.
     #[tokio::test]
     async fn resolve_leaves_a_pointerless_body_untouched() {

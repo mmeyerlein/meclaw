@@ -9,8 +9,6 @@ use meclaw_core::serde_json::Value;
 /// Phase-8 Translate-error enum. T8 will add WireError mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TranslateError {
-    /// `{text_id: ...}`-leaf in system-tree — Phase 12 blob-resolution not implemented.
-    BlobUnsupported(String),
     /// Unsupported UBF turn `type` (e.g. `image`, `audio`, unknown combo).
     TypeUnsupported(String),
     /// A `tool_call`-turn's `text` could not be parsed as the OpenAI
@@ -31,14 +29,13 @@ pub(crate) enum TranslateError {
 /// order. The `tools` sub-slot is skipped entirely (extracted separately by T6
 /// `build_openai_request`).
 ///
-/// Returns `Err(BlobUnsupported(path))` if any leaf is a `{text_id}`-pointer
-/// (Phase-12 deferred).
-pub(crate) fn concat_system_prompt(
-    tree: &Value,
-    system_order: &[String],
-) -> Result<String, TranslateError> {
+/// Infallible since GH #86. It used to reject a `{text_id}` leaf with
+/// `BlobUnsupported`, because nothing resolved that pointer class; the substrate
+/// now expands it at the delivery boundary, so every leaf that arrives here is
+/// an inline `{"text": …}` container and there is no failure left to report.
+pub(crate) fn concat_system_prompt(tree: &Value, system_order: &[String]) -> String {
     let Some(obj) = tree.as_object() else {
-        return Ok(String::new());
+        return String::new();
     };
     let mut top_keys: Vec<String> = obj
         .keys()
@@ -58,35 +55,26 @@ pub(crate) fn concat_system_prompt(
     let mut parts: Vec<String> = Vec::new();
     for k in &ordered {
         let subtree = &obj[k];
-        walk_collect(subtree, k, &mut parts)?;
+        walk_collect(subtree, &mut parts);
     }
-    Ok(parts.join("\n\n"))
+    parts.join("\n\n")
 }
 
-fn walk_collect(node: &Value, path: &str, out: &mut Vec<String>) -> Result<(), TranslateError> {
+fn walk_collect(node: &Value, out: &mut Vec<String>) {
     let Some(obj) = node.as_object() else {
-        return Ok(());
+        return;
     };
     if obj.contains_key("text") {
         if let Some(t) = obj["text"].as_str() {
             out.push(t.to_string());
         }
-        return Ok(());
-    }
-    if obj.contains_key("text_id") {
-        return Err(TranslateError::BlobUnsupported(path.to_string()));
+        return;
     }
     let mut keys: Vec<&String> = obj.keys().collect();
     keys.sort();
     for k in keys {
-        let next = if path.is_empty() {
-            k.clone()
-        } else {
-            format!("{path}.{k}")
-        };
-        walk_collect(&obj[k], &next, out)?;
+        walk_collect(&obj[k], out);
     }
-    Ok(())
 }
 
 /// Build the OpenAI Chat-Completions request body JSON from `LlmParams`,
@@ -160,6 +148,91 @@ pub(crate) fn build_openai_request(
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// Standard base64 alphabet (RFC 4648 §4), the encoder side of the in-tree
+/// `store::query::hamming::decode_base64`. Hand-rolled for the same reason the
+/// decoder is: the tech stack is a closed allow-list and this is 20 lines.
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Encode bytes as standard base64 with `=` padding.
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        let sextets = [
+            (triple >> 18) & 0x3F,
+            (triple >> 12) & 0x3F,
+            (triple >> 6) & 0x3F,
+            triple & 0x3F,
+        ];
+        for (i, s) in sextets.iter().enumerate() {
+            // 1 input byte carries 2 sextets, 2 bytes carry 3; the rest is padding.
+            if i <= chunk.len() {
+                out.push(BASE64_ALPHABET[*s as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Build one OpenAI-compatible image content part from an attachment's bytes
+/// and its (sidecar-authoritative) MIME type — GH #87.
+///
+/// Shape per the Chat-Completions vision contract: a `content` array entry
+/// `{"type": "image_url", "image_url": {"url": "data:<mime>;base64,<data>"}}`.
+/// The data URL is self-contained, so no blob ever leaves the colony as a
+/// dereferenceable link.
+pub(crate) fn image_content_part(mime_type: &str, bytes: &[u8]) -> Value {
+    use meclaw_core::serde_json::json;
+    json!({
+        "type": "image_url",
+        "image_url": {"url": format!("data:{mime_type};base64,{}", encode_base64(bytes))}
+    })
+}
+
+/// Fold resolved image parts into a built Chat-Completions request — GH #87.
+///
+/// The attachments hang off the message body, not off a turn, so they join the
+/// conversation where a vision model expects them: on the **last user
+/// message**, whose plain string `content` becomes a content array of
+/// `{"type":"text"}` plus the image parts (an existing array is extended).
+/// Without a user message the parts become one appended user message of their
+/// own — an attachment always has to reach the model as user input.
+///
+/// **Empty `image_parts` is a no-op**: a cell that declares no attachment
+/// consumption produces the pre-GH-#87 request byte for byte.
+pub(crate) fn attach_image_parts(request: &mut Value, image_parts: Vec<Value>) {
+    use meclaw_core::serde_json::json;
+    if image_parts.is_empty() {
+        return;
+    }
+    let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+    let last_user = messages
+        .iter_mut()
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .map(|idx| &mut messages[idx]);
+    match last_user {
+        Some(msg) => {
+            let content = msg.get("content").cloned().unwrap_or(Value::Null);
+            let mut parts: Vec<Value> = match content {
+                Value::Array(existing) => existing,
+                Value::String(text) => vec![json!({"type": "text", "text": text})],
+                _ => Vec::new(),
+            };
+            parts.extend(image_parts);
+            msg["content"] = Value::Array(parts);
+        }
+        None => messages.push(json!({"role": "user", "content": image_parts})),
+    }
 }
 
 /// Map provider-attribution `params` to their HTTP request headers (A4).
@@ -368,8 +441,8 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
 #[cfg(test)]
 mod tests {
     use super::{
-        TranslateError, build_openai_request, concat_system_prompt, parse_openai_response,
-        translate_error_to_code,
+        TranslateError, attach_image_parts, build_openai_request, concat_system_prompt,
+        encode_base64, image_content_part, parse_openai_response, translate_error_to_code,
     };
     use crate::llm::params::LlmParams;
     use meclaw_core::serde_json::{Value, json};
@@ -380,13 +453,13 @@ mod tests {
     fn empty_tree_returns_empty_string() {
         let tree = json!({});
         let out = concat_system_prompt(&tree, &[]);
-        assert_eq!(out.unwrap(), "");
+        assert_eq!(out, "");
     }
 
     #[test]
     fn single_leaf_returns_its_text() {
         let tree = json!({"identity": {"soul": {"text": "S"}}});
-        let out = concat_system_prompt(&tree, &[]).unwrap();
+        let out = concat_system_prompt(&tree, &[]);
         assert_eq!(out, "S");
     }
 
@@ -396,8 +469,7 @@ mod tests {
             "identity": {"soul": {"text": "S"}},
             "facts":    {"x":    {"text": "F"}},
         });
-        let out =
-            concat_system_prompt(&tree, &["identity".to_string(), "facts".to_string()]).unwrap();
+        let out = concat_system_prompt(&tree, &["identity".to_string(), "facts".to_string()]);
         assert_eq!(out, "S\n\nF");
     }
 
@@ -407,17 +479,28 @@ mod tests {
             "identity": {"soul": {"text": "S"}},
             "tools":    {"calc": {"text": "{\"name\":\"calc\"}"}}
         });
-        let out = concat_system_prompt(&tree, &[]).unwrap();
+        let out = concat_system_prompt(&tree, &[]);
         assert_eq!(out, "S");
     }
 
+    /// GH #86: a leaf that arrived as a `{text_id}` pointer reaches this
+    /// function already resolved — the substrate expands it at the delivery
+    /// boundary, into exactly the `{"text": …}` container an inline leaf uses.
+    /// There is nothing left here to tell the two apart, which is the point:
+    /// the old `BlobUnsupported` rejection guarded a case that can no longer
+    /// arrive.
     #[test]
-    fn text_id_leaf_returns_blob_unsupported() {
-        let tree = json!({"identity": {"body": {"text_id": "01HXY"}}});
-        let err = concat_system_prompt(&tree, &[]).unwrap_err();
+    fn a_leaf_that_arrived_resolved_joins_the_prompt_like_any_other() {
+        let tree = json!({
+            "identity": {
+                "soul": {"text": "inline"},
+                "body": {"text": "the long persona"},
+            }
+        });
+        let out = concat_system_prompt(&tree, &[]);
         assert_eq!(
-            err,
-            TranslateError::BlobUnsupported("identity.body".to_string())
+            out, "the long persona\n\ninline",
+            "both leaves join the prompt; alphabetical DFS puts body before soul"
         );
     }
 
@@ -629,6 +712,105 @@ mod tests {
             json!(0.0),
             "provider_extra.temperature must overlay-win over params.temperature"
         );
+    }
+
+    // ───── GH #87: attachments[] → image content parts ─────
+
+    #[test]
+    fn base64_encodes_every_residue_class() {
+        assert_eq!(encode_base64(b""), "");
+        assert_eq!(encode_base64(&[0, 0, 0]), "AAAA");
+        assert_eq!(encode_base64(&[0xFF]), "/w==");
+        assert_eq!(encode_base64(&[0xFF, 0xFF]), "//8=");
+        assert_eq!(encode_base64(&[0, 0, 0, 0xFF]), "AAAA/w==");
+        assert_eq!(encode_base64(b"Man"), "TWFu");
+        assert_eq!(encode_base64(b"hello world"), "aGVsbG8gd29ybGQ=");
+    }
+
+    #[test]
+    fn base64_round_trips_through_the_in_tree_decoder() {
+        // The store's hand-rolled decoder is the counterpart; a round trip over
+        // a byte range that exercises the full alphabet pins both.
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        let encoded = encode_base64(&bytes);
+        let decoded = crate::store::query::hamming::decode_base64(&encoded).unwrap();
+        assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn image_content_part_carries_mime_and_base64_data_url() {
+        let part = image_content_part("image/png", &[0xFF, 0xFF]);
+        assert_eq!(
+            part,
+            json!({"type": "image_url",
+                   "image_url": {"url": "data:image/png;base64,//8="}})
+        );
+    }
+
+    #[test]
+    fn attach_image_parts_merges_into_the_last_user_message() {
+        let params = p();
+        let messages = [
+            json!({"origin": "user", "type": "text", "text": "first"}),
+            json!({"origin": "assistant", "type": "text", "text": "reply"}),
+            json!({"origin": "user", "type": "text", "text": "look at this"}),
+        ];
+        let mut body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        attach_image_parts(&mut body, vec![image_content_part("image/png", b"\xff")]);
+        let arr = body["messages"].as_array().unwrap();
+        assert_eq!(arr.len(), 3, "no message is added when a user turn exists");
+        // The earlier user turn keeps its plain string content.
+        assert_eq!(arr[0]["content"], json!("first"));
+        // The last one becomes a content array: text first, then the image.
+        assert_eq!(
+            arr[2],
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,/w=="}}
+            ]})
+        );
+    }
+
+    #[test]
+    fn attach_image_parts_appends_a_user_message_when_there_is_none() {
+        let params = p();
+        let messages = [json!({"origin": "assistant", "type": "text", "text": "hi"})];
+        let mut body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        attach_image_parts(&mut body, vec![image_content_part("image/jpeg", b"\xff")]);
+        let arr = body["messages"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(
+            arr[1],
+            json!({"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/w=="}}
+            ]})
+        );
+    }
+
+    #[test]
+    fn attach_image_parts_without_parts_is_byte_identical() {
+        let params = p();
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let before = build_openai_request(&params, "sys", &messages, &[]).unwrap();
+        let mut after = before.clone();
+        attach_image_parts(&mut after, vec![]);
+        assert_eq!(
+            meclaw_core::serde_json::to_string(&after).unwrap(),
+            meclaw_core::serde_json::to_string(&before).unwrap(),
+            "a cell without attachments must produce the pre-GH-#87 request byte for byte"
+        );
+    }
+
+    #[test]
+    fn attach_image_parts_extends_an_existing_content_array() {
+        let mut body = json!({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "a"}]}
+        ]});
+        attach_image_parts(&mut body, vec![image_content_part("image/png", b"\xff")]);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], json!({"type": "text", "text": "a"}));
+        assert_eq!(content[1]["type"], "image_url");
     }
 
     #[test]
@@ -857,10 +1039,6 @@ mod tests {
 
     #[test]
     fn translate_error_all_variants_map_to_provider_error() {
-        assert_eq!(
-            translate_error_to_code(&TranslateError::BlobUnsupported("p".into())),
-            "provider_error"
-        );
         assert_eq!(
             translate_error_to_code(&TranslateError::TypeUnsupported("image".into())),
             "provider_error"

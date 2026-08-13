@@ -558,10 +558,32 @@ pub(crate) fn patch_and_substitute_config(
             "cell.mailbox_size must be >= 1 (0 has no capacity semantics)".into(),
         ));
     }
-    let params = runtime
+    let mut params = runtime
         .get("params")
         .cloned()
         .unwrap_or(JsonValue::Object(Default::default()));
+    // GH #85 -- the default-deny cut, and it is PROSPECTIVE. `provenance` is
+    // `Some` exactly on the paths that instantiate a node from a template, so
+    // this fills the hole in the node being BORN and touches nothing that is
+    // already on disk. Same shape as the GH #20 secret cut: instantiation
+    // starts writing something new, existing instances keep running unchanged.
+    //
+    // Written into both views because the block is a literal: the runtime view
+    // is what the cell about to spawn sees, and the disk view is what the
+    // operator can read back and edit.
+    if provenance.is_some() && sandbox_enforcing(&cell_type) && params.get("sandbox").is_none() {
+        let block = default_sandbox_block();
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("sandbox".into(), block.clone());
+        }
+        cfg.as_object_mut()
+            .and_then(|c| {
+                c.entry("params")
+                    .or_insert_with(|| JsonValue::Object(Default::default()))
+                    .as_object_mut()
+            })
+            .map(|p| p.insert("sandbox".into(), block));
+    }
     // Extract the contract block from the post-substitution config (T23) and
     // compile it via the shared `compile_contract_view` helper (paket-7 B4).
     // A malformed `contract.emits` schema yields `MutationError::Schema` HERE —
@@ -624,6 +646,38 @@ pub(crate) fn patch_and_substitute_config(
         mailbox_size,
         header_view,
     ))
+}
+
+/// The cell types that read `params.sandbox` and enforce it (GH #85).
+///
+/// A closed list rather than "every cell type", because a block nobody reads
+/// is noise in a `store`'s params and meaningless on a `hive` scope marker.
+/// The coupling is deliberate and one-directional: `meclaw-colony` cannot see
+/// `meclaw-cells`, so a fourth cell type that grows a sandbox has to be added
+/// here as well, and `docs/cell-types.md` says so at each of the three.
+const SANDBOX_ENFORCING_CELL_TYPES: [&str; 3] = ["bash", "code", "harness"];
+
+/// Whether `cell_type` is one of the cell types that enforce a sandbox.
+fn sandbox_enforcing(cell_type: &str) -> bool {
+    SANDBOX_ENFORCING_CELL_TYPES.contains(&cell_type)
+}
+
+/// The profile a template-sourced cell gets when it declares none (GH #85).
+///
+/// Deliberately path-free. A default naming the cell's own directory would
+/// bake an absolute host path into the instantiated `config.json`, and an
+/// exported tree would carry a boundary that points at a directory on somebody
+/// else's machine -- the same class of failure GH #20 was opened about. What
+/// stays reachable is the runtime set (`/usr`, `/lib`, `/etc`, `/proc`, the
+/// usual device nodes), which is what an interpreter needs to start at all;
+/// everything else the template has to declare, and `trust: "trusted"` remains
+/// the explicit escape hatch.
+fn default_sandbox_block() -> JsonValue {
+    meclaw_core::serde_json::json!({
+        "trust": "restricted",
+        "network": "deny",
+        "filesystem": {"runtime": true}
+    })
 }
 
 /// If a `seed/` directory exists in the staging path, create a fresh `cell.db`

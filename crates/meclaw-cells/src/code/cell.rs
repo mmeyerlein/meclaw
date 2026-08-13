@@ -268,12 +268,21 @@ impl StatelessCell for CodeCell {
             // S4 (GH #35): the sandbox is installed on the command, not around
             // it. A profile that cannot be applied fails HERE, before a child
             // exists — a `restricted` cell never falls back to unsandboxed.
-            if let Some(profile) = &self.params.sandbox
-                && let Err(e) = crate::sandbox::apply(profile, &mut command)
-            {
-                emit_spawn_error(sink, &reply_target, format!("sandbox not applied: {e}")).await;
-                return;
-            }
+            //
+            // GH #85: the returned scope owns the child's cgroup and must stay
+            // alive until the child is reaped, so it is bound rather than
+            // dropped on the spot.
+            let _sandbox_scope = match &self.params.sandbox {
+                None => crate::sandbox::SandboxScope::empty(),
+                Some(profile) => match crate::sandbox::apply(profile, &mut command) {
+                    Ok(scope) => scope,
+                    Err(e) => {
+                        emit_spawn_error(sink, &reply_target, format!("sandbox not applied: {e}"))
+                            .await;
+                        return;
+                    }
+                },
+            };
             let mut child = match command.spawn() {
                 Ok(c) => c,
                 Err(e) => {

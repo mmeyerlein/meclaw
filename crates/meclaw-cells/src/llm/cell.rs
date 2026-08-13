@@ -6,6 +6,7 @@ use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::wire::WireError;
 use crate::llm::{auth, output, params::LlmParams, state, translate, translate_responses, wire};
 use meclaw_colony::stateful_cell::StatefulCell;
+use meclaw_colony::{AttachmentReadError, AttachmentReader};
 use meclaw_core::serde_json::Value;
 use meclaw_core::{Body, Message, OutputSink};
 
@@ -193,6 +194,11 @@ pub struct LlmCell {
     /// reqwest client — built in `LlmCellFactory::spawn_cell` (T24), cloned
     /// into the RespawnFn closure.
     pub http: reqwest::Client,
+    /// GH #87: read handle on the blob store, present iff this cell declares
+    /// `consumes.body.attachments`. `None` means the cell does not consume
+    /// attachments and the slot travels past it untouched — the pre-GH-#87
+    /// behaviour, byte for byte.
+    attachments: Option<AttachmentReader>,
 }
 
 impl LlmCell {
@@ -201,8 +207,103 @@ impl LlmCell {
     /// drive the cell without the full Colony.
     #[doc(hidden)]
     pub fn new(params: LlmParams, http: reqwest::Client) -> Self {
-        Self { params, http }
+        Self {
+            params,
+            http,
+            attachments: None,
+        }
     }
+
+    /// GH #87: install the declared-consumer blob reader.
+    ///
+    /// The factory builds it via `AttachmentReader::for_contract`, which yields
+    /// `Some` only for a cell whose contract declares
+    /// `consumes.body.attachments`. Passing `None` keeps the cell exactly as it
+    /// was before this feature existed.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_attachment_reader(mut self, reader: Option<AttachmentReader>) -> Self {
+        self.attachments = reader;
+        self
+    }
+
+    /// Resolve the `attachments[]` slot into OpenAI image content parts
+    /// (GH #87). Returns `(error_code, detail)` on failure — every detail names
+    /// the attachment and the reason.
+    ///
+    /// No declaration (no reader) or no slot ⇒ `Ok(vec![])`, and the caller's
+    /// request stays byte-identical to the pre-GH-#87 one. The declared MIME
+    /// type is checked BEFORE the read so a 40 MB PDF is rejected without ever
+    /// entering memory; the sidecar's MIME type — the authority, it is what the
+    /// store committed — is checked again after the read and is what the data
+    /// URL carries.
+    async fn resolve_image_attachments(
+        &self,
+        slot: Option<&Value>,
+    ) -> Result<Vec<Value>, (&'static str, String)> {
+        let Some(reader) = &self.attachments else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = slot.and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.params.effective_wire_dialect() == WireDialect::Responses {
+            return Err((
+                "invalid_input",
+                "attachments[] consumption is implemented for the chat-completions \
+                 wire dialect only (see docs/roadmap.md)"
+                    .to_string(),
+            ));
+        }
+        let timeout = std::time::Duration::from_millis(self.params.attachment_timeout_ms);
+        let mut parts = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let raw_id = entry.get("blob_id").and_then(|v| v.as_str()).unwrap_or("");
+            let Ok(blob_id) = meclaw_core::Uuid::parse_str(raw_id) else {
+                return Err((
+                    "invalid_input",
+                    format!("attachment '{raw_id}': blob_id is not a UUID"),
+                ));
+            };
+            let declared_mime = entry
+                .get("mime_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !is_image_mime(declared_mime) {
+                return Err(("invalid_input", non_image_detail(blob_id, declared_mime)));
+            }
+            let blob = match reader.read(blob_id, timeout).await {
+                Ok(b) => b,
+                Err(e @ AttachmentReadError::Timeout(..)) => {
+                    return Err(("timeout", e.to_string()));
+                }
+                Err(e) => return Err(("invalid_input", e.to_string())),
+            };
+            if !is_image_mime(&blob.mime_type) {
+                return Err(("invalid_input", non_image_detail(blob_id, &blob.mime_type)));
+            }
+            parts.push(translate::image_content_part(&blob.mime_type, &blob.bytes));
+        }
+        Ok(parts)
+    }
+}
+
+/// The `llm` cell consumes `image/*` attachments; everything else is a
+/// cell-level rejection (GH #87).
+fn is_image_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+}
+
+/// Error detail for a non-image attachment — names the attachment and the
+/// reason, per the GH #87 failure contract.
+fn non_image_detail(blob_id: meclaw_core::Uuid, mime: &str) -> String {
+    format!(
+        "attachment {blob_id}: mime type '{mime}' is not an image; \
+         the llm cell consumes image/* attachments only"
+    )
 }
 
 /// Returns the current wall-clock time as Unix milliseconds (i64). Used for
@@ -533,27 +634,40 @@ impl StatefulCell for LlmCell {
             };
 
             // 5c: concat system-prompt (skips tools-subtree at top-level).
+            // Infallible since GH #86: the only failure it ever had was an
+            // unresolved `{text_id}` leaf, and the substrate resolves those at
+            // the delivery boundary now.
             let system_string =
-                match translate::concat_system_prompt(&system_tree, &self.params.system_order) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        output::emit_error(
-                            sink,
-                            reply_target,
-                            translate::translate_error_to_code(&e),
-                            &format!("translate: {e:?}"),
-                            "translate",
-                            input_messages,
-                            started_at_unix_ms,
-                            (unix_ms_now() - started_at_unix_ms).max(0) as u64,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await;
-                        return;
-                    }
-                };
+                translate::concat_system_prompt(&system_tree, &self.params.system_order);
+
+            // 5c.2 (GH #87): resolve declared `attachments[]` into image
+            // content parts. A cell without the declaration holds no reader,
+            // gets an empty vector here and stays byte-identical to pre-#87.
+            // The read is I/O and carries its own operation timeout (A) inside
+            // `AttachmentReader::read`.
+            let image_parts = match self
+                .resolve_image_attachments(content_obj.get("attachments"))
+                .await
+            {
+                Ok(parts) => parts,
+                Err((code, detail)) => {
+                    output::emit_error(
+                        sink,
+                        reply_target,
+                        code,
+                        &detail,
+                        "parse",
+                        input_messages,
+                        started_at_unix_ms,
+                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            };
 
             // P10 dialect fork. Everything above (system tree, tools, system
             // prompt) is dialect-neutral and shared; below this point the two
@@ -614,7 +728,12 @@ impl StatefulCell for LlmCell {
                 &input_messages,
                 &tools,
             ) {
-                Ok(r) => r,
+                Ok(mut r) => {
+                    // GH #87: fold the resolved images into the last user
+                    // message. No-op for an empty vector.
+                    translate::attach_image_parts(&mut r, image_parts);
+                    r
+                }
                 Err(e) => {
                     output::emit_error(
                         sink,
@@ -1003,34 +1122,6 @@ mod tests {
             })
             .await;
         assert_eq!(count, 0, "parse-fail must NOT write to cell.db");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn handle_translate_error_text_id_in_system_emits_provider_error() {
-        // T20: text_id-leaf in system → BlobUnsupported (Phase-12 deferred) →
-        // emit_error(provider_error, source="translate"). Gate-1: messages
-        // pass-through unchanged.
-        let td = TempDir::new().unwrap();
-        let conn =
-            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
-        let mut db = meclaw_colony::DbConn::wrap(conn, None);
-        let mut cell = mk_cell();
-        let (sink, mut rx) = mk_sink();
-        let msg = MessageBuilder::new(Path::new("/llm"))
-            .reply_to(Path::new("/observer"))
-            .body(Body::Inline(json!({
-                "system": {"identity": {"body": {"text_id": "01HX"}}},
-                "messages": [{"origin":"user","type":"text","text":"Hi"}]
-            })))
-            .build();
-        cell.handle(msg, &sink, &mut db).await;
-        let em = rx.recv().await.unwrap();
-        assert_eq!(em.content["header"]["finish_reason"], "error");
-        assert_eq!(em.content["header"]["error_code"], "provider_error");
-        assert_eq!(em.content["meta"]["error"]["source"], "translate");
-        // Gate-1: messages pass-through unchanged.
-        assert_eq!(em.content["messages"][0]["text"], "Hi");
-        assert_eq!(em.content["messages"][0]["origin"], "user");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

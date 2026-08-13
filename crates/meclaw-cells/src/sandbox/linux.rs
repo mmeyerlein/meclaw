@@ -1,5 +1,24 @@
-//! Linux enforcement of a [`SandboxProfile`]: Landlock for the filesystem view,
-//! `unshare(CLONE_NEWUSER | CLONE_NEWNET)` for the network deny.
+//! Linux enforcement of a [`SandboxProfile`]: Landlock for the filesystem
+//! view, `unshare(CLONE_NEWUSER | CLONE_NEWNET)` for the network deny, and the
+//! ordering that ties all four mechanisms together.
+//!
+//! The caps live in [`super::cgroup`] and the syscall filter in
+//! [`super::seccomp`]; what belongs HERE is the sequence, because the order is
+//! load-bearing and every argument for it is a different one:
+//!
+//! 1. **join the cgroup**, while the credentials are still plainly the
+//!    daemon's -- a `cgroup.procs` write is a permission question about the
+//!    writer, and a user namespace would only make it harder to reason about;
+//! 2. **`PR_SET_NO_NEW_PRIVS`**, because both `landlock_restrict_self` and
+//!    `seccomp(SECCOMP_SET_MODE_FILTER, ...)` require it;
+//! 3. **`unshare`**, because creating the namespaces needs no filesystem
+//!    access and doing it before Landlock keeps the ordering obvious;
+//! 4. **Landlock**, because from here on nothing outside the allow-list can be
+//!    opened -- including the binary about to be `exec`ed, which is why it has
+//!    to be in the runtime set or in `read`;
+//! 5. **seccomp**, last, because every step above is a syscall the filter
+//!    would otherwise have to allow, and a filter installed earlier would just
+//!    be a longer allow-list.
 //!
 //! # Why Landlock and not a mount namespace
 //!
@@ -23,12 +42,14 @@
 //! does not change, so file permissions behave exactly as before. The child
 //! loses the network and nothing else.
 //!
-//! # Not handled in phase 1
+//! # Still not handled
 //!
 //! `LANDLOCK_ACCESS_FS_IOCTL_DEV` (ABI 5) is deliberately left unhandled, so
-//! `ioctl` on device nodes stays unrestricted. Path access is the phase-1
-//! threat model; the ioctl surface belongs with the seccomp work in GH #85.
+//! `ioctl` on device nodes stays unrestricted. The seccomp filter of GH #85
+//! did not pick it up either: its three axes are the ones the issue named, and
+//! a blanket `ioctl` rule would break far more than it closes.
 
+use super::cgroup::SandboxScope;
 use super::profile::{FilesystemProfile, NetworkPolicy, SandboxProfile};
 use std::ffi::CString;
 use std::io;
@@ -172,13 +193,18 @@ pub fn network_isolation_supported() -> bool {
 ///
 /// A [`SandboxProfile::Trusted`] profile is the declared escape hatch and does
 /// nothing at all.
-pub fn apply(profile: &SandboxProfile, cmd: &mut tokio::process::Command) -> io::Result<()> {
-    let (network, filesystem) = match profile {
-        SandboxProfile::Trusted => return Ok(()),
+pub fn apply(
+    profile: &SandboxProfile,
+    cmd: &mut tokio::process::Command,
+) -> io::Result<SandboxScope> {
+    let (network, filesystem, limits, syscalls) = match profile {
+        SandboxProfile::Trusted => return Ok(SandboxScope::empty()),
         SandboxProfile::Restricted {
             network,
             filesystem,
-        } => (*network, filesystem),
+            limits,
+            syscalls,
+        } => (*network, filesystem, *limits, *syscalls),
     };
 
     let abi = landlock_abi().ok_or_else(|| {
@@ -192,16 +218,43 @@ pub fn apply(profile: &SandboxProfile, cmd: &mut tokio::process::Command) -> io:
     let handled = handled_access_fs(abi);
     let fds = open_allowed_paths(filesystem, handled)?;
 
+    // The cap is state outside the process, so it is created here, in the
+    // parent, and owned by the returned scope. A failure to create it fails the
+    // spawn: `limits` that nobody enforces would be the comforting lie the
+    // whole key exists to avoid.
+    let (scope, procs_fd) = match limits {
+        Some(l) => {
+            let (scope, fd) = super::cgroup::create(&l)?;
+            (scope, Some(fd))
+        }
+        None => (SandboxScope::empty(), None),
+    };
+    let procs_raw = procs_fd.as_ref().map(|fd| fd.as_raw_fd());
+
+    // The seccomp program is assembled here too, so an architecture this
+    // substrate cannot key a filter to fails before a child exists rather than
+    // as an opaque errno out of `pre_exec`.
+    let mut filter = match syscalls {
+        Some(policy) => Some(super::seccomp::Filter::build(&policy)?),
+        None => None,
+    };
+
     // SAFETY (the whole point of this module): the closure below runs in the
     // child after `fork()` in a multithreaded parent, so it must be
     // async-signal-safe. It allocates nothing, formats nothing and logs
     // nothing: every value it touches (`handled`, the `rules` vector and its
-    // raw fds) is built above, before the fork, and is only read afterwards.
-    // `io::Error::last_os_error` wraps an `errno` and does not allocate. The
-    // raw fds stay valid because their `OwnedFd`s are moved into the closure
-    // and therefore outlive every use.
+    // raw fds, the cgroup descriptor) is built above, before the fork, and is
+    // only read afterwards. `io::Error::last_os_error` wraps an `errno` and
+    // does not allocate. The raw fds stay valid because their `OwnedFd`s are
+    // moved into the closure and therefore outlive every use.
     unsafe {
         cmd.pre_exec(move || {
+            // First, while the credentials are still plainly this daemon's:
+            // joining a cgroup is a permission question about the writer, and
+            // a user namespace would only make it harder to reason about.
+            if let Some(fd) = procs_raw {
+                super::cgroup::join_via(fd)?;
+            }
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -210,10 +263,21 @@ pub fn apply(profile: &SandboxProfile, cmd: &mut tokio::process::Command) -> io:
             if network == NetworkPolicy::Deny {
                 unshare_network()?;
             }
-            restrict_self(handled, &fds)
+            restrict_self(handled, &fds)?;
+            // Last, and deliberately so: everything above is a syscall the
+            // filter would have to allow, and a filter installed before them
+            // would only be a longer allow-list. From here on nothing else in
+            // this closure runs.
+            if let Some(f) = filter.as_mut() {
+                f.install()?;
+            }
+            // `procs_fd` is only moved in so that the descriptor outlives the
+            // call above; nothing reads it after this point.
+            let _ = &procs_fd;
+            Ok(())
         });
     }
-    Ok(())
+    Ok(scope)
 }
 
 /// `unshare(CLONE_NEWUSER | CLONE_NEWNET)`: the child keeps its credentials but

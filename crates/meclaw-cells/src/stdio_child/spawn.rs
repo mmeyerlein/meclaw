@@ -43,6 +43,19 @@ pub struct ChildSpec {
     /// answer to "a child process reads the colony's secrets": with this on,
     /// the child sees exactly what was handed to it and nothing else.
     pub env_clear: bool,
+    /// Process sandbox for the child (GH #85). `None` is the pre-#85
+    /// behaviour and stays the default, so `mcp` and `subcolony` are untouched
+    /// by this field; the `harness` cell fills it from `params.sandbox`.
+    ///
+    /// It sits NEXT TO `process_group` and `env_clear`, not instead of them:
+    /// the environment wipe and the cwd clamp answer different questions than
+    /// a filesystem allow-list, and the group is what makes descendants
+    /// reapable.
+    ///
+    /// Boxed because a `ChildSpec` travels inside the `harness` cell's
+    /// reconfiguration message, and a profile carrying two path vectors would
+    /// otherwise make every variant of that enum as large as its largest one.
+    pub sandbox: Option<Box<crate::sandbox::SandboxProfile>>,
 }
 
 /// A running child process plus its line-JSON pipes.
@@ -56,6 +69,11 @@ pub struct StdioChild {
     /// Reaps the child's process group on every teardown path, including the
     /// ones that never reach `terminate`.
     pub(crate) guard: ProcessGroupGuard,
+    /// Owns whatever the sandbox created outside the process -- today the
+    /// child's cgroup (GH #85). Held here so that it lives exactly as long as
+    /// the child does: `terminate` consumes `self`, and every path that does
+    /// not reach `terminate` drops it instead.
+    pub(crate) _sandbox: crate::sandbox::SandboxScope,
 }
 
 /// Kills the child's process group when it goes out of scope.
@@ -128,6 +146,15 @@ impl StdioChild {
         if spec.process_group {
             cmd.process_group(0);
         }
+        // GH #85: the sandbox goes on last, so it wraps the fully configured
+        // command. Fail-closed like `bash` and `code`: a profile that cannot be
+        // built fails HERE, before a child exists, rather than letting the
+        // harness run with the daemon's rights after all.
+        let sandbox = match &spec.sandbox {
+            None => crate::sandbox::SandboxScope::empty(),
+            Some(profile) => crate::sandbox::apply(profile.as_ref(), &mut cmd)
+                .map_err(|e| StdioChildError::Spawn(format!("sandbox not applied: {e}")))?,
+        };
         let mut child = cmd
             .spawn()
             .map_err(|e| StdioChildError::Spawn(e.to_string()))?;
@@ -145,6 +172,7 @@ impl StdioChild {
             stdin,
             stdout: BufReader::new(stdout).lines(),
             guard: ProcessGroupGuard { pgid },
+            _sandbox: sandbox,
         })
     }
 

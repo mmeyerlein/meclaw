@@ -58,7 +58,7 @@ Two of the four blocks have fundamentally different authority. This separation i
 
 **`max_concurrency`** (*optional, only for stateless cells, from Phase 7*) lives in the **`params`** block, not in the `cell` block: maximum number of concurrently running worker tasks in the stateless-cell dispatcher (see `meclaw-overview.md` section "Stateless-cell dispatcher"). Default: high value (effectively unbounded for typical load paths). Configurable per cell: e.g. `web_fetch` with `32` (HTTP provider rate limits), `file` with `8` (disk I/O), `bash` one-shot with `4` (process resource limit). For stateful and long-running cells the value is ignored.
 
-**`sandbox`** (*optional, from S4 / GH #35*) also lives in the **`params`** block, not in the `cell` block: the `cell` key list is closed and describes how the **colony** runs the cell, whereas the sandbox describes the rights with which the **cell** starts its child process, a property of execution just like `external_timeout_ms`. The block is read by the cell types that start foreign code: **`bash`** and **`code`**. Other cell types ignore it today (`harness` follows, see below).
+**`sandbox`** (*optional, from S4 / GH #35, completed in GH #85*) also lives in the **`params`** block, not in the `cell` block: the `cell` key list is closed and describes how the **colony** runs the cell, whereas the sandbox describes the rights with which the **cell** starts its child process, a property of execution just like `external_timeout_ms`. The block is read by the three cell types that start foreign code: **`bash`**, **`code`** and **`harness`**. Every other cell type ignores it.
 
 ```json
 "params": {
@@ -82,12 +82,30 @@ Two of the four blocks have fundamentally different authority. This separation i
 | `filesystem.read` | array of absolute paths | no, default `[]` | readable and executable, recursively. |
 | `filesystem.write` | array of absolute paths | no, default `[]` | readable, writable and creatable, recursively. |
 | `filesystem.runtime` | bool | no, default `true` | adds the runtime set (see below). |
-| `limits` | object | — | **reserved, not enforced** — boot error, see below. |
-| `syscalls` | object | — | **reserved, not enforced** — boot error, see below. |
+| `limits` | object | no | resource caps via cgroup v2, only under `restricted` — see below. |
+| `limits.memory_max_bytes` | integer > 0 | no | `memory.max` in bytes. Swap is pinned to `0` alongside it: a cap a process can escape into swap is not a cap. |
+| `limits.pids_max` | integer > 0 | no | `pids.max` — how many tasks the child and its descendants may hold together. The answer to a fork bomb. |
+| `limits.cpu_max_percent` | integer > 0 | no | `cpu.max` as a percentage of **one** core against a fixed 100 ms period, so `200` means two whole cores. |
+| `syscalls` | object | no | syscall filter via seccomp-bpf, only under `restricted` — see below. |
+| `syscalls.ptrace` | `"deny"` \| `"allow"` | no, default `"deny"` | `ptrace` plus `process_vm_readv`/`process_vm_writev`, the same capability under three names. |
+| `syscalls.raw_sockets` | `"deny"` \| `"allow"` | no, default `"deny"` | `AF_PACKET` of any kind and `SOCK_RAW` of any family. An ordinary TCP or UDP socket is untouched. |
+| `syscalls.foreign_signals` | `"deny"` \| `"allow"` | no, default `"deny"` | every signal whose target is not the sandboxed process itself. |
 
-**Both key sets are closed** (`sandbox` and `sandbox.filesystem`): an unknown key is a boot error. A `"netwrok": "deny"` must not pass as "no value given, so use the default". At a security boundary a forgiving parser is the worst property a parser can have.
+**All four key sets are closed** (`sandbox`, `sandbox.filesystem`, `sandbox.limits`, `sandbox.syscalls`): an unknown key is a boot error. A `"netwrok": "deny"` must not pass as "no value given, so use the default". At a security boundary a forgiving parser is the worst property a parser can have.
 
-**Default profile (recommended baseline for template-sourced cells).** A template that brings foreign code declares this block, where `<cell-workspace>` is the only directory it may write:
+**Default-deny for template-sourced cells (GH #85, the migration cut).** When a `bash`, `code` or `harness` cell is **instantiated from a template** and declares **no** `params.sandbox`, instantiation writes this block into its `config.json`:
+
+```json
+"sandbox": { "trust": "restricted", "network": "deny", "filesystem": { "runtime": true } }
+```
+
+**The cut is prospective only.** It applies at instantiation time and only to the node being born, the same shape as the secret cut from GH #20. A tree already on disk keeps running unchanged: there, an absent `sandbox` block still means "no sandbox". What "template-sourced" means is answered by `cell.provenance` (§ `cell`): the stamp is written in the same write as the default, and an `adopt` entry carries neither.
+
+**The default deliberately names no path.** A default that filled in the cell's own directory would bake an absolute host path into the instantiated `config.json`, and an exported tree would then carry a boundary pointing at a directory on somebody else's machine — exactly the failure class GH #20 was opened about. What stays reachable is the runtime set, which is what an interpreter needs to start at all; anything beyond that the template declares itself. The block is visible in the instance `config.json` and therefore editable.
+
+**The escape hatch stays explicit.** A template that needs full rights writes `"sandbox": {"trust": "trusted"}`, nothing is inserted and nothing is enforced, and whoever reads the instance sees the decision.
+
+Recommended baseline for a template that has to write (`<cell-workspace>` is the only directory it should write):
 
 ```json
 "sandbox": {
@@ -97,15 +115,23 @@ Two of the four blocks have fundamentally different authority. This separation i
 }
 ```
 
-**An absent `sandbox` block still means "no sandbox"** today: the cell runs with the daemon's rights, as it did before S4. Flipping that to automatic default-deny for template-sourced cells is a breaking change for every existing topology and is tracked in GH #85. Until then the profile above is a recommendation, not a default.
-
 **The runtime set** (`filesystem.runtime: true`) grants read and execute on `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/proc`, `/sys` and read/write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`. Without it no interpreter starts, because even the dynamic loader would be unreachable. It is a convenience, **not a security statement**: it contains `/etc` (hence `/etc/passwd`) and `/proc` (hence `/proc/<pid>/cmdline` of other processes of the same user). Set `runtime: false` and enumerate the paths yourself if that is not acceptable.
 
-**`limits` and `syscalls` are named but not enforced.** Both keys belong to the schema so that the shape is fixed, and both are **rejected at config load** (the error names GH #85). Resource caps (cgroup v2) and the syscall filter (seccomp-bpf) are phase 2. A cap that nobody enforces would be worse than no cap: it would tell the operator a comforting lie.
+**Resource caps (`limits`, GH #85).** Enforced through a **delegated sub-cgroup** (cgroup v2) created per child process, filled, entered before the `exec` and removed afterwards — including after a crash and a restart, because the directory name carries the daemon's pid and the next run sweeps away whatever pid no longer exists. A `limits` block that caps **nothing** is a boot error: it would read as "capped" and be no such thing.
+
+The delegated root is looked up in two steps: the topmost writable ancestor of the daemon's own cgroup (which is what delegation looks like for a systemd user service with `Delegate=yes` and inside a container), otherwise `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service`. **Operating requirement, measured:** creating the directory is not enough — *moving* a process additionally requires write access to `cgroup.procs` of the **common ancestor** of source and destination. A daemon started from an ssh login lives in `user-<uid>.slice/session-<n>.scope`, so the common ancestor is the root-owned `user-<uid>.slice` and the move fails with `EACCES`. The same daemon under `systemctl --user` lives below `user@<uid>.service` and is allowed. **Run the daemon as a user unit if you want `limits`.** Otherwise the spawn fails loudly (fail-closed) instead of running uncapped.
+
+Teardown writes `cgroup.kill` first: the sub-cgroup belongs to exactly one child, so anything that outlived it is a leftover — a cap a detached descendant escapes is not a cap.
+
+**Syscall filter (`syscalls`, GH #85).** A seccomp-bpf program assembled in this tree (no new crate, hard rule 6) that closes what Landlock, being a filesystem LSM, does not cover. **Naming the block means "filter this process"**: an axis that is not mentioned is **denied**, and an axis you want to keep open you spell out as `"allow"` and can see that you did. A block in which all three axes are `"allow"` is a boot error, because it would install no filter at all.
+
+A denial is `EPERM`, not a kill: the program sees an ordinary permission error and can report it. Only an architecture the filter was not built for ends the process, because a filter keyed to the wrong syscall table is not a filter.
+
+**The limit of `foreign_signals`, stated plainly:** a BPF program cannot consult the process table, so it compares the target pid against exactly one constant, its own, patched in after the fork. What stays allowed is `kill(self)` and `tgkill(self, tid)`, which is what `raise()` and `abort()` compile down to. Denied are `kill(0, …)` (the own process group — for a cell's child that is the **daemon's** group), `kill(-1, …)` and every foreign pid. The cost: a shell script under this axis cannot end its own background job with `kill $!`. That is a real restriction; the opposite reading, "allow every positive pid", would protect nothing.
 
 **Fail-closed.** A `restricted` profile that cannot be enforced (no Landlock in the kernel, no namespaces on this host, a declared path that does not exist) makes the spawn fail; the cell emits `error_code: "io_error"` with `sandbox not applied: <reason>`. There is no path on which a `restricted` cell quietly keeps running unsandboxed.
 
-**`sandbox` is not runtime-changeable.** The block is read from the birth params only. For today's consumers `bash` and `code` that holds structurally: both are stateless, have no `cell.db` and therefore no runtime param overlay at all. For any future consumer it stands as a rule: a security boundary that a message can move is not a boundary.
+**`sandbox` is not runtime-changeable.** The block is read from the birth params only. For `bash` and `code` that holds structurally: both are stateless, have no `cell.db` and therefore no runtime param overlay at all. `harness` has one, and there `sandbox` is listed immutable explicitly: an update touching it is rejected as `Immutable` rather than swallowed as an unknown key. A security boundary that a message can move is not a boundary.
 
 Cell-type-specific. Each cell type defines its own `params` structure (see `cell-types.md`). The colony hands this block to the cell at startup; afterwards param updates via message are possible (last-write-wins, persisted in `cell.db`). **Form** (W4b): the update message carries a **top-level `params` body slot** (1:1 this `params` block, partial), pure cell content, no header gate; the cell merges + persists it itself and replays the overlay at wake/respawn over the birth params (`config.json` stays untouched). Which fields are runtime-changeable or immutable (e.g. credentials, security boundaries) is cell-type-specific (see `cell-types.md`, e.g. `llm` § Runtime param updates).
 
@@ -191,6 +217,8 @@ Split into `body` (content slots) and **the two header compartments** `context` 
 - **Mutation/locality validator**: the build-time validator uses `emits.hop` (what the cell produces) together with `consumes.context` + `consumes.hop` (what the downstream cell expects) to statically check locality and reachability of a header value. A `hop` value is only available at the immediately following hop (unless an edge carries it forward via `set_context`), a `context` value across the entire lifecycle. Hive transits participate in the fan-in intersection: an edge with a hive `from` is a transit pass-through and contributes `set_hop` of this edge ∪ the intersection of the contributions of all inbound edges of the hive (recursively across multi-stage transits, cycle-safe). The same key walk the runtime performs at transit (`hop` expires only at a cell emission, not at the transit). **Participation/status filter at boot:** at bootstrap, the locality checker carries contract obligations **only for active nodes**, nodes that participate in the active graph. A registered but **disconnected/inactive** node (persisted `colony.db` status at reboot **or** island derived as inactive from t0 at first boot) is pure bookkeeping: it is rehydrated (stable `cell_id`), but at boot is subject to **no** contract enforcement. The full check resides at the **mutation moment** that connects it (participation rule + transit-aware intersection). Thus the check is uniform across both boot kinds: inactive ⇒ no boot obligation; active-and-wired ⇒ sharply checked.
 
 **Every key declared in `consumes.body` is mandatory.** There is no optional `consumes.body` field: `validate_consumes` (`crates/meclaw-core/src/contract.rs`) requires every declared key in the incoming body and otherwise reports `required consumes.body '{key}' missing`. **Consequent rule for `/colony` roundtrips:** a `/colony` endpoint answer (`{"mutation":{…}}`, `{"rescan":{"status":"ok"}}`) is **not** a UBF body, it carries no `messages[]` and therefore bounces off every contract that declares `messages`. A cell that runs a `/colony` roundtrip therefore declares an **empty** `consumes.body`.
+
+**Declaration as a capability switch (GH #87):** a declared `consumes.body` key is not only a presence obligation, it can also **unlock a capability**. First case: `consumes.body.attachments`. Only a cell that declares the slot receives the read-only blob-store handle at spawn with which it resolves `attachments[]` refs itself at `handle()` time (`meclaw-overview.en.md` § "`attachments[]` schema", owner ruling GH #19; consumer detail in `cell-types.en.md` § `llm`). Without the declaration the handle does not exist, so the cell **cannot** read an attachment rather than merely not doing so. Because declaring is binding, this is a deliberate coupling: whoever wants to read attachments thereby also requires them on every inbound message.
 
 **Enforcement state:** The substrate-side required-`consumes` check runs at the delivery boundary (before `handle()`): missing/type-wrong required key → error message to `reply_to` (`error_code: "consumes_violation"`), otherwise dead letter (same token). **The error reply is delivered DIRECTLY to `reply_to`** (registry lookup via `route()`), not routed via the consumer's out-edges. It is feedback to a known sender, not a routing target (W2b ruling 2026-06-12; see `meclaw-overview.md` § Routing errors "Outputs arm: three disjoint cases", case 2). A catch-all out-edge of the consumer does not redirect the error reply.
 

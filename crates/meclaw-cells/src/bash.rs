@@ -92,20 +92,28 @@ impl meclaw_colony::StatelessCell for BashCell {
             // S4 (GH #35): the sandbox is installed on the command, not around
             // it. A profile that cannot be applied fails HERE, before a child
             // exists — a `restricted` cell never falls back to unsandboxed.
-            if let Some(profile) = &self.sandbox
-                && let Err(e) = crate::sandbox::apply(profile, &mut cmd)
-            {
-                self.emit_error(
-                    sink,
-                    reply_target,
-                    ERR_IO_ERROR,
-                    format!("sandbox not applied: {e}"),
-                    id,
-                    started,
-                )
-                .await;
-                return;
-            }
+            //
+            // GH #85: the returned scope owns the child's cgroup and must stay
+            // alive until the child is reaped, so it is bound rather than
+            // dropped on the spot.
+            let _sandbox_scope = match &self.sandbox {
+                None => crate::sandbox::SandboxScope::empty(),
+                Some(profile) => match crate::sandbox::apply(profile, &mut cmd) {
+                    Ok(scope) => scope,
+                    Err(e) => {
+                        self.emit_error(
+                            sink,
+                            reply_target,
+                            ERR_IO_ERROR,
+                            format!("sandbox not applied: {e}"),
+                            id,
+                            started,
+                        )
+                        .await;
+                        return;
+                    }
+                },
+            };
 
             let child = match cmd.spawn() {
                 Ok(c) => c,

@@ -15,6 +15,14 @@ fn default_external_timeout_ms() -> u64 {
     110_000
 }
 
+/// GH #87: A-timeout for one `attachments[]` blob read. A local filesystem read
+/// of a file the substrate itself committed — orders of magnitude faster than a
+/// provider round trip, so it gets a much tighter default than
+/// `external_timeout_ms` and its own knob.
+fn default_attachment_timeout_ms() -> u64 {
+    5_000
+}
+
 /// How the cell authenticates against the provider (P10).
 ///
 /// Vendor-neutral by design: `OauthSubscription` describes "a rotating OAuth
@@ -119,6 +127,12 @@ pub struct LlmParams {
     /// cell-types.md Z.1542).
     #[serde(default = "default_external_timeout_ms")]
     pub external_timeout_ms: u64,
+    /// GH #87: operation-timeout (A) for reading ONE `attachments[]` blob from
+    /// the store, in milliseconds; default 5_000. Only meaningful for a cell
+    /// that declares `consumes.body.attachments` — a cell without that
+    /// declaration never holds a reader and never reads a blob.
+    #[serde(default = "default_attachment_timeout_ms")]
+    pub attachment_timeout_ms: u64,
     /// App-attribution: OpenRouter `HTTP-Referer` request header (app page /
     /// model rankings). A regular param (A4 params-uniform ruling): set in
     /// `config.json`, `${VAR}`-substituted from `.env` like any other param.
@@ -245,6 +259,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "system_order",
     "provider_extra",
     "external_timeout_ms",
+    // GH #87 attachment consumption.
+    "attachment_timeout_ms",
     "http_referer",
     "x_title",
     // P10 auth dimension.
@@ -312,6 +328,29 @@ mod tests {
         assert!(p.system_order.is_empty());
         assert!(p.provider_extra.is_empty());
         assert_eq!(p.external_timeout_ms, 110_000);
+    }
+
+    #[test]
+    fn parse_attachment_timeout_has_a_default_well_below_external_timeout() {
+        // GH #87: the A-timeout for a blob read is a filesystem read, not a
+        // provider round trip — its own knob, its own (much smaller) default.
+        let raw = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.attachment_timeout_ms, 5_000);
+        assert!(p.attachment_timeout_ms < p.external_timeout_ms);
+    }
+
+    #[test]
+    fn attachment_timeout_is_a_known_mutable_param() {
+        let raw = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let p = LlmParams::parse(&raw).unwrap();
+        let update = json!({"attachment_timeout_ms": 250})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, overlay) = p.apply_update(&update).unwrap();
+        assert_eq!(merged.attachment_timeout_ms, 250);
+        assert_eq!(overlay.len(), 1);
     }
 
     #[test]

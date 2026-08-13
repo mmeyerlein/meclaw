@@ -212,15 +212,19 @@ async fn an_unresolvable_pointer_dead_letters_as_blob_unavailable() {
     h.shutdown().await;
 }
 
-/// The other classes are deliberately untouched: `attachments[]` refs belong to
-/// the consuming cell, and `system` `{text_id}` leaves are a separate site.
-/// Both must arrive verbatim, not silently mangled by this resolver.
+/// The one class that stays deliberately untouched: `attachments[]` refs belong
+/// to the consuming cell, which reads them on demand at `handle()` time. They
+/// must arrive verbatim, not silently mangled by this resolver.
+///
+/// The `system` tree's `{text_id}` leaves used to be pinned here as a second
+/// untouched class. They are resolved since GH #86; their pins live in
+/// `gh86_system_tree_pointer_resolution.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn attachments_and_system_pointers_arrive_untouched() {
+async fn attachment_refs_arrive_untouched() {
     let td = tempfile::TempDir::new().unwrap();
     let (h, mut sink_rx) = colony_with_sink(&td).await;
     let sent = json!({
-        "system": {"identity": {"body": {"text_id": Uuid::now_v7().to_string()}}},
+        "system": {"identity": {"soul": {"text": "inline"}}},
         "attachments": [{
             "blob_id": Uuid::now_v7().to_string(),
             "mime_type": "application/pdf",
@@ -239,8 +243,8 @@ async fn attachments_and_system_pointers_arrive_untouched() {
     };
     assert_eq!(
         body, sent,
-        "attachments[] refs and system text_id leaves are other pointer classes \
-         and pass through byte-identical"
+        "attachments[] refs are a pointer class of their own and pass through \
+         byte-identical"
     );
     h.shutdown().await;
 }

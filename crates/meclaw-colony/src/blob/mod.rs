@@ -13,6 +13,8 @@
 //! Phase-12 scope: ONLY write_streaming + read_sidecar. read_body arrives in
 //! Phase 13 (Cell-Konsumenten).
 
+pub mod attachments;
 pub mod disk;
 pub(crate) mod pointers;
+pub use attachments::{AttachmentBytes, AttachmentReadError, AttachmentReader};
 pub use disk::{BlobError, BlobSidecar, DiskBlobStore};

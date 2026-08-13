@@ -110,6 +110,10 @@ fn child_spec(params: &SubcolonyParams) -> ChildSpec {
         // Secret isolation, the deliberate plus of a process boundary: the child
         // sees the passthrough list and nothing else of this colony's env.
         env_clear: true,
+        // A child colony is a colony, not a cell running foreign code: it has
+        // no `params.sandbox` of its own and its cells carry their own
+        // profiles. GH #85 deliberately leaves this untouched.
+        sandbox: None,
     }
 }
 

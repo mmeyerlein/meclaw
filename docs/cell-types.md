@@ -109,8 +109,8 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 **Inference trigger**: exclusively `messages[]`. System updates (paths under `system.*`) accumulate in `cell.db` without a provider call.
 
 **State in `cell.db`**:
-- `system.*`: accumulative-replace per path. Bootstrap context (persona, tool schemas, facts). Updates arrive per message from arbitrary cells; the sender does not know the structure.
-- `messages[]`: last-received as-is (blob refs unresolved, no appended turns).
+- `system.*`: accumulative-replace per path. Bootstrap context (persona, tool schemas, facts). Updates arrive per message from arbitrary cells; the sender does not know the structure. Leaves sit in `cell.db` as `{"text": …}`: since GH #86 a `{text_id}` leaf no longer reaches the cell at all, the substrate resolves it at the delivery boundary.
+- `messages[]`: last-received as-is (no appended turns). Blob refs are already resolved here; since GH #19 the substrate expands `messages_id`/`text_id` before `handle()`, and the cell never sees a pointer.
 - **Not in cell.db**: appended assistant turn (output), blob cache (in-memory only).
 
 **`params`**:
@@ -123,7 +123,8 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
   "temperature": 0.7,
   "max_tokens":  4096,
 
-  "external_timeout_ms": 110000,
+  "external_timeout_ms":   110000,
+  "attachment_timeout_ms": 5000,
 
   "system_order":   ["identity", "facts", "instructions", "tools"],
   "provider_extra": { },
@@ -142,6 +143,7 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 ```
 
 - `external_timeout_ms` (concept A, see overview § Timeouts): A-timeout around the provider HTTP call (`tokio::time::timeout`), default `110000` (110 s). On Elapsed: regular error message with `finish_reason: "error"`, `error_code: "timeout"`.
+- `attachment_timeout_ms` (concept A, GH #87): A-timeout around **one** `attachments[]` blob read from the store, default `5000` (5 s). Much smaller than `external_timeout_ms`, because a blob read is a local filesystem read, not a provider round trip. On Elapsed: regular error message with `finish_reason: "error"`, `error_code: "timeout"`, whose detail names the attachment id. Without effect for a cell without `consumes.body.attachments`, which never reads a blob.
 
 - `provider` (Phase 8): **`"openai"` only** (including OpenAI-compatible endpoints via `base_url`). The value is set up as an enum, but Phase 8 implements exclusively the OpenAI translate. Further providers (in particular `"anthropic"`, Messages API native) are **deferred**, no fixed phase reference (see "Multi-provider" below). A non-`openai` value is in Phase 8 a `model_not_found`/`invalid_input`-equivalent configuration error at spawn.
 - `auth` (P10): **`"api_key"`** (default) | **`"oauth_subscription"`**. Selects the credential source, **not** the provider. Exactly **one** credential per cell: `api_key` is required for `"api_key"` and forbidden for `"oauth_subscription"`; `auth_ref` the other way round. Any violation is a configuration error at spawn whose message **never** names a param value.
@@ -166,6 +168,13 @@ Order within a message: the `params` slot is merged **first** + persisted in the
 **Immutable per llm** (update attempt ⇒ **loud reject**, `error_code: "invalid_input"`, **no** partial apply): `api_key` (credential, secret hygiene, mirror of the A4 `Authorization` ruling), `provider` (Phase-8 identity) and the entire P10 auth dimension — `auth`, `auth_ref`, `wire_dialect`, `oauth_token_endpoint`, `oauth_client_id`, `oauth_originator`, `oauth_client_version`. Rationale for the extension: `auth`/`auth_ref` are credential identity, and `wire_dialect`/`oauth_*` decide **which endpoint** a credential is presented to; if they were mutable, a message could redirect an existing token to a new destination. **Unknown** param keys ⇒ likewise loud reject (no silent no-op). A malformed value (wrong type) ⇒ reject (all-or-nothing). The reject detail names only the key/the rule, **never** a param value.
 
 **Tool definitions**: live in `system.tools.<tool_name>.text` as JSON strings. The adapter parses them at the provider call and builds the provider-native tool set. Tools are **not** concatenated into the system-prompt string. Extracted separately. Tool calls and tool results are their own `messages[]` turn types (`type: "tool_call"` / `"tool_result"` with `id` as the correlation anchor, pass-through value from the provider).
+
+**Attachments (`attachments[]`) — vision input (GH #87)**: an `llm` cell consumes file attachments **exactly when its contract declares `consumes.body.attachments`** (`config.md` § consumes; declaring is binding, which makes the slot mandatory on every inbound message). Only then does it receive a **read-only store handle** at spawn and resolve the `blob_id` refs **itself, at `handle()` time**. The substrate never inlines them (owner ruling GH #19, see `meclaw-overview.en.md` § "`attachments[]` schema"). A cell **without** the declaration holds no handle: the slot travels past it untouched and its provider request is byte-identical to the one without the slot.
+
+- **What is consumed**: `image/*`. Each attachment becomes an `image_url` content part of the request's last `user` message (whose `content` turns from a string into a content array: the text first, then the images); the URL is a self-contained `data:<mime>;base64,<…>` URL, so no dereferenceable link leaves the colony. The authority on the MIME type is the **sidecar**, which is what the store committed.
+- **Failure modes are cell errors, not dead letters**. The message was delivered correctly; it is the attachment behind it that is unreadable. A non-image MIME type and a missing or uncommitted blob yield a regular error message with `error_code: "invalid_input"`; an elapsed `attachment_timeout_ms` yields `error_code: "timeout"`. Every detail names the **attachment id** and the reason, and the inbound `messages[]` travel along unchanged (gate-1 pass-through, so failover edges stay usable). An attachment that cannot be read does **not** reach the provider.
+- **The declared MIME type is checked before the read**: a 40 MB PDF is rejected without ever entering memory.
+- **Wire dialect**: implemented for `chat_completions`. On `wire_dialect: "responses"` a non-empty `attachments[]` is a loud reject (`invalid_input`) rather than a silent drop, see `docs/roadmap.md`.
 
 **Output body**:
 - `messages[]` = only the new assistant turn (no pass-through of the incoming `messages[]`)
@@ -271,7 +280,7 @@ This way an LLM consumer reads the full tool output naturally (stdout first, std
 
 **Output header** (`hop` compartment, expires on the next cell emission): `operation` (= `"bash"`), `exit_code`, `duration_ms`, `had_stderr` (mandatory, always set), `bytes` (length of the `text`), optional `truncated` (on long stdout).
 
-**`params`**: typically the command to execute or the script-path convention. Optional `sandbox` (S4/GH #35, schema in `config.md` § `params`), the process sandbox block for the spawned shell.
+**`params`**: typically the command to execute or the script-path convention. Optional `sandbox` (S4/GH #35, completed in GH #85; schema in `config.md` § `params`), the process sandbox block for the spawned shell.
 
 **Phase-7 conventions** (Slice-2 decisions):
 - **`exit ≠ 0` is a NORMAL tool_result**: `exit_code` always in the header (even =0). The LLM/caller reads the code and decides. Consistent with Claude Code's Bash tool.
@@ -286,7 +295,7 @@ This way an LLM consumer reads the full tool output naturally (stdout first, std
   ##meclaw-stderr-end##
   ```
 - **`had_stderr: bool`** header ALWAYS set (true/false).
-- **Security boundary: opt-in via `params.sandbox`** (S4, GH #35). **Without** a `sandbox` block bash still has full FS access via the shell and full network, and the phase-7 trust model applies unchanged to that case. **With** `sandbox: {"trust": "restricted", ...}` the shell starts under a Landlock filesystem allowlist and, when `network: "deny"`, inside a fresh network namespace. Schema, default profile and the fail-closed rule: `config.md` § `params`. Not enforced: resource caps and the syscall filter (phase 2, GH #85).
+- **Security boundary via `params.sandbox`** (S4, GH #35; completed in GH #85). **Without** a `sandbox` block bash still has full FS access via the shell and full network, and the phase-7 trust model applies unchanged to that case; **a bash cell instantiated from a template gets the block automatically**, though (the default-deny cut, `config.md` § `params`). **With** `sandbox: {"trust": "restricted", ...}` the shell starts under a Landlock filesystem allowlist, inside a fresh network namespace when `network: "deny"`, under the declared `limits` (cgroup v2) and behind the declared `syscalls` filter (seccomp-bpf). Schema, the operating requirement for the caps and the fail-closed rule: `config.md` § `params`. **Particularly relevant for a shell:** under `syscalls.foreign_signals: "deny"` the script may only signal itself, so a `kill $!` on its own background job fails with `EPERM`.
 - **Shell**: `/bin/sh -c <command>`. `cwd`/`shell` as params deferred (operator sets via `cd /x && cmd` inline).
 - **No persistent bash** (`cell.timeout: -1`): by-design dropped (architecture ruling 2026-06-08). `bash` is one-shot only, not a deferred option.
 - **Input minimal**: `{"command": "..."}`.
@@ -355,7 +364,7 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - script writes a JSON array without `multi_send_capable` → error with `error_code: "multi_send_not_declared"`.
 - script stdout valid, but `contract.emits` violated → error with `error_code: "contract_violation"`. This `code` validation runs **always-on** (unconditionally, independent of build profile and `colony.json` `strict_validation`, `code` is the only user-script-driven trust boundary; see `meclaw-overview.md` § "Schema validation: timing and scope" and `docs/config.md` § Schema format and validation).
 
-**`params`**: typically `runner` (canonically `"python3"` in Phase 9, `CodeParams::parse` rejects other values with `'params.runner: only "python3" is supported in Phase 9'`. Background: on the target platforms Ubuntu 24 / Python 3.12 the real binary is `/usr/bin/python3`, `python` deliberately does not exist there), script path or inline code, `external_timeout_ms` (concept A, see overview § Timeouts; default `60000`). **`multi_send_capable` is not (any longer) in `params`**. It comes from `contract.multi_send_capable` (see Multi-send above). Optional `sandbox` (S4/GH #35, schema in `config.md` § `params`), the process sandbox block for the spawned runner. A script under `trust: "restricted"` reads only the declared paths, so a script delivered as `script_path` rather than `script_inline` must itself live under one of them.
+**`params`**: typically `runner` (canonically `"python3"` in Phase 9, `CodeParams::parse` rejects other values with `'params.runner: only "python3" is supported in Phase 9'`. Background: on the target platforms Ubuntu 24 / Python 3.12 the real binary is `/usr/bin/python3`, `python` deliberately does not exist there), script path or inline code, `external_timeout_ms` (concept A, see overview § Timeouts; default `60000`). **`multi_send_capable` is not (any longer) in `params`**. It comes from `contract.multi_send_capable` (see Multi-send above). Optional `sandbox` (S4/GH #35, completed in GH #85; schema in `config.md` § `params`), the process sandbox block for the spawned runner. A script under `trust: "restricted"` reads only the declared paths, so a script delivered as `script_path` rather than `script_inline` must itself live under one of them. **A code cell instantiated from a template without a block of its own gets the default-deny profile** (`config.md` § `params`); its runtime set is enough for a `script_inline`, while a `script_path` needs a declaration.
 
 **`cell.db` for `code`** (Phase-9 brainstorm E9): **deferred** in Phase 9. DB access from script logic runs via topology (`code` → multi-send → `store`), not in-process. Whoever needs a collector/state pattern in `code` lifts that into a separate design pass.
 
@@ -703,7 +712,9 @@ This way a long-running provider call never blocks the acceptance of new tool-ca
 
 **`params`**: `adapter` (required; today only `"claude-code"`), `emit_to` (required), `workspace_root` (required, canonicalized — tasks run only below it), `command`, `model` (from `${VAR}`), `permission_mode`, `max_turns`, `max_budget_usd`, `allowed_tools`, `extra_args`, `env`, `env_passthrough`, `approval` (`off` | `channel`), `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms`, `kill_grace_ms`.
 
-**Trust model (empirically established 2026-08-09)**: `harness` is **not a sandbox**. The harness brings its own tools (shell, file access, network) and runs with the rights of the colony process. The load-bearing V1 barriers are **`env_clear` + `env_passthrough`** (the harness does not see the colony's secrets) and the **canonicalized cwd clamp** under `workspace_root`. **`allowed_tools` is explicitly NOT an upper bound**: the CLI treats `--allowedTools` **additively** to what the permission mode allows anyway — in the acceptance smoke, `Bash` ran despite `allowed_tools: ["Write"]`. `allowed_tools` extends, it does not restrict. Sandbox/container build-out = roadmap defer, as with `bash`; `harness` cells run only in trusted topologies.
+**Sandbox (GH #85)**: `harness` reads the same `params.sandbox` block as `bash` and `code` (schema in `config.md` § `params`) and hands it to the stdio child process. It sits **next to** `env_clear`/`env_passthrough` and the canonicalized `cwd` clamp, not in their place: the three answer different questions. Process-group and reaping semantics are unchanged, and a sandboxed child still leads its own group. `sandbox` is on the runtime overlay's **immutable** list: a params update touching it is rejected as `Immutable`. A `harness` cell instantiated from a template without a block of its own gets the default-deny profile, so a harness that is supposed to write a workspace declares one (or takes an explicit `trust: "trusted"`).
+
+**Trust model (empirically established 2026-08-09, the state before GH #85)**: `harness` is **not a sandbox by itself**. The harness brings its own tools (shell, file access, network) and runs with the rights of the colony process. The load-bearing V1 barriers are **`env_clear` + `env_passthrough`** (the harness does not see the colony's secrets) and the **canonicalized cwd clamp** under `workspace_root`. **`allowed_tools` is explicitly NOT an upper bound**: the CLI treats `--allowedTools` **additively** to what the permission mode allows anyway — in the acceptance smoke, `Bash` ran despite `allowed_tools: ["Write"]`. `allowed_tools` extends, it does not restrict. Since GH #85: **without** `params.sandbox` a hand-written `harness` cell still runs exactly like that, and **with** the block it runs under the same boundary as `code` and `bash`.
 
 **Runtime param updates (β)**: mutable `model`, `max_turns`, `max_budget_usd`, `startup_timeout_ms`, `external_timeout_ms`, `query_timeout_ms` — take effect from the **next** task. Immutable and a loud reject (`invalid_input`): `adapter`, `command`, `emit_to`, `workspace_root`, `env`, `env_passthrough`, `permission_mode`, `allowed_tools`, `extra_args`, `approval`, `kill_grace_ms` — that is the containment boundary. A params-only message persists and stays silent.
 ---

@@ -114,6 +114,9 @@ impl HarnessCell {
             // Containment: the child sees the passthrough list and nothing
             // else of this process's environment.
             env_clear: true,
+            // GH #85: the same profile `code` and `bash` carry, on the cell
+            // whose child brings the largest surface of all three.
+            sandbox: self.params.sandbox.clone().map(Box::new),
         }
     }
 

@@ -223,6 +223,21 @@ impl CompiledConsumes {
     pub fn is_vacuous(&self) -> bool {
         self.body.is_empty() && self.context.is_empty() && self.hop.is_empty()
     }
+
+    /// True iff the cell declares `consumes.body.<key>` (GH #87).
+    ///
+    /// Declaring is binding: every key declared in `consumes.body` is
+    /// mandatory, there is no optional `consumes.body` field (config.md
+    /// § `consumes`: every key declared in `consumes.body` is required).
+    /// Declaration and the required-key projection therefore coincide, and this
+    /// method reads the projection rather than keeping a second list.
+    ///
+    /// Used by the substrate to decide whether a cell gets a capability that
+    /// only a declared consumer may hold — today the `attachments[]` blob
+    /// reader (`meclaw_colony::AttachmentReader`).
+    pub fn declares_body(&self, key: &str) -> bool {
+        self.body.iter().any(|(k, _)| k == key)
+    }
 }
 
 /// Substrate-side ingress check (config.md § consumes, l.135-138): every
@@ -501,6 +516,31 @@ mod tests {
         assert!(
             validate_consumes(&serde_json::json!({"system": {}}), &headers, &compiled).is_err()
         );
+    }
+
+    #[test]
+    fn declares_body_reports_declared_slot_and_ignores_others() {
+        // GH #87: the declaration signal the substrate gates the attachment
+        // reader on. Declaring is binding (config.md § consumes), so a declared
+        // body key is a required key.
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
+            "body": {"messages": {"type": "array"}, "attachments": {"type": "array"}}
+        }))
+        .unwrap();
+        let compiled = CompiledConsumes::compile(&block);
+        assert!(compiled.declares_body("attachments"));
+        assert!(compiled.declares_body("messages"));
+        assert!(!compiled.declares_body("system"));
+    }
+
+    #[test]
+    fn declares_body_is_false_without_the_slot() {
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
+            "body": {"messages": {"type": "array"}}
+        }))
+        .unwrap();
+        let compiled = CompiledConsumes::compile(&block);
+        assert!(!compiled.declares_body("attachments"));
     }
 
     #[test]

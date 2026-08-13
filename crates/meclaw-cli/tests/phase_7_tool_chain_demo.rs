@@ -39,10 +39,23 @@ async fn setup_tool_chain_templates(td: &tempfile::TempDir, h: &meclaw_testing::
         let tpl = templates_root.join(name);
         std::fs::create_dir_all(&tpl).unwrap();
         std::fs::write(tpl.join("template.json"), format!(r#"{{"name":"{name}"}}"#)).unwrap();
+        // GH #85, the default-deny cut: a template-sourced `bash` cell that
+        // declares no `params.sandbox` is instantiated restricted, and this
+        // demo's `cat` reads a fresh temp directory no static template could
+        // name. So it takes the documented escape hatch, exactly as an
+        // operator migrating an existing template would. What this test proves
+        // is the CONTENT FLOW web_fetch -> file -> bash; the sandbox boundary
+        // is proven where it belongs, in
+        // `crates/meclaw-cells/tests/sandbox_isolation.rs`.
+        let params = if *cell_type == "bash" {
+            r#"{"sandbox":{"trust":"trusted"}}"#
+        } else {
+            "{}"
+        };
         std::fs::write(
             tpl.join("config.json"),
             format!(
-                r#"{{"cell":{{"type":"{cell_type}"}},"params":{{}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+                r#"{{"cell":{{"type":"{cell_type}"}},"params":{params},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
             ),
         )
         .unwrap();

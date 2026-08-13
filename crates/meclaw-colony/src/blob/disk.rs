@@ -169,11 +169,24 @@ impl DiskBlobStore {
     /// deserialised to a `Value` so the cell-delivery boundary can hand the cell a
     /// transparent inline body (spec Z.1363).
     pub async fn read_body(&self, blob_id: Uuid) -> Result<serde_json::Value, BlobError> {
+        let (bytes, _sidecar) = self.read_bytes(blob_id).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Reads a blob's raw content plus its sidecar (GH #87).
+    ///
+    /// The read path for `attachments[]`: an attachment is a file of arbitrary
+    /// type, so the consumer needs the bytes and the authoritative MIME type,
+    /// not a deserialised `Value`. Honours the same reader-contract as
+    /// [`read_body`](Self::read_body) — the sidecar is the commit marker, so an
+    /// orphan content file (crash mid-write) reads as
+    /// [`BlobError::NotFound`].
+    pub async fn read_bytes(&self, blob_id: Uuid) -> Result<(Vec<u8>, BlobSidecar), BlobError> {
         let sidecar = self.read_sidecar(blob_id).await?;
         let ext = mime_to_ext(&sidecar.mime_type);
         let blob_path = self.root.join(format!("{blob_id}.{ext}"));
         let bytes = tokio::fs::read(&blob_path).await?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok((bytes, sidecar))
     }
 }
 
@@ -236,6 +249,44 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = DiskBlobStore::new(dir.path()).unwrap();
         let err = store.read_body(Uuid::now_v7()).await.unwrap_err();
+        assert!(matches!(err, BlobError::NotFound(_)));
+    }
+
+    // ── GH #87: raw-bytes read for the attachments[] consumer ──────────────
+
+    #[tokio::test]
+    async fn read_bytes_round_trips_content_and_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nnot-really-a-png";
+        let blob_ref = store
+            .write_streaming(png.as_slice(), "image/png", Some("shot.png"))
+            .await
+            .unwrap();
+        let (bytes, sidecar) = store.read_bytes(blob_ref.blob_id).await.unwrap();
+        assert_eq!(bytes, png);
+        assert_eq!(sidecar.mime_type, "image/png");
+        assert_eq!(sidecar.filename.as_deref(), Some("shot.png"));
+    }
+
+    #[tokio::test]
+    async fn read_bytes_orphan_without_sidecar_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let id = Uuid::now_v7();
+        std::fs::write(dir.path().join(format!("{id}.png")), b"orphan").unwrap();
+        let err = store.read_bytes(id).await.unwrap_err();
+        assert!(
+            matches!(err, BlobError::NotFound(_)),
+            "orphan blob without sidecar must be non-existent (reader-contract Z.1362)"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_bytes_unknown_uuid_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskBlobStore::new(dir.path()).unwrap();
+        let err = store.read_bytes(Uuid::now_v7()).await.unwrap_err();
         assert!(matches!(err, BlobError::NotFound(_)));
     }
 }

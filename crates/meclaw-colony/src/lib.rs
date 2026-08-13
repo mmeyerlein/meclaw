@@ -44,7 +44,9 @@ pub mod watchdog;
 /// `cell.idle_timeout_ms` (see 13-B-2/3).
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 60_000;
 
-pub use blob::{BlobError, BlobSidecar, DiskBlobStore};
+pub use blob::{
+    AttachmentBytes, AttachmentReadError, AttachmentReader, BlobError, BlobSidecar, DiskBlobStore,
+};
 pub use bootstrap::{
     BootState, BootstrapError, BootstrapErrors, BootstrapPlan, PlannedCell, PlannedEdge,
     PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state,
