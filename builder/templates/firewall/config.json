@@ -1,0 +1,36 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./screen",
+          "to": "./rules",
+          "condition": "has(hop.route) && hop.route == 'fwstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'firewall'",
+              "fw_phase": "hop.phase",
+              "channel": "hop.channel",
+              "user_id": "hop.user_id",
+              "fw_body": "hop.fw_body",
+              "fw_now": "hop.fw_now"
+            }
+          }
+        },
+        {
+          "from": "./rules",
+          "to": "./screen",
+          "condition": "context.store_origin == 'firewall'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the firewall: bundles the deterministic screen and its rule store behind one entry lane and two exit routes. Every inbound turn of a channel passes it before anything agentic is reached, and leaves either unchanged on 'pass' or refused on 'reject' with the rule that fired named on the hop.",
+    "use_when": "One per ingress channel, between the surface and the agent's intake. Instantiate it in the same mutation that wires the ingress lane and BOTH exits; the hive is an island until an edge crosses into it.",
+    "not_in_scope": "No model anywhere -- whether a turn is admissible is decided by comparisons and a clock. No outbound speech: the firewall never answers the sender. No rewriting: a passed turn is byte-identical to the one that arrived."
+  }
+}

@@ -12,12 +12,35 @@ pub(crate) enum EditOp {
         path: String,
         find: String,
         replace: String,
+        /// GH #105: optional precondition on the number of sites. `None` keeps
+        /// the historic replace-ALL contract byte-for-byte.
+        expected_matches: Option<u64>,
     },
     InsertAtLine {
         path: String,
         line: u32,
         content: String,
     },
+}
+
+/// GH #105: reads the optional `expected_matches` guard. Absent and explicit
+/// `null` both mean "no guard" (the historic contract); everything else must be
+/// an integer >= 1 — the guard counts sites the caller INTENDS to change, and
+/// zero of those is not an edit.
+fn parse_expected_matches(args: &meclaw_core::JsonValue) -> Result<Option<u64>, String> {
+    match args.get("expected_matches") {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| "args.expected_matches must be a positive integer".to_string())?;
+            if n == 0 {
+                return Err("args.expected_matches must be >= 1".into());
+            }
+            Ok(Some(n))
+        }
+    }
 }
 
 pub(crate) fn parse_edit_args(args: &meclaw_core::JsonValue) -> Result<EditOp, String> {
@@ -50,9 +73,16 @@ pub(crate) fn parse_edit_args(args: &meclaw_core::JsonValue) -> Result<EditOp, S
                 path: path.to_string(),
                 find: find.to_string(),
                 replace: replace.to_string(),
+                expected_matches: parse_expected_matches(args)?,
             })
         }
         "insert_at_line" => {
+            // GH #105: the guard is a find_replace concept — an insert has no
+            // match count. Ignoring the argument here would let a caller
+            // believe in a guard that never runs.
+            if parse_expected_matches(args)?.is_some() {
+                return Err("args.expected_matches is only valid for find_replace".into());
+            }
             let line = args
                 .get("line")
                 .and_then(|v| v.as_u64())
@@ -82,7 +112,7 @@ pub(crate) fn parse_edit_args(args: &meclaw_core::JsonValue) -> Result<EditOp, S
 use crate::boundary::{self, resolve_error_code};
 use crate::tool::{
     ERR_INVALID_INPUT, ERR_IO_ERROR, ERR_NOT_A_FILE, ERR_NOT_FOUND, ERR_PATTERN_NOT_FOUND,
-    build_error_body, build_tool_result_body, parse_tool_call_args,
+    ERR_UNEXPECTED_MATCH_COUNT, build_error_body, build_tool_result_body, parse_tool_call_args,
 };
 use meclaw_core::serde_json::{Map, Value};
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
@@ -240,6 +270,7 @@ fn run_edit_op(base: &std::path::Path, op: EditOp) -> OpOutcome {
             path,
             find,
             replace,
+            expected_matches,
         } => {
             let resolved = match boundary::resolve_existing(base, &path) {
                 Ok(p) => p,
@@ -266,9 +297,26 @@ fn run_edit_op(base: &std::path::Path, op: EditOp) -> OpOutcome {
             };
             let matches = content.matches(find.as_str()).count() as u64;
             if matches == 0 {
+                // Precedence (GH #105): `pattern_not_found` is the MORE
+                // specific diagnosis and keeps winning over the count guard —
+                // "your pattern is not in this file" is a different repair
+                // from "your pattern is not unique enough".
                 return OpOutcome::Err {
                     code: ERR_PATTERN_NOT_FOUND,
                     text: format!("pattern {find:?} not found in {path:?}"),
+                };
+            }
+            // GH #105: the guard runs BEFORE the write — a mismatch leaves the
+            // file untouched, which is the whole point of declaring a count.
+            if let Some(expected) = expected_matches
+                && expected != matches
+            {
+                return OpOutcome::Err {
+                    code: ERR_UNEXPECTED_MATCH_COUNT,
+                    text: format!(
+                        "expected {expected} match(es) of {find:?} in {path:?}, found {matches} \
+                         — file left untouched"
+                    ),
                 };
             }
             let new_content = content.replace(find.as_str(), replace.as_str());
@@ -310,6 +358,18 @@ fn run_edit_op(base: &std::path::Path, op: EditOp) -> OpOutcome {
             let file_content = match std::fs::read_to_string(&resolved) {
                 Ok(s) => s,
                 Err(e) => return map_io_err(e),
+            };
+            // GH #108: the op is insert_at_LINE, so the cell closes the line it
+            // was asked to insert. Spliced verbatim, a `content` without its own
+            // terminator fused into the line it displaced — a silently broken
+            // file that only the next compile run reported. Empty content stays
+            // empty: it starts no line, and a caller who wants a blank one
+            // writes "\n". The FILE's own missing final newline is deliberately
+            // left alone (that would rewrite a line the caller never named).
+            let insert_content = if insert_content.is_empty() || insert_content.ends_with('\n') {
+                insert_content
+            } else {
+                format!("{insert_content}\n")
             };
             // split_inclusive keeps newlines; insert_content owned for borrow safety
             let mut lines: Vec<&str> = file_content.split_inclusive('\n').collect();
@@ -799,8 +859,59 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(op,
-            EditOp::FindReplace { ref path, ref find, ref replace }
+            EditOp::FindReplace { ref path, ref find, ref replace, expected_matches: None }
             if path == "a.txt" && find == "foo" && replace == "bar"));
+    }
+
+    /// GH #105: the guard is opt-in, positive, and find_replace-only.
+    #[test]
+    fn parse_edit_args_expected_matches_guard() {
+        let op = parse_edit_args(&json!({
+            "op": "find_replace", "path": "a.txt", "find": "f", "replace": "r",
+            "expected_matches": 3
+        }))
+        .unwrap();
+        assert!(matches!(
+            op,
+            EditOp::FindReplace {
+                expected_matches: Some(3),
+                ..
+            }
+        ));
+
+        // Explicit null reads as "no guard" — the historic contract.
+        let op = parse_edit_args(&json!({
+            "op": "find_replace", "path": "a.txt", "find": "f", "replace": "r",
+            "expected_matches": null
+        }))
+        .unwrap();
+        assert!(matches!(
+            op,
+            EditOp::FindReplace {
+                expected_matches: None,
+                ..
+            }
+        ));
+
+        for bad in [json!(0), json!(-2), json!("2"), json!(1.5)] {
+            assert!(
+                parse_edit_args(&json!({
+                    "op": "find_replace", "path": "a.txt", "find": "f", "replace": "r",
+                    "expected_matches": bad
+                }))
+                .is_err(),
+                "expected_matches {bad} must be rejected"
+            );
+        }
+
+        assert!(
+            parse_edit_args(&json!({
+                "op": "insert_at_line", "path": "a.txt", "line": 1, "content": "x\n",
+                "expected_matches": 1
+            }))
+            .is_err(),
+            "the guard has no meaning on insert_at_line"
+        );
     }
 
     #[test]

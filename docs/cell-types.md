@@ -84,7 +84,12 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 
 **Output header** (`hop` compartment, expires on the next cell emission): `operation`, `rows_affected`, `duration_ms`, optional `error_code`.
 
-**Failure classification** (Phase-9 brainstorm E5, analogous to `bash`): SQL errors (constraint violation, type mismatch, unknown table/column) are **regular `tool_result` turns** with `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"` / `"query_timeout"` / `"invalid_input"` for malformed args or unknown operation), **not** `finish_reason: "error"`. Rationale: the LLM/caller reads the code and decides (retry, schema correction, different operation). Only internal errors (DB corruption, spawn error) trigger a cell crash + restart. Since P3, `unknown_column` also covers `select`/`where`/`order_by` (previously only the `insert` path via the SQLite error text). The `traverse`/`similar` failure cases (P4) map onto the existing codes — `invalid_input` for guard/arg violations, `unknown_table`/`unknown_column` via the catalog, `sql_error` for vector mismatch, `query_timeout` — **no new code**.
+**Failure classification** (Phase-9 brainstorm E5, analogous to `bash`) — **two families** (doc-to-code alignment, GH #109):
+
+1. **SQL level ⇒ a regular `tool_result` turn** with `header.error_code` (`"sql_error"` / `"unknown_table"` / `"unknown_column"` / `"type_mismatch"` / `"constraint_violation"`) and **no** `finish_reason: "error"`. These are the failures the query finds while running: constraint violation, type mismatch, unknown table/column. Rationale: the LLM/caller reads the code and decides (retry, schema correction, different operation).
+2. **Args level ⇒ an error message WITH `finish_reason: "error"`.** Exactly two codes: `"invalid_input"` (malformed body, no `tool_call` turn, `text` that is not JSON, unknown operation, missing projection, unknown operator key, guard violation, rejected `params` update) and `"query_timeout"` (`query_timeout_ms` interrupted the running query). This class either never reaches the database or is aborted halfway — there is no result a `tool_result` could report on. **The earlier wording sorted `invalid_input` and `query_timeout` into family 1; that was the documentation, not the code** (the doc comment in `store/cell.rs` has always described the split). Pinned in `crates/meclaw-cells/tests/fitness_store.rs`. **As-built detail**: the turn of an args-level rejection carries an **empty** `id` — such an answer cannot be correlated by `tool_call_id` inside a tool loop, only by ordering.
+
+Only internal errors (DB corruption, spawn error) trigger a cell crash + restart. Since P3, `unknown_column` also covers `select`/`where`/`order_by` (previously only the `insert` path via the SQLite error text). The `traverse`/`similar` failure cases (P4) map onto the existing codes — `invalid_input` for guard/arg violations, `unknown_table`/`unknown_column` via the catalog, `sql_error` for vector mismatch, `query_timeout` — **no new code**.
 
 **`params`**:
 
@@ -109,9 +114,23 @@ No scope-owned `dead_letters` override: the dead-letter queue is always `/colony
 **Inference trigger**: exclusively `messages[]`. System updates (paths under `system.*`) accumulate in `cell.db` without a provider call.
 
 **State in `cell.db`**:
-- `system.*`: accumulative-replace per path. Bootstrap context (persona, tool schemas, facts). Updates arrive per message from arbitrary cells; the sender does not know the structure. Leaves sit in `cell.db` as `{"text": …}`: since GH #86 a `{text_id}` leaf no longer reaches the cell at all, the substrate resolves it at the delivery boundary.
+- `system.*`: accumulative-replace per path. Bootstrap context (persona, tool schemas, facts). Updates arrive per message from arbitrary cells; the sender does not know the structure. Leaves sit in `cell.db` as `{"text": …}`: since GH #86 a `{text_id}` leaf no longer reaches the cell at all, the substrate resolves it at the delivery boundary. A row persisted **before** #86 can never cross that boundary again — if a leaf read back from `cell.db` still carries `text_id`, that is a **loud error of the call** since GH #95 (`error_code: "provider_error"`, `meta.error.source: "translate"`, every affected `slot_path` named) instead of a silent drop out of the system prompt; no provider call, no restart. The way out is to re-send the slot with inline text, whose upsert overwrites the row.
 - `messages[]`: last-received as-is (no appended turns). Blob refs are already resolved here; since GH #19 the substrate expands `messages_id`/`text_id` before `handle()`, and the cell never sees a pointer.
 - **Not in cell.db**: appended assistant turn (output), blob cache (in-memory only).
+
+**Seed (`seed/system.jsonl`, GH #99)**: the static layer underneath the accumulated `system.*` state. It lets a template ship a default identity instead of starting the cell selfless and waiting for the first `system.*` update message — the agent is operational from boot on (degraded until it is briefed, never wrong). Same format as the `store` seed (overview § seed concept): line 1 is the schema header, lines 2+ are the rows.
+
+```
+{"schema": {"slot_path": "text", "value": "json"}}
+{"slot_path": "identity", "value": {"text": "You are a research assistant."}}
+{"slot_path": "instructions.tone", "value": {"text": "Answer briefly."}}
+```
+
+- A row is **exactly one leaf**: `slot_path` is the dotted slot path, `value` the UBF leaf. The semantics are those of an ordinary `system.*` update (upsert per path); `updated_at` is stamped by the loader at seed time, the file does not carry it.
+- **Plain-text leaves only.** A `{"text_id": …}` leaf in a seed is a **loud configuration error at spawn time** — the substrate resolves that pointer class at the delivery boundary (GH #86), which a leaf written directly into `cell.db` never passes. Rejected as well: a nested subtree as `value` (then the nesting belongs in the `slot_path`), an empty `slot_path`, a missing header.
+- The seed applies **only on `OpenStatus::Created`** of the `cell.db` — a re-open is never re-seeded, otherwise the template default would overwrite the grown identity on every restart (overview § seed concept).
+- The seed is parsed **before** the `cell.db` is created: a rejected seed leaves behind no empty `cell.db` that would make the repaired seed look like a "resume" and skip it forever. The same parse path hangs off `meclaw --validate` (validate-equals-spawn).
+- **A missing file is not an error** (the normal case for every cell without a seed).
 
 **`params`**:
 ```json
@@ -169,12 +188,12 @@ Order within a message: the `params` slot is merged **first** + persisted in the
 
 **Tool definitions**: live in `system.tools.<tool_name>.text` as JSON strings. The adapter parses them at the provider call and builds the provider-native tool set. Tools are **not** concatenated into the system-prompt string. Extracted separately. Tool calls and tool results are their own `messages[]` turn types (`type: "tool_call"` / `"tool_result"` with `id` as the correlation anchor, pass-through value from the provider).
 
-**Attachments (`attachments[]`) — vision input (GH #87)**: an `llm` cell consumes file attachments **exactly when its contract declares `consumes.body.attachments`** (`config.md` § consumes; declaring is binding, which makes the slot mandatory on every inbound message). Only then does it receive a **read-only store handle** at spawn and resolve the `blob_id` refs **itself, at `handle()` time**. The substrate never inlines them (owner ruling GH #19, see `meclaw-overview.en.md` § "`attachments[]` schema"). A cell **without** the declaration holds no handle: the slot travels past it untouched and its provider request is byte-identical to the one without the slot.
+**Attachments (`attachments[]`) — vision input (GH #87)**: an `llm` cell consumes file attachments **exactly when its contract declares `consumes.body.attachments`** (`config.md` § consumes; declaring is binding, which makes the slot mandatory on every inbound message). Only then does it receive a **read-only store handle** at spawn and resolve the `blob_id` refs **itself, at `handle()` time**. The substrate never inlines them (owner ruling GH #19, see `meclaw-overview.md` § "`attachments[]` schema"). A cell **without** the declaration holds no handle: the slot travels past it untouched and its provider request is byte-identical to the one without the slot.
 
-- **What is consumed**: `image/*`. Each attachment becomes an `image_url` content part of the request's last `user` message (whose `content` turns from a string into a content array: the text first, then the images); the URL is a self-contained `data:<mime>;base64,<…>` URL, so no dereferenceable link leaves the colony. The authority on the MIME type is the **sidecar**, which is what the store committed.
+- **What is consumed**: `image/*`. On `chat_completions` each attachment becomes an `image_url` content part of the request's last `user` message (whose `content` turns from a string into a content array: the text first, then the images); the URL is a self-contained `data:<mime>;base64,<…>` URL, so no dereferenceable link leaves the colony. The authority on the MIME type is the **sidecar**, which is what the store committed.
 - **Failure modes are cell errors, not dead letters**. The message was delivered correctly; it is the attachment behind it that is unreadable. A non-image MIME type and a missing or uncommitted blob yield a regular error message with `error_code: "invalid_input"`; an elapsed `attachment_timeout_ms` yields `error_code: "timeout"`. Every detail names the **attachment id** and the reason, and the inbound `messages[]` travel along unchanged (gate-1 pass-through, so failover edges stay usable). An attachment that cannot be read does **not** reach the provider.
 - **The declared MIME type is checked before the read**: a 40 MB PDF is rejected without ever entering memory.
-- **Wire dialect**: implemented for `chat_completions`. On `wire_dialect: "responses"` a non-empty `attachments[]` is a loud reject (`invalid_input`) rather than a silent drop, see `docs/roadmap.md`.
+- **Wire dialect**: implemented for **both** dialects (GH #87 `chat_completions`, GH #94 `responses`). On `wire_dialect: "responses"` each attachment becomes an `input_image` item in the typed `input[]`: `{"type": "input_image", "image_url": "data:<mime>;base64,<…>"}` — on this wire `image_url` is a **string**, not an object (pinned reference `ContentItem::InputImage`, `openai/codex` @ `266c6920`, `protocol/src/models.rs:716-734`). The items attach to the last `user` message of the `input[]`; without a `user` message they become an appended `user` message of their own. The error taxonomy and the data-URL form are identical on both dialects.
 
 **Output body**:
 - `messages[]` = only the new assistant turn (no pass-through of the incoming `messages[]`)
@@ -342,7 +361,7 @@ Wire example:
   { "header": { "msg_type": "tool_call" },
     "messages": [{ "origin": "assistant", "type": "tool_call", "id": "call_b", "text": "..." }] },
   { "header": { "msg_type": "user_visible" },
-    "messages": [{ "origin": "assistant", "type": "text", "text": "Drei Tools werden parallel angefragt." }] }
+    "messages": [{ "origin": "assistant", "type": "text", "text": "Three tools are being called in parallel." }] }
 ]
 ```
 
@@ -389,7 +408,8 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 **Phase-7 conventions** (Slice-3 decisions):
 - **GET only** in Slice 3. `method`/`headers`/`body` deferred.
 - **Input minimal**: `{"url": "..."}`.
-- **non-2xx HTTP status = NORMAL tool_result** with `http_status` header. The LLM/caller reads the status. Only DNS/connect/timeout/invalid input produce error messages (`io_error` / `timeout` / `invalid_input` on missing/invalid `url`).
+- **non-2xx HTTP status = NORMAL tool_result** with `http_status` header. The LLM/caller reads the status. Only DNS/connect/timeout/invalid input produce error messages (`io_error` / `timeout` / `invalid_input`).
+- **The input gate PARSES the URL (GH #110)**: missing, non-string, empty, **syntactically broken** (`"not-a-url"`, `"http://"`) and foreign-scheme URLs (anything but `http`/`https`, `file://` included) are `invalid_input`, and the text quotes the URL. Before, the gate only checked presence and type; a syntax error surfaced from reqwest and was mapped to `io_error` — an agent repairing its own call reads `io_error` as "network problem, retry" and thus applies the wrong repair forever. A broken URL is a broken **call**. `io_error` stays what it should be: DNS, connect, transport. The URL itself travels on unchanged (the parser never re-serializes it).
 - **TLS**: rustls (`rustls-tls` feature of reqwest); no OpenSSL/native-tls in the tree.
 - **Header**: `operation: "web_fetch"`, `http_status: u16` (mandatory), `content_type: String`, `duration_ms`, `bytes`.
 - **Truncation**: `max_bytes` (GH #83, see above) cuts visibly; below it large bodies stay inline in `text` and are offloaded as a whole-body blob when needed.
@@ -434,16 +454,24 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 
 **Body format of the response**: `messages[]` with a `tool_result` turn. On `read`, `text` contains the file content (on large files from Phase 12 whole-body offload of the entire message as `Body::Blob` at the delivery boundary, **not** via an in-message `text_id` pointer). On `write`/`list`/`stat`, `text` contains a JSON-structured status (bytes written, file list, stat info).
 
-**Output header**: `operation` (`"read"`/`"write"`/`"list"`/`"stat"`), `bytes`, `duration_ms`.
+**Output header**: `operation` (`"read"`/`"write"`/`"list"`/`"stat"`), `bytes`, `duration_ms`, optional `encoding` (only `read` with `mode: "base64"`, GH #106).
 
 **`params`**: `base_path` (mandatory; security boundary).
 
+**Read modes and byte ranges (GH #106).** By default `read` is a **text** read: `text` carries the file content, `bytes` its byte length, and a non-UTF-8 file is a typed `io_error`. Two optional arguments open up the rest:
+
+- **`mode`**: `"text"` (default; absent and `null` mean the same) or `"base64"`. In base64 mode `text` is standard-alphabet base64 (RFC 4648 §4, padded) of the **raw** bytes, the emission additionally carries `header.encoding: "base64"`, and `header.bytes` stays the **raw** byte count (not the encoded length). That makes a `.pyc`, an object file or a PNG header inspectable at all instead of merely refused. The encoder is hand-rolled (closed tech-stack allow-list) and pinned against the RFC vectors.
+- **`offset` / `limit`**: a window in **BYTES**, in either mode. `offset` >= 0 (default 0), `limit` >= 1 (default: the rest of the file); `limit: 0` and non-integer values ⇒ `invalid_input`. A window running past the end is **clamped**, and an `offset` at or past the end is an **empty read** (`bytes: 0`), not an error — that is the "you are at the end" paging signal.
+- **Byte semantics go past UTF-8**: a window can land mid-character. In text mode that is the same typed `io_error` as any other non-UTF-8 read, and the text names the way out (`mode: "base64"`). Base64 mode does not have the problem — that is what it is for.
+- **The three arguments belong to `read`**: on `write`/`list`/`stat` they are `invalid_input` rather than silently ignored. A silently dropped `offset` on a `write` would let the caller believe in a partial write that never happened.
+- **The default contract is untouched**: without `mode`, `offset` and `limit` the old path runs exactly as before, including the **absence** of the `encoding` header.
+
 **Phase-7 conventions** (Slice-1 decisions):
 - **`target = reply_to`**: FileCell emits to `msg.reply_to`; fallback `/colony/dead_letters` if `reply_to` is missing. Edges in the topology can override the target.
-- **`tool_call.text` is JSON args**: `{"op": "read"|"write"|"list"|"stat", "path": "<rel>", "content"?: "<str for write>"}`.
+- **`tool_call.text` is JSON args**: `{"op": "read"|"write"|"list"|"stat", "path": "<rel>", "content"?: "<str for write>", "mode"?: "text"|"base64", "offset"?: <u64>, "limit"?: <u64 >= 1>}` (the last three for `read` only, GH #106).
 - **`write` without auto-mkdir**: the parent dir MUST exist. Missing parent → `io_error`. Symlink-safe via parent canonicalize.
 - **`write` error texts are a contract (GitHub #79)**: `io_error` is ambiguous on the write path, so `text` names the condition and the parent as the caller wrote it — `parent directory does not exist: notes (write does not create directories)`, `parent path is not a directory: notes`, `parent directory not accessible: notes (permission denied)`. Failures of the write stage itself (after the parent resolved) carry the prefix `write failed:` plus the named reason (`permission denied`, `read-only filesystem`, `no space left on device`, …). The `error_code` stays `io_error` in every case — the texts are the distinction, not the taxonomy.
-- **Security boundary**: all paths canonicalized against `base_path` (symlinks resolved); traversal/absolute-rel/symlink-escape → `path_outside_boundary` or `invalid_input`.
+- **Security boundary, two stages (GH #107)**: **lexical first, canonicalized second.** Stage 1 runs **before any filesystem access**: a plain component walk over the relative path (`.` is nothing, a name descends, `..` ascends) — climbing above the base is `path_outside_boundary`, **even if a later component would come back in** (`../<base-name>/x`); deciding that would mean resolving names outside the fence, which is exactly what is being closed. Stage 2 is unchanged: `canonicalize` resolves symlinks and the canonical path must live under `base_path` (on the write path, the canonical parent). The ordering is the point: `canonicalize` fails `not_found` on a missing target, so `../missing` used to report `not_found` while `../existing` reported `path_outside_boundary` — a (weak) **existence oracle** for the world outside. Now **every** escape attempt answers identically, whatever is or is not out there; on the read path **and** the write path (a missing parent outside the fence is an escape, not an `io_error`). `..` **inside** the boundary stays ordinary path arithmetic. Absolute paths remain `invalid_input`.
 - **Default `max_concurrency`**: 8.
 - **error_codes**: `invalid_input`, `path_outside_boundary`, `not_found`, `not_a_directory`, `not_a_file`, `io_error`.
 
@@ -465,15 +493,17 @@ The script cannot hijack these keys. Process metadata belongs to the cell.
 - **Ops in Slice 2**: `find_replace` + `insert_at_line`. **Patch is deferred** (a separate diff-format design pass is needed).
 - **`find_replace` = replace ALL**: all occurrences are replaced. The `matches_changed` header gives the count.
 - **0 matches → `ERR_PATTERN_NOT_FOUND`**: the caller wanted to replace, the pattern was not there → error (no normal tool_result with `matches_changed: 0`).
+- **`expected_matches` — the expectation guard (GH #105)**: optional argument of `find_replace`, an integer ≥ 1. When it is set and the actual match count differs, the file is **not touched**; the answer is `error_code: "unexpected_match_count"` and `text` names **both** numbers (expected and found). Reason: replace-ALL with an ambiguous pattern silently patches sites the caller never saw — the highest-risk failure mode while coding. With the guard the count becomes a **precondition** instead of an after-the-fact report. **Without** the argument the behaviour is unchanged (replace-ALL, `matches_changed` as a report) — `null` counts as "not set". `expected_matches: 0` ⇒ `invalid_input` (the guard counts sites that are **meant** to change, and none of them is not an edit intent), as does a non-integer value. **Precedence**: 0 matches stay `pattern_not_found`, guard or no guard — "your pattern is not in this file" is a different repair from "your pattern is not unique enough". On `insert_at_line` the argument ⇒ `invalid_input` (there is no match count there; silently ignoring it would fake a guard that never runs).
 - **`insert_at_line` is 1-based and insert-BEFORE**: `line = 1` → at the very start; `line = file_lines + 1` → at the very end. `line < 1` or `line > file_lines + 1` → `invalid_input`.
-- **Shares FileCell's security boundary**: same `base_path` logic (extracted into `meclaw-cells/src/boundary.rs`).
+- **`content` is normalized to a whole line (GH #108)**: when `content` does not end in `\n`, the cell appends exactly **one**. Before, `content` was spliced verbatim between the line slices and, lacking its own terminator, fused with the line it displaced (`"X"` at line 2 of `"a\nb\n"` produced `"a\nXb\n"`) — a silently broken file that only the next compile run reported. The operation is called `insert_at_line`, so the cell closes the line it is asked to insert. The alternative "just document it" was **rejected**: the failure is silent at edit time, and documentation prevents nothing silent. Two edges: **empty `content`** stays empty (it starts no line; a caller who wants a blank one writes `"\n"`), and the **FILE's own missing final newline** is left alone — appending to a file without a trailing `\n` still lands on its last line, because the opposite would rewrite a line the caller never named.
+- **Shares FileCell's security boundary**: same `base_path` logic (extracted into `meclaw-cells/src/boundary.rs`) — including the two-stage fence from GH #107 (lexical pre-check ahead of the existence check, see § `file`).
 - **Not atomic**: read-modify-write without tempfile+rename (consistent with FileCell::write). Crash mid-way = OS-level problem. Atomic edits are post-roadmap.
 - **Concurrent edit on the same file**: race condition possible (no lock in Phase 7). The caller topology serializes if needed.
 - **Input**:
-  - `{"op": "find_replace", "path": "<rel>", "find": "<str>", "replace": "<str>"}`
+  - `{"op": "find_replace", "path": "<rel>", "find": "<str>", "replace": "<str>", "expected_matches"?: <u64 ≥ 1>}`
   - `{"op": "insert_at_line", "path": "<rel>", "line": <u32>, "content": "<str>"}`
 - **Default `max_concurrency`**: 8.
-- **error_codes**: reuse from file + new `pattern_not_found`.
+- **error_codes**: reuse from file + new `pattern_not_found` + `unexpected_match_count` (GH #105).
 
 ---
 

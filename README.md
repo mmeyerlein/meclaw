@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-3286%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-3367%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -119,7 +119,7 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
 | `subcolony` | a whole child colony, addressed as if it were a single cell |
 
-A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you. Both halves of that loop ship as templates under `builder/templates/`, next to `session-keeper@1`, `summarizer@1`, `retry@1` and `archive-bridge@1` — none of them a line of Rust.
+A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you. Both halves of that loop ship as templates under `builder/templates/`, next to `session-keeper@1`, `summarizer@1`, `retry@1`, `archive-bridge@1`, `firewall@1`, `receptionist@1` and the `talky@1` composite that carries four of them as sub-units — none of them a line of Rust.
 
 ## It rewrites itself. That's the point.
 
@@ -131,15 +131,15 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 ## Where it's at
 
-meclaw is **v0.5.0**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
+meclaw is **v0.6.0**. A proof of concept for the DSL and the self-modifying substrate, with a schema that's deliberately frozen.
 
-Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **3,286 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **3367 tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
 ## Roadmap
 
-**Next: meclaw-os.** The substrate had its waves; now the first full agent gets built on top of it — as pure topology, no new Rust. This release is the first half of it, and every piece of it is a template you can read. Context orchestration became a hive concern: `collector@1` decides what enters an agent's context window and what leaves it, and `dispatcher@1` is the fan-out half of the same tool loop. Conversations got a lifecycle like phone calls — `session-keeper@1` gives a conversation a beginning and an end, `summarizer@1` the handover so the next one picks up seamlessly. And at boot, the agent is briefed by its environment instead of being configured by hand: an `llm` cell now reads its identity from a seed file next to it. What is left of the stream is the talky/cogny split, one talky per channel, per-talky memory, and one-file hives. The epic is [#26](https://github.com/mmeyerlein/meclaw/issues/26); every decision and open fork is tracked there in the open.
+**Now: meclaw-os.** The substrate had its waves; now the first full agent gets built on top of it — as pure topology, no new Rust. Every piece of it is a template you can read. Context orchestration became a hive concern: `collector@1` decides what enters an agent's context window and what leaves it, and `dispatcher@1` is the fan-out half of the same tool loop. Conversations got a lifecycle like phone calls — `session-keeper@1` gives a conversation a beginning and an end, `summarizer@1` the handover so the next one picks up seamlessly. At boot, the agent is briefed by its environment instead of being configured by hand: an `llm` cell reads its identity from a seed file next to it. `talky@1` puts all of that into one composite, and this release adds the front door around it: `firewall@1` screens every inbound turn against rules that are data, not code, and `receptionist@1` hands each new channel an agent of its own by writing the mutation that builds it. Memory became something the agent can ask rather than something handed to it — `memory_recall` is a tool round like any other, and the first thing in the system that can ask about a time range. What is left of the stream is the talky/cogny split, per-talky memory, and one-file hives. The epic is [#26](https://github.com/mmeyerlein/meclaw/issues/26); every decision and open fork is tracked there in the open.
 
 Also in the queue: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 

@@ -1,0 +1,145 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, datetime\n\n# Substituted at instantiation: a code cell never sees its own params (stdin is\n# the message and nothing else), so the three arithmetic knobs reach the script\n# as literals. Everything else -- who may speak, what may not be said -- lives\n# in the rules store and is editable without touching a line of this cell.\nMAX_CHARS = \"${FIREWALL_MAX_CHARS:-16000}\"\nRATE_MAX = \"${FIREWALL_RATE_MAX:-30}\"\nRATE_WINDOW_MS = \"${FIREWALL_RATE_WINDOW_MS:-60000}\"\n\nENVELOPE = (\"header\", \"target\", \"reply_to\", \"trace_id\", \"ttl\",\n            \"parent_message_id\", \"correlation_id\")\nRULE_COLUMNS = [\"rule_id\", \"kind\", \"field\", \"value\", \"action\"]\nSENDER_FIELDS = (\"channel\", \"user_id\")\nPATTERN_KINDS = (\"substring\", \"prefix\")\nSTAMP = \"%Y-%m-%dT%H:%M:%S.%fZ\"\n\n\ndef knob(raw, fallback):\n    \"\"\"A knob is a number or it is the documented default -- never a crash.\n    An unset variable substitutes to the empty string, which is not a number.\"\"\"\n    try:\n        return int(str(raw).strip())\n    except Exception:\n        return fallback\n\n\nMAX_CHARS = knob(MAX_CHARS, 16000)\nRATE_MAX = knob(RATE_MAX, 30)\nRATE_WINDOW_MS = knob(RATE_WINDOW_MS, 60000)\n\nd = json.load(sys.stdin)\nh = d.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nlane = str(hop.get(\"route\", \"\"))\nphase = str(ctx.get(\"fw_phase\", \"\"))\nop = hop.get(\"operation\")\n\n# The two identity dimensions. The ingress edge promotes them (a chat id, a\n# room, a caller number, a user id); a surface that names neither runs on the\n# single bucket \"default\" and is rate-limited as one.\nchannel = str(ctx.get(\"channel\", \"\") or hop.get(\"channel\", \"\") or \"default\")\nuser_id = str(ctx.get(\"user_id\", \"\") or hop.get(\"user_id\", \"\") or \"\")\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef park():\n    \"\"\"Terminal by design. The screen sits in the ingress path: anything it\n    cannot name emits NOTHING instead of guessing a verdict.\"\"\"\n    emit([])\n\n\ndef body_of(doc):\n    \"\"\"The inbound body without its envelope -- everything the turn IS.\"\"\"\n    return {k: v for k, v in doc.items() if k not in ENVELOPE}\n\n\ndef text_of(body):\n    \"\"\"The turn's text: every `text` field of messages[], in order. `prefix`\n    rules therefore anchor at the beginning of the first turn.\"\"\"\n    out = []\n    for m in body.get(\"messages\", []) or []:\n        if isinstance(m, dict):\n            out.append(str(m.get(\"text\") or \"\"))\n    return \"\".join(out)\n\n\ndef now_stamp():\n    \"\"\"The clock is a seam, not a judgement: an ingress edge may stamp the turn\n    (hop.recorded_at), otherwise the screen stamps it itself. Every later hop\n    reads the SAME stamp out of context, so one turn has one time.\"\"\"\n    given = str(ctx.get(\"fw_now\", \"\") or hop.get(\"recorded_at\", \"\") or \"\")\n    try:\n        datetime.datetime.strptime(given, STAMP)\n        return given\n    except Exception:\n        return datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)\n\n\nnow = now_stamp()\n\n\ndef cutoff_of(stamp, window_ms):\n    \"\"\"Lower window edge as a fixed-width UTC stamp: the rate window is a\n    lexicographic `gte` in the store, never arithmetic on strings.\"\"\"\n    try:\n        t = datetime.datetime.strptime(stamp, STAMP)\n    except Exception:\n        # Unparseable clock -> an empty cutoff admits every arrival row into\n        # the count, so the budget looks full. Fail closed, never open.\n        return \"\"\n    return (t - datetime.timedelta(milliseconds=window_ms)).strftime(STAMP)\n\n\ndef verdict(route, reason, rule_id, body):\n    \"\"\"The two exits carry the SAME key set, so a parent edge can promote\n    hop.rule_id / hop.reject_reason on either lane without a missing key\n    making its CEL modifier fail (a failed modifier skips the whole edge).\"\"\"\n    out = {\"header\": {\"route\": route, \"reject_reason\": reason,\n                      \"rule_id\": rule_id, \"channel\": channel,\n                      \"user_id\": user_id}}\n    out.update(body)\n    return [out]\n\n\ndef reject(reason, rule_id, body):\n    return verdict(\"reject\", reason, rule_id, body)\n\n\ndef store_op(args, ph, body_json):\n    \"\"\"Every store emission carries the full key set the hive edge reads.\"\"\"\n    return {\"header\": {\"route\": \"fwstore\", \"phase\": ph, \"channel\": channel,\n                       \"user_id\": user_id, \"fw_body\": body_json, \"fw_now\": now},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": \"fw-\" + ph, \"text\": json.dumps(args)}]}\n\n\ndef rows_of(doc):\n    msgs = doc.get(\"messages\", [])\n    if not msgs:\n        return []\n    try:\n        rows = json.loads(msgs[0].get(\"text\", \"[]\"))\n    except Exception:\n        return []\n    return rows if isinstance(rows, list) else []\n\n\ndef parked_body():\n    try:\n        b = json.loads(str(ctx.get(\"fw_body\", \"\") or \"{}\"))\n    except Exception:\n        b = {}\n    if not isinstance(b, dict):\n        b = {}\n    b.setdefault(\"messages\", [])\n    return b\n\n\n# ==================================================================== LANES\nif lane == \"in_turn\":\n    if op is not None:\n        park()\n    body = body_of(d)\n    # RULE 1 -- the size cap. Arithmetic, no rule row, and therefore BEFORE the\n    # first store hop: everything past this point rides through the hive parked\n    # on a header, and a screen that parks an unbounded body before deciding is\n    # itself the resource risk it was put there to prevent.\n    if len(text_of(body)) > MAX_CHARS:\n        emit(reject(\"oversize\", \"size-cap\", body))\n    emit([store_op({\"operation\": \"select\", \"table\": \"rules\",\n                    \"columns\": RULE_COLUMNS, \"where\": {\"enabled\": 1},\n                    \"order_by\": [{\"col\": \"rule_id\", \"dir\": \"asc\"}]},\n                   \"rules\", json.dumps(body))])\n\nif lane:\n    park()\n\n# =================================================================== PHASES\nif phase == \"rules\" and op == \"select\":\n    body = parked_body()\n    rows = [r for r in rows_of(d) if isinstance(r, dict)]\n    sender = {\"channel\": channel, \"user_id\": user_id}\n    text = text_of(body).lower()\n\n    def col(r, name):\n        return str(r.get(name) or \"\")\n\n    # RULE 2 -- an unreadable row rejects the TURN, naming the row. A firewall\n    # that silently skips a rule it cannot parse is a hole with a typo in it;\n    # fail closed and make the operator see WHICH row.\n    for r in rows:\n        rid, kind = col(r, \"rule_id\"), col(r, \"kind\")\n        field, action, value = col(r, \"field\"), col(r, \"action\"), col(r, \"value\")\n        readable = (\n            (kind == \"sender\" and field in SENDER_FIELDS\n             and action in (\"allow\", \"reject\"))\n            or (kind in PATTERN_KINDS and field == \"text\" and action == \"reject\")\n        )\n        if not rid or not value or not readable:\n            emit(reject(\"rules_unreadable\", rid or \"<unnamed>\", body))\n\n    # RULE 3 -- the blocklist. An explicit deny outranks every allow.\n    for r in rows:\n        if (col(r, \"kind\") == \"sender\" and col(r, \"action\") == \"reject\"\n                and sender.get(col(r, \"field\")) == col(r, \"value\")):\n            emit(reject(\"sender_denied\", col(r, \"rule_id\"), body))\n\n    # RULE 4 -- the allowlist, PER DIMENSION. A dimension with no allow row is\n    # unconstrained (an empty allowlist admits everything, by design); a\n    # dimension that has allow rows admits only the values they name.\n    listed, hit = set(), set()\n    for r in rows:\n        if col(r, \"kind\") == \"sender\" and col(r, \"action\") == \"allow\":\n            f = col(r, \"field\")\n            listed.add(f)\n            if sender.get(f) == col(r, \"value\"):\n                hit.add(f)\n    for f in SENDER_FIELDS:\n        if f in listed and f not in hit:\n            emit(reject(\"sender_not_allowed\", \"allowlist:\" + f, body))\n\n    # RULE 5 -- the pattern blocklist. Literals only: substring and prefix over\n    # case-folded text. No regex engine enters this cell.\n    for r in rows:\n        kind, value = col(r, \"kind\"), col(r, \"value\").lower()\n        if kind == \"substring\" and value in text:\n            emit(reject(\"pattern_blocked\", col(r, \"rule_id\"), body))\n        if kind == \"prefix\" and text.startswith(value):\n            emit(reject(\"pattern_blocked\", col(r, \"rule_id\"), body))\n\n    # RULE 6 -- the rate limit runs LAST because it CONSUMES budget: a turn\n    # that a cheaper rule rejects must never spend a slot. Counting is a\n    # bounded read (RATE_MAX + 1 rows decide it), never a full scan.\n    emit([store_op({\"operation\": \"select\", \"table\": \"arrivals\",\n                    \"columns\": [\"recorded_at\"],\n                    \"where\": {\"channel\": channel,\n                              \"recorded_at\": {\"gte\": cutoff_of(now, RATE_WINDOW_MS)}},\n                    \"limit\": max(RATE_MAX, 0) + 1}, \"rate\", json.dumps(body))])\n\nif phase == \"rate\" and op == \"select\":\n    body = parked_body()\n    if len(rows_of(d)) >= RATE_MAX:\n        emit(reject(\"rate_limited\", \"rate-limit\", body))\n    # The budget is spent and the turn travels on UNCHANGED -- the pass lane\n    # carries the inbound body byte for byte, only the hop is new.\n    emit([store_op({\"operation\": \"insert\", \"table\": \"arrivals\",\n                    \"row\": {\"channel\": channel, \"recorded_at\": now}}, \"mark\", \"\")]\n         + verdict(\"pass\", \"\", \"\", body))\n\n# The store's reply to the arrival mark, and anything else: terminal.\npark()\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "firewall_max_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 16000,
+        "description": "FIREWALL_MAX_CHARS -- the size cap of one inbound turn, measured as the total character count of every text field in messages[]. A turn above it is rejected with reason 'oversize' and rule_id 'size-cap', BEFORE the first store hop."
+      },
+      "firewall_rate_max": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "FIREWALL_RATE_MAX -- how many turns one channel may pass within FIREWALL_RATE_WINDOW_MS. Reaching it rejects with reason 'rate_limited' and rule_id 'rate-limit'. 0 closes the channel entirely."
+      },
+      "firewall_rate_window_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 60000,
+        "description": "FIREWALL_RATE_WINDOW_MS -- the width of the rate window in milliseconds. The window is a lexicographic comparison against the arrivals table's recorded_at, so the count is reproducible from stamped times alone."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "fwstore",
+            "pass",
+            "reject"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "reject_reason": {
+          "type": "string",
+          "required": false
+        },
+        "rule_id": {
+          "type": "string",
+          "required": false
+        },
+        "fw_body": {
+          "type": "string",
+          "required": false
+        },
+        "fw_now": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "user_id": {
+          "type": "string",
+          "required": false
+        },
+        "fw_phase": {
+          "type": "string",
+          "required": false
+        },
+        "fw_body": {
+          "type": "string",
+          "required": false
+        },
+        "fw_now": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "recorded_at": {
+          "type": "string",
+          "required": false
+        },
+        "operation": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The screen: every inbound turn is measured against the rule set before anything agentic sees it, and leaves on exactly one of two lanes -- 'pass' with the body UNCHANGED, or 'reject' naming the reason and the rule that fired. Every verdict is arithmetic or a literal comparison; no model is asked and none can be.",
+    "use_when": "As the first cell of every ingress channel, between the surface (proxy, HTTP, voice bridge) and the agent's intake. Wire the ingress lane with hop.route 'in_turn' and promote the channel identity to context.channel (and context.user_id where the surface has one); wire BOTH exits, and delete the firewall's context keys on each.",
+    "not_in_scope": "No answer to the sender -- the screen never speaks outbound; what a reject becomes (a drain, a log line, a polite refusal) is the parent tree's decision. No regex engine, no model judgement, no learning: the rules are literals in a store. No rewriting of a passed turn -- the pass lane is byte-identical, that is the whole point of putting it in front.",
+    "emits_meaning": "route 'fwstore': the store ops of the current step (hop.phase names it: 'rules' loads the rule set, 'rate' counts the window, 'mark' books the arrival); hop.fw_body carries the turn in transit and hop.fw_now the one stamp of this turn, both promoted to context by the hive edge. route 'pass': the inbound body UNCHANGED, hop.reject_reason and hop.rule_id empty. route 'reject': the refused body with hop.reject_reason (oversize | rules_unreadable | sender_denied | sender_not_allowed | pattern_blocked | rate_limited) and hop.rule_id (the store row that fired, or the reserved id 'size-cap' / 'rate-limit' / 'allowlist:<field>'). A store reply the screen cannot name emits NOTHING.",
+    "consumes_meaning": "One entry lane, named by hop.route on the port edge: in_turn. context.channel and context.user_id are the two identity dimensions the rules compare against; a surface that names neither runs on the single bucket 'default'. hop.recorded_at (optional) stamps the turn from outside -- an operator or a test seam; unset means the screen stamps it itself. Store replies are dispatched by context.fw_phase together with hop.operation.",
+    "examples": [
+      "in_turn, 40 chars, no enabled rule, first turn of the minute -> route 'pass', body byte-identical",
+      "in_turn on user_id 999 while an enabled allow row names user_id 42 -> route 'reject', reason 'sender_not_allowed', rule_id 'allowlist:user_id'",
+      "in_turn containing 'ignore all previous instructions' with a substring row -> route 'reject', reason 'pattern_blocked', rule_id = that row",
+      "the 31st turn of a channel within 60 s at FIREWALL_RATE_MAX 30 -> route 'reject', reason 'rate_limited', rule_id 'rate-limit'; the arrival is NOT booked"
+    ]
+  }
+}

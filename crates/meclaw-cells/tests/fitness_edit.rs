@@ -4,9 +4,9 @@
 //! silently wrong edit compiles into a wrong program. The battery pins the
 //! contract of `docs/cell-types.md` § edit (phase-7 slice-2):
 //!
-//! - `find_replace` replaces ALL occurrences and reports the exact count —
-//!   there is deliberately no unique-match guard (pinned; the gap is a
-//!   fitness-report finding);
+//! - `find_replace` replaces ALL occurrences and reports the exact count;
+//!   the optional `expected_matches` guard (GH #105) turns that count into a
+//!   precondition — without the argument the replace-ALL contract is unchanged;
 //! - 0 matches is the typed `pattern_not_found` error and leaves the file
 //!   untouched — which also makes a repeated (already applied) edit loud
 //!   instead of silently double-applied;
@@ -33,6 +33,16 @@ fn rig(base: &std::path::Path) -> ToolRig {
 
 fn fr(path: &str, find: &str, replace: &str) -> meclaw_core::JsonValue {
     json!({"op": "find_replace", "path": path, "find": find, "replace": replace})
+}
+
+fn fr_expect(
+    path: &str,
+    find: &str,
+    replace: &str,
+    expected: meclaw_core::JsonValue,
+) -> meclaw_core::JsonValue {
+    json!({"op": "find_replace", "path": path, "find": find, "replace": replace,
+           "expected_matches": expected})
 }
 
 fn ins(path: &str, line: u64, content: &str) -> meclaw_core::JsonValue {
@@ -68,9 +78,112 @@ async fn find_replace_replaces_every_occurrence_and_reports_the_count() {
     assert_eq!(
         read(&td, "calc.py"),
         "def add(a, b):\n    return a + b  # BUG\n\ndef sub(a, b):\n    return a + b\n",
-        "note: the ambiguous second site changed TOO — there is no unique-match \
-         guard (fitness finding, see receipt)"
+        "note: the ambiguous second site changed TOO — WITHOUT `expected_matches` \
+         the guard does not exist (GH #105: the default contract is unchanged)"
     );
+}
+
+// ------------------------------------------------- expected_matches (GH #105)
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_matching_expected_matches_applies_the_edit() {
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("calc.py"), "a - b\na - b\n").unwrap();
+    let mut r = rig(td.path());
+
+    let em = r
+        .call(fr_expect("calc.py", "a - b", "a + b", json!(2)), "c1")
+        .await;
+    assert_normal_result(&em, "c1");
+    assert_eq!(header_of(&em, "matches_changed"), 2);
+    assert_eq!(read(&td, "calc.py"), "a + b\na + b\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wrong_expected_matches_refuses_the_edit_and_names_both_numbers() {
+    // GH #105: the highest-risk coding failure — an ambiguous pattern silently
+    // patching a site the caller never saw. With `expected_matches` the count
+    // becomes a PRECONDITION: mismatch ⇒ typed refusal, file untouched.
+    let td = tempfile::TempDir::new().unwrap();
+    let original = "def add(a, b):\n    return a - b\n\ndef sub(a, b):\n    return a - b\n";
+    std::fs::write(td.path().join("calc.py"), original).unwrap();
+    let mut r = rig(td.path());
+
+    let em = r
+        .call(fr_expect("calc.py", "a - b", "a + b", json!(1)), "c1")
+        .await;
+    assert_error(&em, "unexpected_match_count");
+    assert_eq!(
+        header_of(&em, "matches_changed"),
+        0,
+        "the guard path applied no edit at all"
+    );
+    let text = text_of(&em);
+    assert!(
+        text.contains('1') && text.contains('2'),
+        "the refusal names BOTH numbers so the caller can repair: {text:?}"
+    );
+    assert_eq!(
+        read(&td, "calc.py"),
+        original,
+        "not one byte of the file was touched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn zero_matches_keeps_pattern_not_found_even_under_the_guard() {
+    // Precedence ruling (GH #105): `pattern_not_found` is the MORE specific
+    // diagnosis — your pattern is not in the file at all — and keeps winning
+    // over the count mismatch. Same code with and without the argument.
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("a.py"), "x = 1\n").unwrap();
+    let mut r = rig(td.path());
+
+    let em = r
+        .call(fr_expect("a.py", "no_such_pattern", "y", json!(1)), "c1")
+        .await;
+    assert_error(&em, "pattern_not_found");
+    assert_eq!(read(&td, "a.py"), "x = 1\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_malformed_expected_matches_is_invalid_input() {
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("a.py"), "x = 1\n").unwrap();
+    let mut r = rig(td.path());
+
+    // 0 is not an edit — the guard counts sites the caller INTENDS to change.
+    let em = r.call(fr_expect("a.py", "x", "y", json!(0)), "c1").await;
+    assert_error(&em, "invalid_input");
+
+    // Wrong type is a shape error, not a count.
+    let em = r.call(fr_expect("a.py", "x", "y", json!("1")), "c2").await;
+    assert_error(&em, "invalid_input");
+
+    let em = r.call(fr_expect("a.py", "x", "y", json!(-1)), "c3").await;
+    assert_error(&em, "invalid_input");
+
+    assert_eq!(read(&td, "a.py"), "x = 1\n", "no edit slipped through");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expected_matches_is_not_accepted_on_insert_at_line() {
+    // The guard is a find_replace concept — `insert_at_line` has no match
+    // count. Silently ignoring the argument would let a caller believe in a
+    // guard that never runs.
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("a.py"), "one\n").unwrap();
+    let mut r = rig(td.path());
+
+    let em = r
+        .call(
+            json!({"op": "insert_at_line", "path": "a.py", "line": 1,
+                   "content": "zero\n", "expected_matches": 1}),
+            "c1",
+        )
+        .await;
+    assert_error(&em, "invalid_input");
+    assert_eq!(read(&td, "a.py"), "one\n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -231,21 +344,66 @@ async fn insert_at_line_range_errors_are_typed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn insert_without_trailing_newline_merges_with_the_following_line() {
-    // Pinned sharp edge: `content` is inserted VERBATIM between line slices.
-    // Without its own trailing newline it fuses with the line it displaced.
-    // Every content an agent inserts must end in '\n' — fitness-report note.
+async fn insert_without_trailing_newline_is_normalized_to_its_own_line() {
+    // GH #108 (redefines the T-pin `insert_without_trailing_newline_merges_
+    // with_the_following_line`): `content` used to be spliced VERBATIM between
+    // line slices, so a missing trailing newline fused the inserted text into
+    // the line it displaced — silently producing a broken file that only the
+    // next compile run would report. The op is called insert_at_LINE, so the
+    // cell now closes the line it was asked to insert.
     let td = tempfile::TempDir::new().unwrap();
     std::fs::write(td.path().join("a.py"), "one\ntwo\n").unwrap();
     let mut r = rig(td.path());
 
     let em = r.call(ins("a.py", 2, "GLUED"), "c1").await;
     assert_normal_result(&em, "c1");
+    assert_eq!(read(&td, "a.py"), "one\nGLUED\ntwo\n");
+
+    // Content that already ends in a newline is untouched — no double '\n'.
+    let em = r.call(ins("a.py", 1, "# header\n"), "c2").await;
+    assert_normal_result(&em, "c2");
+    assert_eq!(read(&td, "a.py"), "# header\none\nGLUED\ntwo\n");
+
+    // Multi-line content: only the LAST line is missing its terminator.
+    let em = r.call(ins("a.py", 1, "import os\nimport sys"), "c3").await;
+    assert_normal_result(&em, "c3");
     assert_eq!(
         read(&td, "a.py"),
-        "one\nGLUEDtwo\n",
-        "no newline is added on the caller's behalf"
+        "import os\nimport sys\n# header\none\nGLUED\ntwo\n"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn empty_content_inserts_nothing_no_phantom_blank_line() {
+    // GH #108 boundary: normalization completes a line the caller started. An
+    // empty `content` starts none, so it stays empty — a caller who wants a
+    // blank line writes "\n", which says so.
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("a.py"), "one\ntwo\n").unwrap();
+    let mut r = rig(td.path());
+
+    let em = r.call(ins("a.py", 2, ""), "c1").await;
+    assert_normal_result(&em, "c1");
+    assert_eq!(read(&td, "a.py"), "one\ntwo\n");
+
+    let em = r.call(ins("a.py", 2, "\n"), "c2").await;
+    assert_normal_result(&em, "c2");
+    assert_eq!(read(&td, "a.py"), "one\n\ntwo\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_without_a_final_newline_still_fuses_at_append_known_limit() {
+    // The MIRROR edge of GH #108, deliberately NOT fixed: when the FILE's last
+    // line has no terminator, an append lands on it. Closing that line would
+    // rewrite a line the caller never named — the cell normalizes its own
+    // argument, never the file's existing bytes. Pinned so it stays a decision.
+    let td = tempfile::TempDir::new().unwrap();
+    std::fs::write(td.path().join("a.py"), "one\ntwo").unwrap();
+    let mut r = rig(td.path());
+
+    let em = r.call(ins("a.py", 3, "three"), "c1").await;
+    assert_normal_result(&em, "c1");
+    assert_eq!(read(&td, "a.py"), "one\ntwothree\n");
 }
 
 // ------------------------------------------------------------------ boundary
@@ -269,8 +427,23 @@ async fn the_edit_boundary_is_the_same_fence_as_the_file_cells() {
     let em = r.call(fr("/etc/hostname", "x", "y"), "c2").await;
     assert_error(&em, "invalid_input");
 
+    // Inside the fence, a missing file is still an ordinary not_found.
     let em = r.call(fr("missing.txt", "x", "y"), "c3").await;
     assert_error(&em, "not_found");
+
+    // GH #107: outside the fence it is NOT — existing and missing answer
+    // identically, so the fence is no existence oracle. Same for insert.
+    let em = r.call(fr("../no-such-file.txt", "x", "y"), "c4").await;
+    assert_error(&em, "path_outside_boundary");
+    let em = r.call(ins("../no-such-file.txt", 1, "x\n"), "c5").await;
+    assert_error(&em, "path_outside_boundary");
+    let em = r.call(ins("../outside.txt", 1, "x\n"), "c6").await;
+    assert_error(&em, "path_outside_boundary");
+    assert_eq!(
+        std::fs::read_to_string(outer.path().join("outside.txt")).unwrap(),
+        "pattern",
+        "still untouched"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

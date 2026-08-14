@@ -1,0 +1,84 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "turns": {
+        "id": "text",
+        "session_id": "text",
+        "turn_id": "text",
+        "role": "text",
+        "content": "text",
+        "recorded_at": "text",
+        "deferred": "int"
+      },
+      "round": {
+        "turn_id": "text",
+        "session_id": "text",
+        "iter": "int",
+        "role": "text",
+        "turn": "json",
+        "fired": "int",
+        "recorded_at": "text"
+      },
+      "batched": {
+        "session_id": "text",
+        "batched_at": "text",
+        "pruned_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The state surfaces of one agent's context assembly: `turns` is the rolling conversation (both user and assistant turns, session-scoped, id lexicographically time-ordered, with a `deferred` lifecycle stamp for mid-round turns - the turns-table sibling of round.fired, never content), `round` is the per-turn fan-in slate that carries the assembled legs (leg-window, leg-memory) and the tool round (assistant tool_call turns, tool results) with the fired flag both guards read. Both carry `session_id`, because the same two tables are also the record of a session until it closes: then they are read back whole, and the delivery is booked in `batched` - the ledger the prune lane trusts.",
+    "use_when": "One per collector hive. No other cell writes here; code cells own no state, so the assembly state machine keeps all of its state in this store.",
+    "not_in_scope": "No durable memory of its own. The rolling window is short-term working state and is cut at READ time (order by id desc, limit N); the durable record of a closed session leaves with the write batch, and what of it is worth remembering is decided by whoever receives that batch, never here. Deletes happen only on the collector's evidence-gated prune chain (GH #76): sessions the `batched` ledger names as delivered and aged, cut up to their close boundary - never a cap, never a schedule of this store's own. No FTS, no vectors, no canonical bindings: nothing here is retrieved by similarity, it is retrieved by recency.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the assembly state machine, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another emission won the race and this one is terminal).",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. The lane a reply belongs to is carried by context.store_origin ('collector'), the step by context.col_phase, both promoted by the edge that sent the op.",
+    "examples": [
+      "{operation: insert, table: turns, row: {id, session_id, turn_id, role: 'user', content, recorded_at}} -> the turn is in the window before the window is read",
+      "{operation: select, table: turns, columns: [...], where: {session_id}, order_by: [{col: 'id', dir: 'desc'}], limit: 12} -> the turn cap runs in the store, the byte cap runs in the assembler",
+      "{operation: update, table: round, set: {fired: 1}, where: {turn_id, role: 'leg-window', fired: 0}} -> rows_affected 1 means this emission owns the fire",
+      "{operation: select, table: round, columns: [...], where: {session_id}} -> the whole day's rounds in one read, which is what a session close hands on",
+      "{operation: delete, table: turns, where: {session_id, recorded_at: {lte: <close boundary>}}} -> the prune chain cuts a delivered-and-aged session exactly at its evidence; rows_affected is the report"
+    ]
+  }
+}

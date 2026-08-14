@@ -1,0 +1,67 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "sessions": {
+        "channel": "text",
+        "session_id": "text",
+        "opened_at": "text",
+        "last_seen": "text",
+        "closed": "int",
+        "closed_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The generation ledger of the keeper: one row per session, that is, per channel generation. It answers exactly two questions -- which generation is a channel currently in, and when did that channel last speak -- and holds nothing else.",
+    "use_when": "One per session-keeper hive. Both code cells of the hive write here and nowhere else; code cells own no state, so all of it lives in this store.",
+    "not_in_scope": "No conversation turns, no tool rounds, no memory: what was said belongs to the collector's window and to the memory hive. No deletes -- a closed generation keeps its row, which is what makes the close idempotent and the history readable.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the two passes, hop.rows_affected carries the guard signal of the close: a guarded update that affected 0 rows means this generation was already sealed and the emission is terminal.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('keeper-stamp' / 'keeper-close'), the step by context.ses_phase, both promoted by the edge that sent the op.",
+    "examples": [
+      "{operation: select, table: sessions, columns: [...], where: {channel, closed: 0}, order_by: [{col: 'opened_at', dir: 'desc'}], limit: 1} -> the generation a turn belongs to",
+      "{operation: update, table: sessions, set: {last_seen}, where: {session_id, closed: 0}} -> the channel is alive, the idle clock restarts",
+      "{operation: update, table: sessions, set: {closed: 1, closed_at}, where: {session_id, closed: 0}} -> rows_affected 1 means this pass owns the close and emits the close request"
+    ]
+  }
+}

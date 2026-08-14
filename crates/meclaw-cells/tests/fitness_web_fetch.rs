@@ -132,9 +132,35 @@ async fn missing_or_malformed_url_is_invalid_input() {
     let em = r.call(json!({"url": ""}), "c2").await;
     assert_error(&em, "invalid_input");
 
-    // Pinned taxonomy edge: a syntactically broken URL is only discovered by
-    // the HTTP client, so it reports `io_error`, not `invalid_input` — the
-    // `invalid_input` gate checks presence/type, not URL syntax.
-    let em = r.call(json!({"url": "not-a-url"}), "c3").await;
-    assert_error(&em, "io_error");
+    // GH #110 (redefines the T-pin assertion: this used to be `io_error`):
+    // the gate PARSES the URL now. A syntax error is a broken CALL, and the
+    // repair is to rewrite it — `io_error` would have read as "network
+    // problem, retry", which is the wrong repair applied forever.
+    for (i, bad) in [
+        "not-a-url",         // no scheme at all
+        "http://",           // scheme without a host
+        "://example.org",    // empty scheme
+        "ht tp://a.example", // space in the scheme
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let em = r.call(json!({"url": bad}), &format!("c3{i}")).await;
+        assert_error(&em, "invalid_input");
+        assert!(
+            text_of(&em).contains(bad),
+            "the refusal quotes the url it could not parse: {:?}",
+            text_of(&em)
+        );
+    }
+
+    // A URL that parses but names a transport this cell does not speak is the
+    // same class: the call is wrong, not the network.
+    for (i, bad) in ["file:///etc/passwd", "ftp://example.org/x"]
+        .into_iter()
+        .enumerate()
+    {
+        let em = r.call(json!({"url": bad}), &format!("c4{i}")).await;
+        assert_error(&em, "invalid_input");
+    }
 }

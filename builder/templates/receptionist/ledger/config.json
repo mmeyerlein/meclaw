@@ -1,0 +1,63 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "channels": {
+        "channel": "text",
+        "talky_path": "text",
+        "created_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The channel register of the reception: one row per channel that has ever spoken, naming the talky instance it owns. It answers exactly one question -- does this channel already have an agent -- and holds nothing else.",
+    "use_when": "One per receptionist hive. The greet cell writes here and nowhere else; code cells own no state, so all of it lives in this store.",
+    "not_in_scope": "No conversation, no session state, no per-turn bookkeeping: what a channel SAID belongs to its talky's collector, which generation it is in belongs to its keeper. No deletes -- a channel that fell silent keeps its row, and that is what makes the lookup idempotent.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the dispatch of the reply; an empty select result is the whole definition of an unknown channel.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. That a reply belongs to the greet pass is carried by context.rec_origin, the step by context.rec_phase, both promoted by the edge that sent the op.",
+    "examples": [
+      "{operation: select, table: channels, columns: [...], where: {channel}, limit: 1} -> the talky a channel already owns, or nothing",
+      "{operation: insert, table: channels, row: {channel, talky_path, created_at}} -> a channel has been met, and this is the instance that answers it"
+    ]
+  }
+}

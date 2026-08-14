@@ -1,0 +1,6 @@
+{"schema": {"rule_id": "text", "kind": "text", "field": "text", "value": "text", "action": "text", "enabled": "int", "note": "text"}}
+{"rule_id": "example-allow-channel", "kind": "sender", "field": "channel", "value": "example-channel", "action": "allow", "enabled": 0, "note": "Allowlist row. Enable at least one allow row per field to CLOSE that dimension: with no enabled allow row for a field, the field is unconstrained."}
+{"rule_id": "example-allow-user", "kind": "sender", "field": "user_id", "value": "example-user", "action": "allow", "enabled": 0, "note": "The generalisation of the hand-wired Telegram allowlist: one row per admitted sender, editable without touching the cell."}
+{"rule_id": "example-deny-user", "kind": "sender", "field": "user_id", "value": "example-blocked-user", "action": "reject", "enabled": 0, "note": "Blocklist row. An explicit deny outranks every allow row."}
+{"rule_id": "example-block-injection", "kind": "substring", "field": "text", "value": "ignore all previous instructions", "action": "reject", "enabled": 0, "note": "Pattern row, case-folded substring match over the turn's text. A literal, never a regex."}
+{"rule_id": "example-block-command-prefix", "kind": "prefix", "field": "text", "value": "/admin", "action": "reject", "enabled": 0, "note": "Pattern row anchored at the beginning of the first turn."}

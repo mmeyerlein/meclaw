@@ -836,3 +836,228 @@ async fn a_batched_session_is_pruned_and_the_living_session_is_not() {
 
     h.shutdown().await;
 }
+
+// ==================================================== THE MEMORY TOOL (GH #78)
+//
+// The per-turn recall leg is fired before the model has seen the turn, so no
+// agent can ever DECIDE to ask memory about a time RANGE. The tool closes that
+// half -- and the two trees below ask the two questions that decide whether it
+// is really wiring: does the round come back complete when the port is there,
+// and does it END when the port is not?
+//
+// The router in both trees is the SHIPPED `dispatcher@1` template, unchanged.
+// If the dispatcher had to learn one word about memory, the claim of the issue
+// would be false.
+
+/// The shipped fan-out half, byte for byte as the template ships it.
+fn dispatcher_config() -> Value {
+    let raw = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../builder/templates/dispatcher/config.json"),
+    )
+    .expect("dispatcher template");
+    meclaw_core::serde_json::from_str(&raw).expect("dispatcher json")
+}
+
+/// A brain that asks for two tools at once -- one ordinary tool and one
+/// `memory_recall` with a TIME RANGE -- and then reports what came back.
+const MEMORY_BRAIN: &str = r#"
+import sys, json
+d = json.load(sys.stdin)
+h = d.get("header") or {}
+ctx = h.get("context") or {}
+hop = h.get("hop") or {}
+it = int(ctx.get("iter", 0) or 0)
+msgs = d.get("messages", [])
+if it == 0:
+    args = json.dumps({"query": "what did we decide?",
+                       "window_from": "2026-08-01T00:00:00Z",
+                       "window_to": "2026-08-02T00:00:00Z"})
+    out = {"header": {"finish_reason": "tool_calls"},
+           "messages": [
+               {"origin": "assistant", "type": "tool_call", "id": "c1",
+                "text": json.dumps({"name": "fake_tool", "arguments": "alpha"})},
+               {"origin": "assistant", "type": "tool_call", "id": "m1",
+                "text": json.dumps({"name": "memory_recall", "arguments": args})}]}
+else:
+    users = [str(m.get("text", "")) for m in msgs if m.get("origin") == "user"]
+    res = [str(m.get("text", "")) for m in msgs if m.get("type") == "tool_result"]
+    out = {"header": {"finish_reason": "stop"},
+           "messages": [{"origin": "assistant", "type": "text",
+                         "text": "first=%s|tools=%d|%s|stale=%s" % (
+                             users[0] if users else "<none>", len(res),
+                             " ;; ".join(sorted(res)), hop.get("round_stale", ""))}]}
+sys.stdout.write(json.dumps(out))
+"#;
+
+/// A memory hive's recall port, reduced to the one thing this test asks of it:
+/// it REPORTS the request it received. Nothing is retrieved, so nothing has to
+/// be believed -- what the bundle says is what the collector asked for.
+const MEMO: &str = r#"
+import sys, json
+d = json.load(sys.stdin)
+ctx = (d.get("header") or {}).get("context") or {}
+sys.stdout.write(json.dumps(
+    {"header": {"route": "bundle"},
+     "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                   "text": "MEMORY[tier=%s,from=%s,to=%s,q=%s]" % (
+                       ctx.get("memory_tier", ""), ctx.get("recall_window_from", ""),
+                       ctx.get("recall_window_to", ""), ctx.get("recall_query", ""))}]}))
+"#;
+
+/// The wiring a parent draws for an agent with a memory tool. Exactly TWO edges
+/// are new next to an ordinary tool: the dispatcher's `memory_recall` lane into
+/// the collector, and the recall port it already had for the per-turn leg.
+fn memory_main_config(with_memo: bool) -> Value {
+    let mut edges = vec![
+        json!({"from": "./probe", "to": "./collector/assemble",
+               "condition": "hop.route == 'turn'",
+               "modifier": {"set_hop": {"route": "'in_turn'"}}}),
+        json!({"from": "./probe", "to": "./collector/assemble",
+               "condition": "hop.route == 'sweep'",
+               "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
+        json!({"from": "./collector/assemble", "to": "./brain",
+               "condition": "hop.route == 'brain'",
+               "modifier": {"set_context": {"turn_id": "hop.turn_id",
+                                            "session_id": "hop.session_id",
+                                            "iter": "hop.iter"}}}),
+        json!({"from": "./brain", "to": "./collector/assemble",
+               "condition": "hop.finish_reason == 'stop'",
+               "modifier": {"set_hop": {"route": "'in_answer'"}}}),
+        json!({"from": "./collector/assemble", "to": "/sink",
+               "condition": "hop.route == 'answer'"}),
+        json!({"from": "./brain", "to": "./split",
+               "condition": "hop.finish_reason == 'tool_calls'"}),
+        json!({"from": "./split", "to": "./collector/assemble",
+               "condition": "hop.route == 'calls'",
+               "modifier": {"set_hop": {"route": "'in_calls'"}}}),
+        // An ordinary tool: the dispatcher names it, this edge knows the cell.
+        json!({"from": "./split", "to": "./tool",
+               "condition": "hop.route == 'tool' && hop.tool_name == 'fake_tool'"}),
+        json!({"from": "./tool", "to": "./collector/assemble",
+               "condition": "hop.route == 'res'",
+               "modifier": {"set_hop": {"route": "'in_tool'"}}}),
+        // THE new edge (GH #78). Same form, same condition key -- the tool
+        // whose cell happens to be the collector itself.
+        json!({"from": "./split", "to": "./collector/assemble",
+               "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
+               "modifier": {"set_hop": {"route": "'in_memory_call'"}}}),
+    ];
+    if with_memo {
+        edges.push(json!({"from": "./collector/assemble", "to": "./memo",
+                          "condition": "hop.route == 'recall'",
+                          "modifier": {"set_context": {
+                              "recall_query": "hop.recall_query",
+                              "memory_tier": "hop.memory_tier",
+                              "memory_call_id": "hop.memory_call_id",
+                              "recall_window_from": "hop.recall_window_from",
+                              "recall_window_to": "hop.recall_window_to"}}}));
+        edges.push(json!({"from": "./memo", "to": "./collector/assemble",
+                          "condition": "hop.route == 'bundle'",
+                          "modifier": {"set_hop": {"route": "'in_bundle'"}}}));
+    }
+    json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}})
+}
+
+fn build_memory_tree(td: &tempfile::TempDir, env: &str, with_memo: bool) {
+    let root = td.path();
+    std::fs::write(root.join(".env"), env).unwrap();
+    write(root, "main/config.json", &memory_main_config(with_memo));
+    copy_cells(&template_dir(), &root.join("main/collector"));
+    write(
+        root,
+        "main/probe/config.json",
+        &code_cell(PROBE, &["turn", "close", "prune", "sweep"], json!({})),
+    );
+    write(
+        root,
+        "main/brain/config.json",
+        &code_cell(MEMORY_BRAIN, &[], finish_hop()),
+    );
+    write(root, "main/split/config.json", &dispatcher_config());
+    write(
+        root,
+        "main/tool/config.json",
+        &code_cell(TOOL, &["res"], json!({})),
+    );
+    if with_memo {
+        write(
+            root,
+            "main/memo/config.json",
+            &code_cell(MEMO, &["bundle"], json!({})),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_memory_recall_call_is_served_by_the_collector_and_completes_the_round() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_memory_tree(&td, "", true);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    let ans = say(&h, &mut sink_rx, "what did we decide on the first?").await;
+    assert!(
+        ans.contains("|tools=2|"),
+        "one ordinary tool and one memory call, both fanned back in: {ans}"
+    );
+    assert!(
+        ans.contains("result-alpha"),
+        "the ordinary tool travelled its ordinary path: {ans}"
+    );
+    // The window the MODEL asked for reached the recall port -- the first
+    // producer of the recall window the memory hive has understood since P15.
+    assert!(
+        ans.contains(
+            "MEMORY[tier=1,from=2026-08-01T00:00:00Z,to=2026-08-02T00:00:00Z,q=what did we decide?]"
+        ),
+        "the call's arguments reached memory as its own keys: {ans}"
+    );
+    assert!(
+        ans.contains("first=what did we decide on the first?"),
+        "and the round re-entered through the seam, window first: {ans}"
+    );
+    assert!(
+        ans.ends_with("|stale=0"),
+        "a complete round is not a stale one: {ans}"
+    );
+
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_memory_call_without_a_wired_port_ends_in_the_rounds_idle_exit() {
+    // The documented failure path. Without the recall edge the request is
+    // unroutable and nothing ever answers the call -- but the round must not
+    // park forever: the idle exit of GH #103 owns this case exactly as it owns
+    // a tool that died mid-flight. No new machinery for a memory tool.
+    let td = tempfile::TempDir::new().unwrap();
+    build_memory_tree(&td, "COLLECTOR_ROUND_IDLE_MS=300\n", false);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(turn_in("s1", "what did we decide on the first?"))
+        .await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), sink_rx.recv())
+            .await
+            .is_err(),
+        "the round parks: the memory call has no port to answer it"
+    );
+
+    let got = round_trip(&h, &mut sink_rx, "/sweep").await;
+    let ans = answer_text(&got);
+    assert!(ans.contains("|tools=2|"), "the fan-in completed: {ans}");
+    assert!(
+        ans.contains("result-alpha"),
+        "the tool that DID answer still travels: {ans}"
+    );
+    assert!(
+        ans.contains("tool result lost"),
+        "the memory call was answered synthetically, under its own id: {ans}"
+    );
+    assert!(
+        ans.ends_with("|stale=1"),
+        "and the seam says the round was closed by the idle exit: {ans}"
+    );
+
+    h.shutdown().await;
+}

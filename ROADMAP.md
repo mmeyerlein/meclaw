@@ -17,7 +17,6 @@ settled principles and open forks; its sub-issues in intended order, collector
 hives first:
 [#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
 [#28](https://github.com/mmeyerlein/meclaw/issues/28) the talky/cogny split,
-[#29](https://github.com/mmeyerlein/meclaw/issues/29) one talky per channel,
 [#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
 [#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
 [#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
@@ -25,12 +24,11 @@ hives first:
 0.5.0 delivered the first half of this stream as templates: the collector hive
 and its fan-out half (#27), the session lifecycle and its handover, the llm
 cell's seed path (#99), and the collector's own follow-ups #77, #91, #76 and
-#103. What is left of the epic is the talky/cogny split and what hangs off it.
+#103. 0.6.0 put the front door on it: the firewall hive (#36), one talky per
+channel (#29), and window-mode memory requests as a real tool round (#78). What
+is left of the epic is the talky/cogny split and what hangs off it.
 
 Still open in this stream:
-[#78](https://github.com/mmeyerlein/meclaw/issues/78) window-mode memory
-requests through a tool loop,
-[#36](https://github.com/mmeyerlein/meclaw/issues/36) the firewall hive,
 [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
 app store, [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive
 built with the builder.
@@ -48,6 +46,14 @@ surface and error-code semantics,
 per-invocation interpreter start,
 [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
 subscription plan actually carries until reset.
+
+The tool cells got their own pass in 0.6.0: the contract batteries of #104
+turned into seven follow-ups, and #105–#110 shipped with this release — the
+match-count guard, binary and windowed reads, a fence that is no existence
+oracle, a line-closing insert, the store error taxonomy and URL parsing at the
+`web_fetch` gate. What is left of that set is
+[#111](https://github.com/mmeyerlein/meclaw/issues/111), guarding interpreter
+bytecode caches in the coding templates' edit-test loops.
 
 ## Later: memory hive continued
 
@@ -85,14 +91,19 @@ and a keyless quickstart.
 
 The good first issues from the first public wave — #3 and #4 — shipped with
 0.5.0 as `retry@1` and `archive-bridge@1`. The template surface is open: a
-template is a directory, a README and a `template.json`, and the six under
-`builder/templates/` are the worked examples. New ones are welcome.
+template is a directory, a README and a `template.json`, and the nine under
+`builder/templates/` are the worked examples — eight single-purpose ones plus
+the `talky@1` composite that carries four of them as sub-units. New ones are
+welcome.
 
 ## Shipped
 
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.6.0 — the front door.** The firewall hive screens every inbound turn
+  against rules that are data, the receptionist hands each channel an agent of
+  its own, and memory becomes a tool round the agent can aim at a time range.
 - **v0.5.0 — the agent wave.** Two waves in one night: the collector hive goes
   public and four more templates join it, the tool cells get contract batteries,
   and the boot probe stops guessing from row counts.

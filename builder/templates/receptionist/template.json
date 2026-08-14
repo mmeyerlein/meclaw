@@ -1,0 +1,23 @@
+{
+  "name": "receptionist",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "One agent per channel, built on demand: the first turn of a channel nobody has met makes the reception instantiate a fresh talky for exactly that channel -- one mutation carrying the node AND its four port edges -- and hands the triggering turn straight into it. Every later turn of that channel takes the lane that mutation drew.",
+    "use_when": "In front of a surface that serves many chats, rooms or callers with the same kind of agent. One per colony. The parent writes two edges: the ingress into ./greet, and the PRIVILEGED ./greet -> /colony/mutations lane, which only a bootstrap config.json can grant -- no mutation can create it at any scope.",
+    "not_in_scope": "No conversation, no persona, no tools: the agent is the composite this instantiates, not the reception. No tool lanes for the instances it creates (a fresh talky has no tools -- the parent tree wires them). No teardown: instances are never removed, and a channel that fell silent keeps its row and its agent. No fairness, no quota, no allowlist -- who may talk is a condition on the ingress edge.",
+    "examples": [
+      "PORTS - Entry: ./greet on lane in_turn, with context.channel promoted by the parent's ingress edge. Exit: the per-channel lanes the reception draws itself, plus the bootstrap-only mutation lane ./greet -> /colony/mutations.",
+      "two Telegram chats reach the same bot: chat 42 gets /talky-42, chat 99 gets /talky-99, both from ONE template and one shared .env",
+      "the second turn of chat 42: one ledger select, no mutation, straight through to /talky-42/keeper/stamp"
+    ]
+  },
+  "tags": [
+    "reception",
+    "per-channel",
+    "self-modification",
+    "mutation",
+    "fleet"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

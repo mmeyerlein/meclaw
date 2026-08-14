@@ -1,0 +1,70 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nd = json.load(sys.stdin)\nh = d.get(\"header\") or {}\nhop = h.get(\"hop\") or {}\nctx = h.get(\"context\") or {}\nroute = str(hop.get(\"route\") or \"\")\nfinish = str(hop.get(\"finish_reason\") or \"\")\nif route == \"summary_error\":\n    source = \"summarizer\"\nelif finish:\n    source = \"brain\"\nelse:\n    source = \"unknown\"\ncode = str(hop.get(\"error_code\") or finish or \"error\")\nsession = str(hop.get(\"session_id\") or ctx.get(\"session_id\") or \"\")\nturn = str(hop.get(\"turn_id\") or ctx.get(\"turn_id\") or \"\")\ntext = \"talky error: source=%s code=%s session=%s turn=%s\" % (source, code, session, turn)\nsys.stdout.write(json.dumps([{\n    \"header\": {\"route\": \"error\", \"error_code\": code, \"error_source\": source,\n               \"session_id\": session, \"turn_id\": turn},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": text}]}]))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "error"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "error_source": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The composite's ONE error drain port: the failure lanes of the brain and of the summarizer fan in here and leave as one normalised report on route error, so a parent tree drains a single edge instead of three.",
+    "use_when": "Inside the talky composite. The parent MUST wire the exit somewhere - a log sink, an alarm, an operator surface; an unwired error lane dead-letters, which is loud but not actionable.",
+    "not_in_scope": "No retry, no judgement, no swallowing: what a failure means is the parent's decision. Deliberately NOT a drain cell - a drain that ends inside the unit would make the failure invisible to the tree that owns the agent.",
+    "emits_meaning": "route error: one report per failure, naming source (brain or summarizer), error code, session and turn. The report carries NO conversation content on purpose - the llm error lane echoes the PROMPT back, and a drain is not the place to file it.",
+    "consumes_meaning": "the brain's error / content_filter emission (finish_reason on the hop) and the summarizer's summary_error emission (route on the hop). Anything else is reported as source unknown rather than swallowed.",
+    "examples": [
+      "provider 500 at the brain -> one report, source brain, code error",
+      "empty summary at the close -> one report, source summarizer, code empty_summary"
+    ]
+  }
+}

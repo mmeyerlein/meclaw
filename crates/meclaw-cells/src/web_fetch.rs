@@ -53,6 +53,12 @@ pub(crate) struct WebFetchArgs {
 }
 
 /// Parses tool_call args for WebFetchCell.
+///
+/// GH #110: the gate PARSES the URL, it does not merely check presence and
+/// type. A syntax error used to surface from reqwest and was mapped to
+/// `io_error` — which an agent repairing its own call reads as "network
+/// problem, retry", the wrong repair applied forever. A broken URL is a broken
+/// CALL, so it belongs on the `invalid_input` lane with the missing one.
 pub(crate) fn parse_web_fetch_args(args: &meclaw_core::JsonValue) -> Result<WebFetchArgs, String> {
     let url = args
         .get("url")
@@ -60,6 +66,17 @@ pub(crate) fn parse_web_fetch_args(args: &meclaw_core::JsonValue) -> Result<WebF
         .ok_or_else(|| "args.url missing or not a string".to_string())?;
     if url.is_empty() {
         return Err("args.url is empty".into());
+    }
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| format!("args.url {url:?} is not a valid URL: {e}"))?;
+    // A URL this cell cannot speak is the same class of mistake as one that
+    // does not parse: the call is wrong, not the network. Naming it here also
+    // keeps `file://` from ever looking like a transport failure.
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "args.url {url:?} uses scheme {:?}; web_fetch speaks http and https only",
+            parsed.scheme()
+        ));
     }
     Ok(WebFetchArgs {
         url: url.to_string(),
@@ -430,6 +447,37 @@ mod tests {
     #[test]
     fn parse_web_fetch_args_rejects_empty_url() {
         assert!(parse_web_fetch_args(&json!({"url": ""})).is_err());
+    }
+
+    /// GH #110: the gate parses. A syntax error is a broken CALL — it must not
+    /// have to travel through reqwest to be discovered as one.
+    #[test]
+    fn parse_web_fetch_args_rejects_unparseable_urls_and_foreign_schemes() {
+        for bad in [
+            "not-a-url",
+            "http://",
+            "://example.org",
+            "ht tp://a.example",
+            "file:///etc/passwd",
+            "ftp://example.org/x",
+        ] {
+            let err = parse_web_fetch_args(&json!({ "url": bad })).unwrap_err();
+            assert!(err.contains(bad), "the error quotes the url: {err}");
+        }
+        // Everything the cell CAN speak still parses, including ports, query
+        // strings, IPv6 literals and userinfo.
+        for good in [
+            "http://127.0.0.1:8080/foo?a=1#frag",
+            "https://example.org",
+            "http://[::1]:80/x",
+            "https://user:pw@example.org/p",
+        ] {
+            assert_eq!(
+                parse_web_fetch_args(&json!({ "url": good })).unwrap().url,
+                good,
+                "the url is passed through verbatim, never re-serialized"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

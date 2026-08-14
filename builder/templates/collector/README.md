@@ -18,6 +18,12 @@ the window and what leaves it**, in one place, and hands the result to the brain
   asks the memory hive once, and the bundle enters the context in `system.memory`. The
   collector renders nothing of its own; it only chooses which of the two forms the memory
   hive emitted travels on, and how much of it.
+- **A memory the model can ask itself.** That ambient leg is fired before the model has
+  seen the turn, so nothing in an agent could ever *decide* to ask about a **time range**
+  (GH #78). The `in_memory_call` lane closes it: the brain emits a `memory_recall`
+  `tool_call`, the dispatcher routes it by name like any other tool, and the cell behind
+  that edge is the collector -- which serves the call on the recall port it already owns
+  and answers it under the original `tool_call_id`. The round ends where it began.
 - **The tool round, fanned back in.** The store-backed fan-in of the example pattern, with
   one difference that matters: the re-entry carries the conversation window and the memory
   bundle with it, because the round is assembled at the same place the context is.
@@ -53,7 +59,7 @@ the window and what leaves it**, in one place, and hands the result to the brain
 
 | cell | type | what it holds |
 |---|---|---|
-| `assemble` | `code` | the whole state machine: eight entry lanes, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
+| `assemble` | `code` | the whole state machine: nine entry lanes, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
 | `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane. |
 
 ## Ports
@@ -64,9 +70,10 @@ Entry lanes go **into `./assemble`**. The parent edge names the lane with
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
-| `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn |
+| `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn -- **or**, when the request carried a `memory_call_id`, the tool result of a `memory_recall` call |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round |
 | `in_tool` | a tool cell | one tool result |
+| `in_memory_call` | the tool dispatcher, on `hop.tool_name == 'memory_recall'` | the memory tool: the collector serves the call itself (GH #78) |
 | `in_answer` | the brain, on `finish_reason == 'stop'` | writes the answer into the window and lets it out |
 | `in_close` | the session keeper, on `hop.route == 'close'` | reads the whole session back and batches it out |
 | `in_prune` | a timer or an operator, on `hop.route == 'prune'` | prunes delivered-and-aged sessions; the template **never fires this itself** |
@@ -78,7 +85,7 @@ Exits leave **from `./assemble`** on `hop.route`:
 |---|---|---|
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `COLLECTOR_MAX_ITER`, marked `hop.round_capped=1` |
-| `recall` | the memory hive's recall port | only when `COLLECTOR_MEMORY_TIER` is set; promote `recall_query`, `memory_tier`, `session_id`, `turn_id` |
+| `recall` | the memory hive's recall port | the per-turn leg (only when `COLLECTOR_MEMORY_TIER` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible |
 
@@ -98,7 +105,8 @@ crossing edge derives inactive and never spawns.
 | `COLLECTOR_MAX_ITER` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. |
 | `COLLECTOR_ROUND_IDLE_MS` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `COLLECTOR_MEMORY_TIER` | (empty) | empty = no memory leg at all, and the assembly waits for the window leg alone. `0` / `1` / `2` request that recall tier once per turn. |
-| `COLLECTOR_MEMORY_FORM` | `readable` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. |
+| `COLLECTOR_MEMORY_FORM` | `readable` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. Applies to the ambient leg and to a `memory_recall` result alike. |
+| `COLLECTOR_MEMORY_CALL_TIER` | `1` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
 | `COLLECTOR_PRUNE_AFTER_MS` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 
 ### A cap is a preview, never a delete
@@ -214,6 +222,88 @@ undefined order. Decided behaviour now:
 The check costs the first assembly of every turn one extra store round-trip (open-round
 select), two routing hops -- the tool round itself is unchanged.
 
+### The memory tool (GH #78)
+
+The per-turn leg above is the **free floor**: it is fired the moment a turn arrives, at a
+fixed tier, before the model has read a word of it. That covers the ambient case and it
+cannot cover the other one -- a question about a **time range**. The recall cell has
+understood `recall_window_from` / `recall_window_to` since P15, but nothing in an agent
+could ever *decide* to send them, because nobody who had seen the turn was ever the one
+asking. The memory tool is that missing producer, and it sits at the **consumer**.
+
+**From the dispatcher's side it is a tool like any other.** The brain emits a `tool_call`
+named `memory_recall`, the dispatcher routes it by `hop.tool_name`, and an edge knows the
+cell -- exactly as for a web search. The dispatcher learns nothing: routing is fan-out,
+and this is fan-out. **From the collector's side it is the one tool it serves itself**,
+because it is the memory specialist of this hive already (it owns the recall port for the
+per-turn leg, R-OS-5). So the round ends in the collector and memory never learns a word
+of dispatcher vocabulary (R-OS-2).
+
+Two edges, and neither of them is new machinery:
+
+```jsonc
+// 1. the dispatcher's memory lane -- the same shape as any tool edge
+{"from": "./split", "to": "./collector/assemble",
+ "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
+ "modifier": {"set_hop": {"route": "'in_memory_call'"}}}
+
+// 2. the recall port the per-turn leg already used, carrying five keys now
+{"from": "./collector/assemble", "to": "<memory hive>/recall",
+ "condition": "hop.route == 'recall'",
+ "modifier": {"set_context": {"recall_query": "hop.recall_query",
+                              "memory_tier": "hop.memory_tier",
+                              "memory_call_id": "hop.memory_call_id",
+                              "recall_window_from": "hop.recall_window_from",
+                              "recall_window_to": "hop.recall_window_to"}}}
+```
+
+`memory_call_id` is the whole correlation: the ambient leg travels the same edge with the
+key **empty**, and the returning bundle is filed as the memory leg of the turn; a bundle
+that comes back with the key set is filed as the `tool_result` of that call, under the
+original `tool_call_id`, on the ordinary `round-w` phase. One port, two meanings, told
+apart by what the request carried out. Every key is always present and empty rather than
+absent -- a missing hop key makes the promoting CEL modifier fail, and a failed modifier
+skips the edge.
+
+The tool schema is a **seed**, not a contract of this template -- what the brain may ask
+for is decided where the brain's `system.tools` is written:
+
+```jsonc
+"memory_recall": {
+  "description": "Ask long-term memory about something, optionally restricted to a time range.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query":       {"type": "string", "description": "what to look for"},
+      "window_from": {"type": "string", "description": "ISO-8601 start of the time range (optional)"},
+      "window_to":   {"type": "string", "description": "ISO-8601 end of the time range (optional)"}
+    },
+    "required": ["query"]
+  }
+}
+```
+
+The collector reads exactly those three argument names, passes the window through as the
+recall port's own keys, and takes the **tier** from `COLLECTOR_MEMORY_CALL_TIER`. A tier
+is a cost decision of the tree, not something a model gets to raise from inside a prompt.
+
+Discipline, unchanged in every direction:
+
+- **It counts as a normal call.** The `memory_recall` id is a member of the round's
+  expectation set like any other, `COLLECTOR_TOOL_CHARS` cuts its result like any other,
+  `COLLECTOR_ROUND_BYTES` and `COLLECTOR_MAX_ITER` bound the round it belongs to.
+- **A call that cannot be served is answered, never parked.** With
+  `COLLECTOR_MEMORY_CALL_TIER` empty the collector answers the call itself with a typed
+  error result -- the dispatcher-lid pattern, one lane further in.
+- **A port that is not wired ends in the idle exit.** Without the `recall` edge the
+  request is unroutable and no answer ever comes; the round then parks and is closed by
+  the round idle window of GH #103 (synthetic result, `hop.round_stale=1`) -- the same
+  exit a tool that died mid-flight gets. No second machinery for a memory tool.
+- **The ambient tier-0 bundle stays the free floor.** It does not step aside when the
+  model asks for itself: the two are different questions (what is always true about this
+  person vs. what happened between these two dates), and a turn that pays for both is a
+  turn whose model asked for the second one on purpose.
+
 ### `window` here is a context window, not a recall window
 
 The `window` cell holds the turns an agent is about to *see*. The memory hive's "recall
@@ -238,6 +328,11 @@ origin. Two ways out, and the first is the recommended one:
    already carries.
 2. **Size the budget instead.** For a shape that does not restore:
    `message_default_ttl >= 4 + rounds * 12` in the instantiating colony's `colony.json`.
+
+A `memory_recall` call rides on top of that: the request leaves the hive, crosses the
+memory hive's own chain and comes back, so it costs whatever that hive costs plus the four
+hops of this one (dispatcher edge, recall edge, return edge, the `round-w` write). With a
+restoring re-entry edge that is still one round's worth of budget; without one, size for it.
 
 Either way, TTL is not what bounds the round. This hive bounds it itself with
 `COLLECTOR_MAX_ITER`, which is why a runaway round ends in a message on the `answer` lane
@@ -272,6 +367,10 @@ and, when the brain asked for tools:
 ```
 in_calls  -> insert round(assistant)     phase round-w
 in_tool   -> insert round(tool)          phase round-w
+in_memory_call -> ROUTE recall           (memory_call_id = the tool_call_id,  <- GH #78
+                                          recall_window_from/_to = the args)
+in_bundle (with a memory_call_id)
+          -> insert round(tool)          phase round-w      <- back in the regular fan-in
 round-w   -> select round                phase round-check
 round-check-> complete: update round
              set fired=1                 phase round-guard  <- per ITERATION
@@ -327,7 +426,9 @@ design) -- the same discipline as the store-backed tool loop this grew out of.
   does not decide when a session begins or ends.
 - **Not memory.** The collector reads the recall bundle and hands the closed session on
   unfiltered, but what is worth remembering out of that batch is the receiver's question,
-  never the collector's.
+  never the collector's. It **serves** the `memory_recall` call (GH #78) because it owns
+  the port and the round, and it answers it with what the memory hive said, verbatim up to
+  the cap -- it retrieves nothing, ranks nothing and remembers nothing of its own.
 - **Not an eager deleter.** Every *cap* is a read-time cut; rows fall only on the
   `in_prune` lane, only with delivery evidence in the `batched` ledger, only behind the
   age gate, and never by the collector's own initiative -- the lane has no schedule of
@@ -337,11 +438,15 @@ design) -- the same discipline as the store-backed tool loop this grew out of.
 
 - `crates/meclaw-cells/tests/collector_window.rs` -- the shipped `script_inline` against
   real stdin documents: assembly, the eviction policy, the caps, the gate, the seam and
-  its bound, the close lane, the delivery ledger, the prune chain, the round idle exit
-  and the mid-round deferral.
+  its bound, the close lane, the delivery ledger, the prune chain, the round idle exit,
+  the mid-round deferral and the memory tool (the request, its window arguments, the
+  answer as a tool result, the switched-off tier).
 - `crates/meclaw-cells/tests/collector_colony.rs` -- a running colony with no memory hive
   in it at all, so a turn that references an earlier turn can only have been answered from
   the window; plus a 100 KB tool result that arrives capped, a runaway round that the seam
   ends, a session that leaves as one batch, a batched session that is pruned while
   the living session keeps every byte, a lost tool result whose round a sweep closes, and
-  a mid-round turn that defers and rides with the next assembly.
+  a mid-round turn that defers and rides with the next assembly. Two more trees run the
+  memory tool against the **shipped `dispatcher@1`** -- one with the recall port wired
+  (both results fan in, the model's time range reaches the request) and one without it
+  (the call is unroutable and the round ends in the idle exit).

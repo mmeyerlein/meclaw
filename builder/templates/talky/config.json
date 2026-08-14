@@ -1,0 +1,125 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./keeper/stamp",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./keeper/close",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'close'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_close'"
+            },
+            "set_context": {
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./collector/assemble",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
+          "modifier": {
+            "set_context": {
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./split",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./brain",
+          "to": "./collector/assemble",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./errors",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')"
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'calls'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_calls'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./collector/assemble",
+          "to": "./summary/prep",
+          "condition": "has(hop.route) && hop.route == 'write'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_batch'"
+            }
+          }
+        },
+        {
+          "from": "./summary/prep",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'summary'"
+        },
+        {
+          "from": "./summary/prep",
+          "to": "./errors",
+          "condition": "has(hop.route) && hop.route == 'summary_error'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the brain, the tool dispatcher and the session summarizer behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the Egon rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path, the handover -- is an internal edge here.",
+    "use_when": "One per conversational agent. Instantiate it in the same mutation that wires the four ports plus the per-instance tool lanes; the composite is an island until an edge crosses into it.",
+    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no surface proxy, no drain cell. The brain's identity, instructions and tool schemas live in its own cell.db -- the composite carries the topology, never the persona."
+  }
+}

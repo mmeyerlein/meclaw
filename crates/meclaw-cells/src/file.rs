@@ -27,13 +27,128 @@ pub struct FileCell {
 // ---- FileOp ----------------------------------------------------------------
 
 pub(crate) enum FileOp {
-    Read { path: String },
-    Write { path: String, content: String },
-    List { path: String },
-    Stat { path: String },
+    Read {
+        path: String,
+        /// GH #106: how the bytes reach the caller. `None` ⇒ the historic
+        /// UTF-8 text contract.
+        mode: ReadMode,
+        /// GH #106: byte range. BYTE semantics — it knows nothing about
+        /// characters (that is what `ReadMode::Base64` is for).
+        range: ByteRange,
+    },
+    Write {
+        path: String,
+        content: String,
+    },
+    List {
+        path: String,
+    },
+    Stat {
+        path: String,
+    },
+}
+
+/// GH #106: the two shapes a `read` payload can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadMode {
+    /// Default. `text` is the file content; non-UTF-8 is a typed `io_error`.
+    Text,
+    /// `text` is the standard-alphabet, padded base64 of the raw bytes, and
+    /// the emission carries `encoding: "base64"`.
+    Base64,
+}
+
+/// GH #106: an optional byte window into the file. `Default` is the whole file
+/// and takes the historic `read_to_string` path unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ByteRange {
+    pub offset: Option<u64>,
+    pub limit: Option<u64>,
+}
+
+impl ByteRange {
+    /// True when the caller asked for the whole file (the pinned default path).
+    fn is_whole_file(&self) -> bool {
+        self.offset.is_none() && self.limit.is_none()
+    }
+
+    /// Applies the window to `bytes`, clamping at EOF. An offset at or past the
+    /// end yields an empty slice — the "you are at the end" paging signal.
+    fn slice<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        let start = self.offset.unwrap_or(0).min(bytes.len() as u64) as usize;
+        let rest = &bytes[start..];
+        match self.limit {
+            Some(n) => &rest[..(n.min(rest.len() as u64) as usize)],
+            None => rest,
+        }
+    }
+}
+
+/// Standard base64 (RFC 4648 §4, padded). Hand-rolled: the encoder is twenty
+/// lines and the tech-stack allow-list is closed — a dependency for this would
+/// be a spec conflict, not a convenience.
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 // ---- parse_file_op ---------------------------------------------------------
+
+/// GH #106: the arguments that only `read` understands.
+const READ_ONLY_ARGS: [&str; 3] = ["mode", "offset", "limit"];
+
+/// GH #106: `mode` is optional; absent, `null` and `"text"` are the same
+/// (historic) contract.
+fn parse_read_mode(args: &JsonValue) -> Result<ReadMode, String> {
+    match args.get("mode") {
+        None => Ok(ReadMode::Text),
+        Some(v) if v.is_null() => Ok(ReadMode::Text),
+        Some(v) => match v.as_str() {
+            Some("text") => Ok(ReadMode::Text),
+            Some("base64") => Ok(ReadMode::Base64),
+            _ => Err("args.mode must be \"text\" or \"base64\"".to_string()),
+        },
+    }
+}
+
+/// GH #106: `offset` (>= 0) and `limit` (>= 1), both in BYTES. A zero `limit`
+/// is rejected — a read of nothing is not a read, it is a mistyped argument.
+fn parse_byte_range(args: &JsonValue) -> Result<ByteRange, String> {
+    fn num(args: &JsonValue, key: &str) -> Result<Option<u64>, String> {
+        match args.get(key) {
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(v) => Ok(Some(v.as_u64().ok_or_else(|| {
+                format!("args.{key} must be a non-negative integer (bytes)")
+            })?)),
+        }
+    }
+    let offset = num(args, "offset")?;
+    let limit = num(args, "limit")?;
+    if limit == Some(0) {
+        return Err("args.limit must be >= 1 (bytes)".into());
+    }
+    Ok(ByteRange { offset, limit })
+}
 
 /// Parses tool_call args for FileCell. Returns `Err(human-readable)` with
 /// `ERR_INVALID_INPUT` semantics (caller builds the error body).
@@ -49,9 +164,21 @@ pub(crate) fn parse_file_op(args: &JsonValue) -> Result<FileOp, String> {
     if path.is_empty() {
         return Err("args.path is empty".into());
     }
+    // GH #106: `mode`/`offset`/`limit` are READ arguments. Ignoring them on the
+    // other ops would let a caller believe in a partial write or a paged list
+    // that never happened — the same class of lie as a guard that never runs.
+    if op != "read" {
+        for key in READ_ONLY_ARGS {
+            if args.get(key).is_some_and(|v| !v.is_null()) {
+                return Err(format!("args.{key} is only valid for op \"read\""));
+            }
+        }
+    }
     match op {
         "read" => Ok(FileOp::Read {
             path: path.to_string(),
+            mode: parse_read_mode(args)?,
+            range: parse_byte_range(args)?,
         }),
         "write" => {
             let content = args
@@ -161,11 +288,19 @@ impl meclaw_colony::StatelessCell for FileCell {
 
             let duration_ms = started.elapsed().as_millis() as u64;
             match outcome {
-                OpOutcome::Ok { text, bytes } => {
+                OpOutcome::Ok {
+                    text,
+                    bytes,
+                    encoding,
+                } => {
                     let mut header = Map::new();
                     header.insert("operation".into(), Value::String(op_label.clone()));
                     header.insert("bytes".into(), Value::from(bytes));
                     header.insert("duration_ms".into(), Value::from(duration_ms));
+                    // GH #106: only a non-text payload announces itself.
+                    if let Some(enc) = encoding {
+                        header.insert("encoding".into(), Value::String(enc.to_string()));
+                    }
                     let body = build_tool_result_body(text, id, header);
                     tracing::info!(operation = %op_label, bytes, duration_ms, "file op ok");
                     let _ = sink
@@ -234,8 +369,65 @@ fn describe_op(op: &FileOp) -> String {
 }
 
 enum OpOutcome {
-    Ok { text: String, bytes: u64 },
-    Err { code: &'static str, text: String },
+    Ok {
+        text: String,
+        bytes: u64,
+        /// GH #106: `Some("base64")` marks a payload that is NOT the file's
+        /// text. Absent on every historic path.
+        encoding: Option<&'static str>,
+    },
+    Err {
+        code: &'static str,
+        text: String,
+    },
+}
+
+/// GH #106: turns the resolved file into the payload the caller asked for.
+/// The default (text, whole file) keeps the historic `read_to_string` path
+/// byte-for-byte — including its UTF-8 error text.
+fn read_payload(p: &StdPath, mode: ReadMode, range: ByteRange) -> OpOutcome {
+    if mode == ReadMode::Text && range.is_whole_file() {
+        return match std::fs::read_to_string(p) {
+            Err(e) => map_io_to_outcome(e),
+            Ok(s) => {
+                let bytes = s.len() as u64;
+                OpOutcome::Ok {
+                    text: s,
+                    bytes,
+                    encoding: None,
+                }
+            }
+        };
+    }
+    let raw = match std::fs::read(p) {
+        Err(e) => return map_io_to_outcome(e),
+        Ok(b) => b,
+    };
+    let slice = range.slice(&raw);
+    let bytes = slice.len() as u64;
+    match mode {
+        ReadMode::Base64 => OpOutcome::Ok {
+            text: base64_encode(slice),
+            bytes,
+            encoding: Some("base64"),
+        },
+        // The range is BYTE semantics, so it can land mid-character. Same code
+        // as any other non-UTF-8 read; the text names the way out.
+        ReadMode::Text => match std::str::from_utf8(slice) {
+            Ok(s) => OpOutcome::Ok {
+                text: s.to_string(),
+                bytes,
+                encoding: None,
+            },
+            Err(e) => OpOutcome::Err {
+                code: ERR_IO_ERROR,
+                text: format!(
+                    "byte range is not valid UTF-8 ({e}); \
+                     offset/limit count BYTES — read it with mode \"base64\""
+                ),
+            },
+        },
+    }
 }
 
 /// Runs a `FileOp` synchronously. Called from `spawn_blocking`.
@@ -247,7 +439,7 @@ fn run_op(base: &StdPath, op: FileOp) -> OpOutcome {
         max_concurrency: 0, // unused in resolve helpers
     };
     match op {
-        FileOp::Read { path } => match cell.resolve_existing(&path) {
+        FileOp::Read { path, mode, range } => match cell.resolve_existing(&path) {
             Err(e) => OpOutcome::Err {
                 code: resolve_error_code(&e),
                 text: e.to_string(),
@@ -258,13 +450,7 @@ fn run_op(base: &StdPath, op: FileOp) -> OpOutcome {
                     code: ERR_NOT_A_FILE,
                     text: format!("{path:?} is a directory"),
                 },
-                Ok(_) => match std::fs::read_to_string(&p) {
-                    Err(e) => map_io_to_outcome(e),
-                    Ok(s) => {
-                        let bytes = s.len() as u64;
-                        OpOutcome::Ok { text: s, bytes }
-                    }
-                },
+                Ok(_) => read_payload(&p, mode, range),
             },
         },
         FileOp::Write { path, content } => match cell.resolve_write_parent(&path) {
@@ -277,6 +463,7 @@ fn run_op(base: &StdPath, op: FileOp) -> OpOutcome {
                 Ok(()) => OpOutcome::Ok {
                     text: format!("{{\"written\":{}}}", content.len()),
                     bytes: content.len() as u64,
+                    encoding: None,
                 },
             },
         },
@@ -345,7 +532,11 @@ fn list_dir(p: &StdPath) -> OpOutcome {
     let arr: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
     let text = serde_json::to_string(&arr).unwrap();
     let bytes = text.len() as u64;
-    OpOutcome::Ok { text, bytes }
+    OpOutcome::Ok {
+        text,
+        bytes,
+        encoding: None,
+    }
 }
 
 fn stat_path(p: &StdPath) -> OpOutcome {
@@ -379,7 +570,11 @@ fn stat_path(p: &StdPath) -> OpOutcome {
     }
     let text = serde_json::to_string(&Value::Object(obj)).unwrap();
     let bytes = text.len() as u64;
-    OpOutcome::Ok { text, bytes }
+    OpOutcome::Ok {
+        text,
+        bytes,
+        encoding: None,
+    }
 }
 
 fn map_io_to_outcome(e: std::io::Error) -> OpOutcome {
@@ -881,7 +1076,89 @@ mod tests {
     #[test]
     fn parse_file_op_read() {
         let op = parse_file_op(&json!({"op": "read", "path": "a.txt"})).unwrap();
-        assert!(matches!(op, FileOp::Read { ref path } if path == "a.txt"));
+        assert!(matches!(op, FileOp::Read { ref path, mode, range }
+            if path == "a.txt" && mode == ReadMode::Text && range == ByteRange::default()));
+    }
+
+    /// GH #106: RFC 4648 §4 test vectors — the encoder is hand-rolled, so its
+    /// padding behaviour is pinned against the standard, not against itself.
+    #[test]
+    fn base64_encode_matches_rfc4648_vectors() {
+        for (raw, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(raw.as_bytes()), want, "vector {raw:?}");
+        }
+        // Bytes no text mode could ever carry.
+        assert_eq!(base64_encode(&[0xFF, 0xFE, 0x00]), "//4A");
+    }
+
+    #[test]
+    fn parse_file_op_read_mode_and_range() {
+        let op = parse_file_op(
+            &json!({"op": "read", "path": "a.bin", "mode": "base64", "offset": 2, "limit": 8}),
+        )
+        .unwrap();
+        assert!(matches!(op, FileOp::Read { mode, range, .. }
+            if mode == ReadMode::Base64
+                && range == ByteRange { offset: Some(2), limit: Some(8) }));
+
+        // null reads as absent on every one of the three.
+        let op = parse_file_op(
+            &json!({"op": "read", "path": "a.bin", "mode": null, "offset": null, "limit": null}),
+        )
+        .unwrap();
+        assert!(matches!(op, FileOp::Read { mode, range, .. }
+            if mode == ReadMode::Text && range == ByteRange::default()));
+
+        for bad in [
+            json!({"op": "read", "path": "a", "mode": "binary"}),
+            json!({"op": "read", "path": "a", "mode": 1}),
+            json!({"op": "read", "path": "a", "limit": 0}),
+            json!({"op": "read", "path": "a", "offset": -1}),
+            json!({"op": "write", "path": "a", "content": "x", "limit": 1}),
+            json!({"op": "list", "path": ".", "mode": "base64"}),
+            json!({"op": "stat", "path": "a", "offset": 1}),
+        ] {
+            assert!(parse_file_op(&bad).is_err(), "must reject {bad}");
+        }
+    }
+
+    #[test]
+    fn byte_range_clamps_at_both_ends() {
+        let data = b"0123456789";
+        assert_eq!(ByteRange::default().slice(data), data);
+        assert_eq!(
+            ByteRange {
+                offset: Some(3),
+                limit: Some(4)
+            }
+            .slice(data),
+            b"3456"
+        );
+        // Past EOF is empty, never a panic and never an error.
+        assert_eq!(
+            ByteRange {
+                offset: Some(99),
+                limit: None
+            }
+            .slice(data),
+            b""
+        );
+        assert_eq!(
+            ByteRange {
+                offset: Some(8),
+                limit: Some(999)
+            }
+            .slice(data),
+            b"89"
+        );
     }
 
     #[test]

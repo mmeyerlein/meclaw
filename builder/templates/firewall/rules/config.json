@@ -1,0 +1,73 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "rules": {
+        "rule_id": "text",
+        "kind": "text",
+        "field": "text",
+        "value": "text",
+        "action": "text",
+        "enabled": "int",
+        "note": "text"
+      },
+      "arrivals": {
+        "channel": "text",
+        "recorded_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The rule set and the arrival ledger of the firewall, as rows: 'rules' says who may speak and what may not be said, 'arrivals' is the stamped trace the rate window counts. Both are ordinary tables -- the whole point of the hive is that the policy is editable with an insert and an update, never with a code change.",
+    "use_when": "One per firewall hive. The screen reads and writes here and nowhere else; a code cell owns no state, so all of it lives in this store. An operator (or a mutation) edits the rules table live -- the screen reloads it on every single turn.",
+    "not_in_scope": "No turn content and no verdict history: what was rejected and why is a hop on the reject lane, and where that gets logged is the parent tree's business. No regex, no scoring, no model: a rule is a literal plus a match mode. No pruning of the arrivals table -- it is append-only and grows; trimming it is an operator's delete, not a rule.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the phase dispatch in the screen; the row array of a select IS the rule set (or the arrival window) of that turn.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('firewall'), the step by context.fw_phase, both promoted by the edge that sent the op.",
+    "examples": [
+      "{operation: select, table: rules, columns: [rule_id, kind, field, value, action], where: {enabled: 1}, order_by: [{col: 'rule_id', dir: 'asc'}]} -> the rule set of this turn, in a stable order",
+      "{operation: select, table: arrivals, columns: [recorded_at], where: {channel: 'tg:42', recorded_at: {gte: '<cutoff>'}}, limit: 31} -> the bounded read that decides the rate limit",
+      "{operation: insert, table: arrivals, row: {channel: 'tg:42', recorded_at: '<now>'}} -> the passed turn books its slot",
+      "{operation: update, table: rules, set: {enabled: 1}, where: {rule_id: 'example-block-injection'}} -> a hot policy change, no restart, no code"
+    ]
+  }
+}

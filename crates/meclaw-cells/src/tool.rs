@@ -37,6 +37,11 @@ pub const ERR_IO_ERROR: &str = "io_error";
 pub const ERR_TIMEOUT: &str = "timeout";
 /// error_code for a search pattern that is not found (find_replace).
 pub const ERR_PATTERN_NOT_FOUND: &str = "pattern_not_found";
+/// GH #105: `find_replace` found the pattern, but not as often as the caller's
+/// `expected_matches` declared. Its own code because the repair differs from
+/// every neighbour: the pattern is THERE, it is just not the site the caller
+/// had in mind — narrow it, do not retry it.
+pub const ERR_UNEXPECTED_MATCH_COUNT: &str = "unexpected_match_count";
 
 // ---- tool_call parser ----
 

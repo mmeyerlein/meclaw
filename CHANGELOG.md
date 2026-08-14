@@ -4,6 +4,140 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.6.0] — 2026-08-14
+
+The front door. Five parallel tracks in one morning, hours after 0.5.0 shipped,
+each merged on its own behind full gates. Where 0.5.0 built the agent, this one
+builds what stands in front of it: who is allowed in, who gets an agent of their
+own, and how an agent asks its own memory a question. Two more templates go
+public — nine now under `builder/templates/` — and the tool cells get the
+polish that a coding agent leans on.
+
+A minor bump rather than a patch, for the same three reasons 0.5.0 was one: new
+templates, a new collector lane, and four sanctioned behaviour changes on the
+`file`, `edit` and `web_fetch` cells.
+
+### Added
+
+- **`firewall@1` screens every inbound channel, and never asks a model.**
+  Between a surface and an agent sits a hive that measures each incoming turn
+  against a rule set of rows and lets it out on exactly one of two lanes: `pass`
+  with a byte-identical body, or `reject` carrying both the reason and the rule
+  that fired. Six deterministic rule classes in a fixed order — size cap,
+  unreadable rule, sender blocklist, sender allowlist, pattern blocklist, rate
+  limit — and every verdict is a character count, a literal comparison or a
+  clock. The policy is store data, not code: a row is switched off, never
+  deleted, and editing the rule set needs no restart and no cell code. It fails
+  closed (a rule line that will not parse rejects the turn and names itself) and
+  it is deliberately regex-free — a caller-fed regex on the ingress path is a
+  ReDoS on exactly the channel being protected. The shipped seed is inert: five
+  example rows, all disabled, with only the two arithmetic rules armed. Two
+  cells, no Rust (#36).
+- **`receptionist@1` gives every channel its own agent.** The first turn from an
+  unknown channel makes the reception emit ONE mutation that instantiates a
+  fresh `talky@1` for that channel and wires its four ports in the same diff;
+  every later turn from that channel takes the edge that mutation drew. The
+  ordering is the whole trick and it is measured, not asserted: a
+  `/colony/mutations` emission is dispatched inline before the next emission
+  leaves the mailbox, so the triggering turn travels behind its own mutation and
+  is never lost — a burst on a cold channel is answered twice and forks nothing.
+  The channel travels as two keys, a sanitised node name and the raw identity,
+  so a channel identity never has to be escaped into a CEL literal. Two cells,
+  no Rust (#29).
+- **An agent can ask its memory about a time range.** The per-turn recall fires
+  before the model has seen the turn, so nothing in an agent could ever *decide*
+  to ask for a period. `memory_recall` is now a tool round like any other: the
+  dispatcher only names it, and the collector — the memory specialist of the
+  hive, which owns the recall port anyway — serves it on a ninth entry lane
+  (`in_memory_call`) and correlates the answer through
+  `context.memory_call_id`. Empty means the turn's ambient leg, set means the
+  `tool_result` of the running round. The recall cell has understood
+  `recall_window_from` / `recall_window_to` since P15; this is the first
+  producer for them. `COLLECTOR_MEMORY_CALL_TIER` (default 1, empty switches the
+  tool off). The dispatcher is untouched, and memory learns no dispatcher
+  vocabulary (#78).
+- **`edit` can make the match count a precondition.** `find_replace` replaced
+  every occurrence and reported the number afterwards, which quietly patches
+  places the caller never saw. The optional `expected_matches` turns the count
+  into a guard: a deviation leaves the file untouched and answers the new typed
+  `unexpected_match_count` naming both numbers. Zero matches keep the more
+  specific `pattern_not_found`, and the argument on `insert_at_line` is
+  `invalid_input` rather than silently ignored. Without the argument the
+  behaviour is byte-identical to before (#105).
+- **`file` reads binaries and windows.** `mode: "base64"` hands back the raw
+  bytes (RFC 4648 §4, flagged as `header.encoding`), and `offset` / `limit` are
+  a BYTE window in both modes, clamped at the end. An offset at or past EOF is
+  an empty read rather than an error — that is the paging signal — while
+  `limit: 0` is `invalid_input`. The default read contract, including the
+  absence of the `encoding` header, is pinned unchanged (#106).
+
+### Changed
+
+- **The `file` and `edit` fence stops being an existence oracle.** The boundary
+  check ran after `canonicalize`, so `../missing` answered `not_found` while
+  `../exists` answered `path_outside_boundary` — the difference read out the
+  existence of files outside the fence. A purely lexical pre-check now runs
+  before any filesystem access, on the write path as well as the read paths, so
+  every escape attempt gets the same answer and the text does not reveal what
+  was looked for. The canonicalize stage stays behind it; only that one catches
+  symlink escapes. A path that lexically ascends and would really land inside is
+  now refused too — deciding otherwise would mean resolving names outside the
+  fence, which is the oracle being closed (#107).
+- **`insert_at_line` closes its own line.** Content was spliced verbatim between
+  the line slices, so content without a trailing newline fused with the line it
+  displaced — silently, with `matches_changed: 1` reported, and the breakage
+  surfacing only at the next compile. The cell now appends exactly one newline
+  when it is missing. Empty content still inserts nothing (no phantom blank
+  line), and a file without a final newline still fuses on append: the cell
+  normalises its own argument, never foreign bytes. That limit is pinned as a
+  known one (#108).
+- **`web_fetch` parses the URL at the gate.** A malformed URL used to fall out
+  of the transport layer as `io_error`. The gate now parses it: a syntax error
+  is `invalid_input` quoting the URL, and a scheme the cell does not speak —
+  everything but `http`/`https`, `file://` included — is the same class, naming
+  the scheme. `io_error` goes back to meaning DNS, connect and transport. The
+  URL itself travels unchanged; nothing is re-serialised (#110).
+
+### Docs
+
+- **The `store` cell's two error families are named as they are built** (#109).
+  The docs sorted `invalid_input` and `query_timeout` into the regular
+  `tool_result` family while the code emits them as error messages with
+  `finish_reason: "error"`. The code is the intent — that class never reaches
+  the database, so there is no result to report on — so the docs move: an
+  SQL-level family carrying `header.error_code` on a regular `tool_result`, and
+  an args-level family carrying `finish_reason`. Documented alongside, because
+  it bites a caller directly: an args-level rejection carries an empty `id` and
+  is correlatable only by order, not by `tool_call_id`.
+
+### Tooling
+
+- **The export tool gates DE/EN drift.** `DOCS_MAP` ships the English twin as
+  the public file, so a forgotten translation always lands in the public tree
+  and never in the internal one — two 0.5.0 commits did exactly that. R6c now
+  compares two language-independent signals against the source revision:
+  heading-level parity (titles are reported but never compared, and `##` inside
+  a code fence is not a heading) and staleness (a German twin committed later
+  than its translation). Deliberately not a content diff, which would be
+  permanently red and therefore switched off at the first release. Both
+  exception lists are single judgements with a reason: a declared structural
+  deviation keyed by its exact printed signature, and a translation receipt
+  keyed to the full SHA of the German commit it was translated against — the
+  next German commit invalidates it automatically. Both are currently empty
+  (#113).
+- **`talky@1`, `firewall@1` and `receptionist@1` join the export allow-list.**
+  `PUBLIC_TEMPLATES` is an allow-list, so a template is private until someone
+  enters it; nine are entered now. Each one carries its runtime-reading test
+  with it, which is what R2b asks for: no exported test may read what the subset
+  lacks (#112, #29, #36).
+
+### Known
+
+- One pre-existing test (`collector_colony`'s idle-window sweep, a deliberately
+  tight 300 ms semantic discriminator) went red once under five-track peak load
+  and was re-verified green in isolation three times. Tracked as #114; whether
+  it wants a harder test or a quieter machine is open.
+
 ## [0.5.0] — 2026-08-14
 
 The agent wave. Two waves in one night — the start-Egon wave and night wave 3 —

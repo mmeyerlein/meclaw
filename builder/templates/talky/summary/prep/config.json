@@ -1,0 +1,109 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# --- recency weighting (deterministic structure, no model judgement) --------\n# How many of the newest turns travel VERBATIM into the prompt. Everything\n# before them phases out to a bounded preview -- more from the last turns,\n# phase-out before, hard facts kept (R-OS-3 handover).\nRECENT_TURNS = int(\"${SUMMARIZER_RECENT_TURNS:-12}\")\n# Per-turn character cap on the phased-out older turns.\nPHASEOUT_CHARS = int(\"${SUMMARIZER_PHASEOUT_CHARS:-200}\")\n# Per-item character cap on tool call/result previews in the context section.\nTOOL_CHARS = int(\"${SUMMARIZER_TOOL_CHARS:-200}\")\n# How many tool-activity lines enter at most, newest kept.\nROUND_LINES = int(\"${SUMMARIZER_ROUND_LINES:-40}\")\n\n# The prompt lives HERE, in the glue phase -- an llm cell has no params.system\n# slot (P15 lesson); its system state arrives by message, and this hive sends\n# it fresh with every batch (accumulate-replace per path, so re-sending is an\n# idempotent upsert).\nINSTRUCTIONS = (\n    \"You are the session summarizer of an agent. A conversation generation \"\n    \"has closed; write the handover summary its successor wakes up with, so \"\n    \"the transition is not noticeable.\\n\"\n    \"Weight by recency: the recent turns deserve the most detail, older \"\n    \"turns fade to their essentials. Always keep hard facts - names, dates, \"\n    \"numbers, decisions, preferences, open tasks - even from the oldest \"\n    \"turns.\\n\"\n    \"Write plain prose, no headings. Do not address the user; describe the \"\n    \"session. An empty or short session yields a short, honest summary - \"\n    \"never invent content the session does not contain.\")\n\nd = json.load(sys.stdin)\nh = d.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nlane = str(hop.get(\"route\", \"\"))\nsession = str(hop.get(\"session_id\", \"\") or ctx.get(\"session_id\", \"\") or \"default\")\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef role_of(t):\n    return \"user\" if t.get(\"origin\") == \"user\" else \"assistant\"\n\n\nif lane == \"in_batch\":\n    # The collector's close batch (R-OS-6): messages[] the whole day in order,\n    # the raw round rows in the top-level slot `rounds`. One batch, one prompt.\n    msgs = [m for m in d.get(\"messages\", []) if isinstance(m, dict)]\n    recent = msgs[-RECENT_TURNS:] if RECENT_TURNS > 0 else []\n    older = msgs[:len(msgs) - len(recent)]\n    lines = [\"Session %s closed with %d turns.\" % (session, len(msgs)), \"\"]\n    if older:\n        lines.append(\"## %d older turns (condensed to %d chars each, oldest first)\"\n                     % (len(older), PHASEOUT_CHARS))\n        for t in older:\n            lines.append(\"- %s: %s\" % (role_of(t),\n                                       str(t.get(\"text\", \"\") or \"\")[:PHASEOUT_CHARS]))\n        lines.append(\"\")\n    lines.append(\"## Recent turns (verbatim, oldest first)\")\n    if recent:\n        for t in recent:\n            lines.append(\"- %s: %s\" % (role_of(t), str(t.get(\"text\", \"\") or \"\")))\n    else:\n        lines.append(\"(none - the session had no turns)\")\n    # Tool rounds as context. The leg-* rows are the collector's bookkeeping\n    # (assembly legs, eviction reports) and carry no session content of their\n    # own -- the turns above already are the conversation.\n    tool_lines = []\n    for r in d.get(\"rounds\", []) or []:\n        if not isinstance(r, dict) or r.get(\"role\") not in (\"assistant\", \"tool\"):\n            continue\n        t = r.get(\"turn\")\n        items = t if isinstance(t, list) else ([t] if isinstance(t, dict) else [])\n        for x in items:\n            if not isinstance(x, dict):\n                continue\n            kind = x.get(\"type\")\n            if kind not in (\"tool_call\", \"tool_result\"):\n                continue\n            word = \"call\" if kind == \"tool_call\" else \"result\"\n            tool_lines.append(\"- iter %s %s %s: %s\"\n                              % (r.get(\"iter\", 0), word, x.get(\"id\", \"\"),\n                                 str(x.get(\"text\", \"\") or \"\")[:TOOL_CHARS]))\n    if tool_lines:\n        lines.append(\"\")\n        lines.append(\"## Tool activity (capped previews, newest last)\")\n        lines.extend(tool_lines[-ROUND_LINES:])\n    emit([{\"header\": {\"route\": \"llm\", \"session_id\": session,\n                      \"turn_count\": str(len(msgs))},\n           \"system\": {\"instructions\": {\"text\": INSTRUCTIONS}},\n           \"messages\": [{\"origin\": \"user\", \"type\": \"text\",\n                         \"text\": \"\\n\".join(lines)}]}])\n\nif lane == \"in_answer\":\n    text = \"\"\n    for m in d.get(\"messages\", []):\n        if m.get(\"origin\") == \"assistant\" and m.get(\"type\") in (\"text\", None):\n            text = str(m.get(\"text\", \"\") or \"\")\n    if not text.strip():\n        # system.* is accumulate-replace per path: an empty update would\n        # REPLACE a real handover with nothing. Rather no update, loud lane.\n        emit([{\"header\": {\"route\": \"summary_error\", \"session_id\": session,\n                          \"error_code\": \"empty_summary\"},\n               \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                             \"text\": \"summary failed for session %s: \"\n                                     \"empty_summary (the writer returned no \"\n                                     \"text)\" % session}]}])\n    # ONE emission, and its body IS the update: the `system.handover` upsert\n    # an llm cell consumes without a provider call. No messages[] -- messages\n    # would trigger an inference at the receiver.\n    emit([{\"header\": {\"route\": \"summary\", \"session_id\": session,\n                      \"summary_chars\": str(len(text))},\n           \"system\": {\"handover\": {\"text\": text}}}])\n\nif lane == \"in_error\":\n    # Degradation (GH #100 ruling): a failed call leaves on its own route\n    # instead of being swallowed -- the parent tree decides (drain or alarm).\n    # No retry here: retry is edge business, not template business.\n    code = str(hop.get(\"error_code\", \"\") or \"\") or \"unknown_error\"\n    emit([{\"header\": {\"route\": \"summary_error\", \"session_id\": session,\n                      \"error_code\": code},\n           \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                         \"text\": \"summary failed for session %s: %s\"\n                                 % (session, code)}]}])\n\n# Terminal by design: an unknown lane parks, it does not guess.\nemit([])\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "recent_turns": {
+        "type": "number",
+        "secret": false,
+        "default": 12,
+        "description": "How many of the newest turns of the closed session travel VERBATIM into the summarizer prompt (SUMMARIZER_RECENT_TURNS). Everything before them phases out."
+      },
+      "phaseout_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 200,
+        "description": "Per-turn character cap on the phased-out older turns (SUMMARIZER_PHASEOUT_CHARS). A bounded preview, counted in the prompt, never silently gone."
+      },
+      "tool_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 200,
+        "description": "Per-item character cap on tool call/result previews in the prompt's tool-activity section (SUMMARIZER_TOOL_CHARS)."
+      },
+      "round_lines": {
+        "type": "number",
+        "secret": false,
+        "default": 40,
+        "description": "How many tool-activity lines enter the prompt at most (SUMMARIZER_ROUND_LINES); the newest are kept."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "llm",
+            "summary",
+            "summary_error"
+          ],
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "turn_count": {
+          "type": "string",
+          "required": false
+        },
+        "summary_chars": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "session_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The glue half of the summarizer: shapes a closed session's write batch into ONE recency-weighted prompt for the writer llm (recent turns verbatim, older turns condensed and counted, tool rounds as capped context), and forms the writer's answer into ONE system.handover update - the fresh memory the next generation wakes up with. The prompt lives here, in the glue phase, because an llm cell has no params.system slot; the instructions ride as a system update next to the prompt document.",
+    "use_when": "Inside the summarizer hive, behind the collector's write batch. The parent edge names the entry lane (hop.route == 'write' -> set_hop 'in_batch').",
+    "not_in_scope": "No inference (the writer llm answers). No judgement about what the day was worth - the weighting is deterministic structure, the judgement is the model's prose. No retry on failure: retry is edge business; a failed call leaves on summary_error and the parent tree decides. Not the writer of any system path except system.handover (R-OS-1: one writer per slot).",
+    "emits_meaning": "route llm: the summarizer prompt for the writer - system.instructions the shipped prompt, messages[] one user document, hop.session_id and hop.turn_count for the internal edge to promote. route summary: ONE emission per batch whose body is nothing but {system: {handover: {text}}} - the update an llm cell consumes without a provider call; hop.session_id and hop.summary_chars say whose and how long. route summary_error: the degradation lane - a failed or empty summary, hop.error_code the cause, one assistant text naming session and cause. An unknown lane emits nothing (empty multi-send, terminal by design).",
+    "consumes_meaning": "Three lanes, named by hop.route: in_batch (the collector's close batch - messages[] the whole day, top-level slot rounds the raw round rows, hop.session_id/turn_count/round_count the sizes), in_answer (the writer's finished summary, session in context), in_error (the writer's error message, hop.error_code rides through). The session is read from hop.session_id first, context.session_id second.",
+    "examples": [
+      "close batch of 40 turns -> older 28 condensed to 200 chars each and counted, newest 12 verbatim, tool rounds as capped previews -> one prompt on route llm",
+      "writer answers 'the user configured helix...' -> one emission on route summary with system.handover.text and summary_chars",
+      "provider 500 -> the writer's error arrives on in_error -> one emission on route summary_error with error_code provider_error",
+      "empty session -> the prompt says '0 turns' and the instructions demand a short honest summary instead of invention"
+    ]
+  }
+}

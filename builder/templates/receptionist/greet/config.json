@@ -1,0 +1,146 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, re, hashlib, datetime\n\n# The front door of a colony that talks to many channels. One question per\n# turn: has this channel been here before? A channel with a ledger row is\n# handed through on the lane its own talky answers to; a channel without one\n# gets a talky of its own -- instantiated by ONE mutation that carries the node\n# AND every crossing port edge, because an island without a crossing edge\n# derives inactive and never wakes.\n#\n# The cell is SELF-LOCATING: `target` is its own path, so the scope of the\n# mutation is the hive's parent and nothing has to be configured twice.\n\nd = json.load(sys.stdin)\nh = d.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nlane = str(hop.get(\"route\", \"\"))\nphase = str(ctx.get(\"rec_phase\", \"\"))\nop = hop.get(\"operation\")\n\nSELF = str(d.get(\"target\", \"\") or \"\")\nMODEL = \"${RECEPTIONIST_MODEL:-openai/gpt-4o-mini}\"\nTEMPLATE = \"${RECEPTIONIST_TEMPLATE:-talky}\"\nINGRESS = \"${RECEPTIONIST_INGRESS:-keeper/stamp}\"\nREPLY_FROM = \"${RECEPTIONIST_REPLY_FROM:-collector/assemble}\"\nERROR_FROM = \"${RECEPTIONIST_ERROR_FROM:-errors}\"\nREPLY_TO = \"${RECEPTIONIST_REPLY_TO:-}\"\nWRITE_TO = \"${RECEPTIONIST_WRITE_TO:-}\"\nERROR_TO = \"${RECEPTIONIST_ERROR_TO:-}\"\n\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%dT%H:%M:%S.%fZ\")\nENVELOPE = (\"header\", \"target\", \"reply_to\", \"trace_id\", \"ttl\",\n            \"parent_message_id\", \"correlation_id\")\nCOLUMNS = [\"channel\", \"talky_path\", \"created_at\"]\n\n\ndef park():\n    \"\"\"Terminal by design. The greet sits in the ingress path of a loop and in\n    front of a mutation lane: anything it cannot name is parked, never echoed.\"\"\"\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef body_of(doc):\n    \"\"\"The inbound body without its envelope -- everything the turn IS.\"\"\"\n    return {k: v for k, v in doc.items() if k not in ENVELOPE}\n\n\ndef rows_of(doc):\n    msgs = doc.get(\"messages\", [])\n    if not msgs:\n        return []\n    try:\n        rows = json.loads(msgs[0].get(\"text\", \"[]\"))\n    except Exception:\n        return []\n    return rows if isinstance(rows, list) else []\n\n\ndef key_of(channel):\n    \"\"\"A channel identity is free text; a node name and a CEL string literal\n    are not. The key is the sanitised form -- and a channel that HAD to be\n    sanitised keeps a digest of the original, so `tg:42` and `tg/42` can never\n    collapse onto one talky.\"\"\"\n    safe = re.sub(r\"[^A-Za-z0-9_-]\", \"_\", channel)\n    if safe == channel and safe != \"\":\n        return safe\n    digest = hashlib.sha1(channel.encode(\"utf-8\")).hexdigest()[:8]\n    return (safe or \"ch\") + \"-\" + digest\n\n\ndef places():\n    \"\"\"scope, self. The hive is the cell's parent, the scope is the hive's\n    parent: a receptionist at /main/front/greet mutates /main and addresses\n    itself as ./front/greet.\"\"\"\n    segs = [s for s in SELF.split(\"/\") if s]\n    if len(segs) < 2:\n        return \"/\", \"./\" + (segs[-1] if segs else \"greet\")\n    return \"/\" + \"/\".join(segs[:-2]), \"./\" + \"/\".join(segs[-2:])\n\n\ndef store_op(args, ph, channel, keep=\"\"):\n    \"\"\"Every emission carries the full key set the hive edges read. A missing\n    hop key makes a CEL modifier fail, and a failed modifier SKIPS the edge --\n    so keys are always present and empty rather than absent.\"\"\"\n    return {\"header\": {\"route\": \"rstore\", \"phase\": ph, \"channel\": channel,\n                       \"chan\": \"\", \"chan_raw\": \"\", \"rec_body\": keep},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": \"r-\" + ph, \"text\": json.dumps(args)}]}\n\n\ndef turn_msg(channel, keep):\n    \"\"\"The turn on its channel lane. `chan` is the safe key the edge condition\n    compares, `chan_raw` the identity the keeper downstream should mint ids\n    from -- carrying both is what keeps the condition free of escaping.\"\"\"\n    m = {\"header\": {\"route\": \"turn\", \"phase\": \"\", \"channel\": channel,\n                    \"chan\": key_of(channel), \"chan_raw\": channel, \"rec_body\": \"\"}}\n    m.update(keep)\n    return m\n\n\ndef node_of(channel):\n    scope, _ = places()\n    node = TEMPLATE + \"-\" + key_of(channel)\n    return node, ((\"\" if scope == \"/\" else scope) + \"/\" + node)\n\n\ndef mutation_for(channel):\n    \"\"\"ONE mutation: the talky AND all four crossing port edges. Order inside\n    the diff is irrelevant (the colony validates the post-state), but the\n    edges MUST travel with the node -- a subtree without a crossing edge\n    derives inactive and its timer never spawns.\"\"\"\n    scope, self_rel = places()\n    key = key_of(channel)\n    node, _ = node_of(channel)\n    base = \"./\" + node\n    edges = [{\n        \"from\": self_rel,\n        \"to\": base + \"/\" + INGRESS,\n        \"condition\": (\"has(hop.route) && hop.route == 'turn' && \"\n                      \"has(hop.chan) && hop.chan == '\" + key + \"'\"),\n        \"modifier\": {\"set_hop\": {\"route\": \"'in_turn'\"},\n                     \"set_context\": {\"channel\": \"hop.chan_raw\"}},\n    }]\n    if REPLY_TO:\n        edges.append({\"from\": base + \"/\" + REPLY_FROM, \"to\": REPLY_TO,\n                      \"condition\": (\"has(hop.route) && hop.route == 'answer' && \"\n                                    \"!has(hop.round_capped)\")})\n    if WRITE_TO:\n        edges.append({\"from\": base + \"/\" + REPLY_FROM, \"to\": WRITE_TO,\n                      \"condition\": \"has(hop.route) && hop.route == 'write'\",\n                      \"modifier\": {\"set_hop\": {\"route\": \"'in_batch'\"}}})\n    if ERROR_TO:\n        edges.append({\"from\": base + \"/\" + ERROR_FROM, \"to\": ERROR_TO,\n                      \"condition\": \"has(hop.route) && hop.route == 'error'\"})\n    return {\"header\": {\"msg_type\": \"mutation\", \"route\": \"mutate\", \"phase\": \"\",\n                       \"channel\": channel, \"chan\": key, \"chan_raw\": channel,\n                       \"rec_body\": \"\"},\n            \"messages\": [],\n            \"scope\": scope,\n            \"diff\": {\"add_nodes\": [{\"name\": node, \"template\": TEMPLATE}],\n                     \"add_edges\": edges},\n            \"ctx\": {\"model\": MODEL}}\n\n\n# ==================================================================== VERDICT\n# A colony reply is not a UBF body and carries neither context nor correlation.\n# It is TERMINAL here: reading \"anything that is not a request\" as a request is\n# the reply-fallback loop that spins until the TTL kills it. A rejected\n# mutation needs no repair either -- the only reject this lane produces is a\n# name collision, which means the channel got its talky from the turn that\n# raced this one, and that talky answers the same key.\nif \"mutation\" in d:\n    park()\n\n# ==================================================================== LANES\nif lane == \"in_turn\":\n    if op is not None:\n        park()\n    channel = str(ctx.get(\"channel\", \"\") or hop.get(\"channel\", \"\") or \"default\")\n    # The turn rides through the lookup on the hop: a store reply carries the\n    # row, not the conversation that asked for it.\n    emit([store_op({\"operation\": \"select\", \"table\": \"channels\",\n                    \"columns\": COLUMNS, \"where\": {\"channel\": channel},\n                    \"limit\": 1}, \"look\", channel, json.dumps(body_of(d)))])\n\nif lane:\n    park()\n\n# =================================================================== PHASES\nif phase == \"look\" and op == \"select\":\n    channel = str(ctx.get(\"rec_channel\", \"\") or \"default\")\n    rows = rows_of(d)\n    try:\n        keep = json.loads(str(ctx.get(\"rec_body\", \"\") or \"{}\"))\n    except Exception:\n        keep = {}\n    if not isinstance(keep, dict):\n        keep = {}\n    keep.setdefault(\"messages\", [])\n    if rows:\n        # Known channel: straight through on its own lane, no mutation.\n        emit([turn_msg(channel, keep)])\n    # New channel. Three emissions, and the ORDER is the whole trick: the\n    # mutation is dispatched inline by the colony's outputs arm before the next\n    # emission is taken from the mailbox, so the ingress edge it draws is\n    # already in the edge table when the turn behind it is routed. The turn\n    # that triggered the instantiation is therefore never lost.\n    _, talky_path = node_of(channel)\n    emit([mutation_for(channel),\n          store_op({\"operation\": \"insert\", \"table\": \"channels\",\n                    \"row\": {\"channel\": channel, \"talky_path\": talky_path,\n                            \"created_at\": now}}, \"open\", channel),\n          turn_msg(channel, keep)])\n\npark()\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "RECEPTIONIST_MODEL -- the provider model id handed to every talky this cell instantiates, as ctx.model. Convention K-H2 (Lane B): put the RESOLVED literal in .env, not a nested token."
+      },
+      "template": {
+        "type": "string",
+        "secret": false,
+        "default": "talky",
+        "description": "RECEPTIONIST_TEMPLATE -- the composite instantiated per channel. It also names the instances: <template>-<channel key>."
+      },
+      "ingress": {
+        "type": "string",
+        "secret": false,
+        "default": "keeper/stamp",
+        "description": "RECEPTIONIST_INGRESS -- entry port of the composite, relative to the instance root."
+      },
+      "reply_from": {
+        "type": "string",
+        "secret": false,
+        "default": "collector/assemble",
+        "description": "RECEPTIONIST_REPLY_FROM -- the cell inside the composite that emits answers and write batches."
+      },
+      "error_from": {
+        "type": "string",
+        "secret": false,
+        "default": "errors",
+        "description": "RECEPTIONIST_ERROR_FROM -- the composite's error drain port."
+      },
+      "reply_to": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "RECEPTIONIST_REPLY_TO -- scope-relative target of the answer lane. Empty means the edge is left out and the answers dead-letter."
+      },
+      "write_to": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "RECEPTIONIST_WRITE_TO -- scope-relative target of the closed-session batch. Empty means the edge is left out."
+      },
+      "error_to": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "RECEPTIONIST_ERROR_TO -- scope-relative target of the error drain. Empty means the edge is left out."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "rstore",
+            "turn",
+            "mutate"
+          ],
+          "required": true
+        },
+        "msg_type": {
+          "type": "string",
+          "values": [
+            "mutation"
+          ],
+          "required": false
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "chan": {
+          "type": "string",
+          "required": false
+        },
+        "chan_raw": {
+          "type": "string",
+          "required": false
+        },
+        "rec_body": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {},
+      "context": {
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "rec_phase": {
+          "type": "string",
+          "required": false
+        },
+        "rec_channel": {
+          "type": "string",
+          "required": false
+        },
+        "rec_body": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec",
+      "mutate-graph"
+    ]
+  },
+  "description": {
+    "purpose": "The front door: it asks the ledger which channel a turn belongs to, hands a known channel through to the talky that already answers it, and gives an unknown channel a talky of its own -- one mutation, node plus all crossing port edges, and the triggering turn right behind it.",
+    "use_when": "In front of a fleet of per-channel agents, between the surface and the talkys. One per colony. The parent writes TWO edges: the ingress into ./greet, and the PRIVILEGED lane ./greet -> /colony/mutations, which only a bootstrap config.json can grant.",
+    "not_in_scope": "No conversation, no persona, no tools: what the agent is belongs to the composite. It never removes an instance (No-Delete), never routes an answer itself, and never decides what a channel IS -- the ingress edge promotes that.",
+    "emits_meaning": "route rstore: the ledger ops of the current step (hop.phase carries the step, hop.channel the identity, hop.rec_body the turn in transit -- all promoted to context by the hive edge). route mutate (hop.msg_type mutation): the instantiation, for the privileged lane only. route turn: the inbound turn, unchanged, on the channel lane -- hop.chan is the safe key the edge compares, hop.chan_raw the identity the composite should mint session ids from.",
+    "consumes_meaning": "One entry lane, named by hop.route on the port edge: in_turn, with context.channel naming the identity. The ledger reply is dispatched by context.rec_phase together with hop.operation. A body carrying `mutation` is the colony's verdict and is terminal -- which is why consumes.body is EMPTY: a colony reply is not a UBF body and would bounce against any declared key.",
+    "examples": [
+      "in_turn on an unknown channel tg:42 -> one mutation (add_nodes talky-tg_42-<digest> + 4 port edges), one ledger insert, and the turn on lane 'turn'",
+      "in_turn on a known channel -> exactly the turn; the edge the earlier mutation drew takes it to that channel's talky"
+    ]
+  }
+}

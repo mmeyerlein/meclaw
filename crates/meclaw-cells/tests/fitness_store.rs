@@ -262,9 +262,10 @@ async fn errors_are_normal_tool_results_with_typed_codes_never_crashes() {
     // projection, unknown operator) are `invalid_input` WITH
     // `finish_reason: "error"` — pinned as BUILT (store/cell.rs doc:
     // "Only parse failures (invalid_input) and query timeouts produce
-    // Error-Messages"). NOTE: cell-types.md § store sorts `invalid_input`
-    // into the no-finish_reason family — a doc/code divergence, reported in
-    // the track receipt rather than silently patched here.
+    // Error-Messages"). GH #109 resolved the doc/code divergence in favour of
+    // the CODE: cell-types.md § store (de + en) now describes these two
+    // families explicitly. This pin is unchanged by that ruling — it was the
+    // evidence for it.
     let args_cases = [
         json!({"operation": "select", "table": "artifacts"}), // projection mandatory
         json!({"operation": "select", "table": "artifacts", "columns": ["id"],
