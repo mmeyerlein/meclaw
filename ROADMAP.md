@@ -61,22 +61,16 @@ oracle, a line-closing insert, the store error taxonomy and URL parsing at the
 [#111](https://github.com/mmeyerlein/meclaw/issues/111), guarding interpreter
 bytecode caches in the coding templates' edit-test loops.
 
-An architecture comparison with prime-agent (2026-08) added a hardening batch
-to this stream, in intended order:
-[#115](https://github.com/mmeyerlein/meclaw/issues/115) wiring the sharpest
-gates into CI (corridor diffs, cargo deny, the unwrap lint, scenario checks),
-[#116](https://github.com/mmeyerlein/meclaw/issues/116) an orphan process
-journal so a hard daemon crash cannot leak children,
-[#117](https://github.com/mmeyerlein/meclaw/issues/117) SSRF hardening for
-`web_fetch`, and
-[#121](https://github.com/mmeyerlein/meclaw/issues/121) a root lease against
-double-started daemons. Two more need a design ruling before code:
-[#118](https://github.com/mmeyerlein/meclaw/issues/118) gating writes to the
-llm cell's persistent system tree, and
-[#119](https://github.com/mmeyerlein/meclaw/issues/119) a terminal notice for
-silently stalled tool loops. The comparison also yielded one template item for
-the agent stream: [#120](https://github.com/mmeyerlein/meclaw/issues/120), a
-context-compaction lane for the store-backed tool loop.
+An architecture comparison with prime-agent (2026-08) added a hardening batch to
+this stream, and 0.8.0 shipped all of it: the sharpest gates now run in CI
+(#115), a hard daemon crash cannot leak children (#116), `web_fetch` refuses the
+private network by default (#117), a second daemon cannot boot on the same root
+(#121), writes into the llm cell's persistent system tree are gated (#118), a
+TTL death inside a fan-in can be answered (#119), and the store-backed tool loop
+got a context-compaction lane as a reference topology (#120). What the batch
+left behind is [#127](https://github.com/mmeyerlein/meclaw/issues/127): two
+advisory findings in the dependency tree, which is why the advisory half of
+`cargo deny` reports instead of blocking.
 
 ## Later: memory hive continued
 
@@ -89,7 +83,9 @@ The stall had one carve-out: the three hive *bugs* (#52, #53, #73) shipped in
 [#72](https://github.com/mmeyerlein/meclaw/issues/72) the extraction
 lane claims 1.5x the turn count under sustained ingest,
 [#88](https://github.com/mmeyerlein/meclaw/issues/88) a query hygiene guard for
-recall, so a contaminated query cannot poison all legs,
+recall, so a contaminated query cannot poison all legs — the guard itself
+shipped in 0.8.0; the issue stays open until a real contaminated query has been
+counted through its verdict,
 [#51](https://github.com/mmeyerlein/meclaw/issues/51) extraction batch gate
 defaults tuned for cost over freshness,
 [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
@@ -124,6 +120,11 @@ welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.8.0 — the hard shell.** The hardening batch in one day: SSRF policy in
+  the `web_fetch` cell, an orphan journal and boot reap, a root lease, a gate on
+  the persistent system tree, an answerable TTL death, a compaction lane — and
+  the corridor diffs, the unwrap ratchet and `cargo deny` moved from a document
+  into CI.
 - **v0.7.0 — the advisor.** A tool may answer on a lane of its own while the
   channel is served in the same breath, the advice returns as a fresh round, and
   `memory-drain@1` carries a closed day into memory losslessly and idempotently.

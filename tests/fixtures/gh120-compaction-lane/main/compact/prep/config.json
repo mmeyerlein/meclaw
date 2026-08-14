@@ -1,0 +1,66 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# --- the compaction policy: deterministic, no model judgement ---------------\n# How many of the newest tool rounds stay VERBATIM in the window. The SAME\n# number is the iteration bound on the trigger edge: with KEEP_ROUNDS = 1 a\n# fold needs at least two rounds in the thread, which is exactly\n# `int(context.iter) >= 1` in `../tool-loop/config.json`.\nKEEP_ROUNDS = 1\n# Per-item character cap on the texts that enter the fold prompt. A cap is a\n# bound on the worst case; the store keeps the full row either way.\nITEM_CHARS = 2000\n\n# The prompt lives HERE, in the glue phase -- an llm cell has no params.system\n# slot, its system state arrives by message. The four headings are fixed on\n# purpose: two folds of the same turn have to be comparable, and a summary\n# whose shape drifts cannot be refined, only rewritten.\nINSTRUCTIONS = (\n    \"You are the context compactor of an agent's tool loop. Below is the part \"\n    \"of the thread that no longer fits the window. The newest rounds are kept \"\n    \"verbatim elsewhere and are deliberately NOT shown to you.\\n\"\n    \"Rewrite the running summary so that it can REPLACE that part. Use exactly \"\n    \"these four headings, in this order:\\n\"\n    \"GOAL: what the user asked for.\\n\"\n    \"PROGRESS: what has been established, with the concrete values.\\n\"\n    \"KEY DECISIONS: choices already made that later rounds must not redo.\\n\"\n    \"NEXT STEPS: what still has to happen.\\n\"\n    \"If a running summary is given, refine it -- never start over and never \"\n    \"drop a fact it already carries. Keep names, numbers and identifiers \"\n    \"verbatim. Invent nothing.\")\n\nd = json.load(sys.stdin)\nctx = d.get(\"header\", {}).get(\"context\", {})\nmsgs = [m for m in d.get(\"messages\", []) if isinstance(m, dict)]\nit = int(ctx.get(\"iter\", 0) or 0)\n\n\ndef emit(msg):\n    sys.stdout.write(json.dumps(msg))\n    sys.exit(0)\n\n\n# Group the rebuilt thread into rounds. A round starts at the FIRST assistant\n# tool_call turn of a run of them, so a cut BETWEEN groups can never land\n# between a tool_call and its tool_result -- the rule that keeps every folded\n# prefix a valid provider thread.\nhead, groups, prev = [], [], None\nfor m in msgs:\n    kind = m.get(\"type\")\n    if kind == \"tool_call\" and prev != \"tool_call\":\n        groups.append([m])\n    elif groups:\n        groups[-1].append(m)\n    else:\n        head.append(m)\n    prev = kind\n\nfold = groups[:-KEEP_ROUNDS] if len(groups) > KEEP_ROUNDS else []\nif not fold:\n    # Nothing to fold. The trigger edge's iteration bound makes this\n    # unreachable in the shipped topology; it stays because a lane that can be\n    # entered must also be able to leave. `refire` re-fires the UNCOMPACTED\n    # window instead of parking the turn -- the window stays large, never lost.\n    emit({\"header\": {\"route\": \"refire\"}, \"messages\": []})\n\nquestion = next((m for m in head if m.get(\"origin\") == \"user\"), None)\nrunning = \"\"\nfor m in head:\n    if m.get(\"origin\") == \"assistant\" and m.get(\"type\") in (\"text\", None):\n        running = str(m.get(\"text\", \"\") or \"\")\n\nlines = [\"The user asked: %s\"\n         % (str(question.get(\"text\", \"\") or \"\") if question else \"(unknown)\"), \"\"]\nif running:\n    # Iterative summarisation: the previous summary is the starting point of\n    # the next one, never a blank page.\n    lines.append(\"## Running summary so far\")\n    lines.append(running)\n    lines.append(\"\")\nlines.append(\"## Rounds to fold in (%d, oldest first; the newest %d stay verbatim)\"\n             % (len(fold), KEEP_ROUNDS))\nfor g in fold:\n    for x in g:\n        kind = x.get(\"type\")\n        text = str(x.get(\"text\", \"\") or \"\")[:ITEM_CHARS]\n        if kind == \"tool_call\":\n            lines.append(\"- call %s: %s\" % (x.get(\"id\", \"\"), text))\n        elif kind == \"tool_result\":\n            lines.append(\"- result %s: %s\" % (x.get(\"id\", \"\"), text))\n        else:\n            lines.append(\"- %s: %s\" % (x.get(\"origin\", \"assistant\"), text))\n\n# `compact_upto` is the boundary this fold claims: every round up to and\n# including that iteration is represented by the summary row. The edge to\n# ./condense promotes it into context, because the llm cell emits a hop of its\n# own and a hop key does not survive a cell.\nemit({\"header\": {\"route\": \"condense\", \"compact_upto\": str(it - KEEP_ROUNDS)},\n      \"system\": {\"instructions\": {\"text\": INSTRUCTIONS}},\n      \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"\\n\".join(lines)}]})\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "condense",
+            "refire"
+          ]
+        },
+        "compact_upto": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "turn_id": {
+          "type": "string",
+          "required": true
+        },
+        "iter": {
+          "type": "int",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The deterministic half of the fold: it groups the rebuilt thread into rounds, decides WHERE the cut runs, and writes the prompt that asks for the four fixed sections.",
+    "use_when": "Entry cell of the compaction lane. The re-entry edge of the tool loop routes here instead of to the brain once the accumulated prompt-token count crosses the threshold.",
+    "not_in_scope": "No condensation of its own (that is the llm cell behind it), no store write (that is ./emit), and no decision about WHEN to compact -- the threshold lives on the edge.",
+    "examples": [
+      "four rounds in the window, KEEP_ROUNDS=1 -> rounds 0-2 enter the prompt, round 3 stays verbatim, hop.compact_upto=2",
+      "a thread that already carries a summary -> the summary enters the prompt as the running summary and the model refines it"
+    ]
+  }
+}

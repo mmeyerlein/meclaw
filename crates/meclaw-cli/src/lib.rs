@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod factories;
+pub mod lease;
 pub use factories::built_in_factories;
 /// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
 /// so the CLI re-exports the substrate's type instead of mirroring it.
@@ -327,6 +328,36 @@ pub async fn run_with_hooks_tuned(
         return Ok(());
     }
 
+    // GH #121: the root lease, and it comes FIRST.
+    //
+    // Two daemons on one `{root}` used to boot side by side, share the WAL and
+    // spawn a duplicate of every cell with a duplicate of every child process;
+    // `busy_timeout` serialises those writes but guards nothing. So the lease is
+    // taken before `colony.db` is opened, before the template scan, and before
+    // any registry read or write — every line below this one assumes it is the
+    // only colony on this root.
+    //
+    // Track-Ruling G7-R2: `--validate` takes the lease too. It is a dry run for
+    // cells, but not for the database — `boot_load_or_scan` below writes a full
+    // template index whenever the stored one is empty or belongs to another
+    // root, and that write lands in the live colony's `colony.db`. Only
+    // `--sandbox-probe` stays exempt, and it has already returned above: it asks
+    // about the host, not about a colony, and touches neither.
+    //
+    // Ordering against GH #116 (orphan reap): the lease is strictly first. The
+    // reap reads the orphan journal and kills processes a crashed daemon left
+    // behind — an operation that must never run while another daemon is live on
+    // the same root, because those "orphans" would be its children. The lease
+    // is what makes that safe, so it sits above every boot step, the reap
+    // included.
+    //
+    // The guard lives to the end of `run_with_hooks_tuned`, so every exit path —
+    // `--validate`'s early return, a `?`, a panic unwind, SIGTERM's graceful
+    // shutdown — releases the root. The two `std::process::exit` calls below
+    // skip `Drop` by design; the lease they leave is a stale one, which the next
+    // boot reclaims after verifying the holder is gone.
+    let _root_lease = lease::acquire(&cli.root)?;
+
     let db_path = cli.root.join("colony.db");
     let colony_db = meclaw_colony::ColonyDb::open(&db_path)
         .map_err(|e| anyhow::anyhow!("open colony.db: {e}"))?;
@@ -550,6 +581,39 @@ pub async fn run_with_hooks_tuned(
                 cli.root.display()
             );
         }
+    }
+
+    // GH #116 — orphan reap. Position is load-bearing in both directions:
+    //
+    //   * AFTER the `--validate` / `--sandbox-probe` returns above: those are
+    //     dry runs and must not kill anything, and `--validate` promises to be
+    //     side-effect free.
+    //   * BEFORE the `colony_task` spawn below, and therefore before any cell
+    //     exists: the journal the reaper folds must contain only the PREVIOUS
+    //     run's entries, and the install must be in place before the first tool
+    //     child is spawned.
+    //   * AFTER the root lease (GH #121, track G7), once that lands: the lease
+    //     is what makes "no other daemon owns this root" a fact rather than an
+    //     inference. Until then the reaper carries its own guard — an entry
+    //     whose owning daemon is still alive is left untouched — so the two
+    //     mechanisms compose in either merge order (see the track receipt).
+    let reap = meclaw_cells::orphan_journal::boot(&cli.root);
+    if reap.reaped > 0 || reap.skipped > 0 {
+        tracing::warn!(
+            examined = reap.examined,
+            reaped = reap.reaped,
+            gone = reap.gone,
+            skipped = reap.skipped,
+            owned_by_live_daemon = reap.owned_by_live_daemon,
+            "orphan journal: previous run left tool children behind"
+        );
+    } else {
+        tracing::info!(
+            examined = reap.examined,
+            gone = reap.gone,
+            owned_by_live_daemon = reap.owned_by_live_daemon,
+            "orphan journal: boot reap clean"
+        );
     }
 
     // T12 Real Colony-Spawn (replaces T5 stub):

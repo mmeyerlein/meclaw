@@ -291,6 +291,12 @@ impl StatelessCell for CodeCell {
                 }
             };
 
+            // GH #116: same crash-durable record as `bash` — see the note at
+            // that spawn site. Taken before the pipes are moved out, because
+            // `Child::id()` is only meaningful while the child is unreaped.
+            let _journal_note =
+                crate::orphan_journal::note_spawn(child.id(), None, msg.target.as_str());
+
             // Concurrent stdin write: avoids a pipe deadlock with large
             // stdin/stdout — the stdin pipe buffer fills up and the script waits
             // on the stdout reader, which only starts in with_killing_timeout.

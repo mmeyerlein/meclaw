@@ -4,6 +4,238 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.8.0] — 2026-08-14
+
+The hard shell. Two waves in one day, thirteen tracks, and hardly a line of it
+about new capability. This release is about the bad day: a daemon killed
+mid-flight, a second daemon started on the same root, a redirect that walks into
+a cloud metadata endpoint, a prompt slot that grows without a ceiling, a message
+that dies of TTL inside a fan-in and takes the whole round down with it silently,
+a tool loop whose window fills until nothing useful is left in it. The substrate
+could already do the work; what it could not do was fail well. It can now — and
+the four sharpest rules in the repository stopped being shell commands in a
+document and became CI jobs.
+
+A minor bump: new params on two cell types, a new `colony.json` switch, two new
+boot steps, and one sanctioned default change — `web_fetch` now refuses private
+addresses, which will break any topology that fetches from a host on its own
+network until it opts in.
+
+### Added
+
+- **`web_fetch` refuses the private network, and the address it screened is the
+  address it connects to.** The cell runs *in* the daemon process, so no
+  sandbox can ever cover its egress — the policy has to live in the cell. It
+  does now, as a deny matrix over the *resolved* address rather than the name:
+  loopback, RFC 1918, CGNAT, link-local, ULA, multicast, reserved, plus every
+  v4-in-v6 form (v4-mapped, v4-compatible, NAT64, 6to4) judged by the address
+  embedded in them. Obfuscated literals (`http://2130706433/`, octal, hex) are
+  normalised by the URL parser before the deny sees them, which is pinned rather
+  than assumed, and every range boundary is pinned from the other side too — a
+  deny that also blocks the open internet is an outage, not a hardening. The
+  rebinding window between screening and connecting is closed by a custom
+  resolver: reqwest only connects to addresses that resolver returns, and a name
+  whose record set contains *any* private address is refused whole. The cell
+  follows redirects itself (`Policy::none()` plus its own loop), because
+  reqwest's policy hook is synchronous and cannot resolve a name — so a hop it
+  followed would never face the deny again. Every hop is screened, the budget is
+  a knob, a foreign scheme or an `https → http` downgrade is refused, and a
+  refusal is a well-formed tool result carrying the call id, never a panic and
+  never a dead letter. Three new error codes (`target_blocked`,
+  `too_many_redirects`, `invalid_redirect`), a two-step opt-out
+  (`allow_private_networks` opens the private ranges but never link-local — no
+  one runs anything at `169.254.169.254` on purpose), and two new output headers
+  (`redirects`, `final_url`) that appear only when a redirect actually happened
+  (#117).
+- **A daemon that is killed does not leave its children behind.** Per-spawn
+  hygiene — process groups, `kill_on_drop`, the staged terminate — covers every
+  path on which the daemon still runs code. It covers none on which it does not:
+  SIGKILL, the OOM killer, a power cut. The only thing that can still reach an
+  orphan afterwards is a record that was on disk *before* the crash, so that is
+  what every spawn now writes: an fsynced JSONL line beside the child carrying
+  its pid, its start identity from `/proc`, its `comm` and its owner, with an
+  exit line appended on drop. Boot folds the file, verifies each survivor
+  against its *living* identity and kills only what it positively recognises as
+  its own orphan. Four refusals, each with its own test: a recycled pid (start
+  identity differs), a `comm` mismatch, a survivor whose identity was never
+  recorded, and an entry whose owning daemon is still alive — those are skipped
+  loudly, never killed. No pattern matching, no `pkill`, no heuristic. The
+  journal is never rewritten: exits are appended and made inert on read, because
+  `{root}` is under the no-delete policy and a rewrite would itself be a crash
+  window (#116).
+- **One daemon per root, and the kernel decides.** Two daemons on the same root
+  used to both boot, share the WAL and spawn a second copy of every cell with a
+  second child process each; SQLite's busy timeout serialises writes and is no
+  guard against a second colony. Boot now takes a lease: a candidate directory
+  holding the holder record is `rename`d onto the lease path, and POSIX refuses
+  to replace a non-empty directory — which is what makes "occupied" a single
+  atomic kernel answer instead of a check-then-act window. The holder record is
+  never believed, always verified against `/proc` by pid *and* start time, so a
+  recycled pid cannot impersonate the holder. A live holder refuses the boot and
+  names its pid; a dead, zombie or recycled one is reclaimed loudly by
+  rename-then-delete, so only the reclaimer that won its rename deletes anything
+  and never a fresh lease published in the meantime; anything undecidable fails
+  closed. Release compares the token first, so a process wrongly declared dead
+  cannot take its successor's lease down on the way out. The lease is taken
+  strictly before the orphan reap (#121).
+- **The `llm` cell gates what a message may write into its persistent `system`
+  tree.** The tree is a prompt that survives restarts, and until now any message
+  could put anything anywhere in it, at any size. Two independent halves: limits
+  that are always on (`system_max_leaf_bytes`, default 65536, per leaf;
+  `system_max_slots`, default 256, distinct slots in the tree) and an opt-in slot
+  allowlist (`system_writable`, a list of path prefixes; empty means no allowlist
+  and therefore every path, exactly as before). All three are immutable params —
+  a message allowed to raise its own ceiling would not be gated at all. Path and
+  size are checked before the transaction is even opened; the slot budget is
+  checked inside it, because it needs the current state of the tree. A rejection
+  is loud (a warning naming slot and rule) and all-or-nothing: the `messages[]`
+  half of the same message rolls back with it, the provider is never reached, and
+  the reply names the rule and the slot but never a leaf value. The seed path is
+  configuration, not message traffic, so it stays ungated — a pinned cell still
+  seeds its own identity even under a narrow allowlist, and no message can
+  overwrite it afterwards. All nineteen existing writers in the repository were
+  inventoried and shown to pass under the default (#118).
+- **A TTL death can be answered, if the colony asks for it.** TTL expiry is
+  terminal by spec: the message goes straight to the dead-letter queue and the
+  reply cascade is deliberately skipped. Inside a fan-in that reads as a silent
+  stall — the collector never completes, the origin waits out its own timeout,
+  and the topology has nothing to react to. A terminal notice now closes that:
+  the canonical substrate error reply (`ttl_expired`, plus the dead target and
+  the dead message id for edge conditions), carrying the original `context` so a
+  collector can correlate its round, sent from the virtual `/colony` address. It
+  carries no `reply_to` of its own, which makes a cascade structurally
+  impossible rather than merely marked. It is opt-in
+  (`colony.json` `ttl_notice`, default `false`) for the same reason `restore_ttl`
+  is: the notice carries a fresh TTL budget, so switching it on means the colony
+  has taken its loops out of the TTL bound and limits them by iteration count
+  instead. Both frozen corridors are untouched — the notice is built at the five
+  dispatch call sites, not inside `route()` (#119).
+- **The `llm` cell says where its time goes.** One INFO line per provider call
+  on its own target, splitting a `handle()` into persist, translate, wire and an
+  unaccounted remainder, with time-to-first-byte taken at the response head and
+  the total after the body is drained, attempts folded for the refresh retry, and
+  the summary emitted *after* the send so a backed-up colony shows up as the
+  remainder rather than as nothing at all. A DEBUG line adds request sizes and
+  counts — never conversation content — and only allocates when DEBUG is on.
+  Both lanes are instrumented. Nothing about the message model changed: these are
+  tracing fields, not a new slot. The first thing it settled is that the chat
+  lane has no retry ladder and makes exactly one POST per message, so a slow
+  round trip has to be measured against the message log to tell "inside the cell"
+  from "in front of it" (#124).
+- **A context-compaction lane, as a reference topology.** The store-backed tool
+  loop rebuilds its thread from the store every round, so it grows monotonically:
+  round six carries round one's tool result for the sixth time. What existed
+  against that was capping and eviction — a cap keeps a prefix, an eviction keeps
+  nothing. Condensation was the one memory ability the loop lacked. An edge now
+  accumulates prompt tokens into the context, the collector's fire lane is
+  partitioned in two by a threshold, and the branch over it runs a small hive
+  that groups the rounds, places the cut, condenses the prose and writes one
+  summary row; the collector then rebuilds compaction-aware — user turn, newest
+  summary, every round behind its boundary — while the folded rows stay exactly
+  where they were. No new cell type, no substrate, not one line of Rust: three
+  existing cells, a hive marker and six edges, shipped beside the existing
+  tool-loop fixture with its own walkthrough (#120).
+
+### Changed
+
+- **`web_fetch` refuses private addresses by default.** This breaks any topology
+  that points it at a service on its own network — a local mock, a sidecar, a
+  documentation server. The repair is the documented opt-out
+  (`allow_private_networks: true` in `params`), never a weaker default: the nine
+  in-tree tests that fetch from localhost were repaired that way, one by one, and
+  a test pins that the default still refuses what they opt into. Link-local stays
+  closed under the opt-out (#117).
+- **`reasoning` and `reasoning_effort` are ordinary `llm` params.** They pass
+  through to the chat-completions body: the short form becomes
+  `{"effort": …}`, the object form travels verbatim, the object wins when both
+  are set (no merge of two provider blocks), and `provider_extra` still overlays
+  everything. Unset means the key is absent, byte-identical to before. Mutable on
+  purpose — a thinking budget is a knob, not an identity (#124).
+
+### Tooling
+
+- **The four sharpest rules in the repository now run themselves** (#115). The
+  two byte-frozen routing corridors are diffed by a script in CI against
+  reference bodies that travel with the export, so a corridor cannot drift
+  unnoticed in either tree; a private drift lock keeps those copies byte-honest
+  against their originals and pins the extraction rule itself, so the two gates
+  cannot quietly start measuring different things. `unwrap`/`expect` in library
+  and binary targets became a **ratchet** rather than a ban: a per-package pin
+  measured from clippy's JSON output, growing is red, shrinking is green with a
+  note to re-pin. Rewriting the existing call sites is a change to load-bearing
+  code, not a CI task — but new code cannot add to them. `cargo deny` is split:
+  bans, licenses and sources block, because that verdict depends only on the
+  lockfile and the policy in this commit, while advisories report and run
+  weekly, because that database moves underneath a pull request that changed
+  nothing. `deny.toml` gained no `ignore` entry; the file asks for a written
+  reason for every suppression, and a finding that is real is registered as an
+  issue instead (#127).
+- **The export learned two more gates.** R2c refuses an exported test that reads
+  `plans/` at runtime — `plans/` has no public subset at all, so such a reference
+  is necessarily dead, the same defect class R2b covers for `builder/`. R10
+  checks every relative markdown link against the *export* index rather than the
+  working tree, which is where the two known dead links in the template READMEs
+  had been hiding — along with five nobody had noticed, an entire class caused by
+  the export renaming `docs/X.en.md` to `docs/X.md`. Seven fixed, and the gate
+  was proved from both sides: red on the commit before the fix, naming exactly
+  those seven, green after (#126).
+- **The drain's colony-level test goes public, and the memory hive still does
+  not.** The test measured against the shipped hive writer, which is why it sat
+  on the export blocklist. It is now pinned to a minimal fixture snapshot
+  instead: the writer and the one writer-to-store edge byte for byte, the store
+  **projected onto the episodes surface only**. A leak guard ran before any code
+  was written and blocked the full store config — predicate canon and dream
+  machinery — and blocked the shipped writer description as well, so the
+  snapshots carry their own. A private drift gate holds all three against the
+  living template and, as a ceiling, pins that the public projection publishes
+  nothing beyond `episodes`, so a later refresh cannot widen it by copy-paste
+  (#125).
+- **The private memory hive's recall path got a query hygiene guard.** It is not
+  part of this distribution and changes nothing that ships; it is recorded here
+  because the issue is public. A caller query longer than a threshold is clamped
+  to its last question, its last sentence, or its tail, and the keyword leg now
+  keeps the *tail* tokens instead of the head — in the usual contamination shape,
+  where a prompt fragment precedes the actual question, the head cap kept exactly
+  the wrong half. The verdict is loud rather than a rejection, because the
+  session-boot request carries no query at all and must still answer. A healthy
+  query leaves the result byte-identical (#88).
+
+### Fixed
+
+- **Two load-sensitive test flakes, both hardened at the premise rather than
+  waived.** The collector's idle-window sweep (#114) failed a third of the time
+  under parallel load for two reasons, both the same class: a wall-clock second
+  of silence was an ambiguous synchronisation point — silence also means the
+  round has not opened yet — and the 300 ms window was simultaneously the
+  deadline of the test's own chain, so under load the round closed *itself* and
+  the sweep proved nothing. The three cases now wait on a positive receipt, the
+  collector's own slate, and time the occasion from that observation; the window
+  is documented at 2000 ms with the reasoning in the test. Zero red in 672
+  executions under the load recipe that used to fail 48 out of 48. The long-
+  running respawn re-notify (#128) had a premise that was simply untrue: the
+  cell task is spawned *before* the re-notify fires, and the I/O sub-task
+  announces its liveness on entry through the same inbox, so on a multi-threaded
+  runtime it can arrive first. All three siblings shared the helper and all three
+  flaked; fixed together, 192 executions green under load.
+
+### Known
+
+- **#127: `cargo deny check advisories` is red on this tree**, which is why the
+  advisory job reports instead of blocking — and why it reports rather than
+  blocks is exactly this: the finding count moved between the wave and the
+  release without a single commit in between. Three at release time: an
+  unmaintained proc-macro crate reachable through the templating dependency with
+  no safe upgrade available, a yanked transitive crate, and RUSTSEC-2026-0190
+  (an unsoundness in `anyhow`'s `downcast_mut` after `context`, corrected
+  upstream). Every repair moves the lockfile and therefore the build surface, so
+  none of them is a release-day change. Registered rather than suppressed;
+  `deny.toml` still carries an empty `ignore`.
+- **#124 and #88 stay open** on purpose: both shipped the measurement, neither
+  has its production number yet. The latency line has to be read next to the
+  message log on a real deployment before any knob is turned, and the hygiene
+  guard is robustness, not a lift — what closes it is a real contaminated query
+  counted through its verdict.
+
 ## [0.7.0] — 2026-08-14
 
 The advisor. Two tracks, both pure topology: an agent may now hand a question to

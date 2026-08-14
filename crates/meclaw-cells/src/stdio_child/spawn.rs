@@ -69,6 +69,11 @@ pub struct StdioChild {
     /// Reaps the child's process group on every teardown path, including the
     /// ones that never reach `terminate`.
     pub(crate) guard: ProcessGroupGuard,
+    /// GH #116: the orphan-journal entry for this child. Retired when this
+    /// struct is dropped or terminated — i.e. on every path that still runs
+    /// code. A `SIGKILL`ed daemon runs none of them, which is exactly when the
+    /// entry has to survive for the next boot's reap.
+    pub(crate) _journal_note: crate::orphan_journal::SpawnNote,
     /// Owns whatever the sandbox created outside the process -- today the
     /// child's cgroup (GH #85). Held here so that it lives exactly as long as
     /// the child does: `terminate` consumes `self`, and every path that does
@@ -159,6 +164,12 @@ impl StdioChild {
             .spawn()
             .map_err(|e| StdioChildError::Spawn(e.to_string()))?;
         let pgid = if spec.process_group { child.id() } else { None };
+        // GH #116: journal the child before anything else can fail. The label
+        // is the program rather than a cell path — a `ChildSpec` is built from
+        // params and does not carry the spawning cell's address, and the field
+        // is diagnostics only (it is never a kill criterion).
+        let _journal_note =
+            crate::orphan_journal::note_spawn(child.id(), pgid, &format!("stdio:{}", spec.program));
         let stdin = child
             .stdin
             .take()
@@ -173,6 +184,7 @@ impl StdioChild {
             stdout: BufReader::new(stdout).lines(),
             guard: ProcessGroupGuard { pgid },
             _sandbox: sandbox,
+            _journal_note,
         })
     }
 

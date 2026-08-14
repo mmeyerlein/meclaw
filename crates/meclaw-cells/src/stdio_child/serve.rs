@@ -138,12 +138,16 @@ where
     // `_sandbox` travels with the loop for the same reason the guard does: it
     // owns the child's cgroup (GH #85), and dropping it here on a cancelled
     // task is what takes that cgroup away again.
+    // `_journal_note` travels with the loop for the third time for the same
+    // reason (GH #116): dropping it here on a cancelled task is what retires
+    // the child's orphan-journal entry.
     let crate::stdio_child::spawn::StdioChild {
         mut child,
         mut stdin,
         mut stdout,
         mut guard,
         _sandbox,
+        _journal_note,
     } = child;
     let mut pending: std::collections::HashMap<
         CorrelationKey,
@@ -187,6 +191,7 @@ where
                         stdout,
                         guard,
                         _sandbox,
+                        _journal_note,
                     };
                     let exit = reassembled.terminate(cfg.kill_grace).await;
                     fail_pending(&mut pending, exit);

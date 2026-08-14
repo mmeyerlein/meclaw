@@ -82,7 +82,7 @@ The `has()` is not decoration: `hop` is single-hop, so the `calls`, `result` and
 emissions carry no `tool_name` at all. A bare `hop.tool_name == 'web_search'` does not
 evaluate to `false` on those, it **errors** (CEL semantics) and the substrate skips the
 edge with a log line per lane per message. Same rule as everywhere else --
-[`docs/store-backed-tool-loop.en.md`](../../../docs/store-backed-tool-loop.en.md).
+[`docs/store-backed-tool-loop.md`](../../../docs/store-backed-tool-loop.md).
 
 ## Knobs
 
@@ -145,7 +145,7 @@ A restoring edge **must** carry a condition -- the substrate refuses an uncondit
 at config load and at `add_edges`, because the iteration bound is then the only thing left
 stopping the loop. Restore once per **round**, not once per tool result: `iter` counts
 brain answers, and a bundle of fifteen calls is one answer, one iteration, one restore.
-Derivation and hop table: [`docs/store-backed-tool-loop.en.md`](../../../docs/store-backed-tool-loop.en.md).
+Derivation and hop table: [`docs/store-backed-tool-loop.md`](../../../docs/store-backed-tool-loop.md).
 
 **2. A failed inference.** A turn that is neither a bundle nor a final answer is terminal
 here (empty multi-send). The `llm` cell's error path echoes the **input** conversation back

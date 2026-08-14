@@ -1,0 +1,80 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./dispatcher",
+          "condition": "hop.finish_reason == 'tool_calls'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "hop.route == 'c_asst'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./tool-a",
+          "condition": "hop.route == 'tool'"
+        },
+        {
+          "from": "./tool-a",
+          "to": "./collector",
+          "condition": "hop.route == 'c_res'"
+        },
+        {
+          "from": "./collector",
+          "to": "/store",
+          "condition": "hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "/store",
+          "condition": "hop.route == 'cguard'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'",
+              "firing": "'1'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "/compact/prep",
+          "condition": "hop.route == 'fire' && int(context.tokens_seen) >= 40 && int(context.iter) >= 1",
+          "modifier": {
+            "set_context": {
+              "tokens_seen": "0",
+              "compacting": "'1'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "/llm",
+          "condition": "hop.route == 'fire' && (int(context.tokens_seen) < 40 || int(context.iter) < 1)",
+          "modifier": {
+            "set_context": {
+              "iter": "int(context.iter) + 1",
+              "firing": "''",
+              "compacting": "''"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "/park",
+          "condition": "hop.route == 'park'"
+        }
+      ]
+    }
+  }
+}

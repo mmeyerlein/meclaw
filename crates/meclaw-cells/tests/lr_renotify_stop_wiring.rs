@@ -6,8 +6,10 @@
 //! Two layers of proof:
 //!   1. Per-factory (proxy/timer/mcp): invoking the `RespawnFn` emits a
 //!      `ColonyMsg::StopWiringRestored` on the colony inbox (deterministic, no
-//!      network — the proxy/mcp endpoints are unreachable but the re-notify fires
-//!      synchronously inside the closure before any I/O).
+//!      network — the proxy/mcp endpoints are unreachable, so no external round
+//!      trip has to succeed for the re-notify to fire). It is NOT ordered
+//!      against the other traffic of the task the closure just spawned, so the
+//!      assertion waits for that message specifically (GH #128).
 //!   2. Full-colony (timer, representative): a reconnect-eager re-spawn restores
 //!      a LIVE stop pair so a SUBSEQUENT disconnect COMMITS (no
 //!      `stop_wiring_unavailable`, no `term_timeout`).
@@ -25,6 +27,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot};
+
+/// Name of a `ColonyMsg` variant, for the diagnostics of
+/// [`assert_respawn_renotifies_stop_wiring`]. `ColonyMsg` carries join handles
+/// and oneshots and therefore has no `Debug`; the label of what actually
+/// arrived is what a failure needs. The named arms are the ones a freshly
+/// spawned Long-Running task can put on the inbox by itself; everything else
+/// collapses into `"other"`.
+fn colony_msg_name(msg: &ColonyMsg) -> &'static str {
+    match msg {
+        ColonyMsg::IoLiveness { .. } => "IoLiveness",
+        ColonyMsg::Stopped { .. } => "Stopped",
+        ColonyMsg::CellDied { .. } => "CellDied",
+        ColonyMsg::Route { .. } => "Route",
+        ColonyMsg::StopWiringRestored { .. } => "StopWiringRestored",
+        _ => "other",
+    }
+}
 
 /// Invoke a Long-Running factory's `RespawnFn` (built via the boot-inactive
 /// hook, same construction as `spawn_cell`'s respawn) and assert it emits a
@@ -58,20 +77,38 @@ async fn assert_respawn_renotifies_stop_wiring(factory: Arc<dyn CellFactory>, pa
     let (sender, join, _peace_rx, _backstop_rx) = respawn();
 
     // The closure must have re-notified the colony of its fresh stop pair.
-    let msg = tokio::time::timeout(Duration::from_secs(30), inbox_rx.recv())
-        .await
-        .expect("StopWiringRestored must arrive within 30s")
-        .expect("colony inbox open");
-    match msg {
-        ColonyMsg::StopWiringRestored { path, .. } => {
-            assert_eq!(
-                path.as_str(),
-                "/ll",
-                "re-notify must carry the cell's own path"
-            );
+    //
+    // The re-notify is NOT ordered against the task the closure just spawned:
+    // `build()` calls `tokio::spawn` first, `renotify_stop_wiring` runs after —
+    // so on a multi-threaded runtime the young I/O sub-task can reach the SAME
+    // inbox first (its `run_io` entry announces `ColonyMsg::IoLiveness`). The
+    // invariant under test is that `StopWiringRestored` ARRIVES, not that it
+    // arrives first; asserting on the first message pinned incidental ordering
+    // and flaked under load (GH #128). So: drain until the positive receipt
+    // shows up, bounded by ONE shared 30s failure-marker deadline (30s
+    // convention, robust against cargo-parallel load), and fail only if the
+    // deadline passes or the inbox closes without it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut seen: Vec<&'static str> = Vec::new();
+    let restored_path = loop {
+        let msg = tokio::time::timeout_at(deadline, inbox_rx.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("no StopWiringRestored from the LR respawn closure within 30s; saw {seen:?}")
+            })
+            .unwrap_or_else(|| {
+                panic!("colony inbox closed before StopWiringRestored; saw {seen:?}")
+            });
+        match msg {
+            ColonyMsg::StopWiringRestored { path, .. } => break path,
+            other => seen.push(colony_msg_name(&other)),
         }
-        _ => panic!("expected StopWiringRestored from the LR respawn closure"),
-    }
+    };
+    assert_eq!(
+        restored_path.as_str(),
+        "/ll",
+        "re-notify must carry the cell's own path"
+    );
 
     drop(sender);
     let _ = tokio::time::timeout(Duration::from_secs(30), join).await;

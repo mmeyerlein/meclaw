@@ -1527,6 +1527,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                                     work.push_back((sender_path, msg));
                                     while let Some((s, m)) = work.pop_front() {
+                                        // GH #119: TTL death + reply anchor ⇒ ONE terminal notice.
+                                        // Queued BEFORE the corridor consumes the message; the
+                                        // corridor itself stays byte-identical.
+                                        if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                                         match route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes).await {
                                             RouteAction::Done => {}
                                             RouteAction::Cascade { sender, msg } => {
@@ -1800,6 +1804,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                         work.push_back((sender_path, msg));
                         while let Some((s, m)) = work.pop_front() {
+                            // GH #119: TTL death + reply anchor ⇒ ONE terminal notice (see the
+                            // inbox-Route twin above). Corridor untouched.
+                            if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                             match route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes).await {
                                 RouteAction::Done => {}
                                 RouteAction::Cascade { sender, msg } => {
@@ -2085,6 +2092,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((em.sender_path.clone(), err_msg));
                     while let Some((s, m)) = work.pop_front() {
+                        // GH #119: even a substrate error reply that runs out of TTL
+                        // notifies its anchor — the notice itself is anchor-free.
+                        if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                         // Only Cascade is continued — the reply addresses a cell.
                         // Unresolvable reply_to → route_with_log dead-letters it.
                         if let RouteAction::Cascade { sender, msg } = route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes).await {
@@ -2175,6 +2185,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                             work.push_back((em.sender_path.clone(), err_msg));
                             while let Some((s, m)) = work.pop_front() {
+                                // GH #119: TTL death + reply anchor ⇒ ONE terminal notice.
+                                if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                                 // Plan sanction (Task 3.2): only `Cascade` is continued —
                                 // the reply addresses a cell; ColonyDispatch/HiveTransit
                                 // are deliberately not pursued for this error reply.
@@ -2281,6 +2293,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((from.clone(), follow_up));
                     while let Some((s, m)) = work.pop_front() {
+                        // GH #119: the tool-loop case — a fan-out follow-up that runs out of
+                        // TTL notifies its reply anchor instead of dying silently.
+                        if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                         match route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes).await {
                             RouteAction::Done => {}
                             RouteAction::Cascade { sender, msg } => {
@@ -5232,6 +5247,92 @@ fn handle_unresolved(
     None
 }
 
+/// GH #119 — build the terminal notice of a TTL death, or `None` when there is
+/// nobody to notify.
+///
+/// TTL exhaustion is terminal by spec: the frozen corridor `route()` puts the
+/// message straight into the dead-letter queue and deliberately takes NO
+/// `reply_to` cascade. Inside a fan-in that reads as a **silent stall** — the
+/// collector never completes its round, the origin waits out its own timeout,
+/// and the topology has nothing to route on. This builds the one thing it CAN
+/// route on: a substrate error reply in the canonical wire shape
+/// (`hop.finish_reason == "error"` + `hop.error_code == "ttl_expired"` — the
+/// same form `consumes_violation`, `contract_violation` and the
+/// `message_timeout` backstop already produce), addressed to the dying
+/// message's reply anchor.
+///
+/// **Opt-in** via `colony.json` `ttl_notice` (default `false`). The notice
+/// carries a fresh routing budget, so a colony that turns it on has taken its
+/// loops out of the TTL guard and must bound them with an iteration counter —
+/// exactly the trade `modifier.restore_ttl` makes visible on an edge, and the
+/// reason both are a colony's decision rather than substrate behaviour. With
+/// the flag off this returns `None` and nothing about a TTL death changes.
+///
+/// Four properties carry the guarantee:
+///
+/// - **Off means off.** No flag, no notice, no behaviour change anywhere.
+/// - **No anchor, no notice.** `reply_to == None` yields `None`, and the
+///   behaviour is exactly the pre-#119 one: the dead letter, nothing else.
+/// - **The notice is terminal.** It carries no `reply_to` of its own — the same
+///   rule `handle_unresolved` follows ("cascade is one-shot"), so a notice that
+///   dies of TTL itself can never produce a second notice. The anti-cascade
+///   property is *structural*, not a marker a later reader has to remember.
+/// - **A live budget.** The dying message's TTL is 0 by definition, and closing
+///   a round costs several hops, so the notice is stamped with the colony's
+///   `message_default_ttl` — the same envelope-setter authority the outputs-arm
+///   applies to source emissions.
+///
+/// The persistent `context` compartment travels unchanged: a collector
+/// correlates its round on `context.turn_id`, and a notice it cannot correlate
+/// is a notice it cannot act on. `hop` is rebuilt (structural freshness) and
+/// additionally names the dead target and the dead message id, so an edge
+/// condition can discriminate on them.
+///
+/// Returns the `(sender, message)` pair for the caller's routing work queue.
+/// The sender is the virtual `/colony` address — the notice has no emitting
+/// cell, exactly as in `handle_unresolved`.
+///
+/// Panic-free by construction (A1′ Hot-Path class): no `unwrap`/`expect`, no
+/// indexing, no arithmetic — only clones, a `format!` and a builder.
+fn build_ttl_notice(
+    msg: &Message,
+    sender_path: &Path,
+    cfg: &crate::ColonyConfig,
+) -> Option<(Path, Message)> {
+    if !cfg.ttl_notice || msg.ttl != 0 {
+        return None;
+    }
+    let notice_ttl = cfg.message_default_ttl;
+    let anchor = msg.reply_to.clone()?;
+    let dead_target = Path::resolve(sender_path, msg.target.as_str());
+    let content = meclaw_core::serde_json::json!({
+        "header": {
+            "finish_reason": "error",
+            "error_code": "ttl_expired",
+            "dead_target": dead_target.as_str(),
+            "dead_message_id": msg.id.to_string(),
+        },
+        "messages": [{
+            "origin": "assistant",
+            "type": "text",
+            "text": format!(
+                "ttl exhausted before {} was reached — the message is terminal, \
+                 no result will follow",
+                dead_target.as_str()
+            ),
+        }]
+    });
+    let (hop, body) = split_content_header(content);
+    let notice = MessageBuilder::new(anchor)
+        .trace_id(msg.trace_id)
+        .parent_message_id(msg.id)
+        .ttl(notice_ttl)
+        .headers(Headers::from_parts(msg.headers.context.clone(), hop))
+        .body(Body::Inline(body))
+        .build();
+    Some((Path::new("/colony"), notice))
+}
+
 /// Push a dead letter into the transient in-memory DLQ buffer.
 ///
 /// **Phase-16 W6d (A6): no eviction.** The DLQ is now persisted in `colony.db`
@@ -6150,6 +6251,121 @@ mod tests {
             "status must stay parked — no false Awake"
         );
         log_rx.close(); // no log-row assertion — mirror of the inactive-check early return
+    }
+
+    /// GH #119 — the anti-cascade pin. The terminal notice of a TTL death is
+    /// itself anchor-free, so a notice that runs out of TTL produces **no**
+    /// second notice. Driven with `notice_ttl = 0`, i.e. a colony whose budget
+    /// leaves the notice dead on arrival — the worst case the property has to
+    /// survive. Both deaths land in the DLQ and the queue stops there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_ttl_notice_cannot_produce_a_notice_of_its_own() {
+        let mut registry = std::collections::HashMap::<Path, RegistryEntry>::new();
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = std::collections::VecDeque::new();
+        let (log_tx, mut log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+
+        // A message that dies of TTL with a reply anchor.
+        let dying = MessageBuilder::new(Path::new("/tool"))
+            .ttl(0)
+            .reply_to(Path::new("/collector"))
+            .build();
+
+        // The call-site rule, verbatim: the notice is built BEFORE the corridor
+        // consumes the message.
+        // A colony that has opted in AND whose budget leaves the notice dead on
+        // arrival — the worst case the anti-cascade property has to survive.
+        let cfg = crate::ColonyConfig {
+            ttl_notice: true,
+            message_default_ttl: 0,
+            ..Default::default()
+        };
+        let (notice_sender, notice) = build_ttl_notice(&dying, &Path::new("/"), &cfg)
+            .expect("a reply anchor must yield one notice");
+        assert_eq!(notice.reply_to, None, "the notice is terminal");
+
+        let a1 = route_with_log(
+            &mut registry,
+            &hive_scopes,
+            &mut dead_letters,
+            &log_tx,
+            Path::new("/"),
+            dying,
+            &None,
+            usize::MAX,
+        )
+        .await;
+        assert!(matches!(a1, RouteAction::Done));
+
+        // Now the notice itself, under the same rule: nothing comes back.
+        assert!(
+            build_ttl_notice(&notice, &notice_sender, &cfg).is_none(),
+            "a notice carries no anchor — it can never produce a second notice"
+        );
+        let a2 = route_with_log(
+            &mut registry,
+            &hive_scopes,
+            &mut dead_letters,
+            &log_tx,
+            notice_sender,
+            notice,
+            &None,
+            usize::MAX,
+        )
+        .await;
+        assert!(matches!(a2, RouteAction::Done));
+
+        assert_eq!(
+            dead_letters.len(),
+            2,
+            "exactly two deaths — the original and the notice; no cascade beyond"
+        );
+        assert!(
+            dead_letters
+                .iter()
+                .all(|d| d.reason == crate::dead_letter::DeadLetterReason::TtlExpired),
+            "both are ttl_expired: {dead_letters:?}"
+        );
+        log_rx.close();
+    }
+
+    /// GH #119 — the three ways to get no notice: the flag is off, there is no
+    /// reply anchor, or the message is not dying at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_flag_no_anchor_and_no_death_each_yield_no_notice() {
+        let on = crate::ColonyConfig {
+            ttl_notice: true,
+            ..Default::default()
+        };
+        let off = crate::ColonyConfig::default();
+
+        let dying = MessageBuilder::new(Path::new("/tool"))
+            .ttl(0)
+            .reply_to(Path::new("/collector"))
+            .build();
+        assert!(
+            build_ttl_notice(&dying, &Path::new("/"), &off).is_none(),
+            "the default colony is unchanged — opt-in, like modifier.restore_ttl"
+        );
+        assert!(
+            build_ttl_notice(&dying, &Path::new("/"), &on).is_some(),
+            "control: the same death DOES notify once the colony opted in"
+        );
+
+        let anchorless = MessageBuilder::new(Path::new("/tool")).ttl(0).build();
+        assert!(
+            build_ttl_notice(&anchorless, &Path::new("/"), &on).is_none(),
+            "no anchor ⇒ DLQ only, unchanged behaviour"
+        );
+
+        let alive = MessageBuilder::new(Path::new("/tool"))
+            .ttl(3)
+            .reply_to(Path::new("/collector"))
+            .build();
+        assert!(
+            build_ttl_notice(&alive, &Path::new("/"), &on).is_none(),
+            "ttl > 0 ⇒ no notice"
+        );
     }
 
     /// Phase-13-J-1: empty receiver → status parked to `Asleep`, `WakeFn` is

@@ -351,6 +351,51 @@ pub(crate) fn classify_responses_status(status: u16, body: &Value) -> WireError 
     }
 }
 
+/// Wall-clock phases of ONE provider call (GH #124).
+///
+/// The issue's operator datapoint was "the provider says 2–4.5 s, the message
+/// log says 16 s". Answering that needs the roundtrip split in two: the time
+/// until the provider's response head arrives (which is the provider's own
+/// latency plus the network) and the time the whole call took including body
+/// download. A gap between them is ours, not the provider's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WireTimings {
+    /// Milliseconds from issuing the request until the response head arrived
+    /// (time to first byte). `None` when no head ever arrived — a network
+    /// error or an elapsed A-timeout — so a failed call cannot masquerade as
+    /// an instant one.
+    pub ttfb_ms: Option<u64>,
+    /// Milliseconds for the full HTTP roundtrip, body download included, and
+    /// including the wait that ended in a timeout.
+    pub total_ms: u64,
+    /// Provider HTTP attempts inside this call. Always 1 for a single POST;
+    /// the Responses lane's auth retry sums two calls into one figure.
+    pub attempts: u32,
+}
+
+impl WireTimings {
+    /// Fold a follow-up attempt of the same logical call into this one
+    /// (the Responses lane's single auth retry).
+    ///
+    /// `ttfb_ms` becomes the LAST attempt's — that is the answer being
+    /// returned — while `total_ms` and `attempts` accumulate, so the summary
+    /// line shows what the retry ladder cost in total rather than only its
+    /// final rung.
+    #[must_use]
+    pub(crate) fn plus_attempt(self, next: WireTimings) -> Self {
+        Self {
+            ttfb_ms: next.ttfb_ms,
+            total_ms: self.total_ms.saturating_add(next.total_ms),
+            attempts: self.attempts.saturating_add(next.attempts),
+        }
+    }
+}
+
+/// Milliseconds elapsed since `start`, saturated into `u64`.
+fn ms_since(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Execute the OpenAI Chat-Completions POST.
 ///
 /// Single async I/O function for the LlmCell — every Translate result flows
@@ -374,6 +419,26 @@ pub async fn call_openai(
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, WireError> {
+    call_openai_timed(client, url, api_key, extra_headers, body, timeout)
+        .await
+        .0
+}
+
+/// [`call_openai`] plus the per-phase [`WireTimings`] of that call (GH #124).
+///
+/// Same request, same classification, same A-timeout — the only addition is
+/// that the caller learns how the elapsed time split between waiting for the
+/// provider's response head and everything after it. `call_openai` is the
+/// timing-free wrapper, so every existing call site is byte-identical.
+pub async fn call_openai_timed(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+) -> (Result<Value, WireError>, WireTimings) {
+    let started = std::time::Instant::now();
     let request_fut = async {
         let mut req = client.post(url);
         for (name, value) in extra_headers {
@@ -388,38 +453,53 @@ pub async fn call_openai(
             req = req.header(name.as_str(), value.as_str());
         }
         // Authorization set LAST so it is authoritative regardless of input.
-        let resp = req
+        let resp = match req
             .header("Authorization", format!("Bearer {api_key}"))
             .json(body)
             .send()
             .await
-            .map_err(|e| WireError::Network(e.to_string()))?;
+        {
+            Ok(r) => r,
+            Err(e) => return (Err(WireError::Network(e.to_string())), None),
+        };
+        // The response head is here — everything after this point is body
+        // download plus our own parsing (GH #124 discriminator).
+        let ttfb = Some(ms_since(started));
         let status = resp.status().as_u16();
-        match status {
+        let outcome = match status {
             200..=299 => {
-                let json = resp
-                    .json::<Value>()
-                    .await
-                    .map_err(|e| WireError::BodyParse(e.to_string()))?;
-                // GH #75: a 2xx that carries an upstream `error` object instead
-                // of `choices` is a provider failure, not a response. Classify
-                // it here, at the wire boundary, so it reaches the same lane as
-                // the same failure delivered with a real HTTP status.
-                match classify_in_body_error(&json) {
-                    Some(e) => Err(e),
-                    None => Ok(json),
+                match resp.json::<Value>().await {
+                    Ok(json) => {
+                        // GH #75: a 2xx that carries an upstream `error` object
+                        // instead of `choices` is a provider failure, not a
+                        // response. Classify it here, at the wire boundary, so
+                        // it reaches the same lane as the same failure
+                        // delivered with a real HTTP status.
+                        match classify_in_body_error(&json) {
+                            Some(e) => Err(e),
+                            None => Ok(json),
+                        }
+                    }
+                    Err(e) => Err(WireError::BodyParse(e.to_string())),
                 }
             }
             401 => Err(WireError::Unauthorized),
             404 => Err(WireError::ModelNotFound),
             429 => Err(WireError::RateLimited),
             _ => Err(WireError::HttpStatus(status)),
-        }
+        };
+        (outcome, ttfb)
     };
-    match tokio::time::timeout(timeout, request_fut).await {
-        Ok(result) => result,
-        Err(_) => Err(WireError::Timeout),
-    }
+    let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
+        Ok(pair) => pair,
+        Err(_) => (Err(WireError::Timeout), None),
+    };
+    let timings = WireTimings {
+        ttfb_ms,
+        total_ms: ms_since(started),
+        attempts: 1,
+    };
+    (result, timings)
 }
 
 /// Execute a Responses-API POST and return the raw response body as text.
@@ -443,6 +523,26 @@ pub async fn call_responses(
     body: &Value,
     timeout: Duration,
 ) -> Result<String, WireError> {
+    call_responses_timed(client, url, bearer, extra_headers, body, timeout)
+        .await
+        .0
+}
+
+/// [`call_responses`] plus the per-phase [`WireTimings`] of that call (GH #124).
+///
+/// On this wire the split matters even more than on chat-completions: the body
+/// is an SSE stream that is consumed to the end, so `ttfb_ms` is when the model
+/// started answering and `total_ms - ttfb_ms` is how long the generation took
+/// to stream out.
+pub async fn call_responses_timed(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: &str,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+) -> (Result<String, WireError>, WireTimings) {
+    let started = std::time::Instant::now();
     let request_fut = async {
         let mut req = client.post(url);
         for (name, value) in extra_headers {
@@ -452,27 +552,39 @@ pub async fn call_responses(
             }
             req = req.header(name.as_str(), value.as_str());
         }
-        let resp = req
+        let resp = match req
             .header("Authorization", format!("Bearer {bearer}"))
             .json(body)
             .send()
             .await
-            .map_err(|e| WireError::Network(e.to_string()))?;
+        {
+            Ok(r) => r,
+            Err(e) => return (Err(WireError::Network(e.to_string())), None),
+        };
+        // Response head in hand — the SSE body still has to stream out, and
+        // that remainder is what `total_ms - ttfb_ms` shows (GH #124).
+        let ttfb = Some(ms_since(started));
         let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| WireError::Network(e.to_string()))?;
+        let text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
+        };
         if (200..300).contains(&status) {
-            return Ok(text);
+            return (Ok(text), ttfb);
         }
         let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        Err(classify_responses_status(status, &parsed))
+        (Err(classify_responses_status(status, &parsed)), ttfb)
     };
-    match tokio::time::timeout(timeout, request_fut).await {
-        Ok(result) => result,
-        Err(_) => Err(WireError::Timeout),
-    }
+    let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
+        Ok(pair) => pair,
+        Err(_) => (Err(WireError::Timeout), None),
+    };
+    let timings = WireTimings {
+        ttfb_ms,
+        total_ms: ms_since(started),
+        attempts: 1,
+    };
+    (result, timings)
 }
 
 /// Copy a `HeaderMap` into a `HashMap<String, String>` with the
@@ -829,6 +941,47 @@ mod tests {
             carried.len()
         );
         assert!(carried.contains("[truncated,"), "the cut must be marked");
+    }
+
+    // ───── GH #124: phase timings ─────
+
+    use super::WireTimings;
+
+    /// The Responses lane's auth retry is two POSTs for one logical call. The
+    /// summary must show what BOTH cost, and the time-to-first-byte of the
+    /// answer that is actually returned — the second one.
+    #[test]
+    fn folding_a_retry_sums_the_cost_and_keeps_the_last_ttfb() {
+        let first = WireTimings {
+            ttfb_ms: Some(120),
+            total_ms: 140,
+            attempts: 1,
+        };
+        let second = WireTimings {
+            ttfb_ms: Some(3_000),
+            total_ms: 3_200,
+            attempts: 1,
+        };
+        let folded = first.plus_attempt(second);
+        assert_eq!(folded.attempts, 2, "a retry is a second attempt");
+        assert_eq!(folded.total_ms, 3_340, "both attempts cost wall clock");
+        assert_eq!(
+            folded.ttfb_ms,
+            Some(3_000),
+            "the returned answer's own ttfb, not the rejected one's"
+        );
+    }
+
+    #[test]
+    fn folding_saturates_instead_of_overflowing() {
+        let huge = WireTimings {
+            ttfb_ms: None,
+            total_ms: u64::MAX,
+            attempts: u32::MAX,
+        };
+        let folded = huge.plus_attempt(huge);
+        assert_eq!(folded.total_ms, u64::MAX);
+        assert_eq!(folded.attempts, u32::MAX);
     }
 
     #[test]

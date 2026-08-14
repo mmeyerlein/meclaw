@@ -207,6 +207,127 @@ Two places bound that, and they are different decisions:
 For a genuinely large document the honest pattern is not a cap at all: fetch it to a file with a
 `file` cell and hand the model the path, so the payload never becomes a thread row.
 
+Both of those bound what enters and what leaves. Neither **condenses** — a cap keeps a prefix and
+an eviction keeps nothing. That third answer is the next section.
+
+## Compacting the thread when the window fills
+
+A cap bounds one item; an eviction drops a whole turn. Neither turns twelve rounds into a
+paragraph, so a long turn's window keeps growing until the provider refuses it. The missing
+capability is condensation: fold the old rounds into **one** summary row and rebuild from
+`summary + tail`.
+
+This is topology, not a new cell type. The reference tree is
+[`tests/fixtures/gh120-compaction-lane`](../tests/fixtures/gh120-compaction-lane/) — the loop
+above plus one hive and one edge split, pinned in
+`crates/meclaw-cells/tests/compaction_lane.rs`.
+
+### The accumulator is an edge, not a cell
+
+`tokens_prompt` is an `llm` hop key, and a `hop` expires on the next cell emission. The one place
+it is still readable is the edge that leaves the brain, so that edge keeps the running total:
+
+```json
+{ "from": "./llm", "to": "./tool-loop",
+  "condition": "hop.finish_reason == 'tool_calls'",
+  "modifier": { "set_context": {
+    "tokens_seen": "int(context.tokens_seen) + int(hop.tokens_prompt)" } } }
+```
+
+No cell counts anything, and the number rides in `context` next to `iter` — the same
+compartment, owned by the same layer.
+
+### The threshold splits the re-entry edge in two
+
+The loopback edge of step 5 becomes two edges that **partition** the `fire` lane. The second
+condition is the exact negation of the first, because a lane that is not exhaustive parks the
+turn — the collector has already spent its fire guard and nothing else will emit:
+
+```json
+{ "from": "./collector", "to": "/compact/prep",
+  "condition": "hop.route == 'fire' && int(context.tokens_seen) >= 40 && int(context.iter) >= 1",
+  "modifier": { "set_context": { "tokens_seen": "0", "compacting": "'1'" } } },
+{ "from": "./collector", "to": "/llm",
+  "condition": "hop.route == 'fire' && (int(context.tokens_seen) < 40 || int(context.iter) < 1)",
+  "modifier": { "set_context": { "iter": "int(context.iter) + 1", "firing": "''",
+                                 "compacting": "''" } } }
+```
+
+Three things are decided here and nowhere else:
+
+- **The threshold.** `40` is a fixture-scale number, chosen so four rounds of a deterministic
+  mock cross it; a real one is a fraction of the model's context window, in the tens of thousands.
+- **The reset.** Compaction sets `tokens_seen` back to `0`, which is what makes the lane fire
+  again later instead of once. The accumulator *is* the lane's state.
+- **The iteration bound.** `int(context.iter) >= 1` is the number of rounds kept verbatim
+  (`KEEP_ROUNDS`, one) expressed on the edge: a fold needs something to fold. Compaction does
+  **not** consume an iteration — only the brain edge counts.
+
+### The lane: policy in `code`, prose in `llm`
+
+`/compact` is three ordinary cells:
+
+| cell | type | what it decides |
+|---|---|---|
+| `prep` | `code` | groups the rebuilt thread into rounds, picks the cut, writes the prompt |
+| `condense` | `llm` | the prose, and only the prose |
+| `emit` | `code` | one `insert` of the summary row — or the degradation route |
+
+Three rules are worth taking from [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent),
+whose compaction is the strongest part of that codebase, and each lands in a different place here:
+
+1. **Summarize iteratively.** The previous summary is already the second message of the rebuilt
+   thread, so `prep` finds it without asking the store: it enters the prompt as the running
+   summary and the next fold refines it instead of starting from a blank page.
+2. **Force fixed sections.** The instruction shipped by `prep` names four headings — goal,
+   progress, key decisions, next steps. Fixed shape is what makes two folds of the same turn
+   comparable; a summary whose shape drifts can only be rewritten, never refined.
+3. **Never cut at a `tool_result`.** `prep` groups the thread into rounds — a round begins at the
+   first assistant `tool_call` of a run of them — and folds whole groups. A cut between groups
+   cannot land between a `tool_call` and its answer, so every folded prefix stays a valid provider
+   thread. The rule is structural, not a check.
+
+### The rebuild: `user + summary + tail`
+
+`emit` writes one row whose `iter` column carries the boundary:
+
+```text
+turn_id  iter  role       fired  turn
+t-7      2     summary    null   {"origin":"assistant","type":"text","text":"GOAL: …"}
+```
+
+The collector's rebuild (step 5) reads that column. Without a summary row it is the plain
+cumulative thread; with one it is the user turn, the newest summary, and every `assistant`/`tool`
+row **behind** the boundary. After a fold at boundary `2`, a four-round turn re-enters the brain
+with four messages instead of nine.
+
+The chain re-enters through the collector rather than around it: the summary insert comes back
+as an ordinary store reply, and because it carries `context.compacting`, the collector re-selects
+with `firing = 1` instead of racing for a guard the chain already holds.
+
+### What is compacted is the view, never the record
+
+The folded rows stay in `thread`, byte for byte. Nothing is updated, nothing is deleted; the
+summary row is an **addition**. That is the same discipline the collector template applies to its
+own window: a cap is a read-time cut of something the environment still holds, and rows fall only
+where deletion is the declared job. A later fold, an audit, or a session batch still sees the
+full turn.
+
+### The lane can always leave
+
+A fold that produced nothing — an empty answer, a provider error — must not fold the rounds into
+nothing, and it must not park the turn either. `emit` then leaves on `refire`: a plain select that
+sends the **uncompacted** window on. Expensive and complete beats cheap and stuck. `prep` carries
+the same exit for a thread with nothing to fold, which the iteration bound above already makes
+unreachable.
+
+### What it costs
+
+A fold replaces the one hop of a plain re-entry with eight — collector → `prep` → `condense` →
+`emit` → store, the reply back, the re-select, its reply, and then the brain — so it costs seven
+extra hops on the round it interrupts. The next section's advice applies unchanged, and more so:
+put `restore_ttl` on the re-entry edge and the loop pays for one round at a time, fold included.
+
 ## The TTL budget of one round
 
 `ttl` is the routing-loop guard: colony decrements it on every routing decision and a message
@@ -350,6 +471,8 @@ To build another store-backed loop:
 7. Rebuild the provider thread only after winning that guard.
 8. Increment the iteration and route to the LLM on an edge.
 9. Make store replies and losing races terminate explicitly with an empty multi-send.
+10. When the thread outgrows the window, fold the old rounds into one summary row and rebuild
+    from `summary + tail` — condensation is the one memory capability a cap cannot supply.
 
 Validate the worked example without external credentials:
 

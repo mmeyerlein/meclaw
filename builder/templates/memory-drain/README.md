@@ -5,7 +5,8 @@ The adapter between a closed session and the central memory (GitHub #101).
 A collector hands its day out as **one** write batch (`messages[]` = the whole day,
 top-level slot `rounds`, `hop.session_id`/`turn_count`/`round_count` — see the C3 receipt).
 The memory hive's writer takes **one** turn at a time and writes exactly one `episodes`
-row per turn ([hive spec](../memory-hive/README.md) § B.3/D.2). Nothing spoke both forms,
+row per turn (hive spec § B.3/D.2 — the memory hive itself is not part of this
+distribution). Nothing spoke both forms,
 so a closed day never reached memory at all.
 
 This hive is that translation, and it lives **outside** the memory hive on purpose
@@ -31,8 +32,8 @@ second write path.
 ## Ports
 
 Instantiate `add_nodes` and both port `add_edges` in **one** mutation — an island whose
-edges are all internal derives inactive
-([cookbook/island-activation.md](../../cookbook/island-activation.md)).
+edges are all internal derives inactive, so a two-step instantiation leaves the drain
+dormant (the island-activation rule).
 
 | Port | Direction | Endpoint | The edge must carry |
 |---|---|---|---|

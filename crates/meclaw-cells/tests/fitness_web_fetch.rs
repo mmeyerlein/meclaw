@@ -31,8 +31,14 @@ fn rig_with(params: meclaw_core::JsonValue) -> ToolRig {
     )
 }
 
+/// GH #117: every server this battery talks to is a local mock on 127.0.0.1,
+/// which the shipped DEFAULT now refuses. The battery takes the documented
+/// opt-out (`allow_private_networks`) — the default is NOT softened to keep it
+/// green, and `web_fetch_ssrf.rs` pins that the default still refuses exactly
+/// these targets.
 fn rig() -> ToolRig {
-    rig_with(json!({"max_concurrency": 2, "external_timeout_ms": 10000}))
+    rig_with(json!({"max_concurrency": 2, "external_timeout_ms": 10000,
+                    "allow_private_networks": true}))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -93,7 +99,8 @@ async fn a_slow_server_hits_the_typed_operation_timeout() {
     // Rule 12 concept A: the cell's own timeout, not the substrate backstop.
     let (addr, _srv) =
         start_mock_server(MockResponse::ok(b"too late").with_delay(Duration::from_secs(20))).await;
-    let mut r = rig_with(json!({"max_concurrency": 1, "external_timeout_ms": 300}));
+    let mut r = rig_with(json!({"max_concurrency": 1, "external_timeout_ms": 300,
+                                "allow_private_networks": true}));
 
     let started = std::time::Instant::now();
     let em = r

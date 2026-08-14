@@ -81,3 +81,4 @@ Thumbs.db
 # only a subset. Until then: everything stays in the local repo.
 # PROGRESS.md is already tracked (marker entry effectively a no-op).
 /PROGRESS.md
+__pycache__/

@@ -8,6 +8,7 @@ pub mod file;
 pub mod harness;
 pub mod llm;
 pub mod mcp;
+pub mod orphan_journal;
 pub mod params_overlay;
 pub(crate) mod process;
 pub mod proxy;

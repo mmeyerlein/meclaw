@@ -34,6 +34,26 @@ pub(crate) fn killpg(pgid: u32, signal: i32) -> io::Result<()> {
     }
 }
 
+/// Send `signal` to the single process `pid`.
+///
+/// The one-process counterpart of [`killpg`], added for the boot-time orphan
+/// reap (GH #116): a `bash`/`code` child is not a group leader, so there is no
+/// group to address — but its pid has just been identity-verified, which is
+/// exactly what makes signalling it safe. Same error contract as `killpg`:
+/// `ESRCH` for an already-gone process is returned, never panicked.
+pub(crate) fn kill(pid: u32, signal: i32) -> io::Result<()> {
+    // SAFETY: `kill` is a plain libc syscall wrapper with no memory arguments.
+    // The only inputs are two integers, and the return value is fully checked
+    // below. `pid` is positive by construction (u32 from `Child::id()`), so
+    // this can never become a process-group or broadcast signal.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// `SIGTERM` — ask the group to wind down.
 pub(crate) const SIGTERM: i32 = libc::SIGTERM;
 

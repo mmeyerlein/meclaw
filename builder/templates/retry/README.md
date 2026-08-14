@@ -117,7 +117,7 @@ dead-letters as `no_route` -- loud, but downstream of the real mistake. The call
 - **`restore_ttl`.** A retry round is two hops; even `RETRY_MAX=20` stays far below the
   colony default budget of 64. A loop whose ROUND is itself routing-heavy (tool loops
   with fan-in) restores its budget on the re-entry edge instead -- see
-  `docs/store-backed-tool-loop.en.md`.
+  `docs/store-backed-tool-loop.md`.
 - **Fan-in / bundles.** One call, one tool, one loop.
 
 ## Reading the script

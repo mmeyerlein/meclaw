@@ -400,7 +400,10 @@ async fn boot_workshop() -> Workshop {
         "main/reader/config.json",
         &tool_cell(
             "web_fetch",
-            json!({"max_concurrency": 2, "external_timeout_ms": 10000, "max_bytes": 32768}),
+            // GH #117: round 4 pulls a fixture doc from a LOCAL mock server,
+            // which the shipped default refuses. Documented opt-out.
+            json!({"max_concurrency": 2, "external_timeout_ms": 10000, "max_bytes": 32768,
+                   "allow_private_networks": true}),
             false,
         ),
     );

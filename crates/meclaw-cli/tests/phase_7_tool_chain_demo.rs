@@ -47,10 +47,13 @@ async fn setup_tool_chain_templates(td: &tempfile::TempDir, h: &meclaw_testing::
         // is the CONTENT FLOW web_fetch -> file -> bash; the sandbox boundary
         // is proven where it belongs, in
         // `crates/meclaw-cells/tests/sandbox_isolation.rs`.
-        let params = if *cell_type == "bash" {
-            r#"{"sandbox":{"trust":"trusted"}}"#
-        } else {
-            "{}"
+        let params = match *cell_type {
+            "bash" => r#"{"sandbox":{"trust":"trusted"}}"#,
+            // GH #117: the chain starts at a mock server on 127.0.0.1, which
+            // the shipped web_fetch default refuses. Documented opt-out, same
+            // escape hatch an operator would take.
+            "web_fetch" => r#"{"allow_private_networks":true}"#,
+            _ => "{}",
         };
         std::fs::write(
             tpl.join("config.json"),

@@ -4,7 +4,10 @@
 use crate::llm::params::{AuthMode, WireDialect};
 use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::wire::WireError;
-use crate::llm::{auth, output, params::LlmParams, state, translate, translate_responses, wire};
+use crate::llm::{
+    auth, latency, output, params::LlmParams, state, system_gate, translate, translate_responses,
+    wire,
+};
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
 use meclaw_core::serde_json::Value;
@@ -66,10 +69,15 @@ fn responses_url(params: &LlmParams) -> String {
 /// refresh (passing the generation we used, so a concurrent refresher wins
 /// instead of racing) → retry **exactly once** → typed error. No backoff loop,
 /// no failover: failover is topology (cell-types Z.166).
+///
+/// `wire_out` receives what the provider call(s) cost (GH #124). It stays
+/// `None` when the lane failed before reaching the wire — a credential the
+/// broker could not produce never touched the provider.
 async fn run_responses_lane(
     cell: &LlmCell,
     request_json: &Value,
     timeout: std::time::Duration,
+    wire_out: &mut Option<wire::WireTimings>,
 ) -> Result<TranslatedResponse, LaneFailure> {
     let url = responses_url(&cell.params);
     let attribution = translate::build_attribution_headers(&cell.params);
@@ -79,12 +87,20 @@ async fn run_responses_lane(
             let bearer = cell.params.api_key.as_deref().unwrap_or_default();
             let mut headers = translate_responses::build_responses_headers(&cell.params, None);
             headers.extend(attribution);
-            wire::call_responses(&cell.http, &url, bearer, &headers, request_json, timeout)
-                .await
-                .map_err(|e| LaneFailure::from_wire(&e))?
+            let (result, timings) = wire::call_responses_timed(
+                &cell.http,
+                &url,
+                bearer,
+                &headers,
+                request_json,
+                timeout,
+            )
+            .await;
+            *wire_out = Some(timings);
+            result.map_err(|e| LaneFailure::from_wire(&e))?
         }
         AuthMode::OauthSubscription => {
-            call_with_oauth(cell, &url, &attribution, request_json, timeout).await?
+            call_with_oauth(cell, &url, &attribution, request_json, timeout, wire_out).await?
         }
     };
 
@@ -117,12 +133,17 @@ async fn run_responses_lane(
 }
 
 /// The oauth_subscription branch: token → call → (401 → refresh → one retry).
+///
+/// `wire_out` accumulates BOTH attempts when the retry fires (GH #124), so a
+/// 401-refresh ladder shows up as `wire_attempts: 2` with the summed wall
+/// clock instead of silently doubling the apparent handle duration.
 async fn call_with_oauth(
     cell: &LlmCell,
     url: &str,
     attribution: &[(String, String)],
     request_json: &Value,
     timeout: std::time::Duration,
+    wire_out: &mut Option<wire::WireTimings>,
 ) -> Result<String, LaneFailure> {
     let auth_ref = cell.params.auth_ref.as_deref().unwrap_or_default();
     let endpoint = cell
@@ -148,11 +169,14 @@ async fn call_with_oauth(
             translate_responses::build_responses_headers(&cell.params, account.as_deref());
         headers.extend(attribution.to_vec());
         async move {
-            wire::call_responses(&cell.http, url, &bearer, &headers, request_json, timeout).await
+            wire::call_responses_timed(&cell.http, url, &bearer, &headers, request_json, timeout)
+                .await
         }
     };
 
-    match call(token.access_token.clone(), token.account_id.clone()).await {
+    let (first, first_timings) = call(token.access_token.clone(), token.account_id.clone()).await;
+    *wire_out = Some(first_timings);
+    match first {
         Ok(text) => Ok(text),
         Err(WireError::Unauthorized) => {
             // Pass the generation we used: if another cell already refreshed
@@ -166,7 +190,11 @@ async fn call_with_oauth(
             )
             .await
             .map_err(wire_auth_failure)?;
-            match call(fresh.access_token.clone(), fresh.account_id.clone()).await {
+            let (retried, retry_timings) =
+                call(fresh.access_token.clone(), fresh.account_id.clone()).await;
+            // Both POSTs were spent on this one logical call — report their sum.
+            *wire_out = Some(first_timings.plus_attempt(retry_timings));
+            match retried {
                 Ok(text) => Ok(text),
                 // Still refused after a fresh token — stop. One retry, no loop.
                 Err(WireError::Unauthorized) => {
@@ -225,6 +253,38 @@ impl LlmCell {
     pub fn with_attachment_reader(mut self, reader: Option<AttachmentReader>) -> Self {
         self.attachments = reader;
         self
+    }
+
+    /// Emit the GH #124 phase-summary line for a call that reached a provider
+    /// (or died trying), tagged with the cell's dialect and model.
+    ///
+    /// Called at every terminal point of an inference, so an operating log has
+    /// exactly one summary per provider call. `outcome` is `"ok"` or the UBF
+    /// `error_code`. Paths that end BEFORE the request is built (body-parse
+    /// reject, params reject, Q3 silence) emit nothing: they never called a
+    /// provider, and a line for them would dilute the stream this question is
+    /// asked of.
+    ///
+    /// Deliberately called AFTER the emission, not before: `sink.push` awaits a
+    /// bounded channel, so a backpressured colony makes the emit itself take
+    /// time. Logging first would have hidden exactly that in the blind spot
+    /// GH #124 is about — this way it lands in `handle_ms` and therefore in
+    /// `unaccounted_ms`.
+    fn log_phases(&self, clock: &latency::PhaseClock, outcome: &str) {
+        latency::log_summary(
+            &clock.finish(),
+            self.dialect_name(),
+            &self.params.model,
+            outcome,
+        );
+    }
+
+    /// The wire dialect as the string that appears in the instrumentation.
+    fn dialect_name(&self) -> &'static str {
+        match self.params.effective_wire_dialect() {
+            WireDialect::ChatCompletions => "chat_completions",
+            WireDialect::Responses => "responses",
+        }
     }
 
     /// Resolve the `attachments[]` slot into provider-native image parts —
@@ -324,6 +384,48 @@ fn unix_secs_now() -> i64 {
         .as_secs() as i64
 }
 
+/// GH #118: answer a refused write into the persistent `system` tree.
+///
+/// LOUD, never a silent drop — the two halves of "loud" are:
+/// * a `WARN` line on the `meclaw::llm::system_gate` target, so an operator
+///   watching the daemon sees the refusal even when nobody reads the reply;
+/// * a regular error message (`error_code: "invalid_input"`, the same closed
+///   enum value the params-update reject uses — the spec's `error_code` list is
+///   closed and this is the same class of event: a message asked for something
+///   it may not have).
+///
+/// `input_messages` travels unchanged (Gate-1 pass-through), so a failover edge
+/// keyed on `finish_reason == "error"` stays usable. Neither the log line nor
+/// the detail ever carries the leaf content.
+async fn reject_system_write(
+    sink: &OutputSink,
+    reply_target: meclaw_core::Path,
+    reject: &crate::llm::system_gate::GateReject,
+    input_messages: Vec<Value>,
+    started_at_unix_ms: i64,
+) {
+    tracing::warn!(
+        target: "meclaw::llm::system_gate",
+        reason = reject.reason(),
+        slot = reject.slot().unwrap_or("-"),
+        "refused a write into the persistent system tree (GH #118)"
+    );
+    output::emit_error(
+        sink,
+        reply_target,
+        "invalid_input",
+        &reject.detail(),
+        "parse",
+        input_messages,
+        started_at_unix_ms,
+        0,
+        None,
+        None,
+        None,
+    )
+    .await;
+}
+
 /// Extract OpenAI-tool objects from a `system_tree.tools.*` sub-object.
 ///
 /// Each leaf `{"text": "<json>"}` under `system.tools` is parsed as the
@@ -371,6 +473,10 @@ impl StatefulCell for LlmCell {
         db: &'a mut meclaw_colony::DbConn,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
+            // GH #124: one stopwatch for the whole call. It only reads the
+            // monotonic clock at the phase boundaries and is dropped with the
+            // call — it can never itself be the reason a call is slow.
+            let mut clock = latency::PhaseClock::start();
             let started_at_unix_ms = unix_ms_now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
@@ -551,6 +657,24 @@ impl StatefulCell for LlmCell {
                 Some(sys) => state::flatten_to_leaves(sys, ""),
                 None => Vec::new(),
             };
+
+            // GH #118: the write gate in front of the persistent system tree.
+            // The slot-path and per-leaf-size halves are pure and run HERE, so a
+            // refused write never opens a transaction at all. The slot budget
+            // needs the current tree and runs inside `system_first_persist`.
+            let gate = system_gate::SystemGate::from_params(&self.params);
+            if let Err(reject) = gate.check_leaves(&system_leaves) {
+                reject_system_write(
+                    sink,
+                    reply_target,
+                    &reject,
+                    messages_array.unwrap_or_default(),
+                    started_at_unix_ms,
+                )
+                .await;
+                return;
+            }
+
             let now_secs = unix_secs_now();
             let messages_value = messages_array
                 .as_ref()
@@ -558,28 +682,54 @@ impl StatefulCell for LlmCell {
             let persist_result = {
                 let sys_leaves = system_leaves.clone();
                 let msgs_val = messages_value.clone();
+                let gate = gate.clone();
                 db.call(move |conn| {
-                    state::system_first_persist(conn, &sys_leaves, msgs_val.as_ref(), now_secs)
+                    state::system_first_persist(
+                        conn,
+                        &gate,
+                        &sys_leaves,
+                        msgs_val.as_ref(),
+                        now_secs,
+                    )
                 })
                 .await
             };
             if let Err(e) = persist_result {
-                output::emit_error(
-                    sink,
-                    reply_target,
-                    "provider_error",
-                    &format!("cell.db write failed: {e}"),
-                    "parse",
-                    messages_array.unwrap_or_default(),
-                    started_at_unix_ms,
-                    0,
-                    None,
-                    None,
-                    None,
-                )
-                .await;
+                match e {
+                    state::PersistError::Gate(reject) => {
+                        reject_system_write(
+                            sink,
+                            reply_target,
+                            &reject,
+                            messages_array.unwrap_or_default(),
+                            started_at_unix_ms,
+                        )
+                        .await;
+                    }
+                    state::PersistError::Sql(e) => {
+                        output::emit_error(
+                            sink,
+                            reply_target,
+                            "provider_error",
+                            &format!("cell.db write failed: {e}"),
+                            "parse",
+                            messages_array.unwrap_or_default(),
+                            started_at_unix_ms,
+                            0,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    }
+                }
                 return;
             }
+
+            // GH #124 phase boundary: everything up to here is body parse plus
+            // the `cell.db` write transaction. A blocked or slow cell.db shows
+            // up as `persist_ms` on the summary line and nowhere else.
+            clock.persisted();
 
             // Step 4: Q3 system-only silence. If no messages slot, the
             // persist above already happened — return without emit/inference.
@@ -695,6 +845,9 @@ impl StatefulCell for LlmCell {
                     return;
                 }
             };
+            // GH #124: kept before the vector is moved into the request, so the
+            // DEBUG detail line can name how many images this call carried.
+            let image_part_count = image_parts.len();
 
             // P10 dialect fork. Everything above (system tree, tools, system
             // prompt) is dialect-neutral and shared; below this point the two
@@ -702,6 +855,7 @@ impl StatefulCell for LlmCell {
             // pinned by `llm_chat_completions_wire_regression`.
             if self.params.effective_wire_dialect() == WireDialect::Responses {
                 let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
+                let mut wire_timings: Option<wire::WireTimings> = None;
                 let outcome = match translate_responses::build_responses_request(
                     &self.params,
                     &system_string,
@@ -712,10 +866,28 @@ impl StatefulCell for LlmCell {
                         // GH #94: fold the resolved images into the typed
                         // input[]. No-op for an empty vector.
                         translate_responses::attach_input_images(&mut request_json, image_parts);
-                        run_responses_lane(self, &request_json, timeout).await
+                        // GH #124: same phase boundary as the chat lane.
+                        clock.translated();
+                        if tracing::enabled!(target: latency::LATENCY_TARGET, tracing::Level::DEBUG)
+                        {
+                            latency::log_request_detail(
+                                self.dialect_name(),
+                                meclaw_core::serde_json::to_string(&request_json)
+                                    .map(|s| s.len())
+                                    .unwrap_or(0),
+                                input_messages.len(),
+                                tools.len(),
+                                image_part_count,
+                                system_string.len(),
+                            );
+                        }
+                        run_responses_lane(self, &request_json, timeout, &mut wire_timings).await
                     }
                     Err(e) => Err(LaneFailure::from_translate(&e, "translate")),
                 };
+                if let Some(t) = wire_timings {
+                    clock.wired(t);
+                }
                 let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
                 match outcome {
                     Ok(t) => {
@@ -732,8 +904,10 @@ impl StatefulCell for LlmCell {
                             latency_ms,
                         )
                         .await;
+                        self.log_phases(&clock, "ok");
                     }
                     Err(f) => {
+                        let code = f.code;
                         output::emit_error(
                             sink,
                             reply_target,
@@ -748,6 +922,7 @@ impl StatefulCell for LlmCell {
                             f.extra,
                         )
                         .await;
+                        self.log_phases(&clock, code);
                     }
                 }
                 return;
@@ -784,6 +959,24 @@ impl StatefulCell for LlmCell {
                     return;
                 }
             };
+            // GH #124 phase boundary: system read-back, tools, prompt concat,
+            // attachment reads + base64 and the request build all land in
+            // `translate_ms`. The DEBUG line explains a large one (a megabyte
+            // of images, a thousand-turn history) with sizes only — never with
+            // conversation content.
+            clock.translated();
+            if tracing::enabled!(target: latency::LATENCY_TARGET, tracing::Level::DEBUG) {
+                latency::log_request_detail(
+                    self.dialect_name(),
+                    meclaw_core::serde_json::to_string(&request_json)
+                        .map(|s| s.len())
+                        .unwrap_or(0),
+                    input_messages.len(),
+                    tools.len(),
+                    image_part_count,
+                    system_string.len(),
+                );
+            }
 
             // Step 6: HTTP call (async, A timeout via call_openai's
             // internal tokio::time::timeout wrapper).
@@ -800,7 +993,7 @@ impl StatefulCell for LlmCell {
             // attribution params become HTTP request headers (body-params stay
             // in `request_json`).
             let attribution_headers = translate::build_attribution_headers(&self.params);
-            let wire_result = wire::call_openai(
+            let (wire_result, wire_timings) = wire::call_openai_timed(
                 &self.http,
                 &url,
                 // `parse` guarantees `api_key` is present whenever this cell
@@ -811,6 +1004,7 @@ impl StatefulCell for LlmCell {
                 timeout,
             )
             .await;
+            clock.wired(wire_timings);
             let response_json = match wire_result {
                 Ok(json) => json,
                 Err(err) => {
@@ -832,6 +1026,7 @@ impl StatefulCell for LlmCell {
                         wire::wire_error_meta(&err),
                     )
                     .await;
+                    self.log_phases(&clock, code);
                     return;
                 }
             };
@@ -858,6 +1053,7 @@ impl StatefulCell for LlmCell {
                         None,
                     )
                     .await;
+                    self.log_phases(&clock, translate::translate_error_to_code(&e));
                     return;
                 }
             };
@@ -877,6 +1073,7 @@ impl StatefulCell for LlmCell {
                 latency_ms,
             )
             .await;
+            self.log_phases(&clock, "ok");
         }
     }
 }

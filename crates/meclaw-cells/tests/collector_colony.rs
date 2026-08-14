@@ -16,6 +16,7 @@ mod support;
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
+use std::time::Duration;
 use support::{boot, recv_bounded};
 use tokio::sync::mpsc;
 
@@ -417,6 +418,98 @@ async fn say_in(
     answer_text(&round_trip_in(h, rx, session, text).await)
 }
 
+/// The idle window the GH #103 colony cases configure. It is the one SEMANTIC
+/// discriminator of that block -- a round is closed by an occasion only when
+/// its last progress lies BEHIND this window -- and every wait in those cases
+/// is derived from it, never written out a second time (`idle_env` puts the
+/// same number into the tree's `.env`, so the two cannot drift).
+///
+/// Why two seconds and not the 300 ms this block was written with (GH #114):
+/// the window is not only the gate the OCCASION has to pass, it is also the
+/// deadline the tree's OWN chain has to beat. The round-check that follows
+/// every new round row measures the round against the same window, so when a
+/// hop of this tree -- a python subprocess spawn plus a store round trip --
+/// takes longer than the window, the round declares ITSELF idle and closes
+/// without any occasion at all. Measured under eight-way parallel load: hops
+/// of 500-700 ms, and a round that closed itself 306 ms after its own tool
+/// result (3/24 binary runs red at the "a deferred turn asks nothing" pin).
+/// Two seconds sits above that hop latency with room to spare while staying a
+/// window a wall clock can still tell apart. The BOUNDARY behaviour -- fresh
+/// round waits, stale round closes -- is pinned deterministically and without
+/// a clock at script level in `collector_window.rs` (`STALE`/`FRESH`), so
+/// nothing semantic rides on the absolute number here.
+const ROUND_IDLE: Duration = Duration::from_millis(2000);
+
+/// The `.env` line that configures [`ROUND_IDLE`] in a tree under test.
+fn idle_env() -> String {
+    format!("COLLECTOR_ROUND_IDLE_MS={}\n", ROUND_IDLE.as_millis())
+}
+
+/// How long a case waits before it hands the round its occasion: the idle
+/// window plus a slack of half a second. The clock starts at the OBSERVED
+/// slate (see [`await_parked_round`]) and the newest row was written no later
+/// than that, so the round's last progress is at least `ROUND_IDLE` old when
+/// the occasion mints its own cut; the slack absorbs timestamp granularity.
+/// Scheduler latency can only delay the occasion further, which makes the
+/// round staler, never fresher -- the discriminator has no upper edge to lose.
+const PAST_IDLE: Duration = Duration::from_millis(2500);
+
+/// Waits for the POSITIVE receipt that a tool round is open and its fan-in is
+/// stuck, and returns the slate it read for the failure messages.
+///
+/// The receipt is the collector's own state surface: the `round` table in the
+/// store cell's `cell.db` carries an unfired `assistant` row (the round IS
+/// open, the guard has not fired) next to at least one real `tool` result row
+/// (one call answered, the other lost in flight). Nothing else in these trees
+/// writes there, so the two rows together are the parked round -- an
+/// observation, not an inference from elapsed time.
+///
+/// GH #114: the cases used to wait a wall-clock second instead and read
+/// "nothing arrived at the sink" as "the round parked". Under parallel cargo
+/// load that reading is ambiguous -- the three python cells of this tree can
+/// need seconds to walk probe -> brain -> dispatch -> tool, and "not started
+/// yet" produces exactly the same silence. Measured: 12/36 red at ~33 % under
+/// twelve-way load. Waiting for the slate removes the ambiguity: what follows
+/// is timed against an OBSERVED round, not against a hopeful sleep.
+///
+/// The 30 s bound is a failure marker, not a discriminator, and follows the
+/// 30 s convention of `recv_bounded`.
+async fn await_parked_round(td: &tempfile::TempDir) -> String {
+    let db = td.path().join("main/collector/window/cell.db");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut slate = "<no round table yet>".to_string();
+    loop {
+        if let Ok(conn) = rusqlite::Connection::open(&db)
+            && let Ok(mut stmt) =
+                conn.prepare("SELECT role, fired, recorded_at FROM round ORDER BY recorded_at")
+        {
+            let rows: Vec<(String, i64, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map(|it| it.flatten().collect())
+                .unwrap_or_default();
+            if !rows.is_empty() {
+                slate = rows
+                    .iter()
+                    .map(|(role, fired, at)| format!("{role}/fired={fired}@{at}"))
+                    .collect::<Vec<_>>()
+                    .join(" ; ");
+            }
+            let open = rows
+                .iter()
+                .any(|(role, fired, _)| role == "assistant" && *fired == 0);
+            let answered = rows.iter().any(|(role, _, _)| role == "tool");
+            if open && answered {
+                return slate;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no parked round in the collector's slate within 30 s -- slate: {slate}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_conversation_can_reference_its_own_first_turn() {
     let td = tempfile::TempDir::new().unwrap();
@@ -659,24 +752,30 @@ async fn a_round_with_a_lost_result_is_closed_by_a_sweep_after_the_idle_window()
     // park first (that is the pre-#103 pin), and a sweep after the idle
     // window must close it: synthetic stand-in, regular fire, round_stale=1.
     let td = tempfile::TempDir::new().unwrap();
-    build_tool_tree(
-        &td,
-        "COLLECTOR_ROUND_IDLE_MS=300\n",
-        ROBUST_BRAIN,
-        DROPPY_TOOL,
-    );
+    build_tool_tree(&td, &idle_env(), ROBUST_BRAIN, DROPPY_TOOL);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
-    // The round parks: one call is open, nothing reaches the sink.
+    // The round parks: one call is open, nothing reaches the sink. The slate
+    // is the receipt that it IS parked (GH #114) -- an unfired assistant row
+    // beside the one real result.
     h.send(turn_in("s1", "look it up")).await;
+    let slate = await_parked_round(&td).await;
+
+    // One construct, two duties. It is the pre-#103 pin -- an incomplete round
+    // fires for nobody, not even once its window has passed, and nothing in
+    // this tree closes it on its own -- and it is the wait that puts the sweep
+    // PAST that window (see PAST_IDLE for why the arithmetic holds under
+    // load). That order is what makes the sweep the PROVEN occasion: were the
+    // round to close itself, the answer would land inside this silence and
+    // fail the pin instead of passing for the sweep's work.
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(1), sink_rx.recv())
+        tokio::time::timeout(PAST_IDLE, sink_rx.recv())
             .await
             .is_err(),
-        "an incomplete round parks -- the deterministic exit needs an occasion"
+        "an incomplete round parks -- the deterministic exit needs an occasion (slate: {slate})"
     );
 
-    // The occasion: a parent timer's sweep, well past the 300 ms window.
+    // The occasion: a parent timer's sweep, well past the idle window.
     let got = round_trip(&h, &mut sink_rx, "/sweep").await;
     assert_eq!(hop_of(&got, "route"), "answer");
     let ans = answer_text(&got);
@@ -710,20 +809,19 @@ async fn a_mid_round_turn_defers_and_rides_with_the_next_assembly() {
     // mid-round turn both defers itself AND closes the stale round it ran
     // into. At most ONE open brain call per session (telephone model R-OS-3).
     let td = tempfile::TempDir::new().unwrap();
-    build_tool_tree(
-        &td,
-        "COLLECTOR_ROUND_IDLE_MS=300\n",
-        ROBUST_BRAIN,
-        DROPPY_TOOL,
-    );
+    build_tool_tree(&td, &idle_env(), ROBUST_BRAIN, DROPPY_TOOL);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(turn_in("s1", "look it up")).await;
+    // Same discipline as the sweep case (GH #114): the parked round is read
+    // off the slate, and the wait that follows both pins "no occasion, no
+    // fire" and carries the round past its idle window.
+    let slate = await_parked_round(&td).await;
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(1), sink_rx.recv())
+        tokio::time::timeout(PAST_IDLE, sink_rx.recv())
             .await
             .is_err(),
-        "the round parks until an occasion arrives"
+        "the round parks until an occasion arrives (slate: {slate})"
     );
 
     // The mid-round turn IS the occasion. It closes the stale round -- and
@@ -1031,16 +1129,19 @@ async fn a_memory_call_without_a_wired_port_ends_in_the_rounds_idle_exit() {
     // park forever: the idle exit of GH #103 owns this case exactly as it owns
     // a tool that died mid-flight. No new machinery for a memory tool.
     let td = tempfile::TempDir::new().unwrap();
-    build_memory_tree(&td, "COLLECTOR_ROUND_IDLE_MS=300\n", false);
+    build_memory_tree(&td, &idle_env(), false);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(turn_in("s1", "what did we decide on the first?"))
         .await;
+    // The parked round off the slate, then the wait that is both the pin and
+    // the passage of the idle window (GH #114).
+    let slate = await_parked_round(&td).await;
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(1), sink_rx.recv())
+        tokio::time::timeout(PAST_IDLE, sink_rx.recv())
             .await
             .is_err(),
-        "the round parks: the memory call has no port to answer it"
+        "the round parks: the memory call has no port to answer it (slate: {slate})"
     );
 
     let got = round_trip(&h, &mut sink_rx, "/sweep").await;

@@ -15,6 +15,17 @@ fn default_external_timeout_ms() -> u64 {
     110_000
 }
 
+/// GH #118: default cap on the number of distinct slots in the persistent
+/// `system` tree. Shared with the gate so the doc-comment lives in one place.
+fn default_system_max_slots() -> usize {
+    crate::llm::system_gate::DEFAULT_SYSTEM_MAX_SLOTS
+}
+
+/// GH #118: default cap on the serialized size of ONE system leaf, in bytes.
+fn default_system_max_leaf_bytes() -> usize {
+    crate::llm::system_gate::DEFAULT_SYSTEM_MAX_LEAF_BYTES
+}
+
 /// GH #87: A-timeout for one `attachments[]` blob read. A local filesystem read
 /// of a file the substrate itself committed — orders of magnitude faster than a
 /// provider round trip, so it gets a much tighter default than
@@ -119,6 +130,28 @@ pub struct LlmParams {
     /// system prompt; default `[]`.
     #[serde(default)]
     pub system_order: Vec<String>,
+    /// GH #118: cap on the number of distinct slots the persistent `system`
+    /// tree may hold; default 256. A message write that would push the tree
+    /// past it is a loud reject, never a truncation.
+    #[serde(default = "default_system_max_slots")]
+    pub system_max_slots: usize,
+    /// GH #118: cap on the serialized size of ONE system leaf, in bytes;
+    /// default 65536. Same loud-reject rule.
+    #[serde(default = "default_system_max_leaf_bytes")]
+    pub system_max_leaf_bytes: usize,
+    /// GH #118: the subtrees a MESSAGE may write in the persistent `system`
+    /// tree, as dotted slot-path prefixes (`"handover"`, `"tools"`, …).
+    ///
+    /// Empty (the default) = no allowlist configured, every slot path stays
+    /// writable — pre-#118 behaviour, so the operator's direct `@external`
+    /// system update and every in-topology writer keep working untouched. A
+    /// non-empty list pins the message-writable surface; the `seed/system.jsonl`
+    /// loader is NOT gated by it (configuration tier, see `system_gate`).
+    ///
+    /// Prefixes are relative to the `system` subtree — `"identity"`, never
+    /// `"system.identity"`.
+    #[serde(default)]
+    pub system_writable: Vec<String>,
     /// Pass-through map of provider-specific extras; default `{}`.
     #[serde(default)]
     pub provider_extra: serde_json::Map<String, serde_json::Value>,
@@ -146,6 +179,28 @@ pub struct LlmParams {
     /// no header emitted.
     #[serde(default)]
     pub x_title: Option<String>,
+    /// GH #124: deliberation budget for a thinking-class model on the
+    /// chat-completions lane, in the provider's shorthand form (`"low"` /
+    /// `"medium"` / `"high"` and whatever else the provider accepts — the
+    /// value is passed through, not validated against a list this crate would
+    /// have to chase).
+    ///
+    /// The Translate boundary turns it into the request body's
+    /// `"reasoning": {"effort": …}`. `None` = the field is NOT sent and the
+    /// request is byte-identical to one from before this param existed — the
+    /// same unset-means-absent rule as `http_referer`/`x_title` (A4).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// GH #124: the full reasoning block, passed to the request body verbatim
+    /// (e.g. `{"effort": "low", "exclude": true}` or a `max_tokens` budget).
+    ///
+    /// Exists next to `reasoning_effort` because the providers' reasoning
+    /// objects keep growing and a shorthand cannot express all of them; this
+    /// param is the escape hatch that does not need a code change per knob.
+    /// When BOTH are set this one wins (it is the strictly more expressive
+    /// form). `None` = the field is not sent.
+    #[serde(default)]
+    pub reasoning: Option<Value>,
 }
 
 impl LlmParams {
@@ -192,6 +247,34 @@ impl LlmParams {
                         "auth 'oauth_subscription' requires wire_dialect 'responses'".to_string(),
                     );
                 }
+            }
+        }
+        // GH #118 system-gate knobs. A cap of zero would wall the cell off from
+        // its own system tree; a prefix written in `system.`-space would never
+        // match a slot path (they are relative to the `system` subtree) and
+        // would silently pin the cell shut. Both are loud at spawn.
+        if p.system_max_slots == 0 {
+            return Err("system_max_slots must be at least 1".to_string());
+        }
+        if p.system_max_leaf_bytes == 0 {
+            return Err("system_max_leaf_bytes must be at least 1".to_string());
+        }
+        for prefix in &p.system_writable {
+            if prefix.is_empty() {
+                return Err(
+                    "system_writable entries must be non-empty slot-path prefixes".to_string(),
+                );
+            }
+            if prefix.starts_with("system.") || prefix == "system" {
+                return Err(format!(
+                    "system_writable entry '{prefix}': prefixes are relative to the system \
+                     subtree — write 'identity', not 'system.identity'"
+                ));
+            }
+            if prefix.starts_with('.') || prefix.ends_with('.') {
+                return Err(format!(
+                    "system_writable entry '{prefix}': must not start or end with '.'"
+                ));
             }
         }
         Ok(p)
@@ -259,10 +342,17 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "system_order",
     "provider_extra",
     "external_timeout_ms",
+    // GH #118 system-write gate.
+    "system_max_slots",
+    "system_max_leaf_bytes",
+    "system_writable",
     // GH #87 attachment consumption.
     "attachment_timeout_ms",
     "http_referer",
     "x_title",
+    // GH #124 reasoning passthrough (chat-completions lane).
+    "reasoning_effort",
+    "reasoning",
     // P10 auth dimension.
     "auth",
     "auth_ref",
@@ -295,6 +385,13 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     // overlay would also outlive — and silently override — a later
     // `config.json` fix.
     "oauth_client_version",
+    // GH #118: the system-write gate. A message that could raise its own
+    // limits or clear its own allowlist would not be gated at all — the
+    // declaration only means something if it is out of the message path's
+    // reach, exactly like the credential keys above.
+    "system_max_slots",
+    "system_max_leaf_bytes",
+    "system_writable",
 ];
 
 /// β: the reject type now lives in the generic params-overlay core. Re-exported
@@ -351,6 +448,128 @@ mod tests {
         let (merged, overlay) = p.apply_update(&update).unwrap();
         assert_eq!(merged.attachment_timeout_ms, 250);
         assert_eq!(overlay.len(), 1);
+    }
+
+    // ───── GH #118: the system-write gate ─────
+
+    /// The safe default is "bounded, not closed": limits are on for every cell,
+    /// the allowlist is opt-in and empty — so a pre-#118 config keeps its exact
+    /// behaviour (the operator's direct `@external` system update included).
+    #[test]
+    fn system_gate_params_default_to_bounded_but_unpinned() {
+        let p = LlmParams::parse(&api_key_raw()).unwrap();
+        assert_eq!(p.system_max_slots, 256);
+        assert_eq!(p.system_max_leaf_bytes, 65_536);
+        assert!(
+            p.system_writable.is_empty(),
+            "no allowlist unless a topology declares one"
+        );
+    }
+
+    #[test]
+    fn parse_reads_the_system_gate_params() {
+        let mut raw = api_key_raw();
+        raw["system_max_slots"] = json!(8);
+        raw["system_max_leaf_bytes"] = json!(1024);
+        raw["system_writable"] = json!(["handover", "tools"]);
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.system_max_slots, 8);
+        assert_eq!(p.system_max_leaf_bytes, 1024);
+        assert_eq!(p.system_writable, vec!["handover", "tools"]);
+    }
+
+    /// The whole point of the gate: a message must never be able to widen the
+    /// gate it is about to pass.
+    #[test]
+    fn the_system_gate_params_are_immutable_at_runtime() {
+        let base = LlmParams::parse(&api_key_raw()).unwrap();
+        for (key, value) in [
+            ("system_max_slots", json!(999_999)),
+            ("system_max_leaf_bytes", json!(999_999)),
+            ("system_writable", json!([])),
+        ] {
+            let update = json!({key: value}).as_object().unwrap().clone();
+            let err = base.apply_update(&update).unwrap_err();
+            assert!(
+                matches!(err, super::ParamUpdateError::Immutable(ref k) if k == key),
+                "key {key} must be immutable, got {err:?}"
+            );
+        }
+    }
+
+    /// A prefix in `system.`-space would never match a slot path (slot paths
+    /// are relative to the `system` subtree) and would pin the cell shut
+    /// without a word. Loud at spawn instead.
+    #[test]
+    fn parse_rejects_a_system_prefixed_writable_entry() {
+        let mut raw = api_key_raw();
+        raw["system_writable"] = json!(["system.identity"]);
+        let err = LlmParams::parse(&raw).unwrap_err();
+        assert!(err.contains("system.identity"), "{err}");
+        assert!(err.contains("relative"), "{err}");
+    }
+
+    #[test]
+    fn parse_rejects_a_zero_system_limit() {
+        let mut raw = api_key_raw();
+        raw["system_max_slots"] = json!(0);
+        assert!(LlmParams::parse(&raw).is_err());
+        let mut raw = api_key_raw();
+        raw["system_max_leaf_bytes"] = json!(0);
+        assert!(LlmParams::parse(&raw).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_a_malformed_writable_entry() {
+        for bad in [json!([""]), json!([".identity"]), json!(["identity."])] {
+            let mut raw = api_key_raw();
+            raw["system_writable"] = bad.clone();
+            assert!(
+                LlmParams::parse(&raw).is_err(),
+                "entry {bad} must be rejected"
+            );
+        }
+    }
+
+    // ───── GH #124: reasoning passthrough ─────
+
+    #[test]
+    fn parse_reasoning_fields_default_to_none() {
+        let raw = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.reasoning_effort, None);
+        assert_eq!(p.reasoning, None);
+    }
+
+    #[test]
+    fn parse_reads_both_reasoning_forms() {
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "x",
+            "reasoning_effort": "low",
+            "reasoning": {"effort": "high", "exclude": true},
+        });
+        let p = LlmParams::parse(&raw).unwrap();
+        assert_eq!(p.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            p.reasoning,
+            Some(json!({"effort": "high", "exclude": true}))
+        );
+    }
+
+    /// A deliberation budget is a knob, not an identity: it must be tunable at
+    /// runtime like `model` or `temperature`, not frozen with the credentials.
+    #[test]
+    fn reasoning_fields_are_known_and_mutable_params() {
+        let raw = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let p = LlmParams::parse(&raw).unwrap();
+        let update = json!({"reasoning_effort": "high", "reasoning": {"effort": "high"}})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, overlay) = p.apply_update(&update).unwrap();
+        assert_eq!(merged.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(merged.reasoning, Some(json!({"effort": "high"})));
+        assert_eq!(overlay.len(), 2);
     }
 
     #[test]

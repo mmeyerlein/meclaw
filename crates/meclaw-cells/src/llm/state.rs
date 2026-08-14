@@ -11,6 +11,7 @@
 //! - `system_first_persist` — atomic transaction wrapper that drives the
 //!   writers in Q2 system-first order (consumed by `handle()` steps 2/3).
 
+use crate::llm::system_gate::{GateReject, SystemGate};
 use meclaw_core::serde_json::{self, Value};
 
 /// Walks a UBF system-subtree and returns flat `(dotted-leaf-path, leaf-json)` pairs.
@@ -165,6 +166,26 @@ pub(crate) fn replace_last_input(
     Ok(())
 }
 
+/// How a `system_first_persist` call failed: the database said no, or the
+/// GH #118 write gate did.
+///
+/// Two variants because the caller answers them differently — a SQL failure is
+/// a `provider_error` (the substrate under the cell broke), a gate reject is an
+/// `invalid_input` (the message asked for something it may not have).
+#[derive(Debug)]
+pub(crate) enum PersistError {
+    /// `cell.db` refused the write.
+    Sql(rusqlite::Error),
+    /// The GH #118 write gate refused the write. Nothing was committed.
+    Gate(GateReject),
+}
+
+impl From<rusqlite::Error> for PersistError {
+    fn from(e: rusqlite::Error) -> Self {
+        PersistError::Sql(e)
+    }
+}
+
 /// Atomic persist of system-leaves + optional messages[] in ONE transaction.
 ///
 /// Q2 system-first order: all leaves UPSERTed first, then (if Some) messages
@@ -173,20 +194,51 @@ pub(crate) fn replace_last_input(
 ///
 /// Empty `system_leaves` is allowed (e.g. message-only input). `None`
 /// `messages_array` skips the last_input write entirely (system-only input).
+///
+/// GH #118: the **slot budget** is checked INSIDE the transaction, because it
+/// is the only half of the gate that needs to know what the tree already holds.
+/// Counting the rows outside the transaction would be a check against a state
+/// the write no longer sees. A reject drops the transaction unopened-ended —
+/// neither the system leaves NOR the `messages[]` half survive it, so a refused
+/// system write can never leave the cell with a half-applied body. The
+/// slot-path and per-leaf-size halves of the gate run BEFORE this call (pure,
+/// no database — see `SystemGate::check_leaves`).
 pub(crate) fn system_first_persist(
     conn: &mut rusqlite::Connection,
+    gate: &SystemGate,
     system_leaves: &[(String, Value)],
     messages_array: Option<&Value>,
     now: i64,
-) -> rusqlite::Result<()> {
+) -> Result<(), PersistError> {
     let tx = conn.transaction()?;
+    if !system_leaves.is_empty() {
+        let existing = existing_slot_paths(&tx)?;
+        let novel = system_leaves
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .filter(|p| !existing.contains(*p))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        gate.check_slot_budget(existing.len(), novel)
+            .map_err(PersistError::Gate)?;
+    }
     for (slot_path, leaf) in system_leaves {
         upsert_system_leaf(&tx, slot_path, leaf, now)?;
     }
     if let Some(msgs) = messages_array {
         replace_last_input(&tx, msgs, now)?;
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(())
+}
+
+/// The slot paths currently in `cell.db.system` (GH #118 slot budget).
+fn existing_slot_paths(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT slot_path FROM system")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect()
 }
 
 /// LlmCell's expected cell.db schema version. Phase-6.5 set schema_version=1
@@ -217,9 +269,10 @@ pub(crate) fn check_schema_version(conn: &rusqlite::Connection) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::{
-        check_schema_version, check_text_id_residue, flatten_to_leaves, read_system_tree,
-        replace_last_input, system_first_persist, upsert_system_leaf,
+        PersistError, check_schema_version, check_text_id_residue, flatten_to_leaves,
+        read_system_tree, replace_last_input, system_first_persist, upsert_system_leaf,
     };
+    use crate::llm::system_gate::SystemGate;
     use meclaw_colony::persist::open_or_create_cell_db;
     use meclaw_core::serde_json::json;
     use tempfile::TempDir;
@@ -449,7 +502,7 @@ mod tests {
         let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let leaves = vec![("identity.soul".to_string(), json!({"text":"S"}))];
         let msgs = json!([{"origin":"user","type":"text","text":"Hi"}]);
-        system_first_persist(&mut conn, &leaves, Some(&msgs), 100).unwrap();
+        system_first_persist(&mut conn, &SystemGate::default(), &leaves, Some(&msgs), 100).unwrap();
         let sys_value: String = conn
             .query_row(
                 "SELECT value FROM system WHERE slot_path='identity.soul'",
@@ -480,7 +533,7 @@ mod tests {
         )
         .unwrap();
         let leaves = vec![("x".to_string(), json!({"text":"new-system-leaf"}))];
-        system_first_persist(&mut conn, &leaves, None, 200).unwrap();
+        system_first_persist(&mut conn, &SystemGate::default(), &leaves, None, 200).unwrap();
         let sys: String = conn
             .query_row("SELECT value FROM system WHERE slot_path='x'", [], |r| {
                 r.get(0)
@@ -502,7 +555,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let msgs = json!([{"origin":"user","type":"text","text":"M"}]);
-        system_first_persist(&mut conn, &[], Some(&msgs), 100).unwrap();
+        system_first_persist(&mut conn, &SystemGate::default(), &[], Some(&msgs), 100).unwrap();
         let li: String = conn
             .query_row("SELECT message_json FROM last_input WHERE id=1", [], |r| {
                 r.get(0)
@@ -515,6 +568,94 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM system", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    // ───── GH #118: the slot budget, checked inside the transaction ─────
+
+    /// A write that would push the tree past `system_max_slots` is refused, and
+    /// the WHOLE transaction rolls back — the `messages[]` half of the same body
+    /// must not survive a refused system write.
+    #[test]
+    fn a_write_over_the_slot_budget_rolls_back_everything() {
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let gate = SystemGate::for_test(2, 65_536, &[]);
+        system_first_persist(
+            &mut conn,
+            &gate,
+            &[
+                ("a".to_string(), json!({"text":"1"})),
+                ("b".to_string(), json!({"text":"2"})),
+            ],
+            None,
+            1,
+        )
+        .unwrap();
+
+        let err = system_first_persist(
+            &mut conn,
+            &gate,
+            &[("c".to_string(), json!({"text":"3"}))],
+            Some(&json!([{"origin":"user","type":"text","text":"Hi"}])),
+            2,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PersistError::Gate(_)),
+            "must be a gate reject, got {err:?}"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM system", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "the refused slot must not have landed");
+        let last_input: i64 = conn
+            .query_row("SELECT COUNT(*) FROM last_input", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            last_input, 0,
+            "the messages half must roll back with the refused system write"
+        );
+    }
+
+    /// Overwriting slots that already exist never grows the tree — a cell parked
+    /// at its budget can still refresh every slot it owns.
+    #[test]
+    fn refreshing_existing_slots_at_the_budget_still_commits() {
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let gate = SystemGate::for_test(2, 65_536, &[]);
+        let leaves = vec![
+            ("a".to_string(), json!({"text":"1"})),
+            ("b".to_string(), json!({"text":"2"})),
+        ];
+        system_first_persist(&mut conn, &gate, &leaves, None, 1).unwrap();
+        let refreshed = vec![("a".to_string(), json!({"text":"1b"}))];
+        system_first_persist(&mut conn, &gate, &refreshed, None, 2).unwrap();
+        let v: String = conn
+            .query_row("SELECT value FROM system WHERE slot_path='a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(v, r#"{"text":"1b"}"#);
+    }
+
+    /// A message-only body never touches the system table, so it must not pay
+    /// the budget query — and must not be refused by a full tree either.
+    #[test]
+    fn a_message_only_write_is_never_slot_budget_refused() {
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let gate = SystemGate::for_test(1, 65_536, &[]);
+        system_first_persist(
+            &mut conn,
+            &gate,
+            &[("a".to_string(), json!({"text":"1"}))],
+            None,
+            1,
+        )
+        .unwrap();
+        let msgs = json!([{"origin":"user","type":"text","text":"Hi"}]);
+        system_first_persist(&mut conn, &gate, &[], Some(&msgs), 2).unwrap();
     }
 
     #[test]

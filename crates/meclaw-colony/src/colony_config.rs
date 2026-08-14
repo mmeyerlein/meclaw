@@ -48,6 +48,21 @@ pub struct ColonyConfig {
     pub idle_timeout_default_ms: u64,
     /// Default TTL for source messages (routing-loop guard).
     pub message_default_ttl: u32,
+    /// GH #119 — opt in to the **terminal notice** of a TTL death.
+    ///
+    /// Off (the default) an expired TTL is terminal and silent exactly as the
+    /// spec describes: the message dead-letters and takes no `reply_to`
+    /// cascade. On, a TTL death that carries a reply anchor additionally sends
+    /// ONE substrate error reply (`error_code: "ttl_expired"`) to that anchor,
+    /// so a waiting fan-in has something to route on instead of parking
+    /// forever.
+    ///
+    /// It is opt-in for the same reason `modifier.restore_ttl` is: the notice
+    /// carries a fresh `message_default_ttl`, so a colony that turns it on has
+    /// taken its loops out of the TTL guard and must bound them with an
+    /// iteration counter instead. Everything that does not opt in keeps the
+    /// sharp guard.
+    pub ttl_notice: bool,
     /// Maximum `one_for_one` restarts per cell before `failed`.
     pub restart_max_retries: u32,
     /// Threshold (bytes) at/above which a UBF body is offloaded to a blob.
@@ -86,6 +101,10 @@ impl Default for ColonyConfig {
             // live consumers (outputs-arm source emissions, HTTP ingress) read
             // this field, never the constant directly.
             message_default_ttl: meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #119: OFF by default — turning it on changes what an expired
+            // TTL means for a loop, so it is a colony's decision, never the
+            // substrate's (same discipline as `modifier.restore_ttl`).
+            ttl_notice: false,
             restart_max_retries: 5,
             blob_inline_max_bytes: 65_536,
             blob_max_recursion_depth: 64,
@@ -454,6 +473,23 @@ mod tests {
         // And an absent file (the common case) means exactly the same thing.
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_colony_config(dir.path()).unwrap(), c);
+    }
+
+    /// GH #119: the TTL-notice guarantee is opt-in and OFF by default — a
+    /// colony that says nothing keeps the sharp, silent TTL guard.
+    #[test]
+    fn ttl_notice_is_off_unless_the_colony_asks_for_it() {
+        assert!(
+            !ColonyConfig::default().ttl_notice,
+            "default must stay off — turning it on changes what TTL bounds"
+        );
+        assert!(!ColonyConfig::parse_str("{}").unwrap().ttl_notice);
+        assert!(
+            ColonyConfig::parse_str(r#"{"ttl_notice": true}"#)
+                .unwrap()
+                .ttl_notice,
+            "and it parses from colony.json when asked for"
+        );
     }
 
     /// The three knobs parse from `colony.json`, including the kebab-case policy

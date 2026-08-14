@@ -1,0 +1,13 @@
+# The unwrap/expect ceiling per workspace package (GH #115).
+# Format: <package> <max clippy::unwrap_used + clippy::expect_used hits>
+# Measured by .github/gates/unwrap_budget.py over the default targets
+# (lib + bins) -- test modules and tests/ are out of scope by design.
+# A number may only ever go DOWN. Re-pin with `unwrap_budget.py --write`
+# and say in the commit why the number moved.
+
+meclaw-api 2
+meclaw-cells 67
+meclaw-cli 0
+meclaw-colony 79
+meclaw-core 3
+meclaw-testing 38

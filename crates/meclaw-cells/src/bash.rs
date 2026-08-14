@@ -139,6 +139,14 @@ impl meclaw_colony::StatelessCell for BashCell {
                 }
             };
 
+            // GH #116: crash-durable record of this child. The note retires the
+            // entry on EVERY path that still runs code — return, timeout kill,
+            // task abort, panic unwind. The one path it does not cover is the
+            // one it exists for: a `SIGKILL`ed daemon, where the entry survives
+            // in the journal and the next boot reaps what it names.
+            let _journal_note =
+                crate::orphan_journal::note_spawn(child.id(), None, msg.target.as_str());
+
             let result = with_killing_timeout(child, self.external_timeout).await;
             let duration_ms = started.elapsed().as_millis() as u64;
 

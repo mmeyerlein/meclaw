@@ -147,11 +147,37 @@ pub(crate) fn build_openai_request(
     if !tools_extracted.is_empty() {
         body.insert("tools".into(), Value::Array(tools_extracted.to_vec()));
     }
+    if let Some(reasoning) = reasoning_block(params) {
+        body.insert("reasoning".into(), reasoning);
+    }
     // provider_extra overlay (wins on conflict per cell-types.md:145).
     for (k, v) in &params.provider_extra {
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// The request body's `reasoning` block from the two reasoning params (GH #124).
+///
+/// | params | body `reasoning` |
+/// |---|---|
+/// | neither set | key ABSENT — byte-identical to a pre-#124 request |
+/// | `reasoning_effort: "low"` | `{"effort": "low"}` |
+/// | `reasoning: {…}` | that object, verbatim |
+/// | both set | the `reasoning` object — it is the strictly more expressive form |
+///
+/// Same unset-means-absent rule as the attribution params (A4): an unset knob
+/// produces no key at all, never an empty or null one, so a provider that does
+/// not know the field never sees it.
+fn reasoning_block(params: &crate::llm::params::LlmParams) -> Option<Value> {
+    use meclaw_core::serde_json::json;
+    if let Some(block) = &params.reasoning {
+        return Some(block.clone());
+    }
+    params
+        .reasoning_effort
+        .as_ref()
+        .map(|effort| json!({"effort": effort}))
 }
 
 /// Standard base64 alphabet (RFC 4648 §4), the encoder side of the in-tree
@@ -823,6 +849,74 @@ mod tests {
         let messages = [json!({"origin": "user", "type": "image", "text": "<bytes>"})];
         let err = build_openai_request(&params, "", &messages, &[]).unwrap_err();
         assert_eq!(err, TranslateError::TypeUnsupported("image".to_string()));
+    }
+
+    // ---------- GH #124: reasoning passthrough (chat-completions body) ----------
+
+    /// The whole point of the unset case: a config that never heard of
+    /// reasoning must produce the exact request it produced before, so no
+    /// provider can 400 on a field it does not know.
+    #[test]
+    fn unset_reasoning_leaves_the_request_untouched() {
+        let params = p();
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        assert!(
+            body.get("reasoning").is_none(),
+            "unset ⇒ absent, never null: {body}"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_becomes_the_effort_shorthand() {
+        let mut params = p();
+        params.reasoning_effort = Some("low".to_string());
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        assert_eq!(body["reasoning"], json!({"effort": "low"}));
+    }
+
+    #[test]
+    fn a_reasoning_object_travels_verbatim() {
+        let mut params = p();
+        params.reasoning = Some(json!({"max_tokens": 2048, "exclude": true}));
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        assert_eq!(
+            body["reasoning"],
+            json!({"max_tokens": 2048, "exclude": true})
+        );
+    }
+
+    /// Documented precedence: the object is the strictly more expressive form,
+    /// so it wins over the shorthand and the two never merge.
+    #[test]
+    fn the_object_wins_over_the_shorthand_when_both_are_set() {
+        let mut params = p();
+        params.reasoning_effort = Some("low".to_string());
+        params.reasoning = Some(json!({"effort": "high"}));
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        assert_eq!(body["reasoning"], json!({"effort": "high"}));
+    }
+
+    /// `provider_extra` is the documented last-word overlay (cell-types
+    /// § llm params). A reasoning block set there must still win — otherwise
+    /// the escape hatch would have a hole exactly where it is needed most.
+    #[test]
+    fn provider_extra_still_overrides_the_reasoning_block() {
+        let mut params = p();
+        params.reasoning_effort = Some("low".to_string());
+        params.provider_extra.insert(
+            "reasoning".to_string(),
+            json!({"effort": "medium", "exclude": true}),
+        );
+        let messages = [json!({"origin": "user", "type": "text", "text": "Hi"})];
+        let body = build_openai_request(&params, "", &messages, &[]).unwrap();
+        assert_eq!(
+            body["reasoning"],
+            json!({"effort": "medium", "exclude": true})
+        );
     }
 
     // ---------- W4 (A4): attribution-header mapping ----------

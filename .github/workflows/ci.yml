@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The advisory database moves without anyone committing here, so the deny job
+  # also has to run on a clock -- otherwise a fresh RUSTSEC entry stays unseen
+  # until the next unrelated pull request.
+  schedule:
+    - cron: "17 5 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,3 +33,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: check
         run: cargo check --workspace
+
+  # The rules that used to live only in a document and in somebody's memory.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Two frozen function bodies in crates/meclaw-colony/src/colony.rs,
+      # byte-compared against their reference under .github/fixtures/.
+      - name: corridor byte gates
+        run: .github/gates/corridor_byte_gates.sh
+      # CONTRIBUTING bans unwrap()/expect() outside tests. The clippy lints for
+      # it are allow-by-default, so `-D warnings` above never saw them. This
+      # pins the existing count per package and fails when it grows.
+      - name: unwrap/expect budget
+        run: python3 .github/gates/unwrap_budget.py
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Deterministic half: a verdict that depends only on this commit's
+      # Cargo.lock and deny.toml. Blocking.
+      - name: bans, licenses, sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+      # Time-dependent half: RUSTSEC advisories and crates.io yank state change
+      # under a commit that never moved, so a red here is a report, not a
+      # verdict on the pull request. It is deliberately not blocking; the
+      # advisories standing open today are tracked in GH #127 (GH #115 is
+      # where the split was decided).
+      - name: advisories (reporting only)
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

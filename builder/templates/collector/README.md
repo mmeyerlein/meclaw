@@ -339,7 +339,7 @@ restoring re-entry edge that is still one round's worth of budget; without one, 
 Either way, TTL is not what bounds the round. This hive bounds it itself with
 `COLLECTOR_MAX_ITER`, which is why a runaway round ends in a message on the `answer` lane
 rather than in a silence. Hop table and derivation:
-[`docs/store-backed-tool-loop.en.md`](../../../docs/store-backed-tool-loop.en.md).
+[`docs/store-backed-tool-loop.md`](../../../docs/store-backed-tool-loop.md).
 
 ## The protocol, row by row
 

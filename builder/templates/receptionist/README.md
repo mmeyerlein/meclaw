@@ -70,9 +70,8 @@ answers `scope_out_of_bounds` for every one of them, and a template's own
 `params.graph` is containment-checked against its subtree root, so the edge
 cannot travel inside this template either. It exists exactly if an operator
 wrote it into a `config.json` before boot, and no topology can grant itself the
-lane afterwards (cookbook
-[`colony-endpoint-roundtrip.md`](../../cookbook/colony-endpoint-roundtrip.md),
-rule 4; same shape as [`builder-hive`](../builder-hive/)).
+lane afterwards (the colony-endpoint roundtrip rule 4; the `builder-hive`
+topology has the same shape).
 
 Consequence for the gate runbook: a receptionist instantiated by `add_nodes`
 registers and activates, but its mutation lane is **inert** until an operator
