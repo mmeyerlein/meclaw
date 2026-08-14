@@ -59,7 +59,7 @@ the window and what leaves it**, in one place, and hands the result to the brain
 
 | cell | type | what it holds |
 |---|---|---|
-| `assemble` | `code` | the whole state machine: nine entry lanes, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
+| `assemble` | `code` | the whole state machine: ten entry lanes, the fan-in gate, the eviction policy, the seam, the round-robustness exits, the prune chain |
 | `window` | `store` | `turns` (the rolling conversation) and `round` (the per-turn slate: the assembled legs plus the tool round) -- both carry `session_id`, which is what makes them readable as a whole session at close time, and write times, which is what makes them prunable. Plus `batched`, the delivery ledger of the close lane. |
 
 ## Ports
@@ -70,8 +70,9 @@ Entry lanes go **into `./assemble`**. The parent edge names the lane with
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
+| `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn -- **or**, when the request carried a `memory_call_id`, the tool result of a `memory_recall` call |
-| `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round |
+| `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result |
 | `in_memory_call` | the tool dispatcher, on `hop.tool_name == 'memory_recall'` | the memory tool: the collector serves the call itself (GH #78) |
 | `in_answer` | the brain, on `finish_reason == 'stop'` | writes the answer into the window and lets it out |
@@ -83,7 +84,7 @@ Exits leave **from `./assemble`** on `hop.route`:
 
 | route | to | notes |
 |---|---|---|
-| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. |
+| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `COLLECTOR_MAX_ITER`, marked `hop.round_capped=1` |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `COLLECTOR_MEMORY_TIER` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
@@ -107,6 +108,7 @@ crossing edge derives inactive and never spawns.
 | `COLLECTOR_MEMORY_TIER` | (empty) | empty = no memory leg at all, and the assembly waits for the window leg alone. `0` / `1` / `2` request that recall tier once per turn. |
 | `COLLECTOR_MEMORY_FORM` | `readable` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. Applies to the ambient leg and to a `memory_recall` result alike. |
 | `COLLECTOR_MEMORY_CALL_TIER` | `1` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
+| `COLLECTOR_ASYNC_TOOLS` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
 | `COLLECTOR_PRUNE_AFTER_MS` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
 
 ### A cap is a preview, never a delete
@@ -366,6 +368,11 @@ and, when the brain asked for tools:
 
 ```
 in_calls  -> insert round(assistant)     phase round-w
+          -> per async id: insert
+             round(tool, acknowledged)   phase round-w      <- R-CG-3: no expectation
+             (the assistant row is written fired=1 when NOTHING else was asked)
+in_advice -> insert turns(advice)        phase turn-w       <- the return lane, into
+             (+ recall request)                                the turn chain above
 in_tool   -> insert round(tool)          phase round-w
 in_memory_call -> ROUTE recall           (memory_call_id = the tool_call_id,  <- GH #78
                                           recall_window_from/_to = the args)
@@ -414,6 +421,47 @@ prune-r     -> update batched set pruned_at   phase prune-mark  report, NO delet
 
 An incomplete fan-in and a lost guard race emit **nothing** (empty multi-send, terminal by
 design) -- the same discipline as the store-backed tool loop this grew out of.
+
+## The async class and the return lane (GH #28, R-CG-3)
+
+A tool that thinks does not fit inside a round. An advisor core answers in minutes; a
+fan-in that waited for it would be betting `COLLECTOR_ROUND_IDLE_MS` against thinking
+time, and losing that bet writes "tool result lost" into the transcript. So the round
+does not wait at all:
+
+1. **The dispatcher classifies.** `DISPATCHER_ASYNC_TOOLS=consult_cogny` makes the
+   dispatcher name the affected `tool_call_id`s in `hop.async_calls` on the `calls` lane.
+   One declaration, in the one cell that sees the whole bundle.
+2. **The collector opens no expectation.** Each named id is answered on the spot with a
+   plain `tool_result` under its own `tool_call_id` -- the assistant turn stays
+   well-formed for every provider -- and when *nothing else* was asked, the assistant row
+   is written `fired=1`. There is no open round: no guard to win, nothing for
+   `in_round_sweep` to find, no idle exit. The turn ends with the interim answer the
+   dispatcher already sent to the channel.
+3. **The answer comes back as an event.** Whatever the advisor produces -- a result, or a
+   question back -- arrives on `in_advice` with `context.consult_id`. It runs the *turn*
+   chain: written into the window under role `advice`, memory leg fired like on any turn,
+   gate closed, seam fired. The brain sees a fresh round and verbalises the follow-up in
+   the channel's own voice.
+4. **The reply finds its thread.** Every advice turn still in the window contributes its
+   id to `system.consult.open`. The model passes one back in its next consult call
+   (`arguments.consult_id`), the dispatcher promotes it to `hop.consult_id`, and the
+   advisor keeps one thread across question and answer.
+
+An `advice` row is inbound on the wire (`origin: user`), because that is the only inbound
+role a provider knows. In the store it keeps its own role, so a batch and a prune can
+still tell an event from a user's word.
+
+```json
+{ "from": "./split", "to": "/agent/cogny/collector/assemble",
+  "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+  "modifier": {"set_hop": {"route": "'in_turn'"},
+               "set_context": {"consult_id": "hop.consult_id"},
+               "restore_ttl": true} },
+{ "from": "/agent/cogny/collector/assemble", "to": "./collector/assemble",
+  "condition": "has(hop.route) && hop.route == 'answer'",
+  "modifier": {"set_hop": {"route": "'in_advice'"}, "restore_ttl": true} }
+```
 
 ## What it is not
 

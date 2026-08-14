@@ -11,7 +11,8 @@
         "role": "text",
         "content": "text",
         "recorded_at": "text",
-        "deferred": "int"
+        "deferred": "int",
+        "consult_id": "text"
       },
       "round": {
         "turn_id": "text",
@@ -68,7 +69,7 @@
     ]
   },
   "description": {
-    "purpose": "The state surfaces of one agent's context assembly: `turns` is the rolling conversation (both user and assistant turns, session-scoped, id lexicographically time-ordered, with a `deferred` lifecycle stamp for mid-round turns - the turns-table sibling of round.fired, never content), `round` is the per-turn fan-in slate that carries the assembled legs (leg-window, leg-memory) and the tool round (assistant tool_call turns, tool results) with the fired flag both guards read. Both carry `session_id`, because the same two tables are also the record of a session until it closes: then they are read back whole, and the delivery is booked in `batched` - the ledger the prune lane trusts.",
+    "purpose": "The state surfaces of one agent's context assembly: `turns` is the rolling conversation (both user and assistant turns, session-scoped, id lexicographically time-ordered, with a `deferred` lifecycle stamp for mid-round turns - the turns-table sibling of round.fired, never content - and a `consult_id` on the rows that came in as an advisor event, which is the correlation the model is shown so it can answer the RIGHT open question), `round` is the per-turn fan-in slate that carries the assembled legs (leg-window, leg-memory) and the tool round (assistant tool_call turns, tool results) with the fired flag both guards read. Both carry `session_id`, because the same two tables are also the record of a session until it closes: then they are read back whole, and the delivery is booked in `batched` - the ledger the prune lane trusts.",
     "use_when": "One per collector hive. No other cell writes here; code cells own no state, so the assembly state machine keeps all of its state in this store.",
     "not_in_scope": "No durable memory of its own. The rolling window is short-term working state and is cut at READ time (order by id desc, limit N); the durable record of a closed session leaves with the write batch, and what of it is worth remembering is decided by whoever receives that batch, never here. Deletes happen only on the collector's evidence-gated prune chain (GH #76): sessions the `batched` ledger names as delivered and aged, cut up to their close boundary - never a cap, never a schedule of this store's own. No FTS, no vectors, no canonical bindings: nothing here is retrieved by similarity, it is retrieved by recency.",
     "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the assembly state machine, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another emission won the race and this one is terminal).",

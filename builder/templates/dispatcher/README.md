@@ -26,6 +26,15 @@ messages a graph can route.
   out, and TTL expiry emits **nothing** towards the surface.
 - **A final answer, passed through.** `finish_reason == 'stop'` leaves on its own lane,
   unchanged.
+- **A sentence next to the bundle, delivered at once.** One brain response may carry
+  `content` **and** `tool_calls`. The text leaves on the `answer` lane with
+  `hop.interim = "1"` while the calls keep running: the turn ends with "one moment, I am
+  asking" instead of with silence, and no second inference is spent on saying so.
+- **An async tool class that opens no expectation.** Names listed in
+  `DISPATCHER_ASYNC_TOOLS` are classified here -- this cell is the only one that ever sees
+  the whole bundle -- and their `tool_call_id`s ride out on `hop.async_calls`. The fan-in
+  reads that and waits for the *other* calls only, so a tool that thinks for minutes never
+  races the round's idle window.
 
 ## The cell
 
@@ -52,7 +61,7 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 | `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round |
 | `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result |
 | `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind |
-| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along |
+| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle |
 
 The tool lanes guard the key they discriminate on:
 
@@ -80,9 +89,44 @@ edge with a log line per lane per message. Same rule as everywhere else --
 | env var | default | meaning |
 |---|---|---|
 | `DISPATCHER_MAX_CALLS` | `16` | per-answer call budget. **At** the cap the bundle runs; one call over it, the bundle is refused **as a whole** and every id is answered with `call budget exceeded`. |
+| `DISPATCHER_ASYNC_TOOLS` | (empty) | comma-separated tool names that answer on a lane of their own instead of inside the round. Empty = no call is ever async. |
 
-One knob per concern: this one bounds **one brain answer**. It does not bound the loop --
-see below.
+One knob per concern: the first bounds **one brain answer**, the second says which calls
+the round is allowed to end without. Neither bounds the loop -- see below.
+
+## The async class (GH #28)
+
+An advisor that thinks does not fit inside a round. Waiting for it would mean betting the
+round's idle window against thinking time -- and losing that bet means a synthetic "tool
+result lost" in the transcript. So the class is declared, once, here:
+
+```
+DISPATCHER_ASYNC_TOOLS=consult_cogny
+```
+
+What changes for a call whose name is on that list:
+
+| key | value |
+|---|---|
+| `hop.async_calls` (on the `calls` lane) | the comma-joined `tool_call_id`s of the async calls in this bundle -- the fan-in opens no expectation for them |
+| `hop.async` (on the `tool` lane) | `"1"` |
+| `hop.consult_id` | `arguments.consult_id` when the model answers a question the advisor asked back, otherwise the `tool_call_id`. One correlation across the whole exchange, in both directions. |
+| `hop.consult_eta` | `arguments.eta` -- the model's own coarse duration estimate, produced in the SAME turn (GH #123). **Logged, never consumed.** |
+
+The call itself travels exactly like any other: `hop.tool_name` selects the cell, the raw
+arguments are the body. Nothing here knows what an advisor is.
+
+**The duration estimate (GH #123, observe-only).** The estimate is not a component; it is
+a habit given to the model in its own context. Put hints like these into the talky's
+system prompt and let it fill `arguments.eta` in the same call:
+
+```
+consult_cogny: when you ask, add a coarse eta -- "seconds" for a lookup,
+"a minute" for a web search, "minutes" for deep reasoning.
+```
+
+Nothing in the tree reads the value. It rides on the hop, lands in the message log, and
+the first question it answers is how well the model estimates at all.
 
 ## Three things that belong on an edge, not in here
 
@@ -124,7 +168,7 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 
 | input | emissions |
 |---|---|
-| `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then one `tool` per call, in bundle order |
+| `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order |
 | `tool_call` turns present, count > budget | `calls`, then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
 | no calls, `finish_reason == 'stop'` | one `answer` |

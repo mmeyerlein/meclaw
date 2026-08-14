@@ -1,0 +1,33 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./drain",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "drain_origin": "'drain'",
+              "drain_phase": "hop.phase",
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./drain",
+          "condition": "context.drain_origin == 'drain'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the drain hive: the adapter that turns one closed session - handed out by a collector as ONE write batch - into N single-turn episodes on the memory hive's turn-write ingress, plus the ledger that makes a second delivery a skip. It sits BEFORE the hive's writer port and outside the hive (GH #101, R-MD-1): the memory hive is not changed by a single line.",
+    "use_when": "One per talky whose closed sessions should reach the central memory. Wire the two ports in the SAME mutation that instantiates it: the talky's 'write' route into ./drain as lane in_batch, and ./drain's 'episode' route into the memory hive's turn-write port.",
+    "not_in_scope": "No extraction, no summarising, no recall, no LLM call - the write path is synchronous and model-free by spec. No second write path into memory: everything goes through the existing writer, which is the point of the adapter. No session lifecycle of its own; the keeper closes the session and the collector produces the batch."
+  }
+}

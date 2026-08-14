@@ -1,0 +1,67 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "drain_log": {
+        "id": "text",
+        "session_id": "text",
+        "kind": "text",
+        "payload": "text",
+        "drained_upto": "int",
+        "recorded_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The drain's own bookkeeping, and nothing else: one table with two kinds of row. A 'batch' row is the closed day parked between two hops (the script keeps no state, so the conversation has to survive the ledger read it triggers); a 'mark' row says how far this session has reached the memory hive. That number is the whole dedup guarantee - it is read BEFORE anything is written, and it is what makes a second delivery of the same batch a skip instead of a double insert.",
+    "use_when": "One per memory-drain hive. Nothing else writes here, and the drain reads nothing else: the hive's episodes table is not this store's business and is never touched from here.",
+    "not_in_scope": "No memory, no episodes, no extraction, no retrieval. The parked day is a transport buffer, not a second record of the conversation - the durable record is the episodes table of the memory hive, and the window store of the talky before it. No cross-session reads: every op is scoped by session_id.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the drain's phase machine (insert -> select -> insert), hop.rows_affected is the store's own count.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args. The lane a reply belongs to is carried by context.drain_origin ('drain'), the step by context.drain_phase, both promoted by the internal edge that sent the op.",
+    "examples": [
+      "{operation: insert, table: drain_log, row: {id, session_id, kind: 'batch', payload: <the day as json>, drained_upto: 0, recorded_at}} -> the day survives the read it is about to trigger",
+      "{operation: select, table: drain_log, columns: [id, kind, payload, drained_upto], where: {session_id}, order_by: [{col: 'id', dir: 'asc'}]} -> the newest parked day and every mark of the session in ONE reply",
+      "{operation: insert, table: drain_log, row: {kind: 'mark', drained_upto: 6, ...}} -> six turns of this session are in the memory hive under the ids s#0..s#5"
+    ]
+  }
+}

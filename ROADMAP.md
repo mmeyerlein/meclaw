@@ -16,7 +16,6 @@ memory machinery. The epic
 settled principles and open forks; its sub-issues in intended order, collector
 hives first:
 [#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
-[#28](https://github.com/mmeyerlein/meclaw/issues/28) the talky/cogny split,
 [#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
 [#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
 [#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
@@ -25,8 +24,15 @@ hives first:
 and its fan-out half (#27), the session lifecycle and its handover, the llm
 cell's seed path (#99), and the collector's own follow-ups #77, #91, #76 and
 #103. 0.6.0 put the front door on it: the firewall hive (#36), one talky per
-channel (#29), and window-mode memory requests as a real tool round (#78). What
-is left of the epic is the talky/cogny split and what hangs off it.
+channel (#29), and window-mode memory requests as a real tool round (#78). 0.7.0
+split the thinking off the talking (#28): a tool that answers on its own lane
+while the channel is served at once, the `in_advice` return round, the consult
+ETA as an observe-only measurement (#123), and the drain adapter that finally
+carries a closed day into memory (#101). What is left of the epic is per-talky
+memory and one-file hives — plus
+[#124](https://github.com/mmeyerlein/meclaw/issues/124), the first thing the
+advisor measured about itself: a consult round trip is far too slow for a
+question memory could have answered.
 
 Still open in this stream:
 [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
@@ -54,6 +60,23 @@ oracle, a line-closing insert, the store error taxonomy and URL parsing at the
 `web_fetch` gate. What is left of that set is
 [#111](https://github.com/mmeyerlein/meclaw/issues/111), guarding interpreter
 bytecode caches in the coding templates' edit-test loops.
+
+An architecture comparison with prime-agent (2026-08) added a hardening batch
+to this stream, in intended order:
+[#115](https://github.com/mmeyerlein/meclaw/issues/115) wiring the sharpest
+gates into CI (corridor diffs, cargo deny, the unwrap lint, scenario checks),
+[#116](https://github.com/mmeyerlein/meclaw/issues/116) an orphan process
+journal so a hard daemon crash cannot leak children,
+[#117](https://github.com/mmeyerlein/meclaw/issues/117) SSRF hardening for
+`web_fetch`, and
+[#121](https://github.com/mmeyerlein/meclaw/issues/121) a root lease against
+double-started daemons. Two more need a design ruling before code:
+[#118](https://github.com/mmeyerlein/meclaw/issues/118) gating writes to the
+llm cell's persistent system tree, and
+[#119](https://github.com/mmeyerlein/meclaw/issues/119) a terminal notice for
+silently stalled tool loops. The comparison also yielded one template item for
+the agent stream: [#120](https://github.com/mmeyerlein/meclaw/issues/120), a
+context-compaction lane for the store-backed tool loop.
 
 ## Later: memory hive continued
 
@@ -101,6 +124,9 @@ welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.7.0 — the advisor.** A tool may answer on a lane of its own while the
+  channel is served in the same breath, the advice returns as a fresh round, and
+  `memory-drain@1` carries a closed day into memory losslessly and idempotently.
 - **v0.6.0 — the front door.** The firewall hive screens every inbound turn
   against rules that are data, the receptionist hands each channel an agent of
   its own, and memory becomes a tool round the agent can aim at a time range.

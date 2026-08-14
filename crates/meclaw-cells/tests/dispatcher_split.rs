@@ -195,14 +195,133 @@ fn the_calls_lane_carries_the_assistant_turn_verbatim() {
         vec![call_turn("c1", "web_search", "{}"), said.clone()],
     ));
 
-    assert_eq!(out.len(), 2, "one expectation set plus ONE call: {out:?}");
+    // Three since R-CG-3: the calls lane, the interim answer the sentence
+    // becomes, and the call itself.
+    assert_eq!(out.len(), 3, "{out:?}");
     assert_eq!(route_of(&out[0]), "calls");
     assert_eq!(
         turns_of(&out[0])[1],
         said,
         "the text turn reaches the collector unchanged"
     );
-    assert_eq!(route_of(&out[1]), "tool");
+    assert_eq!(route_of(&out[2]), "tool");
+}
+
+// ────────────────────────────────────────────── the advisor split (GH #28, R-CG-3)
+
+#[test]
+fn a_sentence_next_to_a_bundle_also_leaves_on_the_answer_lane_at_once() {
+    // Delta 1 of R-CG-3: ONE brain response carries the interim answer AND the
+    // calls. The text must reach the channel in the same turn that asks the
+    // tool -- a second inference for "one moment" is exactly the extra turn the
+    // advisor split abolishes.
+    let said = json!({"origin": "assistant", "type": "text", "text": "one moment, asking"});
+    let out = emit(brain_doc(
+        "tool_calls",
+        vec![call_turn("c1", "consult_cogny", "{}"), said.clone()],
+    ));
+
+    assert_eq!(out.len(), 3, "calls, the interim answer, the call: {out:?}");
+    assert_eq!(route_of(&out[0]), "calls", "PLAIN order is unchanged");
+    assert_eq!(route_of(&out[1]), "answer", "the sentence travels at once");
+    assert_eq!(
+        hop_str(&out[1], "interim"),
+        "1",
+        "an interim answer says so, so a channel can tell it from a final one"
+    );
+    assert_eq!(
+        turns_of(&out[1]),
+        &vec![said],
+        "the interim answer carries the TEXT only, never the calls"
+    );
+    assert_eq!(route_of(&out[2]), "tool", "the call runs regardless");
+}
+
+#[test]
+fn a_bundle_without_a_sentence_says_nothing_to_the_channel() {
+    let out = emit(brain_doc("tool_calls", vec![call_turn("c1", "t", "{}")]));
+    assert_eq!(out.len(), 2, "no interim answer is invented: {out:?}");
+    assert!(out.iter().all(|m| route_of(m) != "answer"), "{out:?}");
+}
+
+#[test]
+fn an_async_call_opens_no_fan_in_expectation_and_carries_its_consult_id() {
+    // Delta 2 of R-CG-3: the dispatcher is the only cell that sees the whole
+    // bundle, so it is the only cell that can classify one. It does not swallow
+    // the call -- it NAMES it on the expectation lane, and the collector reads
+    // that name instead of keeping its own list.
+    let out = emit_with(
+        &[("DISPATCHER_ASYNC_TOOLS", "consult_cogny")],
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn(
+                    "c1",
+                    "consult_cogny",
+                    r#"{"question":"weather?","eta":"seconds"}"#,
+                ),
+                call_turn("c2", "web_search", "{}"),
+            ],
+        ),
+    );
+
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(route_of(&out[0]), "calls");
+    assert_eq!(
+        hop_str(&out[0], "async_calls"),
+        "c1",
+        "the fan-in is told WHICH ids it must not wait for: {out:?}"
+    );
+
+    assert_eq!(hop_str(&out[1], "tool_name"), "consult_cogny");
+    assert_eq!(hop_str(&out[1], "async"), "1");
+    assert_eq!(
+        hop_str(&out[1], "consult_id"),
+        "c1",
+        "a fresh consult is correlated by the call that opened it"
+    );
+    // GH #123, observe-only: the estimate the model produced in the SAME turn
+    // travels on the hop and nothing reads it.
+    assert_eq!(hop_str(&out[1], "consult_eta"), "seconds");
+
+    assert_eq!(hop_str(&out[2], "tool_name"), "web_search");
+    assert_eq!(hop_str(&out[2], "async"), "", "a sync tool is untouched");
+    assert_eq!(hop_str(&out[2], "consult_id"), "");
+}
+
+#[test]
+fn without_the_knob_no_call_is_async() {
+    let out = emit(brain_doc(
+        "tool_calls",
+        vec![call_turn("c1", "consult_cogny", "{}")],
+    ));
+    assert_eq!(hop_str(&out[0], "async_calls"), "", "default is empty");
+    assert_eq!(hop_str(&out[1], "async"), "");
+}
+
+#[test]
+fn a_reply_to_an_open_consult_keeps_the_correlation_id_it_was_given() {
+    // The bilateral half: the advisor asked back, the user answered, and the
+    // model passes the id it was shown. Without this the reply would open a
+    // SECOND consult and the advisor would have to guess the thread.
+    let out = emit_with(
+        &[("DISPATCHER_ASYNC_TOOLS", "consult_cogny")],
+        brain_doc(
+            "tool_calls",
+            vec![call_turn(
+                "c9",
+                "consult_cogny",
+                r#"{"consult_id":"k-7","answer":"Berlin"}"#,
+            )],
+        ),
+    );
+    assert_eq!(hop_str(&out[1], "consult_id"), "k-7");
+    assert_eq!(
+        hop_str(&out[1], "tool_call_id"),
+        "c9",
+        "the call id stays the call id -- the two are different keys"
+    );
+    assert_eq!(hop_str(&out[0], "async_calls"), "c9");
 }
 
 #[test]

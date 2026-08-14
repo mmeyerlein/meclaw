@@ -2007,3 +2007,281 @@ fn the_machine_readable_form_of_a_called_bundle_is_a_configuration_choice() {
         "the collector renders nothing of its own; it chooses a form"
     );
 }
+
+// ===================================== THE ADVISOR CONNECTION (GH #28, R-CG-3)
+
+/// A lane document with extra hop keys -- the dispatcher's `async_calls` marker
+/// and the correlation id an advice event carries back.
+fn lane_with(
+    route: &str,
+    hop: serde_json::Value,
+    ctx: serde_json::Value,
+    messages: serde_json::Value,
+) -> serde_json::Value {
+    let mut doc = lane_doc(route, messages);
+    for (k, v) in hop.as_object().expect("hop object") {
+        doc["header"]["hop"][k] = v.clone();
+    }
+    for (k, v) in ctx.as_object().expect("ctx object") {
+        doc["header"]["context"][k] = v.clone();
+    }
+    doc
+}
+
+fn call_bundle(ids: &[&str]) -> serde_json::Value {
+    serde_json::Value::Array(
+        ids.iter()
+            .map(|id| {
+                serde_json::json!({"origin": "assistant", "type": "tool_call",
+                                   "id": id, "text": "{}"})
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn an_all_async_bundle_closes_its_round_at_once_and_waits_for_nothing() {
+    // Delta 2 of R-CG-3: the collector opens NO fan-in expectation for a call
+    // the dispatcher classified as async. The assistant row is filed as already
+    // fired, so no guard can ever fire it, no sweep can ever find it open, and
+    // COLLECTOR_ROUND_IDLE_MS never races the advisor's thinking time. The turn
+    // is over; the answer comes back later as an EVENT, not as a fan-in.
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1"}),
+        serde_json::json!({}),
+        call_bundle(&["c1"]),
+    ));
+
+    assert_eq!(out.len(), 2, "the assistant row plus one ack: {out:?}");
+    let asst = op_of(&out[0]);
+    assert_eq!(asst["row"]["role"], "assistant");
+    assert_eq!(
+        asst["row"]["fired"], 1,
+        "a round with nothing to wait for is not an open round"
+    );
+    // The ack keeps the wire well-formed: a provider rejects an assistant turn
+    // whose tool_call has no tool_result beside it.
+    let ack = op_of(&out[1]);
+    assert_eq!(ack["row"]["role"], "tool");
+    let turn: serde_json::Value =
+        serde_json::from_str(ack["row"]["turn"].as_str().expect("turn")).expect("turn json");
+    assert_eq!(turn["id"], "c1", "under the original tool_call_id");
+    assert_eq!(turn["type"], "tool_result");
+    assert!(
+        turn["text"].as_str().unwrap_or_default().contains("later"),
+        "and it says what happened: {turn}"
+    );
+}
+
+#[test]
+fn a_mixed_bundle_still_waits_for_the_calls_that_do_answer() {
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1"}),
+        serde_json::json!({}),
+        call_bundle(&["c1", "c2"]),
+    ));
+
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(
+        op_of(&out[0])["row"]["fired"],
+        0,
+        "c2 is still expected, so the round is open"
+    );
+    let turn: serde_json::Value =
+        serde_json::from_str(op_of(&out[1])["row"]["turn"].as_str().expect("turn"))
+            .expect("turn json");
+    assert_eq!(turn["id"], "c1", "only the async call is acknowledged");
+}
+
+#[test]
+fn without_the_marker_a_bundle_behaves_exactly_as_before() {
+    let out = emit(lane_doc("in_calls", call_bundle(&["c1", "c2"])));
+    assert_eq!(out.len(), 1, "one assistant row, no acks: {out:?}");
+    assert_eq!(op_of(&out[0])["row"]["fired"], 0);
+}
+
+#[test]
+fn an_advice_event_is_assembled_like_a_turn_and_keeps_its_correlation() {
+    // Delta 3 of R-CG-3: the advisor's result comes back as an EVENT on its own
+    // lane and starts a fresh round -- the turn it belongs to ended long ago.
+    let out = emit(lane_with(
+        "in_advice",
+        serde_json::json!({}),
+        serde_json::json!({"consult_id": "k-7"}),
+        serde_json::json!([{"origin": "assistant", "type": "text",
+                            "text": "berlin: 21C"}]),
+    ));
+
+    assert_eq!(out.len(), 1, "no memory leg configured: {out:?}");
+    let op = op_of(&out[0]);
+    assert_eq!(
+        out[0]["header"]["phase"], "turn-w",
+        "the SAME chain as a turn"
+    );
+    assert_eq!(op["table"], "turns");
+    assert_eq!(
+        op["row"]["role"], "advice",
+        "an event is not a user turn and not the agent's own words"
+    );
+    assert_eq!(op["row"]["content"], "berlin: 21C");
+    assert_eq!(
+        op["row"]["consult_id"], "k-7",
+        "the correlation is what makes the exchange bilateral"
+    );
+    let minted = out[0]["header"]["turn_id"].as_str().expect("turn_id");
+    assert!(!minted.is_empty(), "a fresh turn id: this is a new round");
+    assert_eq!(op["row"]["turn_id"], minted);
+}
+
+#[test]
+fn an_advice_event_fires_the_memory_leg_like_any_other_turn() {
+    let out = emit_with(
+        &[("COLLECTOR_MEMORY_TIER", "1")],
+        lane_with(
+            "in_advice",
+            serde_json::json!({}),
+            serde_json::json!({"consult_id": "k-7"}),
+            serde_json::json!([{"origin": "assistant", "type": "text", "text": "berlin: 21C"}]),
+        ),
+    );
+    assert_eq!(out.len(), 2, "the gate waits for the leg it configured");
+    assert_eq!(out[1]["header"]["route"], "recall");
+}
+
+#[test]
+fn the_open_consults_of_the_window_reach_the_brain_as_data() {
+    // The reply half of the bilateral lane: the model can only pass a consult
+    // id back if it was shown one. The collector renders nothing -- it hands
+    // over the raw ids and lets the persona decide what to do with them.
+    let turns = serde_json::json!([
+        {"role": "user", "text": "what is the weather?"},
+        {"role": "assistant", "text": "one moment, asking"},
+        {"role": "advice", "text": "which city?", "consult_id": "k-7"}
+    ]);
+    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let out = emit(reply_doc("fire", "select", 1, rows));
+
+    assert_eq!(out[0]["header"]["route"], "brain");
+    assert_eq!(
+        out[0]["system"]["consult"]["open"],
+        serde_json::json!(["k-7"]),
+        "verbatim ids, no prose: {}",
+        out[0]
+    );
+    // The system tree only travels through `text` leaves (walk_collect), so
+    // the ids need one -- three words of label, and the ids themselves.
+    assert_eq!(out[0]["system"]["consult"]["text"], "open consults: k-7");
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(
+        msgs[2]["origin"], "user",
+        "an event is inbound on the wire -- the two roles a provider knows"
+    );
+    assert_eq!(msgs[2]["text"], "which city?");
+}
+
+#[test]
+fn a_window_without_advice_carries_no_consult_slot() {
+    let turns = serde_json::json!([{"role": "user", "text": "hi"}]);
+    let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
+    let out = emit(reply_doc("fire", "select", 1, rows));
+    assert!(
+        out[0].get("system").is_none(),
+        "no leg, no slot: {}",
+        out[0]
+    );
+}
+
+#[test]
+fn an_interim_answer_does_not_travel_twice_and_never_splits_a_round() {
+    // The sentence that stood next to the bundle already went to the channel
+    // and was written into the WINDOW by the in_answer lane. Repeating it
+    // inside the round would show it twice -- and on the wire it would stand
+    // between an assistant turn and the tool results that answer it, which
+    // every provider rejects.
+    let calls = serde_json::json!([
+        {"origin": "assistant", "type": "tool_call", "id": "c1", "text": "{}"},
+        {"origin": "assistant", "type": "text", "text": "one moment, asking"}
+    ]);
+    let res = serde_json::json!(
+        {"origin": "tool", "type": "tool_result", "id": "c1", "text": "42"}
+    );
+    let rows = serde_json::json!([
+        {"turn_id": "t1", "iter": 0, "role": "assistant",
+         "turn": calls.to_string(), "fired": 0},
+        {"turn_id": "t1", "iter": 0, "role": "tool",
+         "turn": res.to_string(), "fired": 0}
+    ]);
+    let out = emit(reply_doc("round-fire", "select", 2, rows));
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    assert_eq!(
+        msgs.len(),
+        2,
+        "the call and its result, nothing else: {msgs:?}"
+    );
+    assert_eq!(msgs[0]["type"], "tool_call");
+    assert_eq!(msgs[1]["type"], "tool_result");
+}
+
+#[test]
+fn an_interim_answer_stays_an_interim_answer_on_its_way_out() {
+    let out = emit(lane_with(
+        "in_answer",
+        serde_json::json!({"interim": "1"}),
+        serde_json::json!({}),
+        serde_json::json!([{"origin": "assistant", "type": "text",
+                            "text": "one moment, asking"}]),
+    ));
+    assert_eq!(out.len(), 2, "the write plus the reply: {out:?}");
+    assert_eq!(out[1]["header"]["route"], "answer");
+    assert_eq!(
+        out[1]["header"]["interim"], "1",
+        "a channel must be able to tell the two apart: {}",
+        out[1]
+    );
+    let plain = emit(lane_doc(
+        "in_answer",
+        serde_json::json!([{"origin": "assistant", "type": "text", "text": "42"}]),
+    ));
+    assert!(
+        plain[1]["header"].get("interim").is_none(),
+        "a final answer carries no marker: {}",
+        plain[1]
+    );
+}
+
+#[test]
+fn an_errand_that_arrives_as_a_tool_call_is_still_a_turn() {
+    // The advisor connection (R-CG-3): the talky's dispatcher addresses the
+    // agent core by tool NAME, so what reaches the core's in_turn lane is a
+    // `tool_call` turn whose text is the raw arguments. That IS the question --
+    // a turn written with empty content would make the core answer nothing.
+    let out = emit(lane_doc(
+        "in_turn",
+        serde_json::json!([{"origin": "assistant", "type": "tool_call", "id": "c1",
+                            "text": "{\"question\":\"weather in berlin\"}"}]),
+    ));
+    assert_eq!(
+        op_of(&out[0])["row"]["content"],
+        "{\"question\":\"weather in berlin\"}"
+    );
+    assert_eq!(
+        op_of(&out[0])["row"]["role"],
+        "user",
+        "the asker is the user"
+    );
+}
+
+#[test]
+fn a_real_user_turn_still_wins_over_anything_beside_it() {
+    let out = emit(lane_doc(
+        "in_turn",
+        serde_json::json!([
+            {"origin": "user", "type": "text", "text": "the question"},
+            {"origin": "assistant", "type": "text", "text": "some echo"}
+        ]),
+    ));
+    assert_eq!(op_of(&out[0])["row"]["content"], "the question");
+}

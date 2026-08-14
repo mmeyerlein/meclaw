@@ -73,6 +73,8 @@ its timer never spawns.
 | write | `./collector/assemble` | out | `hop.route == 'write'` -- the closed session as one batch |
 | error drain | `./errors` | out | `hop.route == 'error'` |
 
+Plus, per instance, the two **advisor lanes** to an agent core -- see below.
+
 ```json
 {"from": "<surface>", "to": "./talky/keeper/stamp",
  "condition": "has(hop.user_id) && int(hop.user_id) == 12345",
@@ -176,6 +178,60 @@ bundle of fifteen calls is one answer, one iteration, one restore. The substrate
 a restoring edge without a condition, because the iteration bound is then the only thing
 left stopping the loop.
 
+### The advisor lanes (GH #28, R-CG-3)
+
+An agent core (`cogny`) is a **sibling hive** of the talkies, not a cell inside one: one
+core, N channel voices. It is reached like a tool and answers like an event, so the
+connection is two edges plus one knob.
+
+```json
+"DISPATCHER_ASYNC_TOOLS": "consult_cogny"
+```
+
+```json
+{"from": "./talky/split", "to": "/agent/cogny/collector/assemble",
+ "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+ "modifier": {"set_hop": {"route": "'in_turn'"},
+              "set_context": {"consult_id": "hop.consult_id", "col_phase": "''"},
+              "restore_ttl": true}},
+{"from": "/agent/cogny/collector/assemble", "to": "./talky/collector/assemble",
+ "condition": "has(hop.route) && hop.route == 'answer'",
+ "modifier": {"set_hop": {"route": "'in_advice'"},
+              "set_context": {"col_phase": "''"},
+              "restore_ttl": true}}
+```
+
+Four things in that pair are load-bearing:
+
+- **`col_phase` must be cleared.** Both messages leave *another* collector's chain and
+  carry whatever step that chain was in. A collector's `in_turn` / `in_advice` refuses a
+  message that arrives mid-assembly, so the port edge resets the key. Everything else in
+  the context rides along on purpose -- `session_id` above all, which is what keeps one
+  consultation inside the channel's own session.
+- **`consult_id` becomes context**, because the hop is single-hop and the correlation has
+  to survive the core's whole chain and come home with the answer.
+- **`restore_ttl` on both**, with the condition they already carry: an errand is a fresh
+  journey, not the tail of the turn that started it.
+- **The errand arrives as a `tool_call` turn.** Its text is the raw arguments the model
+  wrote, and the core's collector files that as the turn: the talky IS the core's user.
+
+What the parent does *not* wire: nothing else. The turn ends with the interim answer the
+dispatcher already sent to the channel, and the returning advice starts a fresh talky
+round that verbalises it in the channel's own voice.
+
+**The duration estimate (GH #123, observe-only).** Put the hints in the brain's own
+instructions and let the model fill `arguments.eta` in the same call it already makes:
+
+```
+consult_cogny(question, eta): eta is a coarse guess at how long the answer will
+take -- "seconds" for a lookup, "a minute" for a web search, "minutes" for deep
+reasoning. Say what you are doing in the same reply; that sentence reaches the
+user immediately.
+```
+
+The estimate rides out as `hop.consult_eta` and **nothing reads it**. First we watch how
+well the model guesses.
+
 ## Knobs
 
 Everything the sub-templates parametrise is forwarded verbatim: the `${VAR:-default}`
@@ -200,6 +256,7 @@ plus a reboot moves them without touching a config.
 | `COLLECTOR_MEMORY_FORM` | `readable` | collector -- `readable` / `json` / `both` |
 | `COLLECTOR_PRUNE_AFTER_MS` | `604800000` | collector -- age gate on the prune lane (7 d) |
 | `DISPATCHER_MAX_CALLS` | `16` | split -- per-answer call budget |
+| `DISPATCHER_ASYNC_TOOLS` | (empty) | split -- comma-separated tools that answer on their own lane instead of inside the round (`consult_cogny`) |
 | `SUMMARIZER_RECENT_TURNS` | `12` | summary -- newest turns travelling verbatim |
 | `SUMMARIZER_PHASEOUT_CHARS` | `200` | summary -- per-turn cap on the phased-out turns |
 | `SUMMARIZER_TOOL_CHARS` | `200` | summary -- per-item cap on tool previews |
@@ -252,9 +309,18 @@ Two things to have ready before the mutation:
 - **Not a drain.** `./errors` normalises and forwards; it does not swallow. An unwired
   error port dead-letters, loudly.
 - **Not one instance per day.** v1 runs the logical generation: same cells, new id.
+- **Not the agent core.** The talky is the channel voice; the thinking, the agent-level
+  memory and the heavy tool work belong to a `cogny` hive next to it (R-CG-1). The
+  composite carries the two lanes to reach it and nothing of what happens there.
 
 ## Pins
 
+- `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the advisor connection end to
+  end: an interim answer and a consult call out of ONE brain response, a round that
+  closes without waiting, the agent core's own tool round, the result home on
+  `in_advice`, and the bilateral question-back under one `consult_id`. Plus the pin that
+  no idle window ever waits for the core (one-millisecond window, two sweeps, nothing
+  swept).
 - `crates/meclaw-cells/tests/talky_composite.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: one turn through keeper, seam, brain, split, a
   tool and back to the seam (two provider calls, the second one carrying the tool

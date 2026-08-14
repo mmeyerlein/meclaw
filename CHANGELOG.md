@@ -4,6 +4,93 @@ All notable changes to MeClaw are documented in this file. One entry per release
 package. The format loosely follows [Keep a Changelog](https://keepachangelog.com/);
 versioning follows SemVer (0.x: minor/patch bumps for additive features).
 
+## [0.7.0] — 2026-08-14
+
+The advisor. Two tracks, both pure topology: an agent may now hand a question to
+a second agent that thinks slowly, answer its channel in the same breath, and
+deliver the advice later on a lane of its own — and a day that a conversation
+has closed finally reaches memory instead of stopping at a format gap. Not one
+line of Rust changed in either; six template files and one new template did all
+of it, which is the point the substrate has been built toward.
+
+A minor bump rather than a patch: a new template, a new collector lane, a new
+store column, and one sanctioned behaviour change in the dispatcher's fan-out.
+
+### Added
+
+- **`memory-drain@1` carries a closed day into memory.** A collector hands its
+  session out as ONE write batch — the whole day in `messages[]` — while a
+  memory hive's writer takes one turn at a time. Both forms were right and
+  nothing spoke both, so a closed day never arrived. The adapter is that
+  translation and it lives *outside* the memory hive on purpose: it speaks only
+  the documented `turn-write` port, so no memory internals move and no second
+  write path gets invented. Two cells (a `code` phase machine and a `store`
+  ledger), one internal edge, two ports. It is **lossless** — every text turn
+  becomes exactly one episode, in the order of the day, nothing judged, merged,
+  capped or dropped — and it is **idempotent**: the identity an episode travels
+  under is minted deterministically as `"<session_id>#<index>"`, read back out
+  of the ledger before anything fires, and an already drained turn is skipped
+  rather than written twice. The same batch delivered twice moves no row; a
+  session that has grown is drained from where it stopped. Both gates are
+  measured against the shipped writer in a running colony, not against a stand-in
+  (#101).
+- **A tool can answer on a lane of its own, and nothing waits for it.** Tools
+  named in `DISPATCHER_ASYNC_TOOLS` are classified by the only cell that ever
+  sees the whole bundle, and the dispatcher tells the fan-in which
+  `tool_call_id`s it must not expect (`hop.async_calls`). The collector
+  acknowledges each of them on the spot with a real `tool_result` under its own
+  id — the assistant turn stays well-formed for every provider — and if nothing
+  else was asked, the round is closed immediately. There is then no open round
+  to win, nothing for an idle sweep to find, and no timeout racing a slow
+  thinker: the expectation that could expire no longer exists. A mixed bundle
+  stays open and closes on its synchronous half (#28).
+- **`in_advice`, the return lane.** A late answer comes back as a fresh round on
+  the collector's tenth entry lane: stored under its own `advice` role, run
+  through the memory leg, the gate and the seam, so the result is verbalised for
+  the channel it lands in rather than pasted into it. The turn that asked ended
+  long ago with the interim answer and cannot re-enter. The link is bilateral —
+  question and answer share `context.consult_id`, and the ids of the
+  consultations still in the window are offered to the model as `system.consult`
+  so it can answer one by naming it. Additive at the store: `turns` grows a
+  `consult_id` column into an existing database (#28).
+- **The consult carries an ETA, observe-only.** The dispatcher reads
+  `arguments.eta` off a consult call and puts it on the edge as
+  `hop.consult_eta`. Nothing consumes it: it travels and it is logged, and the
+  guidance for a model that should set it sensibly is a prompt building block in
+  the `talky@1` and `dispatcher@1` READMEs, not topology. A measurement first,
+  and a lever only once there is something to measure (#123).
+
+### Changed
+
+- **The dispatcher serves `content` and `tool_calls` from the same response.**
+  A sentence next to a bundle used to be the odd case; now it is the rule. The
+  sentence leaves the cell at once on the `answer` lane marked
+  `hop.interim = "1"` while the calls run on, so a channel can say "one moment"
+  and mean it. The order the fan-out keeps is unchanged — calls first, because
+  they are the expectation set, then the interim answer, then the calls
+  themselves. The interim answer travels exactly once: it is already an
+  assistant turn in the window, and repeating it inside the tool round would put
+  it between an assistant turn and the `tool_result`s answering it, which every
+  provider refuses (#28).
+
+### Tooling
+
+- **`memory-drain@1` joins the export allow-list.** Ten templates are entered
+  now. The adapter ships; the memory hive it feeds stays private, which is the
+  whole reason the adapter is a separate template rather than a hive change. Its
+  script-level test travels with it, and the colony-level test that deliberately
+  measures against the *shipped* hive writer is registered in the blocklist with
+  its reason, as R2b asks: no exported test may read what the subset lacks
+  (#101).
+
+### Known
+
+- #114 is still open: `collector_colony`'s idle-window sweep, a deliberately
+  tight 300 ms semantic discriminator, went red once more under parallel load
+  during this wave and was re-verified green in isolation. The async tool class
+  above removes the *product* reason to wait on a slow tool; it does not make
+  the discriminator any less tight.
+
 ## [0.6.0] — 2026-08-14
 
 The front door. Five parallel tracks in one morning, hours after 0.5.0 shipped,

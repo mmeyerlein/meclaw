@@ -211,6 +211,36 @@ pub fn canned_tool_calls(tool_calls: Vec<(&str, &str, &str)>) -> MockResponse {
     MockResponse::ok_json(json.to_string().as_bytes())
 }
 
+/// Build a canned response that carries `content` **and** `tool_calls` in the
+/// SAME choice -- the shape a model produces when it says "one moment" and asks
+/// for a tool in one breath (GH #28). The `llm` cell maps it to one `tool_call`
+/// turn per call, followed by the text turn.
+pub fn canned_content_and_tool_calls(
+    content: &str,
+    tool_calls: Vec<(&str, &str, &str)>,
+) -> MockResponse {
+    let calls: Vec<serde_json::Value> = tool_calls
+        .into_iter()
+        .map(|(id, name, args)| {
+            serde_json::json!({
+                "id": id,
+                "type": "function",
+                "function": {"name": name, "arguments": args}
+            })
+        })
+        .collect();
+    let json = serde_json::json!({
+        "id": "chatcmpl-test-tc-002",
+        "model": "gpt-4o-mock",
+        "choices": [{
+            "message": {"role": "assistant", "content": content, "tool_calls": calls},
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+    });
+    MockResponse::ok_json(json.to_string().as_bytes())
+}
+
 /// Build a canned error response (4xx/5xx HTTP status with a minimal OpenAI-shaped
 /// error body). `MockResponse` is constructed via direct struct literal — T9 left
 /// the fields public, so this is straightforward.
