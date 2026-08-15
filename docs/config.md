@@ -79,7 +79,7 @@ Two of the four blocks have fundamentally different authority. This separation i
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `trust` | `"restricted"` \| `"trusted"` | yes | `restricted` = the sandbox is enforced. `trusted` = the explicit escape hatch for local cells, **no** enforcement. |
-| `network` | `"deny"` \| `"allow"` | no, default `"deny"` | only under `restricted`. `deny` starts the child in a fresh network namespace (`unshare(CLONE_NEWUSER\|CLONE_NEWNET)`), which holds nothing but a `lo` in state DOWN, so even `127.0.0.1` is out of reach. |
+| `network` | `"deny"` \| `"allow"` | no, default `"deny"` | only under `restricted`. `deny` starts the child in a fresh network namespace (`unshare(CLONE_NEWUSER\|CLONE_NEWNET)`), which holds nothing but a `lo` in state DOWN, so even `127.0.0.1` is out of reach. `allow` leaves it in the daemon's network **and** puts the resolver configuration into the Landlock view (see below). |
 | `filesystem` | object | **yes** under `restricted` | the allowed filesystem view, enforced via Landlock. |
 | `filesystem.read` | array of absolute paths | no, default `[]` | readable and executable, recursively. |
 | `filesystem.write` | array of absolute paths | no, default `[]` | readable, writable and creatable, recursively. |
@@ -118,6 +118,10 @@ Recommended baseline for a template that has to write (`<cell-workspace>` is the
 ```
 
 **The runtime set** (`filesystem.runtime: true`) grants read and execute on `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/proc`, `/sys` and read/write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`. Without it no interpreter starts, because even the dynamic loader would be unreachable. It is a convenience, **not a security statement**: it contains `/etc` (hence `/etc/passwd`) and `/proc` (hence `/proc/<pid>/cmdline` of other processes of the same user). Set `runtime: false` and enumerate the paths yourself if that is not acceptable.
+
+**What `network: "allow"` additionally grants — name resolution (GH #144).** `/etc/resolv.conf` is inside the runtime set, but on a systemd-resolved host it is a **symlink** into `/run/systemd/resolve/`, and `/run` was in no set at all. An `allow` therefore opened the sockets and let every lookup die in `getaddrinfo` — measured: 953 of 953 embedding calls "endpoint unreachable" at `exit_code: 0`. Under `network: "allow"` Landlock now also grants read access to the **target** of `/etc/resolv.conf`: the resolved directory (`/run/systemd/resolve`, `/run/resolvconf`, … depending on the host), or the file itself when it sits directly in `/etc`. A boundary that promises a capability and then withholds it is worse than one that refuses it.
+
+The grant rides on `network: "allow"` and on nothing else. Under `deny` the child sits in a fresh network namespace and has nothing to resolve for, so the path stays out. Pinned in `crates/meclaw-cells/tests/gh144_network_allow_resolves_names.rs`.
 
 **Resource caps (`limits`, GH #85).** Enforced through a **delegated sub-cgroup** (cgroup v2) created per child process, filled, entered before the `exec` and removed afterwards — including after a crash and a restart, because the directory name carries the daemon's pid and the next run sweeps away whatever pid no longer exists. A `limits` block that caps **nothing** is a boot error: it would read as "capped" and be no such thing.
 

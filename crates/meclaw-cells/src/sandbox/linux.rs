@@ -134,6 +134,43 @@ const RUNTIME_RW: [&str; 5] = [
     "/dev/urandom",
 ];
 
+/// The resolver configuration every libc consults before it sends a query.
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+
+/// What `network: "allow"` has to grant beyond the runtime set so that a name
+/// can actually be resolved (GH #144).
+///
+/// `RESOLV_CONF` lives under `/etc`, which the runtime set covers -- but on a
+/// systemd-resolved host it is a SYMLINK into `/run/systemd/resolve/`, and
+/// `/run` is in no set at all. The result was an "allow" that opened sockets
+/// and resolved nothing: every outbound call died in `getaddrinfo`, while the
+/// profile said the network was open. A boundary that promises a capability it
+/// then withholds is worse than one that refuses it, so the promise is kept
+/// here rather than left to each template to discover.
+///
+/// Only under [`NetworkPolicy::Allow`]. A child in a fresh network namespace
+/// has nothing to resolve for, and widening its view for a lookup it cannot
+/// perform would be a grant nobody asked for.
+///
+/// The path is the resolved TARGET's directory, not the symlink and not a
+/// blanket `/run`: `systemd-resolved` rewrites `stub-resolv.conf` by rename, and
+/// a Landlock rule pins an inode -- a rule on the file would go stale the next
+/// time the host changes networks, a rule on the directory survives it. When
+/// the target already sits in `/etc` (the plain-file distributions), the file
+/// itself is granted instead, so a hand-declared `runtime: false` profile is
+/// not silently widened to all of `/etc`.
+fn resolver_grant(network: NetworkPolicy) -> Option<std::path::PathBuf> {
+    if network != NetworkPolicy::Allow {
+        return None;
+    }
+    let target = std::fs::canonicalize(RESOLV_CONF).ok()?;
+    match target.parent() {
+        Some(dir) if dir == Path::new("/etc") => Some(target),
+        Some(dir) => Some(dir.to_path_buf()),
+        None => None,
+    }
+}
+
 // ---- feature detection ----------------------------------------------------
 
 /// The Landlock ABI version this kernel reports, or `None` when Landlock is
@@ -216,7 +253,7 @@ pub fn apply(
     })?;
 
     let handled = handled_access_fs(abi);
-    let fds = open_allowed_paths(filesystem, handled)?;
+    let fds = open_allowed_paths(filesystem, network, handled)?;
 
     // The cap is state outside the process, so it is created here, in the
     // parent, and owned by the returned scope. A failure to create it fails the
@@ -374,8 +411,21 @@ fn handled_access_fs(abi: u32) -> u64 {
 ///
 /// `O_CLOEXEC` matters: the fds exist only to describe rules to the kernel
 /// before `execve`, and must not leak into the sandboxed program.
-fn open_allowed_paths(fs: &FilesystemProfile, handled: u64) -> io::Result<Vec<(OwnedFd, u64)>> {
+fn open_allowed_paths(
+    fs: &FilesystemProfile,
+    network: NetworkPolicy,
+    handled: u64,
+) -> io::Result<Vec<(OwnedFd, u64)>> {
     let mut out = Vec::new();
+    // What "allow" owes the child before any of its own paths (GH #144): a
+    // socket without a resolver is not a network. Optional like the runtime
+    // set, for the same reason -- a host without the file is a host that
+    // resolves differently, not a misconfigured cell.
+    if let Some(p) = resolver_grant(network)
+        && let Some(entry) = open_optional(&p, GRANT_RO, handled)?
+    {
+        out.push(entry);
+    }
     if fs.runtime {
         // The runtime set is a convenience, not a declaration: an entry that
         // does not exist on this distribution (`/lib64`, say) is skipped.
@@ -480,6 +530,39 @@ mod tests {
         let missing = Path::new("/nonexistent-s4-sandbox-probe");
         assert!(open_required(missing, GRANT_RO, handled).is_err());
         assert!(open_optional(missing, GRANT_RO, handled).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_resolver_grant_exists_only_under_network_allow() {
+        // GH #144. The kernel-side proof is the regression lock in
+        // `tests/gh144_network_allow_resolves_names.rs`; what belongs here is
+        // the half that holds on every host, with or without Landlock: the
+        // grant is a property of "allow" and of nothing else.
+        assert!(
+            resolver_grant(NetworkPolicy::Deny).is_none(),
+            "a child in a fresh network namespace has nothing to resolve for"
+        );
+        match (
+            resolver_grant(NetworkPolicy::Allow),
+            std::fs::canonicalize(RESOLV_CONF),
+        ) {
+            (Some(granted), Ok(target)) => {
+                assert!(
+                    target.starts_with(&granted),
+                    "the grant must cover the resolved target: {} does not reach {}",
+                    granted.display(),
+                    target.display()
+                );
+            }
+            (None, Ok(t)) => panic!(
+                "{RESOLV_CONF} resolves to {} but nothing is granted",
+                t.display()
+            ),
+            // No resolver configuration on this host: nothing to grant, and a
+            // profile that names a path which does not exist would fail the
+            // spawn instead of opening the network.
+            (granted, Err(_)) => assert!(granted.is_none()),
+        }
     }
 
     #[test]

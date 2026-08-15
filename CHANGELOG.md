@@ -393,6 +393,28 @@ Rust crates are internals and move without notice.
 
 ### Fixed
 
+- **A freshly instantiated `memory-hive` can build its semantic leg again**
+  (#144). Two defects on top of each other, and neither showed in production
+  because both only bite a tree instantiated *after* the #85 default-deny cut.
+  First: the hive's `embed` cell — the one cell whose entire job is an HTTPS
+  call — declared no `params.sandbox`, so instantiation handed it
+  `network: "deny"` like every other template cell. A fresh hive answered
+  953/953 embedding calls with "endpoint unreachable" at `exit_code: 0`, the
+  retrieval fan degraded to three legs, and nothing failed loudly. It declares
+  the narrowest profile that can call out now: `trust: "restricted"`, the bare
+  runtime set, `network: "allow"`.
+  Second, underneath it: `network: "allow"` did not actually allow. Under
+  `trust: "restricted"` the Landlock view was `/usr /lib /lib64 /bin /sbin /etc
+  /proc /sys`, and while `/etc/resolv.conf` is inside it, on a systemd-resolved
+  host that file is a symlink into `/run/systemd/resolve/` — which was in no set
+  at all. Every lookup died in `getaddrinfo`. `allow` now grants the resolved
+  target of `/etc/resolv.conf` read-only, and **only** under `allow`: a child in
+  a fresh network namespace has nothing to resolve for. Behaviour-changing
+  substrate fix with a regression lock
+  (`crates/meclaw-cells/tests/gh144_network_allow_resolves_names.rs`).
+  Third, smaller: the `recall` cell now writes one stderr line when it fuses
+  without the semantic leg, so a dead embedder is greppable in `log.jsonl`
+  instead of visible only to whoever reads `semantic_degraded` off the answer.
 - **A `code` cell that emits a non-object no longer takes its task down.** Two
   `expect()` calls sat on a trust boundary: a script writing `[1]` or
   `{"header": 5}` killed the cell task instead of being refused. It is an
