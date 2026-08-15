@@ -12,6 +12,9 @@ None of that is configured here. **The seed contains no policy file, no allow
 list and no security block** -- that is the claim, and it is why this example is
 three cells instead of thirty.
 
+[`WALKTHROUGH.md`](WALKTHROUGH.md) runs the whole thing command by command with
+the real output next to each one: under two minutes, no key, no account.
+
 ## What is checked in
 
 ```

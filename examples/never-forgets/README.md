@@ -8,6 +8,11 @@ That is the whole example. Not "it has a vector store": a vector store answers
 about the radiator in February*. Those are different questions, and only one of
 them has a date in it.
 
+If you intend to actually run this against a model, follow
+[`WALKTHROUGH.md`](WALKTHROUGH.md) instead of this file -- it is the same example
+end to end, with every command in the order it has to happen and the real output
+next to it.
+
 ## The three moments
 
 ```
@@ -127,22 +132,39 @@ itself, because it already owns the recall port. So the round ends where it
 began and memory never learns a word of dispatcher vocabulary.
 
 The tool schema is a **seed**, not a contract of the topology -- what the model
-may ask for is decided where the brain's `system.tools` is written:
+may ask for is decided where the brain's `system.tools` is written, in
+`templates/talky/brain/seed/system.jsonl`. **Wiring the lane is not enough**: a
+wired edge routes a call that the model never makes, because a tool it cannot
+see is a tool it will not ask for. The composite ships no tools deliberately --
+identity, instructions and tools are the agent, not the graph.
+
+The leaf `system.tools.memory_recall.text` holds the **provider-native tool
+object as a JSON string** -- the full envelope, not just the inner schema:
 
 ```json
-"memory_recall": {
-  "description": "Ask long-term memory about something, optionally restricted to a time range.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "query":       {"type": "string", "description": "what to look for"},
-      "window_from": {"type": "string", "description": "ISO-8601 start of the range (optional)"},
-      "window_to":   {"type": "string", "description": "ISO-8601 end of the range (optional)"}
-    },
-    "required": ["query"]
+{
+  "type": "function",
+  "function": {
+    "name": "memory_recall",
+    "description": "Ask long-term memory about something, optionally restricted to a time range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query":       {"type": "string", "description": "what to look for"},
+        "window_from": {"type": "string", "description": "ISO-8601 start of the range (optional)"},
+        "window_to":   {"type": "string", "description": "ISO-8601 end of the range (optional)"}
+      },
+      "required": ["query"]
+    }
   }
 }
 ```
+
+The adapter parses that string at call time and hands it to the provider
+verbatim. Seed only the inner half and the provider rejects it; seed nothing at
+all and the model answers the March question out of thin air while every edge in
+the graph still fires correctly. [`WALKTHROUGH.md`](WALKTHROUGH.md) Step 2 is
+the executable version of this paragraph.
 
 Inside `/memory/keep` the window is not machinery either. ISO-8601 UTC sorts
 lexicographically, so a range is a string comparison over a column -- no index,
@@ -172,6 +194,44 @@ p = "examples/never-forgets/templates/talky/collector/assemble/config.json"
 d = json.load(open(p))
 d["params"]["turn_write"] = "1"
 json.dump(d, open(p, "w"), indent=2)
+EOF
+
+# Give the brain the tool. WITHOUT THIS STEP THE EXAMPLE DOES NOT WORK: the lane
+# is wired, but the model never sees a memory_recall to call, so it answers from
+# its own recollection and the whole point is lost.
+mkdir -p examples/never-forgets/templates/talky/brain/seed
+python3 - <<'EOF'
+import json
+tool = {
+  "type": "function",
+  "function": {
+    "name": "memory_recall",
+    "description": "Ask long-term memory about something, optionally restricted to a time range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query":       {"type": "string", "description": "what to look for"},
+        "window_from": {"type": "string", "description": "ISO-8601 start of the range (optional)"},
+        "window_to":   {"type": "string", "description": "ISO-8601 end of the range (optional)"}
+      },
+      "required": ["query"]
+    }
+  }
+}
+instructions = ("Today is 2026-08-15. You have a long-term memory you cannot see. "
+                "When the user asks about something said in the past, call memory_recall "
+                "FIRST -- never answer from your own recollection. If the question names a "
+                "month or a period, pass it as window_from/window_to in ISO-8601 UTC. "
+                "Answer only from what memory returns; if it returns nothing for that "
+                "window, say so plainly.")
+
+p = "examples/never-forgets/templates/talky/brain/seed/system.jsonl"
+with open(p, "w") as f:
+    f.write(json.dumps({"schema": {"slot_path": "text", "value": "json", "updated_at": "int"}}) + "\n")
+    f.write(json.dumps({"slot_path": "instructions.memory",
+                        "value": {"text": instructions}, "updated_at": 0}) + "\n")
+    f.write(json.dumps({"slot_path": "tools.memory_recall",
+                        "value": {"text": json.dumps(tool)}, "updated_at": 0}) + "\n")
 EOF
 
 ./target/release/meclaw --root ./examples/never-forgets/seed \

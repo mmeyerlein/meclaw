@@ -2,6 +2,8 @@
 
 Detailed spec of the `config.json` format per cell and per hive scope marker. In case of conflict between this file and `meclaw-overview.md`, the overview wins. It is the single source of truth.
 
+> New here? [`README.md`](README.md) is the map of this directory and [`glossary.md`](glossary.md) defines the vocabulary this file assumes.
+
 ## Supreme rule
 
 **A cell does not know what happens before or after it.** It knows only its own contract (input/output schema), its params, and the message it is currently processing. It has **no** knowledge of sender paths, receiver paths, hop history, routing strategies, or other cells.

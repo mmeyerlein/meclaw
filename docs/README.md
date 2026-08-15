@@ -1,0 +1,68 @@
+# The meclaw documentation
+
+Six documents, and they are not meant to be read in order. Find the row that
+matches what you are trying to do.
+
+## Where to go
+
+| If you want to… | Read | Why that one |
+|---|---|---|
+| get a colony running in five minutes | [`../README.md`](../README.md) and [`../examples/`](../examples/) | The repo README has the quickstart and the vocabulary in five bullets; the examples are working colonies you can boot. |
+| understand what the words mean | [`glossary.md`](glossary.md) | Fifteen terms, two sentences each, every one pointing at the place that defines it properly. |
+| understand how the whole thing works | [`meclaw-overview.md`](meclaw-overview.md) | The system description and the **single source of truth**: cell model, edge model, headers, routing, mutations, lifecycle. On conflict with any other file, this one wins. |
+| write or configure a cell | [`config.md`](config.md) | The `config.json` format, block by block — `cell`, `params`, `contract`, `description` — plus variable substitution and what a cell is and is not allowed to know. |
+| pick the right cell type | [`cell-types.md`](cell-types.md) | Every built-in type in detail: `llm`, `store`, `code`, `web_fetch`, `proxy`, `timer`, `mcp`, `hive` and the rest, with their params, their contracts and their failure modes. |
+| build a multi-tool agent loop | [`store-backed-tool-loop.md`](store-backed-tool-loop.md) | The protocol for fanning tool calls out, waiting for every result, and re-entering inference exactly once — worked through against a real example colony. |
+| know what it costs to run | [`costs.md`](costs.md) | How to measure provider spend from a colony's own database, the numbers measured on one production colony, and which tiers are honestly unmeasured. |
+| see what is stable and what is next | [`../ROADMAP.md`](../ROADMAP.md) | What has shipped, what is being worked on, and what is deliberately not planned. The issue tracker carries the substance. |
+| contribute | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | How to build, how to test, and which parts of the codebase are byte-pinned against fixtures on purpose. |
+
+## Two step-by-step walkthroughs
+
+Both are transcripts: every command was run, every output block is what came
+back.
+
+- [`../examples/hard-shell/WALKTHROUGH.md`](../examples/hard-shell/WALKTHROUGH.md)
+  — attack a colony on purpose. No key, no model, no account. Ends with four
+  encoded SSRF attempts that all get refused.
+- [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md)
+  — teach a colony three months of history and then ask it a question with a
+  date in it. Needs a provider key; costs a fraction of a cent.
+
+## The reading order that actually works
+
+If you are new and want the whole picture rather than an answer to one question:
+
+1. [`../README.md`](../README.md) — what this is and why the graph is the program.
+2. [`glossary.md`](glossary.md) — so the next document reads as prose.
+3. One walkthrough above — the vocabulary attached to something running.
+4. [`meclaw-overview.md`](meclaw-overview.md) §§ *Core principles*, *Cell model*,
+   *Edge model*, *Headers vs. body* — about a fifth of the file, and the fifth
+   everything else rests on.
+5. [`config.md`](config.md) and [`cell-types.md`](cell-types.md) as reference,
+   when you write your first cell.
+
+## About these files
+
+**The three specification documents are a trio.**
+[`meclaw-overview.md`](meclaw-overview.md) is the source of truth;
+[`cell-types.md`](cell-types.md) and [`config.md`](config.md) are detail specs
+that say so in their own first paragraph. If they disagree with the overview,
+the overview is right and the detail spec is a bug.
+
+**Language.** The trio is written in German and maintained with an English twin
+alongside it (`X.md` German, `X.en.md` English); the newer documents — this
+index, the glossary, `costs` and `store-backed-tool-loop` — are English-only and
+have no German twin. Publication resolves that: the English side is what ships,
+under the plain `X.md` name. So a published tree is entirely English and
+contains no `.en.md` file at all, which is why every link on this page points at
+the plain name. Drift between a pair is a release gate, not a matter of
+diligence.
+
+**`roadmap.md` and `deferred.md`** in this directory are internal registers of
+deferred spec items and are not part of a published tree. The forward-looking
+list a reader wants is [`../ROADMAP.md`](../ROADMAP.md).
+
+**`demo.sh`, `demo.cast` and `demo.svg`** are the terminal recording embedded in
+the repo README: `docs/demo.sh` driving [`../examples/swarm/`](../examples/swarm/),
+replayable with `asciinema play docs/demo.cast`.

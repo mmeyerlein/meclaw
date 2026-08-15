@@ -1,5 +1,8 @@
 # Store-backed tool-loop protocol
 
+> One round of this loop, traced hop by hop against a live provider:
+> [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md) § *Step 7*.
+
 An `llm` cell makes one provider call. It does not remember the conversation and it does not
 wait for tools. A multi-tool loop therefore needs application topology that can:
 

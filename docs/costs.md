@@ -1,5 +1,8 @@
 # What a colony costs to run
 
+> This method run against a four-call colony, with the real output:
+> [`../examples/never-forgets/WALKTHROUGH.md`](../examples/never-forgets/WALKTHROUGH.md) § *Step 8 — what it cost*.
+
 A colony that runs around the clock spends money in exactly one place: the
 provider calls its `llm` cells make. This document describes how to measure that
 spend from a colony's own database, gives the numbers measured on one production

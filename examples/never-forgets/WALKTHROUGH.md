@@ -1,0 +1,474 @@
+# never-forgets, step by step
+
+Every command below was run against this seed on a release build, against a
+**real provider**, and every output block is what came back — shortened, never
+edited. The whole walkthrough costs about **USD 0.00025** in provider tokens
+(four calls, measured with `scripts/cost_report.py`; see step 8).
+
+The claim under test: a sentence said in **February** is still there in
+**August**, and the agent can be asked for it *by date* — not by similarity.
+
+---
+
+## Step 0 — what you need
+
+A release build, an OpenRouter key (or any OpenAI-compatible endpoint), `jq`,
+and a model that can call tools. The run below used
+`openai/gpt-5.6-luna`.
+
+```bash
+cargo build --workspace --release
+```
+
+## Step 1 — the example's own copy of the template library
+
+The collector's per-turn write is a **param**, and `override_params` cannot
+reach into a subtree template. So the example takes its own copy of the library
+and sets the one knob it needs there:
+
+```bash
+cp -r templates examples/never-forgets/templates
+
+python3 - <<'EOF'
+import json
+p = "examples/never-forgets/templates/talky/collector/assemble/config.json"
+d = json.load(open(p))
+d["params"]["turn_write"] = "1"
+json.dump(d, open(p, "w"), indent=2)
+EOF
+```
+
+`turn_write` is the freshness lane: every stored turn and every answer hands the
+conversation out again immediately. Without it the first row appears when the
+session closes — a hole of up to a day, and a question about the last exchange
+gets answered out of an empty store.
+
+## Step 2 — give the brain the tool
+
+**This step is easy to miss and the example does not work without it.** The
+topology in `grow.json` wires the `memory_recall` lane, but a wired lane is not a
+tool the model can see. Tool *schemas* are not topology — they live in the
+brain's `system.tools`, seeded next to the cell. The composite ships none,
+deliberately: identity, instructions and tools are the agent, not the graph.
+
+```bash
+mkdir -p examples/never-forgets/templates/talky/brain/seed
+
+python3 - <<'EOF'
+import json
+tool = {
+  "type": "function",
+  "function": {
+    "name": "memory_recall",
+    "description": "Ask long-term memory about something, optionally restricted to a time range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query":       {"type": "string", "description": "what to look for"},
+        "window_from": {"type": "string", "description": "ISO-8601 start of the range (optional)"},
+        "window_to":   {"type": "string", "description": "ISO-8601 end of the range (optional)"}
+      },
+      "required": ["query"]
+    }
+  }
+}
+instructions = ("Today is 2026-08-15. You have a long-term memory you cannot see. "
+                "When the user asks about something said in the past, call memory_recall "
+                "FIRST -- never answer from your own recollection. If the question names a "
+                "month or a period, pass it as window_from/window_to in ISO-8601 UTC. "
+                "Answer only from what memory returns; if it returns nothing for that "
+                "window, say so plainly.")
+
+p = "examples/never-forgets/templates/talky/brain/seed/system.jsonl"
+with open(p, "w") as f:
+    f.write(json.dumps({"schema": {"slot_path": "text", "value": "json", "updated_at": "int"}}) + "\n")
+    f.write(json.dumps({"slot_path": "instructions.memory",
+                        "value": {"text": instructions}, "updated_at": 0}) + "\n")
+    f.write(json.dumps({"slot_path": "tools.memory_recall",
+                        "value": {"text": json.dumps(tool)}, "updated_at": 0}) + "\n")
+EOF
+```
+
+Note the shape of the tool leaf: `system.tools.<name>.text` holds the
+**provider-native tool object as a JSON string** — the full
+`{"type":"function","function":{…}}` envelope, not just the inner schema. The
+adapter parses that string at call time and hands it to the provider verbatim.
+
+Without this file the model has no `memory_recall` in its menu, never asks
+memory anything, and answers the March question out of thin air. That is not a
+failure of the topology — every edge still fires correctly — and it is exactly
+why it is worth seeing once.
+
+## Step 3 — the key and the model
+
+```bash
+cat > examples/never-forgets/seed/.env <<'EOF'
+OPENROUTER_API_KEY=sk-or-...
+MODEL_BRAIN=openai/gpt-5.6-luna
+EOF
+```
+
+## Step 4 — boot, and grow
+
+```bash
+./target/release/meclaw --root ./examples/never-forgets/seed \
+                        --templates ./examples/never-forgets/templates \
+                        --daemon --api 127.0.0.1:7788 &
+```
+
+```bash
+curl -s http://127.0.0.1:7788/colony/registry
+```
+
+```
+/memory/episodes   store
+/memory/keep       code
+/replay            code
+```
+
+Three cells. Nothing that talks. Now the declaration:
+
+```bash
+curl -s -X POST http://127.0.0.1:7788/colony/mutations \
+     -H 'Content-Type: application/json' \
+     -d @examples/never-forgets/grow.json
+```
+
+```json
+{"mutation":{"id":"01a00650-e550-7902-92b8-4f4db5fbc5ad","outcome":"committed"}}
+```
+
+```
+18 cells:
+  /drain/drain               code      /talky/errors            code
+  /drain/ledger              store     /talky/keeper/close      code
+  /memory/episodes           store     /talky/keeper/night      timer
+  /memory/keep               code      /talky/keeper/sessions   store
+  /replay                    code      /talky/keeper/stamp      code
+  /sink                      code      /talky/split             code
+  /surface                   code      /talky/summary/prep      code
+  /talky/brain               llm       /talky/summary/writer    llm
+  /talky/collector/assemble  code
+  /talky/collector/window    store
+```
+
+Three checked in, fifteen instantiated from templates by one POST. Verify the
+seed landed while you are here:
+
+```bash
+python3 -c "
+import sqlite3
+c = sqlite3.connect('examples/never-forgets/seed/main/talky/brain/cell.db')
+for r in c.execute('SELECT slot_path, substr(value,1,60) FROM system'): print(r)"
+```
+
+```
+('instructions.memory', '{"text":"Today is 2026-08-15. You have a long-term memo')
+('tools.memory_recall', '{"text":"{\\"type\\": \\"function\\", \\"function\\": {\\"name\\"')
+```
+
+---
+
+## Step 5 — load the past
+
+`past.jsonl` is nine turns across three months. One line, one turn, one `curl`:
+
+```bash
+while read -r line; do
+  curl -s -X POST http://127.0.0.1:7788/messages \
+       -H 'Content-Type: application/json' \
+       -d "$(jq -c '{target: "/replay",
+                     headers: {session_id: .session, happened_at: .at},
+                     body: {messages: [{origin: .origin, type: "text", text: .text}]}}' \
+             <<<"$line")"
+  echo
+done < examples/never-forgets/past.jsonl
+```
+
+```json
+{"message_id":"01a0064e-37d3-7d72-9d84-c4cc84b2e92a"}
+{"message_id":"01a0064e-37db-7c51-8680-511010767095"}
+{"message_id":"01a0064e-37e1-7d83-93fb-c40019186369"}
+… nine of them, one per line, in about a second
+```
+
+### What the organism just did — the import loop
+
+Nine POSTs, no model call, no embedding, no queue, no batch job. Each line took
+the same three-hop path: `@external → /replay → /memory/keep → /memory/episodes`.
+That is the whole month-ingest, and three things about it are worth naming.
+
+**It does not go through the conversation surface.** The obvious way to teach an
+agent about January is to say it to the agent. That is wrong here, and the
+reason is a clock: a turn re-spoken through `/surface` gets stamped with today.
+`/replay` speaks the memory's episode port *directly* instead.
+
+**It arrives at the same port the live drain uses.** After every real turn,
+`/drain/drain` puts an episode on `/memory/keep` on route `in_episode`. The
+import lane puts an episode on `/memory/keep` on route `in_episode`. Same
+address, same shape, same lane name — and the memory behind it cannot tell them
+apart. Neither is a special case of the other. That indistinguishability is what
+makes a port a port rather than a function call with two callers.
+
+**The event time rides in the headers, never on the turn.** Look at the `curl`
+again: `happened_at` sits in `headers`, next to `session_id`, while the turn
+itself carries only `origin`, `type` and `text`. A universal-body-format turn
+has no timestamp field, and gluing one on gets the message refused at the
+delivery boundary before any cell sees it. Per-message facts about a message
+belong in the header; the body is the message.
+
+Check where it landed:
+
+```bash
+python3 -c "
+import sqlite3
+c = sqlite3.connect('examples/never-forgets/seed/main/memory/episodes/cell.db')
+for r in c.execute('SELECT happened_at, sender, substr(content,1,48) FROM episodes ORDER BY happened_at'):
+    print(r[0], '|', r[1], '|', r[2])
+print(list(c.execute('SELECT count(*), min(recorded_at), max(recorded_at) FROM episodes')))"
+```
+
+```
+2026-01-09T18:40:00.000Z | user      | I switched the kitchen radiator off for the wint
+2026-01-09T18:40:22.000Z | assistant | Noted. Stuck at three usually means the pin unde
+2026-01-23T09:02:00.000Z | user      | Booked the dentist for the first week of March,
+2026-02-14T11:05:00.000Z | user      | The plumber came by, he says the radiator valve
+2026-02-14T11:06:10.000Z | assistant | So the fix is an insert, not a whole valve body.
+2026-02-21T20:15:00.000Z | user      | Watched the second half of the game at Tom's pla
+2026-03-02T08:12:00.000Z | user      | Bought a second bike lock, the old one is at the
+2026-03-02T08:12:40.000Z | assistant | Two locks, two places. That is the setup that ac
+2026-03-11T17:30:00.000Z | user      | Repotted the big monstera, it had grown straight
+
+[(9, '2026-08-15T16:43:04.576784Z', '2026-08-15T16:43:04.709130Z')]
+```
+
+**That last line is the entire point of the two columns.** `happened_at` spans
+January to March. `recorded_at` spans 132 milliseconds on the afternoon of the
+import. A colony that stored only one of them would have flattened three months
+into a third of a second, and no window over it could ever be right again.
+
+---
+
+## Step 6 — ask it
+
+```bash
+curl -s -X POST http://127.0.0.1:7788/messages \
+     -H 'Content-Type: application/json' \
+     -d '{"target": "/surface", "headers": {"channel": "chat-1"},
+          "body": {"messages": [{"origin": "user", "type": "text",
+                                 "text": "What did the plumber say about the radiator in February?"}]}}'
+```
+
+The answer arrives at `/sink` about fifteen seconds later:
+
+```
+The plumber said the radiator valve is a **Danfoss RA-N** and needs a
+**new insert**.
+```
+
+## Step 7 — read the trace, because the answer is not the interesting part
+
+```bash
+TID=01a00651-25d8-7873-935e-ed827c13d96a
+curl -s "http://127.0.0.1:7788/colony/trace?trace_id=$TID"
+```
+
+Seventy-one hops. The spine of them, with the header keys that decide each turn:
+
+```
+@external                 -> /surface                  {}
+/surface                  -> /talky/keeper/stamp       {route: in_turn}
+/talky/keeper/stamp       -> /talky/collector/assemble {route: in_turn}
+…                                                       (session + window bookkeeping)
+/talky/collector/assemble -> /drain/drain              {route: in_batch, iter: 0}
+/drain/drain              -> /memory/keep              {route: in_episode}
+/memory/keep              -> /memory/episodes          {route: mstore}
+
+/talky/collector/assemble -> /talky/brain              {route: brain, iter: 0}   <- inference 1
+/talky/brain              -> /talky/split              {}
+/talky/split              -> /talky/collector/assemble {route: in_memory_call,
+                                                        tool_name: memory_recall}
+/talky/collector/assemble -> /memory/keep              {route: in_recall,
+                                                        recall_query: "What did the plumber
+                                                          say about the radiator in February?",
+                                                        recall_window_from: 2026-02-01T00:00:00Z,
+                                                        recall_window_to:   2026-02-28T23:59:59Z}
+/memory/keep              -> /memory/episodes          {route: mstore}
+/memory/episodes          -> /memory/keep              {route: in_echo}
+/memory/keep              -> /talky/collector/assemble {route: in_bundle, iter: 0}
+
+/talky/collector/assemble -> /talky/brain              {route: brain, iter: 1}   <- inference 2
+/talky/brain              -> /talky/split              {}
+/talky/split              -> /talky/collector/assemble {route: in_answer}
+/talky/collector/assemble -> /sink                     {route: answer, iter: 1}
+```
+
+### What the organism just did — the consumer asked for the window
+
+The line to stare at is the tool call:
+
+```json
+{"query":"What did the plumber say about the radiator in February?",
+ "window_from":"2026-02-01T00:00:00Z",
+ "window_to":"2026-02-28T23:59:59Z"}
+```
+
+**Nobody upstream computed that range.** No parser looked for month names, no
+edge carried a date, no cell guessed. The model read the question, decided that
+"in February" meant a range, and named it. That is the whole shift: the
+per-turn memory leg every agent can have is fired the moment a turn arrives,
+*before* the model has read a word of it — which is a good floor and can never
+answer a question about a time range, because nobody who had seen the question
+was the one asking.
+
+**From the dispatcher's side it is an ordinary tool.** `/talky/split` matched on
+`hop.tool_name == 'memory_recall'` exactly the way it matches any other tool
+name, and an edge knew which cell answers. From the collector's side it is the
+one tool it serves itself, because it already owns the recall port — so the
+round ends where it began, and memory never learns a word of dispatcher
+vocabulary.
+
+**And the round trip is visible as `iter`.** Inference 1 runs at `iter: 0`,
+memory answers, inference 2 runs at `iter: 1`. Two provider calls with one
+database round trip between them, and only the second one had February in its
+context window.
+
+Here is what came back through the port:
+
+```
+recall over 2026-02-01T00:00:00Z .. 2026-02-28T23:59:59Z:
+- 2026-02-14T11:05:00.000Z user: The plumber came by, he says the radiator valve
+  is a Danfoss RA-N and needs a new insert.
+```
+
+**One row.** The store held nine, and *two* of them talk about the radiator
+valve — January's "the valve is stuck at three" is a perfectly good keyword hit
+and it is the wrong answer. What excluded it was not ranking, not similarity and
+not a model: `happened_at` is ISO-8601 UTC, ISO-8601 UTC sorts
+lexicographically, and the window is therefore a string comparison over a
+column. The query words only *narrow* what the window already holds.
+
+---
+
+## Now break it
+
+The bundle above is small and correct, which is also what a lucky keyword search
+would look like. So ask for a window where the answer does not exist. Not a
+different topic — the **same question, a month that never happened**:
+
+```bash
+curl -s -X POST http://127.0.0.1:7788/messages \
+     -H 'Content-Type: application/json' \
+     -d '{"target": "/surface", "headers": {"channel": "chat-2"},
+          "body": {"messages": [{"origin": "user", "type": "text",
+                                 "text": "What did the plumber say about the radiator in April?"}]}}'
+```
+
+The model asks for April:
+
+```json
+{"query":"What did the plumber say about the radiator?",
+ "window_from":"2026-04-01T00:00:00Z","window_to":"2026-05-01T00:00:00Z"}
+```
+
+The port answers:
+
+```
+recall over 2026-04-01T00:00:00Z .. 2026-05-01T00:00:00Z:
+- nothing was said in this window
+```
+
+And the agent says so:
+
+```
+Nothing was said about the radiator by the plumber in April.
+```
+
+**This is the step that separates a window from a search.** Every similarity
+store on earth would have returned the February sentence here — it is the
+closest thing in the corpus, by a wide margin, and "closest thing" is exactly
+what such a store is built to return. This one refuses, out loud, in one line,
+and the agent repeats the refusal instead of dressing it up. A memory that
+cannot say *nothing* is a memory whose *something* means very little.
+
+Now swap the month the other way. `"What did I say about the radiator in
+January?"` — same store, same tool, and the window moves:
+
+```json
+{"query":"What did the user say about the radiator?",
+ "window_from":"2026-01-01T00:00:00Z","window_to":"2026-01-31T23:59:59Z"}
+```
+
+```
+recall over 2026-01-01T00:00:00Z .. 2026-01-31T23:59:59Z:
+- 2026-01-09T18:40:00.000Z user: I switched the kitchen radiator off for the
+  winter, the valve is stuck at three.
+- 2026-01-09T18:40:22.000Z assistant: Noted. Stuck at three usually means the
+  pin underneath is seized, not the knob.
+- 2026-01-23T09:02:00.000Z user: Booked the dentist for the first week of March,
+  the one on the corner.
+```
+
+```
+In January, you said: "I switched the kitchen radiator off for the winter;
+the valve is stuck at three."
+```
+
+February is now the one that is absent. The two radiator sentences are
+symmetrical — whichever window you name, you get that one and not the other.
+
+**And here is the limit, in the same output.** The January bundle contains the
+dentist, which has nothing to do with radiators. The query narrowing is a
+lowercase substring test over words longer than three characters, and the
+model's query ended in `radiator?` — with the question mark attached, so it
+matched nothing, and by design the window then answers in full rather than
+returning an empty set. That is the right failure direction for nine rows and
+plainly the wrong one for nine million. The window is the load-bearing part
+here; the query words are a courtesy, and this example does not pretend
+otherwise.
+
+---
+
+## Step 8 — what it cost
+
+```bash
+python3 scripts/cost_report.py --db examples/never-forgets/seed/colony.db \
+                               --prices scripts/prices-openrouter-2026-08-15.json
+```
+
+```
+day         model                    calls    prompt  completion       USD
+2026-08-15  openai/gpt-5.6-luna          4      1031         250   0.00025
+total  : USD 0.00025 over 0.02 h
+```
+
+Four calls: two inferences per question, two questions. The nine-turn import and
+both memory round trips cost nothing at all — no model is involved anywhere in
+the storage or the recall path.
+
+---
+
+## Clean up
+
+```bash
+kill %1
+rm -rf examples/never-forgets/seed/{colony.db*,log.jsonl,blobs,.staging,orphan-journal.jsonl,.env} \
+       examples/never-forgets/seed/main/{surface,talky,drain,sink} \
+       examples/never-forgets/templates
+find examples/never-forgets/seed -name 'cell.db*' -delete
+```
+
+The four instantiated node directories are the ones `grow.json` created; delete
+them together with `colony.db` or the next boot will find cells the registry no
+longer knows and refuse the mutation with `resume_requires_stopped_cell`.
+
+## Pinned
+
+`crates/meclaw-cells/tests/never_forgets_example.rs` boots **this** seed and
+applies **this** declaration — the files, not copies of them — against a mock
+provider, replays **this** `past.jsonl`, and drives the February question through
+the whole tree. It checks that the second inference's prompt contains the
+February sentence **with its instant** and contains neither the January nor the
+March one, and the counter-test asks about April and requires the empty answer.
+The mock provides the tool call directly, which is why the test does not need
+the seed from step 2 and a live run does.

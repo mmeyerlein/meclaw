@@ -2,6 +2,8 @@
 
 File-based, LLM-oriented actor workflow system for agentic harnesses. Rust binary, Linux. Specialized in LLM-typical flows with strongly simplified flow management, considerably simpler than BPMN or Serverless Workflow, with no claim to their generality.
 
+> This is the long one. [`README.md`](README.md) maps the directory, [`glossary.md`](glossary.md) gives you the fifteen words first, and the reading order that works is on the map.
+
 ## What is meclaw
 
 A workflow system whose topology lives as a directory tree in the filesystem. Every node is a cell (actor); directories with `type: "hive"` mark authority and mutation boundaries. The topology is mutated at runtime by cells themselves, typically through **builder-hives** (multi-stage hive scopes with an llm cell, a diff-constructor hive, and a validator hive) that translate natural-language requests into graph mutations. Cells communicate exclusively via atomic messages with a universal body format. LLM inference, tool calls, persistent storage, long-running bridges (Telegram, timer, MCP) are all cell types.

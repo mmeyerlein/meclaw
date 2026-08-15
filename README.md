@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-3700%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-3800%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -32,6 +32,129 @@ tool-loop you'd normally hand-write showing up as a path through the tree:
 That's `docs/demo.sh` driving `examples/swarm`. Replay it yourself with
 `asciinema play docs/demo.cast`.
 
+<!-- asciinema: B4 -->
+
+## Try it, no API key
+
+`examples/hard-shell` is a colony with no `llm` cell in it, so there is nothing to
+authenticate: no key, no model, no provider account. It only reaches outwards, and the whole
+example is about where it refuses to. Everything below was run against a fresh clone; the
+output is the real output.
+
+From the 0.9.0 release on there is a prebuilt Linux x86_64 binary, and
+[`scripts/install.sh`](scripts/install.sh) fetches it next to its published SHA-256, verifies
+the sum, and writes one file into `~/.local/bin`. It downloads and checks data; it never pipes
+code into a second shell:
+
+```bash
+curl -fsSL https://meclaw.ai/install.sh | sh
+```
+
+Building from source works on every release, needs a Rust toolchain, and is what the walkthrough
+below was run against:
+
+```bash
+git clone https://github.com/mmeyerlein/meclaw
+cd meclaw
+cargo build --release          # the only slow step. minutes, once.
+```
+
+Boot the colony as a daemon. It comes up in well under a second:
+
+```bash
+./target/release/meclaw --root ./examples/hard-shell/seed \
+                        --templates ./templates \
+                        --daemon --api 127.0.0.1:7799
+```
+
+What is checked in is one cell. Not a framework's worth of scaffolding — one:
+
+```console
+$ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, cell_type}'
+{"path":"/probe","cell_type":"web_fetch"}
+```
+
+Now grow it while it runs. `grow.json` is a mutation: two nodes from the template library,
+four edges, applied to a live colony without a restart.
+
+```console
+$ curl -s -X POST http://127.0.0.1:7799/colony/mutations \
+       -H 'Content-Type: application/json' \
+       -d @examples/hard-shell/grow.json | jq -c .
+{"mutation":{"id":"01a00656-d847-72e3-b652-2fc23becf2e8","outcome":"committed"}}
+
+$ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, cell_type}'
+{"path":"/surface","cell_type":"code"}
+{"path":"/sink","cell_type":"code"}
+{"path":"/probe","cell_type":"web_fetch"}
+```
+
+Three cells now, and nothing was redeployed. Point the colony at the address every
+prompt-injected agent gets told to fetch — `169.254.169.254`, where the cloud hands out
+instance credentials:
+
+```console
+$ curl -s -X POST http://127.0.0.1:7799/messages \
+       -H 'Content-Type: application/json' \
+       -d '{"target": "/surface",
+            "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
+                                   "text": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"}]}}' | jq -c .
+{"message_id":"01a00656-d885-7043-9d7b-550e08775200"}
+```
+
+Nothing in that seed configures a policy, an allow list or a security block. The refusal
+below is the state the thing ships in. Then open <http://127.0.0.1:7799/ui/> and watch it,
+or read the trace it just wrote — which is the next section.
+
+## The organism at work
+
+One message in, three hops, and the harness is the shape of the tree rather than a loop
+someone wrote. This is the trace of the request above, straight out of the running colony:
+
+```console
+$ curl -s 'http://127.0.0.1:7799/colony/trace?limit=20' \
+  | jq -r '.trace[] | "\(.from_path) -> \(.to_path)   ttl=\(.ttl)\n  hop:  \(.headers_json | fromjson | .hop | tostring)\n  body: \(.body_payload | fromjson | .messages[0] | .type + " | " + .text)\n"'
+
+@external -> /surface   ttl=63
+  hop:  {}
+  body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
+
+/surface -> /probe   ttl=62
+  hop:  {"chat_id":"default","duration_ms":17,"exit_code":0,"had_stderr":false,"route":"turn"}
+  body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
+
+/probe -> /sink   ttl=61
+  hop:  {"duration_ms":0,"error_code":"target_blocked","finish_reason":"error","operation":"web_fetch","route":"denied"}
+  body: tool_result | web_fetch refuses 169.254.169.254: link-local 169.254.0.0/16 (cloud metadata)
+```
+
+Read down the `hop` column, because that is where the logic lives:
+
+- **Hop 1** enters from `@external` — the HTTP ingress — with an empty hop. Nothing has
+  decided anything yet.
+- **Hop 2** carries `route: "turn"`. The `/surface` cell put the turn on a *named lane*; the
+  edge to `/probe` fires on that name. The cell did not know `/probe` exists.
+- **Hop 3** is the interesting one. `error_code: "target_blocked"` is a **typed** refusal, and
+  the edge that routed it matched on the code, not on the prose — so the deny gets a lane of
+  its own (`route: "denied"`) instead of dying quietly. There is **no `http_status`**, and that
+  absence is the proof: the address was judged before the connect, so no packet left the
+  machine.
+- **`ttl` counts down** 63 → 62 → 61. A message that loops forever runs out of budget instead
+  of running forever.
+
+The dead-letter queue is empty, which is the point of the third cell — a refusal that
+dead-letters is a refusal nobody sees:
+
+```console
+$ curl -s http://127.0.0.1:7799/colony/dead_letters | jq -c .
+{"dead_letters":[]}
+```
+
+[`examples/hard-shell/WALKTHROUGH.md`](examples/hard-shell/WALKTHROUGH.md) takes this further,
+command by command with the real output next to each one: `kill -9` the daemon mid tool run,
+start a second one on the same directory, and watch the same absence of configuration hold.
+Under two minutes, still no key.
+
 ## What meclaw is
 
 A framework for building agentic harnesses, and swarms of them, as a directory tree. One Rust binary. Linux.
@@ -47,9 +170,14 @@ A harness is the scaffolding around an LLM: the tool-loop, the orchestration, th
 
 ```bash
 # fire up a swarm as a daemon, with an HTTP API and a UI to watch it:
-meclaw --root ./examples/swarm --daemon --api 127.0.0.1:7777
+meclaw --root ./examples/swarm --templates ./templates --daemon --api 127.0.0.1:7777
 # then open http://127.0.0.1:7777/ui/
 ```
+
+`examples/swarm` has an `llm` cell in it, so it wants a provider key in
+`examples/swarm/.env` before it will boot. The quickstart above needs none, because
+`hard-shell` has no `llm` cell at all. [`examples/README.md`](examples/README.md) says which is
+which.
 
 ## Why it's different
 
@@ -65,19 +193,7 @@ meclaw --root ./examples/swarm --daemon --api 127.0.0.1:7777
 
 meclaw is not BPMN. It is not Temporal. It does exactly one thing, LLM-shaped flows, and it makes them something you draw, inspect, and hand off to the agents to maintain.
 
-## Quickstart
-
-```bash
-# build it (Linux)
-git clone https://github.com/mmeyerlein/meclaw
-cd meclaw
-cargo build --release
-# binary: ./target/release/meclaw
-
-# run a swarm as a daemon and watch it work
-./target/release/meclaw --root ./examples/swarm --daemon --api 127.0.0.1:7777
-# open http://127.0.0.1:7777/ui/
-```
+## The shape of a colony
 
 A colony is a folder. A colony that actually does something needs at least a hive and one cell. Only a hive carries a graph, so a lone cell with no edges just sits there routing to nobody:
 
@@ -119,7 +235,27 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
 | `subcolony` | a whole child colony, addressed as if it were a single cell |
 
-A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you. Both halves of that loop ship as templates under `templates/`, next to `session-keeper@1.0.0`, `summarizer@1.0.0`, `retry@1.0.0`, `archive-bridge@1.0.0`, `firewall@1.0.0`, `receptionist@1.0.0`, `memory-drain@1.0.0` and the `talky@1.1.0` composite that carries four of them as sub-units — none of them a line of Rust.
+A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you.
+
+## The template library
+
+Both halves of that tool loop already exist as templates, and so does most of an agent.
+**14 of them ship in this repository**, every one pure DSL — directories, `config.json` files
+and edges, not a line of Rust and no plugin API. Instantiating one *copies* the subtree into
+your colony; from that moment the instance is yours and has no link back to the library.
+
+| | |
+|---|---|
+| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window |
+| the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
+| the front door | `door`, `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
+| memory | `memory-hive` — ten cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
+| whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
+| the small ones | `retry`, `terminal` |
+
+The catalogue, with what each one is for and which ports to wire, is
+[`templates/README.md`](templates/README.md). `examples/meclaw-os` boots a seed with **zero
+cells in it** and grows a seventeen-cell agent out of that library with one declaration.
 
 ## It rewrites itself. That's the point.
 
@@ -133,7 +269,7 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 meclaw is **v0.8.0**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **3700+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 13 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **3800+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
@@ -162,9 +298,28 @@ between releases without notice, including on patch bumps. There is no `meclaw` 
 depend on a crate over a git dependency, pin a commit and expect to do the work yourself on every
 bump — that is a supported thing to do and an unsupported thing to be surprised by.
 
+## What it costs to run
+
+A colony spends money in exactly one place: the provider calls its `llm` cells make. On one
+production colony, measured from its own database over a 24-hour window:
+
+**0.32 EUR / 24 h** with a person talking to it, **0.024 EUR / 24 h** unattended.
+
+The method matters more than the number, because the number is dominated by how much you talk
+to the colony and which cells sit on which model tier — in that measurement the frontier model
+was 97 % of the bill on 24 % of the calls. Every figure is re-derivable against your own
+colony with [`scripts/cost_report.py`](scripts/cost_report.py), and
+[`docs/costs.md`](docs/costs.md) states plainly which tiers have **not** been measured rather
+than estimating them.
+
 ## Roadmap
 
-**Now: meclaw-os.** The substrate had its waves; now the first full agent gets built on top of it — as pure topology, no new Rust. Every piece of it is a template you can read. Context orchestration became a hive concern: `collector@1.1.0` decides what enters an agent's context window and what leaves it, and `dispatcher@1.0.0` is the fan-out half of the same tool loop. Conversations got a lifecycle like phone calls — `session-keeper@1.0.0` gives a conversation a beginning and an end, `summarizer@1.0.0` the handover so the next one picks up seamlessly. At boot, the agent is briefed by its environment instead of being configured by hand: an `llm` cell reads its identity from a seed file next to it. `talky@1.1.0` puts all of that into one composite, and this release adds the front door around it: `firewall@1.0.0` screens every inbound turn against rules that are data, not code, and `receptionist@1.0.0` hands each new channel an agent of its own by writing the mutation that builds it. Memory became something the agent can ask rather than something handed to it — `memory_recall` is a tool round like any other, and the first thing in the system that can ask about a time range. This release splits the thinking off the talking: a tool may answer on a lane of its own while the channel gets an immediate "one moment", the advice arrives later as a fresh round on the collector's `in_advice` lane, and no idle window ever waits for a slow advisor. And `memory-drain@1.0.0` closes the gap at the other end — a day a conversation has closed now reaches memory, losslessly and idempotently, without the memory hive changing a line. What is left of the stream is per-talky memory and one-file hives. The epic is [#26](https://github.com/mmeyerlein/meclaw/issues/26); every decision and open fork is tracked there in the open.
+**Now: meclaw-os.** The substrate had its waves; the first full agent is being built on top of
+it as pure topology, no new Rust — context orchestration, a conversation lifecycle, a screened
+front door, and memory the agent can ask rather than be handed. Every piece of it is a template
+you can read, and they are all in [`templates/README.md`](templates/README.md). The epic is
+[#26](https://github.com/mmeyerlein/meclaw/issues/26); every decision and open fork is tracked
+there in the open.
 
 Also in the queue: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 
