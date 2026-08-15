@@ -124,8 +124,11 @@ firewall) -> /talky/keeper/stamp -> /talky/collector/assemble -> /talky/brain ->
 channel identity survives every later hop -- and why the firewall rate-limits per channel and
 the keeper mints one session per channel instead of flattening every chat into one.
 
-Without a key the colony still boots, grows and routes; the `llm` cell returns an auth error as
-a normal message on the error lane, and you can watch that arrive too.
+Without a key the empty colony still boots — but the grow step needs `OPENROUTER_API_KEY` to
+*exist* in `.env`, because instantiating the `llm` cells substitutes it and a missing variable
+is a hard reject (`env_var_missing`), by design. With a dummy value the colony grows and
+routes; the `llm` cell then returns an auth error as a normal message on the error lane, and
+you can watch that arrive too.
 
 ## Step two: grow the thinking core
 
