@@ -12,6 +12,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The public test suite compiles 400+ test binaries; with debuginfo the
+  # target tree outgrows the 14 GB a hosted runner has free (W13: the run
+  # died on ENOSPC in the middle of the build). Tests do not need line info.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   linux:
