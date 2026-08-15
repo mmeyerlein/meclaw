@@ -1,0 +1,507 @@
+//! CEL-Engine wrapper for edge condition + modifier evaluation.
+//!
+//! Spec: `docs/meclaw-overview.md` § Edge-Modell (Z.819-845) +
+//! § Edge-Expression-Sprache (Z.919-921 — "CEL via the rust crate").
+//!
+//! Phase 13.5-A1: provides `parse_condition`, `parse_modifier`,
+//! `evaluate_condition`. Modifier-Eval (`apply_modifier_set` / `_delete`)
+//! arrives in T7/T8.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use cel::Program;
+use meclaw_core::Headers;
+use meclaw_core::serde_json::{Map, Value};
+
+use crate::config::ModifierSpec;
+
+/// A pre-compiled CEL condition expression. The source string is kept for
+/// match-pattern equality (per spec Z.253 + A1-F6: string-equality, not
+/// semantic).
+#[derive(Clone, Debug)]
+pub struct CompiledCondition {
+    /// Original source string (for match-pattern equality).
+    pub source: String,
+    /// Pre-compiled program (Arc'd because `Program` is not Clone-cheap).
+    pub program: Arc<Program>,
+}
+
+/// A pre-compiled modifier over the two header compartments: per-key compiled
+/// CEL set-expressions + raw delete-lists, per compartment. The source
+/// `ModifierSpec` is kept for match-pattern equality (Phase 13.5-A1 F6).
+#[derive(Clone, Debug)]
+pub struct CompiledModifier {
+    /// Original modifier spec (for match-pattern equality).
+    pub source: ModifierSpec,
+    /// Per-key pre-compiled `context` set-expressions.
+    pub set_context: BTreeMap<String, Arc<Program>>,
+    /// `context` keys to remove (idempotent for non-existent keys).
+    pub delete_context: Vec<String>,
+    /// Per-key pre-compiled `hop` set-expressions.
+    pub set_hop: BTreeMap<String, Arc<Program>>,
+    /// `hop` keys to remove (idempotent for non-existent keys).
+    pub delete_hop: Vec<String>,
+    /// GH #82: this edge restores the message's routing budget (`ttl`). Carried
+    /// verbatim from the spec — there is nothing to compile, the field is a
+    /// declaration, not an expression. Applied by the colony (the envelope
+    /// setter), never here: [`apply_modifier`] works on headers alone.
+    pub restore_ttl: bool,
+}
+
+/// Parse a CEL condition source string into a `CompiledCondition`.
+///
+/// Phase 13.5-A1 T1/T2: parse-only, no evaluation. Used by bootstrap-plan
+/// and mutation-validate to fail fast on malformed CEL.
+pub fn parse_condition(source: &str) -> Result<CompiledCondition, String> {
+    let program = Program::compile(source).map_err(|e| format!("cel parse: {e}"))?;
+    Ok(CompiledCondition {
+        source: source.to_string(),
+        program: Arc::new(program),
+    })
+}
+
+/// Parse a `ModifierSpec` into a `CompiledModifier` (pre-compile both
+/// `set_context` and `set_hop` expression maps). Returns `(key, reason)` on
+/// first parse error, so the caller can attribute the failure to a specific
+/// key. The returned key is prefixed `set_context.`/`set_hop.` to disambiguate
+/// the two compartments.
+pub fn parse_modifier(spec: &ModifierSpec) -> Result<CompiledModifier, (String, String)> {
+    let mut set_context = BTreeMap::new();
+    for (k, expr) in &spec.set_context {
+        let prog = Program::compile(expr)
+            .map_err(|e| (format!("set_context.{k}"), format!("cel parse: {e}")))?;
+        set_context.insert(k.clone(), Arc::new(prog));
+    }
+    let mut set_hop = BTreeMap::new();
+    for (k, expr) in &spec.set_hop {
+        let prog = Program::compile(expr)
+            .map_err(|e| (format!("set_hop.{k}"), format!("cel parse: {e}")))?;
+        set_hop.insert(k.clone(), Arc::new(prog));
+    }
+    Ok(CompiledModifier {
+        source: spec.clone(),
+        set_context,
+        delete_context: spec.delete_context.clone(),
+        set_hop,
+        delete_hop: spec.delete_hop.clone(),
+        restore_ttl: spec.restore_ttl,
+    })
+}
+
+/// Bind the two header compartments (`context` and `hop`) as CEL variables.
+///
+/// Shared by [`evaluate_condition`] and [`apply_modifier`] so both expose the
+/// same `context.*`/`hop.*` namespace. The returned context borrows `headers`
+/// (the bound `serde_json::Map`s must outlive every `program.execute`).
+fn bind_ctx(headers: &Headers) -> Result<cel::Context<'_>, String> {
+    let mut ctx = cel::Context::default();
+    ctx.add_variable("context", &headers.context)
+        .map_err(|e| format!("cel ctx bind context: {e}"))?;
+    ctx.add_variable("hop", &headers.hop)
+        .map_err(|e| format!("cel ctx bind hop: {e}"))?;
+    Ok(ctx)
+}
+
+/// Apply a `CompiledModifier` to the incoming two-compartment headers,
+/// returning fresh headers (input is read-only).
+///
+/// Per spec § Edge-Modell Z.820-833: all `set_*` expressions read the incoming
+/// (pre-modifier) `context.*`/`hop.*` as a fixed namespace — never the output
+/// of another set-key. Per spec Z.832: per compartment, set runs before delete.
+pub fn apply_modifier(m: &CompiledModifier, headers_in: &Headers) -> Result<Headers, String> {
+    let mut out = headers_in.clone();
+    for (k, prog) in &m.set_context {
+        let ctx = bind_ctx(headers_in)?;
+        let v = prog
+            .execute(&ctx)
+            .map_err(|e| format!("cel eval set_context.{k}: {e}"))?;
+        out.context.insert(k.clone(), cel_to_json(v));
+    }
+    for (k, prog) in &m.set_hop {
+        let ctx = bind_ctx(headers_in)?;
+        let v = prog
+            .execute(&ctx)
+            .map_err(|e| format!("cel eval set_hop.{k}: {e}"))?;
+        out.hop.insert(k.clone(), cel_to_json(v));
+    }
+    for k in &m.delete_context {
+        out.context.remove(k);
+    }
+    for k in &m.delete_hop {
+        out.hop.remove(k);
+    }
+    Ok(out)
+}
+
+/// Convert a `cel::Value` back into a `serde_json::Value` for header storage.
+///
+/// Lossy for cel-only types (Duration / Timestamp / Bytes / Function /
+/// Opaque) — stored as Debug-string (Null for Bytes). Phase-13.5-A1 does
+/// not expect those in modifier outputs.
+fn cel_to_json(v: cel::Value) -> Value {
+    use cel::Value as Cv;
+    match v {
+        Cv::Null => Value::Null,
+        Cv::Bool(b) => Value::Bool(b),
+        Cv::Int(i) => Value::from(i),
+        Cv::UInt(u) => Value::from(u),
+        Cv::Float(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Cv::String(s) => Value::String(s.as_ref().clone()),
+        Cv::List(l) => Value::Array(l.iter().cloned().map(cel_to_json).collect()),
+        Cv::Map(m) => {
+            use cel::objects::Key;
+            let obj: Map<String, Value> = m
+                .map
+                .iter()
+                .map(|(k, val)| {
+                    let key_str = match k {
+                        Key::String(s) => s.as_ref().clone(),
+                        Key::Int(i) => i.to_string(),
+                        Key::Uint(u) => u.to_string(),
+                        Key::Bool(b) => b.to_string(),
+                    };
+                    (key_str, cel_to_json(val.clone()))
+                })
+                .collect();
+            Value::Object(obj)
+        }
+        Cv::Bytes(_) => Value::Null,
+        other => Value::String(format!("{other:?}")),
+    }
+}
+
+/// GH #80: why a condition did not produce a boolean.
+///
+/// The two classes want different operator attention, and only one of them is a
+/// defect: a fan-out edge that discriminates on an optional `hop` key errors on
+/// every message that does not carry that key, which is most of them. That is
+/// the steady state, not a fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondErrorKind {
+    /// A key the expression reads is absent from the bound compartments. CEL
+    /// standard semantics: reading it is an error, and per spec F3 the edge is
+    /// skipped. Nothing is wrong with the colony.
+    ///
+    /// Note the honest limit: CEL cannot tell a legitimately absent key from a
+    /// mistyped one. `hop.toolname` and an absent `hop.tool_name` are the same
+    /// event here. What stays visible is the class below — a typo at the
+    /// compartment level (`hopp.tool_name`) or a shape error.
+    MissingKey,
+    /// Everything else: type mismatch, incomparable values, a reference to a
+    /// variable nobody bound, a non-boolean result, recursion limit. These are
+    /// builder errors and stay loud.
+    Eval,
+}
+
+/// A condition that failed to evaluate, with its class ([`CondErrorKind`]).
+///
+/// `Display` is the message alone, so call sites that only format the error
+/// read exactly as they did before the class existed.
+#[derive(Debug, Clone)]
+pub struct CondError {
+    /// Which of the two classes this is.
+    pub kind: CondErrorKind,
+    /// Human-readable reason, unchanged in wording from before GH #80.
+    pub message: String,
+}
+
+impl std::fmt::Display for CondError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CondError {}
+
+impl CondError {
+    fn eval(message: String) -> Self {
+        Self {
+            kind: CondErrorKind::Eval,
+            message,
+        }
+    }
+}
+
+/// Evaluate a `CompiledCondition` against a headers map.
+///
+/// Returns `Ok(true)`/`Ok(false)` on successful eval, `Err(CondError)` for
+/// everything else (undefined map access, type errors, recursion limit).
+/// Callers (e.g. `evaluate_edge`) skip the edge on `Err` per spec F3
+/// (CEL-Standard: undefined-header → skip); GH #80 added the class so the log
+/// level can follow the class instead of treating every fan-out miss as a fault.
+pub fn evaluate_condition(
+    cond: &CompiledCondition,
+    context: &Map<String, Value>,
+    hop: &Map<String, Value>,
+) -> Result<bool, CondError> {
+    let mut ctx = cel::Context::default();
+    // CEL surface is `context.*`/`hop.*`: bind both compartments as variables.
+    // Serde-Path: `serde_json::Map<String, Value>` implements Serialize, and
+    // `impl<T: serde::Serialize> TryIntoValue for T` (cel-0.13.0 objects.rs:506)
+    // converts directly. No manual `json_to_cel` mapping needed.
+    ctx.add_variable("context", context)
+        .map_err(|e| CondError::eval(format!("cel ctx bind context: {e}")))?;
+    ctx.add_variable("hop", hop)
+        .map_err(|e| CondError::eval(format!("cel ctx bind hop: {e}")))?;
+    let value = cond.program.execute(&ctx).map_err(|e| CondError {
+        // The engine's own distinction: `NoSuchKey` is the absent key, every
+        // other variant is a defect in the expression or in the values.
+        kind: match e {
+            cel::ExecutionError::NoSuchKey(_) => CondErrorKind::MissingKey,
+            _ => CondErrorKind::Eval,
+        },
+        message: format!("cel eval: {e}"),
+    })?;
+    match value {
+        cel::Value::Bool(b) => Ok(b),
+        other => Err(CondError::eval(format!("cel result not bool: {other:?}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_condition_simple_eq_succeeds() {
+        let c = parse_condition("hop.foo == 'bar'").expect("parse");
+        assert_eq!(c.source, "hop.foo == 'bar'");
+    }
+
+    #[test]
+    fn parse_condition_malformed_returns_err() {
+        let r = parse_condition("hop.foo ===");
+        assert!(r.is_err(), "expected parse err, got {:?}", r);
+    }
+
+    #[test]
+    fn parse_modifier_compiles_all_set_expressions() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop
+            .insert("tier".into(), "hop.priority == 'high'".into());
+        spec.set_hop.insert("other".into(), "'literal'".into());
+        let m = parse_modifier(&spec).expect("parse");
+        assert_eq!(m.set_hop.len(), 2);
+        assert!(m.set_hop.contains_key("tier"));
+        assert!(m.set_hop.contains_key("other"));
+    }
+
+    #[test]
+    fn parse_modifier_returns_prefixed_key_on_first_bad_expression() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop.insert("bad".into(), "==".into());
+        let (k, _reason) = parse_modifier(&spec).unwrap_err();
+        assert_eq!(k, "set_hop.bad");
+    }
+
+    #[test]
+    fn parse_modifier_attributes_set_context_key() {
+        let mut spec = ModifierSpec::default();
+        spec.set_context.insert("bad".into(), "==".into());
+        let (k, _reason) = parse_modifier(&spec).unwrap_err();
+        assert_eq!(k, "set_context.bad");
+    }
+
+    #[test]
+    fn evaluate_condition_eq_string_returns_true() {
+        let c = parse_condition("hop.priority == 'high'").unwrap();
+        let mut hop = Map::new();
+        hop.insert("priority".into(), Value::String("high".into()));
+        let result = evaluate_condition(&c, &Map::new(), &hop).expect("eval");
+        assert!(result, "expected true for matching condition");
+    }
+
+    #[test]
+    fn evaluate_condition_eq_string_returns_false_on_mismatch() {
+        let c = parse_condition("hop.priority == 'high'").unwrap();
+        let mut hop = Map::new();
+        hop.insert("priority".into(), Value::String("low".into()));
+        let result = evaluate_condition(&c, &Map::new(), &hop).expect("eval");
+        assert!(!result, "expected false for non-matching condition");
+    }
+
+    #[test]
+    fn evaluate_condition_ternary_returns_correct_branch() {
+        let c = parse_condition("hop.finish_reason == 'tool_calls' ? true : false").unwrap();
+        let mut hop = Map::new();
+        hop.insert("finish_reason".into(), Value::String("tool_calls".into()));
+        assert!(evaluate_condition(&c, &Map::new(), &hop).unwrap());
+
+        hop.insert("finish_reason".into(), Value::String("stop".into()));
+        assert!(!evaluate_condition(&c, &Map::new(), &hop).unwrap());
+    }
+
+    #[test]
+    fn evaluate_condition_number_comparison() {
+        let c = parse_condition("hop.tokens_prompt > 100").unwrap();
+        let mut hop = Map::new();
+        hop.insert("tokens_prompt".into(), Value::from(150_i64));
+        assert!(evaluate_condition(&c, &Map::new(), &hop).unwrap());
+        hop.insert("tokens_prompt".into(), Value::from(50_i64));
+        assert!(!evaluate_condition(&c, &Map::new(), &hop).unwrap());
+    }
+
+    #[test]
+    fn evaluate_condition_string_contains() {
+        let c = parse_condition("hop.model.contains('gpt-4')").unwrap();
+        let mut hop = Map::new();
+        hop.insert("model".into(), Value::String("gpt-4o-mini".into()));
+        assert!(evaluate_condition(&c, &Map::new(), &hop).unwrap());
+    }
+
+    #[test]
+    fn condition_reads_both_namespaces() {
+        let c = parse_condition("hop.route == 'fire' && context.iter > 0").unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("route".into(), Value::String("fire".into()));
+        h.context.insert("iter".into(), Value::from(2_i64));
+        assert!(evaluate_condition(&c, &h.context, &h.hop).unwrap());
+    }
+
+    #[test]
+    fn modifier_set_hop_inserts_new_key() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop.insert("tier".into(), "'gold'".into());
+        let m = parse_modifier(&spec).unwrap();
+        let out = apply_modifier(&m, &Headers::new()).expect("apply");
+        assert_eq!(out.hop.get("tier"), Some(&Value::String("gold".into())));
+    }
+
+    #[test]
+    fn modifier_set_hop_overrides_existing_key() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop.insert("priority".into(), "'high'".into());
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("priority".into(), Value::String("low".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(out.hop.get("priority"), Some(&Value::String("high".into())));
+    }
+
+    #[test]
+    fn modifier_set_context_promotes_hop_value() {
+        let spec = ModifierSpec {
+            set_context: BTreeMap::from([("turn_id".into(), "hop.turn_id".into())]),
+            ..ModifierSpec::default()
+        };
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("turn_id".into(), Value::String("t1".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(
+            out.context.get("turn_id"),
+            Some(&Value::String("t1".into()))
+        );
+    }
+
+    #[test]
+    fn modifier_set_context_computes_loop_counter() {
+        // cel-0.13 quirk: a positive JSON integer header value round-trips to
+        // cel `UInt` (serde_json re-serialises positive ints via `serialize_u64`),
+        // and `UInt + Int(literal)` is an unsupported mixed-type op. A loop
+        // counter must therefore cast: `int(context.iter) + 1`. The behavioural
+        // intent (1 → 2) is unchanged. See report concern for Slice-3 follow-up.
+        let spec = ModifierSpec {
+            set_context: BTreeMap::from([("iter".into(), "int(context.iter) + 1".into())]),
+            ..ModifierSpec::default()
+        };
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.context.insert("iter".into(), Value::from(1_i64));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(out.context.get("iter"), Some(&Value::from(2_i64)));
+    }
+
+    #[test]
+    fn modifier_set_hop_and_deletes_per_fach() {
+        let spec = ModifierSpec {
+            set_hop: BTreeMap::from([("route".into(), "'fire'".into())]),
+            delete_hop: vec!["operation".into()],
+            delete_context: vec!["scratch".into()],
+            ..ModifierSpec::default()
+        };
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop
+            .insert("operation".into(), Value::String("select".into()));
+        h.context.insert("scratch".into(), Value::Bool(true));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(out.hop.get("route"), Some(&Value::String("fire".into())));
+        assert!(out.hop.get("operation").is_none());
+        assert!(out.context.get("scratch").is_none());
+    }
+
+    #[test]
+    fn modifier_set_reads_from_input_headers() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop.insert(
+            "tier".into(),
+            "hop.priority == 'high' ? 'gold' : 'standard'".into(),
+        );
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop
+            .insert("priority".into(), Value::String("high".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(out.hop.get("tier"), Some(&Value::String("gold".into())));
+    }
+
+    #[test]
+    fn modifier_delete_hop_removes_existing_key() {
+        let spec = ModifierSpec {
+            delete_hop: vec!["debug".into()],
+            ..ModifierSpec::default()
+        };
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("debug".into(), Value::String("on".into()));
+        h.hop.insert("keep".into(), Value::String("yes".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert!(out.hop.get("debug").is_none());
+        assert!(out.hop.get("keep").is_some());
+    }
+
+    /// Phase 13.5-A1 T9 (F6 pin): the source string of `CompiledCondition` is
+    /// preserved for `remove_edges`/`swap_nodes` match-pattern equality
+    /// (string equality, not semantic).
+    #[test]
+    fn compiled_condition_preserves_source_for_match_pattern_f6() {
+        let c = parse_condition("hop.x == 'y'").unwrap();
+        assert_eq!(
+            c.source, "hop.x == 'y'",
+            "F6-PIN: source string preserved for remove_edges/swap_nodes match-pattern equality"
+        );
+    }
+
+    /// Phase 13.5-A1 T9 (F6 pin): the source `ModifierSpec` of `CompiledModifier`
+    /// is preserved for match-pattern equality (set-expr strings + delete keys).
+    #[test]
+    fn compiled_modifier_preserves_source_for_match_pattern_f6() {
+        let mut spec = ModifierSpec::default();
+        spec.set_hop.insert("tier".into(), "'gold'".into());
+        spec.delete_hop = vec!["debug".into()];
+        let m = parse_modifier(&spec).unwrap();
+        assert_eq!(
+            m.source.set_hop.get("tier").map(String::as_str),
+            Some("'gold'")
+        );
+        assert_eq!(m.source.delete_hop, vec!["debug"]);
+    }
+
+    #[test]
+    fn modifier_delete_non_existent_key_is_idempotent_noop() {
+        let spec = ModifierSpec {
+            delete_hop: vec!["never_was".into()],
+            ..ModifierSpec::default()
+        };
+        let m = parse_modifier(&spec).unwrap();
+        let mut h = Headers::new();
+        h.hop.insert("keep".into(), Value::String("yes".into()));
+        let out = apply_modifier(&m, &h).expect("apply");
+        assert_eq!(out.hop.len(), 1);
+        assert!(out.hop.get("keep").is_some());
+    }
+}

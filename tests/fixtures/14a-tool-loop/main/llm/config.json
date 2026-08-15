@@ -1,0 +1,16 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "api_key": "test-key",
+    "base_url": "http://127.0.0.1:1/v1"
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  }
+}

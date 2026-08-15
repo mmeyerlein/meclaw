@@ -1,0 +1,13 @@
+[
+  {
+    "condition": "has(hop.route) && hop.route == 'wstore'",
+    "from": "./writer",
+    "modifier": {
+      "set_context": {
+        "mem_phase": "'episode'",
+        "store_origin": "'episode'"
+      }
+    },
+    "to": "./store"
+  }
+]

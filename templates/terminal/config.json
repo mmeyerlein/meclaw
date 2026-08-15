@@ -1,0 +1,39 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys\n# Terminal. Every outbound lane of a colony can end here -- an answer, a\n# screened-off turn, a normalised error, a drained episode. Each of them is\n# already in the message trace (open /ui/trace), so swallowing is exactly what\n# keeps the dead-letter queue empty: a lane that ends nowhere dead-letters,\n# a lane that ends HERE is a decision you have not made yet.\nsys.stdout.write(\"[]\")\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The terminal of a colony: everything that leaves a tree arrives here and stops, so the trace shows it and nothing dead-letters.",
+    "use_when": "As the placeholder for a decision not made yet -- where an answer goes, where a rejection is logged, where errors are alarmed, which memory a closed day belongs to.",
+    "not_in_scope": "No storage, no forwarding, no judgement -- it is a stop, not a component."
+  }
+}

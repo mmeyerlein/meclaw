@@ -1,0 +1,20 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./echo",
+          "condition": "!has(hop.finish_reason)"
+        },
+        {
+          "from": "./echo",
+          "to": "."
+        }
+      ]
+    }
+  }
+}

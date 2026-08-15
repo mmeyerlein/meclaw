@@ -1,0 +1,79 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "answers": {
+        "id": "text",
+        "question": "text",
+        "answer": "text"
+      },
+      "searches": {
+        "id": "text",
+        "query": "text",
+        "created_at": "int"
+      },
+      "thread": {
+        "turn_id": "text",
+        "iter": "int",
+        "role": "text",
+        "turn": "text",
+        "fired": "int"
+      },
+      "errors": {
+        "id": "text",
+        "kind": "text",
+        "payload": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Persistent memory: thread (loop fan-in rows per 14b protocol), answers (archived results + remember-tool inserts) and searches tables.",
+    "use_when": "Sink for the archive cell and the planner's remember tool; queryable via store-native select args.",
+    "not_in_scope": "No vector search, no ranking \u2014 plain SQLite tables.",
+    "emits_meaning": "messages[]: one tool_result per operation. hop.operation/rows_affected for routing; SQL failures are normal tool_results with hop.error_code.",
+    "consumes_meaning": "messages[]: tool_call turns with store-native args {operation, table, ...}; select requires an explicit columns array.",
+    "examples": [
+      "{operation: insert, table: answers, row: {...}} -> tool_result 'ok', hop {operation: 'insert', rows_affected: 1}"
+    ]
+  }
+}

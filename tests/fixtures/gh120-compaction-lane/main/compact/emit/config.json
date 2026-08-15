@@ -1,0 +1,64 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\ntid = str(ctx.get(\"turn_id\", \"\"))\nupto = int(ctx.get(\"compact_upto\", 0) or 0)\n\ntext = \"\"\nfor m in d.get(\"messages\", []):\n    if isinstance(m, dict) and m.get(\"origin\") == \"assistant\" \\\n            and m.get(\"type\") in (\"text\", None):\n        text = str(m.get(\"text\", \"\") or \"\")\n\n\ndef emit(route, msgs):\n    sys.stdout.write(json.dumps({\"header\": {\"route\": route}, \"messages\": msgs}))\n    sys.exit(0)\n\n\nif hop.get(\"finish_reason\") == \"error\" or not text.strip():\n    # Degradation, decided instead of accidental: a failed or empty fold must\n    # not fold the rounds into nothing, and it must not park the turn either --\n    # the fire permission was already spent upstream. `refire` re-selects and\n    # sends the UNCOMPACTED window on. Costly, complete, and visible.\n    emit(\"refire\", [])\n\n# The summary row is an ADDITION to the thread, never a replacement: the folded\n# rows stay exactly where they were (No-Delete). `iter` carries the boundary,\n# which is what makes the rebuild able to tell folded from fresh.\nop = {\"operation\": \"insert\", \"table\": \"thread\",\n      \"row\": {\"turn_id\": tid, \"iter\": upto, \"role\": \"summary\",\n              \"turn\": json.dumps({\"origin\": \"assistant\", \"type\": \"text\",\n                                  \"text\": text})}}\nemit(\"write\", [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"k-ins\",\n                \"text\": json.dumps(op)}])\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": false,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "write",
+            "refire"
+          ]
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "turn_id": {
+          "type": "string",
+          "required": true
+        },
+        "compact_upto": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "Turns the condenser's prose into ONE store insert -- the summary row that carries the fold boundary in its `iter` column.",
+    "use_when": "Behind the condense llm cell of the compaction lane.",
+    "not_in_scope": "No policy: it neither chooses the boundary nor decides when to fold. Its one judgement is the degradation -- a failed or empty condensation leaves on `refire` and the uncompacted window travels on.",
+    "examples": [
+      "a summary with the four sections -> one insert of role 'summary' at iter = compact_upto",
+      "the provider answered with finish_reason error -> route refire, no row, no stall"
+    ]
+  }
+}

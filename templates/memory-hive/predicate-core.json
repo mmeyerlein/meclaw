@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "purpose": "Curated seed vocabulary for the extraction lane (0.2.0 P1, ruling Q1/Q2). A predicate is a KEY, not prose: English, snake_case, lower case. The list covers the most common relation types of personal assistance so that even the FIRST fact minted about a subject already sits on a canonical axis instead of opening a private one.",
+  "cardinality_meaning": {
+    "single": "One value at a time. A later value on the same (subject, predicate) axis replaces the earlier one -- this is where the version chain fires and where a span gets its end.",
+    "multi": "The axis ENUMERATES. Values coexist; a new one does not end the ones already there, and supersession is not derived on it (ruling Q4, seeded cardinality)."
+  },
+  "consumers": [
+    "templates/memory-hive/extract-glue/config.json -- renders the two cardinality groups into the extractor prompt (CORE_SINGLE / CORE_MULTI literal, marked by the PREDICATE CORE LIST anchor comments).",
+    "crates/meclaw-cells/tests/extract_canonicalization.rs -- drift lock: the rendered prompt is compared against THIS file, so the literal in the script cannot silently diverge.",
+    "P2 (chain derivation) -- `cardinality` is the seeded half of `axis_is_multivalued`: a predicate listed as `multi` counts as an enumeration even before two facts of it ever shared a valid_from."
+  ],
+  "not_a_closed_set": "New predicates are allowed and expected. The list is the STYLE reference, not a whitelist: an unlisted relation is minted in the same shape (English, snake_case) and, once it recurs, is a candidate for this file.",
+  "a_predicate_names_the_subject_matter": {
+    "rule": "A predicate names the MATTER a statement is about, never the speech act that carried it. Wanting, planning, hoping and intending are marked by `fact_kind: foresight` on the statement; they are not relations of their own (GH #67).",
+    "why": "Measured: one memory held `has_experience` \"setting a personal best time of 27:12 in a charity 5K run\" and its update landed on `plans_to_beat` \"personal best time of 25:50\". The currency question groups by (canonical_subject, canonical_predicate), so no round could ever put the two values in one axis entry, and the memory answered with the older value. A speech-act key does not merely duplicate an axis -- it hides an update from every question about the matter it updates.",
+    "speech_act_predicates": "None are seeded here and none ever will be. A `plans_to_*`, `wants_to_*` or `hopes_to_*` key cannot be aliased into subject-matter form generically either, because the matter varies per statement while the alias table is per predicate. The fate of the class is therefore prevention rather than repair, in three places: the extractor prompt states the rule with examples (`extract-glue`, section \"A PREDICATE NAMES THE SUBJECT MATTER\"), the replacement window shows the extractor the axes the turn is ABOUT so the sibling is visible while it decides, and the nightly currency question is told which statements are intentions so a plan never closes a fact. A store that already carries such an axis keeps it: nothing rewrites a written predicate, and the nightly predicate question may merge two spellings of one relation but never invents a third.",
+    "subject_matter_examples": [
+      { "instead_of": "plans_to_beat", "use": "personal_record", "with": "fact_kind: foresight" },
+      { "instead_of": "wants_to_move_to", "use": "lives_in", "with": "fact_kind: foresight" },
+      { "instead_of": "hopes_to_visit", "use": "visited", "with": "fact_kind: foresight" }
+    ],
+    "why_the_examples_are_not_seeded": "`personal_record` is not in the list below, and no cardinality is claimed for it. Cardinality is a judgement this memory is built to make (the nightly question, ruling Q3), the seed takes precedence over it, and an over-cap axis whose relation is seeded `multi` is answered for good and never asked again (GH #66). Seeding a verdict nobody measured would therefore be irreversible in exactly the corner where it is most likely wrong. The naming rule needs no cardinality to work."
+  },
+  "predicates": [
+    { "predicate": "allergic_to", "cardinality": "multi", "gloss": "substances or foods the subject reacts to" },
+    { "predicate": "born_on", "cardinality": "single", "gloss": "date of birth" },
+    { "predicate": "diet", "cardinality": "single", "gloss": "how the subject eats (keto, vegetarian, ...)" },
+    { "predicate": "dislikes", "cardinality": "multi", "gloss": "things the subject dislikes" },
+    { "predicate": "favorite_color", "cardinality": "single", "gloss": "preferred color" },
+    { "predicate": "favorite_food", "cardinality": "single", "gloss": "preferred dish or cuisine" },
+    { "predicate": "favorite_music", "cardinality": "single", "gloss": "preferred genre, band or artist" },
+    { "predicate": "friend_of", "cardinality": "multi", "gloss": "people the subject is close to" },
+    { "predicate": "has_child", "cardinality": "multi", "gloss": "children of the subject" },
+    { "predicate": "has_parent", "cardinality": "multi", "gloss": "parents of the subject" },
+    { "predicate": "has_pet", "cardinality": "multi", "gloss": "animals living with the subject" },
+    { "predicate": "has_sibling", "cardinality": "multi", "gloss": "siblings of the subject" },
+    { "predicate": "job_title", "cardinality": "single", "gloss": "current role title" },
+    { "predicate": "likes", "cardinality": "multi", "gloss": "things the subject likes" },
+    { "predicate": "lived_in", "cardinality": "multi", "gloss": "earlier places of residence" },
+    { "predicate": "lives_in", "cardinality": "single", "gloss": "current place of residence" },
+    { "predicate": "member_of", "cardinality": "multi", "gloss": "clubs, communities, organisations" },
+    { "predicate": "owns", "cardinality": "multi", "gloss": "things the subject owns" },
+    { "predicate": "partner_of", "cardinality": "single", "gloss": "current partner" },
+    { "predicate": "preferred_language", "cardinality": "single", "gloss": "language the subject wants to be addressed in" },
+    { "predicate": "pronouns", "cardinality": "single", "gloss": "how the subject is referred to" },
+    { "predicate": "relationship_status", "cardinality": "single", "gloss": "single, married, ..." },
+    { "predicate": "skilled_in", "cardinality": "multi", "gloss": "skills and areas of expertise" },
+    { "predicate": "speaks_language", "cardinality": "multi", "gloss": "languages the subject speaks" },
+    { "predicate": "studied_at", "cardinality": "multi", "gloss": "schools and universities attended" },
+    { "predicate": "timezone", "cardinality": "single", "gloss": "the subject's local time zone" },
+    { "predicate": "visited", "cardinality": "multi", "gloss": "places the subject has been to" },
+    { "predicate": "worked_at", "cardinality": "multi", "gloss": "earlier employers" },
+    { "predicate": "works_at", "cardinality": "single", "gloss": "current employer" }
+  ]
+}

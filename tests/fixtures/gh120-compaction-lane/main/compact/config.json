@@ -1,0 +1,64 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./prep",
+          "to": "./condense",
+          "condition": "hop.route == 'condense'",
+          "modifier": {
+            "set_context": {
+              "compact_upto": "hop.compact_upto"
+            }
+          }
+        },
+        {
+          "from": "./prep",
+          "to": "/store",
+          "condition": "hop.route == 'refire'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'",
+              "firing": "'1'",
+              "compacting": "''"
+            }
+          }
+        },
+        {
+          "from": "./condense",
+          "to": "./emit"
+        },
+        {
+          "from": "./emit",
+          "to": "/store",
+          "condition": "hop.route == 'write'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'"
+            }
+          }
+        },
+        {
+          "from": "./emit",
+          "to": "/store",
+          "condition": "hop.route == 'refire'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'",
+              "firing": "'1'",
+              "compacting": "''"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the context-compaction lane (GH #120): the three cells that fold the old rounds of one tool loop into a single summary row. Condensation, not eviction -- the store keeps every folded row, only the WINDOW gets smaller.",
+    "use_when": "Behind the re-entry edge of a store-backed tool loop, on the branch that fires once the accumulated prompt-token count crosses the threshold.",
+    "not_in_scope": "No threshold (that is an edge condition), no rebuild (that is the collector), and no deletion of anything, ever. The `refire` route is the lane's own way out when a fold cannot be produced."
+  }
+}

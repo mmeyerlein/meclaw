@@ -1,0 +1,30 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./keep",
+          "to": "./episodes",
+          "condition": "has(hop.route) && hop.route == 'mstore'"
+        },
+        {
+          "from": "./episodes",
+          "to": "./keep",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_echo'"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "A one-table memory: the episode surface every turn is written to, and the cell that serves the recall port in front of it. Two cells, one internal round trip, no model call anywhere in it.",
+    "use_when": "As the smallest thing that can answer a collector's recall port, so an example can show the port working end to end.",
+    "not_in_scope": "No extraction, no fact model, no ranking, no consolidation -- this hive stores what was said and answers questions about WHEN. Anything that reads meaning out of a turn is a different and much larger thing behind the same port."
+  }
+}

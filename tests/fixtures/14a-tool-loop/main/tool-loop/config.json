@@ -1,0 +1,29 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./dispatcher",
+          "condition": "hop.finish_reason == 'tool_calls'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./tool-a",
+          "condition": "hop.msg_type == 'tool_call'"
+        },
+        {
+          "from": "./tool-a",
+          "to": "./collector"
+        },
+        {
+          "from": "./collector",
+          "to": "/sink"
+        }
+      ]
+    }
+  }
+}

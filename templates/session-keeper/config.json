@@ -1,0 +1,58 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./stamp",
+          "to": "./sessions",
+          "condition": "has(hop.route) && hop.route == 'kstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'keeper-stamp'",
+              "ses_phase": "hop.phase",
+              "channel": "hop.channel",
+              "keeper_session": "hop.session_id",
+              "keeper_body": "hop.keeper_body"
+            }
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": "./stamp",
+          "condition": "context.store_origin == 'keeper-stamp'"
+        },
+        {
+          "from": "./close",
+          "to": "./sessions",
+          "condition": "has(hop.route) && hop.route == 'kstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'keeper-close'",
+              "ses_phase": "hop.phase",
+              "channel": "hop.channel",
+              "keeper_session": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": "./close",
+          "condition": "context.store_origin == 'keeper-close'"
+        },
+        {
+          "from": "./night",
+          "to": "./close",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'night-close'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the session keeper: bundles the channel-generation state and the two passes that move it -- the stamp in the ingress path and the nightly close -- behind one entry lane and two exit routes. A session is a phone call on a channel: it begins with a turn, it ends deterministically, and everything downstream only reads the id.",
+    "use_when": "One per agent surface, in front of the context assembly. Instantiate it in the same mutation that wires the ingress lane and the close port; the keeper is an island until an edge crosses into it.",
+    "not_in_scope": "No conversation content and no context assembly -- the turns live in the collector's window. No judgement about whether a conversation is over: the close is a timer plus an idle threshold, never a model call. Nothing is deleted; a closed generation stays as a row."
+  }
+}

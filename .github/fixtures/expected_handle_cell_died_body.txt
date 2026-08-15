@@ -1,0 +1,39 @@
+async fn handle_cell_died(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    inbox_self_tx: &mpsc::Sender<ColonyMsg>,
+    path: Path,
+    death_kind: DeathKind,
+) -> CellDiedOutcome {
+    let Some(entry) = registry.get_mut(&path) else {
+        tracing::warn!(path = %path.as_str(), "cell-died for unknown path (already removed)");
+        return CellDiedOutcome::Removed;
+    };
+    if matches!(death_kind, DeathKind::Normal) {
+        tracing::info!(path = %path.as_str(), "cell ended normally, removing from registry");
+        registry.remove(&path);
+        return CellDiedOutcome::Removed;
+    }
+    // Panic OR Backstop → one_for_one restart (restart_count counts both).
+    entry.restart_count += 1;
+    if entry.restart_count > entry.restart_limit {
+        tracing::error!(
+            path = %path.as_str(),
+            restarts = entry.restart_count,
+            limit = entry.restart_limit,
+            "cell exceeded restart limit, marking failed (entry retained, no respawn)"
+        );
+        entry.failed = true;
+        entry.active = false;
+        return CellDiedOutcome::Failed { path };
+    }
+    tracing::warn!(
+        path = %path.as_str(),
+        restart = entry.restart_count,
+        ?death_kind,
+        "restarting cell with fresh mpsc pair"
+    );
+    let (new_sender, new_join, new_peace_rx, new_backstop_rx) = (entry.respawn)();
+    entry.handle = ActorHandle::new(path.clone(), new_sender);
+    spawn_watcher(inbox_self_tx, path, new_join, new_peace_rx, new_backstop_rx);
+    CellDiedOutcome::Restarted
+}

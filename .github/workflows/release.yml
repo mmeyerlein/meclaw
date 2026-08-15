@@ -1,0 +1,113 @@
+name: release
+
+# A tag push is the whole trigger. `gh release create` runs here, not on a
+# laptop -- the assets that people download are built by a machine whose
+# inputs are the tag and this file, and by nothing else.
+#
+# Why musl and not the default gnu target: a glibc-linked binary carries a
+# minimum glibc version from the builder image, and `curl | sh` on a host with
+# an older glibc then dies with a linker error instead of running. The musl
+# build is statically linked and has no such floor. The C dependencies in this
+# workspace (ring, libsqlite3-sys/bundled) need a musl-capable C compiler, so
+# musl-tools is installed and pointed at explicitly -- cc-rs looks for
+# `x86_64-linux-musl-gcc` first, which musl-tools does NOT provide (it ships
+# `musl-gcc`), and the explicit CC/AR variables are what close that gap.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add "$TARGET"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ env.TARGET }}
+
+      - name: build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AR_x86_64_unknown_linux_musl: ar
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --target "$TARGET" -p meclaw-cli
+
+      # Stripping happens BEFORE the gate and the smoke test, so the artifact
+      # that is asserted is byte-for-byte the artifact that ships. Debug
+      # symbols are roughly a quarter of the binary and nobody downloads an
+      # installer tarball to read them; the symbols stay reachable through a
+      # source build.
+      - name: strip
+        run: strip "target/$TARGET/release/meclaw"
+
+      # The tag is the single source of the version string. `v0.9.0` becomes
+      # `0.9.0`; the binary's own `--version` is asserted against it, so a tag
+      # that does not match Cargo.toml fails here instead of shipping an asset
+      # whose name lies about its contents.
+      - name: version gate
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          built="$(./target/$TARGET/release/meclaw --version | awk '{print $NF}')"
+          if [ "$version" != "$built" ]; then
+            echo "tag $GITHUB_REF_NAME says $version, binary says $built" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: smoke test
+        run: |
+          ./target/$TARGET/release/meclaw --help > /dev/null
+          ./target/$TARGET/release/meclaw --sandbox-probe > /dev/null
+          root="$(mktemp -d)"
+          cp -r examples/hello/. "$root/"
+          printf 'OPENROUTER_API_KEY=dummy\n' > "$root/.env"
+          ./target/$TARGET/release/meclaw --validate --root "$root" --env "$root/.env"
+
+      # The archive holds the binary and both licences plus the README, so an
+      # unpacked tarball is legally and practically self-contained. The
+      # checksum file is a sibling asset rather than a line in the release body
+      # because install.sh fetches and verifies it unattended.
+      - name: package
+        id: package
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          name="meclaw-${version}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/meclaw" "dist/$name/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
+          tar -czf "dist/${name}.tar.gz" -C dist "$name"
+          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name="${{ steps.package.outputs.name }}"
+          # Idempotent on a re-run: create the release if the tag has none yet,
+          # then upload with --clobber so a repeated run replaces the assets
+          # instead of failing on "already exists".
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/${name}.tar.gz" \
+            "dist/${name}.tar.gz.sha256" \
+            --clobber

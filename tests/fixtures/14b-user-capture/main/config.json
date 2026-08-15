@@ -1,0 +1,26 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./capture",
+          "to": "./store",
+          "condition": "hop.route == 'ustore'"
+        },
+        {
+          "from": "./capture",
+          "to": "./llm",
+          "condition": "hop.route == 'ullm'"
+        },
+        {
+          "from": "./store",
+          "to": "/park",
+          "condition": "hop.operation == 'insert'"
+        }
+      ]
+    }
+  }
+}

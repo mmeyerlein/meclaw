@@ -1,0 +1,35 @@
+digraph topology {
+  rankdir=TB;
+  "/capture" [shape=box];
+  "/compact/condense" [shape=box];
+  "/compact/emit" [shape=box];
+  "/compact/prep" [shape=box];
+  "/llm" [shape=box];
+  "/park" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/store" [shape=box];
+  "/tool-loop/collector" [shape=box];
+  "/tool-loop/dispatcher" [shape=box];
+  "/tool-loop/tool-a" [shape=box];
+  "/tool-loop" [shape=diamond, style=dashed, label="/tool-loop (hive)"];
+  "/capture" -> "/llm" [label="hop.route == 'ullm'"];
+  "/capture" -> "/store" [label="hop.route == 'ustore'"];
+  "/compact/condense" -> "/compact/emit";
+  "/compact/emit" -> "/store" [label="hop.route == 'refire'"];
+  "/compact/emit" -> "/store" [label="hop.route == 'write'"];
+  "/compact/prep" -> "/compact/condense" [label="hop.route == 'condense'"];
+  "/compact/prep" -> "/store" [label="hop.route == 'refire'"];
+  "/llm" -> "/sink" [label="hop.finish_reason != 'tool_calls'"];
+  "/llm" -> "/tool-loop" [label="hop.finish_reason == 'tool_calls'"];
+  "/store" -> "/park" [label="context.store_origin == 'user'"];
+  "/store" -> "/tool-loop/collector" [label="context.store_origin == 'collector'"];
+  "/tool-loop" -> "/tool-loop/dispatcher" [label="hop.finish_reason == 'tool_calls'"];
+  "/tool-loop/collector" -> "/compact/prep" [label="hop.route == 'fire' && int(context.tokens_seen) >= 40 && int(context.iter) >= 1"];
+  "/tool-loop/collector" -> "/llm" [label="hop.route == 'fire' && (int(context.tokens_seen) < 40 || int(context.iter) < 1)"];
+  "/tool-loop/collector" -> "/park" [label="hop.route == 'park'"];
+  "/tool-loop/collector" -> "/store" [label="hop.route == 'cguard'"];
+  "/tool-loop/collector" -> "/store" [label="hop.route == 'cstore'"];
+  "/tool-loop/dispatcher" -> "/tool-loop/collector" [label="hop.route == 'c_asst'"];
+  "/tool-loop/dispatcher" -> "/tool-loop/tool-a" [label="hop.route == 'tool'"];
+  "/tool-loop/tool-a" -> "/tool-loop/collector" [label="hop.route == 'c_res'"];
+}

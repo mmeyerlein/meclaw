@@ -1,0 +1,97 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_EXTRACTOR}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "external_timeout_ms": 110000,
+    "system_order": [
+      "instructions"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "provider_extra": {
+      "reasoning": {
+        "effort": "${MEMORY_REASONING_EXTRACT:-minimal}"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "description": "MODEL_EXTRACTOR — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding)"
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "minimal",
+        "description": "Explicit reasoning effort (MEMORY_REASONING_EXTRACT) — never inherit the provider default"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "Turns one accumulated batch of raw turns into structured facts, entities and edges. Deliberately the cheap model tier — benchmarks show extraction is not the quality bottleneck, retrieval and read-time reasoning are.",
+    "use_when": "Called by extract-glue exactly once per claimed batch (~128 accumulated tokens or a 2-minute-old item by default), never per message.",
+    "not_in_scope": "No validation (extract-glue never trusts this output), no store access, no consolidation reasoning — that is the dreamer's expensive tier. No conversation metadata either: that a turn was asked, answered or discussed is never a fact (O-6) -- the discipline lives in the prompt that extract-glue sends, not in this cell.",
+    "emits_meaning": "messages[]: one assistant turn holding the extraction JSON. hop.finish_reason='error' is not a crash: extract-glue hands the batch back to the queue and the next gate retries it.",
+    "consumes_meaning": "system.instructions.text: the extraction contract (JSON shape, fact_kind semantics). messages[]: one user turn with the batch items as JSON.",
+    "examples": [
+      "batch of 4 turns -> {\"facts\":[{\"subject\":\"user:alex\",\"predicate\":\"diet\",\"claim\":\"eats keto\",\"fact_kind\":\"world\",\"confidence\":80}],\"entities\":[],\"edges\":[]}",
+      "a question turn (\"which editors did I prefer in the last 7 days?\") and the assistant's answer to it -> {\"facts\":[],\"entities\":[],\"edges\":[]}: the conversation is the episode, the world state is unchanged (O-6)"
+    ]
+  }
+}

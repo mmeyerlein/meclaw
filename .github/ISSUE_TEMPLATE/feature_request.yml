@@ -1,0 +1,16 @@
+name: Feature request
+description: A capability meclaw should have
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that meclaw can't do today?
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: The shape of a solution
+      description: How could it work? A cell type, a colony.json switch, a CLI flag — whatever you imagine.

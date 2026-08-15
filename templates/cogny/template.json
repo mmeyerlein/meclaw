@@ -1,0 +1,25 @@
+{
+  "name": "cogny",
+  "version": "1.3.0",
+  "description": {
+    "purpose": "The agent core as one template (GH #28, R-CG-1/R-CG-2): a hive that carries collector@1 as `collector` and dispatcher@1 as `split` plus TWO llm brain slots, with every internal edge pre-wired - the seam with its own iteration bound and its own restore_ttl, the dispatcher lanes, the loopback. Since 1.1.0 the seam is two-laned (GH #124): ./brain is the thinking lane, ./brain_fast the lookup lane, and the SAME assembled errand takes one of them depending on context.consult_class. Structurally a talky without a channel: no session-keeper, no summarizer, no proxy, because the core has no channel, no sessions and no night. Its conversation is the errands the channel voices send it.",
+    "use_when": "One per agent, never one per channel voice - a sibling hive of the talkies at agent level (<agent>/{talky..., cogny, memory, archive}). Instantiate via add_nodes AND wire the two advisor ports plus the tool lanes via add_edges IN THE SAME MUTATION; the composite is an island until an edge crosses into it. Instantiation needs ctx.model (the THINKING model - a fast channel model there wastes the split) and ctx.model_fast (the lookup lane's model); both take a resolved literal or a MODEL_<ROLE> env token passed verbatim.",
+    "not_in_scope": "No tool cells - the tool set is the per-agent choice and its lanes are wired per instance on hop.tool_name. No session keeper, no summarizer, no proxy, no channel identity, no persona: cogny mints no id, closes no day and speaks to no user. No memory hive either - the recall port is wired to the central hive from the parent scope, the core only asks. And no classifier: which lane an errand takes is decided OUTSIDE this hive, by the tool name the asking model chose.",
+    "examples": [
+      "PORTS - Consult ingress, TWO edges since 1.1.0, both landing on ./collector/assemble with route in_turn: the talky's dispatcher edge on hop.tool_name == 'consult_cogny' sets context.consult_class 'consult', the edge on hop.tool_name == 'ask_memory' sets 'lookup'. Both MUST promote hop.consult_id to context and MUST clear col_phase, otherwise the correlation dies at the next hop and the errand arrives mid-assembly. Advice exit: ./collector/assemble on hop.route=='answer' -> the asking talky's collector on lane in_advice, again clearing col_phase. Error drain: ./brain AND ./brain_fast on hop.finish_reason=='error' || 'content_filter'. Per instance: ./split on hop.tool_name=='<name>' out to each tool cell, and every tool cell back into ./collector/assemble with route in_tool. Optional: the collector's recall / in_bundle pair to the central memory hive - this is where params.memory_tier lives now (R-CG-1: the memory leg moved off the talkies).",
+      "a consult errand arrives -> the core runs its OWN tool round -> the advice leaves on the answer lane under the consult_id it was given, and a fresh talky round says it in the channel's voice",
+      "an ask_memory errand arrives -> the collector assembles the SAME window and the SAME memory bundle -> the seam edge picks ./brain_fast -> a short answer leaves on the same answer lane, without waiting behind whatever the deep lane is writing",
+      "the fast lane finds the bundle insufficient -> it calls escalate_to_deep -> the split hands that call back into the seam as a fresh turn with consult_class 'consult', and ./brain answers: a misclassification costs one extra recall, never a wrong answer",
+      "the core cannot answer without knowing more -> the same answer lane carries the question back, the talky puts it in the channel, and the user's reply returns under the SAME consult_id"
+    ]
+  },
+  "tags": [
+    "composite",
+    "agent",
+    "core",
+    "advisor",
+    "tool-loop"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

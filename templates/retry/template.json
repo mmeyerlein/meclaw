@@ -1,0 +1,22 @@
+{
+  "name": "retry",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "A bounded retry loop around ONE tool, as one code cell: the call passes through it on the way in, the reply passes through it on the way out, and an error reply re-emits the ORIGINAL call -- parked in context by the wiring, counted and bounded by the retry edge, never by the cell. At the cap the give-up lane hands the last error to an error sink with the original error_code intact.",
+    "use_when": "In front of a tool cell whose failures are worth a second try (network tools, busy stores). Wire five lanes in the SAME mutation that instantiates it: the call edge (parks hop.call into context.call and seeds context.attempt), the tool's reply edge back in, the retry edge (increments and bounds on int(context.attempt) < RETRY_MAX), the ok edge, and the give-up edge onto the error sink. Every number condition needs the int() cast.",
+    "not_in_scope": "No counting in the cell (the attempt counter is edge authority), no backoff timing, no call bundles (one call per message -- the dispatcher template splits bundles), no fan-in, no knowledge of which cell the tool is.",
+    "examples": [
+      "PORTS - Entry: a message with ONE tool_call turn. Exit on hop.route: 'call' -> the tool (modifier parks the call: set_context {call: hop.call, attempt: '0'}), 'retry' -> the tool again (bounded: int(context.attempt) < ${RETRY_MAX:-3}, modifier increments) OR the error sink (give-up: int(context.attempt) >= ${RETRY_MAX:-3}, modifier rewrites route to 'error' and puts the attempt count on the hop), 'ok' -> the result consumer, 'error' -> the error sink.",
+      "a flaky web tool: fails twice with io_error, succeeds on the third attempt -- the consumer sees one 'ok' result and never a failure",
+      "a permanently broken tool with RETRY_MAX 3: four runs, then the error sink receives the LAST error reply with hop {route: 'error', error_code, attempt: 3} and nothing dead-letters"
+    ]
+  },
+  "tags": [
+    "retry",
+    "error-handling",
+    "routing",
+    "code"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

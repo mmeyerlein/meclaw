@@ -1,0 +1,61 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "episodes": {
+        "id": "text",
+        "session_id": "text",
+        "turn_id": "text",
+        "sender": "text",
+        "content": "text",
+        "happened_at": "text",
+        "recorded_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The episodes surface of the shipped memory-hive store, projected for the memory-drain colony test (GH #125): the append-only turn table the drain writes into, and nothing else.",
+    "use_when": "Test fixture only. It is a PROJECTION of the shipped memory-hive store template, not a hand-written stand-in: cell, contract, query_timeout_ms and the episodes schema are the shipped values. The private test x2_hive_fixture_drift.rs holds them against the living template, so this file cannot go stale unnoticed and cannot quietly grow.",
+    "not_in_scope": "Not a template and not the hive store. The other tables of the hive store, its canonical bindings and its FTS indexes are private hive design, out of scope for the drain contract, and deliberately absent."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./greet",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "rec_origin": "'greet'",
+              "rec_phase": "hop.phase",
+              "rec_channel": "hop.channel",
+              "rec_body": "hop.rec_body"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./greet",
+          "condition": "context.rec_origin == 'greet'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the reception: it holds the channel register and the one pass that reads it, behind a single entry lane. Everything that arrives from a surface goes through here exactly once per turn, and leaves on the lane of the channel it belongs to.",
+    "use_when": "One per colony that serves more than one channel through the same kind of agent. Instantiate it in the same mutation that wires the ingress lane -- and grant the mutation lane in the parent's bootstrap config.json, because no mutation can create it.",
+    "not_in_scope": "No conversation, no routing table of its own: the per-channel lanes are edges the reception itself draws, and they live in the parent scope's edge table like every other edge. Nothing is deleted -- a channel that fell silent keeps its row and its talky."
+  }
+}

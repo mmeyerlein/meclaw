@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nquestion = envelope.get(\"header\", {}).get(\"context\", {}).get(\"question\", \"\")\nthread = []\nif question:\n    thread.append({\"origin\": \"user\", \"type\": \"text\", \"text\": question})\nthread.extend(d.get(\"messages\", []))\nsys.stdout.write(json.dumps({\"messages\": thread}))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

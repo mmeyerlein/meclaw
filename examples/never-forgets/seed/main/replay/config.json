@@ -1,0 +1,74 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n# The import lane. A colony that is supposed to remember months has to be\n# given months, and the way in is NOT the conversation surface: a replayed\n# turn already has an event time, and re-speaking it through the agent would\n# stamp it with today.\n#\n# So this cell speaks the memory's episode port DIRECTLY -- the same port the\n# drain speaks after every live turn. One port, two producers: the drain knows\n# what was just said, this lane knows what was said in January. Neither of\n# them is a special case of the other, and the memory behind the port cannot\n# tell them apart, which is exactly the property that makes a port a port.\n#\n# The event time rides in `context`, never on the turn: a UBF turn carries\n# origin, type, text and id and NOTHING else, so a timestamp glued to it would\n# be refused at the delivery boundary. The header is where per-message facts\n# about a message belong.\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nheader = envelope.get(\"header\") or {}\ncontext = header.get(\"context\") or {}\nturn = None\nfor m in d.get(\"messages\") or []:\n    if m.get(\"type\") in (\"text\", None) and m.get(\"origin\") in (\"user\", \"assistant\"):\n        turn = m\n        break\nif turn is None:\n    sys.stdout.write(\"[]\")\n    sys.exit(0)\nsession = str(context.get(\"session_id\") or \"import\")\nsys.stdout.write(json.dumps([{\n    \"header\": {\"route\": \"episode\", \"session_id\": session,\n               \"turn_id\": str(context.get(\"turn_id\") or \"\"),\n               \"happened_at\": str(context.get(\"happened_at\") or \"\")},\n    \"messages\": [turn]}]))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "episode"
+          ],
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": true
+        },
+        "turn_id": {
+          "type": "string",
+          "required": true
+        },
+        "happened_at": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "happened_at": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The import lane of this colony: it puts one past turn on the memory's episode port under the instant it was said, taken from the request headers rather than from a clock.",
+    "use_when": "Once per colony that has a past to load: a migration off another agent, an archive, a month of exported chat.",
+    "not_in_scope": "No screening, no session, no memory of its own, no answer, no batching. It decides nothing about content and reads no clock -- an imported turn keeps the time it happened."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "thread": {
+        "turn_id": "text",
+        "iter": "int",
+        "role": "text",
+        "turn": "text",
+        "fired": "int"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  }
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Q&A
+    url: https://github.com/mmeyerlein/meclaw/discussions/categories/q-a
+    about: Questions about running meclaw — ask here instead of opening an issue.
+  - name: Ideas
+    url: https://github.com/mmeyerlein/meclaw/discussions/categories/ideas
+    about: Not sure it's a feature request yet? Start a discussion.

@@ -1,0 +1,21 @@
+{
+  "cell": {
+    "type": "bash"
+  },
+  "params": {
+    "command": "true"
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  },
+  "description": {
+    "purpose": "Error lane for rejected ops -- an unrouted error is a caller waiting forever.",
+    "use_when": "Always: every port that can carry an error needs a destination.",
+    "not_in_scope": "No retry, no alerting.",
+    "examples": [
+      "op on an unknown schedule_id -> schedule_not_found lands here"
+    ]
+  }
+}

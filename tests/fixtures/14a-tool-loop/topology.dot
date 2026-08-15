@@ -1,0 +1,14 @@
+digraph topology {
+  rankdir=TB;
+  "/llm" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/tool-loop/collector" [shape=box];
+  "/tool-loop/dispatcher" [shape=box];
+  "/tool-loop/tool-a" [shape=box];
+  "/tool-loop" [shape=diamond, style=dashed, label="/tool-loop (hive)"];
+  "/llm" -> "/tool-loop" [label="hop.finish_reason == 'tool_calls'"];
+  "/tool-loop" -> "/tool-loop/dispatcher" [label="hop.finish_reason == 'tool_calls'"];
+  "/tool-loop/collector" -> "/sink";
+  "/tool-loop/dispatcher" -> "/tool-loop/tool-a" [label="hop.msg_type == 'tool_call'"];
+  "/tool-loop/tool-a" -> "/tool-loop/collector";
+}

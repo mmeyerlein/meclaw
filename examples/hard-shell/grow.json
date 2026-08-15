@@ -1,0 +1,52 @@
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "surface",
+        "template": "door"
+      },
+      {
+        "name": "sink",
+        "template": "terminal"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./surface",
+        "to": "./probe",
+        "condition": "has(hop.route) && hop.route == 'turn'"
+      },
+      {
+        "from": "./probe",
+        "to": "./sink",
+        "condition": "has(hop.error_code) && hop.error_code == 'target_blocked'",
+        "modifier": {
+          "set_hop": {
+            "route": "'denied'"
+          }
+        }
+      },
+      {
+        "from": "./probe",
+        "to": "./sink",
+        "condition": "has(hop.http_status)",
+        "modifier": {
+          "set_hop": {
+            "route": "'fetched'"
+          }
+        }
+      },
+      {
+        "from": "./probe",
+        "to": "./sink",
+        "condition": "has(hop.error_code) && (hop.error_code == 'timeout' || hop.error_code == 'io_error' || hop.error_code == 'invalid_input' || hop.error_code == 'too_many_redirects' || hop.error_code == 'invalid_redirect')",
+        "modifier": {
+          "set_hop": {
+            "route": "'failed'"
+          }
+        }
+      }
+    ]
+  }
+}

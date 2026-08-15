@@ -1,0 +1,14 @@
+digraph topology {
+  rankdir=TB;
+  "/ask" [shape=box];
+  "/capture" [shape=box];
+  "/corpus" [shape=box];
+  "/llm" [shape=box];
+  "/retrieve" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/ask" -> "/corpus";
+  "/capture" -> "/sink";
+  "/corpus" -> "/retrieve";
+  "/llm" -> "/capture";
+  "/retrieve" -> "/llm";
+}

@@ -1,0 +1,69 @@
+async fn route(
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    sender_path: Path,
+    msg: Message,
+) -> RouteAction {
+    // TTL-Dekrement zuerst (Spec § TTL-Semantik: "Colony dekrementiert
+    // bei jeder Routing-Entscheidung"). ttl == 0 vor Lookup → TtlExpired.
+    if msg.ttl == 0 {
+        tracing::warn!(
+            sender = %sender_path.as_str(),
+            target = %msg.target.as_str(),
+            trace_id = %msg.trace_id,
+            reason = "TtlExpired",
+            "ttl exhausted dead-letter"
+        );
+        push_dead_letter(
+            dead_letters,
+            DeadLetter {
+                sender_path,
+                original_target: msg.target.clone(),
+                resolved_target: msg.target.clone(),
+                message: msg,
+                reason: crate::dead_letter::DeadLetterReason::TtlExpired,
+            },
+        );
+        return RouteAction::Done;
+    }
+    let msg = Message {
+        ttl: msg.ttl - 1,
+        ..msg
+    };
+
+    let original_target = msg.target.clone();
+    let resolved = Path::resolve(&sender_path, msg.target.as_str());
+
+    // /colony bare → DLQ-only (spec Z.410: nicht adressierbar).
+    if resolved.as_str() == "/colony" {
+        handle_colony_target(dead_letters, sender_path, original_target, resolved, msg);
+        return RouteAction::Done;
+    }
+    // /colony/<endpoint> → defer to outputs-arm-dispatch (state-rich callsite).
+    // sender + endpoint + msg werden mitgegeben, damit der callsite Pre-T2-Verhalten
+    // exakt spiegeln kann (Stub callt handle_colony_target unverändert) oder ab T3
+    // den echten Dispatcher aufruft.
+    if resolved.starts_with("/colony/") {
+        return RouteAction::ColonyDispatch { endpoint: resolved, msg, sender: sender_path };
+    }
+
+    match registry.get(&resolved) {
+        Some(entry) => {
+            let routed = Message {
+                target: resolved,
+                ..msg
+            };
+            if let Err(e) = entry.handle.send(routed).await {
+                tracing::warn!(target = %e.0.target.as_str(), "route send failed (receiver dropped)");
+            }
+            RouteAction::Done
+        }
+        None => {
+            if hive_scopes.get(&resolved).is_some() { return RouteAction::HiveTransit { hive_path: resolved, msg }; }
+            match handle_unresolved(dead_letters, sender_path, original_target, resolved, msg) {
+            Some((sp, m)) => RouteAction::Cascade { sender: sp, msg: m },
+            None => RouteAction::Done,
+        }},
+    }
+}

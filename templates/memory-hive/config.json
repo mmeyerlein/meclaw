@@ -1,0 +1,262 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [
+      "writer",
+      "recall",
+      "extract-glue"
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": "./writer",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'wstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'episode'",
+              "mem_phase": "'episode'"
+            }
+          }
+        },
+        {
+          "from": "./recall",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'recall'",
+              "mem_phase": "hop.phase",
+              "recall_id": "hop.recall_id"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./recall",
+          "condition": "context.store_origin == 'recall'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./extract-glue",
+          "condition": "has(hop.route) && hop.route == 'enqueue'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'extract'",
+              "mem_phase": "'enqueue'"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./extract-glue",
+          "condition": "context.store_origin == 'episode'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'episode'"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./extract-glue",
+          "condition": "context.store_origin == 'extract'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase",
+              "batch_id": "context.batch_id"
+            }
+          }
+        },
+        {
+          "from": "./extract-glue",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'xstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'extract'",
+              "mem_phase": "hop.phase",
+              "batch_id": "hop.batch_id"
+            }
+          }
+        },
+        {
+          "from": "./extract-glue",
+          "to": "./extractor",
+          "condition": "has(hop.route) && hop.route == 'extract'"
+        },
+        {
+          "from": "./extractor",
+          "to": "./extract-glue",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'extract'",
+              "mem_phase": "'parse'"
+            }
+          }
+        },
+        {
+          "from": "./cron",
+          "to": "./dream-glue",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'nightly-dream'",
+          "modifier": {
+            "set_context": {
+              "dream_run": "hop.event_id",
+              "dream_to": "hop.fired_at",
+              "store_origin": "'dream'",
+              "mem_phase": "'window'"
+            }
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'dstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'dream'",
+              "mem_phase": "hop.phase",
+              "dream_run": "hop.dream_run",
+              "dream_to": "hop.dream_to"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./dream-glue",
+          "condition": "context.store_origin == 'dream'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase"
+            }
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./dreamer",
+          "condition": "has(hop.route) && hop.route == 'dream'"
+        },
+        {
+          "from": "./dreamer",
+          "to": "./dream-glue",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'dream'",
+              "mem_phase": "'verdict'"
+            }
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'judge'"
+        },
+        {
+          "from": "./judge",
+          "to": "./dream-glue",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'dream'",
+              "mem_phase": "'canon-judged'"
+            }
+          }
+        },
+        {
+          "from": "./extract-glue",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed'"
+            }
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed'"
+            }
+          }
+        },
+        {
+          "from": "./embed",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'estore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'embed'",
+              "mem_phase": "'embedded'"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./embed",
+          "condition": "context.store_origin == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed-done'"
+            }
+          }
+        },
+        {
+          "from": "./recall",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed-query'",
+              "recall_id": "hop.recall_id",
+              "store_origin": "'recall'"
+            }
+          }
+        },
+        {
+          "from": "./embed",
+          "to": "./recall",
+          "condition": "has(hop.route) && hop.route == 'equery'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'t1-qvec'"
+            }
+          }
+        },
+        {
+          "from": "./recall",
+          "to": "./dialectic",
+          "condition": "has(hop.route) && hop.route == 'dialectic'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'dialectic'",
+              "recall_id": "hop.recall_id"
+            }
+          }
+        },
+        {
+          "from": "./dialectic",
+          "to": "./recall",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'answer'"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one agent's memory behind four documented ports. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
+    "use_when": "Instantiate per agent tree; wire the ports from the parent scope in the same mutation.",
+    "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph."
+  }
+}

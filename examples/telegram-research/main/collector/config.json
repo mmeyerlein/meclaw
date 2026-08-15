@@ -1,0 +1,61 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\ntid = ctx.get(\"turn_id\", \"\")\nit = int(ctx.get(\"iter\", 0))\nfiring = str(ctx.get(\"firing\", \"\")) == \"1\"\nop = hop.get(\"operation\")\nra = int(hop.get(\"rows_affected\", 0) or 0)\nrt = hop.get(\"route\")\ndef emit(route, msgs):\n    sys.stdout.write(json.dumps([{\"header\":{\"route\":route},\"messages\":msgs}]))\ndef store_op(route, o):\n    emit(route, [{\"origin\":\"assistant\",\"type\":\"tool_call\",\"id\":\"c-op\",\"text\":json.dumps(o)}])\ndef park():\n    sys.stdout.write(json.dumps([]))\ndef ids_of(turn):\n    items = turn if isinstance(turn, list) else [turn]\n    return [t.get(\"id\",\"\") for t in items if isinstance(t, dict) and t.get(\"type\")==\"tool_call\" and t.get(\"id\")]\ndef rows_of(d):\n    rows = json.loads(d.get(\"messages\",[{}])[0].get(\"text\",\"[]\"))\n    return [r for r in rows if r.get(\"turn_id\")==tid]\ndef fire_thread(rows):\n    # PLAIN order since the b2923cf translate-merge: consecutive tool_call turns\n    # are collapsed into ONE wire assistant message (Form B). The interleaved\n    # order (pre-merge workaround) is retired; this fire IS the merge live test.\n    msgs = []\n    for r in sorted(rows, key=lambda r:(int(r.get(\"iter\",0)), 0 if r.get(\"role\")==\"user\" else (1 if r.get(\"role\")==\"assistant\" else 2))):\n        t = json.loads(r.get(\"turn\",\"null\"))\n        if isinstance(t, list): msgs.extend(t)\n        elif t is not None: msgs.append(t)\n    emit(\"fire\", msgs)\ndef is_complete(rows):\n    cur = [r for r in rows if int(r.get(\"iter\",0))==it]\n    expected, received = set(), set()\n    for r in cur:\n        t = json.loads(r.get(\"turn\",\"null\"))\n        if r.get(\"role\")==\"assistant\":\n            expected.update(ids_of(t))\n        elif r.get(\"role\")==\"tool\":\n            tt = t if isinstance(t, dict) else {}\n            if tt.get(\"id\"): received.add(tt.get(\"id\"))\n    return bool(expected and expected <= received)\nif op == \"insert\":\n    store_op(\"cstore\", {\"operation\":\"select\",\"table\":\"thread\",\n              \"columns\":[\"turn_id\",\"iter\",\"role\",\"turn\"],\"where\":{\"turn_id\":tid}})\nelif op == \"select\" and firing:\n    fire_thread(rows_of(d))\nelif op == \"select\":\n    if is_complete(rows_of(d)):\n        store_op(\"cguard\", {\"operation\":\"update\",\"table\":\"thread\",\n                  \"set\":{\"fired\":1},\n                  \"where\":{\"turn_id\":tid,\"iter\":it,\"role\":\"assistant\",\"fired\":0}})\n    else:\n        park()\nelif op == \"update\":\n    if ra == 1:\n        store_op(\"cguard\", {\"operation\":\"select\",\"table\":\"thread\",\n                  \"columns\":[\"turn_id\",\"iter\",\"role\",\"turn\"],\"where\":{\"turn_id\":tid}})\n    else:\n        park()\nelif rt == \"c_asst\":\n    msgs = d.get(\"messages\", [])\n    store_op(\"cstore\", {\"operation\":\"insert\",\"table\":\"thread\",\n              \"row\":{\"turn_id\":tid,\"iter\":it,\"role\":\"assistant\",\"turn\":json.dumps(msgs),\"fired\":0}})\nelif rt == \"c_res\":\n    msgs = d.get(\"messages\", [])\n    turn = msgs[0] if msgs else {}\n    store_op(\"cstore\", {\"operation\":\"insert\",\"table\":\"thread\",\n              \"row\":{\"turn_id\":tid,\"iter\":it,\"role\":\"tool\",\"turn\":json.dumps(turn)}})\nelse:\n    park()\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "cstore",
+            "cguard",
+            "fire"
+          ],
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "turn_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Fan-in collector (examples/14b-tool-loop-store protocol): persists assistant tool_call turns and tool results as thread rows in the memory store, and fires the rebuilt cumulative thread back to the planner exactly once per completed iteration (RMW + atomic fired-flag guard).",
+    "use_when": "Between the tool cells and the loop llm whenever parallel tool_calls must fan in before re-entry.",
+    "not_in_scope": "No content transformation; thread state lives in the store (code cells own no script-visible state).",
+    "emits_meaning": "route cstore/cguard: store ops (insert/select/update) to the memory cell. route fire: the rebuilt thread messages[] for the planner re-entry. Incomplete rounds and lost guard races emit NOTHING (empty multi-send array \u2014 terminal by design).",
+    "consumes_meaning": "c_asst lane: dispatch's assistant turn (tool_call list). c_res lane: one tool_result per tool invocation. store replies: insert/select/update results keyed by context.store_origin=='collector'. context.turn_id/iter correlate the round.",
+    "examples": [
+      "3 parallel web_search calls -> 1 assistant row + 3 tool rows -> is_complete -> guard update wins once -> fire thread (7 turns) to planner with iter+1"
+    ]
+  }
+}

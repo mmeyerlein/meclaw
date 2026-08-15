@@ -1,0 +1,74 @@
+{
+  "cell": {
+    "type": "web_fetch"
+  },
+  "params": {
+    "external_timeout_ms": 5000,
+    "max_concurrency": 4
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "web_fetch"
+          ],
+          "required": true
+        },
+        "http_status": {
+          "type": "number",
+          "required": false
+        },
+        "content_type": {
+          "type": "string",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bytes": {
+          "type": "number",
+          "required": false
+        },
+        "truncated": {
+          "type": "boolean",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:http"
+    ]
+  },
+  "description": {
+    "purpose": "The outbound reach of this colony: GET the URL out of the inbound tool_call args and hand the response back as one tool_result turn.",
+    "use_when": "Wherever a tree has to read something off the open web.",
+    "not_in_scope": "No POST, no headers, no retries -- and, without an explicit params.allow_private_networks, no address inside the machine or the datacentre. That last one is not a policy this cell was given; it is the state it ships in."
+  }
+}

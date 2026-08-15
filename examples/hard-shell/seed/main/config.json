@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of hard-shell. It draws NO edge: the door, the terminal and every lane arrive through grow.json. The one thing checked in beside it is the cell the whole example is about -- an outbound HTTP client, configured with nothing.",
+    "use_when": "As the --root of a colony you are going to attack on purpose.",
+    "not_in_scope": "No agent, no model, no key, no memory. This colony answers no questions; it only reaches outwards, and the point is where it refuses to."
+  }
+}

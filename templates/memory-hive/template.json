@@ -1,0 +1,28 @@
+{
+  "name": "memory-hive",
+  "version": "1.2.0",
+  "description": {
+    "purpose": "Agent memory as a hive: durable episodes (LLM-free write path), a deterministic token-budgeted tier-0 bundle, a four-leg tier-1 retrieval fan (keyword/semantic/graph/temporal) fused by RRF without an LLM, a tier-2 dialectic answer with a mandatory gap statement, batched plus inline fact extraction with bi-temporal validity, and a nightly delta-scoped consolidation run that supersedes instead of deleting, and an identity round in that same nightly run that judges which relation keys and which entity spellings are the same thing and records the merges as revertible aliases.",
+    "use_when": "One hive per agent tree that must remember across turns and sessions. Wire the four ports (turn-write, recall-request, inline-extraction, recall-response) in the SAME mutation that instantiates it — an island without a crossing edge stays inactive and the cron never spawns.",
+    "not_in_scope": "No skills population and no decay scoring (spec phase 5). Graph anchors still match entity names exactly; the fuzzy index (0.2.0 P4) covers the fact axis, not the graph leg. Nothing merges on similarity alone: the index proposes pairs, the nightly judge decides, and a refusal is remembered so it is not asked again. The embedder is optional: without it recall drops to three legs and writes keep queueing; nothing hard-fails.",
+    "examples": [
+      "turn -> /memory/writer -> episodes row; later recall tier 0 returns that episode inside the bundle",
+      "recall tier 1 'nutrition habits' -> semantic leg finds a fact with no lexical overlap, graph leg pulls its episode, RRF ranks both",
+      "recall tier 2 -> {answer, gap, sources, confidence}; a model that omits the gap gets gap_missing=true, never a silent answer",
+      "cron 03:00 -> dream-glue computes the delta window from consolidation_log -> dreamer verdicts -> supersession (expired_at + superseded_by), never a DELETE",
+      "nightly identity round -> two spellings of one relation and two spellings of one person become one axis via set_alias + canonicalize, a look-alike pair is refused via reject_pair, and no written value is ever rewritten"
+    ]
+  },
+  "tags": [
+    "memory",
+    "store",
+    "bi-temporal",
+    "consolidation",
+    "hive",
+    "retrieval",
+    "rrf",
+    "canonicalisation"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

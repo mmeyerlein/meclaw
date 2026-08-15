@@ -1,0 +1,93 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000,
+    "schedules": [
+      {
+        "schedule_id": "${uuid7:nightly-dream}",
+        "schedule_name": "nightly-dream",
+        "cron": "${MEMORY_DREAM_CRON:-0 0 3 * * *}",
+        "emit_to": "../dream-glue",
+        "emit_body": {
+          "messages": [
+            {
+              "origin": "user",
+              "type": "text",
+              "text": "nightly-dream"
+            }
+          ]
+        },
+        "emit_headers": {}
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 0 3 * * *",
+        "description": "6-field Quartz cron of the nightly consolidation (MEMORY_DREAM_CRON)"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        },
+        "iteration_n": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Fires the nightly consolidation. It sends, it does not generate: event_id becomes the run id and fired_at becomes the window end — the two values that make a dream run identifiable and idempotent.",
+    "use_when": "Inside the memory hive; change the schedule at runtime with add/modify/remove ops by schedule_id.",
+    "not_in_scope": "No catch-up. Missed firings are dropped by design — the next run's window starts at the last completed one, so a skipped night is covered automatically.",
+    "emits_meaning": "hop.event_id/fired_at are promoted to context.dream_run/dream_to by the edge and clock the whole run; the body is a plain trigger.",
+    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op.",
+    "examples": [
+      "03:00 -> dream-glue with dream_run=<event_id>, dream_to=<fired_at>"
+    ]
+  }
+}

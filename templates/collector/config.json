@@ -1,0 +1,35 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./assemble",
+          "to": "./window",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'",
+              "col_phase": "hop.phase",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter"
+            }
+          }
+        },
+        {
+          "from": "./window",
+          "to": "./assemble",
+          "condition": "context.store_origin == 'collector'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the collector hive: bundles the assembly state machine and its state surface behind nine entry lanes and five exit routes. What an agent's LLM sees is decided here, in one place, instead of spread over a persona cell, a prep cell and a tool-loop collector.",
+    "use_when": "One per agent brain. Instantiate per agent tree and wire the ports from the parent scope in the same mutation.",
+    "not_in_scope": "No inference, no persona, no tool fan-out, no durable memory. The hive only carries its internal graph; everything crossing its boundary is a documented port - including the memory_recall lane, which is an ordinary tool edge the dispatcher chose by name (GH #78)."
+  }
+}

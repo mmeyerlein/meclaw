@@ -1,0 +1,46 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./prep",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'llm'",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./prep",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'length')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./prep",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_error'"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the summarizer hive: bundles the prompt-shaping glue and the writer llm behind one entry lane (the collector's close batch) and two exit routes (the system.handover update, or the failure). The session handover step of R-OS-3: a closed generation leaves as one recency-weighted summary, so the next generation does not wake up empty.",
+    "use_when": "One per agent, behind the collector's write route. Instantiate and wire the ports from the parent scope in the same mutation - an island without a crossing edge stays inactive.",
+    "not_in_scope": "No session lifecycle (the keeper closes, the collector batches - this hive only consumes the batch). No memory judgement beyond the summary itself. Where the summary route leads - the agent llm's system.handover, a store, both - is the parent's wiring, not this hive's."
+  }
+}

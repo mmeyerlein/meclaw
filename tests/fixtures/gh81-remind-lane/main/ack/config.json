@@ -1,0 +1,21 @@
+{
+  "cell": {
+    "type": "bash"
+  },
+  "params": {
+    "command": "true"
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  },
+  "description": {
+    "purpose": "Where the timer's tool_result ack arrives -- in a full loop this is the collector.",
+    "use_when": "Stand-in for the fan-in that correlates on the tool_call id.",
+    "not_in_scope": "No correlation logic; the fixture reads the message log.",
+    "examples": [
+      "one tool_result per accepted op"
+    ]
+  }
+}

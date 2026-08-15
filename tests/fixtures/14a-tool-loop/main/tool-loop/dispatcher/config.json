@@ -1,0 +1,40 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\ndata = json.load(sys.stdin)[\"body\"]\nturns = data.get(\"messages\", [])\ncalls = [t for t in turns if t.get(\"type\") == \"tool_call\"]\nout = []\nfor c in calls:\n    out.append({\n        \"header\": {\"msg_type\": \"tool_call\", \"tool_call_id\": c.get(\"id\", \"\")},\n        \"messages\": [c],\n    })\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array"
+        }
+      },
+      "hop": {
+        "msg_type": {
+          "type": "string",
+          "values": ["tool_call"]
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

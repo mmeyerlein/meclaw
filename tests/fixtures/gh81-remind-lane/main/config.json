@@ -1,0 +1,39 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./dispatch",
+          "to": "./remind",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'remind'"
+        },
+        {
+          "from": "./remind",
+          "to": "./ack",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_ack'"
+        },
+        {
+          "from": "./remind",
+          "to": "./drain",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'"
+        },
+        {
+          "from": "./remind",
+          "to": "./notify",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'assistant-reminder'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "GH #81: a `remind` tool lane. An agent tool call reaches the timer through the ordinary dispatcher unwrap, the timer answers with a tool_result on the inbound id, and the schedule it created fires into the notify lane.",
+    "use_when": "As the minimal reference for driving a timer as a tool, and as the end-to-end regression for the ack.",
+    "not_in_scope": "No llm cell (the agent turn is posted over HTTP), no collector, no fan-in over several tools.",
+    "examples": [
+      "POST an assistant tool_call {name: remind, arguments: {op: add, ...}} to /dispatch: the ack lands at /ack carrying the inbound call id; a following {op: trigger} fires the schedule into /notify."
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/meclaw-core",
+    "crates/meclaw-colony",
+    "crates/meclaw-cells",
+    "crates/meclaw-api",
+    "crates/meclaw-testing",
+    "crates/meclaw-cli",
+]
+
+[workspace.package]
+version = "0.8.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"

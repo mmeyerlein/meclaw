@@ -1,0 +1,38 @@
+{
+  "_comment": "Dated price snapshot for scripts/cost_report.py. Prices change; this file is the reason the number in docs/costs.md can be dated and re-checked. Copy it, edit it, pass your own with --prices.",
+  "source": "https://openrouter.ai/api/v1/models",
+  "retrieved": "2026-08-15",
+  "currency": "USD",
+  "unit": "USD per 1,000,000 tokens",
+  "models": {
+    "openai/gpt-5.6-luna": {
+      "input": 0.10,
+      "output": 0.60,
+      "_note": "openrouter id resolves to openai/gpt-5.6-luna-20260709"
+    },
+    "anthropic/claude-opus-5": {
+      "input": 5.00,
+      "output": 25.00,
+      "_note": "openrouter id resolves to anthropic/claude-opus-5-20260723"
+    },
+    "qwen/qwen3-embedding-8b": {
+      "input": 0.01,
+      "output": 0.0,
+      "_note": "embedding endpoint; no completion tokens are billed"
+    }
+  },
+  "fallback_models": [
+    {
+      "from_path_suffix": "/embed",
+      "model": "qwen/qwen3-embedding-8b",
+      "_note": "An embed cell is a code cell calling an embedding endpoint. It reports tokens_prompt in its hop header but no model id -- the model lives in its own payload. Attribute it here, or its tokens land in the 'unknown' bucket and are excluded from the total."
+    }
+  ],
+  "fx": {
+    "EUR": {
+      "usd_per_unit": 1.1567,
+      "source": "ECB euro reference exchange rate",
+      "date": "2026-08-14"
+    }
+  }
+}

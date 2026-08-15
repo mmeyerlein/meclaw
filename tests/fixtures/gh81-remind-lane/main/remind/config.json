@@ -1,0 +1,22 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {}
+  },
+  "description": {
+    "purpose": "The remind tool: an agent adds, triggers, modifies and removes schedules through ordinary tool calls.",
+    "use_when": "Whenever an agent has to schedule something for later.",
+    "not_in_scope": "No content of its own -- it emits what the schedule carried.",
+    "examples": [
+      "op add with `at` -> one emission at that instant into emit_to"
+    ]
+  }
+}

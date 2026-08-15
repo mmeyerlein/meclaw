@@ -1,0 +1,63 @@
+{
+  "scope": "/",
+  "ctx": {
+    "model": "${MODEL_CORE}",
+    "model_fast": "${MODEL_CORE_FAST}"
+  },
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "cogny",
+        "template": "cogny"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./talky/split",
+        "to": "./cogny/collector/assemble",
+        "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_turn'"
+          },
+          "set_context": {
+            "consult_id": "hop.consult_id",
+            "consult_class": "'consult'",
+            "col_phase": "''"
+          },
+          "restore_ttl": true
+        }
+      },
+      {
+        "from": "./talky/split",
+        "to": "./cogny/collector/assemble",
+        "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_turn'"
+          },
+          "set_context": {
+            "consult_id": "hop.consult_id",
+            "consult_class": "'lookup'",
+            "col_phase": "''"
+          },
+          "restore_ttl": true
+        }
+      },
+      {
+        "from": "./cogny/collector/assemble",
+        "to": "./talky/collector/assemble",
+        "condition": "has(hop.route) && hop.route == 'answer'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_advice'"
+          },
+          "set_context": {
+            "col_phase": "''"
+          },
+          "restore_ttl": true
+        }
+      }
+    ]
+  }
+}

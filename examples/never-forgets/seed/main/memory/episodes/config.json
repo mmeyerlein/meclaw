@@ -1,0 +1,61 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "episodes": {
+        "id": "text",
+        "session_id": "text",
+        "turn_id": "text",
+        "sender": "text",
+        "content": "text",
+        "happened_at": "text",
+        "recorded_at": "text"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The episode table of this colony: one row per turn, append-only, with the two times kept apart -- happened_at is when it was said, recorded_at is when this colony learned it.",
+    "use_when": "Behind a cell that speaks a recall port. The table is the memory; everything else is a query over it.",
+    "not_in_scope": "No facts, no entities, no embeddings, no index of its own -- the columns are the whole model."
+  }
+}

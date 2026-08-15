@@ -1,0 +1,30 @@
+{
+  "cell": { "type": "code" },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, re\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\nquestion = ctx.get(\"rag_question\", \"\")\n\nmsgs = d.get(\"messages\", [])\nrows = []\nfor m in msgs:\n    if m.get(\"type\") == \"tool_result\":\n        try:\n            rows = json.loads(m.get(\"text\", \"[]\"))\n        except Exception:\n            pass\n        break\n\ndef tokenize(text):\n    return set(t for t in re.split(r'[^a-z0-9]+', text.lower()) if t)\n\nq_tokens = tokenize(question)\n\nscored = []\nfor row in rows:\n    doc_id = row.get(\"doc_id\", \"\")\n    text = row.get(\"text\", \"\")\n    score = len(q_tokens & tokenize(text))\n    scored.append((doc_id, text, score))\n\n# rank desc, tie-break doc_id asc\nscored.sort(key=lambda x: (-x[2], x[0]))\ntop = scored[:2]\n\nquery = \" \".join(sorted(q_tokens))\nscores = [x[2] for x in top]\nchunks = \"\\n\".join(x[1] for x in top)\n\nout = {\n    \"header\": {\n        \"query\": query,\n        \"scores\": scores,\n        \"top_k\": len(top)\n    },\n    \"system\": {\"context\": {\"text\": chunks}},\n    \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": question}]\n}\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "emits": {
+      "hop": {
+        "query":  { "type": "string",  "required": false },
+        "scores": { "type": "array",   "required": false },
+        "top_k":  { "type": "number",  "required": false }
+      },
+      "body": {
+        "messages": { "type": "array" }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      },
+      "context": {
+        "rag_question": { "type": "string", "required": true }
+      }
+    }
+  }
+}

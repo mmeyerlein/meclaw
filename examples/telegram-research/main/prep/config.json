@@ -1,0 +1,66 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid\n\nd = json.load(sys.stdin)[\"body\"]\nmsgs = d.get(\"messages\", [])\nuser_turn = None\nfor m in msgs:\n    if m.get(\"origin\") == \"user\" and m.get(\"type\") == \"text\":\n        user_turn = m\n        break\nif user_turn is None:\n    # Echo guard: store replies / non-user input end here (terminal empty multi-send).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nquestion = user_turn.get(\"text\", \"\")\nturn_id = str(uuid.uuid4())\n\nTOOLS = {\n    \"web_search\": {\"description\": \"Search the web.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}},\n    \"web_fetch\": {\"description\": \"Fetch one URL (GET).\", \"parameters\": {\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}}, \"required\": [\"url\"]}},\n    \"remember\": {\"description\": \"Persist a note into the answers store.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"operation\": {\"type\": \"string\", \"enum\": [\"insert\"]}, \"table\": {\"type\": \"string\", \"enum\": [\"answers\"]}, \"row\": {\"type\": \"object\"}}, \"required\": [\"operation\", \"table\", \"row\"]}}\n}\n\nins = {\"operation\": \"insert\", \"table\": \"thread\",\n       \"row\": {\"turn_id\": turn_id, \"iter\": 0, \"role\": \"user\", \"turn\": json.dumps(user_turn)}}\nout = [\n    {\"header\": {\"route\": \"ustore\"},\n     \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"u-ins\", \"text\": json.dumps(ins)}]},\n    {\"header\": {\"route\": \"ullm\", \"question\": question, \"turn_id\": turn_id},\n     \"system\": {\n        \"identity\": {\"soul\": {\"text\": \"You are a research assistant. Gather facts by calling tools; you may issue several tool calls in one turn. When the tool results answer the user's question, reply with the final answer in German: state each fact and cite its source URL from the tool results as [source: <url>]. Do not invent data; if material is missing for a part of the question, say so explicitly.\"}},\n        \"tools\": {name: {\"text\": json.dumps({\"type\": \"function\", \"function\": {\"name\": name, **schema}})} for name, schema in TOOLS.items()}\n     },\n     \"messages\": [user_turn]}\n]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "ustore",
+            "ullm"
+          ],
+          "required": true
+        },
+        "question": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Loop ingress (capture role of examples/14b): mints turn_id, persists the user turn as thread row 0, and feeds the planner with persona + OpenAI-wrapped tool schemas + the user turn.",
+    "use_when": "Entry of the research loop, directly behind the proxy.",
+    "not_in_scope": "No history rebuild (collector's job), no answer shaping.",
+    "emits_meaning": "route ustore: thread insert for the user turn (memory store). route ullm: system (persona incl. citation duty + tools as full OpenAI tool objects per extract_tools) + messages for the planner; hop.question/turn_id are promoted to context on the out-edge.",
+    "consumes_meaning": "messages[]: a user text turn starts a round. Anything without a user turn (e.g. the store's insert reply echoing back via reply_to fallback) is swallowed (empty multi-send).",
+    "examples": [
+      "user 'How warm...?' -> [thread row 0 insert -> /memory] + [persona+tools+turn -> /planner]"
+    ]
+  }
+}

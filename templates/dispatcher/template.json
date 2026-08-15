@@ -1,0 +1,23 @@
+{
+  "name": "dispatcher",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The fan-out half of a tool loop: one code cell that splits a brain's tool_call bundle into one routable message per call, announces the round to the fan-in first, and passes a final answer through. It carries no map of the topology -- a call leaves as a NAME plus its call id, and the edges of the tree decide which cell that name is.",
+    "use_when": "Between an agent's llm cell and its tools, next to a collector that does the fan-in. Wire the four exit routes in the SAME mutation that instantiates it: 'calls' and 'result' into the collector, one edge per tool on hop.tool_name, 'answer' onto the reply path.",
+    "not_in_scope": "No fan-in, no tool execution, no argument validation, no iteration counting. The loop bound and restore_ttl belong on the re-entry edge (GH #82), not in this cell. A tool name with no edge is a routing error by design, not something the cell resolves.",
+    "examples": [
+      "PORTS - Entry: the llm cell's output (hop.finish_reason). Exit on hop.route: 'calls' -> the collector's in_calls port, 'tool' -> the tool cells, selected by `has(hop.tool_name) && hop.tool_name == '<name>'`, 'result' -> the collector's in_tool port (synthetic errors only), 'answer' -> the collector's in_answer port or the reply sink.",
+      "a two-tool round: web_search and web_fetch are asked in one answer, run in parallel, and both results reach the fan-in under the ids the split preserved",
+      "a brain that asks for 40 tools at once: DISPATCHER_MAX_CALLS refuses the bundle as a whole and answers all 40 ids with 'call budget exceeded', so the agent replies instead of stalling"
+    ]
+  },
+  "tags": [
+    "dispatcher",
+    "tool-loop",
+    "fan-out",
+    "routing",
+    "code"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

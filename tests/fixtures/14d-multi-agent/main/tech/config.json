@@ -1,0 +1,18 @@
+{
+  "cell": { "type": "llm" },
+  "params": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "api_key": "test-key",
+    "base_url": "http://PLACEHOLDER_TECH/v1"
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "consumes": {
+      "context": {
+        "turn_id": { "type": "string", "required": true }
+      }
+    }
+  }
+}

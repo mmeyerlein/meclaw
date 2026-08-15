@@ -1,0 +1,99 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_JUDGE:-anthropic/claude-opus-5}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "external_timeout_ms": 110000,
+    "system_order": [
+      "instructions"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "provider_extra": {
+      "reasoning": {
+        "effort": "${MEMORY_REASONING_JUDGE:-high}"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-5",
+        "description": "MODEL_JUDGE - the identity judgement of the nightly canonicalisation round (ruling Q1). This is the one place in the hive that deliberately carries the STRONGEST model available, not the cheapest that works: the verdict is written into the store as an alias and every later read consumes it. The default is a top-tier placeholder rather than an empty string, because an unconfigured judge would silently skip the canonicalisation round every night; set it explicitly at rollout."
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "high",
+        "description": "Explicit reasoning effort (MEMORY_REASONING_JUDGE) - never inherit the provider default"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "Judges IDENTITY for the nightly canonicalisation round (0.2.0 P5, rulings Q1/Q3/Q5): which predicate keys name the same relation, and which entity candidate pairs are the same person, place or thing. It is the persisting twin of the extractor - the extractor keeps a new turn on the axes that exist, this one repairs the axes that already fell apart. Top tier on purpose, once a night, never per turn.",
+    "use_when": "Called by dream-glue once per consolidation run, after the dreamer's verdicts are parked and before the supersession arithmetic, with the predicate inventory and the fuzzy entity candidates in one payload.",
+    "not_in_scope": "No store access and no effect of its own: dream-glue turns the verdict into set_alias / reject_pair / canonicalize, all additive and revertible. It never deletes, never rewrites a written value, and never judges supersession (that is arithmetic). It also never invents a name - every value it returns has to come from the payload.",
+    "emits_meaning": "messages[]: one assistant turn holding the judgement JSON {predicates:[{alias,canonical}], entities:[{alias,canonical}], different:[{dimension,left,right}]}. hop.finish_reason='error' makes dream-glue skip the round and continue with the rest of the run instead of leaving it hanging.",
+    "consumes_meaning": "system.instructions.text: the judgement contract, handed over by dream-glue (an llm cell has no params.system - the prompt travels in the message). messages[]: the predicate inventory with the subjects each key is used on, plus the candidate entity pairs with the facts of both sides.",
+    "examples": [
+      "predicates 'Lieblingseditor' and 'favorite_editor', both used on subject 'user' -> {\"predicates\":[{\"alias\":\"Lieblingseditor\",\"canonical\":\"favorite_editor\"}]}",
+      "entity pair ('ashford','ashfrd'), one with two facts and one with a single typo-shaped fact -> {\"entities\":[{\"alias\":\"elvse\",\"canonical\":\"elvese\"}]}",
+      "entity pair ('robin','robyn'), each with its own birthday fact -> {\"different\":[{\"dimension\":\"subject\",\"left\":\"robin\",\"right\":\"robyn\"}]} - remembered, so the pair is never proposed again"
+    ]
+  }
+}

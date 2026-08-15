@@ -1,0 +1,101 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${ctx.model}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.3,
+    "max_tokens": 2048,
+    "external_timeout_ms": 120000,
+    "system_order": [
+      "identity",
+      "handover",
+      "memory",
+      "instructions"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "Provider model id; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal. The summarizer's writer reads the SAME key - give it a cheaper model per instance via override_params on summary/writer."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "${OPENROUTER_API_KEY}",
+        "description": "Provider API key"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The agent's brain: the one inference of the composite. It answers the assembled context the collector hands it over the seam, and its system state - identity, instructions, tool schemas, the memory bundle, the handover of the last closed generation - accumulates in its own cell.db, one writer per path.",
+    "use_when": "Inside the talky composite. The seam edge (collector -> here) carries the iteration bound and restore_ttl; the answer edge (here -> split) carries stop and tool_calls, and the split decides which of the two it is.",
+    "not_in_scope": "No tool execution, no context assembly, no persona of its own beyond what is seeded or written into it. Provider and auth are instance business: the shipped default is the OpenRouter chat lane, a subscription or another provider is override_params.",
+    "emits_meaning": "finish_reason 'stop'/'tool_calls' -> ./split (the dispatcher tells a final answer from a tool bundle); 'length' -> the collector's in_answer lane (a truncated answer is an answer); 'error'/'content_filter' -> ./errors, because an error echo carries the PROMPT back and must never be filed as the agent's own words.",
+    "consumes_meaning": "messages[] the assembled context of one turn (window, memory bundle, tool round). A body with system but WITHOUT messages is a system update: it upserts the slot and triggers no inference - that is how the summarizer's handover arrives, which is why the messages slot is not required here.",
+    "examples": [
+      "assembled turn -> tool_calls -> the round runs -> the same seam again with iter+1 -> stop",
+      "system.handover update after a close -> the slot is replaced, no provider call"
+    ]
+  }
+}

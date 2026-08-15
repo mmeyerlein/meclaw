@@ -1,0 +1,33 @@
+[package]
+name = "meclaw-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+# 0.27 drops the unmaintained `proc-macro-error` (RUSTSEC-2024-0370) that
+# maud_macros 0.26 pulled in; API surface used here (Markup/html!/DOCTYPE) is
+# unchanged. Issue #127.
+maud = "0.27"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "macros", "time"] }
+tracing = "0.1"
+anyhow = "1"
+meclaw-core = { path = "../meclaw-core" }
+meclaw-colony = { path = "../meclaw-colony" }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v7"] }
+# Phase 12-B T8: meclaw-testing as a dev-dep — the handler integration tests in
+# tests/phase_12_b_routes.rs drive a real colony task via
+# `meclaw_testing::ColonyHandle::new()` and pass its `inbox_tx` on to a
+# `meclaw_api::ColonyHandle`. Stays strictly [dev-dependencies] (rule 6).
+meclaw-testing = { path = "../meclaw-testing" }

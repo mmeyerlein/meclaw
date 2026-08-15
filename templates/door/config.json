@@ -1,0 +1,52 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n# The door of a colony. The HTTP ingress puts the request headers into\n# `context` and leaves `hop` EMPTY -- naming a lane is an edge's job, and no\n# edge exists above the first cell. So this cell does the one thing a colony\n# needs before any topology can act: it puts the turn on a named lane and\n# promotes the channel identity, so everything downstream can screen,\n# rate-limit and mint sessions PER CHANNEL instead of flattening them.\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nheader = envelope.get(\"header\") or {}\ncontext = header.get(\"context\") or {}\nhop = header.get(\"hop\") or {}\nchannel = str(context.get(\"channel\") or hop.get(\"chat_id\") or \"default\")\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"turn\", \"chat_id\": channel},\n    \"messages\": d.get(\"messages\", [])}))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "turn"
+          ],
+          "required": true
+        },
+        "chat_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The inbound surface of a colony: it turns an HTTP request into a turn on the ingress lane and promotes the channel identity, so screening below it rate-limits per channel and an agent above it mints one session per channel.",
+    "use_when": "One per colony, as the first cell every inbound message meets. Wire exactly one edge out of it, onto whatever screens or receives turns.",
+    "not_in_scope": "No screening, no session, no memory, no answer: it speaks inbound only, and outbound lanes end in a terminal instead."
+  }
+}

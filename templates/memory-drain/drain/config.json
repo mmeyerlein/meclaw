@@ -1,0 +1,86 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, uuid, datetime\n\n# The adapter in front of the memory hive's writer port (GH #101, R-MD-1).\n# One closed session arrives as ONE batch (the collector's `write` route) and\n# leaves as N single-turn episodes on the hive's turn-write ingress. The hive\n# itself is not touched: this cell lives outside it and speaks only its port.\n#\n# The script keeps no state between hops -- so the day is parked in the\n# adapter's OWN ledger first, then read back together with the mark that says\n# how much of this session already reached memory. That read IS the\n# select-before-insert of R-MD-2 no. 2, and it is the only reason a second\n# delivery of the same batch writes nothing.\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nphase = str(ctx.get(\"drain_phase\", \"\"))\nlane = str(hop.get(\"route\", \"\"))\nop = hop.get(\"operation\")\nsession = str(ctx.get(\"session_id\", \"\") or \"default\")\nFMT = \"%Y-%m-%dT%H:%M:%S.%fZ\"\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(FMT)\n\n# What counts as a turn of the conversation. Closed on purpose: a batch may\n# carry anything, an episode is a thing somebody said.\nORIGINS = (\"user\", \"assistant\")\n\n\ndef park():\n    \"\"\"Terminal by design -- an echo with nothing left to do emits NOTHING.\"\"\"\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef head(route, ph=\"\", extra=None):\n    \"\"\"Every emission carries the full key set the port edges read. A missing\n    hop key makes a CEL modifier fail, and a failed modifier SKIPS the edge --\n    so keys are always present and empty rather than absent.\"\"\"\n    out = {\"route\": route, \"phase\": ph, \"session_id\": session,\n           \"turn_id\": \"\", \"happened_at\": \"\", \"turn_index\": \"\"}\n    if extra:\n        out.update(extra)\n    return out\n\n\ndef store_op(args, ph):\n    return {\"header\": head(\"lstore\", ph),\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": \"d-\" + ph, \"text\": json.dumps(args)}]}\n\n\ndef ledger_row(kind, payload, upto):\n    return {\"id\": now + \"-\" + uuid.uuid4().hex[:8], \"session_id\": session,\n            \"kind\": kind, \"payload\": payload, \"drained_upto\": upto,\n            \"recorded_at\": now}\n\n\ndef rows_of(doc):\n    msgs = doc.get(\"messages\", [])\n    if not msgs:\n        return []\n    try:\n        rows = json.loads(msgs[0].get(\"text\", \"[]\"))\n    except Exception:\n        return []\n    return rows if isinstance(rows, list) else []\n\n\ndef turns_of(doc):\n    \"\"\"The conversation as the collector handed it out: every user/assistant\n    text turn, in the order of the day. Nothing is judged, merged or dropped --\n    lossless is what the count gate measures (R-MD-2 no. 1).\n\n    `happened_at` is carried only if the batch has it per turn. The collector's\n    close batch does not, and the writer then stamps its own clock; a replay\n    that DOES know the event time keeps the bi-temporal split intact by putting\n    it on the turn -- a sanctioned UBF turn slot since GH #135. Before that this\n    branch described a route the body schema forbade (`TurnObject` is closed), so\n    a turn carrying the field died as `invalid_ubf_body` before it got here. The\n    `recorded_at` fallback below is a leftover of that period and is unreachable:\n    `TurnObject` carries no such key.\"\"\"\n    out = []\n    for m in doc.get(\"messages\", []):\n        if m.get(\"type\") not in (\"text\", None):\n            continue\n        if m.get(\"origin\") not in ORIGINS:\n            continue\n        out.append({\"origin\": str(m.get(\"origin\")),\n                    \"text\": str(m.get(\"text\", \"\") or \"\"),\n                    \"happened_at\": str(m.get(\"happened_at\")\n                                       or m.get(\"recorded_at\") or \"\")})\n    return out\n\n\ndef episode(index, turn):\n    \"\"\"One turn, one episode, one DETERMINISTIC id (R-MD-2 no. 2).\n\n    The episodes row's own uuid is minted inside the hive and is none of our\n    business; the identity this adapter controls is the turn_id, and it comes\n    from the session and the turn index alone. Same batch, same ids, every run\n    -- which is what makes a second delivery recognisable at all.\"\"\"\n    tid = session + \"#\" + str(index)\n    return {\"header\": head(\"episode\", \"\", {\"turn_id\": tid,\n                                           \"happened_at\": turn.get(\"happened_at\", \"\"),\n                                           \"turn_index\": str(index)}),\n            \"messages\": [{\"origin\": turn.get(\"origin\", \"user\"), \"type\": \"text\",\n                          \"text\": str(turn.get(\"text\", \"\") or \"\")}]}\n\n\n# ===================================================================== LANE\n# The lane is read BEFORE the phases: a message that arrives over the port edge\n# carries whatever drain_phase its context happened to hold, and the lane is\n# the only thing that says what it IS.\nif lane == \"in_batch\":\n    turns = turns_of(d)\n    if not turns:\n        park()\n    emit([store_op({\"operation\": \"insert\", \"table\": \"drain_log\",\n                    \"row\": ledger_row(\"batch\", json.dumps(turns), 0)}, \"park\")])\n\n# =================================================================== PHASES\n# The parked day and every mark this session ever left meet again in ONE reply:\n# one table, one select, no limit. A limit here would silently forget a mark,\n# and a forgotten mark is a double insert.\nif phase == \"park\" and op == \"insert\":\n    emit([store_op({\"operation\": \"select\", \"table\": \"drain_log\",\n                    \"columns\": [\"id\", \"kind\", \"payload\", \"drained_upto\"],\n                    \"where\": {\"session_id\": session},\n                    \"order_by\": [{\"col\": \"id\", \"dir\": \"asc\"}]}, \"probe\")])\n\nif phase == \"probe\" and op == \"select\":\n    # The ledger answered: the newest parked day, and how far this session has\n    # already reached memory. Turns are append-only and arrive in the order of\n    # the day, so \"how far\" is a single number -- everything before it is in\n    # the episodes table under an id this adapter can name.\n    rows = rows_of(d)\n    turns, drained = [], 0\n    for r in rows:\n        if r.get(\"kind\") == \"batch\":\n            try:\n                turns = json.loads(r.get(\"payload\") or \"[]\") or []\n            except Exception:\n                turns = []\n        elif r.get(\"kind\") == \"mark\":\n            drained = max(drained, int(r.get(\"drained_upto\") or 0))\n    pending = turns[drained:]\n    if not pending:\n        # SKIP, not a second insert: this is the idempotence gate (R-MD-2).\n        park()\n    out = [episode(drained + i, t) for i, t in enumerate(pending)]\n    # The mark rides in the SAME multi-send as the episodes it covers: what\n    # left and what says it left are one emission, never two decisions.\n    out.append(store_op({\"operation\": \"insert\", \"table\": \"drain_log\",\n                         \"row\": ledger_row(\"mark\", \"\", len(turns))}, \"mark\"))\n    emit(out)\n\npark()\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "lstore",
+            "episode"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "happened_at": {
+          "type": "string",
+          "required": false
+        },
+        "turn_index": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "drain_phase": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The adapter in front of the memory hive's writer port (GH #101): one closed session, handed out by the collector as ONE write batch, becomes N single-turn episodes on the hive's turn-write ingress - in the order of the day, lossless, and with an id minted from session_id plus turn index so a second delivery of the same batch writes nothing.",
+    "use_when": "Behind a talky's 'write' route, as a SECOND parent edge next to whatever else consumes the close batch. Never inside the memory hive: the hive stays unchanged and only its documented port is spoken to.",
+    "not_in_scope": "No extraction, no summarising, no judgement about what is worth remembering - append-all, exactly like the batch it consumes. No LLM call (the write path is synchronous and model-free by spec). No writes into the hive's own tables: the ledger it keeps is its own, and the only thing it says is how far a session has been drained.",
+    "emits_meaning": "route 'lstore': a store-native op for the adapter's own ledger; hop.phase names the step of the chain (park -> probe -> mark). route 'episode': ONE conversational turn for the hive's turn-write ingress, with hop.turn_id = '<session_id>#<index>' (deterministic), hop.turn_index, hop.happened_at (empty when the batch carries no event time) and hop.session_id - all four must be promoted to context by the port edge.",
+    "consumes_meaning": "hop.route 'in_batch': the collector's close batch (messages[] the whole day, top-level slot 'rounds', hop.session_id/turn_count/round_count). Everything else is a ledger reply, recognised by context.drain_phase plus hop.operation; context.session_id is the session the whole chain belongs to.",
+    "examples": [
+      "a 6-turn day arrives on in_batch -> the day is parked in the ledger, the ledger is asked what was already drained, and 6 episodes leave on route 'episode' with turn_ids s1#0 .. s1#5",
+      "the same batch arrives a second time -> the ledger says 6 of 6 are drained -> NOTHING is emitted",
+      "a batch that grew by two turns arrives -> only s1#6 and s1#7 leave"
+    ]
+  }
+}

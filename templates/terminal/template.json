@@ -1,0 +1,22 @@
+{
+  "name": "terminal",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane which has no destination yet still HAS a destination -- the message arrives, the trace records it, and the dead-letter queue stays empty.",
+    "use_when": "Once per colony while lanes are still being decided, or permanently for lanes whose only consumer is the trace. Instantiate it under any name -- `sink` is the usual one -- and point every outbound lane at it that has nowhere else to go.",
+    "not_in_scope": "No storage, no forwarding, no retry, no judgement, no reply to the caller. It is a stop, not a component: the moment a lane knows where it belongs, it stops pointing here.",
+    "examples": [
+      "PORTS - Entry: any turn on any lane. Exit: nothing (empty multi-send, terminal).",
+      "four lanes, one terminal: an answer, a rejection, an error and a drained episode all end here while the tree is being built -- four different decisions, none of them made yet",
+      "read the arrivals: GET /ui/trace shows each of them with its own hop chain, which is why swallowing loses nothing"
+    ]
+  },
+  "tags": [
+    "sink",
+    "terminal",
+    "routing",
+    "code"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

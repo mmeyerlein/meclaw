@@ -1,0 +1,9 @@
+{
+  "cell": { "type": "hive" },
+  "params": { "graph": { "edges": [
+    { "from": "./router",  "to": "./billing", "condition": "hop.agent_target == 'billing'" },
+    { "from": "./router",  "to": "./tech",    "condition": "hop.agent_target == 'tech'" },
+    { "from": "./billing", "to": "./capture" },
+    { "from": "./tech",    "to": "./capture" }
+  ] } }
+}

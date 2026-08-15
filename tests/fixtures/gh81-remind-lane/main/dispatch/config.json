@@ -1,0 +1,50 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\nd = json.load(sys.stdin)[\"body\"]\ncalls = [m for m in d.get(\"messages\", []) if m.get(\"type\") == \"tool_call\"]\nif not calls:\n    # Echo guard: tool results and error replies end here (empty multi-send).\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nout = []\nfor i, c in enumerate(calls):\n    wrapper = json.loads(c.get(\"text\", \"{}\"))\n    name = wrapper.get(\"name\", \"unknown\")\n    args = wrapper.get(\"arguments\", \"{}\")\n    if not isinstance(args, str):\n        args = json.dumps(args)\n    out.append({\n        \"header\": {\"tool_name\": name},\n        \"messages\": [{\n            \"origin\": \"assistant\",\n            \"type\": \"tool_call\",\n            \"id\": c.get(\"id\", \"call-%d\" % i),\n            \"text\": args,\n        }],\n    })\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Unwraps the agent's OpenAI-form tool_calls ({name, arguments}) into one routed tool_call turn per call, with hop.tool_name as the lane discriminator.",
+    "use_when": "In front of any set of tool cells, including the timer (GH #81).",
+    "not_in_scope": "No argument validation, no fan-in bookkeeping.",
+    "emits_meaning": "One message per tool call: the raw args as the tool_call turn's text, hop.tool_name for routing. No tool_calls in the input yields nothing (terminal empty multi-send).",
+    "consumes_meaning": "messages[]: assistant tool_call turns in OpenAI function-call form.",
+    "examples": [
+      "{name: remind, arguments: {op: add, ...}} -> one message with hop.tool_name = remind"
+    ]
+  }
+}

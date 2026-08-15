@@ -1,0 +1,24 @@
+{
+  "name": "memory-drain",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The missing piece between a closed session and the central memory (GH #101): a collector hands its day out as ONE write batch, the memory hive's writer takes ONE turn at a time, and nothing spoke both forms - so a closed day never reached memory. This hive is that translation. It decomposes the batch into single-turn episodes in the order of the day, fires each of them at the EXISTING turn-write ingress, and keeps its own ledger so that the same batch delivered twice writes nothing the second time. It lives outside the memory hive and speaks only its documented port: not one line of the hive changes.",
+    "use_when": "One per talky whose closed sessions belong in the central memory. Instantiate it and wire the two ports in the SAME mutation: the talky's 'write' route into ./drain (lane in_batch), and ./drain's 'episode' route into the memory hive's turn-write port. It is a SECOND parent edge on the write route - whatever else consumes the batch (a summarizer, an archive) keeps consuming it.",
+    "not_in_scope": "No extraction, no summarising, no judgement about what is worth remembering - append-all, exactly like the batch it consumes; what memory makes of it is the hive's business and happens later, batched. No LLM call and no provider key: the write path is synchronous and model-free by spec. No second write path into memory. No session lifecycle: the keeper closes the session, the collector produces the batch. No recall lane - this adapter only writes.",
+    "examples": [
+      "PORTS - Entry: in_batch, wired as {from: <talky>/collector/assemble, to: <drain>/drain, condition: has(hop.route) && hop.route == 'write', modifier: {set_hop: {route: 'in_batch'}, set_context: {session_id: 'hop.session_id'}}}. Exit: 'episode' -> the memory hive's turn-write port, wired as {from: <drain>/drain, to: <memory>/writer, condition: has(hop.route) && hop.route == 'episode', modifier: {set_context: {session_id: 'hop.session_id', turn_id: 'hop.turn_id', happened_at: 'hop.happened_at'}}}.",
+      "a 6-turn day closes -> 6 episodes with turn_ids s1#0 .. s1#5 land in the hive's episodes table, one per turn, in the order of the day",
+      "the same day is closed a second time (or the batch is replayed) -> the ledger says 6 of 6 -> NOTHING is written, the row count does not move",
+      "the session grew to 8 turns since the last drain -> only s1#6 and s1#7 are written"
+    ]
+  },
+  "tags": [
+    "memory",
+    "drain",
+    "adapter",
+    "session",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

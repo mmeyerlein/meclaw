@@ -1,0 +1,57 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./prep",
+          "to": "./llm",
+          "modifier": {
+            "set_context": {
+              "question": "hop.question"
+            }
+          }
+        },
+        {
+          "from": "./llm",
+          "to": "./dispatch",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
+        },
+        {
+          "from": "./llm",
+          "to": "./done",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'length' || hop.finish_reason == 'error')"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./lookup",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'lookup'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./calc",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'calc'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./done",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'unknown'"
+        },
+        {
+          "from": "./lookup",
+          "to": "./collector"
+        },
+        {
+          "from": "./calc",
+          "to": "./collector"
+        },
+        {
+          "from": "./collector",
+          "to": "./llm"
+        }
+      ]
+    }
+  }
+}

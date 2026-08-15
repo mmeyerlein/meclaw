@@ -1,0 +1,45 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nhop = envelope.get(\"header\", {}).get(\"hop\", {})\nmsgs = d.get(\"messages\", [])\n\n# Echo guard: the memory store's insert reply (tool_result for table errors)\n# falls back here via reply_to \u2014 swallow it, terminal.\nif hop.get(\"operation\") in (\"insert\", \"select\", \"update\", \"delete\"):\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nkind = hop.get(\"error_code\") or hop.get(\"tool_name\") or hop.get(\"finish_reason\") or \"unknown\"\nargs = {\"operation\": \"insert\", \"table\": \"errors\",\n        \"row\": {\"id\": str(uuid.uuid4()), \"kind\": str(kind), \"payload\": json.dumps(msgs)[:4000]}}\nout = [{\"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": \"drain-\" + args[\"row\"][\"id\"][:8], \"text\": json.dumps(args)}]}]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {}
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "In-tree error drain: persists drained payloads (llm error emissions, unknown tool names) as rows in the memory store's errors table \u2014 visible via SELECT, loop-free.",
+    "use_when": "Target of error-class edges inside a template subtree. Edges to /colony/dead_letters are mutation-illegal there ('escapes subtree root') \u2014 this cell is the in-tree replacement.",
+    "not_in_scope": "No retries, no alerting \u2014 wire a notifier branch if needed.",
+    "emits_meaning": "One errors-table insert per drained message. Store replies (operation hop) are swallowed (empty multi-send, terminal).",
+    "consumes_meaning": "Anything an error edge routes here; hop.error_code/tool_name/finish_reason becomes the row's kind.",
+    "examples": [
+      "planner finish 'error' -> errors row {kind: 'provider_error', payload: messages[]}"
+    ]
+  }
+}

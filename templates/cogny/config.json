@@ -1,0 +1,117 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./collector/assemble",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && (!has(context.consult_class) || context.consult_class != 'lookup')",
+          "modifier": {
+            "set_context": {
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./collector/assemble",
+          "to": "./brain_fast",
+          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && has(context.consult_class) && context.consult_class == 'lookup'",
+          "modifier": {
+            "set_context": {
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./split",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./brain_fast",
+          "to": "./split",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./brain",
+          "to": "./collector/assemble",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./brain_fast",
+          "to": "./collector/assemble",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'calls'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_calls'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./split",
+          "to": "./collector/assemble",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'escalate_to_deep'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "consult_class": "'consult'",
+              "col_phase": "''"
+            },
+            "restore_ttl": true
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the cogny composite: the agent core as ONE hive - the proven tool-loop core (collector fan-in, dispatcher fan-out, a thinking brain) behind ONE consult ingress and ONE advice exit. Its own seam, its own iteration bound, its own restore_ttl. Since 1.1.0 the seam has TWO lanes (GH #124): the same assembled errand goes to ./brain or to ./brain_fast, decided by context.consult_class, so a lookup never queues behind a research answer in one serial mailbox. No keeper, no summarizer, no proxy: the core has no channel, no sessions and no night, so nothing here mints an id or closes a day.",
+    "use_when": "One per agent, never one per channel voice. Instantiate it as a SIBLING of the talkies and wire the two advisor ports plus the tool lanes in the same mutation; the composite is an island until an edge crosses into it. The lookup lane needs nothing extra to exist - it needs the ingress edge of the second tool name to set context.consult_class, and without that every errand takes the deep lane exactly as before.",
+    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no channel surface, no session lifecycle. The core's identity, instructions and tool schemas live in the brains' own cell.db - the composite carries the topology, never the persona; the ONE exception is the `brevity` system slot of ./brain_fast, which is the lane's length discipline and therefore topology. The class is not decided here either: an edge outside this hive reads the tool name the asking model chose."
+  }
+}

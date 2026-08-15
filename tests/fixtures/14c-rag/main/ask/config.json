@@ -1,0 +1,25 @@
+{
+  "cell": { "type": "code" },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\nd = json.load(sys.stdin)[\"body\"]\nmsgs = d.get(\"messages\", [])\nquestion = \"\"\nfor m in msgs:\n    if m.get(\"origin\") == \"user\":\n        question = m.get(\"text\", \"\")\n        break\n\n# Emit hop.rag_question (promoted to context.rag_question by the set_context edge)\n# + a store-select tool_call as the body.\n# IMPORTANT: op_select requires an explicit columns array (no SELECT *).\nout = {\n    \"header\": {\n        \"rag_question\": question\n    },\n    \"messages\": [{\n        \"origin\": \"assistant\",\n        \"type\": \"tool_call\",\n        \"id\": \"q-sel\",\n        \"text\": json.dumps({\"operation\": \"select\", \"table\": \"corpus\", \"columns\": [\"doc_id\", \"text\"]})\n    }]\n}\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "emits": {
+      "hop": {
+        "rag_question": { "type": "string", "required": true }
+      },
+      "body": {
+        "messages": { "type": "array" }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      }
+    }
+  }
+}

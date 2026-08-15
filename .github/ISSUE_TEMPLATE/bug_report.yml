@@ -1,0 +1,28 @@
+name: Bug report
+description: Something misbehaved — a crash, a wrong result, a dead letter
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Colony layout (the directory tree), the message you sent, and the steps to get there.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, `meclaw --version`, and how you run it (daemon or direct mode).
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace / logs
+      description: Relevant trace output. Strip API keys and private hostnames before pasting.

@@ -1,0 +1,93 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Runtime state (created by a daemon run)
+/log.jsonl
+/colony.db
+/colony.db-*
+**/cell.db
+**/cell.db-*
+/blobs/
+/.staging/
+
+# Demo fixture state (created when someone runs `meclaw --root examples/demo-colony`
+# directly inside the repo; fixture discipline: ONLY config.json + template.json
+# stay committed, everything else is generated and ignored).
+/tests/fixtures/demo-colony/colony.db
+/tests/fixtures/demo-colony/colony.db-*
+/tests/fixtures/demo-colony/log.jsonl
+/tests/fixtures/demo-colony/blobs/
+/tests/fixtures/demo-colony/.staging/
+
+# Runtime state from running any example colony in place.
+/examples/**/colony.db
+/examples/**/colony.db-*
+/examples/**/log.jsonl
+/examples/**/blobs/
+/examples/**/.staging/
+/examples/**/.env
+# The private template library an example copies next to itself so it can set a
+# param without patching the shared library (examples/never-forgets/README.md).
+/examples/*/templates/
+
+# Runtime state from running a shipped template in place. Since the V8 move the
+# library is a TOP-LEVEL tree, so workshop/.gitignore no longer covers it at all —
+# and templates/<public> is part of the public export, where workshop/.gitignore never
+# travelled anyway. This is the only file that keeps the artefacts out.
+/templates/**/colony.db
+/templates/**/colony.db-*
+/templates/**/cell.db
+/templates/**/cell.db-*
+/templates/**/log.jsonl
+/templates/**/blobs/
+/templates/**/.staging/
+
+# Runtime state from running any fixture colony in place (tests copy to tmp,
+# but emit-dot / ad-hoc runs may still touch these).
+/tests/fixtures/**/colony.db
+/tests/fixtures/**/colony.db-*
+/tests/fixtures/**/cell.db
+/tests/fixtures/**/cell.db-*
+/tests/fixtures/**/log.jsonl
+/tests/fixtures/**/blobs/
+/tests/fixtures/**/.staging/
+
+# P5 eval: dataset, runtime trees and raw results NEVER belong in a commit.
+# The dataset itself lives OUTSIDE the repo.
+/workshop/evals/**/data/
+/workshop/evals/**/runs/
+
+# Secrets
+/.env
+
+# IDE
+/.vscode/
+/.idea/
+
+# Local agent / tooling state
+/.claude/
+
+# Curated launch-export working tree (separate private repo, never dev-master history)
+/.launch-export/
+
+# Internal launch tracker (strategy, posting accounts) — never exported
+/LAUNCH-PLAN.md
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# === Internal design docs (local durability — item 4, 2026-05-21) ===
+# docs/, plans/, CLAUDE.md, PROGRESS.md are tracked locally so that lessons
+# + plans stay version-locked with the code history. They are NOT part of a
+# later GitHub export (v0.1.0): that one is curated + English and exports
+# only a subset. Until then: everything stays in the local repo.
+# PROGRESS.md is already tracked (marker entry effectively a no-op).
+/PROGRESS.md
+__pycache__/
+
+# W13 working artefacts (test logs + driver), never part of the tree.
+/w13-*.log
+/w13-*.exit
+/w13-*.sh

@@ -1,0 +1,9 @@
+{"session": "winter-2026-01", "at": "2026-01-09T18:40:00.000Z", "origin": "user", "text": "I switched the kitchen radiator off for the winter, the valve is stuck at three."}
+{"session": "winter-2026-01", "at": "2026-01-09T18:40:22.000Z", "origin": "assistant", "text": "Noted. Stuck at three usually means the pin underneath is seized, not the knob."}
+{"session": "winter-2026-01", "at": "2026-01-23T09:02:00.000Z", "origin": "user", "text": "Booked the dentist for the first week of March, the one on the corner."}
+{"session": "winter-2026-02", "at": "2026-02-14T11:05:00.000Z", "origin": "user", "text": "The plumber came by, he says the radiator valve is a Danfoss RA-N and needs a new insert."}
+{"session": "winter-2026-02", "at": "2026-02-14T11:06:10.000Z", "origin": "assistant", "text": "So the fix is an insert, not a whole valve body. Worth asking him for the part number."}
+{"session": "winter-2026-02", "at": "2026-02-21T20:15:00.000Z", "origin": "user", "text": "Watched the second half of the game at Tom's place, we lost anyway."}
+{"session": "spring-2026-03", "at": "2026-03-02T08:12:00.000Z", "origin": "user", "text": "Bought a second bike lock, the old one is at the office."}
+{"session": "spring-2026-03", "at": "2026-03-02T08:12:40.000Z", "origin": "assistant", "text": "Two locks, two places. That is the setup that actually survives a commute."}
+{"session": "spring-2026-03", "at": "2026-03-11T17:30:00.000Z", "origin": "user", "text": "Repotted the big monstera, it had grown straight through the drainage holes."}

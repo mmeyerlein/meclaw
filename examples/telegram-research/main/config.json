@@ -1,0 +1,177 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./proxy",
+          "to": "./prep",
+          "modifier": {
+            "set_context": {
+              "chat_id": "hop.chat_id"
+            }
+          }
+        },
+        {
+          "from": "./prep",
+          "to": "./memory",
+          "condition": "has(hop.route) && hop.route == 'ustore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'prep'"
+            }
+          }
+        },
+        {
+          "from": "./prep",
+          "to": "./planner",
+          "condition": "has(hop.route) && hop.route == 'ullm'",
+          "modifier": {
+            "set_context": {
+              "question": "hop.question",
+              "turn_id": "hop.turn_id",
+              "iter": "'0'"
+            },
+            "set_hop": {
+              "msg_type": "'research_request'"
+            }
+          }
+        },
+        {
+          "from": "./planner",
+          "to": "./dispatch",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
+        },
+        {
+          "from": "./planner",
+          "to": "./proxy",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'"
+        },
+        {
+          "from": "./planner",
+          "to": "./archive",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'"
+        },
+        {
+          "from": "./planner",
+          "to": "./drain",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'error'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'c_asst'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./searcher",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./reader",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./memory",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'tool'"
+            }
+          }
+        },
+        {
+          "from": "./dispatch",
+          "to": "./drain",
+          "condition": "has(hop.tool_name) && hop.tool_name == 'unknown'"
+        },
+        {
+          "from": "./searcher",
+          "to": "./collector",
+          "modifier": {
+            "set_hop": {
+              "route": "'c_res'"
+            }
+          }
+        },
+        {
+          "from": "./reader",
+          "to": "./collector",
+          "modifier": {
+            "set_hop": {
+              "route": "'c_res'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./memory",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./memory",
+          "condition": "has(hop.route) && hop.route == 'cguard'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'collector'",
+              "firing": "'1'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./planner",
+          "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 12",
+          "modifier": {
+            "set_context": {
+              "iter": "int(context.iter) + 1",
+              "firing": "''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./memory",
+          "to": "./collector",
+          "condition": "context.store_origin == 'collector'"
+        },
+        {
+          "from": "./archive",
+          "to": "./memory",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'archive'"
+            }
+          }
+        },
+        {
+          "from": "./drain",
+          "to": "./memory",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'drain'"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Research loop (v2, examples/14b shape): proxy -> prep -> planner -> dispatch -> (searcher|reader|memory) -> collector(fan-in via store) -> planner re-entry until finish 'stop' -> proxy + archive -> memory. The planner answers and cites; no separate synthesizer.",
+    "use_when": "Instantiate whole; override persona/tools in prep, search endpoint in searcher params. Re-root the materialized instance per the gate runbook (island template).",
+    "not_in_scope": "No cross-question memory in the loop (thread rows are per turn_id); no result ranking.",
+    "examples": [
+      "Multi-tool turn: dispatch fans out ALL tool_calls in parallel; the collector fires the rebuilt thread back exactly once when every call has its result (run-4b). Error drains: planner finish 'error' and unknown tool names route to ./drain -> errors table (visible via SELECT, loop-free; edges to /colony/dead_letters are mutation-illegal inside a subtree). Store echo replies die in the cells' empty-multi-send guards."
+    ]
+  }
+}

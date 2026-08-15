@@ -1,0 +1,76 @@
+{
+  "cell": {
+    "type": "web_fetch"
+  },
+  "params": {
+    "external_timeout_ms": 30000,
+    "max_concurrency": 4,
+    "max_bytes": 32768
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "web_fetch"
+          ],
+          "required": true
+        },
+        "http_status": {
+          "type": "number",
+          "required": true
+        },
+        "content_type": {
+          "type": "string",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bytes": {
+          "type": "number",
+          "required": false
+        },
+        "truncated": {
+          "type": "boolean",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:http"
+    ]
+  },
+  "description": {
+    "purpose": "GET-only HTTP client: fetches the URL from the inbound tool_call args and emits the response body as one tool_result turn.",
+    "use_when": "Behind the digest timer (or any cell emitting a tool_call with {url}). GET only — POST/headers/body are a core roadmap defer.",
+    "not_in_scope": "No method/header/body control, no retries. Non-2xx is a normal tool_result with hop.http_status — routing decides.",
+    "emits_meaning": "messages[]: one tool_result turn, text = response body. hop.http_status drives the 2xx edge; error_code only on io_error/timeout/invalid_input.",
+    "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {url}.",
+    "examples": [
+      "{\"url\":\"https://example.com\"} -> tool_result text '<html>...', hop { operation: 'web_fetch', http_status: 200 }"
+    ]
+  }
+}

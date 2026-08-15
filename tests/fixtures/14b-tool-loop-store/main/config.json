@@ -1,0 +1,51 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./capture",
+          "to": "./store",
+          "condition": "hop.route == 'ustore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'user'"
+            }
+          }
+        },
+        {
+          "from": "./capture",
+          "to": "./llm",
+          "condition": "hop.route == 'ullm'",
+          "modifier": {
+            "set_context": {
+              "iter": "0"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "/park",
+          "condition": "context.store_origin == 'user'"
+        },
+        {
+          "from": "./store",
+          "to": "/tool-loop/collector",
+          "condition": "context.store_origin == 'collector'"
+        },
+        {
+          "from": "./llm",
+          "to": "./tool-loop",
+          "condition": "hop.finish_reason == 'tool_calls'"
+        },
+        {
+          "from": "./llm",
+          "to": "/sink",
+          "condition": "hop.finish_reason != 'tool_calls'"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_DREAMER}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "external_timeout_ms": 110000,
+    "system_order": [
+      "instructions"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "provider_extra": {
+      "reasoning": {
+        "effort": "${MEMORY_REASONING_DREAM:-medium}"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "description": "MODEL_DREAMER — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding)"
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "medium",
+        "description": "Explicit reasoning effort (MEMORY_REASONING_DREAM) — never inherit the provider default"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "Writes the narrative belief over one delta window: per (subject, predicate) axis one sentence that names the change — both values and the date. Since P15/R9 it no longer judges supersession: which fact wins is arithmetic (dream-glue derives it from the chain), and arithmetic needs no opinion. The expensive model tier — it runs once a night, never per turn.",
+    "use_when": "Called by dream-glue once per consolidation run with the scoped clusters.",
+    "not_in_scope": "No store access, no application of its own verdicts (dream-glue applies them, logged and reversible), no extraction, and since R9 no supersession verdict at all — the request shape has no `supersede` slot any more.",
+    "emits_meaning": "messages[]: one assistant turn holding the verdict JSON (beliefs / retract). hop.finish_reason='error' closes the run cleanly with an error verdict instead of leaving it 'running'.",
+    "consumes_meaning": "system.instructions.text: the belief contract, handed over by dream-glue's scope phase (an llm cell has no params.system — the prompt travels in the message, which is why it lives in dream-glue). messages[]: the window's facts grouped by subject, oldest first, each with valid_from/valid_until.",
+    "examples": [
+      "two diet facts on one axis -> {\"beliefs\":[{\"holder\":\"self\",\"statement\":\"Alex drank tea until 2026-05, then switched\",\"source_fact_ids\":[\"f1\",\"f2\"]}]}"
+    ]
+  }
+}

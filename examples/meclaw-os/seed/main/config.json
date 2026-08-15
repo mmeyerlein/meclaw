@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of meclaw-os: an empty graph and nothing else. Not one cell is checked in here -- everything this colony is arrives later, from templates, through grow.json.",
+    "use_when": "As the --root of a colony that is grown rather than checked in.",
+    "not_in_scope": "No door, no terminal, no agent, no memory, no screening, no persona: none of that is written here, all of it is instantiated."
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "cell": { "type": "code" },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, re\n\nd = json.load(sys.stdin)[\"body\"]\nmsgs = d.get(\"messages\", [])\nquestion = \"\"\nfor m in msgs:\n    if m.get(\"origin\") == \"user\":\n        question = m.get(\"text\", \"\")\n        break\n\nBILLING = {\"invoice\", \"refund\", \"payment\", \"bill\", \"charge\", \"subscription\"}\nTECH    = {\"error\",   \"bug\",    \"crash\",   \"install\", \"login\", \"password\"}\n\ndef tokenize(text):\n    return set(t for t in re.split(r'[^a-z0-9]+', text.lower()) if t)\n\ntokens = tokenize(question)\nbilling_score = len(tokens & BILLING)\ntech_score    = len(tokens & TECH)\n\n# higher score wins; tie (including both 0) → billing (deterministic)\nagent_target = \"tech\" if tech_score > billing_score else \"billing\"\n\nout = {\n    \"header\": {\n        \"agent_target\": agent_target\n    },\n    \"messages\": msgs\n}\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "0.1.0",
+    "settings": {},
+    "emits": {
+      "hop": {
+        "agent_target": { "type": "string", "values": ["billing", "tech"], "required": true }
+      },
+      "body": {
+        "messages": { "type": "array" }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      }
+    }
+  }
+}

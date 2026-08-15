@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of never-forgets. It draws NO edge: the agent and every lane of this colony arrive later, from templates, through grow.json. What is checked in beside it is only the part a template library cannot ship for you -- the memory this colony keeps and the lane that imports a past into it.",
+    "use_when": "As the --root of a colony whose agent is grown rather than checked in.",
+    "not_in_scope": "No door, no agent, no session, no drain, no terminal: none of that is written here, all of it is instantiated."
+  }
+}

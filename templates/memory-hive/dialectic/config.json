@@ -1,0 +1,97 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_DIALECTIC}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 1024,
+    "external_timeout_ms": 110000,
+    "system_order": [
+      "instructions"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "provider_extra": {
+      "reasoning": {
+        "effort": "${MEMORY_REASONING_DIALECTIC:-medium}"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "description": "MODEL_DIALECTIC — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding)"
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "medium",
+        "description": "Explicit reasoning effort (MEMORY_REASONING_DIALECTIC) — never inherit the provider default"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "Tier 2 of the read path: synthesises one answer across the tier-1 candidates with an explicit source priority (beliefs before facts before episodes) and a MANDATORY gap statement — what memory does not know. The gap is what separates a memory answer from a hallucination.",
+    "use_when": "Hard questions only ('has his position on X changed, and why?'). recall routes here when memory_tier=2; tier 0 and 1 never touch it.",
+    "not_in_scope": "No retrieval (recall has already ranked and budgeted the candidates), no store access, no writes, no tool loop — one provider call per question.",
+    "emits_meaning": "messages[]: one assistant turn holding the answer JSON {answer, gap, sources, confidence}. hop.finish_reason='error' is not a crash: recall downgrades the request to the tier-1 candidate bundle and marks hop.tier_downgraded.",
+    "consumes_meaning": "system.instructions.text: the answer contract, built by recall so prompt and parser stay in one file. messages[]: one user turn with {question, as_of, beliefs, candidates} as JSON.",
+    "examples": [
+      "candidates about diet -> {\"answer\":\"keto since january\",\"gap\":\"nothing recorded after 2026-05\",\"sources\":[\"f1\"],\"confidence\":80}",
+      "no candidate covers the question -> {\"answer\":\"memory does not contain this\",\"gap\":\"no episode mentions the topic at all\",\"sources\":[],\"confidence\":5}"
+    ]
+  }
+}

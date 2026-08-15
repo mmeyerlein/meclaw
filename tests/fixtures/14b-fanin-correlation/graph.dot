@@ -1,0 +1,29 @@
+digraph topology {
+  rankdir=TB;
+  "/capture" [shape=box];
+  "/llm" [shape=box];
+  "/park" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/store" [shape=box];
+  "/tool-loop/collector" [shape=box];
+  "/tool-loop/dispatcher" [shape=box];
+  "/tool-loop/tool-a" [shape=box];
+  "/tool-loop/tool-b" [shape=box];
+  "/tool-loop" [shape=diamond, style=dashed, label="/tool-loop (hive)"];
+  "/capture" -> "/llm" [label="hop.route == 'ullm'"];
+  "/capture" -> "/store" [label="hop.route == 'ustore'"];
+  "/llm" -> "/sink" [label="hop.finish_reason != 'tool_calls'"];
+  "/llm" -> "/tool-loop" [label="hop.finish_reason == 'tool_calls'"];
+  "/store" -> "/park" [label="context.store_origin == 'user'"];
+  "/store" -> "/tool-loop/collector" [label="context.store_origin == 'collector'"];
+  "/tool-loop" -> "/tool-loop/dispatcher" [label="hop.finish_reason == 'tool_calls'"];
+  "/tool-loop/collector" -> "/llm" [label="hop.route == 'fire'"];
+  "/tool-loop/collector" -> "/park" [label="hop.route == 'park'"];
+  "/tool-loop/collector" -> "/store" [label="hop.route == 'cguard'"];
+  "/tool-loop/collector" -> "/store" [label="hop.route == 'cstore'"];
+  "/tool-loop/dispatcher" -> "/tool-loop/collector" [label="hop.route == 'c_asst'"];
+  "/tool-loop/dispatcher" -> "/tool-loop/tool-a" [label="hop.route == 'tool' && hop.tool_name == 'a'"];
+  "/tool-loop/dispatcher" -> "/tool-loop/tool-b" [label="hop.route == 'tool' && hop.tool_name == 'b'"];
+  "/tool-loop/tool-a" -> "/tool-loop/collector" [label="hop.route == 'c_res'"];
+  "/tool-loop/tool-b" -> "/tool-loop/collector" [label="hop.route == 'c_res'"];
+}

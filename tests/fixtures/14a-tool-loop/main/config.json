@@ -1,0 +1,16 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": [
+        {
+          "from": "./llm",
+          "to": "./tool-loop",
+          "condition": "hop.finish_reason == 'tool_calls'"
+        }
+      ]
+    }
+  }
+}

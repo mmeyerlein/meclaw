@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "openai/gpt-4o-mini",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0.2,
+    "max_tokens": 512,
+    "system_order": [
+      "identity"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "Provider model id"
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "set OPENROUTER_API_KEY in your .env",
+        "description": "Provider API key"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Dispatcher LLM: one call per question, expected to answer with exactly one tool_call (web_search/web_fetch/remember).",
+    "use_when": "Behind prep (which provides persona + tool schemas via body.system).",
+    "not_in_scope": "No tool execution, no final answer \u2014 synthesis happens downstream.",
+    "emits_meaning": "hop.finish_reason drives the dispatch edge ('tool_calls' -> dispatch cell); the tool_call turn (OpenAI {name, arguments} form) lives in messages[] and is unwrapped by dispatch.",
+    "consumes_meaning": "messages[] mandatory; body.system upserted into cell.db before the call.",
+    "examples": [
+      "'What is CEL?' -> tool_call web_search {query: 'CEL expression language'}, hop {finish_reason: 'tool_calls', tool_name: 'web_search'}"
+    ]
+  }
+}

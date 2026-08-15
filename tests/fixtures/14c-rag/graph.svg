@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="600" font-family="monospace" font-size="13">
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#444"/></marker>
+<path d="M280 62 H310 V152 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M280 242 H310 V332 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M280 152 H310 V422 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M280 512 H310 V242 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M280 422 H310 V512 H286" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="60" y="40" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="66" text-anchor="middle" fill="#111">/ask</text>
+<rect x="60" y="130" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="156" text-anchor="middle" fill="#111">/corpus</text>
+<rect x="60" y="220" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="246" text-anchor="middle" fill="#111">/capture</text>
+<rect x="60" y="310" width="220" height="44" rx="4" fill="#efe" stroke="#333" stroke-width="1.5" stroke-dasharray="2,2"/>
+<text x="170" y="336" text-anchor="middle" fill="#111">/sink (test probe)</text>
+<rect x="60" y="400" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="426" text-anchor="middle" fill="#111">/retrieve</text>
+<rect x="60" y="490" width="220" height="44" rx="4" fill="#fff" stroke="#333" stroke-width="1.5"/>
+<text x="170" y="516" text-anchor="middle" fill="#111">/llm</text>
+</svg>

@@ -1,0 +1,101 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 400000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${ctx.model}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "external_timeout_ms": 300000,
+    "system_order": [
+      "identity",
+      "memory",
+      "instructions"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "Provider model id of the THINKING model; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal. R-CG-1: the core is allowed to take longer than the channel voice, so the shipped timeouts are the long ones - a channel-voice model here wastes the split."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "${OPENROUTER_API_KEY}",
+        "description": "Provider API key"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The agent core's one inference (R-CG-1): reasoning, LLM-backed tool work and everything a channel voice hands over. Its system state - identity, core instructions, tool schemas, the memory bundle of the central hive - accumulates in its own cell.db, one writer per system path.",
+    "use_when": "Inside the cogny composite, behind the collector's seam. Slower and stronger than a talky brain on purpose; the whole point of the advisor split is that nobody waits for this call.",
+    "not_in_scope": "No tool execution, no context assembly, no channel persona. Cogny never speaks to a user directly - it answers the channel voice, which verbalises the result in its own tone. Provider and auth are instance business: the shipped default is the OpenRouter chat lane, a subscription or another provider is override_params.",
+    "emits_meaning": "finish_reason 'stop'/'tool_calls' -> ./split (the dispatcher tells a final answer from a tool bundle); 'length' -> the collector's in_answer lane (a truncated answer is an answer); 'error'/'content_filter' -> the parent's drain, wired from ./brain, because an error echo carries the PROMPT back and must never be filed as the core's own words.",
+    "consumes_meaning": "messages[] the assembled errand of one consultation - the talky IS this brain's user. A body with system but WITHOUT messages is a system update: it upserts the slot and triggers no inference.",
+    "examples": [
+      "a consult errand -> tool_calls -> the core's own tool round -> the same seam again with iter+1 -> stop, and the advice leaves on the answer lane",
+      "a consultation the core cannot finish alone -> stop with a question, which travels the SAME return lane and reaches the user through the channel voice"
+    ]
+  }
+}

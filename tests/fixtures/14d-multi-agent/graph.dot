@@ -1,0 +1,13 @@
+digraph topology {
+  rankdir=TB;
+  "/billing" [shape=box];
+  "/capture" [shape=box];
+  "/router" [shape=box];
+  "/sink" [shape=box, style=dotted];
+  "/tech" [shape=box];
+  "/billing" -> "/capture";
+  "/capture" -> "/sink";
+  "/router" -> "/billing" [label="hop.agent_target == 'billing'"];
+  "/router" -> "/tech" [label="hop.agent_target == 'tech'"];
+  "/tech" -> "/capture";
+}
