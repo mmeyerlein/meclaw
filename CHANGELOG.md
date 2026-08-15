@@ -104,14 +104,309 @@ Rust crates are internals and move without notice.
   no action; it is listed here because the name appears in `params.fts` and in
   any SQL a reader wrote against the index by hand.
 
+### Added
+
+- **An episode reaches memory at the turn, not at the night.** The collector wrote
+  its day out once, when the session closed — so a fact stated at nine in the
+  morning was unrecallable until the keeper ended the day, a freshness hole of up
+  to twenty-four hours. A second exit, `turn_write`, now hands the same batch out
+  after every stored turn and every stored answer. It is off by default (the
+  `turn_write` param, empty = off, and nothing about the collector moves), it goes
+  through the **existing** `in_batch` inlet of `memory-drain@1` rather than around
+  it, and the drain's ledger stays the single dedup authority — `episodes.turn_id`
+  carries no UNIQUE column, and the writer inserts unconditionally, which is
+  exactly why the fast path had to run through the ledger. Every emission carries
+  the whole session so far, in order and without a `limit`, so the lane is
+  self-healing: a dropped emission is repaired by the next turn rather than
+  leaving a hole. `memory-drain@1` did not move a byte for this — two cadences,
+  one ledger. Wire both edges into the same consumer or neither; a `turn_write`
+  exit that lands somewhere else is a second, unledgered writer.
+- **`cogny` grows a second brain, so a lookup does not queue behind a consult.**
+  An `llm` cell is one task with one mailbox: a trivial memory question sent to an
+  advisor core waited out whatever deep errand was in front of it, and twenty-odd
+  seconds is not a lookup. `brain_fast` is that second mailbox — a second `llm`
+  cell on the same collector, capped at 512 completion tokens where the thinking
+  lane keeps 4096, with the first shipped `llm` system seed in the repository (one
+  slot, `brevity`, deliberately not `instructions`, because a system path has one
+  writer). The lane is picked by class, not by evidence: `context.consult_class`
+  is set on the ingress edge — `ask_memory` is a `lookup`, `consult_cogny` is a
+  `consult` — and the two ingress edges are complementary rather than overlapping,
+  because a fan-out that matches both would answer twice. Both lanes hang off the
+  **same** collector, window and memory bundle, and assembly happens before the
+  edge decision, so a misclassification costs phrasing and never a fact. When the
+  fast lane finds it does not have enough, it says so: `escalate_to_deep` is a
+  reserved tool name inside the composite and its edge re-enters the composite's
+  own ingress as a `consult`. Wiring only the first ingress edge is legal and
+  gives the previous behaviour — without `consult_class`, every errand takes the
+  thinking lane and `brain_fast` never sees a message (#124).
+- **The front model can write memory in the same call it answers in.** Extraction
+  used to be a nightly batch only, so the strongest thing the model knew about a
+  turn — that it *was* worth remembering — was thrown away and rediscovered hours
+  later by a cheaper model. The `remember` tool makes the inline path the
+  strategic target and leaves the batch as the safety net. It is an async-class
+  tool (declare it in `DISPATCHER_ASYNC_TOOLS`, or the round waits for a
+  `tool_result` that never comes and dies at the idle window), and it takes
+  **two** edges, both load-bearing: the forward edge from the dispatcher into the
+  hive's `extract-glue`, and the **reject drain** back out on `hop.route ==
+  'reject'`. The drain is not optional once the ingress is wired — without it a
+  malformed block dead-letters instead of being reported, and the answer pays for
+  it. The tool schema deliberately carries no episode id and no `valid_until`
+  binding: no front model can know a uuid minted inside the hive, so the hive
+  binds the block itself to the newest `user` episode of the session — `user` and
+  not "newest", because the answer episode is written concurrently by the per-turn
+  lane and "newest" would be a race. A block with no bindable turn is rejected
+  with **zero** store writes and the turn stays `pending`, so the night batch
+  picks it up unchanged: the inline path can fail without losing anything.
+- **The collector curates its own context window, continuously and without a
+  model.** A tool loop rebuilds its thread every round, so it grows monotonically;
+  what existed against that was a cap (keeps a prefix) and eviction (keeps
+  nothing). The curator keeps the *meaning* and drops the *bulk*, in three staged
+  passes, at zero cost and zero latency — there is no provider call anywhere in
+  it. It is off by default: `context_window` is a token budget and `0` means
+  pre-curator behaviour. Above it, `curate_soft` (0.5) is the working mark and
+  `curate_hard` (0.75) is reported rather than acted on, `keep_rounds` (2) leaves
+  the newest iterations verbatim at any budget, and what may be elided at all is
+  **declared, never guessed**: `recoverability` names each tool as `env`,
+  `repeatable` or `unique`, and the default is `unique` — a payload nobody
+  classified is a payload nobody touches. An elided result leaves a stub naming
+  its size, its tool, its class, a content hash and the call that brings it back,
+  and the stub survives the recall as a pointer, because deleting a `tool_result`
+  row would orphan its `tool_call` and every provider rejects that turn. The
+  trigger is a budget computed **in the cell** rather than a threshold on an edge
+  — an exact partition over two CEL conditions is how a turn parks silently — and
+  it prefers the provider's real `tokens_prompt` over a `chars/4` estimate that is
+  deliberately a *lower* bound, so it fires late rather than early. Because
+  nothing is paraphrased, invariance is structural rather than hoped for, and it
+  is pinned that way: constraints, details and time markers survive every stage at
+  four budgets, and curating an already curated window is a byte-identical
+  fixpoint. The emergency fold lane that `curate_hard` is measured for does not
+  exist yet — the mark is produced and reported, nothing consumes it.
+- **`thread_recall`, the tool that brings an elided payload back.** The collector
+  serves the call itself out of its own round table, the same shape the memory
+  tool has had since #78, and the scope is this turn and only this turn — the past
+  is `memory_recall`'s job. A recall over `thread_recall_budget` (0.2 of the
+  window) is answered with a typed result naming the number: a wall, never a
+  silent truncation. Switched off, the call is *answered* with a typed result too
+  rather than parked, because a tool the model was offered and that never replies
+  is a hung round.
+- **The memory hive ships** (`memory-hive@1.2.0`, #137). The read and write path
+  that has been carrying the private colony — extractor, dreamer, judge,
+  dialectic, recall, the glue cells, the store and the nightly consolidation — is
+  now part of the distribution, and the public catalogue grows to fourteen
+  templates. The system instructions travel with it: the extraction, dream,
+  judgement and recall prompts are in the shipped scripts, not held back, and so
+  are the curated relation core and the embedding-model seed. Model names appear
+  only as `${MODEL_*}` placeholders with no code default, so an unconfigured hive
+  refuses to instantiate instead of quietly measuring a different model than the
+  report claims. The price of publishing was paid in the fixtures rather than in
+  the code: thirty-two test files came off the export blocklist, and the real
+  people in them became generic ones first.
+- **A hive can be sealed, in two independent ways, both opt-in** (#132, #133).
+  Until now "internal" was a convention: any edge could address any cell at any
+  depth, and a store inside a hive would serve a write from anywhere in the
+  colony. `params.ports` on a hive marker names which of its **direct** children
+  may be addressed from outside; an `add_edges` that crosses the boundary in
+  either direction is rejected with the new `hive_port_boundary`, before anything
+  destructive has happened. Presence of the key is the switch, an empty list is
+  legal (pure transit), and everything inside the hive stays free at any depth.
+  `store` gains `write_surface: "internal"`, which is a **runtime** refusal rather
+  than a wiring one — a `select` and an `insert` travel the same edge, so a wiring
+  rule could not tell them apart. Writes (`insert`, `update`, `delete`,
+  `create_table`, the alias ops, and the params slot) from outside the owning hive
+  are refused with the new `write_denied`, carrying the `tool_call_id` back; reads
+  stay open from everywhere. The sender identity is stamped by the substrate, not
+  claimed by the message, and a message with no `reply_to` counts as outside —
+  fail-closed. Both seals are flipped on for the memory hive itself
+  (`writer`, `recall`, `extract-glue` are its ports; its store is internal), which
+  turned exactly zero existing tests red.
+- **The extraction gate is tuned for freshness rather than for cost** (#51). The
+  batch fired at 512 accumulated tokens or a thirty-minute-old item, which on a
+  quiet conversation meant a fact stated now was extracted half an hour from now.
+  The defaults are 128 tokens and 2 minutes; the item cap stays at 64. They are
+  documented as recommended, not mandatory — the gate is a knob per deployment,
+  and the README and both contract declarations now say so instead of implying a
+  rule.
+- **A claim gets a lease, so a live batch is not extracted twice** (#72). A
+  claimed row carried no timestamp, so the recovery sweep handed *every* claimed
+  row back regardless of age — including the one an extractor was working on at
+  that moment. Measured on the private colony: 5,859 batched items for 3,839
+  turns (1.53×), thirty reclaims where there should have been one, a third more
+  provider calls and half again the wall time. `pending_extraction` grows a
+  `claimed_at` column, the claim stamps it, and the sweep only reclaims what is
+  older than `MEMORY_BATCH_CLAIM_LEASE_MIN` (5, chosen to outlast a full
+  extraction cycle under the extractor's 180 s message timeout). Rows claimed
+  before this change carry an empty stamp, sort under every cutoff and are treated
+  as expired. No Rust changed — the comparison operator was already there.
+- **A turn may state when it happened** (#135). `happened_at` is an optional slot
+  on the UBF turn object. It belongs on the turn and not in the header because a
+  header carries one time per message while a batch of replayed turns carries a
+  different one per turn — which is what an import lane needs to say "this was
+  said in January" while the store records "learned in March". The turn object
+  stays closed (`additionalProperties: false`): this is one named slot, not an
+  open door, and any other extra field is still a whole-body rejection.
+- **Two examples that tell a problem instead of a feature.**
+  `examples/never-forgets` is a colony that answers a question about January in
+  March: six seed files, one `grow.json` of four nodes and ten edges, a replay
+  lane that imports nine turns spread over three months, and the collector's
+  `memory_recall` tool asking for a time range and getting one back with dates.
+  It is honest about its own scope — it demonstrates the memory **port**, not the
+  memory hive, and a window with nothing in it comes back empty rather than with
+  the next best thing. `examples/hard-shell` is the other half of 0.8.0's
+  hardening, written as an invitation: four files, three cells, and **no security
+  configuration at all**, because the point is that the defaults hold. It fetches
+  a cloud metadata address offline and gets `target_blocked` with no
+  `http_status`, because no connection was ever made, and the README walks the
+  root lease and the orphan reap from there.
+- **A cost number anyone can reproduce.** `docs/costs.md` publishes what a running
+  colony costs, and the harness that produced it travels with it:
+  `scripts/cost_report.py` plus a dated price list carrying its source, its
+  retrieval date and its exchange rate. The script reads `colony.db` strictly
+  read-only, touches `message_log` and never a message body, and has two rules
+  that make the number honest rather than flattering — a model it has no price for
+  lands in an `unknown` bucket that is listed, warned about, and **left out of the
+  sum** rather than guessed at, and the twenty-four-hour projection divides by the
+  window that was asked for rather than by the span of the rows it happened to
+  find, which on a quiet night is a factor of two. The published figures: USD 0.364
+  per 24 h over a 27.27 h observation window (110 provider calls), and USD 0.028
+  per 24 h for fifteen unattended hours overnight. Roughly 97 % of the bill comes
+  from 24 % of the calls, all of them to the frontier model. What is *not*
+  measured is marked as not measured.
+- **A release is a binary and one line, not a build.** A tag matching `v*` now
+  builds a static `x86_64-unknown-linux-musl` binary, refuses to publish it if the
+  tag does not match the version the binary reports, smoke-tests it (`--help`,
+  `--sandbox-probe`, `--validate` against a copy of `examples/hello`) and uploads
+  a tarball plus a separate `.sha256`. `scripts/install.sh` is the other side:
+  POSIX `sh`, one downloaded file, checksum verified **before** anything is
+  unpacked, atomic move into `~/.local/bin`, no shell profile touched and no
+  second `curl | sh`. It takes `MECLAW_VERSION`, `MECLAW_INSTALL_DIR` and
+  `MECLAW_REPO`, reads the latest tag off the release redirect rather than the
+  GitHub API (whose unauthenticated budget is per IP and therefore shared behind
+  NAT), and falls back to the API only if that fails. The workflow can first run
+  on a real tag push; the installer's branches were exercised offline under
+  `dash`.
+- **A stability statement, and its carve-out.** `README.md` § Stability names the
+  four surfaces this project holds still: the HTTP API, the template DSL, the
+  template port addresses, and the documented `error_code` strings. Inside 0.x
+  they move additively; a break gets a Breaking section in this file with the
+  migration named, and if it is not in that section it was not meant to break you.
+  The counter-statement is just as explicit: every crate is `publish = false`,
+  there is no SemVer promise on any Rust item, and a git dependency should pin a
+  commit. The `${KNOB}` environment variables in the templates are named as an
+  **experimental** surface that is migrating onto `params` across the 0.x line and
+  is deliberately *not* covered (#138) — the same two sentences now stand in
+  fourteen template READMEs.
+- **`door@1` and `terminal@1`, and a seed with no cells in it.**
+  `examples/meclaw-os` starts as a colony of zero cells and grows itself: one
+  `grow.json` takes it to seventeen, a second declaration adds the advisor core
+  and takes it to twenty-two. The door (an HTTP request onto a named lane, ten
+  lines of Python) and the terminal were seed cells inside that example — public
+  without being components. Moving them into the library is what makes them
+  parts. `cogny@1` became public in the same pass.
+
 ### Changed
 
+- **The template library lives at `templates/`.** It used to sit under `builder/`,
+  which named its author rather than its content and put a library of shipped
+  parts inside a tool. The tool kept the old role under a new name (`workshop/`,
+  private); the library moved to the top level. The published cut is unchanged in
+  kind: `templates/` is mixed, and what travels is an explicit allow-list, so a
+  new template is private until somebody enters it there — the checked boundary is
+  the list, never the directory name.
+- **`--strict` is now `--validate-strict`.** The flag only ever modified
+  `--validate`, and its bare name read like a global mode. It appeared in no flag
+  table in any document, so it gets no alias and no deprecation window; it does
+  have a documented row now. `--tokio-console` and its port are hidden from
+  `--help` in the same pass — fully functional, but a debugging instrument rather
+  than an operator knob.
+- **Port addresses are declared contracts, in the READMEs that own them.** The
+  addresses the examples wire literally — `./keeper/stamp`, `./collector/assemble`,
+  `./split` and `./errors` on `talky`, `./assemble` on `collector`,
+  `./collector/assemble` on `cogny`, `./screen` on `firewall`, `./drain` on
+  `memory-drain` — are now written down as addresses rather than left as
+  implementation detail that happens to be reachable. What sits behind them may be
+  rearranged in a version bump; moving one of them is a Breaking entry and a major
+  version.
+- **Template pinning says what it will do.** `name@exact-version` requires an exact
+  match, and a bump today *replaces* the directory. `templates/README.md` § Versioning
+  now states both the current behaviour and the intent that superseded versions
+  stay available from 0.9.0 on, so nobody infers a guarantee from a mechanism.
 - **`GET /colony/templates?type=` actually filters.** It was parsed and ignored —
   a silent no-op that answered with the full template list, which reads exactly
   like "no other templates match". A caller relying on the old behaviour was
   relying on getting everything.
 - **`GET /colony/events` slims its 501 body to `{"error": "deferred"}`**, the
   same envelope shape every other refusal uses.
+- **The specification follows the code where the two had drifted apart.** No
+  behaviour moved; the documents did. The restart section described the mailbox as
+  it was before #18 — the truth is that the message in flight dies with its frame
+  while the rest of the mailbox is rescued and delivered to the successor in order,
+  and that the stateless dispatcher deliberately carries no such guard. `header` is
+  documented as a reserved name that is **never** a body slot: it is cut out of
+  every emission and merged into the envelope, so a payload parked there is lost
+  silently. The `llm` cell's `error_code` list is declared **additive** rather than
+  closed, which means an edge condition must not assume it has enumerated them all
+  and needs a default lane. Mutation `error_code`s are stated to fall under the same
+  stability promise as the dead-letter codes, and a mutation rejection is `422` and
+  never `400` — `400` means unreadable, `422` means understood and refused. Message
+  headers are documented as deliberately uncapped (#141): a limit would be a
+  breaking change and is not planned. Two smaller ones: `/colony/dead_letters?since=`
+  has been filtering since the day it was written and was wrongly listed as inert,
+  and with `--api` the stdin/stdout bridge is never spawned at all, so EOF is not a
+  shutdown trigger — the spec promised the opposite in two places.
+- **The harness pins which refusal wins when two apply** (#46.3). The order is
+  occupancy, then workspace, then tombstone, and the first refusal is the reported
+  one — so a repeated `task_id` while a task is running answers `harness_busy`, not
+  `invalid_input`. The order was never in doubt in the code and is now in the
+  documents and in a test, because "which error do I get" is the kind of thing a
+  caller writes a branch on.
+- **The example colonies and `.env.example` stop papering over a missing key.**
+  `swarm`, `hello` and `telegram-research` substituted a placeholder API key, so a
+  fresh clone started cleanly and failed with a provider `401` on the first turn.
+  They now reference `${OPENROUTER_API_KEY}` with no default: the daemon refuses to
+  boot and names the variable. `.env.example` was cut down to the public tree —
+  the local-model, builder and Slack blocks are gone, and the memory hive's
+  required variables are in, because those are the ones whose absence rejects an
+  instantiation outright.
+- **The licence declarations agree with the licence.** `deny.toml` allowed
+  `proprietary`, and two `template.json` files carried `"internal"` and an author of
+  `builder`. Everything now says `MIT OR Apache-2.0` and names a real author. No
+  dependency and no template changed — only what the files claimed about them.
+
+### Tooling
+
+- **The export learned to publish a hive, and to rebuild its own history.** Making
+  the memory hive public meant proving the fixtures were clean rather than asserting
+  it: the language gate grew a `DECLARED_DATA_BLOCKS` mechanism keyed by path *and*
+  exact text block, which `make_export.py` imports rather than copies, so the two
+  gates cannot drift into measuring different things. The private-tree marker moved
+  from a template name onto a structural rule, the repository's own GitHub URL
+  stopped counting as a name leak, and `--fresh-history` builds a parentless export
+  commit for a history rebuild.
+- **A community profile.** Code of Conduct, issue forms and a pull-request template,
+  all in the export whitelist.
+- **`cost_report.py` survives a non-numeric token count.** A string, a `null`, a
+  list or a float where a token count belonged used to throw the whole report away
+  as a traceback; those rows now land in the same `skipped` bucket everything else
+  unusable lands in.
+- **CI builds its tests without debug info.** The public suite grew enough that the
+  runner ran out of disk.
+
+### Fixed
+
+- **A `code` cell that emits a non-object no longer takes its task down.** Two
+  `expect()` calls sat on a trust boundary: a script writing `[1]` or
+  `{"header": 5}` killed the cell task instead of being refused. It is an
+  `invalid_json` rejection now, and the rejection stays total — a broken shape in
+  the second message of a multi-send produces exactly one refusal and zero regular
+  emissions, rather than half a batch.
+- **The three `cargo deny` advisory findings from 0.8.0 are closed** (#127). All
+  three were registered rather than suppressed at the time, and `deny.toml` still
+  carries an empty `ignore`.
+- **Two more tests that raced rather than waited.** The #116 retire-record test
+  waits for the record instead of racing it (#134), green 224× under the load recipe
+  that reproduced it, and the no-delete assertion (#129) compares under the
+  collector's own read order rather than under `rowid`, which is what made it
+  order-sensitive in the first place.
 
 ## [0.8.0] — 2026-08-14
 

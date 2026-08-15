@@ -118,6 +118,16 @@ Five things in those edges are load-bearing, and four of them are not decoration
 - **The errand arrives as a `tool_call` turn.** Its text is the raw arguments the model
   wrote. The core's collector files that as the turn.
 
+**`./collector/assemble` is the port address, and the address is the contract.** Both
+external ports meet at that one endpoint, and the working colonies under
+[`../../examples/`](../../examples/) wire it literally as `./cogny/collector/assemble` --
+a stable **address**, not implementation detail that happens to be reachable. Which cells
+sit behind it may be rearranged in a version bump; the address may not, and moving it is a
+breaking change to every parent that wired it: a CHANGELOG Breaking entry and a new major
+version, never a patch. The per-instance lanes below reach further in, to `./split` and to
+both brains, and carry the same promise for the same reason -- the examples wire those
+literally too.
+
 ### Per-instance lanes (not ports of this template)
 
 **Tools stay outside.** The tool set is the per-agent choice, so the composite carries no

@@ -31,7 +31,7 @@
         "type": "string",
         "secret": false,
         "default": "0 0,30 22-23,0-3 * * *",
-        "description": "6-field Quartz cron of the nightly close sweep, declared in UTC (KEEPER_NIGHT_CRON). The default is the UTC image of 00:00-06:00 Europe/Berlin in SUMMER (CEST, UTC+2): 22:00-03:30 UTC, twelve firings every thirty minutes. Winter (CET, UTC+1) is '0 0,30 23,0-4 * * *'. Compute your own: UTC = local - offset."
+        "description": "6-field Quartz cron of the nightly close sweep, declared in UTC (KEEPER_NIGHT_CRON). Documentation, not a params field: a timer cell has no `night_cron` param, the value lives inside the schedule at params.schedules[0].cron and is edited there (or at runtime with a modify op by schedule_id). The default is the UTC image of 00:00-06:00 Europe/Berlin in SUMMER (CEST, UTC+2): 22:00-03:30 UTC, twelve firings every thirty minutes. Winter (CET, UTC+1) is '0 0,30 23,0-4 * * *'. Compute your own: UTC = local - offset."
       }
     },
     "emits": {

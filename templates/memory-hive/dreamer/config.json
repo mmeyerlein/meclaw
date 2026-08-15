@@ -30,11 +30,15 @@
         "secret": false,
         "description": "MODEL_DREAMER — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding)"
       },
-      "reasoning_effort": {
-        "type": "string",
+      "provider_extra": {
+        "type": "object",
         "secret": false,
-        "default": "medium",
-        "description": "Explicit reasoning effort (MEMORY_REASONING_DREAM) — never inherit the provider default"
+        "default": {
+          "reasoning": {
+            "effort": "medium"
+          }
+        },
+        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort (MEMORY_REASONING_DREAM) — set explicitly, never inherited from the provider default. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
       }
     },
     "emits": {

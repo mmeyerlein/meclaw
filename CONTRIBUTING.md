@@ -12,7 +12,10 @@ will not land. Keep us honest.
 
 ## Build it
 
-Linux, a recent stable Rust toolchain (the repo pins one in `rust-toolchain.toml`).
+Linux and a current stable Rust toolchain. `rust-toolchain.toml` selects the `stable` channel
+rather than pinning a version, so `rustup update` is the whole setup — the floor is set by
+edition 2024, which needs 1.85 or newer. A build break introduced by a fresh stable is treated
+as a question about the spec, not as a reason to pin.
 
 ```bash
 git clone https://github.com/mmeyerlein/meclaw

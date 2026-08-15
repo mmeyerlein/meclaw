@@ -96,6 +96,14 @@ Exits leave **from `./assemble`** on `hop.route`:
 The enum itself is `contract.emits.hop.route` in `assemble/config.json` -- that declaration
 is the authority, this table is its prose.
 
+**`./assemble` is the port address, and the address is the contract.** Every lane in and
+every route out crosses that one endpoint, and the working colonies under
+[`../../examples/`](../../examples/) address it literally as `<parent>/collector/assemble`
+-- it is a stable **address**, not implementation detail that happens to be reachable. The
+second cell, `./window`, is internal and may be rearranged in a version bump; `./assemble`
+may not, and moving it is a breaking change to every parent that wired it: a CHANGELOG
+Breaking entry and a new major version, never a patch.
+
 Wire the ports in the **same mutation** that instantiates the hive: an island without a
 crossing edge derives inactive and never spawns.
 

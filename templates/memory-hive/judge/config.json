@@ -31,11 +31,15 @@
         "default": "anthropic/claude-opus-5",
         "description": "MODEL_JUDGE - the identity judgement of the nightly canonicalisation round (ruling Q1). This is the one place in the hive that deliberately carries the STRONGEST model available, not the cheapest that works: the verdict is written into the store as an alias and every later read consumes it. The default is a top-tier placeholder rather than an empty string, because an unconfigured judge would silently skip the canonicalisation round every night; set it explicitly at rollout."
       },
-      "reasoning_effort": {
-        "type": "string",
+      "provider_extra": {
+        "type": "object",
         "secret": false,
-        "default": "high",
-        "description": "Explicit reasoning effort (MEMORY_REASONING_JUDGE) - never inherit the provider default"
+        "default": {
+          "reasoning": {
+            "effort": "high"
+          }
+        },
+        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort (MEMORY_REASONING_JUDGE) - set explicitly, never inherited from the provider default. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
       }
     },
     "emits": {
