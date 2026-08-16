@@ -585,23 +585,52 @@ pub fn validate_post_state_with_templates_scoped(
                 .resolve(template)
                 .map_err(|_| MutationError::TemplateMissing(template.into()))?;
 
-            // F2-Ruling (R10, 2026-06-11): `override_params` has no addressing
-            // semantics for the sub-cells of a SUBTREE template — it used to
-            // COMMIT as a silent no-op (`stage_subtree_merge` never reads it;
-            // K-H2 E3 measured every addressing form as committed-without-
-            // effect). Reject loudly and pre-destructively; sub-cell
-            // parametrization goes through ctx substitution baked into the
-            // template (spec overview § Mutation-Format).
-            if n.get("override_params").is_some()
-                && crate::mutation::subtree::parse_subtree(&entry.filesystem_path)?
-                    .cells
-                    .len()
-                    > 1
-            {
-                return Err(MutationError::Schema(format!(
-                    "override_params unsupported on subtree templates — use ctx \
-                     substitution (template '{template}', R10 ruling)"
-                )));
+            // GH #140 (supersedes the R10 blanket reject of 2026-06-11): on a
+            // SUBTREE template, `override_params` is ADDRESSED — its keys are
+            // the cells' paths inside the template, `""` being the subtree
+            // root. R10's complaint was that the flat form committed as a
+            // silent no-op; addressing removes the cause rather than the
+            // feature. What R10 protected is kept exactly: a key that names no
+            // cell is refused pre-destructively and told what the template
+            // actually contains, so nothing can be "set" into the void again.
+            if let Some(over) = n.get("override_params") {
+                let parsed = crate::mutation::subtree::parse_subtree(&entry.filesystem_path)?;
+                if parsed.cells.len() > 1 {
+                    let obj = over.as_object().ok_or_else(|| {
+                        MutationError::Schema(format!(
+                            "override_params on the subtree template '{template}' must be an \
+                             object keyed by the cells' paths inside the template (\"\" is the \
+                             subtree root)"
+                        ))
+                    })?;
+                    let known: Vec<&str> =
+                        parsed.cells.iter().map(|c| c.rel_path.as_str()).collect();
+                    for key in obj.keys() {
+                        if !known.contains(&key.as_str()) {
+                            let mut listed: Vec<String> = known
+                                .iter()
+                                .map(|k| {
+                                    if k.is_empty() {
+                                        "\"\" (root)".to_string()
+                                    } else {
+                                        format!("'{k}'")
+                                    }
+                                })
+                                .collect();
+                            listed.sort();
+                            return Err(MutationError::Schema(format!(
+                                "override_params['{key}'] names no cell of the subtree template \
+                                 '{template}'. Its cells are: {}",
+                                listed.join(", ")
+                            )));
+                        }
+                        if !obj[key].is_object() {
+                            return Err(MutationError::Schema(format!(
+                                "override_params['{key}'] must be a params object"
+                            )));
+                        }
+                    }
+                }
             }
 
             // Ebene 2: cell.type for resolved template must be in factories.

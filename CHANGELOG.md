@@ -9,6 +9,33 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.4] — 2026-08-17
+
+### Added
+
+- **`override_params` works on subtree templates, addressed by cell path**
+  (#140). The keys are the paths of the cells inside the template, `""` being
+  the subtree root:
+
+  ```json
+  {"name": "coll", "template": "collector",
+   "override_params": {"assemble": {"max_turns": 40},
+                       "window": {"retention_days": 7}}}
+  ```
+
+  R10 (2026-06-11) had rejected the field outright on subtree templates, and for
+  a good reason: the flat form committed and applied nothing — a builder
+  believing an override took, which is a false accept. The collateral was that
+  `collector`, `cogny` and `talky` are subtree templates, so the params surface
+  they gained in #136 could not be set at instantiation at all. An operator
+  edited the instance config afterwards, which is forking the template by hand.
+
+  Addressing removes the cause instead of the feature. **What R10 protected is
+  unchanged**: a key that names no cell of the template is refused
+  pre-destructively with `schema`, and the refusal lists the cells that do
+  exist, so the next attempt is informed rather than guessed. `${ctx.*}`
+  substitution remains the way for values the template itself distributes.
+
 ## [0.10.3] — 2026-08-17
 
 ### Changed

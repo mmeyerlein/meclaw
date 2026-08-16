@@ -83,8 +83,10 @@ advisory findings (#127) closed in 0.9.0.
 production: [#138](https://github.com/mmeyerlein/meclaw/issues/138), the
 remaining environment knobs that have not moved to the params surface yet —
 `collector@1.2.0` is the worked migration —,
-[#140](https://github.com/mmeyerlein/meclaw/issues/140), params for cells inside
-a subtree template that cannot be set at instantiation, and
+[#140](https://github.com/mmeyerlein/meclaw/issues/140) — closed in 0.10.4:
+`override_params` on a subtree template is addressed by cell path now, which
+keeps R10's protection (an unaddressable key is still refused) and opens the
+knob surface it had closed —, and
 [#141](https://github.com/mmeyerlein/meclaw/issues/141), message headers as a
 standing watch: unbounded by design, measured every few weeks rather than
 capped.
@@ -171,6 +173,10 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.4 — the cells inside a subtree can be parameterised at birth.**
+  `override_params` on a subtree template is addressed by the cells' paths
+  inside it. R10's protection stays: a key that addresses nothing is refused,
+  and the refusal lists what the template does contain.
 - **v0.10.3 — tier 2 sees sessions.** The multi-session synthesis gap (100 % retrieval, 30.8 % accuracy) gets the first of its three measures: the candidates arrive grouped by conversation, oldest first, and the prompt says how to aggregate over them. A shape fix; the gate is a benchmark run.
 - **v0.10.2 — a wired port must have its drain.** A hive can declare which of
   its ports come in pairs, and a mutation that wires the ingress without the

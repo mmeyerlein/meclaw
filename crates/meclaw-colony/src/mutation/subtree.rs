@@ -11,7 +11,7 @@
 
 use crate::config::{EdgeSpec as ConfigEdgeSpec, HiveParams};
 use crate::mutation::MutationError;
-use meclaw_core::{Path, serde_json};
+use meclaw_core::{JsonValue, Path, serde_json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -648,6 +648,7 @@ pub fn stage_subtree(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     provenance: Option<&crate::config::NodeProvenance>,
+    overrides: &SubtreeOverrides,
 ) -> Result<StagedSubtree, MutationError> {
     // 1. Parse the template tree (reuse T3).
     let template = parse_subtree(template_root)?;
@@ -675,7 +676,11 @@ pub fn stage_subtree(
 
         // Fresh UUID v7 per cell (`cell_id_override = None`) + substitution.
         // The empty `add_node` carries no `override_params` (templated subtree).
-        let empty = serde_json::Value::Object(Default::default());
+        // GH #140: the per-cell override, addressed by the cell's path inside
+        // the template. `patch_and_substitute_config` takes an `add_nodes`
+        // entry, so the override is handed over in the shape that call already
+        // understands — one code path merges params, not two.
+        let node_override = overrides.for_cell(&node.rel_path);
         let (
             cell_type,
             params,
@@ -689,7 +694,7 @@ pub fn stage_subtree(
             &cell_staging,
             env,
             ctx,
-            &empty,
+            &node_override,
             provenance,
         )?;
         // Seed inner store cells where a `seed/` dir is present.
@@ -868,6 +873,73 @@ pub fn rename_roots(partition: &SubtreePartition, subtree_root_abs: &Path) -> Ve
     roots
 }
 
+/// GH #140 — `override_params` for the cells INSIDE a subtree template.
+///
+/// A subtree template is instantiated as a whole, and until now its sub-cells
+/// could not be parameterised at that moment: `override_params` was rejected
+/// outright (R10, 2026-06-11), because the flat form has no addressing and used
+/// to commit as a silent no-op. The protection was right and the closure was
+/// collateral — `collector`, `cogny` and `talky` are subtree templates, so the
+/// params surface they gained in #136 had no way to be set at birth. An
+/// operator edited the instance config afterwards, which is a fork of the
+/// template by hand.
+///
+/// The addressing is the cell's path inside the template:
+///
+/// ```json
+/// {"name": "coll", "template": "collector",
+///  "override_params": {"assemble": {"max_turns": 40},
+///                      "window": {"retention_days": 7}}}
+/// ```
+///
+/// `""` addresses the subtree root. A key that names no cell in the template is
+/// a `schema` reject that lists what the template actually contains — R10's
+/// original complaint was a silent no-op, and an unaddressable key must not
+/// become one again by a different route.
+#[derive(Debug, Default)]
+pub struct SubtreeOverrides {
+    by_rel_path: HashMap<String, JsonValue>,
+}
+
+impl SubtreeOverrides {
+    /// Read the map out of an `add_nodes` entry. An absent or empty
+    /// `override_params` yields an empty set, which changes nothing anywhere.
+    pub fn from_add_node(add_node: &JsonValue) -> Self {
+        let mut by_rel_path = HashMap::new();
+        if let Some(obj) = add_node.get("override_params").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                by_rel_path.insert(k.clone(), v.clone());
+            }
+        }
+        Self { by_rel_path }
+    }
+
+    /// The synthetic `add_nodes` entry for one cell — the shape
+    /// `patch_and_substitute_config` already merges. A cell with no entry gets
+    /// an empty object and is byte-identical to the pre-#140 staging.
+    fn for_cell(&self, rel_path: &str) -> JsonValue {
+        match self.by_rel_path.get(rel_path) {
+            None => JsonValue::Object(Default::default()),
+            Some(params) => {
+                let mut o = serde_json::Map::new();
+                o.insert("override_params".to_string(), params.clone());
+                JsonValue::Object(o)
+            }
+        }
+    }
+
+    /// Every addressed path, for the validator that has to reject an unknown one.
+    pub fn addressed(&self) -> impl Iterator<Item = &String> {
+        self.by_rel_path.keys()
+    }
+
+    /// True when nothing was addressed — the state of every mutation written
+    /// before this existed.
+    pub fn is_empty(&self) -> bool {
+        self.by_rel_path.is_empty()
+    }
+}
+
 /// Merge-stage a SUBTREE template against a partial live tree: stage ONLY the
 /// `missing` subset (one fresh sub-tree per rename-root), leaving existing nodes
 /// untouched, and resolve ALL subtree-internal edges.
@@ -901,6 +973,7 @@ pub fn stage_subtree_merge(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     provenance: Option<&crate::config::NodeProvenance>,
+    overrides: &SubtreeOverrides,
 ) -> Result<StagedSubtreeMerge, MutationError> {
     let template = parse_subtree(template_root)?;
     let partition = classify_subtree_nodes(root, scope, name, template_root)?;
@@ -925,6 +998,7 @@ pub fn stage_subtree_merge(
             env,
             ctx,
             provenance,
+            overrides,
         )?);
     }
 
@@ -961,6 +1035,7 @@ fn stage_rename_root(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     provenance: Option<&crate::config::NodeProvenance>,
+    overrides: &SubtreeOverrides,
 ) -> Result<StagedRenameRoot, MutationError> {
     // Copy the rename-root's template sub-path into staging (drops template.json).
     let template_subdir = if root_rel.is_empty() {
@@ -993,7 +1068,9 @@ fn stage_rename_root(
         let cell_staging = staging_dir_for(&root_staging_path, &sub_rel);
         let abs = absolute_for(subtree_root_abs, &node.rel_path);
 
-        let empty = serde_json::Value::Object(Default::default());
+        // GH #140: same per-cell addressing on the merge path — a subtree that
+        // grows a missing branch parameterises it exactly like a fresh one.
+        let node_override = overrides.for_cell(&node.rel_path);
         let (
             cell_type,
             params,
@@ -1007,7 +1084,7 @@ fn stage_rename_root(
             &cell_staging,
             env,
             ctx,
-            &empty,
+            &node_override,
             provenance,
         )?;
         crate::mutation::stage::seed_cell_db_if_present(&cell_staging)?;
@@ -1328,6 +1405,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             Some(&prov),
+            &SubtreeOverrides::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -1386,6 +1464,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -1444,6 +1523,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -1495,6 +1575,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -1554,6 +1635,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect_err("escaping edge must be rejected");
         assert!(
@@ -1593,6 +1675,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -1979,6 +2062,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("merge-staging should succeed");
 
@@ -2049,6 +2133,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("merge should succeed");
 
@@ -2133,6 +2218,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            &SubtreeOverrides::default(),
         )
         .expect("merge should succeed");
 

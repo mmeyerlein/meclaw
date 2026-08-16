@@ -18,8 +18,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core", version = "0.10.3" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.10.3" }
+meclaw-core = { path = "../meclaw-core", version = "0.10.4" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.10.4" }
 
 [dev-dependencies]
 tempfile = "3"

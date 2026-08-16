@@ -208,6 +208,10 @@ pub fn build_staging_tree_from_templates(
                 // nested cell names the subtree template, which is the unit an
                 // update addresses.
                 Some(&provenance_of(tpl)),
+                // GH #140: per-cell `override_params`, addressed by the cell's
+                // path inside the template. Validation has already refused any
+                // key that names no cell, so an entry here always lands.
+                &crate::mutation::subtree::SubtreeOverrides::from_add_node(n),
             )?;
             subtrees.push(staged_subtree);
             continue;

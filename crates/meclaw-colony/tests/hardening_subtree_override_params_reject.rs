@@ -1,14 +1,19 @@
-//! F2-Ruling (R10, 2026-06-11): `override_params` on a SUBTREE `add_nodes` is
-//! an explicit REJECT (`schema`) instead of a silent no-op.
+//! What R10 protected, after GH #140 opened the surface it had closed.
 //!
-//! Finding: every
-//! addressing form of `override_params` on a subtree template COMMITTED and
-//! applied nothing — `stage.rs` dispatches subtree templates to
-//! `stage_subtree_merge` without ever reading `override_params` (the nested
-//! cells are staged with an empty `add_node`). Commit-without-effect is a
-//! false-accept surface: a builder believes the override took. Ruling:
-//! (a)+(c) — reject dead overrides, sub-cell parametrization goes EXCLUSIVELY
-//! through ctx substitution baked into the template (spec overview § Mutation).
+//! The original finding (F2-Ruling, 2026-06-11): every addressing form of
+//! `override_params` on a subtree template COMMITTED and applied nothing —
+//! `stage.rs` dispatched subtree templates to `stage_subtree_merge` without
+//! ever reading the field. Commit-without-effect is a false-accept surface: a
+//! builder believes the override took. The ruling was to reject the field
+//! outright.
+//!
+//! #140 removes the cause instead of the feature: `override_params` on a
+//! subtree template is now ADDRESSED by the cells' paths inside the template.
+//! What stays exactly as R10 left it is the property this file guards — **a
+//! key that addresses nothing is refused, pre-destructively**. The flat form
+//! below is precisely such a key (`external_timeout_ms` is a params name, not
+//! a cell path), so the mutation this file has always sent is still rejected,
+//! for a reason that is now specific rather than categorical.
 
 use meclaw_colony::api_dto::ReadRegistryReply;
 use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
@@ -106,9 +111,9 @@ fn write_templates(root: &std::path::Path) {
     );
 }
 
-/// `override_params` on a SUBTREE template must reject `schema` with the
-/// ruling reason — pre-destructively (nothing staged, nothing registered,
-/// no directory under {root}).
+/// A FLAT `override_params` on a SUBTREE template addresses no cell, so it
+/// still rejects `schema` — pre-destructively (nothing staged, nothing
+/// registered, no directory under {root}).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn override_params_on_subtree_template_rejects_schema() {
     let td = tempfile::TempDir::new().unwrap();
@@ -139,8 +144,13 @@ async fn override_params_on_subtree_template_rejects_schema() {
                 "override_params on a subtree template must reject schema (F2/R10)"
             );
             assert!(
-                details.contains("unsupported on subtree templates — use ctx"),
-                "reject reason must carry the ruling text; got: {details}"
+                details.contains("names no cell of the subtree template"),
+                "the reject must say WHICH key addressed nothing; got: {details}"
+            );
+            assert!(
+                details.contains("Its cells are:"),
+                "and it must list what the template does contain, so the next \
+                 attempt is informed rather than guessed; got: {details}"
             );
         }
         other => panic!("expected Rejected, got {other:?} (pre-fix: silent no-op commit)"),
