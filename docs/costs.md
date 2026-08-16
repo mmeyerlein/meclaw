@@ -171,7 +171,8 @@ python3 scripts/cost_report.py --db colony.db \
 The unattended row was measured with the **v0.8.0 gate defaults** of the memory
 lane — `MEMORY_BATCH_TOKENS=512` and `MEMORY_BATCH_MAX_AGE_MIN=30`, the two knobs
 that decide how often an idle colony opens an extraction round. Those defaults
-change in 0.9.0 ([#51](https://github.com/mmeyerlein/meclaw/issues/51)), so the
+changed in 0.9.0 to `128` / `2`
+([#51](https://github.com/mmeyerlein/meclaw/issues/51)), so the
 overnight figure is pinned to the configuration above and not to a version: a
 colony on the new defaults will produce a different number from the same traffic.
 Re-run the command to get yours.

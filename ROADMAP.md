@@ -34,6 +34,15 @@ memory and one-file hives — plus
 advisor measured about itself: a consult round trip is far too slow for a
 question memory could have answered.
 
+0.8.0 and 0.9.0 carried the stream past the point where the agent was the only
+thing being built. 0.8.0 hardened the substrate the organism runs on; 0.9.0 made
+its memory a public building block, moved an episode from the session close to
+the turn it happened in, and gave a hive the means to own its domain — ports a
+parent may not wire around (#133) and a store write surface that is internal to
+its hive (#132). The example that proves the claim end to end lives in
+[`examples/meclaw-os`](examples/meclaw-os/): an empty seed, one declaration,
+seventeen cells.
+
 Still open in this stream:
 [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
 app store, [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive
@@ -67,59 +76,75 @@ this stream, and 0.8.0 shipped all of it: the sharpest gates now run in CI
 private network by default (#117), a second daemon cannot boot on the same root
 (#121), writes into the llm cell's persistent system tree are gated (#118), a
 TTL death inside a fan-in can be answered (#119), and the store-backed tool loop
-got a context-compaction lane as a reference topology (#120). What the batch
-left behind is [#127](https://github.com/mmeyerlein/meclaw/issues/127): two
-advisory findings in the dependency tree, which is why the advisory half of
-`cargo deny` reports instead of blocking.
+got a context-compaction lane as a reference topology (#120). Its leftover
+advisory findings (#127) closed in 0.9.0.
 
-## Later: memory hive continued
+0.9.0 added a flank of its own, from the release audit rather than from
+production: [#138](https://github.com/mmeyerlein/meclaw/issues/138), the
+remaining environment knobs that have not moved to the params surface yet —
+`collector@1.2.0` is the worked migration —,
+[#140](https://github.com/mmeyerlein/meclaw/issues/140), params for cells inside
+a subtree template that cannot be set at instantiation, and
+[#141](https://github.com/mmeyerlein/meclaw/issues/141), message headers as a
+standing watch: unbounded by design, measured every few weeks rather than
+capped.
 
-**The memory hive rests until after the showcase launch.** Nothing below is
-abandoned and nothing below blocks the streams above; the hive is simply not
-where the next measurable win is.
+## Later: memory, after the measurement
 
-The stall had one carve-out: the three hive *bugs* (#52, #53, #73) shipped in
-0.4.0, because a defect is not an enhancement. The enhancements keep waiting:
-[#72](https://github.com/mmeyerlein/meclaw/issues/72) the extraction
-lane claims 1.5x the turn count under sustained ingest,
-[#88](https://github.com/mmeyerlein/meclaw/issues/88) a query hygiene guard for
-recall, so a contaminated query cannot poison all legs — the guard itself
-shipped in 0.8.0; the issue stays open until a real contaminated query has been
-counted through its verdict,
-[#51](https://github.com/mmeyerlein/meclaw/issues/51) extraction batch gate
-defaults tuned for cost over freshness,
+**The stall is over: the memory hive shipped publicly in 0.9.0**, test suite
+included, and what used to wait here has largely landed — the extraction lane's
+double claim (#72) and its cost-first gate defaults (#51) in 0.9.0, the recall
+query hygiene guard (#88) proven in production, the three hive bugs (#52, #53,
+#73) back in 0.4.0.
+
+What replaces the list is one measurement. A 50-question LongMemEval run against
+the 0.9.0 tree returned **96 % R@5 and 58 % end accuracy**: in 19 of 21 wrong
+answers the retrieval had delivered the gold session and the synthesis failed to
+answer from it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
+[#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
+stream now points — the bottleneck is not the remembering.
+
+Still open around it:
 [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
 recall window, so time-range questions run as point recalls,
 [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
-drain.
+drain,
+[#147](https://github.com/mmeyerlein/meclaw/issues/147) wiring the inline ingress
+without its reject drain fails silently — a wiring-time check, deliberately held
+for the architecture pass that makes inline extraction a system-wide property
+rather than a per-hive feature.
 
 ## Alongside: surfaces and docs
 
 New ways in and out, [#38](https://github.com/mmeyerlein/meclaw/issues/38)
 voice ingress first (dictation-style now, realtime speech when the APIs land),
 then [#39](https://github.com/mmeyerlein/meclaw/issues/39) the realtime HTML
-window. The docs travel in two steps:
-[#92](https://github.com/mmeyerlein/meclaw/issues/92) README and website on the
-current release plus a short what's-next, then
-[#93](https://github.com/mmeyerlein/meclaw/issues/93) the full rewrite once
-meclaw-os lands, together with
-[#43](https://github.com/mmeyerlein/meclaw/issues/43) the moving showcase demo
-and a keyless quickstart.
+window. The docs travelled in two steps, and the first one (#92, README and
+website on the current release) is done. What is left is
+[#93](https://github.com/mmeyerlein/meclaw/issues/93), the full rewrite once
+meclaw-os lands, and the remainder of
+[#43](https://github.com/mmeyerlein/meclaw/issues/43): the keyless quickstart and
+the annotated message trace shipped with 0.9.0, the *moving* demo did not.
 
 ## Ongoing: community templates
 
 The good first issues from the first public wave — #3 and #4 — shipped with
 0.5.0 as `retry@1.0.0` and `archive-bridge@1.0.0`. The template surface is open: a
 template is a directory, a README and a `template.json`, and the fourteen listed
-in [`templates/README.md`](templates/README.md) are the worked examples — twelve
-single-purpose ones plus two composites: `talky@1.1.0`, which carries four of them
-as sub-units, and `cogny@1.2.0`, which carries two. New ones are welcome.
+in [`templates/README.md`](templates/README.md) are the worked examples — eleven
+single-purpose ones plus three composites: `talky@1.2.0`, which carries four of
+them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.2.0`, the
+agent memory as a hive of ten cells. New ones are welcome.
 
 ## Shipped
 
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.9.0 — sealed hives, open memory.** The memory hive ships publicly with its
+  test suite, an episode reaches memory at the turn instead of at the session
+  close, a hive can seal its ports and a store its write surface, and a `code`
+  cell's stdin becomes a structured document.
 - **v0.8.0 — the hard shell.** The hardening batch in one day: SSRF policy in
   the `web_fetch` cell, an orphan journal and boot reap, a root lease, a gate on
   the persistent system tree, an answerable TTL death, a compaction lane — and

@@ -9,7 +9,45 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
-## [0.9.0] — unreleased
+## [Unreleased]
+
+### Fixed
+
+- **The extraction lane stops paying for a provider that keeps refusing** (#143).
+  Measured against a dead endpoint: the drain flushes about every five seconds,
+  and a batch whose extractor call came back as a provider error was handed
+  straight back to the queue — where the next flush claimed and re-sent it. 107
+  of 111 extraction responses inside nine minutes were retries of **one** failing
+  batch, on a seven-turn session. Free noise against a local model; against a
+  paid endpoint it is a colony that looks idle while it spends.
+
+  The queue row now carries what the batch has already cost: `attempts` and the
+  instant `not_before` from which it may be claimed again. The window doubles per
+  attempt (`MEMORY_EXTRACT_BACKOFF_SEC`, default `60` → 60/120/240 s), and after
+  `MEMORY_EXTRACT_ERROR_BUDGET` (default `3`) consecutive provider errors the
+  batch is **parked** — `status = 'error_parked'`, a mark in `scratch`, a line on
+  stderr — instead of re-sent. Parked is terminal for the automatic lane; a
+  recovery sweep does not take it back, because whatever failed three times in a
+  row will fail the fourth. Nothing is deleted: the turns stay on the queue and an
+  operator can re-open them.
+
+  Two additive columns on `pending_extraction` (`attempts`, `not_before`);
+  existing stores gain them on first open (`ALTER TABLE ADD COLUMN`), so there is
+  nothing to migrate. The eligibility filter lives in the lane rather than in the
+  store query on purpose: a held-back row has to be invisible to the **gate** as
+  well as to the claim, or the gate counts tokens it may not claim and parks on
+  every flush forever.
+
+- **The `never-forgets` pin test ran the example without its seed step** (#142).
+  The recall lane was wired and `system.tools` was never seeded, so a real model
+  never called `memory_recall` and answered out of thin air — while the pin test
+  stayed green, because the mock emits a canonical tool call whatever the brain
+  was offered. The test now performs the documented seed
+  (`templates/talky/brain/seed/system.jsonl`, WALKTHROUGH step 2) and asserts
+  against the recorded provider request that the schema actually arrived.
+  Removing the seed turns the file red.
+
+## [0.9.0] — 2026-08-16
 
 ### Breaking
 
