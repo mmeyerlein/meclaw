@@ -318,6 +318,18 @@ edited past its own lanes.
 `session_id`, `user_id`, `chat_id`, `locale`). They are promoted from `hop` by the port edge —
 the `rag_question` pattern.
 
+**A second consumer is where the hive's own bookkeeping starts to travel** (GH #152).
+`mem_phase` and `recall_id` belong to this hive and are *persistent* context: once a consumer
+has asked once, they ride along in everything that consumer emits afterwards — including an
+errand it hands to a **second** agent, whose collector then asks this hive with a phase it never
+set. The request entry recognises that case by the hop the port edge stamps (`phase: "recall"`)
+and starts a fresh chain regardless of what the context carried, so a caller does not have to
+know about keys it does not own. **Nothing is required of the caller here** — but if you write
+an edge into this port by hand and want to be explicit, `delete_context: ["mem_phase",
+"recall_id"]` says the same thing at the wiring level. Before the fix this was a *silent* stall:
+the request parked, the caller waited for a bundle that never came, and there was no error, no
+dead letter and no log line to find.
+
 **Trap worth knowing:** a `set_context` whose CEL expression reads a hop key that is *absent*
 fails to evaluate, and a failed modifier makes the colony **skip the whole edge**. Any optional
 hop key must therefore always be present (empty string = "unset"), or the modifier must not
