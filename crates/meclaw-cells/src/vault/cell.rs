@@ -508,7 +508,9 @@ impl VaultCell {
                     continue;
                 }
             };
-            let key = self.key.as_ref().expect("unlocked before injecting");
+            let Some(key) = self.key.as_ref() else {
+                return Err("vault: the key vanished mid-injection".into());
+            };
             let plaintext = key
                 .open(&sealed.nonce, &sealed.ciphertext)
                 .map_err(|e| format!("vault: {e}"))?;
@@ -538,12 +540,15 @@ impl VaultCell {
     /// `put` / `rotate` — the filling workflow. Same code, two names: a put
     /// onto an existing name *is* a rotation, because nothing is overwritten.
     async fn op_put(&mut self, db: &mut DbConn, args: &Value) -> Result<Value, String> {
-        if !self.unlocked() {
+        // Check and bind in one step: a separate `unlocked()` followed by an
+        // `expect` is the same fact asserted twice, and the second assertion is
+        // the one that panics when the first ever stops being true.
+        self.unlocked();
+        let Some(key) = self.key.as_ref() else {
             return Err("vault: locked — unlock before storing a secret".into());
-        }
+        };
         let name = arg(args, "name")?.to_string();
         let secret = arg(args, "secret")?.to_string();
-        let key = self.key.as_ref().expect("unlocked checked above");
         let (nonce, ct) = key.seal(secret.as_bytes()).map_err(|e| e.to_string())?;
         let at = now_iso();
         let n = name.clone();
@@ -569,7 +574,8 @@ impl VaultCell {
     /// cell (handing a credential to a connector) is a separate operation with
     /// its own design, not a flag on this one.
     async fn op_use(&mut self, db: &mut DbConn, args: &Value) -> Result<Value, String> {
-        if !self.unlocked() {
+        self.unlocked();
+        if self.key.is_none() {
             return Err("vault: locked — the broker cannot use a secret before an unlock".into());
         }
         // The grant the broker validated. The vault does not look it up (a cell
@@ -593,11 +599,13 @@ impl VaultCell {
             .ok_or_else(|| {
                 format!("vault: no such secret {name:?} (or every version is revoked)")
             })?;
-        let key = self.key.as_ref().expect("unlocked checked above");
+        let Some(key) = self.key.as_ref() else {
+            return Err("vault: locked — the key expired while this call was in flight".into());
+        };
         let plaintext = key
             .open(&sealed.nonce, &sealed.ciphertext)
             .map_err(|e| format!("vault: {e}"))?;
-        let tag = crypto::mac(&plaintext, payload.as_bytes());
+        let tag = crypto::mac(&plaintext, payload.as_bytes()).map_err(|e| format!("vault: {e}"))?;
         // `plaintext` dies here, at the end of this scope, having never been
         // put into a body.
         Ok(json!({

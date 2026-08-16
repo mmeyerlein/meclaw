@@ -127,11 +127,16 @@ impl Drop for MasterKey {
 
 /// HMAC-SHA256 over `payload` with `secret` — what `vault.use` does instead of
 /// handing the secret out. Returns the raw tag; the cell hex-encodes it.
-pub fn mac(secret: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut m =
-        <Hmac<Sha256> as Mac>::new_from_slice(secret).expect("HMAC accepts a key of any length");
+///
+/// HMAC accepts a key of any length, so the error arm is unreachable in
+/// practice — it is a `Result` anyway rather than an `expect`, because "this
+/// cannot happen" is exactly the sentence that precedes a panic in a cell that
+/// is holding a key.
+pub fn mac(secret: &[u8], payload: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let mut m = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+        .map_err(|_| CryptoError::Derive("HMAC rejected the key length".into()))?;
     m.update(payload);
-    m.finalize().into_bytes().to_vec()
+    Ok(m.finalize().into_bytes().to_vec())
 }
 
 /// N random bytes from the system source.
@@ -172,7 +177,13 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 /// "the vault is holding the key you think it is" apart from "some other key",
 /// and not enough to be worth attacking.
 pub fn key_id(key: &MasterKey) -> String {
-    hex(&mac(&key.0, b"meclaw-vault-key-id")[..8])
+    match mac(&key.0, b"meclaw-vault-key-id") {
+        Ok(tag) => hex(&tag[..8]),
+        // Unreachable, and harmless if it ever were: a fingerprint is
+        // cosmetic, and reporting an empty one is better than taking the cell
+        // down over a label.
+        Err(_) => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -240,9 +251,10 @@ mod tests {
 
     #[test]
     fn mac_is_stable_per_secret_and_changes_with_it() {
-        assert_eq!(mac(b"k", b"payload"), mac(b"k", b"payload"));
-        assert_ne!(mac(b"k", b"payload"), mac(b"k2", b"payload"));
-        assert_ne!(mac(b"k", b"payload"), mac(b"k", b"payload2"));
+        let m = |k: &[u8], p: &[u8]| mac(k, p).expect("HMAC takes any key length");
+        assert_eq!(m(b"k", b"payload"), m(b"k", b"payload"));
+        assert_ne!(m(b"k", b"payload"), m(b"k2", b"payload"));
+        assert_ne!(m(b"k", b"payload"), m(b"k", b"payload2"));
     }
 
     #[test]
