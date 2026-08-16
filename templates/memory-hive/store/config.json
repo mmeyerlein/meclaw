@@ -111,7 +111,9 @@
         "enqueued_at": "text",
         "status": "text",
         "batch_id": "text",
-        "claimed_at": "text"
+        "claimed_at": "text",
+        "attempts": "int",
+        "not_before": "text"
       },
       "recall_scratch": {
         "request_id": "text",

@@ -42,7 +42,7 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
-use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
+use mock_openai::{MockOpenAI, OpenAiRequestSnapshot, canned_chat_completion, canned_tool_calls};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -284,6 +284,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         &root.join("templates/talky/collector/assemble/config.json"),
         |v| v["params"]["turn_write"] = json!("1"),
     );
+    seed_the_recall_tool(root);
     std::fs::write(
         root.join(".env"),
         format!(
@@ -292,6 +293,57 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         ),
     )
     .unwrap();
+}
+
+/// WALKTHROUGH Step 2, executed (GH #142).
+///
+/// The step the example does not work without, and the one this test used to
+/// skip: the `memory_recall` lane is wired in `grow.json`, but a wired lane is
+/// not a tool the model can see. The schema lives next to the brain, and the
+/// `talky` composite ships none on purpose -- identity, instructions and tools
+/// are the agent, not the graph.
+///
+/// Skipping it here is what made this file a green test of a broken example: a
+/// canned tool call arrives in canonical form whatever the brain was told, so
+/// the missing seed was invisible until a real provider confabulated an answer
+/// instead of calling anything. Running the documented step and then asserting
+/// the wire (`assert_tool_was_offered`) closes both halves.
+fn seed_the_recall_tool(root: &std::path::Path) {
+    let dir = root.join("templates/talky/brain/seed");
+    std::fs::create_dir_all(&dir).expect("brain seed dir");
+    let tool = json!({
+        "type": "function",
+        "function": {
+            "name": "memory_recall",
+            "description": "Ask long-term memory about something, optionally restricted to a time range.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "what to look for"},
+                    "window_from": {"type": "string", "description": "ISO-8601 start of the range (optional)"},
+                    "window_to": {"type": "string", "description": "ISO-8601 end of the range (optional)"}
+                },
+                "required": ["query"]
+            }
+        }
+    });
+    let instructions = "Today is 2026-08-15. You have a long-term memory you cannot see. \
+         When the user asks about something said in the past, call memory_recall FIRST -- \
+         never answer from your own recollection. If the question names a month or a period, \
+         pass it as window_from/window_to in ISO-8601 UTC. Answer only from what memory \
+         returns; if it returns nothing for that window, say so plainly.";
+    // The tool leaf holds the provider-native object as a JSON STRING -- the
+    // whole `{"type":"function",…}` envelope, not the inner schema. Seed only
+    // the inner half and the provider rejects the call.
+    let lines = [
+        json!({"schema": {"slot_path": "text", "value": "json", "updated_at": "int"}}),
+        json!({"slot_path": "instructions.memory",
+               "value": {"text": instructions}, "updated_at": 0}),
+        json!({"slot_path": "tools.memory_recall",
+               "value": {"text": tool.to_string()}, "updated_at": 0}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(dir.join("system.jsonl"), body).expect("write the brain seed");
 }
 
 async fn boot(td: &tempfile::TempDir) -> ColonyHandle {
@@ -438,6 +490,35 @@ fn await_rows(db: &std::path::Path, sql: &str, n: usize) -> Vec<Vec<String>> {
 
 const EPISODES: &str = "SELECT happened_at, sender, content FROM episodes \
                         ORDER BY happened_at ASC";
+
+/// The one thing the mock cannot fake (GH #142).
+///
+/// Everything else in this file is downstream of a canned tool call: the mock
+/// emits `memory_recall` in canonical form whatever the brain was told, so the
+/// lane can be wired perfectly and green while the model on the other end never
+/// learned the tool exists. That is not hypothetical -- it is how this example
+/// shipped: the recall lane was wired, `system.tools` was never seeded, and a
+/// real provider confabulated the answer instead of calling anything. The pin
+/// test stayed green through all of it.
+///
+/// So the wire is asserted from the other side: whatever the brain ANSWERED, it
+/// must have been OFFERED the schema the lane depends on. A missing seed step
+/// now turns this file red instead of leaving it a green test of a broken
+/// example.
+fn assert_tool_was_offered(req: &OpenAiRequestSnapshot, tool: &str) {
+    let tools = req.tools().unwrap_or_else(|| {
+        panic!("the brain was called with no `tools` at all -- the recall lane depends on {tool:?}")
+    });
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("function")?.get("name")?.as_str())
+        .collect();
+    assert!(
+        names.contains(&tool),
+        "the brain was never told about {tool:?}; it was offered {names:?}. \
+         Wiring the lane is half the job -- the schema has to reach system.tools"
+    );
+}
 
 // ═══════════════════════════════════════════════ 3. the whole claim in one run
 
@@ -614,6 +695,11 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "today's turn is not in memory yet: {fresh:?}"
     );
 
+    // GH #142: the answer above came back through a canned tool call. This is
+    // the assertion that the model could have MADE that call for real.
+    let requests = mock.recorded_requests().await;
+    assert_tool_was_offered(&requests[0], "memory_recall");
+
     let dlq: i64 = rusqlite::Connection::open(td.path().join("colony.db"))
         .expect("colony.db")
         .query_row("SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0))
@@ -676,6 +762,7 @@ async fn a_window_that_holds_nothing_answers_nothing() {
     }
 
     let requests = mock.recorded_requests().await;
+    assert_tool_was_offered(&requests[0], "memory_recall");
     let prompt = meclaw_core::serde_json::to_string(
         requests[1]
             .messages()
