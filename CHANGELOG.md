@@ -9,6 +9,32 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.1] — 2026-08-16
+
+### Fixed
+
+- **An edge can be replaced in one mutation again** (#158). `remove_edges` is now
+  applied **before** `add_edges`. Previously the order was the other way round,
+  and since a `remove_edges` match pattern of `{from, to}` matches *every* edge
+  between that pair, a diff that dropped an edge and added its widened
+  replacement deleted its own new edge — and reported `committed`.
+
+  Widening a port is the ordinary reason to do this: a lane already exists and
+  needs one more hop key promoted into context. Splitting it into two mutations
+  works, but leaves the lane missing in between, which is the exact window one
+  mutation was supposed to avoid.
+
+  What was silent was the *mutation*: it reported success for a diff that had
+  removed a lane. The traffic afterwards was not silent — an emission matching
+  no out-edge dead-letters as `no_route`, as it always has. The receipt and the
+  DLQ disagreed, and the receipt was the one that lied.
+
+### Documentation
+
+- The mutation-format section now states the apply order, and says plainly that
+  a match pattern is a pattern rather than an identity: `{from, to}` alone hits
+  every edge between the pair. Pass `condition`/`modifier` to hit exactly one.
+
 ## [0.10.0] — 2026-08-17
 
 Three packages from one wave, all of them things a colony needs before it can be

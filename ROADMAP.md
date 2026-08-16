@@ -162,6 +162,10 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.1 — an edge can be replaced again.** `remove_edges` now runs before
+  `add_edges`, so dropping a lane and adding its widened replacement in ONE
+  mutation does what it reads like. The other way round it deleted its own new
+  edge and reported success.
 - **v0.10.0 — the wave before the launch.** A secret store whose route surface
   has no read on it and whose unlock attests its own edges before taking the
   key; audience **sets** in affinity, so a fact is usable only in a round that

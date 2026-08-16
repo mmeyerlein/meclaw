@@ -4558,6 +4558,84 @@ pub(crate) async fn handle_mutation(
         }
     }
 
+    // ORDER MATTERS, and it is remove-BEFORE-add (GitHub #158). Replacing an
+    // edge — drop the old one, add the new one with one more key promoted — is
+    // the ordinary way to widen a port, and it belongs in ONE mutation so the
+    // lane is never missing in between. Applied the other way round, the
+    // `remove_edges` pattern (which matches on `from`+`to`, not on identity)
+    // deleted the edge the same diff had just inserted, and the mutation
+    // reported `committed` for a diff that had removed a lane. The traffic
+    // afterwards said so — an emission matching no out-edge dead-letters as
+    // `no_route` (Ruling A1) — which is precisely the disagreement that made it
+    // confusing: the receipt claimed success, the DLQ said otherwise.
+    if let Some(rems) = diff_subst.get("remove_edges").and_then(|v| v.as_array()) {
+        for r in rems {
+            // Phase-6-MVP match pattern: {from, to}. Both required. validate
+            // doesn't reject unknown remove_edges (silent no-op), accepted.
+            //
+            // Phase 13.5-A1 F6: optional `condition` (string-equality on
+            // `edge.condition.source`) and optional `modifier` (serde-JSON
+            // equality on `edge.modifier.source`). If a key is present in the
+            // match-pattern, it MUST equal the edge's stored source verbatim;
+            // if it is absent, the edge's value (Some/None) is not constrained
+            // — i.e. omitting `condition`/`modifier` falls back to the
+            // pre-F6 behavior (match by from/to only).
+            // Paket-5 T1/T2: a missing match.from/to is already rejected
+            // PRE-destructively by `validate_remove_edges` above, so here it is
+            // a defensive skip (unreachable on a validated diff).
+            let Some(from_name) = r
+                .get("match")
+                .and_then(|v| v.get("from"))
+                .and_then(|v| v.as_str())
+            else {
+                tracing::warn!("remove_edges entry missing match.from; skipping");
+                continue;
+            };
+            let Some(to_name) = r
+                .get("match")
+                .and_then(|v| v.get("to"))
+                .and_then(|v| v.as_str())
+            else {
+                tracing::warn!("remove_edges entry missing match.to; skipping");
+                continue;
+            };
+            let pat_condition = r
+                .get("match")
+                .and_then(|v| v.get("condition"))
+                .and_then(|v| v.as_str());
+            let pat_modifier = r.get("match").and_then(|v| v.get("modifier"));
+            let from_path = crate::mutation::resolve_scoped_path(&scope, from_name);
+            let to_path = crate::mutation::resolve_scoped_path(&scope, to_name);
+            // A5: clone the matched edges (not just ids) so a timeout can
+            // re-insert exact copies on rollback. F6 match equality is the SAME
+            // predicate validate uses (`remove_edges_pattern_hits`), so validate
+            // and apply agree by construction.
+            let matched: Vec<crate::edge_table::Edge> = edges
+                .iter()
+                .filter(|e| {
+                    let view = crate::mutation::validate::EdgeMatchView::from(*e);
+                    crate::mutation::validate::remove_edges_pattern_hits(
+                        &view,
+                        from_path.as_str(),
+                        to_path.as_str(),
+                        pat_condition,
+                        pat_modifier,
+                    )
+                })
+                .cloned()
+                .collect();
+            involved.push(from_path.clone());
+            involved.push(to_path.clone());
+            for edge in matched {
+                edges.remove(&edge.id);
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::RemoveEdge {
+                    id: edge.id.to_string(),
+                });
+                removed_edges_saved.push(edge);
+            }
+        }
+    }
+
     if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
         for e in adds {
             let from_name = e
@@ -4657,73 +4735,6 @@ pub(crate) async fn handle_mutation(
                 condition: cond_src,
                 modifier: mod_src,
             });
-        }
-    }
-    if let Some(rems) = diff_subst.get("remove_edges").and_then(|v| v.as_array()) {
-        for r in rems {
-            // Phase-6-MVP match pattern: {from, to}. Both required. validate
-            // doesn't reject unknown remove_edges (silent no-op), accepted.
-            //
-            // Phase 13.5-A1 F6: optional `condition` (string-equality on
-            // `edge.condition.source`) and optional `modifier` (serde-JSON
-            // equality on `edge.modifier.source`). If a key is present in the
-            // match-pattern, it MUST equal the edge's stored source verbatim;
-            // if it is absent, the edge's value (Some/None) is not constrained
-            // — i.e. omitting `condition`/`modifier` falls back to the
-            // pre-F6 behavior (match by from/to only).
-            // Paket-5 T1/T2: a missing match.from/to is already rejected
-            // PRE-destructively by `validate_remove_edges` above, so here it is
-            // a defensive skip (unreachable on a validated diff).
-            let Some(from_name) = r
-                .get("match")
-                .and_then(|v| v.get("from"))
-                .and_then(|v| v.as_str())
-            else {
-                tracing::warn!("remove_edges entry missing match.from; skipping");
-                continue;
-            };
-            let Some(to_name) = r
-                .get("match")
-                .and_then(|v| v.get("to"))
-                .and_then(|v| v.as_str())
-            else {
-                tracing::warn!("remove_edges entry missing match.to; skipping");
-                continue;
-            };
-            let pat_condition = r
-                .get("match")
-                .and_then(|v| v.get("condition"))
-                .and_then(|v| v.as_str());
-            let pat_modifier = r.get("match").and_then(|v| v.get("modifier"));
-            let from_path = crate::mutation::resolve_scoped_path(&scope, from_name);
-            let to_path = crate::mutation::resolve_scoped_path(&scope, to_name);
-            // A5: clone the matched edges (not just ids) so a timeout can
-            // re-insert exact copies on rollback. F6 match equality is the SAME
-            // predicate validate uses (`remove_edges_pattern_hits`), so validate
-            // and apply agree by construction.
-            let matched: Vec<crate::edge_table::Edge> = edges
-                .iter()
-                .filter(|e| {
-                    let view = crate::mutation::validate::EdgeMatchView::from(*e);
-                    crate::mutation::validate::remove_edges_pattern_hits(
-                        &view,
-                        from_path.as_str(),
-                        to_path.as_str(),
-                        pat_condition,
-                        pat_modifier,
-                    )
-                })
-                .cloned()
-                .collect();
-            involved.push(from_path.clone());
-            involved.push(to_path.clone());
-            for edge in matched {
-                edges.remove(&edge.id);
-                write_buffer.push(crate::persist::writer::ColonyWriteOp::RemoveEdge {
-                    id: edge.id.to_string(),
-                });
-                removed_edges_saved.push(edge);
-            }
         }
     }
 
