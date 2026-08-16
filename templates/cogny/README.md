@@ -371,6 +371,16 @@ stateful cell. Two things to have ready before the mutation:
    FRESH birth -- a `cell.db` that already exists means `Resumed` and an inert seed) or as
    a system update message. Neither is this template's business.
 
+One line of the CALLER's identity is this template's business, though, because it decides
+how often this core is woken for nothing. The persona of the talky in front of it has to
+carry the boundary verbatim — see
+[`../talky/README.md`](../talky/README.md) § The sentence a memory-carrying persona has to
+contain. Without it the front model consults the core for what it was handed a moment ago
+(#150): the answer comes back correct, so nothing looks broken, and every such question
+costs a consult round trip instead of a direct reply. A core that is asked what the window
+already says is not a slow core — it is a persona that was never told where its own
+knowledge ends.
+
 ## What it is not
 
 - **Not a channel voice.** No proxy, no chat id, no tone. Who talks to the user is the

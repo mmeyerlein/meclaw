@@ -146,6 +146,26 @@ The tool SCHEMAS are a different thing again: they live in the brain's `system.t
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
 neither -- identity, instructions and tools are the agent, not the topology.
 
+### The sentence a memory-carrying persona has to contain
+
+Whatever else an agent's identity says, one boundary is topology-invariant and belongs in
+its instructions **verbatim**:
+
+> What stands in this conversation window is your own knowledge, not something to look up.
+> A question about what was just said you answer immediately, with no tool and no bridging
+> sentence. The core / the memory is for what is **not** in the window.
+
+Without it the front model asks memory for what it was handed a moment ago (#150, measured
+in production): the answer is *correct*, so nothing looks broken — it just cost a bridging
+sentence, a consult round trip and about six seconds instead of one and a half. The
+instructions of a persona naturally enumerate what the core is FOR (deep thinking,
+research, planning, long-term memory) and, without this sentence, never say what it is not
+for. "What did I just tell you" reads, literally, as a memory question.
+
+The same sentence is what keeps the boundary honest in the other direction: it names the
+window as the model's own knowledge **and** the long-term store as the thing it must ask
+for, so a question about an earlier day still leaves through the lane it should.
+
 Three more optional lanes, all of them the parent's decision:
 
 | lane | endpoint | when |
