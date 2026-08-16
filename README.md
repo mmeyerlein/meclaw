@@ -2,7 +2,7 @@
 
 # meclaw
 
-**Build an agentic harness swarm as a directory tree. The swarm can rewire itself while it runs.**
+**Agent swarms that recursively evolve themselves.**
 
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
