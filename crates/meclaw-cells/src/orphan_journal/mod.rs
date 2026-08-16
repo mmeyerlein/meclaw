@@ -34,7 +34,7 @@ pub mod record;
 /// Boot-time reaping of verified orphans.
 pub mod reap;
 
-pub use identity::{ProcIdentity, read_identity};
+pub use identity::{ProcIdentity, read_identity, read_settled_identity, spawning_thread_comm};
 pub use journal::{
     JOURNAL_FILE, OrphanJournal, SpawnNote, default_path, install, installed, note_spawn,
 };

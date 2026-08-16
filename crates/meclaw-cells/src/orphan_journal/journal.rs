@@ -14,7 +14,7 @@
 //!
 //! Cost is one small `open`/`write`/`fsync` per child, paid twice per tool call.
 
-use crate::orphan_journal::identity::read_identity;
+use crate::orphan_journal::identity::{read_identity, read_settled_identity};
 use crate::orphan_journal::record::{JournalRecord, RecordState};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,11 @@ impl OrphanJournal {
         let Some(pid) = pid else {
             return SpawnNote::inert();
         };
-        let ident = read_identity(pid);
+        // Settled, not raw: right after `Command::spawn` the child can still be
+        // its own pre-exec image, whose `comm` is OUR thread's name. Journalling
+        // that name would make the boot reaper veto a genuine orphan on a
+        // manufactured "identity mismatch" (GH #116).
+        let ident = read_settled_identity(pid);
         let rec = JournalRecord {
             pid,
             start_id: ident.as_ref().map(|i| i.start_id),

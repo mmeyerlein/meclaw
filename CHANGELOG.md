@@ -415,6 +415,16 @@ Rust crates are internals and move without notice.
   Third, smaller: the `recall` cell now writes one stderr line when it fuses
   without the semantic leg, so a dead embedder is greppable in `log.jsonl`
   instead of visible only to whoever reads `semantic_degraded` off the answer.
+- **The orphan journal no longer records a child's name before the child has
+  one** (#116). `note_spawn` read the child's `/proc` identity the instant
+  `Command::spawn` returned — but the kernel releases the `CLONE_VFORK` parent
+  *inside* `execve`, before it renames the task, so under load 3–7 % of spawns
+  captured the pre-exec image and journalled the spawning **thread's** name
+  (`tokio-runtime-w`) as the child's. The next boot then compared that against
+  the real name, saw an "identity mismatch" it had manufactured itself, and
+  refused to reap a genuine orphan. The spawn path now re-reads the identity —
+  bounded, sleep-free — while the child still carries its spawner's name.
+  The reaper is untouched: an unverifiable entry is still never killed.
 - **A `code` cell that emits a non-object no longer takes its task down.** Two
   `expect()` calls sat on a trust boundary: a script writing `[1]` or
   `{"header": 5}` killed the cell task instead of being refused. It is an

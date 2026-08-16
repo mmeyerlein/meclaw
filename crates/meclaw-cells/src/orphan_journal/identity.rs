@@ -83,6 +83,69 @@ pub fn read_identity(pid: u32) -> Option<ProcIdentity> {
     None
 }
 
+/// The name of the CALLING THREAD — and therefore the `comm` that any child it
+/// forks carries until that child's `execve` has landed.
+///
+/// `/proc/thread-self` is the calling thread's directory; `/proc/self` would be
+/// the thread group leader's, which is the wrong question: a child forked from a
+/// Tokio worker is called `tokio-runtime-w` until the kernel renames it, not
+/// after the daemon.
+#[cfg(unix)]
+pub fn spawning_thread_comm() -> Option<String> {
+    std::fs::read_to_string("/proc/thread-self/comm")
+        .ok()
+        .map(|s| s.trim_end_matches('\n').to_string())
+}
+
+/// Without `/proc` there is no thread name to read.
+#[cfg(not(unix))]
+pub fn spawning_thread_comm() -> Option<String> {
+    None
+}
+
+/// How many scheduler yields the spawn path will spend waiting for a child's
+/// `execve` to land. Bounded and sleep-free on purpose: the record has to hit
+/// the disk before the daemon can plausibly die, so this may cost scheduler
+/// slots, never milliseconds of wall clock.
+const SETTLE_YIELDS: usize = 64;
+
+/// Does this identity still look like the fork of `spawner` from BEFORE its
+/// `execve` — i.e. is its `comm` merely inherited rather than its own?
+fn is_pre_exec_image(ident: Option<&ProcIdentity>, spawner: Option<&str>) -> bool {
+    match (ident, spawner) {
+        (Some(id), Some(name)) => id.comm == name,
+        _ => false,
+    }
+}
+
+/// Read `pid`'s identity for the record written at spawn time.
+///
+/// [`read_identity`] alone is not enough here. `Command::spawn` returns as soon
+/// as the kernel releases the `CLONE_VFORK` parent, and that release happens
+/// INSIDE `execve` (`exec_mmap`) and therefore BEFORE `set_task_comm` — so a
+/// `/proc` read taken right after the spawn can still see the pre-exec image,
+/// whose `comm` is the spawning thread's name. Recording that name is worse than
+/// recording nothing: the boot reaper compares it against the live `comm`, sees
+/// a mismatch and refuses to kill a genuine orphan (GH #116).
+///
+/// So: re-read while the child still carries the spawning thread's name, for at
+/// most [`SETTLE_YIELDS`] yields. If it never changes, the observed value is
+/// recorded anyway — a child that really IS named like its spawner is the one
+/// case where the pre-exec image and the truth agree, and being wrong there
+/// costs a skipped orphan, never a wrongly killed stranger.
+pub fn read_settled_identity(pid: u32) -> Option<ProcIdentity> {
+    let spawner = spawning_thread_comm();
+    let mut ident = read_identity(pid);
+    for _ in 0..SETTLE_YIELDS {
+        if !is_pre_exec_image(ident.as_ref(), spawner.as_deref()) {
+            break;
+        }
+        std::thread::yield_now();
+        ident = read_identity(pid);
+    }
+    ident
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +196,63 @@ mod tests {
     #[test]
     fn a_pid_that_cannot_exist_has_no_identity() {
         assert!(read_identity(999_999_999).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spawning_thread_comm_is_this_thread_not_the_process() {
+        // A named thread proves it reads `/proc/thread-self` and not
+        // `/proc/self`: the latter would answer with the test binary's name.
+        let seen = std::thread::Builder::new()
+            .name("reap-probe".to_string())
+            .spawn(spawning_thread_comm)
+            .expect("thread spawns")
+            .join()
+            .expect("thread joins");
+        assert_eq!(
+            seen.as_deref(),
+            Some("reap-probe"),
+            "the settle check must compare against the spawning THREAD's name"
+        );
+    }
+
+    #[test]
+    fn only_a_comm_equal_to_the_spawners_reads_as_a_pre_exec_image() {
+        let id = |comm: &str| ProcIdentity {
+            start_id: 1,
+            comm: comm.to_string(),
+            state: 'S',
+        };
+        assert!(is_pre_exec_image(
+            Some(&id("tokio-runtime-w")),
+            Some("tokio-runtime-w")
+        ));
+        assert!(!is_pre_exec_image(
+            Some(&id("sleep")),
+            Some("tokio-runtime-w")
+        ));
+        // No evidence either way is never a reason to keep polling.
+        assert!(!is_pre_exec_image(Some(&id("sleep")), None));
+        assert!(!is_pre_exec_image(None, Some("tokio-runtime-w")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settle_budget_terminates_on_a_process_that_never_renames_itself() {
+        // Our own pid, read from a thread named exactly like it: the settle
+        // condition is true on every pass, so only the budget can end the loop.
+        let me = std::process::id();
+        let comm = read_identity(me).expect("we have an identity").comm;
+        let settled = std::thread::Builder::new()
+            .name(comm.clone())
+            .spawn(move || read_settled_identity(me))
+            .expect("thread spawns")
+            .join()
+            .expect("thread joins")
+            .expect("we still exist");
+        assert_eq!(
+            settled.comm, comm,
+            "an exhausted budget records what it saw, it does not give up on the identity"
+        );
     }
 }
