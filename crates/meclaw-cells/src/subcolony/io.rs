@@ -110,9 +110,28 @@ fn child_spec(params: &SubcolonyParams) -> ChildSpec {
         // Secret isolation, the deliberate plus of a process boundary: the child
         // sees the passthrough list and nothing else of this colony's env.
         env_clear: true,
-        // A child colony is a colony, not a cell running foreign code: it has
-        // no `params.sandbox` of its own and its cells carry their own
-        // profiles. GH #85 deliberately leaves this untouched.
+        // GH #96, ruled: a subcolony gets NO profile of its own, and this is the
+        // decision rather than an omission.
+        //
+        // A child colony is a colony, not a cell running foreign code. Its cells
+        // carry their own `params.sandbox`, so a profile here would be a SECOND
+        // boundary over the same processes — and the two would disagree the
+        // first time somebody tightened one of them. Worse, the half that looks
+        // most useful does not survive contact: a filesystem cut cannot be
+        // scoped, because the child needs its own root plus every cell
+        // directory below it, which is most of what it could be denied.
+        //
+        // The resource caps ARE scopeable and would bound a runaway child, but
+        // they belong to whoever runs the daemon (a systemd unit, a cgroup, a
+        // container) rather than to a cell param that only covers one of the
+        // several process trees a colony starts. Bounding one of them and
+        // calling it containment is the false accept this issue exists to
+        // avoid.
+        //
+        // What DOES contain the child is here already and is not nothing:
+        // `process_group` (no orphan can survive the parent) and `env_clear`
+        // (the child sees the passthrough list and nothing else of this
+        // colony's environment).
         sandbox: None,
     }
 }

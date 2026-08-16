@@ -9,6 +9,52 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.6] — 2026-08-17
+
+### Added
+
+- **The `mcp` child reads `params.sandbox`** (#96). Same profile schema as
+  `bash`, `code` and `harness` — one shape, one parser, one set of mistakes an
+  operator can make — applied to the `stdio` transport, where there is a child
+  process to contain. **Opt-in**: without the key the child keeps the daemon's
+  rights, which is the state of every `mcp` cell installed today. The key is
+  **immutable**, because a boundary a runtime params update could switch off is
+  not a boundary.
+
+  Of the three places in the tree that start a foreign process, this was the
+  strongest case: an MCP server is a third-party binary an operator configured,
+  and therefore the one least likely to have been written by whoever runs the
+  colony.
+
+### Decided
+
+- **`subcolony` takes no sandbox profile, and the reason is now in the code and
+  the spec** (#96). A child colony is a colony, not a cell running foreign code:
+  its cells carry their own profiles, so a profile here would be a second
+  boundary over the same processes, and the two would disagree the first time
+  somebody tightened one of them. The filesystem half does not survive contact
+  either — the child needs its own root plus every cell directory below it,
+  which is most of what it could be denied. The resource caps are scopeable, but
+  they belong to whoever runs the daemon rather than to a cell param covering
+  one of several process trees.
+
+  What contains the child is unchanged and is not nothing: its own process group
+  and `env_clear`. A test pins the decision, so that wiring a profile here later
+  fails loudly against the paragraph that argued against it.
+
+### Fixed
+
+- **A unit test that asserted against a clock now asserts against an event**
+  (#156). `lr_helper_spawns_task_and_returns_pair` yielded once and then checked
+  that the task had not finished — which failed on a saturated CI runner, and
+  whose obvious repair (assert the running state repeatedly over ~100 ms) failed
+  *locally* every time. That says the assertion was a race in both directions.
+
+  Liveness is proven positively now: a probe message goes into the mailbox and
+  the test waits until the task has taken it out. Only a running task drains its
+  own mailbox. Same family as #153 and #129 — the fix is always to find the
+  event the test actually means.
+
 ## [0.10.5] — 2026-08-17
 
 ### Fixed

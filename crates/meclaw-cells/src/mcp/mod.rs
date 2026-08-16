@@ -37,3 +37,9 @@ pub mod parse;
 pub mod wire;
 
 pub use factory::McpCellFactory;
+// GH #96: the parsed params and the transport they carry are public for the
+// configuration pin in `tests/gh96_mcp_sandbox_profile.rs` — the same reason
+// `subcolony::io::child_spec_for_test` is. What a test cannot see, a test
+// cannot hold; and the containment of a third-party binary is exactly the
+// thing that must not drift unobserved.
+pub use params::{McpOverlay, McpParams, McpTransport};

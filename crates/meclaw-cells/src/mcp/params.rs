@@ -68,6 +68,7 @@ impl crate::params_overlay::OverlayParams for McpOverlay {
         "env",
         "cwd",
         "kill_grace_ms",
+        "sandbox",
         "external_timeout_ms",
         "query_timeout_ms",
     ];
@@ -80,6 +81,9 @@ impl crate::params_overlay::OverlayParams for McpOverlay {
         "env",
         "cwd",
         "kill_grace_ms",
+        // GH #96: a containment a runtime params update could switch off is not
+        // a containment. Same argument as the store's `write_surface`.
+        "sandbox",
     ];
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         let obj = raw.as_object().ok_or("params: must be object")?;
@@ -187,6 +191,17 @@ fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport,
         .get("kill_grace_ms")
         .and_then(|x| x.as_u64())
         .unwrap_or(2_000);
+    // GH #96: an MCP server is a third-party binary an operator configured, and
+    // of the three spawn sites in the tree it is the one least likely to have
+    // been written by whoever runs the colony. It reads `params.sandbox` with
+    // the SAME schema `bash`, `code` and `harness` use — one profile shape, one
+    // parser, one set of mistakes an operator can make.
+    //
+    // Absent means absent: no profile is the historical behaviour (the child
+    // inherits the daemon's rights), which is what every mcp cell on disk has
+    // today. The P8 process-group containment switches stay off here as before;
+    // a sandbox is a different axis and does not turn them on.
+    let sandbox = crate::sandbox::SandboxProfile::parse(&JsonValue::Object(obj.clone()))?;
     Ok(McpTransport::Stdio {
         spec: ChildSpec {
             program,
@@ -194,9 +209,7 @@ fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport,
             env,
             cwd,
             kill_grace_ms,
-            // An MCP server is a single well-behaved process that inherits its
-            // environment — the P8 containment switches stay off here on
-            // purpose (pinned by a regression test).
+            sandbox: sandbox.map(Box::new),
             ..ChildSpec::default()
         },
     })

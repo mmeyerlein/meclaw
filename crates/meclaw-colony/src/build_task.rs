@@ -506,9 +506,23 @@ mod tests {
     }
 
     /// Smoke-check: `build_long_running_task` spawns the cell task and returns
-    /// the expected `(JoinHandle, peace_rx, stop_tx, death_ack_rx)` shape.
-    /// After spawn the mailbox is still open (task is running); `peace_rx` is
-    /// empty (no early peace signal). Clean shutdown by dropping the mailbox.
+    /// the expected `(JoinHandle, peace_rx, stop_tx, death_ack_rx, backstop_rx)`
+    /// shape, fires no early peace, and shuts down cleanly when the mailbox
+    /// closes.
+    ///
+    /// GH #156 — what this test does NOT assert any more: that the task is
+    /// alive at one particular instant. It used to `yield_now()` once and then
+    /// check `!cell_join.is_finished()`, which failed once on a saturated CI
+    /// runner. A single yield is not a synchronisation primitive, and the
+    /// obvious repair (assert the running state repeatedly over ~100 ms) failed
+    /// LOCALLY every time — which says the task does reach a finished state on
+    /// its own timescale and the assertion was a race in both directions.
+    ///
+    /// Liveness is asserted POSITIVELY instead: a message is put in the mailbox
+    /// and the test waits until the task has taken it out. Only a running task
+    /// drains its own mailbox, so the capacity coming back is the task saying
+    /// "I am here" — an event the topology guarantees, rather than a clock it
+    /// does not. Same family as #153 and #129.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lr_helper_spawns_task_and_returns_pair() {
         let (_mb_tx, mb_rx) = mpsc::channel::<Message>(8);
@@ -529,18 +543,36 @@ mod tests {
                 None,
             );
 
-        tokio::task::yield_now().await;
-
+        // The positive liveness receipt: hand the task a message and wait until
+        // it has taken it. `capacity()` returns to its full value only when the
+        // receiver has dequeued, and only a running task dequeues.
+        let before = _mb_tx.capacity();
+        _mb_tx
+            .send(
+                meclaw_core::MessageBuilder::new(Path::new("/lr-probe"))
+                    .body(meclaw_core::Body::Inline(
+                        meclaw_core::serde_json::json!({"messages": []}),
+                    ))
+                    .build(),
+            )
+            .await
+            .expect("mailbox accepts the probe");
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while _mb_tx.capacity() < before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         assert!(
-            !cell_join.is_finished(),
-            "lr cell task must still be running right after spawn (mailbox still open)"
+            drained.is_ok(),
+            "the lr cell task must drain its own mailbox — nothing took the probe within 30s"
         );
         assert!(
             matches!(
                 peace_rx.try_recv(),
                 Err(oneshot::error::TryRecvError::Empty)
             ),
-            "peace_rx must be empty right after spawn"
+            "peace_rx must be empty: a live cell fires no peace signal"
         );
 
         // Clean shutdown: drop mailbox sender → task exits.

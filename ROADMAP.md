@@ -53,8 +53,6 @@ built with the builder.
 The pre-MVP stream closed with 0.4.1; what its waves left behind are named
 flanks, and new substrate findings from production land here first. 0.5.0 took
 #94, #95, #83, #89, #97 and #98 off this list. What remains:
-[#96](https://github.com/mmeyerlein/meclaw/issues/96) the mcp and subcolony
-stdio children still run with the daemon's full rights,
 [#46](https://github.com/mmeyerlein/meclaw/issues/46) the harness permission
 surface and error-code semantics,
 [#45](https://github.com/mmeyerlein/meclaw/issues/45) the code cell's
@@ -173,6 +171,9 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.6 — the last two spawn sites are decided.** The `mcp` child reads a
+  sandbox profile; the `subcolony` child deliberately does not, and both halves
+  are written down. Plus a unit test that stopped asserting against a clock.
 - **v0.10.5 — latency you can read off the log.** A read-only tool that answers
   "how slow is this lane" from the colony's own message log, consult eta hints
   that follow what it measured instead of what somebody hoped, and a proxy test
