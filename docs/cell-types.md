@@ -32,6 +32,7 @@ Detailed spec of the built-in cell types. On conflict between this file and `mec
 | `mcp` | MCP-provider bridge, dual task | yes, long-running | atomic-emitting | 10 |
 | `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running | P8 |
 | `subcolony` | child colony as one cell (opaque composition facade) | yes, long-running | atomic-emitting | P9 |
+| `vault` | sealed secret store — **no operation returns a secret** | yes, stateful | atomic-emitting | W15 |
 
 **Status per cell type / per phase** (which cell is live today, which deferred) → `PROGRESS.md` § Status.
 
@@ -881,3 +882,54 @@ The **immutability boundary is the containment boundary** (the same line as with
 **Rule 12 (timeouts)**: `cell.message_timeout` (concept B, the substrate backstop) must sit **clearly above** `request_timeout_ms` (concept A), otherwise the backstop fires before the facade can report its typed `request_timeout`. A convention as with all cell types, not enforced in code; see `meclaw-overview.md` § Timeouts.
 
 **Emission mode**: long-running, stateful, atomic-emitting.
+
+---
+
+## `vault`: a sealed secret store with no read
+
+**The promise is the type, not a policy.** This cell type's route surface contains no `get`. It contains `put`, `rotate`, `use`, `revoke`, `status`, `unlock`, `lock` — and nothing else. A fully compromised model at the other end of an edge can ask the vault to **use** a secret inside a granted scope; it cannot ask to see one, because the question has no name here.
+
+The difference from "a store plus a rule" is the point: a rule is an argument that can be won — by a prompt, by a bug, by a future exception "just for the migration". A missing operation is not.
+
+**Two callers, and they may do different things:**
+
+| caller | recognised by | may |
+|---|---|---|
+| **user channel** | `reply_to == None` — a source message. No edge can produce one, because the colony stamps `reply_to` on everything a cell emits | `put`, `rotate`, `unlock`, `lock`, `status`, `revoke` |
+| **broker** | `reply_to == params.broker` | `use`, `status`, `revoke` |
+| everyone else | — | nothing. Refused **before** the operation is looked at, with an audit row |
+
+That the broker may **not** `put` is deliberate: otherwise an agent that had captured the broker could swap the vault's contents for its own.
+
+**The grant check belongs to the broker, not to the vault.** A cell cannot query another cell inside one `handle()` — that is the actor model, not a limitation of this type. So the work is split where it can be done: the broker validates the grant against the grants store on its own lane, and the vault does the one thing only it can do — check who is talking — and records the `grant_id` it was handed.
+
+**Injection at unlock.** `use` signs (HMAC-SHA256): the secret does work and stays home, the ssh-agent shape. The one case that genuinely needs the value — a connector authenticating to a platform — is served by `params.inject_map`, which names which secret reaches which cell under which param key. The delivery happens **once at unlock**, never per request, and never to an address a message could choose: the map is configuration and the body is not read. The requester learns which name went where, never the value.
+
+**Unlock attestation.** Before accepting key material the vault verifies its **own inbound edges** against `params.broker` + `params.sealed_neighbors`. If anything else is wired to it, it stays locked and names the path. The reason: the port boundary applies to *mutations*, and the birth topology is deliberately exempt (author sovereignty). A `code` cell has filesystem access, so it can rewrite the tree on disk and let the **next boot** draw an edge no mutation would have been allowed to add — the gate laundered through a reboot. It still can; it simply never gets the key. An unverifiable neighbourhood fails closed exactly like a wrong one.
+
+This is the **one** place where a cell looks at the topology, and it is a deliberate, narrow exception to "cells know no topology": read-only, only the edges into its own path, and only ever to refuse.
+
+**A woken vault is always locked.** The key lives in the task and dies with it. A vault that could resume its unlocked state across a sleep would have to keep the key somewhere that survives the sleep, and no such place exists that is not a worse version of the problem the vault solves.
+
+**Crypto:** argon2id from the passphrase against a per-store salt; XChaCha20-Poly1305 per secret with its own 24-byte nonce.
+
+**No-delete:** a `put` onto an existing name **is** a rotation (a new version); `revoke` flips a status. Yesterday's ciphertext stays on disk — that is what makes a revocation auditable rather than a hole. `revoke` deliberately needs no passphrase: being locked out must never stop you disabling a credential that leaked.
+
+**`params`**:
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `broker` | string | **required** | The one sender the vault answers at all. Absolute (`/main/access/invoke`) or hive-relative (`./invoke`, resolved against its own path — which is what makes it a template) |
+| `key_source` | string | `"auto"` | `auto` \| `prompt` \| `systemd-cred` \| `plainfile`. Names a **source**, never material |
+| `credential_name` | string | `"vault_key"` | file under `$CREDENTIALS_DIRECTORY` for `systemd-cred` |
+| `key_file` | string | — | required for `plainfile`. Refused if group or others can read it — the same answer ssh gives for a loose private key |
+| `unlock_ttl_ms` | u64 | — | re-lock after this long |
+| `sealed_neighbors` | array | `[]` | further expected edge neighbours for the attestation |
+| `inject_map` | object | `{}` | `{name: {to, key}}` — which secret is handed to which cell at unlock |
+| `external_timeout_ms` | u64 | `5000` | A-timeout around reading key material (rule 12) |
+
+**Storage** (its own `cell.db`): `vault_meta` (the salt — not secret; it exists so two vaults with one passphrase do not share a key), `vault_secrets` (one row per `(name, version)`), `vault_audit` (every operation, refusals included).
+
+**Honest limit:** a determined `code` cell in the same process can read the vault's memory while it is unlocked. The designed answer is **placement** (own process, own user) — a deployment property that changes no edge. An agent that develops the substrate itself is out of scope by definition; no vault holds against that, and claiming otherwise would be the more dangerous statement.
+
+**Emission mode**: stateful (lazy), atomic-emitting. One `tool_result` turn per message, plus the injections at unlock.

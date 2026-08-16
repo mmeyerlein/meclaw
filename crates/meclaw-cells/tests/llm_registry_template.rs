@@ -1,5 +1,5 @@
 //! meclaw-os -- the shipped `llm-registry@1` template: the catalog behind the
-//! tier names, plus a steward that moves them ON CALL (V8 spec § 3, ruling L6
+//! tier names, plus a write hand that moves them ON CALL (V8 spec § 3, ruling L6
 //! of 2026-08-15).
 //!
 //! What is pinned here is what the template PROMISES, in the order the README
@@ -8,7 +8,7 @@
 //! 1. **The inventory, and the absence of a clock.** Three cells and a hive,
 //!    no `timer`, no `schedules`, no cron string anywhere -- and a booted tree
 //!    that says nothing at all until it is asked. v1 is the catalog plus an
-//!    on-call steward; the closed loop is the target picture (GH #130), not
+//!    on-call hand; the closed loop is the target picture (GH #130), not
 //!    this release, and an absence that is not pinned arrives by accident.
 //! 2. **Resolution is deterministic.** The same request over the same catalog
 //!    resolves to the same model twice, because the rank ends on a unique
@@ -17,7 +17,7 @@
 //!    `resolved: false` with `model_id: ""` -- no nearest match, no default --
 //!    and a named tier whose model cannot serve the request is refused rather
 //!    than silently replaced.
-//! 4. **The steward moves on call, and reaches exactly the right cells.** One
+//! 4. **The hand moves on call, and reaches exactly the right cells.** One
 //!    remap command supersedes the tier row and pushes `{system:{},
 //!    params:{model}}` at every UNPINNED subscriber of that tier. The push is
 //!    proved on the WIRE: the receivers are real `llm` cells against a mock
@@ -68,7 +68,7 @@ const REGISTRY_FILES: &[&str] = &[
     "config.json",
     "store/config.json",
     "select/config.json",
-    "steward/config.json",
+    "hand/config.json",
 ];
 
 const REGISTRY_SEEDS: &[&str] = &["store/seed/models.jsonl", "store/seed/tiers.jsonl"];
@@ -149,7 +149,7 @@ sys.stdout.write(json.dumps({
                   "text": raw}]}))
 "#;
 
-/// The commanding side of the steward port. The actor rides the hop so the port
+/// The commanding side of the hand port. The actor rides the hop so the port
 /// edge can make it edge truth; `ACTOR` in the raw request switches it off, so
 /// the refusal path has a way in.
 const OPERATOR: &str = r#"
@@ -259,28 +259,28 @@ fn main_config() -> Value {
         // ── out_select ──
         {"from": "./llm_registry/select", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        // ── in_steward: likewise, and a command without one is refused ──
-        {"from": "./operator", "to": "./llm_registry/steward",
+        // ── in_hand: likewise, and a command without one is refused ──
+        {"from": "./operator", "to": "./llm_registry/hand",
          "condition": "has(hop.route) && hop.route == 'command'",
          "modifier": {"set_context": {"actor": "hop.actor"}}},
         // ── out_ack ──
-        {"from": "./llm_registry/steward", "to": "/sink",
+        {"from": "./llm_registry/hand", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'ack'"},
         // ── out_update: ONE edge per subscriber, by hand. That is the honest
         //    cost of a substrate in which cells cannot be enumerated. ──
-        {"from": "./llm_registry/steward", "to": "./sub_a",
+        {"from": "./llm_registry/hand", "to": "./sub_a",
          "condition": "has(hop.route) && hop.route == 'update' && hop.subscriber == '/sub_a'"},
-        {"from": "./llm_registry/steward", "to": "./sub_b",
+        {"from": "./llm_registry/hand", "to": "./sub_b",
          "condition": "has(hop.route) && hop.route == 'update' && hop.subscriber == '/sub_b'"},
-        {"from": "./llm_registry/steward", "to": "./sub_c",
+        {"from": "./llm_registry/hand", "to": "./sub_c",
          "condition": "has(hop.route) && hop.route == 'update' && hop.subscriber == '/sub_c'"},
         // ── the test's own observer of the push, so its BODY can be read ──
-        {"from": "./llm_registry/steward", "to": "/sink",
+        {"from": "./llm_registry/hand", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'update'"},
         // ── out_error: the drain the parent MUST wire, both code cells ──
         {"from": "./llm_registry/select", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'error'"},
-        {"from": "./llm_registry/steward", "to": "/sink",
+        {"from": "./llm_registry/hand", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'error'"},
         // ── in_admin / out_admin: the documented hand-maintenance lane ──
         {"from": "./admin", "to": "./llm_registry/store",
@@ -502,7 +502,7 @@ async fn wire_subscribers(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>) {
 // ═══════════════════════════════════════════════════════════════════════ pins
 
 /// Three cells and a hive, and NO clock. Pinned as a set, because the shape is
-/// the ruling: v1 is the catalog plus a steward on call. A `timer` here, a
+/// the ruling: v1 is the catalog plus a write hand on call. A `timer` here, a
 /// `schedules` block, or a cron string in any config would be the control loop
 /// arriving by accident -- and the loop is GH #130's business, not v1's.
 #[test]
@@ -521,7 +521,7 @@ fn the_hive_carries_three_cells_and_no_clock() {
     want.sort();
     assert_eq!(
         found, want,
-        "llm-registry@1 is store + select + steward: no probe, no clock"
+        "llm-registry@1 is store + select + hand: no probe, no clock"
     );
     for rel in REGISTRY_FILES {
         let cfg = read_json(&root.join(rel));
@@ -746,7 +746,7 @@ async fn unsatisfiable_requirements_are_refused_and_never_guessed() {
     h.shutdown().await;
 }
 
-/// The steward, on call. One command, and the wire shows all three halves of
+/// The write hand, on call. One command, and the wire shows all three halves of
 /// the promise: the message form an `llm` cell accepts in silence, the tier
 /// index superseded, and exactly the unpinned subscribers of that tier moved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -884,16 +884,16 @@ async fn a_remap_command_pushes_params_to_exactly_the_unpinned_subscribers() {
         &mut rx,
         json!({"operation": "select", "table": "resolutions",
                "columns": ["cell_path", "model_id", "reason"],
-               "where": {"reason": {"in": ["steward_remap", "steward_skipped_pinned"]}},
+               "where": {"reason": {"in": ["hand_remap", "hand_skipped_pinned"]}},
                "order_by": [{"col": "cell_path", "dir": "asc"}], "limit": 20}),
     )
     .await;
     let rows = rows.as_array().cloned().unwrap_or_default();
     assert_eq!(rows.len(), 2, "one line per mid subscriber: {rows:?}");
     assert_eq!(rows[0]["cell_path"].as_str(), Some("/sub_a"));
-    assert_eq!(rows[0]["reason"].as_str(), Some("steward_remap"));
+    assert_eq!(rows[0]["reason"].as_str(), Some("hand_remap"));
     assert_eq!(rows[1]["cell_path"].as_str(), Some("/sub_b"));
-    assert_eq!(rows[1]["reason"].as_str(), Some("steward_skipped_pinned"));
+    assert_eq!(rows[1]["reason"].as_str(), Some("hand_skipped_pinned"));
 
     h.shutdown().await;
 }

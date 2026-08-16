@@ -1,0 +1,78 @@
+{
+  "cell": {
+    "type": "vault"
+  },
+  "params": {
+    "broker": "./invoke",
+    "key_source": "${VAULT_KEY_SOURCE:-auto}",
+    "credential_name": "${VAULT_CREDENTIAL_NAME:-vault_key}",
+    "unlock_ttl_ms": null,
+    "sealed_neighbors": [],
+    "external_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "key_source": {
+        "type": "string",
+        "secret": false,
+        "default": "auto",
+        "description": "VAULT_KEY_SOURCE -- where the master key comes from: auto|prompt|systemd-cred|plainfile. Names a SOURCE, never key material."
+      },
+      "credential_name": {
+        "type": "string",
+        "secret": false,
+        "default": "vault_key",
+        "description": "VAULT_CREDENTIAL_NAME -- the file read under $CREDENTIALS_DIRECTORY when key_source resolves to systemd-cred"
+      }
+    },
+    "multi_send_capable": true,
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "msg_type": {
+          "type": "string",
+          "required": false
+        },
+        "vault_key": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The vault cell: an encrypted store plus an executor. XChaCha20-Poly1305 per secret, argon2id from the passphrase, and one operation that USES a secret (HMAC-SHA256) so the key does work and stays home -- the ssh-agent shape.",
+    "use_when": "As a non-port interior cell of the hive that owns the credentials. `params.broker` names the ONE sender it answers, absolute or hive-relative (`./invoke` resolves against the vault's own path, which is what makes this a template).",
+    "not_in_scope": "There is no `get`, and adding one would not be a feature but a different cell type. A woken vault is always LOCKED -- the key lives in the task and dies with it, because a key that survives a sleep would have to be kept somewhere worse than the problem it solves."
+  }
+}

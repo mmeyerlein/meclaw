@@ -1,0 +1,143 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [
+      "./meter",
+      "./mutator"
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": "./clock",
+          "to": "./meter",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'steward-cycle'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'meter'",
+              "st_phase": "''",
+              "st_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./meter",
+          "to": "./charter",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'meter'",
+              "st_phase": "hop.phase",
+              "st_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./charter",
+          "to": "./meter",
+          "condition": "context.steward_origin == 'meter'"
+        },
+        {
+          "from": "./meter",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'meter'",
+              "st_phase": "hop.phase",
+              "st_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./meter",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'judge'",
+          "modifier": {
+            "set_context": {
+              "st_cycle": "hop.cycle_id",
+              "st_goal": "hop.goal"
+            }
+          }
+        },
+        {
+          "from": "./judge",
+          "to": "./mutator",
+          "condition": "true"
+        },
+        {
+          "from": "./meter",
+          "to": "./mutator",
+          "condition": "has(hop.route) && hop.route == 'revert'",
+          "modifier": {
+            "set_context": {
+              "st_cycle": "hop.cycle_id"
+            }
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'mutator'",
+              "st_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./mutator",
+          "to": "./probe",
+          "condition": "has(hop.route) && hop.route == 'probe'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'probe'",
+              "st_cycle": "hop.cycle_id",
+              "st_phase": "''"
+            }
+          }
+        },
+        {
+          "from": "./probe",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'probe'",
+              "st_phase": "hop.phase",
+              "st_cycle": "hop.cycle_id",
+              "st_reason": "hop.verdict"
+            }
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": "./probe",
+          "condition": "context.steward_origin == 'probe'"
+        },
+        {
+          "from": "./probe",
+          "to": "./mutator",
+          "condition": "has(hop.route) && hop.route == 'revert'",
+          "modifier": {
+            "set_context": {
+              "st_cycle": "hop.cycle_id"
+            }
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": "./meter",
+          "condition": "context.steward_origin == 'meter'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the steward hive: the colony's control loop. Charter -> measure -> judge (and simulate) -> mutate through the normal lane -> health check -> measure the effect -> keep or revert -> receipt. Thirteen internal edges; the two ports are ./meter (an event may force a cycle) and ./mutator (its mutations leave the hive).",
+    "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown steward measures nothing and changes nothing until somebody turns a row on.",
+    "not_in_scope": "No operator lane -- every change travels the same gated path any agent's mutation does. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only."
+  }
+}

@@ -94,6 +94,12 @@ fn cli_for(root: &std::path::Path, blobs: &std::path::Path, bind: SocketAddr) ->
         tokio_console: false,
         tokio_console_port: 6669,
         sandbox_probe: false,
+        vault: None,
+        vault_add: None,
+        vault_status: false,
+        vault_revoke: None,
+        vault_key_source: "auto".to_string(),
+        vault_key_file: None,
         stdio_format: StdioFormat::Text,
     }
 }

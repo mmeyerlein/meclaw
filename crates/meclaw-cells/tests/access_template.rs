@@ -65,6 +65,10 @@ const ACCESS_FILES: &[&str] = &[
     "invoke/config.json",
     "sweep/config.json",
     "clock/config.json",
+    // GH #151: the vault joined as an INTERIOR cell — not a port, so the
+    // generic hive-port boundary refuses any edge into it from outside the
+    // scope. It is the sixth cell and still no model.
+    "vault/config.json",
 ];
 
 /// The two seed tables. Both are catalogue, neither is a secret: `policy` ships
@@ -341,6 +345,12 @@ async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>)
             ),
             ("store".to_string(), Arc::new(StoreCellFactory)),
             ("timer".to_string(), Arc::new(TimerCellFactory)),
+            // GH #151: the hive carries a vault since the credentials moved off
+            // the wire, so the boot needs its factory like any other.
+            (
+                "vault".to_string(),
+                Arc::new(meclaw_cells::vault::VaultCellFactory),
+            ),
         ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
@@ -508,7 +518,7 @@ async fn grant_for(
 /// enabled rule would hand out a capability nobody in the receiving colony ever
 /// decided about.
 #[test]
-fn the_hive_carries_five_cells_no_model_and_starts_inert() {
+fn the_hive_carries_six_cells_no_model_and_starts_inert() {
     let Some(root) = shipped_access() else {
         return;
     };
@@ -523,7 +533,7 @@ fn the_hive_carries_five_cells_no_model_and_starts_inert() {
     want.sort();
     assert_eq!(
         found, want,
-        "access@1 is store + policy + invoke + sweep + clock: no brain, no judge"
+        "access@1 is store + policy + invoke + sweep + clock + vault: no brain, no judge"
     );
     for rel in ACCESS_FILES {
         let cfg = read_json(&root.join(rel));

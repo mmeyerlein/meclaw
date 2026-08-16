@@ -1,0 +1,21 @@
+{
+  "scope": "/",
+  "ctx": {
+    "model": "${MODEL_CORE}"
+  },
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "steward",
+        "template": "steward"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./steward/mutator",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'error'"
+      }
+    ]
+  }
+}

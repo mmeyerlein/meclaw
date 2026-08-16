@@ -15,6 +15,7 @@ use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::harness::HarnessCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::subcolony::SubcolonyCellFactory;
+use meclaw_cells::vault::VaultCellFactory;
 use meclaw_cells::{
     BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
     ProxyCellFactory, TimerCellFactory, WebFetchCellFactory, WebSearchCellFactory,
@@ -37,6 +38,7 @@ use std::sync::Arc;
 /// - `"timer"` → `TimerCellFactory` (long-running scheduled-tick source)
 /// - `"mcp"` → `McpCellFactory` (long-running MCP tool bridge)
 /// - `"harness"` → `HarnessCellFactory` (long-running agent-harness supervisor)
+/// - `"vault"` → `VaultCellFactory` (sealed secret store; no operation returns a secret)
 ///
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
@@ -59,6 +61,9 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     reg.insert("harness".to_string(), Arc::new(HarnessCellFactory));
     // P9: a whole child colony, driven as one cell over the JSON stdio wire.
     reg.insert("subcolony".to_string(), Arc::new(SubcolonyCellFactory));
+    // GH #151: the vault. A stateful cell type whose route surface has no read
+    // on it — see `meclaw_cells::vault`.
+    reg.insert("vault".to_string(), Arc::new(VaultCellFactory));
     reg
 }
 
@@ -99,8 +104,8 @@ mod tests {
         }
         assert_eq!(
             reg.len(),
-            13,
-            "8 Phase-9 + proxy/timer/mcp + harness + subcolony"
+            14,
+            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault"
         );
     }
 
@@ -145,6 +150,27 @@ mod tests {
         assert!(
             reg["web_fetch"]
                 .validate_params(&meclaw_core::serde_json::json!({}))
+                .is_ok()
+        );
+    }
+
+    /// GH #151: the vault has to be reachable from the binary, or a topology
+    /// declaring one fails to boot with `unknown_cell_type` — the same hole the
+    /// long-running factories sat in before Befund 3.
+    #[test]
+    fn registry_wires_the_vault_factory() {
+        let reg = built_in_factories();
+        assert!(reg.contains_key("vault"), "registry missing the vault");
+        // A vault without a broker is not a vault: validation refuses it here,
+        // at boot-plan time, not at the first message.
+        assert!(
+            reg["vault"]
+                .validate_params(&meclaw_core::serde_json::json!({}))
+                .is_err()
+        );
+        assert!(
+            reg["vault"]
+                .validate_params(&meclaw_core::serde_json::json!({"broker": "/main/access/broker"}))
                 .is_ok()
         );
     }

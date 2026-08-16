@@ -1,0 +1,44 @@
+{
+  "cell": {
+    "type": "timer"
+  },
+  "params": {
+    "schedules": [
+      {
+        "name": "steward-cycle",
+        "cron": "${STEWARD_CYCLE_CRON:-0 0 */6 * * *}"
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "cycle_cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 0 */6 * * *",
+        "description": "STEWARD_CYCLE_CRON -- six-field Quartz cron in UTC. Every six hours by default: a control loop that ticks faster than its measurement window can fill only measures noise."
+      }
+    },
+    "consumes": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The cycle tick. Six-field Quartz cron, UTC.",
+    "use_when": "One per steward hive. Event triggers (a DLQ spike, a cost alert) are additional edges into ./meter, not a second timer.",
+    "not_in_scope": "No judgement -- it emits a tick and nothing else."
+  }
+}

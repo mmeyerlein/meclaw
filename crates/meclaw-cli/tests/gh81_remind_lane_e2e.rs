@@ -151,6 +151,12 @@ async fn an_agent_tool_call_schedules_a_lane_and_gets_its_tool_result_back() {
         tokio_console: false,
         tokio_console_port: 6673,
         sandbox_probe: false,
+        vault: None,
+        vault_add: None,
+        vault_status: false,
+        vault_revoke: None,
+        vault_key_source: "auto".to_string(),
+        vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();

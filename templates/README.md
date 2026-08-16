@@ -35,8 +35,10 @@ colony is the job of the mutation that instantiates it (see below).
 | [`receptionist`](receptionist/) | 1.0.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
 | [`retry`](retry/) | 1.0.0 | A bounded retry loop around one tool, as a single cell. At the cap the give-up lane hands the last error on with its `error_code` intact. |
 | [`session-keeper`](session-keeper/) | 1.0.0 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
+| [`steward`](steward/) | 1.0.0 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
 | [`summarizer`](summarizer/) | 1.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
 | [`talky`](talky/) | 1.2.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`vault`](vault/) | 1.0.0 | A secret store with no operation that returns a secret -- not a policy over a store, but a cell type whose route surface has no read on it. Secrets enter over the user channel only; the broker may ask it to USE one. |
 | [`terminal`](terminal/) | 1.0.0 | The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane without a destination yet still HAS one -- the message arrives, the trace records it, and the dead-letter queue stays empty. |
 
 Read a template's `template.json` before wiring it -- the `description` slots (`purpose`,

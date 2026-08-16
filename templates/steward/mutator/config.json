@@ -1,0 +1,71 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, uuid, datetime\n\n# The cell that turns a decision into a change -- and the cell that refuses one.\n#\n# Everything the judge said is re-checked here, deterministically, because a\n# model in a control loop is safe exactly to the degree that its output is\n# checked by something that cannot be talked round:\n#\n#   * the RADIUS  -- model choice and numeric params, nothing else. A topology\n#     change is downgraded to a proposal, never executed.\n#   * the REVERT PLAN -- present, well formed, and actually the inverse of the\n#     change. A cycle without one is invalid by charter rule.\n#   * the LANE -- the mutation goes out through the ordinary mutation path with\n#     every gate the substrate applies to anybody. There is no operator lane\n#     here and there must not be: a control loop that can override the gates it\n#     runs under is not governed, it is merely polite.\n\nMAX_STEP_PCT = int(\"${STEWARD_MAX_NUMERIC_STEP_PCT:-50}\")\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(\n        \"%Y-%m-%dT%H:%M:%S.%fZ\")\n\n\ndef emit(route, phase, body=None, extra=None):\n    h = {\"route\": route, \"phase\": phase, \"cycle_id\": \"\", \"outcome\": \"\"}\n    h.update(extra or {})\n    m = {\"header\": h}\n    m.update(body or {})\n    return m\n\n\ndef receipt(operation, **rest):\n    args = {\"operation\": operation}\n    args.update(rest)\n    return emit(\"rstore\", \"written\", {\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": uuid.uuid4().hex[:12], \"text\": json.dumps(args)}]})\n\n\ndef as_obj(v):\n    if isinstance(v, dict):\n        return v\n    if isinstance(v, str) and v.strip():\n        try:\n            p = json.loads(v)\n        except Exception:\n            return {}\n        return p if isinstance(p, dict) else {}\n    return {}\n\n\ndef numeric(v):\n    try:\n        f = float(v)\n        return f\n    except Exception:\n        return None\n\n\ndef check(change, plan, require_plan):\n    \"\"\"The deterministic re-check. Returns a reason code, or \"\" when it passes.\n\n    Order matters: radius first, because a change outside the radius must be\n    refused whatever else is right about it.\n    \"\"\"\n    target = str(change.get(\"target\") or \"\")\n    kind = str(change.get(\"kind\") or \"\")\n    key = str(change.get(\"key\") or \"\")\n    if not target.startswith(\"/\"):\n        return \"target_not_absolute\"\n    if kind not in (\"model\", \"numeric_param\"):\n        return \"outside_radius\"\n    if kind == \"numeric_param\" and not key:\n        return \"param_key_missing\"\n    if change.get(\"to\") in (None, \"\"):\n        return \"no_new_value\"\n    if kind == \"numeric_param\":\n        old, new = numeric(change.get(\"from\")), numeric(change.get(\"to\"))\n        if new is None:\n            return \"new_value_not_numeric\"\n        # A cap that jumps by an order of magnitude is not a tuning step, it is\n        # a different colony. The step limit keeps one cycle's mistake small\n        # enough that the next cycle can still measure its way out.\n        if old is not None and old != 0:\n            step = abs(new - old) / abs(old) * 100.0\n            if step > MAX_STEP_PCT:\n                return \"step_too_large_%.0f_pct\" % step\n    if not require_plan:\n        return \"\"\n    if not plan:\n        return \"no_revert_plan\"\n    if str(plan.get(\"target\") or \"\") != target:\n        return \"revert_plan_wrong_target\"\n    if str(plan.get(\"kind\") or \"\") != kind:\n        return \"revert_plan_wrong_kind\"\n    if kind == \"numeric_param\" and str(plan.get(\"key\") or \"\") != key:\n        return \"revert_plan_wrong_key\"\n    if plan.get(\"to\") in (None, \"\"):\n        return \"revert_plan_has_no_value\"\n    # The plan has to lead BACK. A \"revert\" to the value we are moving to is a\n    # plan that changes nothing, and it would pass every structural check.\n    if str(plan.get(\"to\")) == str(change.get(\"to\")):\n        return \"revert_plan_is_not_inverse\"\n    if change.get(\"from\") not in (None, \"\") and \\\n            str(plan.get(\"to\")) != str(change.get(\"from\")):\n        return \"revert_plan_does_not_restore_the_original\"\n    return \"\"\n\n\ndef mutation_for(change):\n    \"\"\"The change as a NORMAL-lane mutation.\n\n    A model swap and a numeric param are the same shape at this level: both are\n    a params update on one cell, which is what keeps radius v1 small enough to\n    reason about.\n    \"\"\"\n    target = str(change.get(\"target\"))\n    key = \"model\" if str(change.get(\"kind\")) == \"model\" else str(change.get(\"key\"))\n    value = change.get(\"to\")\n    if str(change.get(\"kind\")) == \"numeric_param\":\n        n = numeric(value)\n        value = int(n) if n is not None and float(n).is_integer() else n\n    scope = target.rsplit(\"/\", 1)[0] or \"/\"\n    name = target.rsplit(\"/\", 1)[-1]\n    return {\"scope\": scope, \"ctx\": {},\n            \"diff\": {\"swap_nodes\": [{\"name\": name, \"params\": {key: value}}]}}\n\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nheader = (doc[\"envelope\"].get(\"header\") or {})\nhop = header.get(\"hop\") or {}\ncontext = header.get(\"context\") or {}\n\n# A store answer carries `operation`; a colony mutation verdict carries\n# `mutation`. Neither needs anything further from this cell.\nif \"operation\" in hop or \"mutation\" in d:\n    sys.stdout.write(\"[]\")\n    sys.exit(0)\n\nmsgs = d.get(\"messages\") or []\ncall = {}\nfor m in msgs:\n    if m.get(\"type\") == \"tool_call\":\n        call = m\nif not call and msgs:\n    call = msgs[-1]\ntry:\n    a = json.loads(call.get(\"text\") or \"{}\")\nexcept Exception:\n    a = None\nif not isinstance(a, dict):\n    a = {}\n\nstamp = now()\n\n# ---- the revert path: the meter ruled that a change did not prove itself ----\nif str(a.get(\"op\") or \"\") == \"revert\":\n    cid = str(a.get(\"cycle_id\") or \"\")\n    plan = as_obj(a.get(\"plan\"))\n    if not plan:\n        sys.stdout.write(json.dumps([receipt(\n            \"update\", table=\"cycles\",\n            set={\"reason_code\": \"revert_plan_missing_at_revert_time\"},\n            where={\"id\": cid})]))\n        sys.exit(0)\n    # The mutation body is the substrate's shape, not ours: `scope` and `diff`\n    # sit at the top level of the body, beside the header. Spelled out rather\n    # than wrapped, so what leaves here is exactly what /colony/mutations\n    # expects to read.\n    m = mutation_for(plan)\n    out = [{\"header\": {\"msg_type\": \"mutation\", \"route\": \"mutate\",\n                       \"phase\": \"\", \"cycle_id\": cid, \"outcome\": \"reverted\"},\n            \"messages\": [], \"scope\": m[\"scope\"], \"diff\": m[\"diff\"], \"ctx\": {}}]\n    out.append(receipt(\"update\", table=\"cycles\",\n                       set={\"status\": \"closed\", \"outcome\": \"reverted\"},\n                       where={\"id\": cid}))\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n# ---- the decide path: the judge has ruled ----\ncid = str(a.get(\"cycle_id\") or context.get(\"st_cycle\") or \"\")\ngoal = str(context.get(\"st_goal\") or \"\")\naction = str(a.get(\"action\") or \"none\")\nchange = as_obj(a.get(\"change\"))\nplan = as_obj(a.get(\"revert_plan\"))\nrequire_plan = str(context.get(\"st_require_plan\") or \"1\") != \"0\"\njudged = {\"action\": action, \"reasoning\": str(a.get(\"reasoning\") or \"\")}\nsimulated = as_obj(a.get(\"simulated\"))\nmeasured = as_obj(context.get(\"st_measured\"))\n\nbase_row = {\"id\": cid or (\"cycle:\" + uuid.uuid4().hex), \"goal\": goal, \"at\": stamp,\n            \"measured\": measured, \"judged\": judged, \"simulated\": simulated,\n            \"change\": change, \"revert_plan\": plan, \"verified\": {}, \"effect\": {}}\n\nif action != \"change\":\n    # `propose` and `none` both end the cycle here, and they are recorded\n    # differently on purpose: a proposal is a message to a human, and a human\n    # who cannot find it later has not been sent one.\n    row = dict(base_row, status=\"closed\",\n               outcome=\"proposed\" if action == \"propose\" else \"no_action\",\n               reason_code=\"judge_\" + action)\n    sys.stdout.write(json.dumps([receipt(\"insert\", table=\"cycles\", row=row)]))\n    sys.exit(0)\n\nreason = check(change, plan, require_plan)\nif reason:\n    # The judge asked for something the charter does not allow. This is the\n    # normal case for a model in a control loop, not an exception -- which is\n    # why the refusal is a recorded outcome rather than an error.\n    row = dict(base_row, status=\"closed\", outcome=\"refused\", reason_code=reason)\n    sys.stdout.write(json.dumps([receipt(\"insert\", table=\"cycles\", row=row)]))\n    sys.exit(0)\n\nm = mutation_for(change)\nout = [\n    {\"header\": {\"msg_type\": \"mutation\", \"route\": \"mutate\", \"phase\": \"\",\n                \"cycle_id\": base_row[\"id\"], \"outcome\": \"applied\"},\n     \"messages\": [], \"scope\": m[\"scope\"], \"diff\": m[\"diff\"], \"ctx\": {}},\n    receipt(\"insert\", table=\"cycles\",\n            row=dict(base_row, status=\"applied\", outcome=\"\", reason_code=\"\")),\n    # The health check runs immediately, not on the next tick: a colony that\n    # was broken by a mutation must not stay broken for a measurement window.\n    emit(\"probe\", \"\", {\"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                                     \"id\": uuid.uuid4().hex[:12],\n                                     \"text\": json.dumps({\n                                         \"op\": \"probe\",\n                                         \"cycle_id\": base_row[\"id\"],\n                                         \"target\": change.get(\"target\")})}]},\n         {\"cycle_id\": base_row[\"id\"], \"outcome\": \"applied\"}),\n]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 15000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "max_numeric_step_pct": {
+        "type": "number",
+        "secret": false,
+        "default": 50,
+        "description": "STEWARD_MAX_NUMERIC_STEP_PCT -- how far one cycle may move a numeric param, in percent. A cap that jumps by an order of magnitude is not a tuning step; the limit keeps one cycle's mistake small enough that the next cycle can measure its way out."
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false,
+          "values": [
+            "rstore",
+            "mutate",
+            "probe",
+            "error"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": false
+        },
+        "cycle_id": {
+          "type": "string",
+          "required": false
+        },
+        "outcome": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The cell that turns a decision into a change -- and the cell that refuses one. Every claim the judge made is re-checked deterministically: the radius (model and numeric params only), the revert plan (present, well formed, and actually the inverse), the step size. What passes goes out through the NORMAL mutation lane with every gate the substrate applies to anybody.",
+    "use_when": "One per steward hive, downstream of ./judge and of ./meter's revert lane.",
+    "not_in_scope": "No operator lane, and there must not be one: a control loop that can override the gates it runs under is not governed, it is merely polite. No topology change either -- a judge that asks for one gets `outside_radius` and a receipt saying so."
+  }
+}

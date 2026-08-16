@@ -1,0 +1,26 @@
+{
+  "name": "steward",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The colony's control loop, as a hive of seven cells. It reads a charter, measures its own colony out of the substrate's ledger, has a model judge and SIMULATE against those numbers, executes the decision through the ordinary mutation lane with every gate, checks the colony's health immediately, measures the effect over the charter's window, and then keeps the change or reverts it -- writing an append-only receipt of every step. This is what makes a claim of self-improvement checkable instead of impressive.",
+    "use_when": "Once per colony, when you want it to pursue a stated goal on its own rather than be tuned by hand. The charter ships with every goal DISABLED: a freshly grown steward measures nothing and changes nothing until an operator turns a row on, which is the only responsible default for a loop that mutates the tree it runs in.",
+    "not_in_scope": "No operator lane -- the steward's mutations travel the same gated path any agent's do, and a loop that could override the gates it runs under would not be governed. No topology change: radius v1 is model choice plus numeric params; a topology idea is recorded as a PROPOSAL for a human and never executed. No pricing service and no second bookkeeping -- prices are charter rows, measurements come out of the colony's own ledger read-only. And no judgement in the measuring path: a measurement a model produced is an opinion.",
+    "examples": [
+      "PORTS - in_event: an edge into ./meter to force a cycle outside the timer (a cost alert, a DLQ spike). out_mutate: ./mutator on hop.msg_type == 'mutation' into /colony/mutations -- this edge is what makes the loop able to act, and a parent that does not draw it gets a steward that measures and receipts and changes nothing, which is a legitimate way to run it for a while.",
+      "THE CHARTER RULE - a cycle without a pre-authored revert plan is invalid. The judge states the way back BEFORE the change, while the colony is still healthy; ./mutator refuses anything else with `no_revert_plan`, and checks that the plan actually restores the original rather than merely being well formed.",
+      "SIMULATION - the ledger is append-only, so the counterfactual is arithmetic rather than a rerun: 'had model X served yesterday's calls at these token counts, the cost would have been Y'. The judge is asked to compute it explicitly, because a simulation nobody computed is a guess wearing a lab coat.",
+      "QUALITY IS A GATE - a cheaper colony that answers worse has not improved, it has been degraded. `quality_floor_pct` in the charter is how far the quality metric may move against us before the change is reverted, and zero is the default.",
+      "SIGNIFICANCE - `min_delta_pct` and `min_samples` per goal. Below the sample floor the cycle closes as `skipped` with the count in its reason code: 'we did not look' and 'we looked and saw nothing' are different facts, and only one of them is a reason to try again.",
+      "TWO CLOCKS - the probe answers 'is the colony still working' in seconds; the window answers 'was that a good idea' in hours. A loop with only the second one leaves a broken colony broken while it collects evidence."
+    ]
+  },
+  "tags": [
+    "steward",
+    "control-loop",
+    "self-improvement",
+    "measurement",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

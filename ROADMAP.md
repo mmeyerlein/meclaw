@@ -114,6 +114,27 @@ without its reject drain fails silently — a wiring-time check, deliberately he
 for the architecture pass that makes inline extraction a system-wide property
 rather than a per-hive feature.
 
+## The wave before the launch
+
+Three packages that all answer the same question — what does a colony need
+before it can be handed to somebody else — and they are built rather than
+planned:
+[#151](https://github.com/mmeyerlein/meclaw/issues/151) the `vault` cell type,
+whose route surface has no read on it and whose unlock attests its own edge
+neighbourhood before it takes the key;
+[#154](https://github.com/mmeyerlein/meclaw/issues/154) audience **sets** in
+`affinity`, so a fact is usable only in a round that is a subset of the one it
+surfaced in;
+[#155](https://github.com/mmeyerlein/meclaw/issues/155) the `steward`, the
+control loop that measures its own colony, simulates on the ledger, mutates
+through the ordinary gated lane, verifies, and keeps or reverts against a
+pre-authored plan.
+
+What is left of the wave is deliberately not built yet: the vault is a template
+rather than a lane inside `access@1` (rewiring a proven security cell is its own
+step), and the steward is tested but not instantiated in the reference colony —
+its first real cycle belongs in the test days, not in the night before them.
+
 ## Alongside: surfaces and docs
 
 New ways in and out, [#38](https://github.com/mmeyerlein/meclaw/issues/38)
@@ -141,6 +162,12 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.0 — the wave before the launch.** A secret store whose route surface
+  has no read on it and whose unlock attests its own edges before taking the
+  key; audience **sets** in affinity, so a fact is usable only in a round that
+  is a subset of the one it surfaced in; and the steward, the control loop that
+  measures its own colony, simulates on the ledger, mutates through the ordinary
+  gated lane, and keeps or reverts against a plan authored beforehand.
 - **v0.9.1 — what production found.** Four defects out of running 0.9.0 rather
   than reading it: an extraction lane that re-sent a failing batch every five
   seconds, a recall request silently ignored because it carried another

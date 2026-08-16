@@ -21,6 +21,7 @@ pub mod store;
 pub mod subcolony;
 pub mod timer;
 pub mod tool;
+pub mod vault;
 pub mod web_fetch;
 pub mod web_search;
 pub use bash::{BashCell, BashCellFactory};

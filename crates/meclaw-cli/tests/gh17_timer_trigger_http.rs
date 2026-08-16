@@ -126,6 +126,12 @@ async fn a_scheduled_lane_is_triggerable_once_over_the_http_api() {
         tokio_console: false,
         tokio_console_port: 6669,
         sandbox_probe: false,
+        vault: None,
+        vault_add: None,
+        vault_status: false,
+        vault_revoke: None,
+        vault_key_source: "auto".to_string(),
+        vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();

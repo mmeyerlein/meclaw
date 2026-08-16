@@ -1,0 +1,65 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "cycles": {
+        "id": "text",
+        "goal": "text",
+        "at": "text",
+        "status": "text",
+        "measured": "json",
+        "judged": "json",
+        "simulated": "json",
+        "change": "json",
+        "revert_plan": "json",
+        "verified": "json",
+        "effect": "json",
+        "outcome": "text",
+        "reason_code": "text"
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "One append-only row per cycle: what was measured, what the judge decided, what it simulated, what was changed, how it would be undone, what the probe saw, what the effect turned out to be, and whether the change was kept or reverted.",
+    "use_when": "One per steward hive. It is also the loop's own memory: an applied cycle stays open until its measurement window has passed, and the next tick reads it back to decide keep or revert.",
+    "not_in_scope": "No deletion and no update of the fields that record the past -- only `effect`, `outcome` and `status` are filled in later, which is the difference between completing a record and rewriting one. The recursive claim is only as good as these rows."
+  }
+}

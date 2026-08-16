@@ -16,10 +16,11 @@ meclaw-os/
 │   ├── colony.json            substrate defaults. two lines.
 │   └── main/config.json       type: "hive", and its graph is EMPTY
 ├── grow.json                  the declaration. five nodes, seven edges.
-└── grow-cogny.json            step two: the thinking core. one node, two edges.
+├── grow-cogny.json            step two: the thinking core. one node, two edges.
+└── grow-steward.json          step three: the control loop. one node, one edge.
 ```
 
-That is **two files**, and neither of them is a cell. There is no door in here, no terminal, no
+That is **three files**, and none of them is a cell. There is no door in here, no terminal, no
 agent, no memory, no screening and no persona -- every one of those arrives from `templates/`,
 at runtime, into a colony that is already up.
 
@@ -205,3 +206,29 @@ READMEs because it is the one that pays off.
 declarations -- the files, not copies of them -- against a mock provider, and drives one turn
 from the HTTP surface to the reply port. It measures the seed (two files, zero cells, no edge)
 and both counts (17, then 21). If the example rots, that test goes red first.
+
+## Step three: the colony that measures itself
+
+`grow-steward.json` adds the [`steward@1`](../../templates/steward/) — seven more cells that
+read a charter, measure this colony out of its own ledger, have a model judge and simulate
+against those numbers, mutate through the ordinary gated lane, verify, and then keep the
+change or revert it against a plan authored beforehand. Every cycle writes a receipt.
+
+It arrives inert. Every goal in the charter ships `enabled: 0`, so a grown steward measures
+nothing and changes nothing until somebody turns a row on — the only defensible default for a
+loop that mutates the tree it runs in.
+
+And it arrives **unable to act**, which is the more interesting half:
+
+```json
+{"from": "./steward/mutator", "to": "/colony/mutations", ...}
+```
+
+That edge is not in the declaration, and it cannot be: `/colony/*` is a virtual endpoint
+rather than a registry node, so `add_edges` refuses it by name — at any scope, from any cell,
+including from the steward's own mutator. Granting the loop its mutation lane is a **boot-time
+act**: a human puts that edge in the seed. No amount of growing gets around it.
+
+So the steward you grow here measures, judges and receipts, and changes nothing. That is a
+legitimate way to run it — a good one for the first weeks, in fact, because the receipts tell
+you what it *would* have done before you let it do anything.

@@ -8,8 +8,8 @@ repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-meclaw-core = { path = "../meclaw-core", version = "0.9.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.9.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.10.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.10.0" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +24,16 @@ chrono = "0.4"
 libc = "0.2"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# Vault (sanctioned 2026-08-16): the crypto area of the tech-stack allow-list.
+# RustCrypto, one choice per job — argon2id derives the key from a passphrase,
+# XChaCha20-Poly1305 seals each secret, HMAC-SHA256 is what `vault.use` does
+# WITH a secret instead of handing it out, getrandom supplies nonces and salt.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.3"
+subtle = "2"
 
 [dev-dependencies]
 tempfile = "3"

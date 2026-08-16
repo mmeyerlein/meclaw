@@ -9,6 +9,92 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.0] — 2026-08-17
+
+Three packages from one wave, all of them things a colony needs before it can be
+handed to anybody: a place to keep a secret an agent cannot read, a disclosure
+rule that matches what a group chat actually means, and a control loop that can
+change the colony it runs in and prove the change was right.
+
+### Added
+
+- **A `vault` cell type: a secret store with no operation that returns a secret**
+  (#151). Not a policy layer over a store — the route surface has no read on it.
+  `put`, `use`, `rotate`, `revoke`, `status`, `unlock`, `lock`, and no `get`. A
+  fully compromised model on the other end of an edge can ask the vault to *use*
+  a credential inside a granted scope; it cannot ask to see one, because the
+  question has no name there.
+
+  Four things carry it. **Two callers**: a message with no `reply_to` is the user
+  channel, which no edge can produce because the colony stamps `reply_to` on
+  everything a cell emits — that is the only way a secret gets in. The broker
+  named in `params.broker` may ask for a secret to be *used*, and may not put
+  one. **Unlock attestation**: the port boundary guards mutations and the birth
+  topology is exempt by design, so a `code` cell with filesystem access could
+  rewrite the tree and let the next boot wire itself in. It still can; it just
+  never gets the key — an unexpected inbound edge, or a topology that cannot be
+  read at all, leaves the vault locked. **An offline filling workflow**:
+  `meclaw --vault /main/access/vault --vault-add <name>` seals straight into the
+  cell's own database with no colony running, so the credential never becomes a
+  message. **No-delete**: a put onto an existing name is a rotation, a revoke
+  flips a status, yesterday's ciphertext stays — and revoke needs no passphrase,
+  because being locked out must never stop you disabling a credential that
+  leaked.
+
+  Crypto is argon2id plus XChaCha20-Poly1305 per secret; `use` v1 signs with
+  HMAC-SHA256 — the ssh-agent shape, where the key does work and stays home. The
+  honest limit is stated rather than hidden: a determined code cell in the same
+  process can read the key while it is unlocked, and the designed answer is
+  placement (own process, own user), which changes no edge.
+
+  Ships with `templates/vault@1.0.0`.
+
+- **`steward@1.0.0`: the colony's control loop** (#155). Charter → deterministic
+  measurement → a judge that simulates before it decides → a mutation through the
+  **normal** lane with every gate → an immediate health check → the effect over a
+  measurement window → keep or revert → a receipt. Seven cells, no Rust.
+
+  The rule that makes it a control loop rather than an agent with write access:
+  **a cycle without a pre-authored revert plan is invalid**. The steward has to
+  know the way back before it moves, and the plan must actually restore the
+  original — a "revert" pointing at the value being moved to would pass every
+  structural check and undo nothing. Radius v1 is model choice and numeric
+  params; a topology idea is recorded as a proposal for a human, never executed,
+  and the radius widens by editing a charter row rather than code. Quality is a
+  gate, not a wish. Two clocks on purpose: the probe answers *is the colony still
+  working* in seconds, the window answers *was that a good idea* in hours.
+
+  A freshly grown steward changes nothing — every goal in the seed ships
+  disabled.
+
+### Changed
+
+- **An audience is a set, not a name** (#154). `affinity` enforced disclosure
+  against a single scope, which is not what a group chat means. A fact that
+  surfaced in a conversation is implicitly released to exactly the people who
+  were there: a disclosure row now records the `audience_set` it was released in,
+  and a fact may be used iff the current participant set is a **subset** of it.
+  Hearsay never surfacing in front of its subject is a consequence of the rule
+  rather than a second mechanism. Strict and fail-closed; the obvious softening
+  (`subject == speaker == present`) is a decision not taken. Rows written before
+  the rule are read as their addressee alone, the narrowest reading that cannot
+  widen an old release by accident.
+
+  In the same package: a curator's proposal is **accepted by default** — the
+  system may extend its picture of a person on its own, and the safety net is the
+  substrate rather than a queue somebody has to work through — and a verdict
+  **appends** instead of overwriting, so the agent stays able to answer why its
+  picture of somebody changed.
+
+- **The `llm-registry` write-hand cell is renamed `steward` → `hand`.** The name
+  steward belongs to the colony control loop; the registry is the book, the
+  steward is the brain. The registry's runtime pin asserting the *absence* of a
+  control loop stays true.
+
+  *Migration*: an instantiated `llm-registry` keeps running — instantiation
+  copies, so an existing instance is unaffected. A tree that wires
+  `./llm_registry/steward` by hand renames that endpoint.
+
 ## [0.9.1] — 2026-08-16
 
 Four defects found by running 0.9.0 in a production colony rather than by reading

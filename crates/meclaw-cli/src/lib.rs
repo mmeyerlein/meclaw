@@ -6,6 +6,7 @@
 pub mod bridge;
 pub mod factories;
 pub mod lease;
+pub mod vault_cli;
 pub use factories::built_in_factories;
 /// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
 /// so the CLI re-exports the substrate's type instead of mirroring it.
@@ -196,6 +197,43 @@ pub struct Cli {
     )]
     pub tokio_console_port: u16,
 
+    /// GH #151: the vault cell this invocation talks to, as its colony path
+    /// (`/main/access/vault`). Required by every `--vault-*` mode below.
+    #[arg(long, value_name = "CELL_PATH")]
+    pub vault: Option<String>,
+
+    /// Store a secret under this name in `--vault`. The secret itself is read
+    /// from stdin — never from an argument, which would land it in `ps` output
+    /// and in shell history. Writes straight into the vault's own database: no
+    /// message, no message log, no context window.
+    #[arg(long = "vault-add", value_name = "NAME")]
+    pub vault_add: Option<String>,
+
+    /// List what `--vault` holds: names and versions, never content.
+    #[arg(long = "vault-status", default_value_t = false)]
+    pub vault_status: bool,
+
+    /// Revoke every active version of this name in `--vault`. Needs no
+    /// passphrase — being locked out must never stop you from disabling a
+    /// leaked credential.
+    #[arg(long = "vault-revoke", value_name = "NAME")]
+    pub vault_revoke: Option<String>,
+
+    /// Where the vault passphrase comes from. Says SOURCE deliberately: the
+    /// switch must never be able to carry key material. Default `auto` —
+    /// a credentials directory (systemd) wins, else the terminal prompts.
+    #[arg(
+        long = "vault-key-source",
+        value_name = "SOURCE",
+        default_value = "auto"
+    )]
+    pub vault_key_source: String,
+
+    /// Key file for `--vault-key-source plainfile`. Refused unless it is
+    /// unreadable by group and others, the same answer ssh gives.
+    #[arg(long = "vault-key-file", value_name = "PATH")]
+    pub vault_key_file: Option<PathBuf>,
+
     /// Wire format of the stdin/stdout bridge. Default `text`.
     #[arg(
         long = "stdio-format",
@@ -336,6 +374,45 @@ pub async fn run_with_hooks_tuned(
             .render()
         );
         return Ok(());
+    }
+
+    // GH #151: the vault user channel. Like `--sandbox-probe` it answers
+    // before anything colony-shaped happens, and for a sharper reason: these
+    // modes must NOT boot a colony. A secret that travels no edge cannot be
+    // read off one, and a mode that spawned cells to store a credential would
+    // hand that credential to a running tree.
+    if cli.vault_add.is_some() || cli.vault_status || cli.vault_revoke.is_some() {
+        let cell_path = cli.vault.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--vault-add/--vault-status/--vault-revoke need --vault <CELL_PATH>, the vault \
+                 cell's colony path (e.g. --vault /main/access/vault)"
+            )
+        })?;
+        let chosen: Vec<&str> = [
+            cli.vault_add.as_ref().map(|_| "--vault-add"),
+            cli.vault_status.then_some("--vault-status"),
+            cli.vault_revoke.as_ref().map(|_| "--vault-revoke"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if chosen.len() > 1 {
+            anyhow::bail!("one vault mode at a time, got {}", chosen.join(" and "));
+        }
+        let command = if let Some(name) = cli.vault_add.clone() {
+            crate::vault_cli::VaultCommand::Add(name)
+        } else if let Some(name) = cli.vault_revoke.clone() {
+            crate::vault_cli::VaultCommand::Revoke(name)
+        } else {
+            crate::vault_cli::VaultCommand::Status
+        };
+        return crate::vault_cli::run(
+            &cli.root,
+            cell_path,
+            command,
+            &cli.vault_key_source,
+            cli.vault_key_file.as_deref(),
+        );
     }
 
     // GH #121: the root lease, and it comes FIRST.

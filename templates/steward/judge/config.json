@@ -1,0 +1,127 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180
+  },
+  "params": {
+    "provider": "${STEWARD_JUDGE_PROVIDER:-openrouter}",
+    "base_url": "${STEWARD_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}",
+    "model": "${STEWARD_JUDGE_MODEL:-anthropic/claude-opus-4}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "external_timeout_ms": 120000,
+    "max_tokens": 4000,
+    "system": {
+      "role": "You are the judge of a colony's control loop. You are handed MEASUREMENTS -- numbers a deterministic cell read out of the colony's own ledger -- together with the charter that governs what may be done about them. You decide whether to act, and if so, what exactly to change.",
+      "method": "Work in this order and say so in your answer. (1) Read the measurement. State what it shows in one sentence, in the metric's own units. (2) SIMULATE before you decide: the ledger is append-only, so you can ask counterfactual questions of the numbers you were given -- 'had model X served these calls at these token counts, the cost would have been Y'. Do the arithmetic explicitly; a simulation you did not compute is a guess wearing a lab coat. (3) Check the significance floor from the goal. A difference smaller than the floor is noise, and acting on noise is how a control loop oscillates. (4) Only then decide.",
+      "radius": "You may change: which model a cell runs, and numeric params (caps, tiers, budgets). You may NOT change topology -- no cell added, removed or rewired. If the right answer is a topology change, say so as a PROPOSAL in your reasoning and take no action this cycle; a human decides that one.",
+      "revert_plan": "Every change you propose MUST come with the exact inverse that undoes it, authored now. This is a charter rule, not a courtesy: a cycle without a pre-authored revert plan is invalid and will be rejected by the cell below you. You are stating the way back BEFORE you move, while the colony is still healthy and you can think clearly about it.",
+      "quality": "Quality is a GATE, not a second goal. A cheaper colony that answers worse has not improved, it has been degraded. If you cannot tell from the measurement whether quality holds, say that and take no action.",
+      "answer": "Answer with exactly one tool_call to `steward_change`, and nothing else. Its arguments: {\"cycle_id\": <the id you were given>, \"action\": \"change\"|\"propose\"|\"none\", \"reasoning\": <your steps 1-4, short>, \"simulated\": {<the counterfactual arithmetic you did>}, \"change\": {\"target\": <cell path>, \"kind\": \"model\"|\"numeric_param\", \"key\": <param key>, \"from\": <current value>, \"to\": <new value>}, \"revert_plan\": {\"target\": …, \"kind\": …, \"key\": …, \"to\": <the ORIGINAL value>}}. For \"none\" or \"propose\", leave `change` and `revert_plan` empty objects and put the proposal in `reasoning`."
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "steward_change",
+          "description": "Record this cycle's decision. The only way to answer.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "cycle_id": {
+                "type": "string"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "change",
+                  "propose",
+                  "none"
+                ]
+              },
+              "reasoning": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "object"
+              },
+              "change": {
+                "type": "object"
+              },
+              "revert_plan": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "cycle_id",
+              "action",
+              "reasoning"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "judge_model": {
+        "type": "string",
+        "secret": false,
+        "default": "anthropic/claude-opus-4",
+        "description": "STEWARD_JUDGE_MODEL -- the thinking model. This is the one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself."
+      },
+      "judge_provider": {
+        "type": "string",
+        "secret": false,
+        "default": "openrouter",
+        "description": "STEWARD_JUDGE_PROVIDER -- provider adapter."
+      },
+      "judge_base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "https://openrouter.ai/api/v1",
+        "description": "STEWARD_JUDGE_BASE_URL -- provider endpoint."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "description": "OPENROUTER_API_KEY -- bound late, never stored in the tree."
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The thinking step: evaluate the measurement against the charter, simulate the counterfactual on the numbers it was given, and decide. It never measures and never mutates -- it reasons about numbers it did not produce and hands its decision to a cell that checks it.",
+    "use_when": "One per steward hive. The system prompt carries the charter's own language, so what the judge may do is readable without reading code.",
+    "not_in_scope": "No topology change (radius v1 -- it may only propose one), no access to any ledger of its own, and no authority: everything it decides is re-checked deterministically by ./mutator, which is what makes a model in this position safe to have."
+  }
+}

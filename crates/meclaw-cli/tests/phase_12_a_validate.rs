@@ -38,6 +38,12 @@ async fn validate_skips_http_bind_even_with_api_flag() {
         tokio_console: false,
         tokio_console_port: 6669,
         sandbox_probe: false,
+        vault: None,
+        vault_add: None,
+        vault_status: false,
+        vault_revoke: None,
+        vault_key_source: "auto".to_string(),
+        vault_key_file: None,
         stdio_format: meclaw_cli::StdioFormat::Text,
     };
     run(cli).await.unwrap();
