@@ -380,7 +380,6 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_EMBED_MODEL` | `qwen/qwen3-embedding-8b` | must match the `model_id` in `seed/emb_models.jsonl` — the seed is NOT variable-substituted, so the two are coupled by hand |
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
 | `MEMORY_EMBED_API_KEY` | *(empty → falls back to `OPENROUTER_API_KEY`)* | bearer for the embedder |
-| `MEMORY_EMBED_TIMEOUT_MS` | `20000` | A-timeout of the embedding call (cloud round trip) |
 | `MODEL_DIALECTIC` | — (required) | tier-2 synthesis model |
 | `MEMORY_REASONING_EXTRACT` | `minimal` | `provider_extra.reasoning.effort` of the `extractor` cell — extraction is a shape-filling job, not a thinking one |
 | `MEMORY_REASONING_DREAM` | `medium` | `provider_extra.reasoning.effort` of the `dreamer` cell (the nightly change narrative) |
@@ -441,7 +440,31 @@ Numeric params (`query_timeout_ms`, `external_timeout_ms`, …) are **literals, 
 substitution yields strings and the parsers want integers. Tunables reach the `code` cells
 through `${VAR:-default}` **inside the script literal** (`daily-digest` precedent) — a
 colony-global route. Per-instance knobs go through the stdin `params` object instead
-(`docs/cell-types.md` § `code`); this hive has not moved to it yet.
+(`docs/cell-types.md` § `code`); the hive's migration onto that surface has started at the
+embedder's timeouts (below) and continues one knob group at a time.
+
+### `./embed` timeouts and the read-lane retry (params, GH #146)
+
+These four are **params of `./embed`**, not environment variables: they ship with their default
+in that cell's `config.json`, the script reads them off its stdin `params` object, and there is
+**no environment fallback** — a `.env` line for the retired `MEMORY_EMBED_TIMEOUT_MS` is read by
+nothing. Retune one per instance by editing the instantiated `config.json`.
+
+| param | default | meaning |
+|---|---|---|
+| `timeout_ms` | `20000` | **write lane.** A-timeout of one bulk corpus embedding call. Throughput, not latency: a failed batch leaves its rows `status='queued'` and the nightly backfill picks them up, so a tight bound that frees the concurrency slot is the cheap answer. That backfill IS this lane's retry, which is why there is no in-process one |
+| `query_timeout_ms` | `30000` | **read lane.** A-timeout of ONE query-embedding attempt. Deliberately more generous than the write lane: the query vector is what recall's semantic leg waits on, and losing it costs a whole leg of the four-leg fan |
+| `query_retries` | `1` | **read lane.** Extra attempts after the first before the lane answers degraded. `0` switches the retry off; the fail-open contract is unaffected either way — a retry never replaces it |
+| `query_retry_backoff_ms` | `250` | **read lane.** Pause between two attempts. Short by design: the measured failure was CPU contention on the box, not a rate limit |
+
+The read lane bounds itself against the cell's own `external_timeout_ms` (`65000`) and keeps a
+2 s reserve for spawn plus the final write, because a process killed mid-flight is **silence**,
+and silence hangs recall's fan-in forever — strictly worse than the degraded answer the retry
+exists to avoid. So the worst case has to fit: `(query_retries + 1) × query_timeout_ms +
+query_retries × query_retry_backoff_ms + 2000 ≤ external_timeout_ms`, and
+`cell.message_timeout` (`90000`) stays above that. Raise one of the four and raise the operation
+timeout with it — a test pins the arithmetic, so getting it wrong is a red test rather than a
+production hang.
 
 ## Two mechanisms worth knowing before you edit a lane
 

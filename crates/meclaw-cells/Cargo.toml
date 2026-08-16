@@ -3,11 +3,13 @@ name = "meclaw-cells"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+description = "Internal crate of the MeClaw substrate — install the `meclaw` crate for the binary; the library API is not stable."
+repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-meclaw-core = { path = "../meclaw-core" }
-meclaw-colony = { path = "../meclaw-colony" }
+meclaw-core = { path = "../meclaw-core", version = "0.9.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.9.0" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

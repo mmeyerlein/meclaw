@@ -3,6 +3,8 @@ name = "meclaw-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+description = "Internal crate of the MeClaw substrate — install the `meclaw` crate for the binary; the library API is not stable."
+repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]

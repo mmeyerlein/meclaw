@@ -393,6 +393,45 @@ Rust crates are internals and move without notice.
 
 ### Fixed
 
+- **A single slow query embedding no longer costs the `memory-hive` its whole
+  semantic leg** (#146). Measured during a 50-question eval under ten parallel
+  colonies: 3 of 30 questions fused three legs instead of four while their
+  stores held hundreds of `ready` embedding rows. The corpus was fine — what
+  failed was embedding the *query*, and the read lane had no retry, so one slow
+  moment cost the most expensive leg of the fan. The timing is the whole story:
+  the degraded questions spent 21.5–21.8 s in tier-1 against a median of 3.15 s,
+  i.e. they walked into the 20 s bound, while a single call against the same
+  provider took 0.26 s. CPU contention on the box, not a dead endpoint.
+
+  The read lane now makes a bounded retry (`query_retries`, default `1`, with
+  `query_retry_backoff_ms`, default `250`) and has its **own** timeout,
+  separate from bulk corpus embedding: `query_timeout_ms` (default `30000`)
+  against `timeout_ms` (default `20000`, the write lane's unchanged value). The
+  two lanes pull in opposite directions — the write lane is throughput and its
+  retry is the nightly backfill, the read lane is latency with an expensive
+  failure — and one number could not serve both.
+
+  **The fail-open contract survives the retry.** After the last attempt the lane
+  still answers `vector: null, degraded: true` at exit code 0: silence from this
+  cell hangs recall's fan-in forever, which is strictly worse than the degraded
+  answer the retry exists to avoid. For the same reason the retry can never
+  outlive the cell's own operation timeout — the script reads its own
+  `external_timeout_ms` (raised `25000` → `65000` so the new worst case fits),
+  keeps a 2 s reserve for spawn and the final write, and skips an attempt it
+  cannot finish. `./embed` also declares `cell.message_timeout: 90000` now
+  instead of taking the colony's 60 s default, so the B-backstop stays above the
+  A-timeout. A test pins that arithmetic.
+
+  Also loud, not just flagged: every failed attempt and the final give-up are
+  stderr lines, and the reason travels — `recall`'s three-leg warn line from
+  #144 used to say "no query vector" for every cause there is, because the
+  `t1-qvec` hop dropped the embedder's `error` on the floor. It carries it now.
+
+  **Migration:** the four knobs live on the `params` surface with **no**
+  environment fallback (`collector@1.2.0` is the reference migration). A `.env`
+  line for `MEMORY_EMBED_TIMEOUT_MS` is read by nothing — move the value into
+  `./embed`'s `params.timeout_ms` before updating, or the cell falls back to the
+  shipped default silently. `./embed` `contract.version` 1.0.0 → 1.1.0.
 - **A freshly instantiated `memory-hive` can build its semantic leg again**
   (#144). Two defects on top of each other, and neither showed in production
   because both only bite a tree instantiated *after* the #85 default-deny cut.

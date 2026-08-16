@@ -3,11 +3,12 @@ name = "meclaw-api"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+description = "Internal crate of the MeClaw substrate — install the `meclaw` crate for the binary; the library API is not stable."
+repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
-utoipa = { version = "5", features = ["axum_extras"] }
 # 0.27 drops the unmaintained `proc-macro-error` (RUSTSEC-2024-0370) that
 # maud_macros 0.26 pulled in; API surface used here (Markup/html!/DOCTYPE) is
 # unchanged. Issue #127.
@@ -17,8 +18,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core" }
-meclaw-colony = { path = "../meclaw-colony" }
+meclaw-core = { path = "../meclaw-core", version = "0.9.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.9.0" }
 
 [dev-dependencies]
 tempfile = "3"

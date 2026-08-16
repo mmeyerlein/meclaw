@@ -1,0 +1,18 @@
+[package]
+name = "meclaw"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "MeClaw — an actor-colony substrate for agent organisms. This crate ships the `meclaw` CLI/daemon binary."
+repository = "https://github.com/mmeyerlein/meclaw"
+
+[[bin]]
+name = "meclaw"
+path = "src/main.rs"
+
+[dependencies]
+meclaw-cli = { path = "../meclaw-cli", version = "0.9.0" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
