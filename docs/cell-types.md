@@ -53,14 +53,24 @@ entire subtree. This is exactly what makes hives the attachment point for comple
 instantiated subtree template is attached to its hive path via edges. The attacher does not need
 to know the internal structure.
 
-**`params`**: **exclusively `graph` and `ports`** (the `HiveParams` deserializer is `deny_unknown_fields`; any other key is a boot error):
+**`params`**: **exclusively `graph`, `ports` and `required_drains`** (the `HiveParams` deserializer is `deny_unknown_fields`; any other key is a boot error):
 - `graph` (optional): initial desired graph for the subtree (format see `meclaw-overview.md` section "Graph schema"). Colony reads this at filesystem bootstrap and enters the declared cells into the registry and the edges into `colony.db`. After the first bootstrap, the persisted edge table in `colony.db` is the truth. `params.graph` is only an initial hint.
 - `ports` (optional, GH #133): array of short names of DIRECT children — the endpoints a parent is meant to wire. **Opt-in, and the presence of the key is the switch.** Without it nothing changes: every interior node may be wired from anywhere, which is the behaviour every topology shipped before this field. With it the hive scope is **sealed** and colony's mutation validation rejects an `add_edges` endpoint that reaches past the port (`error_code: "hive_port_boundary"`, pre-destructive — nothing is staged, spawned or wired). What stays legal: an edge between two nodes inside the hive (any depth), an edge onto the **hive path itself** (the transit address), an edge onto a declared port, and the hive marker wiring its own children. What is rejected: an edge that pairs an interior **non-port** node with an endpoint outside the hive — in either direction, because a reply lane wired straight out of an interior cell bypasses the port exactly as an inbound lane does. An empty list is legal and means "the hive path is the only address". Two deliberate limits: the check covers a mutation's `add_edges` and **not the bootstrap** (see below), and a port is a **direct** child — a node below a port is not the port.
 
   **Why the seal does not cover the bootstrap** (ruling 2026-08-15): the birth topology is the **sovereign design of the colony author**. Whoever writes the `params.graph` of a parent scope is describing the colony they intend, with the whole tree in front of them — that is authorship, not a breach. The seal guards against what happens **afterwards**: a runtime mutation, possibly written by a model, that reaches into a hive it did not build. So a `params.graph` may legitimately wire a deep endpoint into a sealed hive at boot, and several shipped topologies do exactly that. Boot-time enforcement is not ruled out forever, but it would arrive as its **own opt-in switch** — never by silently widening this one, because that would retroactively invalidate birth topologies that are correct today.
 
+- `required_drains` (optional, GH #147): array of `{port, hop, because}` — **port pairs that belong together**. Read as: *if anything outside this hive is wired to `port`, then `port` must have an edge that carries a message with hop `hop` out of the hive.* The classic case is an ingress whose refusals leave on a reject egress: with no consumer, the refusal is a dead end and nobody ever learns the work was not done. **Opt-in like `ports`** — without the key, everything stays as it was.
+
+  A mutation that breaks the pairing is rejected pre-destructively with `error_code: "required_drain_missing"`, and the rejection carries the hive's own `because` sentence verbatim, because a refusal that cannot say what it protects is one people route around. Wiring **both edges in the SAME mutation** is explicitly the intended answer — the check runs against the post-state precisely so that it is.
+
+  The check works by sending the described hop through the **real edge conditions** (`apply_edges`, the same function that routes at runtime) rather than by comparing condition text. `hop.route=='reject'`, `hop.route in ['reject','error']` and `hop.route != 'bundle'` are all three correct drains, and a string comparison would call two of them broken. An edge that stays inside the hive does not count: the refusal has to **leave**. The rule says nothing about the destination — whether the drain is a good one is the parent's business; whether one exists is not.
+
+  The **bootstrap is warned, never refused** — for the same reason the port seal leaves the boot alone: the birth topology is authorship. A tree that has been running for weeks is not stopped from starting; it says the sentence and carries on.
+
   ```json
-  "params": { "ports": ["brief", "gate"], "graph": { "edges": [ … ] } }
+  "params": { "ports": ["brief", "gate"], "graph": { "edges": [ … ] },
+              "required_drains": [ { "port": "gate", "hop": { "route": "reject" },
+                                     "because": "a refused input leaves the hive here" } ] }
   ```
 
 No scope-owned `dead_letters` override: the dead-letter queue is always `/colony/dead_letters` (hive = authority and mutation boundary, **not** DLQ boundary). Otherwise no hive-type-owned fields. In particular no routing configuration, no mailbox size, no own emission-mode statement. Hives have no actor and no mailbox; their routing role is passive transit evaluation by colony over the `params.graph` edges.

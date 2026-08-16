@@ -9,6 +9,7 @@ pub mod hook;
 pub mod port_boundary;
 pub mod recovery;
 pub mod rename;
+pub mod required_drains;
 pub mod stage;
 pub mod substitute;
 pub mod subtree;
@@ -121,6 +122,13 @@ pub enum MutationError {
     /// is byte-identical afterwards. Carries the human-readable constellation
     /// (hive path, offending endpoint, declared ports).
     HivePortBoundary(String),
+    /// GH #147: a hive port that declared a paired drain (`params.required_drains`)
+    /// is wired from outside, and nothing routes the drain's hop out of the hive.
+    /// The classic shape is an ingress whose refusals leave on a reject egress
+    /// that nobody consumes — the refusal is then a dead end and the caller never
+    /// learns the work was not done. Raised pre-destructively, like the port
+    /// boundary. Carries the constellation plus the hive's own reason string.
+    RequiredDrainMissing(String),
     /// Deep-Audit F2: an atomic rename sequence failed AFTER its first committed
     /// `rename(2)` — earlier renames already stand in the live tree (audit-model,
     /// no rollback). This is NOT a clean pre-destructive reject. The call-site
@@ -150,6 +158,7 @@ impl MutationError {
             Self::ResumeTypeMismatch(_) => "resume_type_mismatch",
             Self::ContractIncomplete(_) => "contract_incomplete",
             Self::HivePortBoundary(_) => "hive_port_boundary",
+            Self::RequiredDrainMissing(_) => "required_drain_missing",
             // Never reached: the call-site panics (strict-fail) before any EDA
             // reply. Defensive fallback to "schema" so the spec error_code enum
             // (overview Z.293) stays unchanged — LiveTreeMutated is a strict-fail

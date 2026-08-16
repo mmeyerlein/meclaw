@@ -4738,6 +4738,35 @@ pub(crate) async fn handle_mutation(
         }
     }
 
+    // GH #147: a hive port that declared a paired drain must have one once it is
+    // wired from outside. This runs HERE rather than with the other validations
+    // because it is the only check that needs the POST-state edge table: the
+    // mutation this rule wants people to write puts the ingress and its drain in
+    // one diff, and a pre-state check would refuse exactly that.
+    //
+    // Pre-destructive all the same — the edge ops so far live in RAM, the
+    // `write_buffer` has not been flushed, and no `active` flip has happened at
+    // this point. Same rollback as the stop-wiring guard below.
+    let drain_reqs =
+        crate::mutation::required_drains::collect_required_drains(root, hive_scopes.paths());
+    if !drain_reqs.is_empty()
+        && let Err(err) =
+            crate::mutation::required_drains::check_required_drains(&drain_reqs, edges)
+    {
+        tracing::warn!(reason = %format!("{err:?}"), "required drain missing — rejecting mutation");
+        for eid in &inserted_edge_ids {
+            edges.remove(eid);
+        }
+        for edge in std::mem::take(&mut removed_edges_saved) {
+            edges.insert(edge);
+        }
+        return MutationOutcome::Rejected {
+            id: Some(id),
+            error_code: err.error_code().into(),
+            details: format!("{err:?}"),
+        };
+    }
+
     // Apply sequence step 10b (F1+F2, A3): connectivity recompute + disconnect.
     // Build the affected scope over the involved endpoints + registry keys, then
     // per node compute the edge-derived activity. On a `true→false` transition

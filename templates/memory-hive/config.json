@@ -8,6 +8,22 @@
       "recall",
       "extract-glue"
     ],
+    "required_drains": [
+      {
+        "port": "extract-glue",
+        "hop": {
+          "route": "reject"
+        },
+        "because": "a block this hive refuses leaves on the reject route; undrained it is a dead end and nobody ever learns the memory was not written"
+      },
+      {
+        "port": "recall",
+        "hop": {
+          "route": "reject"
+        },
+        "because": "a half window is a caller bug and leaves here before the leg fan; undrained the caller waits for a bundle that never comes"
+      }
+    ],
     "graph": {
       "edges": [
         {

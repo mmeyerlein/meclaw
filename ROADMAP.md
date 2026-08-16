@@ -109,10 +109,12 @@ Still open around it:
 recall window, so time-range questions run as point recalls,
 [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
 drain,
-[#147](https://github.com/mmeyerlein/meclaw/issues/147) wiring the inline ingress
-without its reject drain fails silently — a wiring-time check, deliberately held
-for the architecture pass that makes inline extraction a system-wide property
-rather than a per-hive feature.
+[#147](https://github.com/mmeyerlein/meclaw/issues/147) is closed in 0.10.2, and
+not as the per-hive feature it was held for: a hive declares which of its ports
+come in pairs (`params.required_drains`), and the mutation that wires the
+ingress without the drain is refused. The architecture pass that makes inline
+extraction a system-wide property is unaffected — it inherits a rule instead of
+having to invent one.
 
 ## The wave before the launch
 
@@ -154,7 +156,7 @@ The good first issues from the first public wave — #3 and #4 — shipped with
 template is a directory, a README and a `template.json`, and the fourteen listed
 in [`templates/README.md`](templates/README.md) are the worked examples — eleven
 single-purpose ones plus three composites: `talky@1.2.0`, which carries four of
-them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.2.0`, the
+them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.3.0`, the
 agent memory as a hive of ten cells. New ones are welcome.
 
 ## Shipped
@@ -162,6 +164,10 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.2 — a wired port must have its drain.** A hive can declare which of
+  its ports come in pairs, and a mutation that wires the ingress without the
+  egress is refused rather than quietly opening a lane that loses messages. The
+  check asks the router, not the condition's spelling.
 - **v0.10.1 — an edge can be replaced again.** `remove_edges` now runs before
   `add_edges`, so dropping a lane and adding its widened replacement in ONE
   mutation does what it reads like. The other way round it deleted its own new

@@ -613,7 +613,51 @@ pub async fn bootstrap_from_filesystem_with_env(
         }
         return Err(errors);
     }
-    Ok(apply_bootstrap_plan(plan, factories, runtime).await)
+    let report = apply_bootstrap_plan(plan, factories, runtime).await;
+    warn_on_missing_drains_after_boot(root, runtime).await;
+    Ok(report)
+}
+
+/// GH #147, the boot half: say it out loud when a hive port that declared a
+/// paired drain is wired without one.
+///
+/// A warning, never a refusal — the mutation path is where this rule bites,
+/// because that is somebody changing a colony they did not necessarily build.
+/// The birth topology is authorship, the same reason the port boundary leaves
+/// the bootstrap alone (GH #133).
+///
+/// Runs after apply, so it sees the topology the colony actually woke up with —
+/// including the edges rehydrated from `colony.db`, which the plan does not
+/// carry.
+async fn warn_on_missing_drains_after_boot(root: &std::path::Path, runtime: &ColonyRuntime) {
+    let (ack_tx, ack_rx) = oneshot::channel();
+    if runtime
+        .inbox_tx
+        .send(ColonyMsg::ReadGraph {
+            scope: meclaw_core::Path::new("/"),
+            ack: ack_tx,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let Ok(graph) = ack_rx.await else {
+        return;
+    };
+    let hive_paths: Vec<meclaw_core::Path> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.cell_type == "hive")
+        .map(|n| meclaw_core::Path::new(&n.path))
+        .collect();
+    let reqs = crate::mutation::required_drains::collect_required_drains(root, hive_paths.iter());
+    let edges: Vec<(String, String, Option<String>)> = graph
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone(), e.condition.clone()))
+        .collect();
+    crate::mutation::required_drains::warn_on_missing_drains(&reqs, &edges);
 }
 
 /// Snapshot the set of registered node paths from the running colony (A8).

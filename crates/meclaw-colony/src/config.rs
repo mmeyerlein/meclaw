@@ -162,6 +162,32 @@ pub struct HiveParams {
     /// is a member of this scope, not a node somewhere below it.
     #[serde(default)]
     pub ports: Option<Vec<String>>,
+    /// GH #147 — **opt-in** drain pairing: ports of this hive whose refusal (or
+    /// any other declared) route must be consumed outside the hive once the
+    /// port is wired from outside.
+    ///
+    /// `None` (key absent) is the historical behaviour: a parent may wire an
+    /// ingress and leave the matching egress a dead end. `Some(list)` makes the
+    /// pairing a rule the mutation validation enforces (see
+    /// [`crate::mutation::required_drains`]).
+    #[serde(default)]
+    pub required_drains: Option<Vec<DrainSpec>>,
+}
+
+/// One `params.required_drains` entry of a hive.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DrainSpec {
+    /// Short name of the direct child that is the port (same shape as
+    /// `params.ports`).
+    pub port: String,
+    /// The hop compartment a message on the drain route carries. Matched by
+    /// RUNNING it through the edge conditions, not by comparing their text.
+    pub hop: BTreeMap<String, String>,
+    /// Why this pairing exists, in the hive's own words. Travels verbatim into
+    /// the rejection — a refusal that cannot say what it protects is a refusal
+    /// people route around.
+    pub because: String,
 }
 
 /// Graph topology hints: optional edge declarations for a hive.

@@ -9,6 +9,39 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.2] — 2026-08-16
+
+### Added
+
+- **`params.required_drains`: a hive can declare which of its ports come in
+  pairs** (#147). Read as *if anything outside this hive wires into this port,
+  then this port must have an edge that carries the declared hop out of the
+  hive*. A mutation that opens the ingress alone is rejected with
+  `required_drain_missing`, pre-destructively, and the rejection carries the
+  hive's own sentence about what the pairing protects.
+
+  The case it comes from: the memory hive refuses an inline extraction block by
+  sending it out a reject egress. With nothing consuming that egress the refusal
+  is a dead end, and the write that never happened is never reported. The README
+  said "not optional once the inline ingress is wired" in bold. Bold is not a
+  check.
+
+  Two things make the rule usable rather than annoying. It **asks the router**:
+  the declared hop is run through `apply_edges`, the same function that routes
+  the real message, so `hop.route=='reject'`, `hop.route in ['reject','error']`
+  and `hop.route != 'bundle'` are all recognised as drains — a comparison of
+  condition text would call two of those broken. And it runs against the
+  **post-state**, so putting the ingress and the drain in one mutation is the
+  answer, not a workaround.
+
+  Opt-in like `params.ports`: a hive that declares nothing behaves exactly as
+  before. The **bootstrap warns rather than refuses**, for the same reason the
+  port seal leaves the boot alone — the birth topology is authorship, and a tree
+  that has been running for weeks should not be stopped from starting.
+
+  `memory-hive` ships the declaration for both of its reject egresses
+  (`memory-hive@1.3.0`).
+
 ## [0.10.1] — 2026-08-16
 
 ### Fixed
