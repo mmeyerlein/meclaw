@@ -11,6 +11,25 @@ Rust crates are internals and move without notice.
 
 ## [0.10.5] — 2026-08-17
 
+### Fixed
+
+- **A test that waited for a poll cycle now waits for the poll** (#153). The
+  proxy promotion e2e suite boots a real tree whose `proxy` polls a mock
+  `getUpdates`, and then waited for the relay's first message — which is a wait
+  for "a cycle landed", not for anything the test can observe. On a loaded
+  runner a missed first poll costs a whole interval, and nothing in the test
+  could tell *the cycle has not come round yet* from *the message will never
+  arrive*.
+
+  It now waits for the mock to have SERVED a `getUpdates` before it waits for
+  the relay, and each half carries its own marker. A red run says which one:
+  the proxy never asked, or it asked and the colony delivered nothing. Those
+  are different pieces of work, and one 30-second marker across both said
+  neither.
+
+  Filed as *not urgent* — and then the CI run of this very release went red on
+  its positive twin, which is as good a reason to fix something as exists.
+
 ### Added
 
 - **`scripts/trace_latency.py`: read a lane's latency out of the colony's own

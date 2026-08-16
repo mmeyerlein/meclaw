@@ -758,6 +758,49 @@ async fn telegram_sends(captured: &Captured) -> Vec<Value> {
         .collect()
 }
 
+/// Waits until the mock has SERVED the poll that carries the canned update
+/// (GH #153).
+///
+/// The proxy polls; the test cannot see a poll cycle, only its effect. So a
+/// wait for the relay's first message was really a wait for "a cycle landed",
+/// and on a loaded runner a missed first poll costs a whole interval with
+/// nothing in the test able to tell "the cycle has not come round yet" from
+/// "the message will never arrive". That is how this file went red once in CI
+/// and green on an immediate rerun, having spent the full 30-second marker on
+/// a path that takes a third of a second locally.
+///
+/// The mock knows exactly when it answered, and the capture vector is the
+/// observable event. Waiting for THAT first splits the failure in two: either
+/// the proxy never asked (the poll half), or it asked and the colony delivered
+/// nothing (the routing half). Both are worth different work, and a single
+/// 30-second marker across both said neither.
+async fn await_first_poll(captured: &Captured) {
+    let deadline = tokio::time::Instant::now() + MARKER;
+    loop {
+        let polls = captured
+            .lock()
+            .await
+            .iter()
+            .filter(|r| r.path.contains("/getUpdates"))
+            .count();
+        if polls > 0 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the proxy never polled the mock within 30s — the POLL half, not the \
+             routing half; paths seen: {:?}",
+            captured
+                .lock()
+                .await
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Waits for the first `sendMessage` body (30 s failure marker).
 async fn await_telegram_send(captured: &Captured) -> Value {
     let deadline = tokio::time::Instant::now() + MARKER;
@@ -797,10 +840,19 @@ async fn telegram_promotion_edge_carries_the_reply_back_to_the_right_chat() {
         run.boot.as_ref().err()
     );
 
+    // GH #153: wait for the observable event first. Until the mock has served a
+    // `getUpdates`, there is nothing for the colony to route, and a timeout
+    // here would blame the routing for a poll that had not happened.
+    await_first_poll(&captured).await;
+
     // Mid-loop receipt: the edge modifier put chat_id into the PERSISTENT
     // compartment. The cell emitted it as a hop key, and only an edge can move
     // it here — a hop would already have decayed at the relay's own emission.
-    let user_turn = recv(&mut run.relay_rx, "the relay must receive the user turn").await;
+    let user_turn = recv(
+        &mut run.relay_rx,
+        "the poll was served, so this is the ROUTING half: the relay must receive the user turn",
+    )
+    .await;
     assert_eq!(
         user_turn
             .headers
@@ -870,9 +922,16 @@ async fn telegram_reply_leg_dies_as_missing_chat_id_without_the_promotion() {
         run.boot.as_ref().err()
     );
 
+    // GH #153, same split as the positive arm.
+    await_first_poll(&captured).await;
+
     // Sanity on the same message the positive arm asserts against: without the
     // modifier the address never leaves the hop, and the hop is gone by now.
-    let user_turn = recv(&mut run.relay_rx, "the relay must receive the user turn").await;
+    let user_turn = recv(
+        &mut run.relay_rx,
+        "the poll was served, so this is the ROUTING half: the relay must receive the user turn",
+    )
+    .await;
     assert!(
         user_turn.headers.context.get("chat_id").is_none(),
         "nothing promoted chat_id, so context must be empty of it; context = {:?}",

@@ -174,8 +174,9 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 - **v0.10.5 — latency you can read off the log.** A read-only tool that answers
-  "how slow is this lane" from the colony's own message log, and consult eta
-  hints that follow what it measured instead of what somebody hoped.
+  "how slow is this lane" from the colony's own message log, consult eta hints
+  that follow what it measured instead of what somebody hoped, and a proxy test
+  that waits for the poll instead of for a cycle.
 - **v0.10.4 — the cells inside a subtree can be parameterised at birth.**
   `override_params` on a subtree template is addressed by the cells' paths
   inside it. R10's protection stays: a key that addresses nothing is refused,
