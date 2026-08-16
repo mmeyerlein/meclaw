@@ -293,13 +293,28 @@ instructions and let the model fill `arguments.eta` in the same call it already 
 
 ```
 consult_cogny(question, eta): eta is a coarse guess at how long the answer will
-take -- "seconds" for a lookup, "a minute" for a web search, "minutes" for deep
-reasoning. Say what you are doing in the same reply; that sentence reaches the
-user immediately.
+take -- "about ten seconds" for a memory lookup, "half a minute" for real
+reasoning, "a minute or more" once a web search is involved. Say what you are
+doing in the same reply; that sentence reaches the user immediately.
 ```
 
-The estimate rides out as `hop.consult_eta` and **nothing reads it**. First we watch how
-well the model guesses.
+Those three phrasings are **measured, not chosen** (GH #124). Read out of a running
+colony's own message log with [`scripts/trace_latency.py`](../../scripts/trace_latency.py),
+the lookup lane sits around ten seconds and the thinking lane spreads much wider, with
+its single largest gap being the core model's own turn. The earlier wording -- "seconds"
+for a lookup, "a minute" for a search -- was a guess, and it was optimistic in the
+direction that costs trust: a user told "seconds" who waits eleven of them has been
+misled by the system, not by the model.
+
+Measure your own deployment before you copy these words. The tool needs nothing but the
+colony root, costs nothing, and takes a second:
+
+```
+scripts/trace_latency.py <colony-root> --lane brain_fast --lane brain --breakdown
+```
+
+The estimate still rides out as `hop.consult_eta` and **nothing reads it**. Consuming it
+-- routing by expected class rather than by tool name -- is the open half of #124.
 
 **The second errand name: `ask_memory` (GH #124, cogny 1.1.0).** The core answers on two
 lanes -- a thinking one and a fast one -- and the lane is chosen by **which tool the model

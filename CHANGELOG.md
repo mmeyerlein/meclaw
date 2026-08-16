@@ -9,6 +9,39 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.5] — 2026-08-17
+
+### Added
+
+- **`scripts/trace_latency.py`: read a lane's latency out of the colony's own
+  log** (#124). A colony records every delivered hop with its instant, so "how
+  slow is this errand" is already on disk — read-only, no model call, no cost,
+  nothing to instrument first. Group traces by a cell name, get n / min / p50 /
+  p95 / max, and with `--breakdown` the legs the time actually sits in.
+
+  The definitions are stated rather than implied, because a latency figure with
+  a fuzzy definition is worse than none: a trace's duration is its last hop's
+  instant minus its first — the span the colony worked on the errand, a lower
+  bound on what somebody waited, not the user-visible round trip. Percentiles
+  are nearest-rank and `n` is printed next to every one of them.
+
+### Changed
+
+- **The consult eta hints are measured now, not guessed** (#124, lever 4). The
+  `talky` README recommended telling the user "seconds" for a memory lookup;
+  the same colony's log says about ten. The wording now follows the measurement
+  — "about ten seconds" for a lookup, "half a minute" for reasoning, "a minute
+  or more" with a search — and the README says to measure your own deployment
+  before copying the words.
+
+  Optimistic in that direction is the expensive kind: a user told *seconds* who
+  waits eleven of them has been misled by the system, not by the model.
+
+  Three of the issue's four levers turned out to be built already (the reasoning
+  budget on the chat-completions lane, the separate lookup lane, and routing by
+  the tool the model chose). Its done-condition — a memory consult in
+  single-digit seconds — is **not** met, and the issue stays open saying so.
+
 ## [0.10.4] — 2026-08-17
 
 ### Added
