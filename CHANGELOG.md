@@ -9,7 +9,11 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
-## [Unreleased]
+## [0.9.1] — 2026-08-16
+
+Four defects found by running 0.9.0 in a production colony rather than by reading
+the code. Two of them were **silent**: the lane kept working, nothing went red,
+and the cost was money or a stalled turn.
 
 ### Fixed
 
@@ -46,6 +50,32 @@ Rust crates are internals and move without notice.
   (`templates/talky/brain/seed/system.jsonl`, WALKTHROUGH step 2) and asserts
   against the recorded provider request that the schema actually arrived.
   Removing the seed turns the file red.
+
+- **A recall request carrying a stale `mem_phase` was silently ignored** (#152).
+  `mem_phase` and `recall_id` are the hive's own bookkeeping and they are
+  *persistent* context: once a consumer has asked memory something, they ride
+  along in everything that consumer emits afterwards — including an errand it
+  hands to a second agent, whose collector then asks the hive with a phase it
+  never set. The echo guard read that as "mid-chain" and parked: no error, no
+  dead letter, no log line, and the caller waited for a bundle that would never
+  come. Measured in a production colony as a four-minute silent stall, and
+  invisible in every shipped example, because a tree with **one** recall consumer
+  cannot produce it.
+
+  The request entry now recognises a request by the **hop** rather than by the
+  context — the port edge stamps `phase: "recall"` and nothing inside the hive
+  ever does — and starts a fresh chain regardless of what the caller carried.
+  Nothing is required of the caller. The echo guard is untouched for everything
+  else: an echo of the hive's own emission carries no request hop.
+
+- **A `talky` persona consulted the core for what its own window already held**
+  (#150). The instructions of a persona naturally enumerate what the core is
+  *for* — deep thinking, research, long-term memory — and never what it is not
+  for, so "what did I just tell you" reads, literally, as a memory question. The
+  answer came back correct, which is why it never looked broken; it just cost a
+  bridging sentence, a consult round trip and about six seconds against one and a
+  half. `talky@1` now prints the boundary sentence a memory-carrying persona has
+  to contain, and `cogny@1` points at it from the side that pays for its absence.
 
 ## [0.9.0] — 2026-08-16
 

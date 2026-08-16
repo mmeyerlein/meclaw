@@ -141,6 +141,11 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.9.1 — what production found.** Four defects out of running 0.9.0 rather
+  than reading it: an extraction lane that re-sent a failing batch every five
+  seconds, a recall request silently ignored because it carried another
+  consumer's chain state, a pin test that ran an example without its seed step,
+  and a persona that consulted the core for what its own window already held.
 - **v0.9.0 — sealed hives, open memory.** The memory hive ships publicly with its
   test suite, an episode reaches memory at the turn instead of at the session
   close, a hive can seal its ports and a store its write surface, and a `code`
