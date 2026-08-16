@@ -104,6 +104,13 @@ answer from it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 [#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
 stream now points — the bottleneck is not the remembering.
 
+0.10.3 takes the first of that issue's three measures: tier 2 now receives the
+candidates **grouped by session** alongside the flat ranking, and the prompt says
+how to aggregate over them. It is a shape fix, and its gate is a benchmark run
+rather than a test — the two remaining measures (the top-20 cap, a second pass
+for counting questions) are untouched, because both change what is retrieved or
+how often the model runs.
+
 Still open around it:
 [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
 recall window, so time-range questions run as point recalls,
@@ -156,7 +163,7 @@ The good first issues from the first public wave — #3 and #4 — shipped with
 template is a directory, a README and a `template.json`, and the fourteen listed
 in [`templates/README.md`](templates/README.md) are the worked examples — eleven
 single-purpose ones plus three composites: `talky@1.2.0`, which carries four of
-them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.3.0`, the
+them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.4.0`, the
 agent memory as a hive of ten cells. New ones are welcome.
 
 ## Shipped
@@ -164,6 +171,7 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.3 — tier 2 sees sessions.** The multi-session synthesis gap (100 % retrieval, 30.8 % accuracy) gets the first of its three measures: the candidates arrive grouped by conversation, oldest first, and the prompt says how to aggregate over them. A shape fix; the gate is a benchmark run.
 - **v0.10.2 — a wired port must have its drain.** A hive can declare which of
   its ports come in pairs, and a mutation that wires the ingress without the
   egress is refused rather than quietly opening a lane that loses messages. The

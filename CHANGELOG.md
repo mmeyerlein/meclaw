@@ -9,6 +9,48 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.3] — 2026-08-17
+
+### Changed
+
+- **Tier 2 sees the candidates grouped by session, not only ranked** (#148,
+  first of three measures; `memory-hive@1.4.0`).
+
+  The measurement this answers: 50 stratified LongMemEval questions against the
+  0.9.0 tree returned 96 % R@5 and 58 % end accuracy, and the `multi-session`
+  class was the sharp one — **100 % R@5 against 30.8 % accuracy**. In 19 of 21
+  wrong answers the retrieval had delivered the gold session. The evidence was
+  in the bundle and the synthesis did not combine it.
+
+  It arrived as one flat list ordered by RRF rank, with nothing saying which
+  candidates came from the same conversation. A question that counts, compares
+  or asks what changed is an aggregation over sessions, and it was being asked
+  of a structure that had thrown the session axis away.
+
+  The tier-2 payload now also carries `sessions`: the same candidates, grouped
+  by the conversation they came from, oldest first, each group with its span and
+  the ids it contributed. The flat ranking travels unchanged next to it — the
+  ranking answers *what is most relevant*, the grouping answers *what belongs
+  together*, and a spanning question needs both. A candidate with no session
+  lands in `unattributed` rather than being dropped or folded into a neighbour.
+
+  A fact candidate now keeps its `session_id` through hydration. The column was
+  always selected; the fact branch dropped it, so a fact could never be grouped
+  with the conversation it came from — which is most of what a multi-session
+  answer is made of.
+
+  The dialectic prompt says what to do with the structure: count sessions rather
+  than candidates, read two sessions that disagree as a change over time rather
+  than a contradiction, and name a missing session in `gap` instead of
+  answering around it.
+
+  **Honest scope**: this is a shape fix and its gate is a benchmark run, not a
+  test. The tests pin the structure; they do not claim the accuracy moved. The
+  issue's other two measures — whether the top-20 cap truncates the set a
+  multi-session answer needs, and whether the dialectic should get a second pass
+  for counting questions — are untouched, because both change what is retrieved
+  or how often the model runs.
+
 ## [0.10.2] — 2026-08-16
 
 ### Added
