@@ -80,6 +80,19 @@ pub struct ConsumesBlock {
     /// Declared hop keys this cell reads (per-hop compartment).
     #[serde(default)]
     pub hop: BTreeMap<String, ConsumeSpec>,
+    /// GH #160 — declared facts about this cell's **own place in the graph**.
+    ///
+    /// Not a message compartment: nothing here is validated against an incoming
+    /// message, and a key declared here never makes a message invalid. It is a
+    /// capability declaration in the same grammar as the three above — "this cell
+    /// reads X" — and the substrate answers it at spawn with a read-only handle
+    /// (`meclaw_colony::NeighbourhoodView`). The only key the substrate knows is
+    /// `inbound_edges`: the paths of the edges that point AT this cell, from the
+    /// authority that owns the edge table, so that a cell which must refuse an
+    /// unexpected neighbour can do so without reading `colony.db` — which
+    /// § Database isolation forbids, with no exceptions left.
+    #[serde(default)]
+    pub topology: BTreeMap<String, ConsumeSpec>,
 }
 
 /// Translate the compact `type` token into a JSON-Schema type keyword.
@@ -201,6 +214,10 @@ pub struct CompiledConsumes {
     body: Vec<(String, String)>,
     context: Vec<(String, String)>,
     hop: Vec<(String, String)>,
+    /// Declared topology facts (GH #160). Deliberately NOT part of
+    /// [`Self::is_vacuous`] or of any message check: it gates a spawn-time
+    /// capability, never an ingress.
+    topology: Vec<String>,
 }
 
 impl CompiledConsumes {
@@ -216,6 +233,9 @@ impl CompiledConsumes {
             body: required(&block.body),
             context: required(&block.context),
             hop: required(&block.hop),
+            // Every declared key, required or not: this is a capability
+            // declaration, and "optional capability" has no meaning.
+            topology: block.topology.keys().cloned().collect(),
         }
     }
 
@@ -237,6 +257,16 @@ impl CompiledConsumes {
     /// reader (`meclaw_colony::AttachmentReader`).
     pub fn declares_body(&self, key: &str) -> bool {
         self.body.iter().any(|(k, _)| k == key)
+    }
+
+    /// True iff the cell declares `consumes.topology.<key>` (GH #160).
+    ///
+    /// The same gate as [`Self::declares_body`], for the capability that hands a
+    /// cell facts about its own position in the graph instead of a slot of an
+    /// incoming message. A cell that declares nothing gets no handle and cannot
+    /// ask.
+    pub fn declares_topology(&self, key: &str) -> bool {
+        self.topology.iter().any(|k| k == key)
     }
 }
 

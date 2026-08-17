@@ -9,6 +9,83 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.12.0] — 2026-08-17
+
+### Added
+
+- **A surface installs into a colony that is already running**
+  ([#163](https://github.com/mmeyerlein/meclaw/issues/163)). One mutation
+  (`add_nodes` with the `canvy` template), no restart, no lane for the parent to
+  grant. Two rules moved for it, and both are the interesting part:
+  - **The egress door is no longer a place.** `EgressPolicy` now decides *where* it
+    opens as well as *what* leaves: `All` stays root-only (Direct-Mode, where a
+    dead end really is an answer and only at `/`), while `Marked` opens at whichever
+    hive a marked message ran out of graph at. The marker is minted by the layer
+    that injected the request and is unforgeable by a cell, so a marked message is
+    by construction an answer somebody is holding a socket open for — there is no
+    hive at which dead-lettering it is better. A surface's answer lane is therefore
+    `./render -> .` and stays inside its own subtree.
+  - **`/colony/graph` is drawable by a mutation** — the one absolute endpoint that
+    is. It addresses the authority's read-only topology endpoint, not a cell, and it
+    is the sanctioned alternative to reading `colony.db`, which § Database isolation
+    forbids. `/colony/mutations`, `/colony/trace` and `/colony/dead_letters` stay
+    out of bounds.
+- **`consumes.topology.inbound_edges`: a cell may declare that it needs to know its
+  own doorway** ([#160](https://github.com/mmeyerlein/meclaw/issues/160)). A
+  declaring cell receives a read-only, self-scoped handle at spawn
+  (`NeighbourhoodView`) that answers one question — the `from` of every edge
+  pointing at its own path — live from the colony's in-memory edge table, bounded by
+  the cell's own operation timeout. Not a message compartment: nothing in
+  `consumes.topology` is validated against an incoming message. Undeclared cells
+  get no handle and cannot ask.
+
+### Changed
+
+- **§ Database isolation has no exceptions left** ([#160](https://github.com/mmeyerlein/meclaw/issues/160)).
+  The `vault` unlock attestation was the last direct `colony.db` read in the
+  workspace; `crates/meclaw-cells/src/vault/attest.rs` no longer imports `rusqlite`
+  and is now a pure comparison of two lists of paths. The defence is unchanged,
+  because it never rested on the database: what protects a vault is the sealed
+  contract in its **own** `cell.db`, so a tampered edge is found whether it was read
+  or told. An unverifiable neighbourhood (no declaration, no answer, a timeout) is
+  treated exactly like a wrong one and the vault stays LOCKED — which means a
+  `vault` config without the new declaration never unlocks. Both shipped vault
+  templates carry it.
+- **`meclaw --vault-add` refuses while a colony holds the root**
+  ([#160](https://github.com/mmeyerlein/meclaw/issues/160)). The vault user channel
+  deliberately boots no colony and therefore never takes the root lease, which left
+  it writing the vault's `cell.db` next to the live cell that owns it — WAL makes
+  that survivable, not correct, and the running cell's view goes stale with nothing
+  announcing it. The channel now consults the lease before the first
+  `Connection::open` and names the holding pid. `--vault-status` stays available
+  (read-only), and `--vault-revoke` keeps working with a loud warning: being locked
+  out of a vault must never be what stops somebody killing a leaked credential.
+- **`templates/canvy` carries both of its outward lanes itself.** The topology lane
+  no longer has to be granted in the parent's `config.json`, at bootstrap or by
+  mutation. The condition on it (`hop.route == 'ask_colony'`) is still mandatory and
+  still the reason [#161](https://github.com/mmeyerlein/meclaw/issues/161) happened.
+
+### Fixed
+
+- **A stray directory can no longer turn a healthy colony into a boot failure**
+  ([#163](https://github.com/mmeyerlein/meclaw/issues/163)). A cell directory
+  somebody places by hand has always been reported and not adopted; a **hive**
+  directory was reported for its children but its `params.graph` was planned anyway,
+  so every endpoint in it pointed at a child that was correctly not adopted and the
+  boot died on `DanglingEndpoint` — on every restart, until the directory was
+  removed. The reboot walk now consults the persisted `hive_scopes` for hives, the
+  same way it consults the registry overlay for cells.
+- **A blocked delivery names its mailbox before it blocks**
+  ([#162](https://github.com/mmeyerlein/meclaw/issues/162)). `route()` delivers with
+  an `await` on the cell's mailbox, which is correct — a full mailbox is
+  backpressure — but the waiter is the colony's routing loop, so the whole colony
+  stops, and the corridor is byte-frozen and silent. From the outside that was a
+  colony that stopped after twenty seconds with an **empty** dead-letter queue and
+  nothing in the message log; diagnosing it during #161 needed a SQLite client on
+  `colony.db`. A pre-check at the call site (the same construction as the TTL twin
+  already there) now logs the target, the sender, the trace and the configured
+  capacity. Semantics are untouched: a full mailbox still blocks.
+
 ## [0.11.1] — 2026-08-17
 
 ### Fixed

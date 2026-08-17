@@ -53,6 +53,17 @@ impl CellFactory for VaultCellFactory {
 
         let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
 
+        // GH #160: the attestation capability. Derived from what this factory
+        // already holds — the contract, the cell's own path, the colony inbox —
+        // and handed to every incarnation of the cell (wake and respawn alike).
+        // Undeclared ⇒ `None` ⇒ the vault cannot attest and therefore never
+        // unlocks, which is the fail-closed direction.
+        let neighbourhood = meclaw_colony::NeighbourhoodView::for_contract(
+            &contract,
+            path.clone(),
+            colony_inbox_tx.clone(),
+        );
+
         let respawn_dir = cell_dir.clone();
         let respawn_path = path.clone();
         let respawn_outputs = outputs_tx.clone();
@@ -60,6 +71,7 @@ impl CellFactory for VaultCellFactory {
         let respawn_inbox_tx = colony_inbox_tx.clone();
         let respawn_blob = blob_store.clone();
         let respawn_consumes = contract.consumes.clone();
+        let respawn_neighbourhood = neighbourhood.clone();
         let respawn_capacity = mailbox_capacity;
         let respawn: RespawnFn = Box::new(
             move || -> (
@@ -76,6 +88,7 @@ impl CellFactory for VaultCellFactory {
                     &respawn_birth,
                     &respawn_path,
                     "respawn",
+                    respawn_neighbourhood.clone(),
                 );
                 let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = match built {
                     Ok((cell, db)) => build_stateful_task_with_peace(
@@ -121,9 +134,16 @@ impl CellFactory for VaultCellFactory {
         let wake_watcher_inbox = colony_inbox_tx.clone();
         let wake_blob = blob_store.clone();
         let wake_consumes = contract.consumes.clone();
+        let wake_neighbourhood = neighbourhood.clone();
         let wake: WakeFn = Box::new(move |receiver: mpsc::Receiver<Message>| {
             // Same class as the respawn: synchronous, inside the colony task.
-            let built = build_vault(&wake_dir, &wake_birth, &wake_path, "wake");
+            let built = build_vault(
+                &wake_dir,
+                &wake_birth,
+                &wake_path,
+                "wake",
+                wake_neighbourhood.clone(),
+            );
             let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = match built {
                 Ok((cell, db)) => build_stateful_task_with_peace(
                     wake_path.clone(),
@@ -185,6 +205,7 @@ fn build_vault(
     birth: &JsonValue,
     path: &Path,
     phase: &str,
+    neighbourhood: Option<meclaw_colony::NeighbourhoodView>,
 ) -> Result<(VaultCell, DbConn), String> {
     let (conn, _status) = match open_or_create_cell_db_with_status(&cell_dir.join("cell.db")) {
         Ok(pair) => pair,
@@ -218,7 +239,7 @@ fn build_vault(
         }
     };
     Ok((
-        VaultCell::new(params, cell_dir.to_path_buf()),
+        VaultCell::new(params, neighbourhood),
         DbConn::wrap(conn, None),
     ))
 }
@@ -254,6 +275,7 @@ mod tests {
             &json!({"broker": "/main/access/broker"}),
             &Path::new("/main/access/vault"),
             "test",
+            None,
         ) {
             Ok(pair) => pair,
             Err(e) => panic!("a fresh vault must build: {e}"),
@@ -280,6 +302,7 @@ mod tests {
             &json!({"broker": 42}),
             &Path::new("/main/access/vault"),
             "wake",
+            None,
         ) {
             Err(e) => e,
             Ok(_) => panic!("unparseable params must not build a vault"),

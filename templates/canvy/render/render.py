@@ -118,6 +118,14 @@ def store_op(operation, **rest):
 def surface_reply(slot):
     """The answer the HTTP layer is waiting for, on the egress lane.
 
+    The lane is `./render -> .`: the answer is handed to this hive, finds no
+    out-edge there, and leaves through the colony's egress door. The door is not
+    a place any more — a marked message (`EgressPolicy::Marked`, and only the
+    HTTP layer can mint the mark) leaves from whichever hive it ran out of graph
+    at, which is what makes this hive installable by mutation at all (GH #163).
+    Before that fix the lane had to be `-> /`, and no mutation may draw an edge
+    that leaves its own subtree.
+
     `messages: []` is mandatory and not decoration. Every body crossing the
     substrate is validated as a UBF document, and one without that slot is
     rejected as `invalid_ubf_body` — the emission never reaches an edge, so it

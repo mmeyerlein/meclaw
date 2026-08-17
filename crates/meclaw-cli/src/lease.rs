@@ -243,6 +243,31 @@ pub fn acquire(root: &Path) -> Result<RootLease, LeaseError> {
     Err(LeaseError::Contended { path: dir })
 }
 
+/// Who holds `root` right now, without taking or disturbing the lease.
+///
+/// GH #160: the vault user channel (`--vault-add` and friends) must not open the
+/// vault's `cell.db` while a colony holds the root — the running vault cell owns
+/// that file, and a second writer makes its in-memory view stale in a way
+/// nothing announces. Those modes must *not* boot a colony, so they cannot take
+/// the lease to find out; they ask.
+///
+/// `None` means "no living holder": no lease, an unreadable record, or a holder
+/// whose process is gone, a zombie, or a recycled pid — every case a boot would
+/// reclaim. `Unknowable` (a host that cannot check pids) reports the holder
+/// instead: for a boot that is a refusal, and refusing is the safe direction here
+/// too.
+pub fn current_holder(root: &Path) -> Option<Holder> {
+    let dir = root.join(LEASE_DIR);
+    let holder = read_holder(&dir).ok()?;
+    match process_status(holder.pid) {
+        ProcStatus::Running { start_id, zombie } if start_id == holder.start_id && !zombie => {
+            Some(holder)
+        }
+        ProcStatus::Unknowable => Some(holder),
+        _ => None,
+    }
+}
+
 /// Try to publish `token` as the lease. `Ok(false)` means the root is occupied.
 fn publish(root: &Path, dir: &Path, token: &Holder, attempt: u32) -> Result<bool, LeaseError> {
     let candidate = scratch_path(root, "new", token.pid, attempt);

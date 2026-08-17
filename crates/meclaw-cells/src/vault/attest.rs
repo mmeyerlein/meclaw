@@ -12,13 +12,22 @@
 //! unlock the checkpoint. A tampered topology may exist; it just never sees the
 //! key. The vault stays LOCKED, and a locked vault is useless to the attacker.
 //!
-//! This is the one place a cell looks at the topology, and it is a deliberate,
-//! narrow exception to "cells know no topology": read-only, only the edges that
-//! touch this cell's own path, and only ever to refuse. A vault that cannot
-//! verify its own neighbourhood is worth less than the sentence it is described
-//! with.
-
-use rusqlite::Connection;
+//! # Where the neighbourhood comes from (GH #160)
+//!
+//! This module used to open `colony.db` read-only and run its own `SELECT`. That
+//! was the last direct-database-access site in the workspace and the one
+//! documented exception to § Database isolation — and it was never load-bearing.
+//! What defends the vault is the **sealed contract in its own `cell.db`**, not the
+//! trustworthiness of the topology it compares against: whether a tampered edge
+//! is learned by reading the database or by being told, the comparison finds the
+//! same unexpected path and the vault stays locked. So the exception is gone. The
+//! neighbourhood now arrives from the authority that owns the edge table, through
+//! a declared, read-only, self-scoped capability
+//! (`meclaw_colony::NeighbourhoodView`, declared as
+//! `contract.consumes.topology.inbound_edges`).
+//!
+//! This module is therefore pure: a comparison of two lists of paths. The cell
+//! that calls it holds the capability; the code that decides never touches I/O.
 
 /// What the attestation found.
 #[derive(Debug, PartialEq, Eq)]
@@ -44,67 +53,28 @@ impl Attestation {
     }
 }
 
-/// Locate `colony.db` from a cell directory by walking up to the colony root.
+/// Verify that every path wired INTO the vault is one the contract expects.
 ///
-/// The root is where the file lives; a cell sits some number of directories
-/// below it. Walking up is what makes this work for a vault at any depth
-/// without handing the cell its root path as configuration it could be lied to
-/// about.
-pub fn colony_db_from_cell_dir(cell_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut cur = Some(cell_dir);
-    while let Some(dir) = cur {
-        let candidate = dir.join("colony.db");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        cur = dir.parent();
-    }
-    None
-}
-
-/// Verify that every edge pointing at `vault_path` comes from a path the
-/// contract expects.
+/// `inbound` is the answer to "who points at me", as the colony gives it. Only
+/// inbound edges are compared: an outbound edge — the vault answering somebody —
+/// cannot be used to extract a secret the vault would not have handed over
+/// anyway, and locking on one would make a vault unable to reply to a
+/// legitimately granted request. The capability that produces `inbound` returns
+/// nothing else for exactly that reason.
 ///
-/// Only inbound edges are checked. An outbound edge — the vault answering
-/// somebody — cannot be used to extract a secret the vault would not have
-/// handed over anyway, and locking on one would make a vault unable to reply
-/// to a legitimately granted request.
-pub fn attest(db: &std::path::Path, vault_path: &str, expected: &[String]) -> Attestation {
-    let conn = match Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    ) {
-        Ok(c) => c,
-        Err(e) => return Attestation::Unverifiable(format!("cannot open {}: {e}", db.display())),
-    };
-    attest_on(&conn, vault_path, expected)
-}
-
-/// The attestation proper, against an open read-only connection.
-pub fn attest_on(conn: &Connection, vault_path: &str, expected: &[String]) -> Attestation {
-    let mut stmt = match conn.prepare("SELECT DISTINCT from_path FROM edges WHERE to_path = ?1") {
-        Ok(s) => s,
-        Err(e) => return Attestation::Unverifiable(format!("cannot read edges: {e}")),
-    };
-    let rows = match stmt.query_map([vault_path], |r| r.get::<_, String>(0)) {
-        Ok(r) => r,
-        Err(e) => return Attestation::Unverifiable(format!("cannot read edges: {e}")),
-    };
-    let mut unexpected = Vec::new();
-    for row in rows {
-        match row {
-            Ok(from) => {
-                if !expected.iter().any(|e| e == &from) {
-                    unexpected.push(from);
-                }
-            }
-            Err(e) => return Attestation::Unverifiable(format!("cannot read edges: {e}")),
-        }
-    }
+/// An empty `inbound` attests: nothing is wired to the vault, so nothing
+/// unexpected is either.
+pub fn attest_neighbours(inbound: &[String], expected: &[String]) -> Attestation {
+    let mut unexpected: Vec<String> = inbound
+        .iter()
+        .filter(|from| !expected.iter().any(|e| e == *from))
+        .cloned()
+        .collect();
     if unexpected.is_empty() {
         Attestation::Matches
     } else {
         unexpected.sort();
+        unexpected.dedup();
         Attestation::Unexpected(unexpected)
     }
 }
@@ -113,33 +83,17 @@ pub fn attest_on(conn: &Connection, vault_path: &str, expected: &[String]) -> At
 mod tests {
     use super::*;
 
-    fn colony_with_edges(edges: &[(&str, &str)]) -> Connection {
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE edges (
-               id TEXT PRIMARY KEY, from_path TEXT NOT NULL,
-               to_path TEXT NOT NULL, created_at INTEGER NOT NULL,
-               condition TEXT, modifier TEXT);",
-        )
-        .unwrap();
-        for (i, (from, to)) in edges.iter().enumerate() {
-            c.execute(
-                "INSERT INTO edges (id, from_path, to_path, created_at) VALUES (?1, ?2, ?3, 0)",
-                rusqlite::params![i.to_string(), from, to],
-            )
-            .unwrap();
-        }
-        c
+    fn paths(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
     fn the_contracted_neighbourhood_attests() {
-        let c = colony_with_edges(&[
-            ("/main/access/broker", "/main/access/vault"),
-            ("/main/access/vault", "/main/access/broker"),
-        ]);
         assert_eq!(
-            attest_on(&c, "/main/access/vault", &["/main/access/broker".into()]),
+            attest_neighbours(
+                &paths(&["/main/access/broker"]),
+                &paths(&["/main/access/broker"])
+            ),
             Attestation::Matches
         );
     }
@@ -148,56 +102,46 @@ mod tests {
     fn an_edge_wired_in_behind_the_gate_keeps_the_vault_locked() {
         // This is the laundering path: no mutation would have added this edge,
         // a rewritten grow file at boot does.
-        let c = colony_with_edges(&[
-            ("/main/access/broker", "/main/access/vault"),
-            ("/main/egon/brain", "/main/access/vault"),
-        ]);
         assert_eq!(
-            attest_on(&c, "/main/access/vault", &["/main/access/broker".into()]),
+            attest_neighbours(
+                &paths(&["/main/access/broker", "/main/egon/brain"]),
+                &paths(&["/main/access/broker"])
+            ),
             Attestation::Unexpected(vec!["/main/egon/brain".into()])
         );
     }
 
+    /// The capability answers with inbound edges only, so an outbound edge cannot
+    /// even reach this comparison — but the property the vault relies on is
+    /// asserted here anyway: a path that is merely *reachable from* the vault is
+    /// not a neighbour of the kind that matters.
     #[test]
-    fn an_outbound_edge_does_not_break_the_attestation() {
-        let c = colony_with_edges(&[
-            ("/main/access/broker", "/main/access/vault"),
-            ("/main/access/vault", "/main/access/connector"),
-        ]);
+    fn only_what_points_at_the_vault_is_compared() {
         assert_eq!(
-            attest_on(&c, "/main/access/vault", &["/main/access/broker".into()]),
+            attest_neighbours(
+                &paths(&["/main/access/broker"]),
+                &paths(&["/main/access/broker", "/main/access/connector"])
+            ),
             Attestation::Matches
         );
-    }
-
-    #[test]
-    fn an_unreadable_topology_fails_closed() {
-        let c = Connection::open_in_memory().unwrap(); // no edges table at all
-        assert!(matches!(
-            attest_on(&c, "/main/access/vault", &[]),
-            Attestation::Unverifiable(_)
-        ));
     }
 
     #[test]
     fn a_vault_with_no_inbound_edges_attests() {
-        // Nothing is wired to it yet — nothing unexpected either.
-        let c = colony_with_edges(&[("/main/a", "/main/b")]);
         assert_eq!(
-            attest_on(&c, "/main/access/vault", &["/main/access/broker".into()]),
+            attest_neighbours(&[], &paths(&["/main/access/broker"])),
             Attestation::Matches
         );
     }
 
     #[test]
-    fn the_colony_db_is_found_by_walking_up_from_the_cell() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("colony.db"), b"").unwrap();
-        let deep = root.path().join("main").join("access").join("vault");
-        std::fs::create_dir_all(&deep).unwrap();
+    fn several_unexpected_neighbours_are_sorted_and_deduplicated() {
         assert_eq!(
-            colony_db_from_cell_dir(&deep).unwrap(),
-            root.path().join("colony.db")
+            attest_neighbours(
+                &paths(&["/z/late", "/a/early", "/z/late"]),
+                &paths(&["/main/access/broker"])
+            ),
+            Attestation::Unexpected(vec!["/a/early".into(), "/z/late".into()])
         );
     }
 
@@ -205,5 +149,16 @@ mod tests {
     fn a_reason_code_names_the_offending_path() {
         let a = Attestation::Unexpected(vec!["/main/egon/brain".into()]);
         assert!(a.reason().contains("/main/egon/brain"));
+    }
+
+    /// Fail-closed is the caller's move now: an unreachable colony becomes
+    /// `Unverifiable`, and `Unverifiable != Matches` is what keeps the vault
+    /// locked. Pinned here because the variant is no longer produced inside this
+    /// module and would otherwise have no test at all.
+    #[test]
+    fn an_unverifiable_neighbourhood_is_not_a_match() {
+        let v = Attestation::Unverifiable("the colony is not answering".into());
+        assert_ne!(v, Attestation::Matches);
+        assert!(v.reason().starts_with("unverifiable:"));
     }
 }

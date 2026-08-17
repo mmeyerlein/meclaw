@@ -33,6 +33,12 @@
           "type": "array",
           "required": true
         }
+      },
+      "topology": {
+        "inbound_edges": {
+          "type": "array",
+          "required": true
+        }
       }
     },
     "emits": {

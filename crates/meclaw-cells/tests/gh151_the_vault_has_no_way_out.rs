@@ -22,41 +22,55 @@ const VAULT_PATH: &str = "/main/access/vault";
 const BROKER: &str = "/main/access/broker";
 const PASSPHRASE: &str = "a passphrase nobody guesses";
 
-/// A vault on a real `cell.db`, inside a tree that carries a `colony.db` whose
-/// edge table says only the broker is wired to it — the sealed contract the
-/// unlock attests against.
+/// A colony that answers exactly one question: who is wired to `of`.
+///
+/// GH #160: the vault no longer reads `colony.db` — it holds a declared,
+/// self-scoped `NeighbourhoodView` and asks the authority. So the fixture is an
+/// edge table plus a responder, and the responder filters by `to` exactly as the
+/// colony does, which keeps the "an outbound edge is not a neighbour" property
+/// under test rather than assumed. The task lives as long as the sender does.
+fn colony_answering(edges: Vec<(String, String)>) -> mpsc::Sender<meclaw_colony::ColonyMsg> {
+    let (tx, mut rx) = mpsc::channel::<meclaw_colony::ColonyMsg>(16);
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let meclaw_colony::ColonyMsg::ReadInboundEdges { of, ack } = msg {
+                let mut inbound: Vec<Path> = edges
+                    .iter()
+                    .filter(|(_, to)| to.as_str() == of.as_str())
+                    .map(|(from, _)| Path::new(from))
+                    .collect();
+                inbound.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                let _ = ack.send(inbound);
+            }
+        }
+    });
+    tx
+}
+
+/// A vault on a real `cell.db`, holding a neighbourhood view onto an edge table
+/// that says only the broker is wired to it — the sealed contract the unlock
+/// attests against.
 async fn vault_with_sealed_topology(
     inbound: &[(&str, &str)],
 ) -> (tempfile::TempDir, VaultCell, DbConn) {
     let root = tempfile::TempDir::new().unwrap();
-    let colony_db = rusqlite::Connection::open(root.path().join("colony.db")).unwrap();
-    colony_db
-        .execute_batch(
-            "CREATE TABLE edges (
-               id TEXT PRIMARY KEY, from_path TEXT NOT NULL,
-               to_path TEXT NOT NULL, created_at INTEGER NOT NULL,
-               condition TEXT, modifier TEXT);",
-        )
-        .unwrap();
-    for (i, (from, to)) in inbound.iter().enumerate() {
-        colony_db
-            .execute(
-                "INSERT INTO edges (id, from_path, to_path, created_at) VALUES (?1, ?2, ?3, 0)",
-                rusqlite::params![i.to_string(), from, to],
-            )
-            .unwrap();
-    }
-    drop(colony_db);
-
     let cell_dir = root.path().join("main").join("access").join("vault");
     std::fs::create_dir_all(&cell_dir).unwrap();
     let conn = meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
     vault_store::apply_ddl(&conn).unwrap();
 
+    let colony = colony_answering(
+        inbound
+            .iter()
+            .map(|(f, t)| ((*f).to_string(), (*t).to_string()))
+            .collect(),
+    );
+    let view = meclaw_colony::NeighbourhoodView::new(Path::new(VAULT_PATH), colony);
+
     let params = VaultParams::parse(&json!({"broker": BROKER})).unwrap();
     (
         root,
-        VaultCell::new(params, cell_dir),
+        VaultCell::new(params, Some(view)),
         DbConn::wrap(conn, None),
     )
 }
@@ -387,9 +401,11 @@ async fn an_edge_that_no_mutation_would_have_allowed_keeps_the_vault_locked() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unverifiable_topology_fails_closed() {
-    // No colony.db above the cell at all: the vault cannot prove where it is,
-    // so it does not take the key.
+async fn an_undeclared_vault_fails_closed() {
+    // No capability at all: the cell's contract does not declare
+    // `consumes.topology.inbound_edges`, so it cannot learn who is wired to it
+    // and therefore never takes the key. Before GH #160 the same case was "no
+    // colony.db above the cell"; the verdict is identical, which is the point.
     let root = tempfile::TempDir::new().unwrap();
     let cell_dir = root.path().join("vault");
     std::fs::create_dir_all(&cell_dir).unwrap();
@@ -398,11 +414,41 @@ async fn an_unverifiable_topology_fails_closed() {
     let mut db = DbConn::wrap(conn, None);
     let mut cell = VaultCell::new(
         VaultParams::parse(&json!({"broker": BROKER})).unwrap(),
-        cell_dir,
+        None,
     );
 
     let content = unlock(&mut cell, &mut db).await;
     assert_eq!(content["header"]["error_code"], "attestation_failed");
+}
+
+/// And a colony that is there but does not answer is the same verdict: the ask
+/// is bounded by the vault's own operation timeout, and an unanswered
+/// neighbourhood is treated exactly like a wrong one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_colony_fails_closed() {
+    let root = tempfile::TempDir::new().unwrap();
+    let cell_dir = root.path().join("vault");
+    std::fs::create_dir_all(&cell_dir).unwrap();
+    let conn = meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+    vault_store::apply_ddl(&conn).unwrap();
+    let mut db = DbConn::wrap(conn, None);
+    // A channel nobody reads: the send succeeds, the answer never comes.
+    let (colony, _held_open) = mpsc::channel::<meclaw_colony::ColonyMsg>(4);
+    let mut cell = VaultCell::new(
+        VaultParams::parse(&json!({"broker": BROKER, "external_timeout_ms": 200})).unwrap(),
+        Some(meclaw_colony::NeighbourhoodView::new(
+            Path::new(VAULT_PATH),
+            colony,
+        )),
+    );
+
+    let content = unlock(&mut cell, &mut db).await;
+    assert_eq!(content["header"]["error_code"], "attestation_failed");
+    let text = content["messages"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("unverifiable"),
+        "the reason must say it could not verify, not that it was wrong: {text}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -639,13 +685,14 @@ async fn the_user_channel_refuses_a_passphrase_that_does_not_open_the_vault() {
 /// A vault that hands `tg` to a co-located connector at unlock.
 async fn vault_with_injection() -> (tempfile::TempDir, VaultCell, DbConn) {
     let (root, _cell, db) = sealed_vault().await;
-    let cell_dir = root.path().join("main").join("access").join("vault");
     let params = VaultParams::parse(&json!({
         "broker": BROKER,
         "inject_map": {"tg": {"to": "./connector", "key": "bot_token"}}
     }))
     .unwrap();
-    (root, VaultCell::new(params, cell_dir), db)
+    let colony = colony_answering(vec![(BROKER.to_string(), VAULT_PATH.to_string())]);
+    let view = meclaw_colony::NeighbourhoodView::new(Path::new(VAULT_PATH), colony);
+    (root, VaultCell::new(params, Some(view)), db)
 }
 
 /// Every emission of one handle() call, in order.

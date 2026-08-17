@@ -424,6 +424,9 @@ pub fn plan_bootstrap_with_env(
     // first-mutation panic's orphans are surfaced, never silently adopted. A clean
     // FirstBoot (no colony.db / no in_flight row) keeps the walk-as-source path.
     let has_pending_mutation = has_in_flight_mutation(root);
+    // GH #163: the same question for hives, which have no registry row. Read
+    // once, before the walk — consulted only on a Reboot / pending mutation.
+    let registered_hives = registered_hive_paths(root);
 
     // Slice 6 (Phase-14-B as build-time error): collect per-node contract views
     // (keyed by absolute meclaw path) and per-edge modifier key-sets, then run
@@ -545,6 +548,20 @@ pub fn plan_bootstrap_with_env(
         };
 
         if cfg.cell.cell_type == "hive" {
+            // A5b + GH #163: a hive directory this colony never registered is
+            // REPORTED, never adopted — exactly like an unknown cell dir below.
+            // The load-bearing part is the `continue`: its `params.graph` must
+            // not be planned. Those edges point at children that are (rightly)
+            // not adopted either, so planning them made every endpoint dangle
+            // and killed the boot of an otherwise healthy colony. Registration
+            // stays instantiation/mutation-only.
+            if (matches!(boot_state, BootState::Reboot) || has_pending_mutation)
+                && mc_path.as_str() != "/"
+                && !registered_hives.contains(mc_path.as_str())
+            {
+                plan.unregistered_nodes.push(mc_path.clone());
+                continue;
+            }
             plan.hives.push(PlannedHive {
                 path: mc_path.clone(),
             });
@@ -1042,6 +1059,46 @@ pub fn probe_boot_state(db_path: &std::path::Path) -> Result<BootState, Bootstra
 /// row). Absent db / missing table / read error → `false`, so a clean FirstBoot
 /// keeps its walk-as-source behaviour. Read-only; runs before the colony writer
 /// thread opens the db (no contention).
+/// GH #163 — the hive half of the reboot registration check: which hive paths
+/// the colony has actually registered, straight out of `{root}/colony.db`'s
+/// `hive_scopes` table.
+///
+/// A hive has no registry row (it is a scope marker, not an actor), so the
+/// `registry` overlay cannot answer "did this colony ever register this hive".
+/// Without that answer the walk planned the `params.graph` of a hive directory
+/// somebody had placed by hand, every endpoint in it pointed at a child that was
+/// correctly *not* adopted, and the boot died on `DanglingEndpoint` — a healthy
+/// colony turned into a restart loop by a stray directory.
+///
+/// Absent database (first boot) or an unreadable one → empty set; the caller
+/// only consults it on a Reboot, where an empty set means "nothing is
+/// registered", which is the conservative direction: report, do not adopt.
+fn registered_hive_paths(root: &std::path::Path) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let db_path = root.join("colony.db");
+    if !db_path.exists() {
+        return out;
+    }
+    let Ok(conn) =
+        rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return out;
+    };
+    // GH #98: boot-path read — carry the busy budget, same as the sibling probe.
+    if crate::persist::apply_busy_timeout(&conn).is_err() {
+        return out;
+    }
+    let Ok(mut stmt) = conn.prepare("SELECT path FROM hive_scopes") else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+        for p in rows.flatten() {
+            out.insert(p);
+        }
+    }
+    out
+}
+
 fn has_in_flight_mutation(root: &std::path::Path) -> bool {
     let db_path = root.join("colony.db");
     if !db_path.exists() {

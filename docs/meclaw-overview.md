@@ -181,7 +181,13 @@ The reason is consistency, not aesthetics. A reader of foreign tables sees a sta
 
 For topology knowledge the route is `/colony/graph` (§ `/colony` as a virtual endpoint): nodes and edges as a reply to a message, out of colony's in-memory registry, without touching a database. A cell that "just quickly reads the graph out of `colony.db`" is built wrong.
 
-**The one documented exception** is the unlock attestation of the `vault` cell (`crates/meclaw-cells/src/vault/attest.rs`): it reads `colony.db` read-only to check, before accepting key material, which paths have an edge pointing at it. The message route is not open to it, because the birth topology is exempt from the port boundary — a tampered topology would answer the question about itself exactly as wrongly as it was built. The exception is narrow: read-only, inbound edges of its own path only, and its only possible outcome is a **refusal**. It is not a precedent; any further case carries the same burden of argument and needs a sanction.
+**There is no exception** (GH #160, ruling 2026-08-17). The last one was the `vault` cell's unlock attestation; it is gone. A cell that needs a fact about **its own place in the graph** declares it in its contract and receives, at spawn, a read-only capability from the authority that owns the edge table:
+
+```json
+"consumes": { "topology": { "inbound_edges": { "type": "array", "required": true } } }
+```
+
+`consumes.topology` is **not** a message compartment: nothing in it is validated against an incoming message, and a key declared there never makes a message invalid. It is a capability declaration in the same grammar as `body`/`context`/`hop` — "this cell reads X". The only key the substrate knows is `inbound_edges`: the `from` paths of every edge pointing at the cell's **own** path (`meclaw_colony::NeighbourhoodView`, answered from colony's in-memory `EdgeTable`). Not the graph, not a scope, not its own outbound edges, and never another cell's. Without the declaration the handle does not exist. "Cells know no topology" therefore survives in the form that carries the weight: a cell learns the shape of **its own doorway**, from the authority, and only ever in order to **refuse** — an unverifiable neighbourhood (no handle, no answer, a timeout) is treated exactly like a wrong one and the `vault` stays LOCKED.
 
 **Instantiation and cell_id stability**: instantiation happens **exactly when** no cell directory exists at the
 target path. When processing a graph, colony checks, per declared node, whether the
@@ -603,6 +609,28 @@ did that message vanish" unanswerable. The marker lives in `context`, because th
 edge authority — the HTTP layer stamps it at injection, it survives the cascade
 (`carry_context_with_hop`), and no cell can forge one. A marker in the body would let
 a model address a browser.
+
+**The door is not a place** (GH #163, ruling 2026-08-17). The policy decides not only
+*what* leaves but *where*: `All` stays at the root hive `/` — "every dead end is an
+answer" is true of stdout and of nothing else, and a dead end deeper in the tree is a
+real dead end that belongs in the DLQ. `Marked` needs no geography: the marker is
+stamped by the injecting layer and unforgeable by a cell, so a marked message is by
+**construction** the answer to a request the outside world is holding open, and there
+is no hive at which dead-lettering it is the better outcome (the caller runs into its
+own timeout, the DLQ collects answers nobody reads). While the door's *location* was
+load-bearing, a surface's answer lane had to be `-> /` — and **no** mutation may draw
+an edge that leaves its own subtree, so a surface could only be created at a colony's
+first boot. Since #163 the lane is `-> .` and a surface installs into a running colony
+by mutation.
+
+**The one absolute edge a mutation may draw** is `-> /colony/graph` (GH #163). It
+addresses no cell but the authority's own read-only topology endpoint — dispatched
+before any edge is consulted — and it is the *sanctioned* way to learn topology,
+because § Database isolation forbids reading `colony.db`. Refusing the lane protected
+nothing; it only meant a surface had to be born with it, or somebody would read the
+database instead. `/colony/mutations` (authority transfer), `/colony/trace` and
+`/colony/dead_letters` (other cells' message content) stay out of bounds — widening
+that list is a decision with its own argument, not a convenience.
 
 **What the HTTP layer does not understand.** An event name. Name and value go to the
 cell verbatim; the moment this layer interpreted one, the binary would know what is

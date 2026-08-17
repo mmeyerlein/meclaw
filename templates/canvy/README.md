@@ -53,17 +53,7 @@ never the movement in between.
 
 ## Installing it
 
-### By mutation — only into a colony that has not booted yet
-
-> **A surface hive can only be created at a colony's FIRST boot**
-> ([#163](https://github.com/mmeyerlein/meclaw/issues/163)). The egress door is
-> only at the root hive, so the lane carrying the answer back must be `-> /`; a
-> mutation may not draw an edge that leaves its subtree, and `-> /` leaves every
-> subtree. So the mutation below is **rejected** (`scope_out_of_bounds`) against a
-> running colony, and placing the directory by hand instead makes the next boot
-> fail with `DanglingEndpoint` because a pre-existing directory is not adopted.
-> Until #163 is fixed, canvy belongs in the bootstrap tree of a colony you are
-> about to start — or in a tree of its own that is fed from outside.
+### By mutation, into a colony that is already running
 
 ```json
 {"scope": "/org/acme/member/alice",
@@ -71,40 +61,44 @@ never the movement in between.
  "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.1.0"}]}}
 ```
 
-Nothing needs to point at it: the only way in is the HTTP route and the only way
-out is the colony's egress door. A hive nothing points at is normally a defect;
-here it is the design.
+That is the whole installation. No restart, no lane to grant, no edge for the
+parent to draw: the page answers over HTTP as soon as the mutation commits.
 
-What a mutation **cannot** grant is the lane to `/colony/graph`. An absolute edge
-endpoint is out of scope for any mutation (`scope_out_of_bounds`), so installed
-this way the topology snapshot never arrives and the canvas reports that it has
-none. Feed the store from outside — one message to `./probe` carrying a `graph` slot is
-enough, and the probe writes the snapshot the same way it would from a tick:
+Nothing needs to point at it either — the only way in is the HTTP route and the
+only way out is the colony's egress door. A hive nothing points at is normally a
+defect; here it is the design.
 
-```bash
-curl -s -X POST localhost:PORT/messages -H 'Content-Type: application/json' -d '{
-  "target": "/…/canvy/probe",
-  "body": {"messages": [],
-           "graph": {"scope": "/", "nodes": [{"path": "/a/b", "cell_type": "code"}],
-                     "edges": []}}}'
-```
+Two rules had to move before that sentence was true
+([#163](https://github.com/mmeyerlein/meclaw/issues/163)), and both are worth
+knowing because they are what the hive's own two unusual edges rest on:
 
-`messages: []` is not decoration: the ingress validates the UBF body and a document
-without that slot is `422 invalid_ubf_body`.
+- **The egress door is not a place.** It used to open only at the root hive, so
+  the lane carrying an answer back had to be `-> /` — and no mutation may draw an
+  edge that leaves its own subtree. Now the *marker* decides: with
+  `EgressPolicy::Marked` a message that carries the mark leaves from whichever
+  hive it ran out of graph at, and only the HTTP layer can mint the mark (a cell
+  cannot write `context`). So the lane is `./render -> .` and stays at home.
+  Direct-Mode (`EgressPolicy::All`, stdout) is unchanged and still root-only:
+  there the mark means nothing, and a dead end deep in the tree is a real dead
+  end.
+- **`/colony/graph` is drawable by a mutation.** It is the one absolute endpoint
+  that is, because it is not a cell — it is the colony's read-only topology
+  endpoint, dispatched before any edge is consulted, and it is the *sanctioned*
+  way to learn topology, since § Database isolation forbids reading `colony.db`.
+  Refusing the lane never protected anything; it only meant a canvas had to be
+  born with it or somebody would go read the database instead.
+  `/colony/mutations`, `/colony/trace` and `/colony/dead_letters` stay out of
+  bounds (authority transfer, and other cells' message content).
 
-### By bootstrap — the topology refreshes itself
+### By bootstrap
 
-Declare the node **and** the privileged lane in the colony's root
-`config.json`, the same shape and the same reason as the receptionist's mutation
-lane:
+The same tree in a colony's bootstrap directory needs nothing added to the
+parent's `config.json` either — the hive carries both lanes itself:
 
 ```json
-{"from": "./org/acme/member/alice/canvy/probe", "to": "/colony/graph",
+{"from": "./probe", "to": "/colony/graph",
  "condition": "has(hop.route) && hop.route == 'ask_colony'"}
 ```
-
-Only a bootstrap `config.json` can write that edge, which is precisely what keeps
-the privilege from spreading: no mutation can mint it at any scope.
 
 **The condition is not optional, and leaving it off does not merely route too
 much.** An edge matches every emission of the cell it starts at, and the probe

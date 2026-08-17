@@ -44,19 +44,27 @@ pub struct VaultCell {
     key: Option<MasterKey>,
     /// When the current unlock expires (`params.unlock_ttl_ms`).
     unlocked_until: Option<std::time::Instant>,
-    /// This cell's own directory, for finding `colony.db` at attestation time.
-    cell_dir: std::path::PathBuf,
+    /// GH #160: the read-only, self-scoped view on this cell's own inbound
+    /// edges, handed over at spawn iff the contract declares
+    /// `consumes.topology.inbound_edges`. `None` means the vault cannot verify
+    /// its own neighbourhood, and an unverifiable neighbourhood is treated
+    /// exactly like a wrong one — the vault stays locked. This replaces the
+    /// `colony.db` read that used to live in `attest.rs`.
+    neighbourhood: Option<meclaw_colony::NeighbourhoodView>,
 }
 
 impl VaultCell {
     /// Construct a locked vault. Production entry is [`super::VaultCellFactory`].
     #[doc(hidden)]
-    pub fn new(params: VaultParams, cell_dir: std::path::PathBuf) -> Self {
+    pub fn new(
+        params: VaultParams,
+        neighbourhood: Option<meclaw_colony::NeighbourhoodView>,
+    ) -> Self {
         Self {
             params,
             key: None,
             unlocked_until: None,
-            cell_dir,
+            neighbourhood,
         }
     }
 
@@ -407,16 +415,31 @@ impl VaultCell {
         vault_path: &Path,
         sink: &OutputSink,
     ) -> Result<Value, String> {
+        // GH #160: the neighbourhood comes from the colony, by capability — never
+        // out of `colony.db`. Nothing here blocks or touches a file, so there is
+        // no `spawn_blocking` any more; the operation timeout (rule 12/A) is the
+        // one the vault already declares for reading key material, because this
+        // is the same class of thing: a bounded ask on the unlock path.
         let expected = self.params.attested_neighbors(vault_path.as_str());
-        let path = vault_path.as_str().to_string();
-        let dir = self.cell_dir.clone();
-        let verdict =
-            tokio::task::spawn_blocking(move || match attest::colony_db_from_cell_dir(&dir) {
-                Some(db_path) => attest::attest(&db_path, &path, &expected),
-                None => Attestation::Unverifiable("no colony.db above this cell".into()),
-            })
-            .await
-            .map_err(|e| format!("vault: attestation task failed: {e}"))?;
+        let verdict = match &self.neighbourhood {
+            None => Attestation::Unverifiable(
+                "this vault declares no `consumes.topology.inbound_edges`, so it has no way to \
+                 learn who is wired to it"
+                    .into(),
+            ),
+            Some(view) => {
+                let budget =
+                    std::time::Duration::from_millis(self.params.external_timeout_ms.max(1));
+                match view.inbound(budget).await {
+                    Ok(paths) => {
+                        let inbound: Vec<String> =
+                            paths.iter().map(|p| p.as_str().to_string()).collect();
+                        attest::attest_neighbours(&inbound, &expected)
+                    }
+                    Err(e) => Attestation::Unverifiable(e.to_string()),
+                }
+            }
+        };
 
         if verdict != Attestation::Matches {
             return Err(format!(

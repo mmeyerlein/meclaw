@@ -245,6 +245,16 @@ Split into `body` (content slots) and **the two header compartments** `context` 
 
 **Declaration as a capability switch (GH #87):** a declared `consumes.body` key is not only a presence obligation, it can also **unlock a capability**. First case: `consumes.body.attachments`. Only a cell that declares the slot receives the read-only blob-store handle at spawn with which it resolves `attachments[]` refs itself at `handle()` time (`meclaw-overview.md` § "`attachments[]` schema", owner ruling GH #19; consumer detail in `cell-types.md` § `llm`). Without the declaration the handle does not exist, so the cell **cannot** read an attachment rather than merely not doing so. Because declaring is binding, this is a deliberate coupling: whoever wants to read attachments thereby also requires them on every inbound message.
 
+**`consumes.topology` — a cell's own place in the graph, not the graph (GH #160).** A fourth field beside `body`/`context`/`hop`, and the only one that is **not a message compartment**: nothing in it is validated against an incoming message, a key declared here never makes a message invalid, and `validate_consumes` does not see it. It is a pure capability declaration in the same grammar.
+
+```json
+"consumes": { "topology": { "inbound_edges": { "type": "array", "required": true } } }
+```
+
+The only key the substrate knows is **`inbound_edges`**: the `from` paths of every edge pointing at the cell's **own** path. A declaring cell receives a read-only handle at spawn (`meclaw_colony::NeighbourhoodView`) that asks exactly that one question — live against colony's in-memory `EdgeTable`, bounded by the cell's own operation timeout, self-scoped. Not the graph (that is `/colony/graph`), not a scope, not its own outbound edges, and never another node's. Without the declaration the handle does not exist.
+
+This replaces the last direct `colony.db` read in the tree (the `vault` unlock attestation); § Database isolation has had **no** exception since. First and only consumer today: `vault` — a cell that cannot verify its neighbourhood stays LOCKED, which is why a `vault` `config.json` without this declaration never unlocks.
+
 **Enforcement state:** The substrate-side required-`consumes` check runs at the delivery boundary (before `handle()`): missing/type-wrong required key → error message to `reply_to` (`error_code: "consumes_violation"`), otherwise dead letter (same token). **The error reply is delivered DIRECTLY to `reply_to`** (registry lookup via `route()`), not routed via the consumer's out-edges. It is feedback to a known sender, not a routing target (W2b ruling 2026-06-12; see `meclaw-overview.md` § Routing errors "Outputs arm: three disjoint cases", case 2). A catch-all out-edge of the consumer does not redirect the error reply.
 
 #### Schema format and validation

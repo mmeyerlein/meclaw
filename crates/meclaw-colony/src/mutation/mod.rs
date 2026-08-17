@@ -72,6 +72,33 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
     meclaw_core::Path::resolve(&meclaw_core::Path::new(scope), name)
 }
 
+/// GH #163 — the one absolute endpoint a mutation may address from inside a
+/// subtree: the colony's own read-only topology endpoint.
+///
+/// Containment (`validate::validate_scope_containment`,
+/// `subtree::resolve_internal_edges`) exists so that a mutation cannot wire into
+/// a cell it has no authority over. `/colony/graph` is not a cell — it is a
+/// virtual read endpoint of the authority itself, dispatched before `apply_edges`
+/// ever runs, and answering it hands out topology, which is not secret: it is the
+/// *sanctioned* way to learn topology, because § Database isolation forbids
+/// reading `colony.db`. Denying the lane to every mutation did not protect
+/// anything; it only meant a cell that needs the graph had to be born with the
+/// lane, or somebody would go read the database instead.
+///
+/// Deliberately a single endpoint and not a `/colony/*` prefix: `/colony/mutations`
+/// is authority *transfer*, `/colony/trace` and `/colony/dead_letters` hand out
+/// other cells' message content. Widening this list is a decision with its own
+/// argument, not a convenience.
+pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] = &["/colony/graph"];
+
+/// Whether `endpoint` is an absolute virtual endpoint a mutation may draw an
+/// edge **to** (never `from` — a virtual endpoint emits nothing on its own).
+///
+/// See [`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`].
+pub fn is_mutation_drawable_virtual_target(endpoint: &str) -> bool {
+    MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS.contains(&endpoint)
+}
+
 /// Errors that abort a mutation. Each variant maps to a spec `error_code` token
 /// (see `docs/meclaw-overview.md` § Mutation-Format → Validierung).
 #[derive(Debug, Clone, PartialEq)]

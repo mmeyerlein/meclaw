@@ -536,6 +536,23 @@ pub enum ColonyMsg {
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadGraphReply>,
     },
+    /// GH #160: the inbound neighbourhood of ONE path — the `from` of every edge
+    /// whose `to` is exactly `of`.
+    ///
+    /// The narrowest topology question there is, and the only one a cell may ask
+    /// about itself: not the graph, not a scope, not its own outbound edges. It
+    /// exists so that a cell which must refuse an unexpected neighbour (the
+    /// `vault` unlock attestation) can learn its own doorway from the authority
+    /// that owns the edge table, instead of opening `colony.db` — which
+    /// § Database isolation forbids, with no exceptions left. Answered from the
+    /// in-memory [`EdgeTable`], so it is a lookup, not a query.
+    ReadInboundEdges {
+        /// The cell's own absolute path.
+        of: Path,
+        /// Reply channel; dropped on Shutdown-drain (the caller then fails
+        /// closed, which for the vault means the vault stays locked).
+        ack: oneshot::Sender<Vec<Path>>,
+    },
     /// Phase 12-B step-7.4: read-only audit view on `colony.db::mutation_log`.
     /// Sync read via `colony_db.read_mutation_log()`.
     ReadMutationsAudit {
@@ -1727,6 +1744,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 ColonyMsg::ReadGraph { ack, .. } => {
                                     drop(ack);
                                 }
+                                ColonyMsg::ReadInboundEdges { ack, .. } => {
+                                    drop(ack);
+                                }
                                 ColonyMsg::ReadTrace { ack, .. } => {
                                     drop(ack);
                                 }
@@ -2019,6 +2039,19 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     ColonyMsg::ReadGraph { scope, ack } => {
                         let reply = crate::colony_dispatch::handle_read_graph(&registry, &edges, scope);
                         let _ = ack.send(reply);
+                    }
+                    ColonyMsg::ReadInboundEdges { of, ack } => {
+                        // GH #160: an in-memory lookup on the edge table, exact
+                        // `to` match. No scope prefix, no outbound edges, no
+                        // registry — the answer is one cell's doorway.
+                        let mut inbound: Vec<Path> = edges
+                            .edges_to(&of)
+                            .into_iter()
+                            .map(|e| e.from.clone())
+                            .collect();
+                        inbound.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                        inbound.dedup();
+                        let _ = ack.send(inbound);
                     }
                     ColonyMsg::ReadMutationsAudit { since, limit, ack } => {
                         let reply = crate::colony_dispatch::handle_read_mutations_audit(&colony_db, since, limit);
@@ -2696,6 +2729,41 @@ async fn route_with_log(
              to the hop cost of the topology (one store-backed tool round costs about \
              a dozen routing hops) and bound a tool loop with an iteration counter in \
              context, not with TTL"
+        );
+    }
+
+    // GH #162: say WHICH mailbox, before blocking on it.
+    //
+    // `route()` delivers with `entry.handle.send(routed).await`. That await is
+    // deliberate — a full mailbox is backpressure, and dropping the message
+    // instead would be worse. But the colony's routing loop is what waits, so
+    // while it waits the colony routes nothing at all, and the corridor is byte-
+    // frozen and silent. From the outside that looked like a colony that simply
+    // stopped after twenty seconds, with an EMPTY dead-letter queue and nothing
+    // in the message log (the log row is written after the send returns) — GH
+    // #161 cost most of a day for exactly that reason, and the diagnosis in the
+    // end needed a SQLite client on `colony.db`.
+    //
+    // So this is the same construction as the TTL twin above: a pre-check at the
+    // call site that names the target, the sender and the trace before the
+    // corridor is entered. Nothing is added inside `route()`, and nothing changes
+    // about the semantics — a full mailbox still blocks.
+    if pre_routable
+        && let Some(entry) = registry.get(&resolved_target)
+        && entry.handle.free_capacity() == 0
+    {
+        tracing::warn!(
+            target = %resolved_target.as_str(),
+            sender = %sender_path.as_str(),
+            trace_id = %msg.trace_id,
+            mailbox_capacity = entry.handle.max_capacity(),
+            reason = "mailbox_full",
+            "target mailbox is FULL — the colony's routing loop now blocks on this \
+             delivery and routes nothing else until it drains. If the colony appears \
+             to stop with an empty dead-letter queue, this is the mailbox it is \
+             waiting on: either the cell is too slow for its producers or an edge is \
+             multiplying messages (cell.mailbox_size raises the buffer, it does not \
+             fix a loop)"
         );
     }
 
@@ -5762,7 +5830,7 @@ fn enqueue_dispatch_follow(
     }
 }
 
-/// GH #159: which root-hive dead ends an egress sink is allowed to claim.
+/// GH #159: which hive dead ends an egress sink is allowed to claim.
 ///
 /// Opening a way out of the colony must not close the dead-letter queue. The DLQ
 /// is diagnostic infrastructure, and a door that silently swallowed every
@@ -5789,6 +5857,28 @@ impl EgressPolicy {
         match self {
             EgressPolicy::All => true,
             EgressPolicy::Marked(key) => msg.headers.context.contains_key(*key),
+        }
+    }
+
+    /// GH #163: at which hive the door may open at all.
+    ///
+    /// `All` keeps the historical geography — only the root hive `/`, because
+    /// "every dead end is an answer" is true of stdout and of nothing else; a
+    /// dead end deeper in the tree is a real dead end and belongs in the DLQ.
+    ///
+    /// `Marked` needs no geography. The marker is minted by the layer that
+    /// injected the request and is unmintable by a cell, so a marked message is
+    /// by construction the answer to a request the outside world is holding
+    /// open. There is no hive at which dead-lettering it is the better outcome —
+    /// it would leave the caller waiting on a timeout and the DLQ collecting
+    /// answers nobody reads. Making the door's *location* load-bearing was what
+    /// made a surface instantiable only at a colony's first boot (#163): the
+    /// lane back out had to be `-> /`, and no mutation may draw an edge that
+    /// leaves its own subtree.
+    fn opens_at(&self, hive_path: &Path) -> bool {
+        match self {
+            EgressPolicy::All => hive_path.as_str() == "/",
+            EgressPolicy::Marked(_) => true,
         }
     }
 }
@@ -5819,15 +5909,20 @@ fn enqueue_hive_transit(
         // everything else on the dead-letter path below, byte-for-byte as if no
         // sink existed — which is what makes wiring a door in `--api` mode safe
         // for every colony that has one.
-        if hive_path.as_str() == "/"
+        //
+        // GH #163: *which* hive may open the door is the policy's call too
+        // (`opens_at`) — `All` stays root-only, a marked answer leaves from
+        // wherever it ran out of graph.
+        if egress_policy.opens_at(&hive_path)
             && let Some(tx) = egress_tx
             && egress_policy.claims(&msg)
         {
             if let Err(e) = tx.try_send(msg) {
                 tracing::warn!(
+                    hive = %hive_path.as_str(),
                     reason = "egress_full_or_closed",
                     error = %e,
-                    "root-hive egress drop (stdout consumer slow/gone)"
+                    "egress drop (consumer slow/gone)"
                 );
             }
             return;

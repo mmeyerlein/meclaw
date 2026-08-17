@@ -526,7 +526,18 @@ fn resolve_internal_edges(
         for spec in hive_edges(template, hive_rel) {
             let from = Path::resolve(&hive_abs, &spec.from);
             let to = Path::resolve(&hive_abs, &spec.to);
-            for endpoint in [&from, &to] {
+            // GH #163: a template's own lane to the colony's read-only topology
+            // endpoint is in bounds — it addresses the authority, not a cell
+            // outside the subtree (see
+            // `crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`). Only as a
+            // target: `from` is always a node of the subtree.
+            let exempt_target = crate::mutation::is_mutation_drawable_virtual_target(to.as_str());
+            let contained: &[&Path] = if exempt_target {
+                &[&from]
+            } else {
+                &[&from, &to]
+            };
+            for endpoint in contained {
                 if !crate::connectivity::is_self_or_descendant(endpoint, subtree_root_abs) {
                     return Err(MutationError::Schema(format!(
                         "subtree edge endpoint {} escapes subtree root {}",

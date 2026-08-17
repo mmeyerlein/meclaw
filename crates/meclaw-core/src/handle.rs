@@ -23,6 +23,17 @@ impl ActorHandle {
     pub fn max_capacity(&self) -> usize {
         self.sender.max_capacity()
     }
+
+    /// Free slots in this cell's mailbox right now. `0` means the next
+    /// [`Self::send`] will WAIT.
+    ///
+    /// GH #162: the routing loop is what waits, so a full mailbox stops the whole
+    /// colony — and until this existed there was no way to say which mailbox that
+    /// was without a SQLite client on `colony.db`. Read-only and cheap; the value
+    /// is a snapshot and the caller must not treat it as a reservation.
+    pub fn free_capacity(&self) -> usize {
+        self.sender.capacity()
+    }
 }
 
 #[cfg(test)]

@@ -265,6 +265,15 @@ fn validate_edges_and_cycle(
     // nested cell + hive paths as valid edge endpoints (same representation as
     // its internal edges below). Empty for single-cell mutations.
     nodes.extend(subtree_node_endpoints.iter().cloned());
+    // GH #163: the colony's read-only topology endpoint is a valid edge TARGET at
+    // every scope (containment lets it through for the same reason). It exists
+    // for the whole lifetime of the colony, so "unknown endpoint" would be a
+    // false negative — the boot path has always resolved `/colony/*` this way.
+    nodes.extend(
+        crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS
+            .iter()
+            .map(|s| (*s).to_string()),
+    );
     if let Some(rems) = obj.get("remove_nodes").and_then(|v| v.as_array()) {
         for r in rems {
             if let Some(name) = r
@@ -1078,6 +1087,13 @@ pub fn validate_scope_containment(
                 check(f)?;
             }
             if let Some(t) = e.get("to").and_then(|v| v.as_str()) {
+                // GH #163: the colony's read-only topology endpoint is the one
+                // absolute target that is in bounds at every scope — it is the
+                // authority's own endpoint, not a cell (see
+                // `crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`).
+                if crate::mutation::is_mutation_drawable_virtual_target(t) {
+                    continue;
+                }
                 check(t)?;
             }
         }

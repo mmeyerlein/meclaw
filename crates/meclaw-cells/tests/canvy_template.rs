@@ -590,18 +590,30 @@ fn the_hive_is_sealed_to_its_two_ports() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(ports, vec!["render", "refresh"], "the store is NOT a port");
-    // The lane out to the root hive is what the egress door claims.
+    // GH #163: both of the hive's outward lanes stay INSIDE what a mutation may
+    // draw, which is what makes the whole template installable into a running
+    // colony. The answer goes to the hive itself and leaves through the egress
+    // door from there (the door is opened by the marker, not by the root hive);
+    // the topology lane addresses the colony's read-only endpoint, the one
+    // absolute endpoint a mutation is allowed. A regression to `-> /` would make
+    // the mutation `scope_out_of_bounds` again.
     let edges = cfg["params"]["graph"]["edges"].as_array().unwrap();
     assert!(
         edges
             .iter()
-            .any(|e| e["from"] == "./render" && e["to"] == "/"),
-        "the surface answer needs a lane to the root hive: {edges:?}"
+            .any(|e| e["from"] == "./render" && e["to"] == "."),
+        "the surface answer needs a lane to this hive: {edges:?}"
     );
     assert!(
-        !edges.iter().any(|e| e["to"] == "/colony/graph"),
-        "the /colony lane is PARENT-granted — a template cannot carry it, an \
-         absolute endpoint is out of scope for any mutation"
+        !edges.iter().any(|e| e["to"] == "/"),
+        "no lane may address the root hive — that is the edge no mutation can \
+         draw: {edges:?}"
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|e| e["from"] == "./probe" && e["to"] == "/colony/graph"),
+        "the hive carries its own topology lane: {edges:?}"
     );
 }
 

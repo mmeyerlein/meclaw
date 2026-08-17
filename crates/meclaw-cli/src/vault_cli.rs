@@ -33,6 +33,43 @@ pub fn run(
     key_source: &str,
     key_file: Option<&Path>,
 ) -> anyhow::Result<()> {
+    // GH #160: single writer, by construction. These modes deliberately do not
+    // boot a colony and therefore never take the root lease (`lib.rs` returns
+    // above the lease block, on purpose — a mode that spawned cells to store a
+    // credential would hand it to a running tree). That left `--vault-add`
+    // writing the vault's `cell.db` while the live vault cell owned it: WAL makes
+    // that survivable rather than correct, because the cell has no idea its store
+    // grew a version and its in-memory view is stale with nothing announcing it.
+    //
+    // So the channel asks who holds the root, before the first
+    // `Connection::open`, and refuses to WRITE into a live one.
+    //
+    // `Status` is read-only and stays available — one connection, one snapshot.
+    // `Revoke` gets the documented exemption from the same issue: being locked
+    // out of a vault must never be what stops somebody killing a leaked
+    // credential. It proceeds, loudly, and says what the operator still has to do
+    // for the running cell to see it.
+    let holder = crate::lease::current_holder(root);
+    if let Some(h) = holder {
+        match &command {
+            VaultCommand::Add(_) => bail!(
+                "a meclaw colony is running on this root (pid {}, start_id {}) and the vault \
+                 cell owns its own cell.db — refusing to write a second version into it from \
+                 outside. Stop pid {} and retry, or add the secret through the running vault.",
+                h.pid,
+                h.start_id,
+                h.pid
+            ),
+            VaultCommand::Revoke(name) => eprintln!(
+                "warning: a meclaw colony is running on this root (pid {}) — revoking `{name}` \
+                 anyway, because a leaked credential must never wait for a maintenance window. \
+                 The running vault cell keeps its current view until it is restarted; restart \
+                 pid {} to make the revocation take effect inside the colony.",
+                h.pid, h.pid
+            ),
+            VaultCommand::Status => {}
+        }
+    }
     match command {
         VaultCommand::Status => {
             let held = user_channel::status(root, cell_path).map_err(|e| anyhow!(e))?;
