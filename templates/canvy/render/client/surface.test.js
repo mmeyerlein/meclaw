@@ -259,6 +259,58 @@ console.log("\nthe hook");
      sent.length === 2 && sent[1].name === "hive:moved" &&
      sent[1].payload.id === "a" && sent[1].payload.x === 120 && sent[1].payload.y === 60,
      JSON.stringify(sent[1]));
+
+  // HIVE IN HIVE. A hive's frame is the frame around its whole SUBTREE, so a drag
+  // has to take the nested frames and the deep cells with it — moving only the
+  // direct children left the inner boxes behind for one round trip and then
+  // snapped them, which is what the nesting looked like from the client side.
+  const deepCell = elem({"data-node": "a/b/deep/four", transform: "translate(50,50)"});
+  const innerRect = elem({x: "10", y: "10", width: "100", height: "60"}, "rect");
+  const innerText = elem({x: "18", y: "28"}, "text");
+  const innerG = elem({"data-hive": "a/b"});
+  innerG.classList = {add() {}, remove() {}};
+  innerG.querySelector = (sel) => (sel === "rect" ? innerRect : sel === "text" ? innerText : null);
+  const deepRect = elem({x: "20", y: "20", width: "60", height: "40"}, "rect");
+  const deepText = elem({x: "28", y: "38"}, "text");
+  const deepG = elem({"data-hive": "a/b/deep"});
+  deepG.classList = {add() {}, remove() {}};
+  deepG.querySelector = (sel) => (sel === "rect" ? deepRect : sel === "text" ? deepText : null);
+  innerG.closest = function (sel) { return sel === "[data-hive]" ? this : null; };
+  const nested = {
+    classList: {add() {}, remove() {}},
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) { return sel === "g.viewport" ? vp : null; },
+    querySelectorAll(sel) {
+      if (sel === "[data-node]") return [deepCell];
+      if (sel === "[data-hive]") return [innerG, deepG];
+      if (sel === "path.edge") return [];
+      if (sel.startsWith("[data-from=")) return [];
+      return [];
+    },
+  };
+  const hook2 = Object.create(Canvy);
+  hook2.el = nested;
+  const sent2 = [];
+  hook2.pushEvent = (n, p) => sent2.push({name: n, payload: p});
+  hook2.mounted();
+  nested.listeners.pointerdown({target: innerG, clientX: 0, clientY: 0, preventDefault() {}});
+  nested.listeners.pointermove({clientX: 70, clientY: 30});
+  flush();
+  nested.listeners.pointerup({clientX: 70, clientY: 30});
+  ok("the dragged hive's own frame moves",
+     innerRect.getAttribute("x") === "80" && innerRect.getAttribute("y") === "40",
+     innerRect.getAttribute("x") + "," + innerRect.getAttribute("y"));
+  ok("a NESTED frame moves with it",
+     deepRect.getAttribute("x") === "90" && deepRect.getAttribute("y") === "50",
+     deepRect.getAttribute("x") + "," + deepRect.getAttribute("y"));
+  ok("and a cell two levels down moves too",
+     boxAttr(deepCell).x === 120 && boxAttr(deepCell).y === 80,
+     JSON.stringify(boxAttr(deepCell)));
+  ok("still exactly one event for the whole gesture",
+     sent2.length === 1 && sent2[0].name === "hive:moved" && sent2[0].payload.id === "a/b",
+     JSON.stringify(sent2));
 }
 
 console.log(fails ? `\n${fails} failing` : "\nall green");

@@ -191,14 +191,26 @@
     });
   }
 
-  /// The cells that belong to a hive: its DIRECT children, which is exactly the
-  /// grouping the server draws a box around (`hive_of` is the parent path, not an
-  /// ancestor test). A nested hive is its own group with its own box.
+  /// Everything BELOW a hive: every cell at any depth, not just its direct
+  /// children. A hive's frame is the frame around its whole subtree, so a drag
+  /// that moved only the direct children would leave the nested hives behind for
+  /// one round trip and then snap them — which is what "hive in hive funktioniert
+  /// noch nicht richtig" looked like from the client side.
   function membersOf(el, hive) {
     const prefix = hive + "/";
     return Array.from(el.querySelectorAll("[data-node]")).filter(function (g) {
-      const id = g.getAttribute("data-node") || "";
-      return id.startsWith(prefix) && id.slice(prefix.length).indexOf("/") === -1;
+      return (g.getAttribute("data-node") || "").startsWith(prefix);
+    });
+  }
+
+  /// The hive frames INSIDE a hive, so the nested rectangles travel with it too.
+  /// Ancestors are deliberately left alone: their frames are derived and the
+  /// server's answer grows them, which is the honest provisional picture — a
+  /// parent that stretched on the client would be guessing.
+  function nestedFrames(el, hive) {
+    const prefix = hive + "/";
+    return Array.from(el.querySelectorAll("[data-hive]")).filter(function (g) {
+      return (g.getAttribute("data-hive") || "").startsWith(prefix);
     });
   }
 
@@ -315,12 +327,23 @@
             const parts = hiveParts(hg);
             const members = membersOf(el, id);
             const ids = members.map(m => m.getAttribute("data-node"));
+            // Own frame first, then every frame inside it — each with the
+            // coordinates it started from, so a move is one addition and not an
+            // accumulation that drifts.
+            const frames = [hg].concat(nestedFrames(el, id)).map(function (g) {
+              const p = hiveParts(g);
+              return {
+                rect: p.rect, text: p.text,
+                rx: numAttr(p.rect, "x"), ry: numAttr(p.rect, "y"),
+                tx: numAttr(p.text, "x"), ty: numAttr(p.text, "y"),
+              };
+            });
             hive = {
               id: id,
               g: hg,
               parts: parts,
+              frames: frames,
               origin: {x: numAttr(parts.rect, "x"), y: numAttr(parts.rect, "y")},
-              label: {x: numAttr(parts.text, "x"), y: numAttr(parts.text, "y")},
               members: members.map(m => ({g: m, at: boxOf(m)})),
               from: userPoint(el, ev),
               delta: {x: 0, y: 0},
@@ -360,14 +383,16 @@
             frame = null;
             if (!hive) return;
             const dx = Math.round(hive.delta.x), dy = Math.round(hive.delta.y);
-            if (hive.parts.rect) {
-              hive.parts.rect.setAttribute("x", hive.origin.x + dx);
-              hive.parts.rect.setAttribute("y", hive.origin.y + dy);
-            }
-            if (hive.parts.text) {
-              hive.parts.text.setAttribute("x", hive.label.x + dx);
-              hive.parts.text.setAttribute("y", hive.label.y + dy);
-            }
+            hive.frames.forEach(function (f) {
+              if (f.rect) {
+                f.rect.setAttribute("x", f.rx + dx);
+                f.rect.setAttribute("y", f.ry + dy);
+              }
+              if (f.text) {
+                f.text.setAttribute("x", f.tx + dx);
+                f.text.setAttribute("y", f.ty + dy);
+              }
+            });
             const boxes = {};
             hive.members.forEach(function (m) {
               m.g.setAttribute("transform",

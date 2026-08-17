@@ -49,6 +49,14 @@ PAD_TOP, PAD_SIDE, PAD_BOT = 30, 24, 24
 # hive wider than this still gets its own row rather than being cut.
 SHELF_W = 2400
 HIVE_GAP_X, HIVE_GAP_Y = 90, 80
+# How much more room each level towards the ROOT gets, so an ancestor's frame
+# strictly contains its descendants' instead of sharing an edge.
+NEST_PAD = 14
+# How many depths the stylesheet has a tint for. Deeper hives keep the last one.
+# Ten, because a real colony gets deep: `/org/<org>/member/<who>/assistants/<name>/
+# talky/keeper` is already eight, and two hives at different depths sharing a colour
+# is exactly the thing the tint exists to prevent.
+HIVE_DEPTH_TINTS = 10
 
 # Fill and stroke per cell type. Ported verbatim from colony_topology.py so the
 # shipped surface and the standalone renderer draw the same colony.
@@ -252,58 +260,140 @@ def hive_block(members, layer):
     return rel, width, height
 
 
+def hive_tree(ids):
+    """The hive paths in the picture, as parent -> sorted children.
+
+    Every ancestor of every cell is a hive, whether or not it holds a cell of its
+    own: `/a/b/c/one` makes `/a`, `/a/b` and `/a/b/c` hives. Drawing only the
+    direct parent was the defect reported as "hive in hive does not work properly
+    yet" — a colony is a tree, and a picture that shows only its leaves' parents
+    shows none of it.
+    """
+    hives = set()
+    for i in ids:
+        parts = i.split("/")[:-1]          # every prefix above the cell itself
+        for n in range(1, len(parts) + 1):
+            hives.add("/".join(parts[:n]))
+    kids = {"": []}
+    for h in hives:
+        kids.setdefault(h, [])
+        parent = h.rsplit("/", 1)[0] if "/" in h else ""
+        kids.setdefault(parent, []).append(h)
+    for k in kids:
+        kids[k] = sorted(kids[k])
+    return kids
+
+
+def own_cells(ids_by_hive, hive):
+    """The cells whose immediate parent is `hive`."""
+    return ids_by_hive.get(hive, [])
+
+
+def layout_subtree(hive, kids, ids_by_hive, layer):
+    """Lay out one hive and everything under it, relative to (0, 0).
+
+    The shape is the same at every depth, which is what makes nesting work at all:
+    a hive's OWN cells go on top as rows by flow rank, its child hives are packed
+    into shelves underneath, and the whole thing reports one size. A parent then
+    packs its children by that size without knowing anything about their insides.
+
+    Returns `(positions, width, height)` — positions keyed by cell id.
+    """
+    pos = {}
+    members = sorted(own_cells(ids_by_hive, hive), key=lambda i: (layer[i], i))
+    width = height = 0
+    if members:
+        rel, w, h = hive_block(members, layer)
+        for i, (rx, ry) in rel.items():
+            pos[i] = (rx, ry)
+        width, height = w, h
+
+    children = kids.get(hive, [])
+    if children:
+        # A child hive needs room for its own frame on every side, so it is inset
+        # by one padding step; that inset is also what keeps the derived boxes
+        # strictly nested instead of sharing an edge.
+        shelf_y = height + (HIVE_GAP_Y if members else 0)
+        shelf_x, shelf_h = 0, 0
+        for child in children:
+            cpos, cw, ch = layout_subtree(child, kids, ids_by_hive, layer)
+            if shelf_x > 0 and shelf_x + cw > SHELF_W:
+                shelf_y += shelf_h + HIVE_GAP_Y
+                shelf_x, shelf_h = 0, 0
+            for i, (rx, ry) in cpos.items():
+                pos[i] = (shelf_x + rx + PAD_SIDE, shelf_y + ry + PAD_TOP)
+            shelf_x += cw + 2 * PAD_SIDE + HIVE_GAP_X
+            shelf_h = max(shelf_h, ch + 2 * PAD_TOP)
+            width = max(width, shelf_x - HIVE_GAP_X)
+        height = shelf_y + shelf_h
+    return pos, width, height
+
+
 def auto_layout(nodes, edges, saved, hive_at=None):
     """Where every box sits. A saved position always wins.
 
-    Two levels, and the outer one is the one that decides whether the picture is
-    readable at all. Inside a hive: rows by flow rank (`hive_block`). Between
-    hives: **packed into rows**, left to right, wrapping at `SHELF_W`.
+    Three levels, and each one only knows about the next: cells inside a hive are
+    rows by flow depth, so a request sits above the thing it asks; a hive's child
+    hives are packed into shelves below its own cells; the top level packs whatever
+    has no parent. Recursive, so depth costs nothing.
 
-    Stacking the hives in one column was the first version, and it was reported
-    unusable on the first colony that had more than a handful: 14 hives became a
-    3672-pixel-tall strip two boxes wide. Every hive sat at the same x, so the
-    whole arrangement carried exactly one bit of information — order — while a
-    screen is two-dimensional. Packing is not decoration: it is what makes the
-    default arrangement worth keeping long enough to rearrange it by hand.
+    Stacking everything in one column was the first version and was reported
+    unusable: 14 hives became a 3672-pixel strip two boxes wide, every hive at the
+    same x, one bit of information where a screen offers two dimensions. Drawing
+    only a cell's DIRECT parent was the second: a colony is a tree and the picture
+    showed none of it.
 
-    Sorted by hive path, so siblings land next to each other rather than wherever
-    a dictionary happened to put them. Deterministic: same input, same output, so
-    a changed picture means a changed colony.
+    Deterministic: same input, same output, so a changed picture means a changed
+    colony.
     """
     ids = [n["id"] for n in nodes]
     layer = flow_layers(ids, edges)
     hive_at = hive_at or {}
-    by_hive = {}
+    ids_by_hive = {}
     for n in nodes:
-        by_hive.setdefault(hive_of(n["id"]), []).append(n["id"])
+        ids_by_hive.setdefault(hive_of(n["id"]), []).append(n["id"])
+    kids = hive_tree(ids)
 
     pos = {}
+    # The root level: cells with no hive at all, then every top-level hive.
     shelf_x, shelf_y, shelf_h = PAD_SIDE, PAD_TOP, 0
-    for hive in sorted(by_hive):
-        members = sorted(by_hive[hive], key=lambda i: (layer[i], i))
-        rel, w, h = hive_block(members, layer)
-        # Wrap when this hive would push the row past the target width — but
-        # never wrap an empty row, or a single hive wider than SHELF_W would
-        # start on a line of its own forever.
+    loose = sorted(own_cells(ids_by_hive, ""), key=lambda i: (layer[i], i))
+    if loose:
+        rel, w, h = hive_block(loose, layer)
+        for i, (rx, ry) in rel.items():
+            pos[i] = (shelf_x + rx, shelf_y + ry)
+        shelf_y += h + HIVE_GAP_Y
+
+    for hive in kids.get("", []):
+        sub, w, h = layout_subtree(hive, kids, ids_by_hive, layer)
         if shelf_x > PAD_SIDE and shelf_x + w > SHELF_W:
             shelf_y += shelf_h + HIVE_GAP_Y
             shelf_x, shelf_h = PAD_SIDE, 0
-        # A hive somebody moved keeps the place they put it: the SAVED value is
-        # the box origin (what `hive_boxes` derives), so the block is translated
-        # by the difference, members and all. Storing the rectangle itself would
-        # be the wrong thing to store — the box is derived, which is what lets a
-        # cell dragged out of a crowd GROW its hive instead of being stranded
-        # outside a stale frame. One row per hive, whatever its size.
         ox, oy = shelf_x, shelf_y
-        if hive in hive_at:
-            ox = hive_at[hive][0] + PAD_SIDE
-            oy = hive_at[hive][1] + PAD_TOP
-        for i, (rx, ry) in rel.items():
+        for i, (rx, ry) in sub.items():
             pos[i] = (ox + rx, oy + ry)
-        # The shelf advances by the AUTOMATIC size regardless, so moving one hive
-        # never reshuffles the others.
         shelf_x += w + HIVE_GAP_X
         shelf_h = max(shelf_h, h)
+
+    # A hive somebody moved keeps the place they put it, and takes its WHOLE
+    # subtree along. What is stored is an offset, never the rectangle: the
+    # rectangle stays derived, which is what lets a cell dragged out of a crowd
+    # grow its hive instead of being stranded outside a stale frame. Applied
+    # shallowest-first, so moving a parent and then a child reads as the child
+    # having been placed inside the parent's new position.
+    # The SAME `deepest` the renderer uses, or the padding differs between the box
+    # that was dragged and the box the delta is computed from, and every hive move
+    # lands a few pixels off.
+    deepest = max((i.count("/") for i in pos), default=1)
+    for hive in sorted(hive_at, key=lambda h: (h.count("/"), h)):
+        members = [i for i in pos if i.startswith(hive + "/")]
+        if not members:
+            continue
+        cur = box_of([pos[i] for i in members], hive.count("/") + 1, deepest)
+        dx = hive_at[hive][0] - cur[0]
+        dy = hive_at[hive][1] - cur[1]
+        for i in members:
+            pos[i] = (pos[i][0] + dx, pos[i][1] + dy)
 
     # Precedence, and it only reads one way: a cell that somebody placed by hand
     # keeps its place, then the offset of its hive, then the automatic layout. A
@@ -315,31 +405,55 @@ def auto_layout(nodes, edges, saved, hive_at=None):
     return pos
 
 
+def box_of(points, depth, deepest=None):
+    """The frame around a set of cell positions, padded for its depth.
+
+    The padding grows towards the ROOT: an ancestor gets strictly more room than
+    its descendants, which is what makes a parent's frame strictly CONTAIN a
+    child's instead of sharing an edge with it. Two boxes that touch read as two
+    boxes bumping into each other; nesting has to be visible without measuring.
+    """
+    deepest = depth if deepest is None else deepest
+    step = max(0, deepest - depth) * NEST_PAD
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x = min(xs) - PAD_SIDE - step
+    y = min(ys) - PAD_TOP - step
+    w = (max(xs) + NODE_W + PAD_SIDE + step) - x
+    h = (max(ys) + NODE_H + PAD_BOT + step) - y
+    return (x, y, w, h)
+
+
 def hive_boxes(nodes, pos):
     """One box per hive, derived from where its members ended up.
 
     Derived and never stored, which is what makes dragging a cell out of a crowd
-    GROW its hive instead of stranding the cell outside a stale rectangle.
+    GROW its hive instead of stranding the cell outside a stale rectangle — and
+    what makes a parent follow when a hive inside it moves.
+
+    A hive's members are every cell BELOW it, at any depth, not only its direct
+    children: that is the whole of hive-in-hive. `/a` is the frame around
+    everything under `/a`, `/a/b` the frame around everything under `/a/b`, and a
+    hive that holds nothing but sub-hives still gets a frame — previously it got
+    none, so the deepest structure in the colony was the only structure drawn.
     """
     groups = {}
     for n in nodes:
-        h = hive_of(n["id"])
-        if not h:
-            continue
-        groups.setdefault(h, []).append(pos[n["id"]])
+        parts = n["id"].split("/")[:-1]
+        for k in range(1, len(parts) + 1):
+            groups.setdefault("/".join(parts[:k]), []).append(pos[n["id"]])
+    if not groups:
+        return []
+    deepest = max(h.count("/") + 1 for h in groups)
     boxes = []
     for h in sorted(groups):
-        xs = [p[0] for p in groups[h]]
-        ys = [p[1] for p in groups[h]]
-        x = min(xs) - PAD_SIDE
-        y = min(ys) - PAD_TOP
-        w = (max(xs) + NODE_W + PAD_SIDE) - x
-        ht = (max(ys) + NODE_H + PAD_BOT) - y
+        depth = h.count("/") + 1
+        x, y, w, ht = box_of(groups[h], depth, deepest)
         boxes.append(
             {
                 "id": h,
                 "name": h.rsplit("/", 1)[-1],
-                "depth": h.count("/") + 1,
+                "depth": depth,
                 "x": x,
                 "y": y,
                 "w": w,
@@ -396,12 +510,17 @@ def node_svg(n):
 
 
 def hive_svg(h):
+    # `depth-N` is what the stylesheet tints. Clamped, because a tree deeper than
+    # the palette should keep the deepest colour rather than fall back to none —
+    # a hive with no tint would read as "not a hive".
+    depth = max(1, min(HIVE_DEPTH_TINTS, h["depth"]))
     return (
-        '<g class="hive" data-hive="%s">'
+        '<g class="hive depth-%d" data-hive="%s">'
         '<rect x="%d" y="%d" width="%d" height="%d" rx="10"/>'
         '<text x="%d" y="%d">%s</text>'
         "</g>"
     ) % (
+        depth,
         esc(h["id"]),
         h["x"],
         h["y"],

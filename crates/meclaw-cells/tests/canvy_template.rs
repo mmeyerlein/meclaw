@@ -210,6 +210,24 @@ fn hive_box(html: &str, hive: &str) -> (i64, i64) {
     (num("x"), num("y"))
 }
 
+/// The `(x, y, w, h)` of a hive box.
+fn hive_frame(html: &str, hive: &str) -> (i64, i64, i64, i64) {
+    let needle = format!("data-hive=\"{hive}\"");
+    let after = html
+        .split(&needle)
+        .nth(1)
+        .unwrap_or_else(|| panic!("no hive box for {hive} in {html}"));
+    let rect = after.split("/>").next().unwrap_or("");
+    let num = |k: &str| -> i64 {
+        rect.split(&format!("{k}=\""))
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no {k} in {rect}"))
+    };
+    (num(" x"), num(" y"), num("width"), num("height"))
+}
+
 /// The `translate(x,y)` of each named node, in the order asked for.
 fn node_positions(html: &str, ids: &[&str]) -> Vec<(i64, i64)> {
     ids.iter()
@@ -578,7 +596,7 @@ fn hives_are_packed_into_rows_and_not_a_single_column() {
     // The hive rectangles carry their own x/y, which is the arrangement itself.
     let mut xs: Vec<f64> = Vec::new();
     let mut ys: Vec<f64> = Vec::new();
-    for chunk in html.split("<g class=\"hive\"").skip(1) {
+    for chunk in html.split("class=\"hive depth-").skip(1) {
         let rect = chunk.split("/>").next().unwrap_or("");
         let get = |k: &str| -> f64 {
             rect.split(&format!("{k}=\""))
@@ -745,6 +763,187 @@ fn a_saved_cell_position_survives_a_hive_move() {
     assert!(
         two.0 >= 900 && two.1 >= 900,
         "and its neighbour follows the hive offset, got {two:?}"
+    );
+}
+
+/// **A hive inside a hive has to LOOK inside it.** Reported as "hive in hive does
+/// not work properly yet", and it did not: a box was derived from a cell's DIRECT
+/// parent only, so `/a` and `/a/b` were two unrelated rectangles packed side by
+/// side, and a hive holding nothing but sub-hives got no box at all. The picture
+/// then said nothing about the tree it is a picture of.
+///
+/// Two properties, and both have to hold at once: every ancestor hive is drawn, and
+/// an ancestor's box strictly CONTAINS its descendant's. Strictly, not merely
+/// overlapping — a shared edge reads as two boxes bumping into each other rather
+/// than one being inside the other.
+#[test]
+fn an_ancestor_hive_contains_its_children() {
+    let Some(root) = shipped_canvy() else { return };
+    // `/a` holds one cell and two sub-hives; `/a/b` holds a cell and a sub-hive of
+    // its own; `/c` is an unrelated neighbour. Three depths, so "contains" is
+    // asserted transitively and not just for one pair.
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(
+                &[
+                    ("/a/own", "llm"),
+                    ("/a/b/two", "store"),
+                    ("/a/b/deep/three", "code"),
+                    ("/a/other/four", "code"),
+                    ("/c/five", "code"),
+                ],
+                &[],
+            ))),
+            json!({}),
+        ),
+    ));
+
+    for h in ["a", "a/b", "a/b/deep", "a/other", "c"] {
+        assert!(
+            html.contains(&format!("data-hive=\"{h}\"")),
+            "every hive on the path must be drawn, {h} is missing: {html}"
+        );
+    }
+    let contains = |outer: &str, inner: &str| {
+        let (ox, oy, ow, oh) = hive_frame(&html, outer);
+        let (ix, iy, iw, ih) = hive_frame(&html, inner);
+        assert!(
+            ox < ix && oy < iy && ox + ow > ix + iw && oy + oh > iy + ih,
+            "{outer} ({ox},{oy},{ow},{oh}) must strictly contain {inner} ({ix},{iy},{iw},{ih})"
+        );
+    };
+    contains("a", "a/b");
+    contains("a", "a/other");
+    contains("a/b", "a/b/deep");
+    contains("a", "a/b/deep");
+
+    // And a neighbour is beside it, not inside it.
+    let (ax, _, aw, _) = hive_frame(&html, "a");
+    let (cx, _, _, _) = hive_frame(&html, "c");
+    assert!(
+        cx >= ax + aw || cx < ax,
+        "an unrelated hive must not sit inside another one"
+    );
+}
+
+/// Each depth gets its own tint, so the nesting is readable without counting
+/// dashes. The class is what the stylesheet keys on, so a picture that lost the
+/// class would look flat again even with every box in the right place.
+#[test]
+fn every_hive_carries_its_depth() {
+    let Some(root) = shipped_canvy() else { return };
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(
+                &[
+                    ("/a/own", "llm"),
+                    ("/a/b/two", "store"),
+                    ("/a/b/deep/three", "code"),
+                ],
+                &[],
+            ))),
+            json!({}),
+        ),
+    ));
+    for (h, depth) in [("a", 1), ("a/b", 2), ("a/b/deep", 3)] {
+        assert!(
+            html.contains(&format!("class=\"hive depth-{depth}\" data-hive=\"{h}\"")),
+            "hive {h} must be drawn as depth-{depth}: {html}"
+        );
+    }
+    // The stylesheet has to actually distinguish them, or the class is decoration —
+    // and it has to cover every depth the renderer can emit, or the deepest hives
+    // fall back to a fill they share with depth 1. The two numbers are read out of
+    // the two files rather than written here, because that is the drift that would
+    // otherwise be invisible.
+    let css = std::fs::read_to_string(root.join("render/client/surface.css")).unwrap();
+    let py = std::fs::read_to_string(root.join("render/render.py")).unwrap();
+    let tints: usize = py
+        .split("HIVE_DEPTH_TINTS = ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .expect("render.py must declare HIVE_DEPTH_TINTS");
+    assert!(tints >= 8, "a real colony reaches depth 8, got {tints}");
+    let mut fills = std::collections::HashSet::new();
+    for depth in 1..=tints {
+        let rule = format!(".canvy .hive.depth-{depth} rect{{ fill:var(--hive{depth}); }}");
+        assert!(
+            css.contains(&rule),
+            "surface.css must give depth-{depth} its own fill: `{rule}` missing"
+        );
+        let value = css
+            .split(&format!("--hive{depth}:"))
+            .nth(1)
+            .and_then(|r| r.split(';').next())
+            .expect("every tint needs a value")
+            .trim()
+            .to_string();
+        assert!(
+            fills.insert(value.clone()),
+            "depth-{depth} reuses the tint {value} — every depth gets its own"
+        );
+    }
+}
+
+/// Dragging a nested hive moves its own subtree and lets its parent follow: the
+/// parent's box is derived, so it grows rather than being left behind.
+#[test]
+fn dragging_a_nested_hive_takes_its_subtree_and_grows_its_parent() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[
+            ("/a/own", "llm"),
+            ("/a/b/two", "store"),
+            ("/a/b/deep/three", "code"),
+        ],
+        &[],
+    );
+    let before = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let inner = hive_frame(&before, "a/b");
+    let target = (inner.0 + 600, inner.1 + 400);
+    let after = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(snapshot_rows(graph)),
+            json!({}),
+            json!({
+                "canvy_origin": "render",
+                "canvy_event": "hive:moved",
+                "canvy_moved_id": "a/b",
+                "canvy_moved_x": target.0.to_string(),
+                "canvy_moved_y": target.1.to_string(),
+            }),
+        ),
+    ));
+    assert_eq!(
+        (hive_frame(&after, "a/b").0, hive_frame(&after, "a/b").1),
+        target,
+        "the nested hive goes where it was dropped"
+    );
+    // Its own sub-hive travelled with it.
+    let deep_before = hive_frame(&before, "a/b/deep");
+    let deep_after = hive_frame(&after, "a/b/deep");
+    assert_eq!(
+        (deep_after.0 - deep_before.0, deep_after.1 - deep_before.1),
+        (600, 400),
+        "a hive moves its whole subtree, not just its direct cells"
+    );
+    // And the parent still contains it.
+    let (ox, oy, ow, oh) = hive_frame(&after, "a");
+    let (ix, iy, iw, ih) = hive_frame(&after, "a/b");
+    assert!(
+        ox < ix && oy < iy && ox + ow > ix + iw && oy + oh > iy + ih,
+        "the parent must grow to keep holding what moved inside it"
     );
 }
 

@@ -9,6 +9,36 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.12.3] — 2026-08-17
+
+### Fixed
+
+- **Hive in hive.** A hive's frame was derived from a cell's **direct** parent only,
+  so `/a` and `/a/b` were drawn as two unrelated rectangles packed side by side, and
+  a hive holding nothing but sub-hives got no frame at all — the picture said almost
+  nothing about the tree it is a picture of. Now every ancestor of every cell is a
+  hive with a frame, the layout is recursive (a hive's own cells as rows by flow
+  depth, its child hives packed into shelves below), and each frame is derived from
+  every cell *beneath* it. An ancestor is padded more than its descendants, so a
+  parent's frame **strictly** contains a child's instead of sharing an edge with it.
+  A colony's real depth is eight and all eight levels are visible.
+- **Dragging a nested hive takes its subtree.** The client moved only the direct
+  children while the server moved everything below, so the inner frames stayed put
+  for one round trip and then snapped into place. The drag now carries every
+  descendant cell and every nested frame; ancestors are deliberately left alone,
+  because their frames are derived and the server's answer grows them — a parent
+  stretched on the client would be guessing.
+
+### Added
+
+- **A tint per depth**, `depth-1` … `depth-10`, so nesting is legible without
+  counting dashes or measuring rectangles. Faint and stacking: hives are emitted
+  parent-first, so a child paints over its parent and each level adds a shade. Ten,
+  because `/org/<org>/member/<who>/assistants/<name>/talky/keeper` is already eight
+  and two hives at different depths sharing a colour is the thing the tint exists to
+  prevent. `HIVE_DEPTH_TINTS` in `render.py` and the rules in `surface.css` are held
+  together by a test that reads both files and refuses a reused value.
+
 ## [0.12.2] — 2026-08-17
 
 ### Added

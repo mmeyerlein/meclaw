@@ -101,8 +101,47 @@ button:hover{border-color:var(--accent);color:var(--accent)}
    by its 1px dashed border and nothing else. With it, the empty space inside a
    hive is the group's handle — and the cells still win, because the nodes group
    paints after the hives group and therefore gets the event first. */
-.canvy .hive rect{ fill:none; stroke:var(--line); stroke-dasharray:4 3;
+/* One tint per DEPTH, so nesting is readable without counting dashes or measuring
+   rectangles — asked for directly, and it is what turns four nested frames into
+   four legible layers. The tints are faint and they STACK: hives are emitted
+   parent-first (sorted by path), so a child paints over its parent and each step
+   adds a shade. Ten depths, because a real colony reaches eight
+   (`/org/<org>/member/<who>/assistants/<name>/talky/keeper`); deeper keeps the last
+   tint, which is still a tint — a hive with no fill would read as "not a hive".
+   Kept in sync with HIVE_DEPTH_TINTS in render.py, and a test reads both. */
+:root{
+  --hive1:rgba(47,111,79,.055); --hive2:rgba(40,120,170,.060);
+  --hive3:rgba(120,90,180,.060); --hive4:rgba(196,120,40,.065);
+  --hive5:rgba(176,60,110,.055); --hive6:rgba(30,140,140,.060);
+  --hive7:rgba(150,140,40,.065); --hive8:rgba(90,90,200,.055);
+  --hive9:rgba(200,90,60,.060); --hive10:rgba(120,120,120,.075);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme=light]){
+  --hive1:rgba(127,191,154,.070); --hive2:rgba(90,170,225,.075);
+  --hive3:rgba(170,140,235,.075); --hive4:rgba(240,160,70,.080);
+  --hive5:rgba(235,120,170,.070); --hive6:rgba(80,205,205,.075);
+  --hive7:rgba(215,205,90,.080); --hive8:rgba(140,140,245,.070);
+  --hive9:rgba(245,130,95,.075); --hive10:rgba(190,190,190,.090);
+}}
+:root[data-theme=dark]{
+  --hive1:rgba(127,191,154,.070); --hive2:rgba(90,170,225,.075);
+  --hive3:rgba(170,140,235,.075); --hive4:rgba(240,160,70,.080);
+  --hive5:rgba(235,120,170,.070); --hive6:rgba(80,205,205,.075);
+  --hive7:rgba(215,205,90,.080); --hive8:rgba(140,140,245,.070);
+  --hive9:rgba(245,130,95,.075); --hive10:rgba(190,190,190,.090);
+}
+.canvy .hive rect{ fill:var(--hive1); stroke:var(--line); stroke-dasharray:4 3;
   pointer-events:all; cursor:grab; }
+.canvy .hive.depth-1 rect{ fill:var(--hive1); }
+.canvy .hive.depth-2 rect{ fill:var(--hive2); }
+.canvy .hive.depth-3 rect{ fill:var(--hive3); }
+.canvy .hive.depth-4 rect{ fill:var(--hive4); }
+.canvy .hive.depth-5 rect{ fill:var(--hive5); }
+.canvy .hive.depth-6 rect{ fill:var(--hive6); }
+.canvy .hive.depth-7 rect{ fill:var(--hive7); }
+.canvy .hive.depth-8 rect{ fill:var(--hive8); }
+.canvy .hive.depth-9 rect{ fill:var(--hive9); }
+.canvy .hive.depth-10 rect{ fill:var(--hive10); }
 .canvy .hive text{ fill:var(--muted); font:11px system-ui,sans-serif;
   cursor:grab; user-select:none; }
 .canvy .hive.dragging rect{ stroke:var(--accent); stroke-dasharray:none; cursor:grabbing; }

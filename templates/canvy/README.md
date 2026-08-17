@@ -213,9 +213,30 @@ way and only one way:
 
 so moving a hive never silently undoes a hand-placed cell inside it.
 
-A hive's members are its **direct** children, which is exactly the grouping the
-server draws a box around. A nested hive is its own group, with its own box, moved
-on its own.
+A hive's frame is the frame around its **whole subtree**, so dragging one takes
+every cell and every nested frame below it. Ancestors are deliberately left alone
+during the drag: their frames are derived, and the server's answer grows them — a
+parent that stretched on the client would be guessing.
+
+### Hive in hive
+
+Every ancestor of every cell is a hive and gets a frame, whether or not it holds a
+cell of its own: `/org/acme/member/al/assistants/egon/talky/keeper` draws seven
+nested frames. The layout is recursive and the same shape at every depth — a hive's
+own cells on top as rows by flow depth, its child hives packed into shelves below —
+so a parent packs its children by their size without knowing anything about their
+insides.
+
+The frames are **derived**, one per hive path, from every cell beneath it. An
+ancestor is padded more than its descendants (`NEST_PAD` per level), which is what
+makes a parent's frame *strictly* contain a child's rather than share an edge with
+it: two boxes that touch read as two boxes bumping into each other.
+
+Each depth gets its own faint tint (`depth-1` … `depth-10` in `surface.css`, matched
+to `HIVE_DEPTH_TINTS` in `render.py` and checked by a test that reads both files).
+They stack, because hives are emitted parent-first, so four nested frames read as
+four layers. A colony reaches depth eight in practice, which is why the palette does
+not stop at three.
 
 ## Editing the picture
 
