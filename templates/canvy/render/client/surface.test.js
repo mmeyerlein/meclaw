@@ -313,5 +313,98 @@ console.log("\nthe hook");
      JSON.stringify(sent2));
 }
 
+// --- 9. selection: the panel, the dimming, and the walk
+//
+// The stylesheet has had `.sel`, `.dim` and `.hot` since the first version —
+// copied from a working tool — and nothing ever set them. So the picture could be
+// looked at and not READ: which edges belong to this cell, what is the condition
+// on that one, where does this go. That is the whole difference between a diagram
+// and something you can dissect a colony with.
+console.log("\nselection");
+{
+  const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
+  function classList() {
+    const set = {};
+    return {
+      add(c) { set[c] = true; },
+      remove() { Array.prototype.forEach.call(arguments, c => delete set[c]); },
+      toggle(c, on) { if (on) set[c] = true; else delete set[c]; },
+      has(c) { return !!set[c]; },
+    };
+  }
+  function elem(attrs, tag) {
+    return {
+      tag: tag || "g",
+      attrs: Object.assign({}, attrs),
+      getAttribute(k) { return k in this.attrs ? String(this.attrs[k]) : null; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      closest() { return null; },
+    };
+  }
+  const cellA = elem({"data-node": "a/one", transform: "translate(0,0)"});
+  const cellB = elem({"data-node": "a/two", transform: "translate(300,0)"});
+  const cellC = elem({"data-node": "b/far", transform: "translate(900,0)"});
+  [cellA, cellB, cellC].forEach(c => { c.classList = classList(); });
+  const e1 = elem({"data-edge": "e1", "data-from": "a/one", "data-to": "a/two",
+                   "data-lane": "0", "data-cond": "hop.route == 'x'",
+                   "data-mod": '{"set_context":{"k":"v"}}'}, "path");
+  const e2 = elem({"data-edge": "e2", "data-from": "b/far", "data-to": "b/far",
+                   "data-lane": "0", "data-cond": "", "data-mod": ""}, "path");
+  [e1, e2].forEach(e => { e.classList = classList(); });
+  const panel = elem({id: "detail"});
+  panel.innerHTML = "";
+  panel.querySelectorAll = () => [];
+  const vp2 = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
+  const board = {
+    classList: classList(),
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) { return sel === "g.viewport" ? vp2 : sel === "#detail" ? panel : null; },
+    querySelectorAll(sel) {
+      if (sel === "[data-node]") return [cellA, cellB, cellC];
+      if (sel === "path.edge") return [e1, e2];
+      if (sel === "[data-hive]") return [];
+      if (sel.startsWith("[data-from=")) return [];
+      return [];
+    },
+  };
+  const hook3 = Object.create(Canvy);
+  hook3.el = board;
+  hook3.pushEvent = () => {};
+  hook3.mounted();
+
+  cellA.closest = (sel) => (sel === "[data-node]" ? cellA : null);
+  board.listeners.click({target: cellA});
+  ok("selecting a cell marks it", cellA.classList.has("sel"));
+  ok("its neighbour is not dimmed", !cellB.classList.has("dim"));
+  ok("an unrelated cell is dimmed", cellC.classList.has("dim"));
+  ok("its edge is hot", e1.classList.has("hot") && !e1.classList.has("dim"));
+  ok("an unrelated edge is dimmed", e2.classList.has("dim"));
+  ok("the panel names the cell and counts both directions",
+     panel.innerHTML.indexOf("a/one") >= 0 &&
+     panel.innerHTML.indexOf("out (1)") >= 0 &&
+     panel.innerHTML.indexOf("in (0)") >= 0,
+     panel.innerHTML.slice(0, 160));
+
+  e1.closest = (sel) => (sel === "[data-edge]" ? e1 : null);
+  board.listeners.click({target: e1});
+  ok("selecting an edge shows its condition IN FULL",
+     panel.innerHTML.indexOf("hop.route == &#39;x&#39;") >= 0 ||
+     panel.innerHTML.indexOf("hop.route == 'x'") >= 0,
+     panel.innerHTML.slice(0, 200));
+  ok("and its modifier", panel.innerHTML.indexOf("set_context") >= 0);
+
+  const empty = elem({});
+  empty.closest = () => null;
+  board.listeners.click({target: empty});
+  ok("clicking the background clears everything",
+     !cellA.classList.has("sel") && !e1.classList.has("hot") &&
+     panel.innerHTML.indexOf("Click a cell") >= 0);
+}
+
 console.log(fails ? `\n${fails} failing` : "\nall green");
 process.exit(fails ? 1 : 0);

@@ -128,6 +128,117 @@ async fn a_request_is_stamped_and_the_event_is_passed_through_verbatim() {
     assert_eq!(handle.await.unwrap(), Ok("<svg/>".to_string()));
 }
 
+/// **A page that outgrew the inline limit still arrives.** The substrate offloads
+/// any body past `colony.json blob_inline_max_bytes` (64 KB) into a blob, by
+/// design and without asking — and a surface answer is a whole HTML page, which is
+/// exactly the kind of body that gets big. Before this, the first canvas that
+/// crossed the line failed every join with "body is not inline": a message that
+/// names the symptom and hides the cause. It happened on a fifty-cell colony, so
+/// "eventually" meant "immediately".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_that_was_offloaded_to_a_blob_still_arrives() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(meclaw_colony::DiskBlobStore::new(dir.path()).unwrap());
+    let (colony_tx, mut colony_rx) = mpsc::channel::<ColonyMsg>(64);
+    let (egress_tx, egress_rx) = mpsc::channel::<Message>(64);
+    let (dispatcher, _join) = Dispatcher::with_blobs(
+        colony_tx,
+        egress_rx,
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+        Some(store.clone()),
+    );
+
+    let d = dispatcher.clone();
+    let handle = tokio::spawn(async move {
+        d.render(
+            "/org/acme/canvy/render",
+            meclaw_core::serde_json::json!({ "event": "surface:join", "value": {} }),
+            RENDER_BUDGET,
+        )
+        .await
+    });
+    let sent = colony_rx.recv().await.expect("the request");
+    let id = injected_request_id(&sent);
+
+    // A page over the limit: the same body, written to the store and referenced.
+    let big = "<svg>".to_string() + &"x".repeat(80_000) + "</svg>";
+    let body = meclaw_core::serde_json::json!({ "surface": { "html": big } });
+    let bytes = meclaw_core::serde_json::to_vec(&body).unwrap();
+    let blob = store
+        .write_streaming(bytes.as_slice(), "application/json", None)
+        .await
+        .unwrap();
+
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert(
+        EGRESS_MARK.to_string(),
+        meclaw_core::serde_json::json!(true),
+    );
+    ctx.insert(REQUEST_ID.to_string(), meclaw_core::serde_json::json!(id));
+    ctx.insert(
+        SURFACE_PATH.to_string(),
+        meclaw_core::serde_json::json!("/org/acme/canvy/render"),
+    );
+    egress_tx
+        .send(
+            MessageBuilder::new(Path::new("/"))
+                .context(ctx)
+                .body(Body::Blob(blob.blob_id))
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let got = handle
+        .await
+        .unwrap()
+        .expect("the offloaded page must arrive");
+    assert_eq!(got.len(), big.len(), "the whole page, not a truncated one");
+    assert!(got.starts_with("<svg>") && got.ends_with("</svg>"));
+}
+
+/// And without a store, a blob body is reported rather than silently served as an
+/// empty page — the dispatcher must never invent a picture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_body_without_a_store_is_reported() {
+    let r = rig();
+    let d = r.dispatcher.clone();
+    let mut colony_rx = r.colony_rx;
+    let handle = tokio::spawn(async move {
+        d.render(
+            "/org/acme/canvy/render",
+            meclaw_core::serde_json::json!({ "event": "surface:join", "value": {} }),
+            RENDER_BUDGET,
+        )
+        .await
+    });
+    let sent = colony_rx.recv().await.expect("the request");
+    let id = injected_request_id(&sent);
+    let mut ctx = meclaw_core::serde_json::Map::new();
+    ctx.insert(
+        EGRESS_MARK.to_string(),
+        meclaw_core::serde_json::json!(true),
+    );
+    ctx.insert(REQUEST_ID.to_string(), meclaw_core::serde_json::json!(id));
+    ctx.insert(
+        SURFACE_PATH.to_string(),
+        meclaw_core::serde_json::json!("/org/acme/canvy/render"),
+    );
+    r.egress_tx
+        .send(
+            MessageBuilder::new(Path::new("/"))
+                .context(ctx)
+                .body(Body::Blob(meclaw_core::Uuid::now_v7()))
+                .build(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(handle.await.unwrap(), Err(RenderError::Malformed(_))),
+        "an unresolvable body must be reported, not served"
+    );
+}
+
 /// A reply nobody asked for must not disturb a pending request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unknown_request_id_is_dropped() {

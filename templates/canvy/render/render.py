@@ -533,22 +533,34 @@ def hive_svg(h):
 
 
 def edge_svg(e):
-    """An edge as its ENDPOINTS, not as a finished path.
-
-    There is deliberately no `d` attribute here. The orthogonal routing lives in
-    the client (`client/surface.js`) because it is presentation, and a `d`
-    computed on both sides would be one algorithm in two languages. The client
-    reads these attributes and draws.
-    """
+    # Two paths per edge and both matter. The thin one is the line; the fat
+    # transparent one is what a mouse can hit — an edge is 1.4 px wide, and
+    # "click an edge to read its condition" is not a feature you can offer on
+    # 1.4 px. Same construction as the standalone renderer, and the reason its
+    # edges are clickable at all.
+    #
+    # `cond` is a CLASS and not only a data attribute: the stylesheet dashes a
+    # conditional edge, and half of a real colony's edges carry a condition. A
+    # picture that draws them like the rest hides exactly what an operator came
+    # to look for. The condition text and the modifier ride along so that
+    # clicking the edge can show them in full without another round trip.
+    cond = e.get("condition") or ""
+    mod = e.get("modifier")
     return (
-        '<path class="edge" data-edge="%s" data-from="%s" data-to="%s" '
-        'data-lane="%d" data-cond="%s"/>'
+        '<g class="edge-g">'
+        '<path class="edge%s" data-edge="%s" data-from="%s" data-to="%s" '
+        'data-lane="%d" data-cond="%s" data-mod="%s"/>'
+        '<path class="edge-hit" data-edge="%s"/>'
+        "</g>"
     ) % (
+        " cond" if cond else "",
         esc(e["id"]),
         esc(e["from"]),
         esc(e["to"]),
         e.get("lane", 0),
-        esc(e.get("condition") or ""),
+        esc(cond),
+        esc(json.dumps(mod, sort_keys=True)) if mod else "",
+        esc(e["id"]),
     )
 
 
@@ -589,6 +601,19 @@ def render(nodes, hives, edges, camera, title):
         '<div class="canvy" id="canvy" phx-hook="Canvy" data-title="%s">' % esc(title),
         '<svg class="stage" xmlns="http://www.w3.org/2000/svg" '
         'viewBox="%d %d %d %d" preserveAspectRatio="xMidYMid meet">' % box,
+        # The arrowheads. The stylesheet has asked for `url(#ar)` since the first
+        # version and nothing ever defined it, so every edge in every picture was
+        # an undirected line: 123 of them on a real colony, and no way to tell
+        # which way anything flows. `orient="auto-start-reverse"` keeps the head
+        # pointing along the path however the router turned it.
+        '<defs>'
+        '<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" '
+        'markerHeight="6.5" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"/></marker>'
+        '<marker id="arh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" '
+        'markerHeight="6.5" orient="auto-start-reverse">'
+        '<path d="M0,0 L10,5 L0,10 z" fill="var(--edge-hot)"/></marker>'
+        "</defs>",
         # The camera is a transform on the viewport group, so pan and zoom compose
         # with the frame above instead of fighting it. Identity at (0,0,1000).
         '<g class="viewport" data-cx="%d" data-cy="%d" data-cz="%d" '
@@ -609,6 +634,15 @@ def render(nodes, hives, edges, camera, title):
     parts.append('</g><g class="nodes">')
     parts.extend(node_svg(n) for n in nodes)
     parts.append("</g></g></svg>")
+    # Somewhere to say what was clicked. Without it the whole selection idea is
+    # invisible and an edge's condition stays a string in an attribute nobody can
+    # read. The panel is filled by the client — the server renders the frame, not
+    # the answer, because what is selected is a client-side fact.
+    parts.append(
+        '<aside id="detail" class="detail">'
+        '<p class="empty">Click a cell or an edge.</p>'
+        "</aside>"
+    )
     parts.append(
         '<div class="legend">%d cells, %d hives, %d edges</div>'
         % (len(nodes), len(hives), len(edges))
@@ -730,6 +764,7 @@ def main():
                 "from": str(e.get("from") or "").strip("/"),
                 "to": str(e.get("to") or "").strip("/"),
                 "condition": e.get("condition"),
+                "modifier": e.get("modifier"),
             }
             for e in raw_edges
             if isinstance(e, dict)

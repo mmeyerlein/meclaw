@@ -789,10 +789,14 @@ pub async fn run_with_hooks_tuned(
     let surfaces = if cli.api.is_some() && !is_direct_mode {
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1024);
         colony_cfg = colony_cfg.with_marked_egress(tx, meclaw_api::surface::render::EGRESS_MARK);
-        let (dispatcher, _dispatcher_join) = meclaw_api::surface::render::Dispatcher::new(
+        // With the blob store, because a surface answer is a whole page and the
+        // substrate offloads any body past `blob_inline_max_bytes` — a canvas of a
+        // fifty-cell colony is already over it.
+        let (dispatcher, _dispatcher_join) = meclaw_api::surface::render::Dispatcher::with_blobs(
             inbox_tx.clone(),
             rx,
             colony_config.message_default_ttl,
+            Some(blob_store.clone()),
         );
         Some(meclaw_api::router::SurfaceState {
             colony_root: std::sync::Arc::new(root_path.clone()),

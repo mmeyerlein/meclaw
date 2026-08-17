@@ -9,6 +9,44 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.13.0] — 2026-08-17
+
+The canvas was correct and unreadable. Its stylesheet was copied from a working
+standalone renderer and promised a UI the markup never emitted — so half of what
+follows is not new work, it is the markup finally keeping the stylesheet's word.
+
+### Fixed
+
+- **Arrowheads.** `surface.css` has said `marker-end: url(#ar)` since the first
+  version and nothing ever defined `#ar`, so every edge in every picture was an
+  undirected line — 123 of them on a real colony, with no way to tell which way
+  anything flows. A graph whose direction you cannot read is a doodle. The markup
+  now carries the `<defs>` its own stylesheet asks for, and a test reads the marker
+  ids out of the CSS so a rename is red on both sides.
+- **A conditional edge looks conditional.** `.cond` is dashed by the stylesheet and
+  was never set; on the colony under test 113 of 123 edges carry a condition, and
+  drawing them like the rest hides exactly what an operator came to look for.
+- **A surface answer larger than `blob_inline_max_bytes` arrives.** The substrate
+  offloads a big body into a blob by design and without asking — and a page is
+  precisely the kind of body that gets big. The dispatcher only understood inline
+  bodies, so the first canvas to cross 64 KB failed every join with "body is not
+  inline": a message that names the symptom and hides the cause. `Dispatcher::with_blobs`
+  resolves it, bounded by its own timeout; an unresolvable body is still reported
+  rather than served as an empty page.
+
+### Added
+
+- **Selection.** Click a cell: its edges light up, everything unrelated dims, and
+  the panel lists what points at it and where it points — each entry clickable, so
+  a colony can be walked one hop at a time. Click an edge: its condition and its
+  modifier in full, which is what you need when a message did not go where you
+  expected. Click the background: cleared. Entirely client-side, because what is
+  selected is not a fact about the colony and a round trip per click would make
+  reading a graph cost cell calls.
+- **A detail panel** to say it in, and a fat invisible twin path per edge to make a
+  1.4-pixel line clickable at all — the same construction the standalone renderer
+  uses.
+
 ## [0.12.3] — 2026-08-17
 
 ### Fixed

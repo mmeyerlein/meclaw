@@ -119,8 +119,28 @@ impl Dispatcher {
         egress_rx: mpsc::Receiver<Message>,
         message_default_ttl: u32,
     ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
+        Self::with_blobs(colony, egress_rx, message_default_ttl, None)
+    }
+
+    /// The same, plus the blob store the substrate offloads large bodies into.
+    ///
+    /// A surface answer is a whole HTML page, and the substrate offloads any body
+    /// over `colony.json blob_inline_max_bytes` (64 KB by default) to a blob —
+    /// correctly, and without asking. Until this existed, the moment a canvas grew
+    /// past that line every join failed with "the surface cell answered oddly:
+    /// body is not inline", which names the symptom and hides the cause: the page
+    /// got big. Found on a 50-cell colony, i.e. immediately.
+    ///
+    /// `None` keeps the old behaviour for callers with no store (tests that feed
+    /// the channel by hand); a blob body then still reports rather than hangs.
+    pub fn with_blobs(
+        colony: mpsc::Sender<ColonyMsg>,
+        egress_rx: mpsc::Receiver<Message>,
+        message_default_ttl: u32,
+        blobs: Option<Arc<meclaw_colony::DiskBlobStore>>,
+    ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(256);
-        let join = tokio::spawn(run(cmd_rx, egress_rx));
+        let join = tokio::spawn(run(cmd_rx, egress_rx, blobs));
         (
             Arc::new(Self {
                 colony,
@@ -220,7 +240,58 @@ fn request_context(id: &str, cell_path: &str) -> meclaw_core::serde_json::Map<St
 }
 
 /// The one task that owns the waiter table and the cache.
-async fn run(mut cmd_rx: mpsc::Receiver<Cmd>, mut egress_rx: mpsc::Receiver<Message>) {
+/// How long the dispatcher waits for the blob store when a page came back
+/// offloaded (rule 12/A). Short: it is a local file read on the render path.
+const BLOB_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A blob-backed body, read back into an inline one.
+///
+/// The substrate offloads a large body by design and the surface must not care: a
+/// page is exactly the kind of body that gets big, and "big" is not an error. A
+/// body that cannot be resolved is left as it is and reported by `read_reply` —
+/// never silently turned into an empty page.
+async fn inline_body(msg: Message, blobs: Option<&Arc<meclaw_colony::DiskBlobStore>>) -> Message {
+    let Body::Blob(id) = &msg.body else {
+        return msg;
+    };
+    let id = *id;
+    let Some(store) = blobs else {
+        tracing::warn!(
+            blob = %id,
+            "a surface reply arrived as a blob and no blob store is wired — the \
+             page cannot be read back"
+        );
+        return msg;
+    };
+    let bytes = match tokio::time::timeout(BLOB_READ_TIMEOUT, store.read_bytes(id)).await {
+        Ok(Ok((bytes, _sidecar))) => bytes,
+        Ok(Err(e)) => {
+            tracing::warn!(blob = %id, error = %e, "surface reply blob unreadable");
+            return msg;
+        }
+        Err(_) => {
+            tracing::warn!(blob = %id, "surface reply blob read timed out");
+            return msg;
+        }
+    };
+    match meclaw_core::serde_json::from_slice::<Value>(&bytes) {
+        Ok(v) => {
+            let mut msg = msg;
+            msg.body = Body::Inline(v);
+            msg
+        }
+        Err(e) => {
+            tracing::warn!(blob = %id, error = %e, "surface reply blob is not JSON");
+            msg
+        }
+    }
+}
+
+async fn run(
+    mut cmd_rx: mpsc::Receiver<Cmd>,
+    mut egress_rx: mpsc::Receiver<Message>,
+    blobs: Option<Arc<meclaw_colony::DiskBlobStore>>,
+) {
     let mut waiting: HashMap<String, oneshot::Sender<Result<String, RenderError>>> = HashMap::new();
     let mut cache: HashMap<String, String> = HashMap::new();
     loop {
@@ -234,7 +305,12 @@ async fn run(mut cmd_rx: mpsc::Receiver<Cmd>, mut egress_rx: mpsc::Receiver<Mess
                 None => return,
             },
             out = egress_rx.recv() => match out {
-                Some(msg) => handle_egress(msg, &mut waiting, &mut cache),
+                // Resolved BEFORE the handler, because the handler is sync and the
+                // read is I/O.
+                Some(msg) => {
+                    let msg = inline_body(msg, blobs.as_ref()).await;
+                    handle_egress(msg, &mut waiting, &mut cache)
+                }
                 None => return,
             },
         }

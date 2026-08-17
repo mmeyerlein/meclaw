@@ -471,10 +471,16 @@ fn the_markup_carries_no_edge_path() {
         "render",
         stdin_doc_pass2(store_reply(rows), json!({})),
     ));
-    assert!(
-        !html.contains(" d=\""),
-        "an edge path leaked into the server's markup: {html}"
-    );
+    // Sharpened when the arrowhead markers arrived: a `<marker>` glyph is a `d`
+    // too, and it is not an edge path. What must not exist is a `d` on an element
+    // that IS an edge — the routing is the client's, in one language.
+    for chunk in html.split("class=\"edge").skip(1) {
+        let element = chunk.split("/>").next().unwrap_or("");
+        assert!(
+            !element.contains(" d=\""),
+            "an edge path leaked into the server's markup: {element}"
+        );
+    }
     assert!(html.contains("data-lane="), "but the lane must be there");
     assert!(html.contains("data-from=\"a/one\""));
 }
@@ -944,6 +950,132 @@ fn dragging_a_nested_hive_takes_its_subtree_and_grows_its_parent() {
     assert!(
         ox < ix && oy < iy && ox + ow > ix + iw && oy + oh > iy + ih,
         "the parent must grow to keep holding what moved inside it"
+    );
+}
+
+/// **Direction.** 123 edges and no arrowhead: the stylesheet says
+/// `marker-end: url(#ar)` and the markup never defined `#ar`, so every edge in
+/// every picture was an undirected line. A graph you cannot read the direction of
+/// is not a graph, it is a doodle — and it was like that from the first render,
+/// because the stylesheet was copied from a working tool and the markup was not.
+#[test]
+fn every_edge_points_somewhere() {
+    let Some(root) = shipped_canvy() else { return };
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(
+                &[("/a/one", "llm"), ("/a/two", "store")],
+                &[("e0", "/a/one", "/a/two")],
+            ))),
+            json!({}),
+        ),
+    ));
+    // Every marker the stylesheet references has to exist in the document that
+    // uses it — read out of the CSS, so a renamed marker is red on both sides.
+    let css = std::fs::read_to_string(root.join("render/client/surface.css")).unwrap();
+    let referenced: std::collections::HashSet<&str> = css
+        .split("marker-end:url(#")
+        .skip(1)
+        .filter_map(|r| r.split(')').next())
+        .collect();
+    assert!(
+        !referenced.is_empty(),
+        "the stylesheet must ask for arrowheads, or this test proves nothing"
+    );
+    for id in referenced {
+        assert!(
+            html.contains(&format!("<marker id=\"{id}\"")),
+            "the markup must define the marker `{id}` its own stylesheet uses: {html}"
+        );
+    }
+    assert!(
+        html.contains("<defs>"),
+        "markers live in a defs block: {html}"
+    );
+}
+
+/// A conditional edge has to LOOK conditional — the stylesheet dashes `.cond`, and
+/// the markup never set it. Half of a colony's edges carry a condition; a picture
+/// that draws them like the rest hides the thing an operator is looking for.
+#[test]
+fn a_conditional_edge_is_drawn_as_one() {
+    let Some(root) = shipped_canvy() else { return };
+    let mut graph = graph_doc(
+        &[("/a/one", "llm"), ("/a/two", "store")],
+        &[("e0", "/a/one", "/a/two"), ("e1", "/a/two", "/a/one")],
+    );
+    graph["edges"][0]["condition"] = json!("has(hop.route) && hop.route == 'x'");
+    graph["edges"][0]["modifier"] = json!({"set_context": {"k": "'v'"}});
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph)), json!({})),
+    ));
+    assert!(
+        html.contains("class=\"edge cond\""),
+        "the conditional edge must carry the class the stylesheet dashes: {html}"
+    );
+    assert_eq!(
+        html.matches("class=\"edge cond\"").count(),
+        1,
+        "and the unconditional one must NOT: {html}"
+    );
+    // The condition and the modifier travel with the edge, so clicking it can show
+    // them without another round trip.
+    assert!(
+        html.contains("hop.route == &#39;x&#39;"),
+        "condition text: {html}"
+    );
+    assert!(
+        html.contains("data-mod="),
+        "the modifier rides along too: {html}"
+    );
+}
+
+/// An edge is 1.4 pixels wide. Clicking one has to be possible with a mouse, so
+/// every edge carries a fat invisible twin — the same construction the standalone
+/// renderer uses, and the reason its edges are clickable at all.
+#[test]
+fn every_edge_has_something_to_click() {
+    let Some(root) = shipped_canvy() else { return };
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(
+                &[("/a/one", "llm"), ("/a/two", "store")],
+                &[("e0", "/a/one", "/a/two"), ("e1", "/a/two", "/a/one")],
+            ))),
+            json!({}),
+        ),
+    ));
+    assert_eq!(
+        html.matches("class=\"edge-hit\"").count(),
+        2,
+        "one hit path per edge: {html}"
+    );
+}
+
+/// The page needs somewhere to say what was clicked. Without a panel the whole
+/// selection idea is invisible, and the condition of an edge stays a string in an
+/// attribute nobody can read.
+#[test]
+fn the_page_carries_a_detail_panel() {
+    let Some(root) = shipped_canvy() else { return };
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(&[("/a/one", "llm")], &[]))),
+            json!({}),
+        ),
+    ));
+    assert!(html.contains("id=\"detail\""), "a detail panel: {html}");
+    assert!(
+        html.contains("class=\"legend\""),
+        "and the legend stays: {html}"
     );
 }
 

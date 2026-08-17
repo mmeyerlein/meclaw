@@ -187,7 +187,12 @@
       const b = nodes[p.getAttribute("data-to")];
       if (!a || !b) { p.removeAttribute("d"); return; }
       const lane = parseInt(p.getAttribute("data-lane") || "0", 10);
-      p.setAttribute("d", G.edgePath(a, b, NODE_W, NODE_H, lane));
+      const d = G.edgePath(a, b, NODE_W, NODE_H, lane);
+      p.setAttribute("d", d);
+      // The fat invisible twin follows the same path — it is what a mouse hits.
+      const hit = p.parentNode && p.parentNode.querySelector
+        ? p.parentNode.querySelector("path.edge-hit") : null;
+      if (hit) hit.setAttribute("d", d);
     });
   }
 
@@ -278,6 +283,108 @@
     return {x: q.x, y: q.y};
   }
 
+  // ── selection ─────────────────────────────────────────────────────────────
+  //
+  // Click a cell: its edges light up, everything unrelated dims, and the panel
+  // lists what points at it and where it points — each entry clickable, so a
+  // colony can be walked one hop at a time. Click an edge: its condition and its
+  // modifier in full, which is the thing you actually need when a message did not
+  // go where you expected.
+  //
+  // Entirely client-side and deliberately so: what is selected is not a fact about
+  // the colony, and a round trip per click would make reading a graph cost cell
+  // calls. Everything it needs is already in the markup the server sent.
+
+  function esc(v) {
+    return String(v === undefined || v === null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function edgesOf(el) {
+    return Array.from(el.querySelectorAll("path.edge")).map(function (p) {
+      return {
+        p: p,
+        id: p.getAttribute("data-edge"),
+        from: p.getAttribute("data-from"),
+        to: p.getAttribute("data-to"),
+        cond: p.getAttribute("data-cond") || "",
+        mod: p.getAttribute("data-mod") || "",
+      };
+    });
+  }
+
+  function clearSelection(el) {
+    el.querySelectorAll("path.edge").forEach(function (p) {
+      p.classList.remove("hot", "dim");
+    });
+    el.querySelectorAll("[data-node]").forEach(function (g) {
+      g.classList.remove("dim", "sel");
+    });
+    const d = el.querySelector("#detail");
+    if (d) d.innerHTML = '<p class="empty">Click a cell or an edge.</p>';
+  }
+
+  /// Fill the panel and dim what is not involved. `id` is a cell path or an edge
+  /// id; anything else clears.
+  function select(el, id) {
+    const detail = el.querySelector("#detail");
+    if (!detail) return;
+    const edges = edgesOf(el);
+    const cells = Array.from(el.querySelectorAll("[data-node]"));
+    const edge = edges.find(e => e.id === id);
+    const cellG = cells.find(g => g.getAttribute("data-node") === id);
+    if (!edge && !cellG) { clearSelection(el); return; }
+
+    if (edge) {
+      edges.forEach(e => {
+        e.p.classList.toggle("hot", e.id === id);
+        e.p.classList.toggle("dim", e.id !== id);
+      });
+      cells.forEach(g => {
+        const p = g.getAttribute("data-node");
+        g.classList.toggle("dim", p !== edge.from && p !== edge.to);
+        g.classList.remove("sel");
+      });
+      detail.innerHTML =
+        '<dl class="kv"><dt>edge</dt><dd>' + esc(edge.from) + "<br>→ " + esc(edge.to) +
+        '</dd></dl><dl class="kv"><dt>condition</dt><dd>' +
+        (edge.cond ? esc(edge.cond) : '<span class="chip">unconditional</span>') +
+        "</dd></dl>" +
+        (edge.mod ? '<dl class="kv"><dt>modifier</dt><dd>' + esc(edge.mod) + "</dd></dl>" : "");
+      return;
+    }
+
+    const mine = edges.filter(e => e.from === id || e.to === id);
+    const near = {};
+    near[id] = true;
+    mine.forEach(e => { near[e.from] = true; near[e.to] = true; });
+    edges.forEach(e => {
+      const rel = mine.indexOf(e) >= 0;
+      e.p.classList.toggle("hot", rel);
+      e.p.classList.toggle("dim", !rel);
+    });
+    cells.forEach(g => {
+      const p = g.getAttribute("data-node");
+      g.classList.toggle("dim", !near[p]);
+      g.classList.toggle("sel", p === id);
+    });
+    const ty = cellG.querySelector ? cellG.querySelector("text.ty") : null;
+    const row = function (list, other) {
+      if (!list.length) return '<span class="chip">none</span>';
+      return list.map(e => '<div class="rel" data-rel="' + esc(e.id) + '">' +
+        esc(other(e)) + (e.cond ? ' <span class="chip">if</span>' : "") + "</div>").join("");
+    };
+    const ins = mine.filter(e => e.to === id), outs = mine.filter(e => e.from === id);
+    detail.innerHTML =
+      '<dl class="kv"><dt>cell</dt><dd>' + esc(id) + "</dd></dl>" +
+      '<dl class="kv"><dt>type</dt><dd>' + esc(ty ? ty.textContent : "") + "</dd></dl>" +
+      '<dl class="kv"><dt>in (' + ins.length + ")</dt><dd>" + row(ins, e => e.from) + "</dd></dl>" +
+      '<dl class="kv"><dt>out (' + outs.length + ")</dt><dd>" + row(outs, e => e.to) + "</dd></dl>";
+    detail.querySelectorAll(".rel").forEach(function (n) {
+      n.addEventListener("click", function () { select(el, n.getAttribute("data-rel")); });
+    });
+  }
+
   const Canvy = {
     mounted() {
       this.cam = cameraOf(this.el);
@@ -289,7 +396,14 @@
     // attributes land again with every diff. Re-applying is not a workaround for
     // the SSR model, it IS the model: the client owns the view, the server owns
     // the picture.
-    updated() { applyCamera(this.el, this.cam); drawEdges(this.el); },
+    updated() {
+      applyCamera(this.el, this.cam);
+      drawEdges(this.el);
+      // The server re-renders the whole tree, so the selection's classes and the
+      // panel are gone with every diff. Re-applying is the same move as the
+      // camera: the client owns the view, the server owns the picture.
+      if (this.sel) select(this.el, this.sel); else clearSelection(this.el);
+    },
     destroyed() { this.unwire(); },
 
     wire() {
@@ -312,6 +426,26 @@
         hook.cam.x += (after.x - before.x) * (z / 1000);
         hook.cam.y += (after.y - before.y) * (z / 1000);
         applyCamera(el, hook.cam);
+      };
+
+      // A click that did not drag is a selection. Decided on pointerUP by whether
+      // the pointer moved, so a drag never selects and a click never has to be
+      // held still — the same rule the reference viewer uses.
+      this.onClick = function (ev) {
+        if (hook.dragged) { hook.dragged = false; return; }
+        const t = ev.target;
+        const edge = t.closest ? t.closest("[data-edge]") : null;
+        const node = t.closest ? t.closest("[data-node]") : null;
+        if (node) {
+          hook.sel = node.getAttribute("data-node");
+        } else if (edge) {
+          hook.sel = edge.getAttribute("data-edge");
+        } else if (t.closest && t.closest("#detail")) {
+          return;                       // the panel handles its own clicks
+        } else {
+          hook.sel = null;
+        }
+        if (hook.sel) select(el, hook.sel); else clearSelection(el);
       };
 
       this.onDown = function (ev) {
@@ -451,6 +585,7 @@
             x: Math.round(done.origin.x + done.delta.x),
             y: Math.round(done.origin.y + done.delta.y),
           });
+          hook.dragged = true;          // the click that follows is the drag's tail
           return;
         }
         if (pan) {
@@ -467,6 +602,7 @@
         hook.pushEvent("node:moved", {
           id: done.id, x: Math.round(done.at.x), y: Math.round(done.at.y)
         });
+        hook.dragged = true;            // so the click that follows does not select
       };
 
       el.addEventListener("pointerdown", this.onDown);
@@ -474,6 +610,7 @@
       el.addEventListener("pointerup", this.onUp);
       el.addEventListener("pointercancel", this.onUp);
       el.addEventListener("wheel", this.onWheel, {passive: false});
+      el.addEventListener("click", this.onClick);
     },
 
     unwire() {
@@ -482,6 +619,7 @@
       this.el.removeEventListener("pointerup", this.onUp);
       this.el.removeEventListener("pointercancel", this.onUp);
       this.el.removeEventListener("wheel", this.onWheel);
+      this.el.removeEventListener("click", this.onClick);
     },
   };
 
