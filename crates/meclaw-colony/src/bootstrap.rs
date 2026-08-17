@@ -674,6 +674,14 @@ pub fn plan_bootstrap_with_env(
                 // instantiation, read here so a restored tree can re-index its
                 // own origin. See `docs/config.md` § `cell` → `provenance`.
                 "provenance",
+                // GH #159: this cell may be served as a surface over HTTP. In the
+                // `cell` block because this block is what the colony reads to
+                // decide how it RUNS a cell, and serving it is the colony's job —
+                // in `params` it would have to be repeated per cell type, which
+                // is the definition of a special case. Parsed by
+                // `crate::surface::parse_decl`, the same function the HTTP route
+                // calls. See `docs/config.md` § `cell` → `surface`.
+                "surface",
             ];
             // Befund 4: reuse the already-parsed, env-substituted value (keys
             // are untouched by substitution; this check only inspects keys).

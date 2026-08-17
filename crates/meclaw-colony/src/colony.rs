@@ -1275,6 +1275,10 @@ pub struct ColonyTaskConfig {
     /// is unroutable at the root hive `/` (HiveNoRoute) goes here instead of the
     /// DLQ. `None` (default) → unchanged DLQ behaviour.
     pub egress_tx: Option<mpsc::Sender<Message>>,
+    /// GH #159: which root-hive dead ends `egress_tx` is allowed to claim.
+    /// Ignored when `egress_tx` is `None`. Defaults to
+    /// [`EgressPolicy::All`], so `with_egress` behaves exactly as it did.
+    pub egress_policy: EgressPolicy,
     /// Test-only deterministic sync hook. When set, the colony fires one tick on
     /// this channel right before it begins the inline death-ack-wait of a
     /// disconnect mutation (i.e. peace-stops sent, about to block). Lets a test
@@ -1315,6 +1319,7 @@ impl ColonyTaskConfig {
             env_source,
             heartbeat_tx: None,
             egress_tx: None,
+            egress_policy: EgressPolicy::All,
             death_ack_wait_tx: None,
         }
     }
@@ -1327,8 +1332,29 @@ impl ColonyTaskConfig {
     }
 
     /// Opt into the Direct-Mode stdio egress sink (root-hive HiveNoRoute → stdout).
+    ///
+    /// Takes **everything** that dies at the root hive, which is correct for
+    /// Direct-Mode: stdout is the colony's only consumer there, so a dead end is
+    /// an answer. In a mode that has other consumers, use
+    /// [`ColonyTaskConfig::with_marked_egress`] instead.
     pub fn with_egress(mut self, tx: mpsc::Sender<Message>) -> Self {
         self.egress_tx = Some(tx);
+        self.egress_policy = EgressPolicy::All;
+        self
+    }
+
+    /// GH #159: opt into an egress sink that claims **only** what was marked for
+    /// it, and leaves every other root-hive dead end in the dead-letter queue.
+    ///
+    /// This is what `--api` mode needs. A surface is rendered by a cell, and the
+    /// rendered HTML has to reach the browser that asked for it, so the colony
+    /// needs a way out. Handing that door `All` would redirect every correct dead
+    /// letter into a consumer which does not recognise most of what arrives, and
+    /// the DLQ is diagnostic infrastructure — the next "why did that message
+    /// vanish" would be unanswerable.
+    pub fn with_marked_egress(mut self, tx: mpsc::Sender<Message>, key: &'static str) -> Self {
+        self.egress_tx = Some(tx);
+        self.egress_policy = EgressPolicy::Marked(key);
         self
     }
 
@@ -1381,6 +1407,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         env_source,
         heartbeat_tx,
         egress_tx,
+        egress_policy,
         death_ack_wait_tx,
     } = cfg;
     #[cfg(debug_assertions)]
@@ -1572,7 +1599,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                             }
                                             RouteAction::HiveTransit { hive_path, msg } => {
-                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
+                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
                                             }
                                         }
                                     }
@@ -1848,7 +1875,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                 }
                                 RouteAction::HiveTransit { hive_path, msg } => {
-                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
+                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
                                 }
                             }
                         }
@@ -2337,7 +2364,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                             }
                             RouteAction::HiveTransit { hive_path, msg } => {
-                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), colony_config.message_default_ttl);
+                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
                             }
                         }
                     }
@@ -5735,10 +5762,42 @@ fn enqueue_dispatch_follow(
     }
 }
 
+/// GH #159: which root-hive dead ends an egress sink is allowed to claim.
+///
+/// Opening a way out of the colony must not close the dead-letter queue. The DLQ
+/// is diagnostic infrastructure, and a door that silently swallowed every
+/// unroutable message would make the next "why did that message vanish"
+/// unanswerable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressPolicy {
+    /// Everything that dies at the root hive goes out. Direct-Mode: stdout **is**
+    /// the colony's only consumer there, so a dead end is an answer.
+    All,
+    /// Only messages carrying this key in `context` go out. Everything else
+    /// dead-letters exactly as it does with no egress sink at all.
+    Marked(&'static str),
+}
+
+impl EgressPolicy {
+    /// Whether this message is the outside world's business.
+    ///
+    /// `Marked` reads `context`, not `hop` and not the body. `context` is edge
+    /// authority: the layer that injects a message stamps it, it survives a
+    /// cascade (`carry_context_with_hop`), and no cell can mint one. A
+    /// body-carried marker would let a model address a browser.
+    fn claims(&self, msg: &Message) -> bool {
+        match self {
+            EgressPolicy::All => true,
+            EgressPolicy::Marked(key) => msg.headers.context.contains_key(*key),
+        }
+    }
+}
+
 /// Evaluate a hive's out-edges (the single edge evaluator `apply_edges`) and
 /// enqueue one transit follow-up per match. No match (edge-list empty or all
 /// CEL conditions false) → DLQ `hive_no_route` (Spec Z.553, trennscharf zu
 /// `unresolved_path`: the hive WAS reachable, the graph just did not forward).
+#[allow(clippy::too_many_arguments)]
 fn enqueue_hive_transit(
     work: &mut VecDeque<(Path, Message)>,
     dead_letters: &mut VecDeque<DeadLetter>,
@@ -5746,6 +5805,7 @@ fn enqueue_hive_transit(
     hive_path: Path,
     msg: Message,
     egress_tx: Option<&mpsc::Sender<Message>>,
+    egress_policy: EgressPolicy,
     ttl_budget: u32,
 ) {
     let decisions = apply_edges(edges, &hive_path, &msg.headers);
@@ -5754,8 +5814,14 @@ fn enqueue_hive_transit(
         // is the egress edge to the outside (stdout) rather than a dead end. With
         // an egress sink set, hand it over instead of dead-lettering. `try_send`
         // keeps this fn sync; a full/closed channel is a warn (no silent drop).
+        //
+        // GH #159: the sink only gets what its policy claims. `Marked` leaves
+        // everything else on the dead-letter path below, byte-for-byte as if no
+        // sink existed — which is what makes wiring a door in `--api` mode safe
+        // for every colony that has one.
         if hive_path.as_str() == "/"
             && let Some(tx) = egress_tx
+            && egress_policy.claims(&msg)
         {
             if let Err(e) = tx.try_send(msg) {
                 tracing::warn!(
@@ -5858,6 +5924,7 @@ mod tests {
             Path::new("/"),
             msg,
             Some(&egress_tx),
+            EgressPolicy::All,
             meclaw_core::MESSAGE_DEFAULT_TTL,
         );
         assert!(
@@ -5868,6 +5935,145 @@ mod tests {
             egress_rx.try_recv().is_ok(),
             "message must land in egress channel"
         );
+    }
+
+    /// One `context` compartment holding exactly one marker, for the policy tests.
+    fn marker_context(
+        key: &str,
+        value: meclaw_core::JsonValue,
+    ) -> meclaw_core::serde_json::Map<String, meclaw_core::JsonValue> {
+        let mut m = meclaw_core::serde_json::Map::new();
+        m.insert(key.to_string(), value);
+        m
+    }
+
+    /// GH #159 — a `Marked` sink takes what carries its key.
+    #[tokio::test]
+    async fn marked_egress_claims_a_marked_message() {
+        let (egress_tx, mut egress_rx) = mpsc::channel::<Message>(8);
+        let mut work: VecDeque<(Path, Message)> = VecDeque::new();
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+        let edges = EdgeTable::new();
+        let msg = MessageBuilder::new(Path::new("/"))
+            .headers(meclaw_core::Headers::from_parts(
+                marker_context("surface_reply", meclaw_core::serde_json::json!(true)),
+                Default::default(),
+            ))
+            .build();
+        enqueue_hive_transit(
+            &mut work,
+            &mut dead_letters,
+            &edges,
+            Path::new("/"),
+            msg,
+            Some(&egress_tx),
+            EgressPolicy::Marked("surface_reply"),
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+        assert!(dead_letters.is_empty(), "a marked message must not DLQ");
+        assert!(egress_rx.try_recv().is_ok(), "a marked message must go out");
+    }
+
+    /// GH #159 — **the test that matters.** An unmarked message keeps
+    /// dead-lettering exactly as it does with no sink at all. Without this,
+    /// wiring a door in `--api` mode would silently swallow every correct dead
+    /// letter of every colony that has one, and the DLQ is how "why did that
+    /// message vanish" is ever answered.
+    #[tokio::test]
+    async fn marked_egress_leaves_an_unmarked_message_in_the_dlq() {
+        let (egress_tx, mut egress_rx) = mpsc::channel::<Message>(8);
+        let mut work: VecDeque<(Path, Message)> = VecDeque::new();
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+        let edges = EdgeTable::new();
+        let msg = MessageBuilder::new(Path::new("/")).build();
+        enqueue_hive_transit(
+            &mut work,
+            &mut dead_letters,
+            &edges,
+            Path::new("/"),
+            msg,
+            Some(&egress_tx),
+            EgressPolicy::Marked("surface_reply"),
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+        assert_eq!(
+            dead_letters.len(),
+            1,
+            "an unmarked root-hive dead end must still dead-letter"
+        );
+        assert!(
+            matches!(
+                dead_letters[0].reason,
+                crate::dead_letter::DeadLetterReason::HiveNoRoute
+            ),
+            "and with the unchanged reason"
+        );
+        assert!(
+            egress_rx.try_recv().is_err(),
+            "an unmarked message must NOT reach the egress channel"
+        );
+    }
+
+    /// A different key is not the key. A marker the sink does not own must not
+    /// open the door — otherwise "marked" would mean "has any context at all".
+    #[tokio::test]
+    async fn marked_egress_ignores_a_foreign_marker() {
+        let (egress_tx, mut egress_rx) = mpsc::channel::<Message>(8);
+        let mut work: VecDeque<(Path, Message)> = VecDeque::new();
+        let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+        let edges = EdgeTable::new();
+        let msg = MessageBuilder::new(Path::new("/"))
+            .headers(meclaw_core::Headers::from_parts(
+                marker_context("something_else", meclaw_core::serde_json::json!("x")),
+                Default::default(),
+            ))
+            .build();
+        enqueue_hive_transit(
+            &mut work,
+            &mut dead_letters,
+            &edges,
+            Path::new("/"),
+            msg,
+            Some(&egress_tx),
+            EgressPolicy::Marked("surface_reply"),
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+        assert_eq!(dead_letters.len(), 1);
+        assert!(egress_rx.try_recv().is_err());
+    }
+
+    /// No sink at all keeps dead-lettering, whatever the policy says. The policy
+    /// is a filter on a door, not a door.
+    #[tokio::test]
+    async fn no_egress_still_dead_letters_under_any_policy() {
+        for policy in [EgressPolicy::All, EgressPolicy::Marked("surface_reply")] {
+            let mut work: VecDeque<(Path, Message)> = VecDeque::new();
+            let mut dead_letters: VecDeque<DeadLetter> = VecDeque::new();
+            let edges = EdgeTable::new();
+            let msg = MessageBuilder::new(Path::new("/")).build();
+            enqueue_hive_transit(
+                &mut work,
+                &mut dead_letters,
+                &edges,
+                Path::new("/"),
+                msg,
+                None,
+                policy,
+                meclaw_core::MESSAGE_DEFAULT_TTL,
+            );
+            assert_eq!(dead_letters.len(), 1, "policy {policy:?} with no sink");
+        }
+    }
+
+    /// The two builders differ in exactly one thing, and it is the policy.
+    #[test]
+    fn the_two_egress_builders_set_the_policy_they_promise() {
+        let (tx, _rx) = mpsc::channel::<Message>(8);
+        let all = make_test_config().with_egress(tx.clone());
+        assert_eq!(all.egress_policy, EgressPolicy::All);
+        let marked = make_test_config().with_marked_egress(tx, "surface_reply");
+        assert!(marked.egress_tx.is_some());
+        assert_eq!(marked.egress_policy, EgressPolicy::Marked("surface_reply"));
     }
 
     #[tokio::test]
@@ -5884,6 +6090,7 @@ mod tests {
             Path::new("/sub"),
             msg,
             Some(&egress_tx),
+            EgressPolicy::All,
             meclaw_core::MESSAGE_DEFAULT_TTL,
         );
         assert_eq!(

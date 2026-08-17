@@ -1,0 +1,68 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [
+      "render",
+      "refresh"
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": "./render",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'canvas'",
+          "modifier": {
+            "set_context": {
+              "canvy_origin": "'render'",
+              "canvy_event": "hop.event",
+              "canvy_moved_id": "hop.moved_id",
+              "canvy_moved_x": "hop.moved_x",
+              "canvy_moved_y": "hop.moved_y"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./render",
+          "condition": "context.canvy_origin == 'render'"
+        },
+        {
+          "from": "./render",
+          "to": "/",
+          "condition": "has(hop.route) && hop.route == 'surface'"
+        },
+        {
+          "from": "./refresh",
+          "to": "./probe"
+        },
+        {
+          "from": "./probe",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'snapshot'",
+          "modifier": {
+            "set_context": {
+              "canvy_origin": "'probe'"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./probe",
+          "condition": "context.canvy_origin == 'probe'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "One interactive canvas served over HTTP under the render cell's own path, drawing whatever its store holds. The first thing it draws is the colony itself.",
+    "use_when": "An operator or a user should see and rearrange something the colony knows, in a browser, without an operator UI release for every new kind of object.",
+    "not_in_scope": "It draws nothing the store does not hold. The topology snapshot arrives on a timer through the parent-granted `./probe -> /colony/graph` lane; without that lane the canvas is fed from outside and stays as fresh as whoever feeds it. No realtime push (a viewer sees a change when it joins or interacts, not when another viewer moves a box). No object library beyond cells, hives and edges.",
+    "examples": [
+      "GET /surface/org/acme/member/alice/canvy/render -> the colony as boxes and lines, draggable",
+      "refresh (timer) -> probe -> /colony/graph -> probe -> store: one snapshot row",
+      "socket event node:moved -> render -> store -> render -> the browser"
+    ]
+  }
+}

@@ -13,6 +13,7 @@ use axum::extract::FromRef;
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use meclaw_colony::blob::DiskBlobStore;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Shared HTTP-handler state. Phase 12-X T17 introduces `blob_store` alongside
@@ -29,6 +30,50 @@ pub struct AppState {
     /// `meclaw_core::MESSAGE_DEFAULT_TTL`. `POST /messages` uses it whenever the
     /// request carries no explicit `ttl` field.
     pub message_default_ttl: u32,
+    /// GH #159: everything the `/surface/*` routes need, and nothing they do not.
+    pub surfaces: SurfaceState,
+}
+
+/// GH #159: the surface routes' own state.
+///
+/// Two things, and the absence of a third is the point: a colony root to resolve a
+/// cell path against, and the dispatcher that carries a cell's answer back. **No
+/// database handle** — see `docs/meclaw-overview.md` § Datenbank-Isolation. A
+/// surface's data is the surface cell's business, obtained by message.
+#[derive(Clone)]
+pub struct SurfaceState {
+    /// The colony tree root. `<root>/main/<cell-path>` is a surface's directory.
+    pub colony_root: Arc<PathBuf>,
+    /// Message out, HTML back.
+    pub dispatcher: Arc<crate::surface::render::Dispatcher>,
+}
+
+impl FromRef<AppState> for SurfaceState {
+    fn from_ref(s: &AppState) -> Self {
+        s.surfaces.clone()
+    }
+}
+
+impl SurfaceState {
+    /// A surface state that can serve nothing: a root that does not exist and a
+    /// dispatcher whose colony is gone.
+    ///
+    /// For every caller that does not exercise a surface. Deliberately **not** a
+    /// stub that quietly succeeds — a test that starts reaching a surface by
+    /// accident gets a 404 and a timeout rather than a plausible answer.
+    pub fn disabled() -> Self {
+        let (colony_tx, _colony_rx) = tokio::sync::mpsc::channel(1);
+        let (_egress_tx, egress_rx) = tokio::sync::mpsc::channel(1);
+        let (dispatcher, _join) = crate::surface::render::Dispatcher::new(
+            colony_tx,
+            egress_rx,
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+        Self {
+            colony_root: Arc::new(PathBuf::from("/nonexistent-surface-root")),
+            dispatcher,
+        }
+    }
 }
 
 impl FromRef<AppState> for Arc<ColonyHandle> {
@@ -59,11 +104,13 @@ pub fn build_router(
     colony: Arc<ColonyHandle>,
     blob_store: Arc<DiskBlobStore>,
     message_default_ttl: u32,
+    surfaces: SurfaceState,
 ) -> Router {
     let state = AppState {
         colony,
         blob_store,
         message_default_ttl,
+        surfaces,
     };
     Router::new()
         // Issue #7: still the HTTP layer's own health check (always 200, no
@@ -102,5 +149,10 @@ pub fn build_router(
         .route("/ui/message", get(ui::message::get_message_ui))
         .route("/ui/trace", get(ui::trace::get_trace_ui))
         .route("/ui/templates", get(ui::templates::get_templates_ui))
+        // GH #159: surfaces. ONE wildcard route for the page, a surface's own
+        // assets and the vendored bundles, plus one for the socket — axum 0.7
+        // wildcard syntax is `*rest`, not `{rest}`. The socket route is listed
+        // first so its more specific suffix wins.
+        .route("/surface/*rest", get(crate::surface::serve::get_surface))
         .with_state(state)
 }

@@ -114,6 +114,16 @@ pub struct CellHeader {
     /// `docs/config.md` § `cell` → `provenance`.
     #[serde(default)]
     pub provenance: Option<NodeProvenance>,
+    /// GH #159: this cell may be served as a surface over HTTP.
+    ///
+    /// In the `cell` block rather than in `params` because this block is what the
+    /// colony reads to decide how it runs a cell, and serving it is the colony's
+    /// job. One field, every cell type, one parser — [`crate::surface::parse_decl`].
+    ///
+    /// Absent by default, which is what every `config.json` written before this
+    /// field existed means. See `docs/meclaw-overview.md` § surfaces.
+    #[serde(default)]
+    pub surface: Option<crate::surface::SurfaceDecl>,
 }
 
 /// GH #62: the template identity an instantiated node carries with it.

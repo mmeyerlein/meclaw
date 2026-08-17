@@ -8,7 +8,11 @@ repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-axum = { version = "0.7", features = ["multipart"] }
+# `ws` (GH #159, sanctioned 2026-08-17): a surface's client is a LiveView
+# client, which is a socket client — HTTP carries only the dead render, and
+# nothing moves after that without a transport. tokio-tungstenite is already in
+# the tree via axum, so this adds no crate and `cargo deny` is unaffected.
+axum = { version = "0.7", features = ["multipart", "ws"] }
 # 0.27 drops the unmaintained `proc-macro-error` (RUSTSEC-2024-0370) that
 # maud_macros 0.26 pulled in; API surface used here (Markup/html!/DOCTYPE) is
 # unchanged. Issue #127.
@@ -18,8 +22,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core", version = "0.10.7" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.10.7" }
+meclaw-core = { path = "../meclaw-core", version = "0.11.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.11.0" }
 
 [dev-dependencies]
 tempfile = "3"

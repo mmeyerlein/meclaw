@@ -175,6 +175,14 @@ The colony is the only write authority in the system. Hives are scope markers in
 
 **Lifecycle of `config.json`**: colony writes `config.json` **exclusively on instantiation** (template copy with UUID assignment and `${VAR}` substitution). After instantiation it is never touched again, a bootstrap snapshot. (The re-dedicated `swap_nodes` graph swap does not rewrite an existing `config.json`; it swings edges, see § Mutation operations.) The live state of a cell lives in its `cell.db`. A global topology truth lives in colony's registry (in-memory) and in `colony.db` (persisted).
 
+**Database isolation — one cell, one database** (Ruling 2026-08-17): a cell touches **only** its own `cell.db`. No access to another cell's `cell.db`, no access to `colony.db`, **not even reading**. Whoever needs information out of another cell's state **sends a message** — there is no second way. This binds all Rust code, not only cell code: no database in `{root}` has two writers or a foreign reader.
+
+The reason is consistency, not aesthetics. A reader of foreign tables sees a state that can change between two of its own statements, and it sees that state without the invariants the owning cell establishes inside its own handler. A schema change in the owning cell then silently breaks a reader who is recorded nowhere as a consumer. A message, by contrast, is versioned (UBF), logged (`message_log`), authorised (edge) and returns an answer that was consistent at **one** point in time. In practice: `ATTACH` does not exist anywhere in the tree, every `cell.db` resolves against the directory of the cell opening it, and `meclaw-api` has no SQLite dependency at all.
+
+For topology knowledge the route is `/colony/graph` (§ `/colony` as a virtual endpoint): nodes and edges as a reply to a message, out of colony's in-memory registry, without touching a database. A cell that "just quickly reads the graph out of `colony.db`" is built wrong.
+
+**The one documented exception** is the unlock attestation of the `vault` cell (`crates/meclaw-cells/src/vault/attest.rs`): it reads `colony.db` read-only to check, before accepting key material, which paths have an edge pointing at it. The message route is not open to it, because the birth topology is exempt from the port boundary — a tampered topology would answer the question about itself exactly as wrongly as it was built. The exception is narrow: read-only, inbound edges of its own path only, and its only possible outcome is a **refusal**. It is not a precedent; any further case carries the same burden of argument and needs a sanction.
+
 **Instantiation and cell_id stability**: instantiation happens **exactly when** no cell directory exists at the
 target path. When processing a graph, colony checks, per declared node, whether the
 directory exists in the tree, `params.graph` at bootstrap as well as a mutation diff at runtime: if it is missing, colony copies the referenced template to the
@@ -532,6 +540,75 @@ The default mode is **direct mode**: a stdin/stdout bridge to the root cell, all
 Deliberately **no own subcommands** (`meclaw start`, `meclaw mutate`, etc.). nginx-style: one binary, many flags, one mode switch (`--daemon`, `--validate`, `--sandbox-probe`). Operations are the outside world's business (systemd, a wrapper script, a builder LLM).
 
 **Info-only flags are side-effect-free**: `--version` and `--help` print their information to stdout and exit with 0, without initializing the tracing subscriber, without filesystem writes (in particular no `log.jsonl` creation), without subprocess spawn. They act before the subscriber setup. Tests for the subscriber setup path happen via direct unit tests of the setup function, not via CLI subprocess calls.
+
+## Surfaces (`/surface`) — what a colony gives a browser
+
+**A surface is a cell that says it may be served over HTTP** (`cell.surface`, see
+`config.md` § `cell`). The cell path **is** the address:
+
+```
+GET  /surface/<cell-path>                      the dead render (HTML)
+GET  /surface/<cell-path>/live/websocket       the Phoenix socket (vsn 2.0.0)
+GET  /surface/<cell-path>/@asset/<file>        this surface's own files
+GET  /surface/@client/<file>                   the LiveView bundles, from the binary
+```
+
+That is the whole decision in one line: many surfaces are told apart by exactly
+what tells cells apart, so there is no second namespace to fall out of step with
+the tree — and a reverse proxy in front gets a complete access rule for the page,
+the surface's own files **and its transport** out of **one** prefix:
+
+```nginx
+location /surface/org/acme/member/alice/canvy/ { ... }
+```
+
+Which is why every verb sits at the **end** rather than as a prefix: a prefix would
+route more easily and would break precisely that promise. Two names are reserved for
+it — `@…` is ours, `live` is the Phoenix client's (it appends exactly `"/websocket"`
+to whatever URL it is handed). A path segment starting with `@` or named `live` is
+not addressable, which keeps a cell named `state` reachable and stops a cell named
+`live` from shadowing a transport.
+
+**Opt-in, and 404 rather than 403.** "Reads are free from anywhere" holds **inside**
+a colony and must not be inherited across an HTTP boundary: the tree holds a
+`vault`, session windows and an affinity store. So a cell is reachable here only if
+it says so, the default is absence, and an undeclared cell answers 404 — a surface
+nobody declared should not confirm that it exists. The one exception to that
+indistinguishability is a **broken** declaration: that is reported loudly and by
+name, because it is the operator's own typo and hiding it costs them an afternoon.
+
+**Who renders what.** The binary serves the dead render — the four things the
+vendored LiveView client needs (a csrf meta tag, one container with `data-phx-main` /
+`data-phx-session` / `data-phx-static` and an id, the script tags, the socket
+constructor) — and **no content at all**. That is protocol scaffolding, and therefore
+generic. The picture arrives in the join reply, from the cell. Two consequences, both
+intended: a page load costs **zero** cell calls and touches no database — a wedged
+colony keeps serving the page and the client then visibly fails to connect instead
+of showing a blank screen — and everything a surface draws is a template change
+rather than a release.
+
+**The return path.** A cell could not answer an HTTP client: a cell's reply travels
+the routing cascade, not back over HTTP. The way out existed (root-hive
+`HiveNoRoute` → egress channel) but was wired only in Direct-Mode. Since #159 the
+hand-off is a **policy**:
+
+| Policy | Meaning |
+|---|---|
+| `All` | Everything that dies at the root hive goes out. Direct-Mode: stdout **is** the only consumer there, so a dead end is an answer. |
+| `Marked(key)` | Only messages carrying that key in `context` go out; every other one lands **unchanged** in the dead-letter queue. |
+
+`--api` takes `Marked`. The reason is the DLQ: it is diagnostic infrastructure, and a
+door that silently swallowed every unroutable message would make every future "why
+did that message vanish" unanswerable. The marker lives in `context`, because that is
+edge authority — the HTTP layer stamps it at injection, it survives the cascade
+(`carry_context_with_hop`), and no cell can forge one. A marker in the body would let
+a model address a browser.
+
+**What the HTTP layer does not understand.** An event name. Name and value go to the
+cell verbatim; the moment this layer interpreted one, the binary would know what is
+being drawn. Working example: `templates/canvy`.
+
+---
 
 ### Web UI (operator inspection)
 

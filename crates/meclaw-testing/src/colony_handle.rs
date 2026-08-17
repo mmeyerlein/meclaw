@@ -161,6 +161,34 @@ impl ColonyHandle {
         )
     }
 
+    /// GH #159: like [`new_with_factories_at`], but wires a **marked** egress sink
+    /// and hands its receiver back.
+    ///
+    /// A message that dies at the root hive `/` carrying `key` in `context` lands
+    /// on that receiver; everything else keeps dead-lettering. That asymmetry is
+    /// the point of the policy, so a test needs both halves of it in one colony.
+    pub fn new_with_marked_egress_at(
+        dir: &tempfile::TempDir,
+        factories: Vec<(String, Arc<dyn meclaw_colony::CellFactory>)>,
+        key: &'static str,
+    ) -> (Self, mpsc::Receiver<meclaw_core::Message>) {
+        let mut registry = CellFactoryRegistry::new();
+        for (name, factory) in factories {
+            registry.insert(name, factory);
+        }
+        let (egress_tx, egress_rx) = mpsc::channel::<meclaw_core::Message>(64);
+        let handle = Self::build_with_blob_store_and_signal_and_egress(
+            dir.path().to_path_buf(),
+            None,
+            registry,
+            None,
+            None,
+            None,
+            Some((egress_tx, key)),
+        );
+        (handle, egress_rx)
+    }
+
     /// Like [`build_with_blob_store`] but optionally wires the colony's
     /// deterministic death-ack-wait sync signal (test-only; `None` in production
     /// and for every existing constructor, so the colony path is unchanged).
@@ -171,6 +199,30 @@ impl ColonyHandle {
         blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
         env_source: Option<std::path::PathBuf>,
         death_ack_wait_tx: Option<mpsc::Sender<()>>,
+    ) -> Self {
+        Self::build_with_blob_store_and_signal_and_egress(
+            dir,
+            tempdir,
+            factories,
+            blob_store,
+            env_source,
+            death_ack_wait_tx,
+            None,
+        )
+    }
+
+    /// The one builder every constructor funnels into. `egress` is GH #159's
+    /// marked sink: `None` (every existing constructor) leaves the colony's
+    /// dead-letter behaviour exactly as it was.
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_blob_store_and_signal_and_egress(
+        dir: std::path::PathBuf,
+        tempdir: Option<tempfile::TempDir>,
+        factories: CellFactoryRegistry,
+        blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
+        env_source: Option<std::path::PathBuf>,
+        death_ack_wait_tx: Option<mpsc::Sender<()>>,
+        egress: Option<(mpsc::Sender<meclaw_core::Message>, &'static str)>,
     ) -> Self {
         let db = ColonyDb::open(&dir.join("colony.db")).expect("open colony.db");
         let (inbox_tx, inbox_rx) = mpsc::channel(1000);
@@ -202,6 +254,9 @@ impl ColonyHandle {
         );
         if let Some(tx) = death_ack_wait_tx {
             cfg = cfg.with_death_ack_wait_signal(tx);
+        }
+        if let Some((tx, key)) = egress {
+            cfg = cfg.with_marked_egress(tx, key);
         }
         let join = tokio::spawn(colony_task(cfg));
         Self {

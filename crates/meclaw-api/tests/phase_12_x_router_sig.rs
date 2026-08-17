@@ -12,6 +12,10 @@ async fn build_router_accepts_blob_store_param() {
     });
     let td = tempfile::TempDir::new().unwrap();
     let blob_store = Arc::new(meclaw_colony::blob::DiskBlobStore::new(td.path()).unwrap());
-    let _router =
-        meclaw_api::router::build_router(colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
+    let _router = meclaw_api::router::build_router(
+        colony,
+        blob_store,
+        meclaw_core::MESSAGE_DEFAULT_TTL,
+        meclaw_api::router::SurfaceState::disabled(),
+    );
 }

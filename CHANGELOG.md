@@ -9,6 +9,65 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.11.0] — 2026-08-17
+
+### Added
+
+- **A colony serves surfaces over HTTP** ([#159](https://github.com/mmeyerlein/meclaw/issues/159)).
+  A cell may declare `cell.surface`, and it is then served under **its own cell
+  path** — `/surface/<cell-path>` for the page, `…/live/websocket` for the
+  transport, `…/@asset/<file>` for its own files. Everything a surface needs sits
+  under one URL prefix, so a single nginx `location` block authorises all three
+  without knowing anything about MeClaw. Opt-in and absent by default: a cell that
+  declares nothing answers 404, never 403.
+- **`templates/canvy@0.1.0`** — the first surface, and a working example of the
+  above: a `code` cell renders every tag server-side, the browser owns only the
+  drag, and the first thing it draws is the colony itself. A page load costs zero
+  cell calls; a join or a drop costs two.
+- The vendored **Phoenix LiveView client** (`phoenix_live_view.min.js` 1.2.9,
+  `phoenix.min.js`, both MIT, byte-for-byte, never edited) ships inside the binary
+  and is served at `/surface/@client/…`. No npm, no bundler, no JS toolchain.
+
+### Changed
+
+- **The colony's egress door is now a policy.** `ColonyTaskConfig::with_egress`
+  keeps taking everything that dies at the root hive (Direct-Mode, unchanged);
+  `with_marked_egress` takes **only** messages carrying a named `context` key and
+  leaves every other root-hive dead end in the dead-letter queue. `--api` uses the
+  marked form, so opening a return path for surfaces does not silently swallow
+  correct dead letters. Behaviour with no egress sink is unchanged.
+- **`docs/meclaw-overview.md` § Datenbank-Isolation** writes down a rule that was
+  held everywhere but recorded nowhere: a cell touches only its own `cell.db`, and
+  no foreign database — **not even reading**. Topology knowledge has a route that
+  obeys it (`/colony/graph`, by message). The two pre-existing breaches are
+  [#160](https://github.com/mmeyerlein/meclaw/issues/160).
+
+### Fixed
+
+- **A privileged `/colony/*` lane needs a condition, and canvy's did not have
+  one** ([#161](https://github.com/mmeyerlein/meclaw/issues/161)). An edge matches
+  on the cell it starts at, not on intent, so the unconditional lane
+  `./probe -> /colony/graph` also carried the probe's two store writes. Each write
+  asked for the topology again and each answer produced two more writes: the growth
+  was exponential and the routing loop blocked on a full mailbox within twenty
+  seconds. Three further template defects surfaced in the same investigation, all
+  of the same class — an emission that is legal to the script and illegal to the
+  substrate: a body without a `messages` slot is refused before it reaches an edge;
+  an edge modifier reading an absent hop field makes the edge **stop matching**, so
+  a drop's position writes dead-lettered while the picture still showed the box
+  moved; and a cell that does not recognise the reply to its own write cannot stop.
+  `templates/receptionist` and `templates/builder-hive` ship the same lane shape
+  and both already carried their conditions.
+
+### Known issues
+
+- **A blocked mailbox send stops the whole colony without naming the mailbox**
+  ([#162](https://github.com/mmeyerlein/meclaw/issues/162)). Backpressure into the
+  routing loop is deliberate, but from the outside it is indistinguishable from a
+  deadlock: the watchdog trips, the dead-letter queue stays **empty** and the
+  message log stops growing, because the loop that would record any of it is the
+  one that is blocked. Diagnosing #161 needed a SQLite client on `colony.db`.
+
 ## [0.10.7] — 2026-08-17
 
 ### Fixed
