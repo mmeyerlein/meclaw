@@ -512,17 +512,26 @@ mod tests {
     ///
     /// GH #156 — what this test does NOT assert any more: that the task is
     /// alive at one particular instant. It used to `yield_now()` once and then
-    /// check `!cell_join.is_finished()`, which failed once on a saturated CI
-    /// runner. A single yield is not a synchronisation primitive, and the
-    /// obvious repair (assert the running state repeatedly over ~100 ms) failed
-    /// LOCALLY every time — which says the task does reach a finished state on
-    /// its own timescale and the assertion was a race in both directions.
+    /// check `!cell_join.is_finished()`, which failed on a saturated CI runner.
+    /// A single yield is not a synchronisation primitive, and the obvious
+    /// repair (assert the running state repeatedly over ~100 ms) failed LOCALLY
+    /// every time — the assertion was a race in both directions.
     ///
-    /// Liveness is asserted POSITIVELY instead: a message is put in the mailbox
-    /// and the test waits until the task has taken it out. Only a running task
-    /// drains its own mailbox, so the capacity coming back is the task saying
-    /// "I am here" — an event the topology guarantees, rather than a clock it
-    /// does not. Same family as #153 and #129.
+    /// The first repair was worse than the fault and is recorded here so it is
+    /// not attempted again: it fed the task a probe message and waited for the
+    /// mailbox capacity to come back, calling that a liveness receipt. But a
+    /// probe is an input, and an input can END the cell — the scheduled CI run
+    /// of 2026-08-17 caught exactly that, tripping on `peace_rx must be empty`
+    /// instead. **A liveness check that perturbs the thing it measures is not a
+    /// liveness check**, and swapping one flake for a subtler one is a loss.
+    ///
+    /// So the assertion is gone rather than replaced, because the test already
+    /// proved liveness at its other end and nobody noticed: a task that never
+    /// ran cannot answer a mailbox close by finishing cleanly. `cell_join`
+    /// returning `Ok` IS the receipt, it is an event rather than an instant,
+    /// and it was in the test the whole time. What remains: the helper returns
+    /// the documented shape, it fires no early peace, and it shuts down when
+    /// the mailbox closes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lr_helper_spawns_task_and_returns_pair() {
         let (_mb_tx, mb_rx) = mpsc::channel::<Message>(8);
@@ -543,41 +552,26 @@ mod tests {
                 None,
             );
 
-        // The positive liveness receipt: hand the task a message and wait until
-        // it has taken it. `capacity()` returns to its full value only when the
-        // receiver has dequeued, and only a running task dequeues.
-        let before = _mb_tx.capacity();
-        _mb_tx
-            .send(
-                meclaw_core::MessageBuilder::new(Path::new("/lr-probe"))
-                    .body(meclaw_core::Body::Inline(
-                        meclaw_core::serde_json::json!({"messages": []}),
-                    ))
-                    .build(),
-            )
-            .await
-            .expect("mailbox accepts the probe");
-        let drained = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while _mb_tx.capacity() < before {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-        assert!(
-            drained.is_ok(),
-            "the lr cell task must drain its own mailbox — nothing took the probe within 30s"
-        );
+        // No early peace. Deterministic without a clock: nothing has been sent
+        // and `run_io` pends for the cell's lifetime, so the only writer to
+        // this channel is a real stop — which has not been asked for yet.
         assert!(
             matches!(
                 peace_rx.try_recv(),
                 Err(oneshot::error::TryRecvError::Empty)
             ),
-            "peace_rx must be empty: a live cell fires no peace signal"
+            "peace_rx must be empty right after spawn"
         );
 
-        // Clean shutdown: drop mailbox sender → task exits.
+        // The liveness receipt, and the whole of it: close the mailbox and the
+        // task finishes cleanly. A task that never ran cannot do that. The
+        // timeout is a failure marker, not a semantic bound — 30 s of a path
+        // that takes microseconds.
         drop(_mb_tx);
-        cell_join.await.expect("lr cell task should finish cleanly");
+        tokio::time::timeout(std::time::Duration::from_secs(30), cell_join)
+            .await
+            .expect("the lr cell task must answer a mailbox close within 30s")
+            .expect("lr cell task should finish cleanly");
     }
 
     // ── build_stateless_task tests ────────────────────────────────────────────

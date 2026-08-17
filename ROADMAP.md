@@ -171,6 +171,9 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.10.7 — a liveness check that perturbs what it measures is not one.**
+  The 0.10.6 repair of a flaky test was worse than the flake; the Monday cron
+  caught it within hours. The assertion is removed, not replaced.
 - **v0.10.6 — the last two spawn sites are decided.** The `mcp` child reads a
   sandbox profile; the `subcolony` child deliberately does not, and both halves
   are written down. Plus a unit test that stopped asserting against a clock.

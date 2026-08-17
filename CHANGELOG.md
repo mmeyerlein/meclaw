@@ -9,6 +9,31 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.10.7] — 2026-08-17
+
+### Fixed
+
+- **A test assertion is removed rather than replaced** (#156, second attempt).
+  0.10.6 claimed to fix a flaky liveness check by making it positive: feed the
+  task a probe message, wait for the mailbox capacity to come back, call that
+  proof the task is running. The first scheduled CI run after the release —
+  the Monday cron — tripped on the line after it instead.
+
+  The error in that repair is worth stating plainly, because it looks like good
+  practice: **a probe is an input, and an input can end the cell.** A liveness
+  check that perturbs the thing it measures is not a liveness check, and
+  trading a known flake for a subtler one is a loss even when the diff looks
+  more rigorous.
+
+  The test already proved liveness at its other end, and nobody had noticed: it
+  closes the mailbox and waits for the task to finish cleanly, which a task
+  that never ran cannot do. That is an event rather than an instant — exactly
+  the property the repair went looking for, already present. So the assertion
+  is gone, the probe is gone, and the test is shorter than before either
+  attempt.
+
+  The docstring records the failed repair so it is not tried a third time.
+
 ## [0.10.6] — 2026-08-17
 
 ### Added

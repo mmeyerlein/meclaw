@@ -4,9 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The advisory database moves without anyone committing here, so the deny job
-  # also has to run on a clock -- otherwise a fresh RUSTSEC entry stays unseen
-  # until the next unrelated pull request.
+  # Two reasons, and the second one was an accident that earned its keep.
+  #
+  # The stated one: the advisory database moves without anyone committing here,
+  # so `deny` has to run on a clock -- otherwise a fresh RUSTSEC entry stays
+  # unseen until the next unrelated pull request.
+  #
+  # The one found in practice (2026-08-17): the schedule runs the WHOLE
+  # workflow, so the suite is executed weekly against a commit nobody touched.
+  # That is the only thing in this project that can catch a flaky test after
+  # the fact -- a push-triggered run tests a change, and a change that passes
+  # once looks settled. The first scheduled run ever found a repair from the
+  # night before that had swapped one race for a subtler one. Keep it whole;
+  # narrowing this to the `deny` job would save minutes and lose that.
   schedule:
     - cron: "17 5 * * 1"
 
