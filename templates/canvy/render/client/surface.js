@@ -110,7 +110,18 @@
     return false;
   }
 
-  const api = {STUB, LANE, side, anchor, route, rounded, segmentHitsBox};
+  /// The finished `d` attribute for one edge — the one call the hook makes.
+  ///
+  /// It exists because the hook used to say `rounded(route(...))`, and `route`
+  /// returns `{d, start, end}` while `rounded` takes an array of points: the
+  /// result was `MNaN,NaN`, i.e. an invisible line. Every property test below
+  /// passed, because they all used `route(...).d` — the defect lived in the ONE
+  /// expression no test evaluated. Now there is only one way to spell it.
+  function edgePath(a, b, w, h, lane) {
+    return route(a, b, w, h, lane).d;
+  }
+
+  const api = {STUB, LANE, side, anchor, route, rounded, edgePath, segmentHitsBox};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.TopoGeom = api;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -176,7 +187,7 @@
       const b = nodes[p.getAttribute("data-to")];
       if (!a || !b) { p.removeAttribute("d"); return; }
       const lane = parseInt(p.getAttribute("data-lane") || "0", 10);
-      p.setAttribute("d", G.rounded(G.route(a, b, NODE_W, NODE_H, lane)));
+      p.setAttribute("d", G.edgePath(a, b, NODE_W, NODE_H, lane));
     });
   }
 
@@ -186,33 +197,118 @@
     p.setAttribute("d", "M" + ca.x + "," + ca.y + " L" + cb.x + "," + cb.y);
   }
 
+  /// The `<g class="viewport">` the camera transform lives on.
+  function viewportOf(el) {
+    return el.querySelector("g.viewport");
+  }
+
+  /// Read the camera the SERVER rendered. The client starts from what the store
+  /// holds, so a reload does not throw a view away.
+  function cameraOf(el) {
+    const g = viewportOf(el);
+    if (!g) return {x: 0, y: 0, z: 1000};
+    const n = (k, d) => {
+      const v = parseFloat(g.getAttribute(k));
+      return isFinite(v) ? v : d;
+    };
+    return {x: n("data-cx", 0), y: n("data-cy", 0), z: n("data-cz", 1000)};
+  }
+
+  function applyCamera(el, cam) {
+    const g = viewportOf(el);
+    if (!g) return;
+    g.setAttribute("transform",
+      "translate(" + Math.round(cam.x) + "," + Math.round(cam.y) + ") scale(" +
+      (cam.z / 1000).toFixed(3) + ")");
+  }
+
+  /// A client point in the SVG's own user space — the space the boxes live in.
+  ///
+  /// Without this a drag moves the box by CSS pixels while the picture is scaled
+  /// to fit its frame, so the box lags or overshoots the cursor by exactly the
+  /// zoom factor. `getScreenCTM` is the only thing that knows the whole chain
+  /// (viewBox fit x camera transform), so ask it rather than reconstruct it.
+  function userPoint(el, ev) {
+    const svg = el.querySelector("svg.stage");
+    const g = viewportOf(el);
+    if (!svg || !g || !svg.createSVGPoint || !g.getScreenCTM) {
+      return {x: ev.clientX, y: ev.clientY};
+    }
+    const m = g.getScreenCTM();
+    if (!m) return {x: ev.clientX, y: ev.clientY};
+    const p = svg.createSVGPoint();
+    p.x = ev.clientX;
+    p.y = ev.clientY;
+    const q = p.matrixTransform(m.inverse());
+    return {x: q.x, y: q.y};
+  }
+
   const Canvy = {
-    mounted() { this.wire(); drawEdges(this.el); },
-    updated() { drawEdges(this.el); },
+    mounted() {
+      this.cam = cameraOf(this.el);
+      this.wire();
+      applyCamera(this.el, this.cam);
+      drawEdges(this.el);
+    },
+    // The server re-renders the whole tree, so its `transform` and its camera
+    // attributes land again with every diff. Re-applying is not a workaround for
+    // the SSR model, it IS the model: the client owns the view, the server owns
+    // the picture.
+    updated() { applyCamera(this.el, this.cam); drawEdges(this.el); },
     destroyed() { this.unwire(); },
 
     wire() {
       const el = this.el, hook = this;
       let drag = null;
+      let pan = null;
       let frame = null;
+
+      // Zoom around the cursor: the point under the pointer stays under it, which
+      // is the only zoom that does not feel like being teleported.
+      this.onWheel = function (ev) {
+        ev.preventDefault();
+        const before = userPoint(el, ev);
+        const factor = Math.exp(-ev.deltaY / 400);
+        const z = Math.max(100, Math.min(4000, hook.cam.z * factor));
+        hook.cam.z = z;
+        applyCamera(el, hook.cam);
+        const after = userPoint(el, ev);
+        hook.cam.x += (after.x - before.x) * (z / 1000);
+        hook.cam.y += (after.y - before.y) * (z / 1000);
+        applyCamera(el, hook.cam);
+      };
 
       this.onDown = function (ev) {
         const g = ev.target.closest("[data-node]");
-        if (!g) return;
+        if (!g) {
+          // Empty canvas: pan. A picture larger than its frame with no way to
+          // move is the same defect as no picture at all.
+          pan = {from: {x: ev.clientX, y: ev.clientY},
+                 origin: {x: hook.cam.x, y: hook.cam.y}};
+          el.classList.add("panning");
+          return;
+        }
         const id = g.getAttribute("data-node");
         // Collect the attached edges ONCE, not per frame.
         const attached = Array.from(el.querySelectorAll(
           '[data-from="' + id + '"], [data-to="' + id + '"]'));
-        drag = {id: id, g: g, origin: boxOf(g), from: {x: ev.clientX, y: ev.clientY},
+        drag = {id: id, g: g, origin: boxOf(g), from: userPoint(el, ev),
                 at: boxOf(g), edges: attached};
         g.setPointerCapture && g.setPointerCapture(ev.pointerId);
         ev.preventDefault();
       };
 
       this.onMove = function (ev) {
+        if (pan) {
+          hook.cam.x = pan.origin.x + (ev.clientX - pan.from.x);
+          hook.cam.y = pan.origin.y + (ev.clientY - pan.from.y);
+          applyCamera(el, hook.cam);
+          return;
+        }
         if (!drag) return;
-        drag.at = {x: drag.origin.x + (ev.clientX - drag.from.x),
-                   y: drag.origin.y + (ev.clientY - drag.from.y)};
+        const now = userPoint(el, ev);
+        drag.at = {x: drag.origin.x + (now.x - drag.from.x),
+                   y: drag.origin.y + (now.y - drag.from.y)};
         if (frame) return;                       // coalesce to one frame
         frame = requestAnimationFrame(function () {
           frame = null;
@@ -232,6 +328,11 @@
       };
 
       this.onUp = function (ev) {
+        if (pan) {
+          pan = null;
+          el.classList.remove("panning");
+          return;
+        }
         if (!drag) return;
         const done = drag;
         drag = null;
@@ -247,6 +348,7 @@
       el.addEventListener("pointermove", this.onMove);
       el.addEventListener("pointerup", this.onUp);
       el.addEventListener("pointercancel", this.onUp);
+      el.addEventListener("wheel", this.onWheel, {passive: false});
     },
 
     unwire() {
@@ -254,6 +356,7 @@
       this.el.removeEventListener("pointermove", this.onMove);
       this.el.removeEventListener("pointerup", this.onUp);
       this.el.removeEventListener("pointercancel", this.onUp);
+      this.el.removeEventListener("wheel", this.onWheel);
     },
   };
 

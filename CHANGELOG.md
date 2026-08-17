@@ -9,6 +9,54 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.12.1] — 2026-08-17
+
+### Fixed
+
+Three defects in `templates/canvy`, all of them browser-visible, all of them found
+by opening the page rather than by a test — which is the finding behind the fourth
+item.
+
+- **The canvas offered the client nothing to attach to.** A LiveView hook mounts
+  only on an element carrying `phx-hook="<Name>"` **and** an `id`; the rendered
+  markup had neither. So `client/surface.js` never ran, and it owns two things the
+  server deliberately does not: every edge's `d` (the server sends endpoints and a
+  lane, never a path) and the whole drag. What every join served was a picture with
+  no lines that could not be moved.
+- **The one expression the hook evaluated to draw an edge threw.** It said
+  `rounded(route(...))`, but `route` returns `{d, start, end}` while `rounded` takes
+  an array of points — a `TypeError` inside the loop, so not one edge in the picture
+  got a path. The 19 property tests all called `route(...).d` and were green. There
+  is now a single `edgePath()` for that call, and it has its own test.
+- **The arrangement was one column.** Hives were stacked vertically, which on a
+  14-hive colony is a 3672-pixel-tall strip two boxes wide: every hive at the same
+  x, so the layout carried one bit of information where a screen offers two
+  dimensions. Hives are packed into rows now (wrapping at 2400 px, sorted by path so
+  siblings land side by side); the same colony draws 2346 × 1396. The `<svg>` also
+  carries a **`viewBox` over the whole drawing**, so the browser fits the picture
+  into the frame before any JavaScript runs — previously the element was exactly the
+  size of its container with nothing to scroll, so everything below the fold was
+  simply unreachable.
+
+### Added
+
+- **Pan and zoom.** Drag the empty canvas, wheel to zoom around the cursor. The
+  camera is applied as a transform on `g.viewport`, server-side from the store row
+  (so a saved view survives a reload without the client) and re-applied by the hook
+  after every diff, because the server re-renders the whole tree. Drag arithmetic
+  now runs in the SVG's user space via `getScreenCTM`, so a box follows the cursor
+  at any zoom instead of lagging by the scale factor.
+- **The client's test suite is executed.** It was in the tree, in the template's
+  file inventory, and run by nothing — not CI, not `cargo test`, not the release
+  routine. `cargo test` runs it now (skipping if `node` is absent), and it grew a
+  section that mounts the hook against a hand-built DOM: does every edge get a
+  usable path, does letting go of a box send exactly one `node:moved` with the drop
+  position, does dragging the empty canvas pan without telling the server anything.
+  A test file that only exists is a comment.
+- Two server-side tests for the seam that had none: the markup must offer the hook
+  name that `surface.js` registers (read out of the JS, so a rename on either side
+  turns it red), and the layout must not regress to a single column.
+
 ## [0.12.0] — 2026-08-17
 
 ### Added

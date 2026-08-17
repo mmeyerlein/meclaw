@@ -91,6 +91,8 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 .surface-boot{ padding:2rem; color:var(--muted); font:14px system-ui,sans-serif; }
 .canvy{ position:absolute; inset:0; background:var(--bg); }
 .canvy svg.stage{ width:100%; height:100%; display:block; }
+.canvy{ cursor:grab; }            /* the empty canvas pans */
+.canvy.panning{ cursor:grabbing; }
 .canvy .node{ cursor:grab; }
 .canvy .node:active{ cursor:grabbing; }
 .canvy path.edge{ fill:none; stroke:var(--edge); stroke-width:1.4; }

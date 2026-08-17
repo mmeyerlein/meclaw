@@ -6,6 +6,17 @@
 //! proven in `crates/meclaw-colony/tests/gh159_egress_policy.rs`.
 
 use meclaw_api::surface::render::{Dispatcher, EGRESS_MARK, REQUEST_ID, RenderError, SURFACE_PATH};
+
+/// Failure-marker budget for a render that MUST complete (30 s convention,
+/// `AGENTS.md` § Coding-Standards).
+///
+/// It was 5 s and went red once under `cargo`-parallel load — `Err(Timeout)` on a
+/// round trip that takes microseconds when it is not competing for a core. That is
+/// the exact class the convention exists for: a marker is not a measurement, and
+/// nothing here asserts anything about latency. The two deliberately TIGHT budgets
+/// in this file (50 ms, 200 ms) are semantic discriminators — they are what the
+/// timeout tests are testing — and they stay where they are.
+const RENDER_BUDGET: Duration = Duration::from_secs(30);
 use meclaw_colony::ColonyMsg;
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use std::time::Duration;
@@ -78,7 +89,7 @@ async fn a_request_is_stamped_and_the_event_is_passed_through_verbatim() {
         d.render(
             "/org/acme/canvy/render",
             meclaw_core::serde_json::json!({ "event": "made:up", "value": { "x": 1 } }),
-            Duration::from_secs(5),
+            RENDER_BUDGET,
         )
         .await
     });
@@ -123,12 +134,8 @@ async fn an_unknown_request_id_is_dropped() {
     let mut r = rig();
     let d = r.dispatcher.clone();
     let handle = tokio::spawn(async move {
-        d.render(
-            "/s",
-            meclaw_core::serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .await
+        d.render("/s", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+            .await
     });
     let sent = r.colony_rx.recv().await.unwrap();
     let id = injected_request_id(&sent);
@@ -159,22 +166,14 @@ async fn two_concurrent_renders_get_their_own_answers() {
     let d2 = r.dispatcher.clone();
 
     let first = tokio::spawn(async move {
-        d1.render(
-            "/a",
-            meclaw_core::serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .await
+        d1.render("/a", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+            .await
     });
     let id1 = injected_request_id(&r.colony_rx.recv().await.unwrap());
 
     let second = tokio::spawn(async move {
-        d2.render(
-            "/b",
-            meclaw_core::serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .await
+        d2.render("/b", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+            .await
     });
     let id2 = injected_request_id(&r.colony_rx.recv().await.unwrap());
     assert_ne!(id1, id2, "two requests must get two ids");
@@ -240,12 +239,8 @@ async fn a_cell_error_comes_back_as_the_cells_own_words() {
     let mut r = rig();
     let d = r.dispatcher.clone();
     let handle = tokio::spawn(async move {
-        d.render(
-            "/s",
-            meclaw_core::serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .await
+        d.render("/s", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+            .await
     });
     let id = injected_request_id(&r.colony_rx.recv().await.unwrap());
     r.egress_tx
@@ -269,12 +264,8 @@ async fn a_reply_that_is_neither_html_nor_error_is_malformed() {
     let mut r = rig();
     let d = r.dispatcher.clone();
     let handle = tokio::spawn(async move {
-        d.render(
-            "/s",
-            meclaw_core::serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .await
+        d.render("/s", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+            .await
     });
     let id = injected_request_id(&r.colony_rx.recv().await.unwrap());
     r.egress_tx
@@ -303,12 +294,8 @@ async fn the_cache_holds_the_newest_render_and_nothing_older() {
         let d = r.dispatcher.clone();
         let expect = markup.to_string();
         let handle = tokio::spawn(async move {
-            d.render(
-                "/s",
-                meclaw_core::serde_json::json!({}),
-                Duration::from_secs(5),
-            )
-            .await
+            d.render("/s", meclaw_core::serde_json::json!({}), RENDER_BUDGET)
+                .await
         });
         let id = injected_request_id(&r.colony_rx.recv().await.unwrap());
         r.egress_tx

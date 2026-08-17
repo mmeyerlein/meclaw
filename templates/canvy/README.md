@@ -163,19 +163,54 @@ python3 scripts/canvy_sync.py
 
 `crates/meclaw-cells/tests/canvy_template.rs` fails if the two ever drift.
 
+## The arrangement, and what the client owns
+
+The default layout is two levels. Inside a hive: rows by flow depth, so a request
+sits above the thing it asks. Between hives: **packed into rows**, left to right,
+wrapping at 2400 px. The first version stacked the hives in one column, which on a
+14-hive colony produced a 3672-pixel-tall strip two boxes wide — deterministic,
+correct, and unusable. An arrangement in one column carries one bit of information
+where a screen offers two dimensions.
+
+The `<svg>` carries a **`viewBox` covering the whole drawing**, so the browser fits
+the entire arrangement into the frame before any JavaScript runs. Zoom and pan ride
+on top of that as the camera transform on `g.viewport`; the camera the store holds
+is applied server-side, so a saved view survives a reload without the client.
+
+Three things are the client's and only the client's, all of them in
+`client/surface.js`, mounted through `phx-hook="Canvy"`:
+
+| | |
+|---|---|
+| **every edge path** | the server sends endpoints and a lane, never a `d` — one routing algorithm, one language |
+| **the drag** | between pointerdown and pointerup; on release it says "the user let go at 700,240" and the server answers with where the box *is* |
+| **pan and zoom** | drag the empty canvas, wheel to zoom around the cursor |
+
+**`id` and `phx-hook` on the canvas element are load-bearing.** A LiveView hook
+mounts only on an element carrying both. Without them the client never runs, and
+what reaches the browser is a picture with no lines that cannot be moved — which is
+exactly what every join served until 2026-08-17, with all the server-side tests
+green. They were green because they all asserted about the markup and none about
+the seam between the markup and the client. Two tests now cover it: one reads the
+hook name out of `surface.js` and looks for it in the rendered markup, and one
+mounts the hook against a hand-built DOM.
+
 ## Editing the picture
 
-`render.py` owns every tag. `client/surface.js` owns how a line is routed and how
-a drag feels. Neither is in the binary, so a canvas that should look different
-costs a template edit and not a release — which is the whole reason this is a hive
-and not a route.
+`render.py` owns every tag. `client/surface.js` owns how a line is routed, how a
+drag feels and where the camera is. Neither is in the binary, so a canvas that
+should look different costs a template edit and not a release — which is the whole
+reason this is a hive and not a route.
 
-The 19 property tests that come with the edge routing are its own:
+The client has its own suite, and `cargo test` runs it:
 
 ```bash
 node templates/canvy/render/client/surface.test.js
 ```
 
-They exist because the routing was the part that was visibly wrong — lines ran
-under the cells they connected — and that is the last defect anyone should have to
-report twice.
+It started as 19 property tests for the edge routing, because the routing was the
+part that was visibly wrong — lines ran under the cells they connected. It grew a
+section that mounts the hook, because the second time this view was reported broken
+the geometry was fine and the hook was the problem: it was never attached, and the
+one expression it evaluated to fill in a path threw. A test file that only exists
+is a comment, so a Rust test runs this one now.

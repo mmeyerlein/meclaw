@@ -104,5 +104,121 @@ console.log("edge routing");
   ok("no NaN in output", !/NaN/.test(d), d);
 }
 
+// --- 7. the ONE expression the hook evaluates
+//
+// Every case above calls `route(...)` and reads `.d`. The hook did not: it said
+// `rounded(route(...))`, and `rounded` takes an array of points, so what reached
+// the browser was `MNaN,NaN` — an edge element with an unusable path, i.e. no
+// visible lines at all, on every join since the surface existed. Nineteen green
+// property tests said nothing about it, because none of them evaluated the line
+// the client actually runs. `edgePath` is now that line, and this is its test.
+{
+  const d = G.edgePath({x: 0, y: 0}, {x: 400, y: 260}, W, H, 0);
+  ok("edgePath yields a drawable path", /^M[-\d.]+,[-\d.]+/.test(d), d);
+  ok("edgePath has no NaN", !/NaN/.test(d), d);
+  ok("edgePath is what route promises", d === G.route({x: 0, y: 0}, {x: 400, y: 260}, W, H, 0).d);
+  // The shape of the old defect, pinned so nobody reintroduces it: handing the
+  // route OBJECT to the point-list function does not merely draw badly, it
+  // THROWS — which is why not one edge in the picture had a path. An exception
+  // inside the loop takes every remaining edge with it.
+  let threw = false;
+  try {
+    G.rounded(G.route({x: 0, y: 0}, {x: 400, y: 260}, W, H, 0));
+  } catch (e) {
+    threw = true;
+  }
+  ok("rounded over a route object throws — the old defect", threw);
+}
+
+// --- 8. THE HOOK ITSELF, mounted against a fake DOM
+//
+// Everything above tests geometry. Nothing tested the hook, and the hook is where
+// both browser-visible defects lived: it was never mounted (the markup offered no
+// `phx-hook`), and when it did run its edge call threw. A canvas with no lines
+// that cannot be dragged passed every test this file had.
+//
+// There is no browser and no DOM library here — the tech stack of this repo is a
+// closed list and a canvas is not a reason to open it. So the DOM is the six
+// methods the hook actually calls, hand-built, over the same attribute names the
+// server emits. That is enough to answer the two questions that matter: does every
+// edge get a usable path, and does letting go of a box tell the server where it
+// landed.
+console.log("\nthe hook");
+{
+  global.document = {};                       // the hook's own guard needs this
+  // The drag coalesces its DOM writes into one animation frame. Run it straight
+  // through: the test wants the arithmetic, not the scheduling.
+  global.requestAnimationFrame = (f) => { f(); return 1; };
+  delete require.cache[require.resolve("./surface.js")];
+  require("./surface.js");
+  const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
+  ok("surface.js registers the Canvy hook", !!Canvy);
+
+  function elem(attrs, tag) {
+    return {
+      tag: tag || "g",
+      attrs: Object.assign({}, attrs),
+      getAttribute(k) { return k in this.attrs ? String(this.attrs[k]) : null; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      closest(sel) { return sel === "[data-node]" && "data-node" in this.attrs ? this : null; },
+    };
+  }
+
+  // Two cells, one edge between them, one viewport — the smallest real picture.
+  const a = elem({"data-node": "a/one", transform: "translate(24,30)"});
+  const b = elem({"data-node": "a/two", transform: "translate(400,300)"});
+  const e = elem({"data-from": "a/one", "data-to": "a/two", "data-lane": "0"}, "path");
+  const vp = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
+  const el = {
+    classList: {add() {}, remove() {}},
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) { return sel === "g.viewport" ? vp : null; },
+    querySelectorAll(sel) {
+      if (sel === "[data-node]") return [a, b];
+      if (sel === "path.edge") return [e];
+      if (sel.startsWith("[data-from=")) {
+        const id = sel.match(/"([^"]+)"/)[1];
+        return [e].filter(p => p.getAttribute("data-from") === id ||
+                               p.getAttribute("data-to") === id);
+      }
+      return [];
+    },
+  };
+
+  const sent = [];
+  const hook = Object.create(Canvy);
+  hook.el = el;
+  hook.pushEvent = (name, payload) => sent.push({name, payload});
+  hook.mounted();
+
+  const d = e.getAttribute("d");
+  ok("mounting fills in the edge path", !!d && /^M[-\d.]+,[-\d.]+/.test(d), String(d));
+  ok("and it carries no NaN", !!d && !/NaN/.test(d), String(d));
+  ok("mounting applies the camera", /translate\(0,0\) scale\(1/.test(vp.getAttribute("transform") || ""));
+
+  // A drag: press on a box, move, let go. One event, carrying where it landed.
+  el.listeners.pointerdown({target: a, clientX: 100, clientY: 100, preventDefault() {}});
+  el.listeners.pointermove({target: a, clientX: 160, clientY: 140});
+  el.listeners.pointerup({target: a, clientX: 160, clientY: 140});
+  ok("letting go of a box sends exactly one event", sent.length === 1, JSON.stringify(sent));
+  ok("and it is node:moved with the drop position",
+     sent.length === 1 && sent[0].name === "node:moved" &&
+     sent[0].payload.id === "a/one" &&
+     sent[0].payload.x === 84 && sent[0].payload.y === 70,
+     JSON.stringify(sent[0]));
+
+  // Pressing the empty canvas pans instead, and sends nothing.
+  const before = vp.getAttribute("transform");
+  el.listeners.pointerdown({target: elem({}), clientX: 10, clientY: 10, preventDefault() {}});
+  el.listeners.pointermove({clientX: 60, clientY: 30});
+  el.listeners.pointerup({clientX: 60, clientY: 30});
+  ok("dragging the empty canvas pans the view", vp.getAttribute("transform") !== before,
+     vp.getAttribute("transform"));
+  ok("and panning tells the server nothing", sent.length === 1);
+}
+
 console.log(fails ? `\n${fails} failing` : "\nall green");
 process.exit(fails ? 1 : 0);

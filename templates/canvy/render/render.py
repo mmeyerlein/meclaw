@@ -44,6 +44,11 @@ import uuid
 NODE_W, NODE_H = 150, 38
 GAP_X, GAP_Y = 60, 40
 PAD_TOP, PAD_SIDE, PAD_BOT = 30, 24, 24
+# How wide a shelf of hives may grow before the next one wraps to a new row, and
+# the air between two hive boxes. `SHELF_W` is a target and not a limit: a single
+# hive wider than this still gets its own row rather than being cut.
+SHELF_W = 2400
+HIVE_GAP_X, HIVE_GAP_Y = 90, 80
 
 # Fill and stroke per cell type. Ported verbatim from colony_topology.py so the
 # shipped surface and the standalone renderer draw the same colony.
@@ -158,6 +163,16 @@ def rows_of(body):
     return v if isinstance(v, list) else None
 
 
+def fmt_scale(per_mille):
+    """The camera's zoom as an SVG scale factor.
+
+    Per-mille because a store column is `text`, `int` or `json` — there is no
+    float, and a thousandth is finer than a mouse wheel can express.
+    """
+    z = max(100, min(4000, int(per_mille or 1000)))
+    return ("%.3f" % (z / 1000.0)).rstrip("0").rstrip(".")
+
+
 def as_doc(value):
     """A `json` column arrives as a string. Absent or unreadable → empty."""
     if isinstance(value, dict):
@@ -204,12 +219,56 @@ def flow_layers(ids, edges):
     return layer
 
 
+def hive_block(members, layer):
+    """One hive laid out on its own, relative to (0, 0): rows by flow rank.
+
+    The flow layer is computed across the WHOLE graph, but it is applied inside
+    one hive, so it has to be COMPRESSED here, not merely shifted. The global
+    layer of a cell is the longest chain reaching it from anywhere, and a real
+    colony has long chains: two cells in the same hive can carry layer 5 and
+    layer 400 because one of them is downstream of a deep pipeline elsewhere.
+    Shifting by the minimum leaves the 395 empty rows between them.
+
+    Measured on a live 46-cell / 13-hive colony: y ran to 174828 with the raw
+    layer, 52992 shifted, and 3384 ranked. What a hive's height should say is how
+    many flow STEPS it has inside it, and ranking is what says that. The order is
+    preserved, so a request still sits above the thing it asks.
+
+    Returns `(relative positions, width, height)`.
+    """
+    rank = {lv: r for r, lv in enumerate(sorted({layer[i] for i in members}))}
+    rows = {}
+    for i in members:
+        rows.setdefault(rank[layer[i]], []).append(i)
+    rel = {}
+    width = 0
+    for lv in sorted(rows):
+        x = 0
+        for i in rows[lv]:
+            rel[i] = (x, lv * (NODE_H + GAP_Y))
+            x += NODE_W + GAP_X
+        width = max(width, x - GAP_X)
+    height = (max(rows) + 1) * (NODE_H + GAP_Y) - GAP_Y
+    return rel, width, height
+
+
 def auto_layout(nodes, edges, saved):
     """Where every box sits. A saved position always wins.
 
-    Grouped by hive, then by flow layer inside the hive, so a request sits above
-    the thing it asks. Deterministic: same input, same output, so a changed
-    picture means a changed colony.
+    Two levels, and the outer one is the one that decides whether the picture is
+    readable at all. Inside a hive: rows by flow rank (`hive_block`). Between
+    hives: **packed into rows**, left to right, wrapping at `SHELF_W`.
+
+    Stacking the hives in one column was the first version, and it was reported
+    unusable on the first colony that had more than a handful: 14 hives became a
+    3672-pixel-tall strip two boxes wide. Every hive sat at the same x, so the
+    whole arrangement carried exactly one bit of information — order — while a
+    screen is two-dimensional. Packing is not decoration: it is what makes the
+    default arrangement worth keeping long enough to rearrange it by hand.
+
+    Sorted by hive path, so siblings land next to each other rather than wherever
+    a dictionary happened to put them. Deterministic: same input, same output, so
+    a changed picture means a changed colony.
     """
     ids = [n["id"] for n in nodes]
     layer = flow_layers(ids, edges)
@@ -218,34 +277,20 @@ def auto_layout(nodes, edges, saved):
         by_hive.setdefault(hive_of(n["id"]), []).append(n["id"])
 
     pos = {}
-    y_cursor = PAD_TOP
+    shelf_x, shelf_y, shelf_h = PAD_SIDE, PAD_TOP, 0
     for hive in sorted(by_hive):
         members = sorted(by_hive[hive], key=lambda i: (layer[i], i))
-        # The flow layer is computed across the WHOLE graph, but it is applied
-        # inside one hive, so it has to be COMPRESSED here, not merely shifted.
-        # The global layer of a cell is the longest chain reaching it from
-        # anywhere, and a real colony has long chains: two cells in the same hive
-        # can carry layer 5 and layer 400 because one of them is downstream of a
-        # deep pipeline elsewhere. Shifting by the minimum leaves the 395 empty
-        # rows between them.
-        #
-        # Measured on a live 46-cell / 13-hive colony: y ran to 174828 with the
-        # raw layer, 52992 shifted, and 3384 ranked. What a hive's height should
-        # say is how many flow STEPS it has inside it, and ranking is what says
-        # that. The order is preserved, so a request still sits above the thing
-        # it asks.
-        rank = {lv: r for r, lv in enumerate(sorted({layer[i] for i in members}))}
-        rows = {}
-        for i in members:
-            rows.setdefault(rank[layer[i]], []).append(i)
-        height = 0
-        for lv in sorted(rows):
-            x = PAD_SIDE
-            for i in rows[lv]:
-                pos[i] = (x, y_cursor + lv * (NODE_H + GAP_Y))
-                x += NODE_W + GAP_X
-            height = max(height, (lv + 1) * (NODE_H + GAP_Y))
-        y_cursor += height + PAD_TOP + PAD_BOT
+        rel, w, h = hive_block(members, layer)
+        # Wrap when this hive would push the row past the target width — but
+        # never wrap an empty row, or a single hive wider than SHELF_W would
+        # start on a line of its own forever.
+        if shelf_x > PAD_SIDE and shelf_x + w > SHELF_W:
+            shelf_y += shelf_h + HIVE_GAP_Y
+            shelf_x, shelf_h = PAD_SIDE, 0
+        for i, (rx, ry) in rel.items():
+            pos[i] = (shelf_x + rx, shelf_y + ry)
+        shelf_x += w + HIVE_GAP_X
+        shelf_h = max(shelf_h, h)
 
     # A saved position always wins, and one saved box must not move its
     # neighbours: the automatic layout above is only the default for a box
@@ -374,12 +419,55 @@ def edge_svg(e):
     )
 
 
+def frame(nodes, hives):
+    """The `viewBox`: the whole drawing, plus a margin.
+
+    Without it the SVG shows the top-left corner of a canvas that is thousands of
+    pixels tall, and since the element is exactly the size of its container there
+    is nothing to scroll. Reported as "not usable", and rightly: a picture you
+    cannot see the bottom of is not a picture. With a viewBox the browser scales
+    the whole arrangement into the frame on its own, before any JavaScript runs —
+    so the canvas is legible even if the client never loads.
+
+    Zoom and pan then ride on TOP of this as the camera transform, which is why
+    the frame is derived from the content and never from the camera.
+    """
+    xs = [n["x"] for n in nodes] + [h["x"] for h in hives]
+    ys = [n["y"] for n in nodes] + [h["y"] for h in hives]
+    if not xs:
+        return (0, 0, NODE_W, NODE_H)
+    right = max([n["x"] + NODE_W for n in nodes] + [h["x"] + h["w"] for h in hives])
+    bottom = max([n["y"] + NODE_H for n in nodes] + [h["y"] + h["h"] for h in hives])
+    x0 = min(xs) - PAD_SIDE
+    y0 = min(ys) - PAD_TOP
+    return (x0, y0, right - x0 + PAD_SIDE, bottom - y0 + PAD_BOT)
+
+
 def render(nodes, hives, edges, camera, title):
+    box = frame(nodes, hives)
     parts = [
-        '<div class="canvy" data-title="%s">' % esc(title),
-        '<svg class="stage" xmlns="http://www.w3.org/2000/svg">',
-        '<g class="viewport" data-cx="%d" data-cy="%d" data-cz="%d">'
-        % (camera[0], camera[1], camera[2]),
+        # `id` + `phx-hook` are the contract with `client/surface.js`, and they are
+        # load-bearing rather than cosmetic: a LiveView hook mounts only on an
+        # element that carries BOTH. Without them the client never runs — no edge
+        # gets its `d` (the server deliberately sends endpoints, not paths) and
+        # nothing can be dragged. That was the state of every join until
+        # 2026-08-17, with all the server-side tests green, because they all
+        # asserted about the markup and none about the seam.
+        '<div class="canvy" id="canvy" phx-hook="Canvy" data-title="%s">' % esc(title),
+        '<svg class="stage" xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="%d %d %d %d" preserveAspectRatio="xMidYMid meet">' % box,
+        # The camera is a transform on the viewport group, so pan and zoom compose
+        # with the frame above instead of fighting it. Identity at (0,0,1000).
+        '<g class="viewport" data-cx="%d" data-cy="%d" data-cz="%d" '
+        'transform="translate(%d,%d) scale(%s)">'
+        % (
+            camera[0],
+            camera[1],
+            camera[2],
+            camera[0],
+            camera[1],
+            fmt_scale(camera[2]),
+        ),
         '<g class="hives">',
     ]
     parts.extend(hive_svg(h) for h in hives)

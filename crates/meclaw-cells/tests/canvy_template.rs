@@ -420,6 +420,187 @@ fn the_markup_carries_no_edge_path() {
     assert!(html.contains("data-from=\"a/one\""));
 }
 
+/// **The defect a browser found and no test did** (2026-08-17): the canvas offered
+/// the client nothing to attach to.
+///
+/// A LiveView hook mounts on an element that carries `phx-hook="<Name>"` AND an
+/// `id`. The markup carried neither, so `surface.js` — the file that fills in every
+/// edge path and owns the whole drag — never ran. What reached the browser was a
+/// picture with no lines that could not be moved, on every join since the surface
+/// existed. Every server-side test passed, because every one of them asserted about
+/// the markup and none about the contract between the markup and the client.
+///
+/// The hook NAME is read out of `surface.js` rather than written here twice, so a
+/// rename on either side turns this red instead of silently detaching the client
+/// again.
+#[test]
+fn the_canvas_offers_the_hook_that_the_client_registers() {
+    let Some(root) = shipped_canvy() else { return };
+    let js = std::fs::read_to_string(root.join("render/client/surface.js")).unwrap();
+    // `root.SurfaceHooks = Object.assign(root.SurfaceHooks || {}, {Canvy: Canvy});`
+    let registered = js
+        .split("SurfaceHooks || {}, {")
+        .nth(1)
+        .and_then(|rest| rest.split(':').next())
+        .map(str::trim)
+        .expect("surface.js must register exactly one hook by name");
+
+    let rows = snapshot_rows(graph_doc(&[("/a/one", "llm")], &[]));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    assert!(
+        html.contains(&format!("phx-hook=\"{registered}\"")),
+        "the markup must offer the hook `{registered}` that surface.js registers, \
+         otherwise no edge is ever drawn and nothing can be dragged: {html}"
+    );
+    // LiveView refuses to mount a hook on an element without an id.
+    let head = &html[..html.find('>').unwrap_or(html.len())];
+    assert!(
+        head.contains("id=\""),
+        "a hook element needs an id or LiveView will not mount it: {head}"
+    );
+}
+
+/// The whole picture has to be reachable. Without a `viewBox` the SVG shows the
+/// top-left corner of a canvas that is thousands of pixels tall and there is no way
+/// to scroll it — which is what "unusable" meant in the first report.
+#[test]
+fn the_frame_shows_the_whole_picture() {
+    let Some(root) = shipped_canvy() else { return };
+    let rows = snapshot_rows(graph_doc(
+        &[
+            ("/a/one", "llm"),
+            ("/a/two", "store"),
+            ("/b/three", "code"),
+            ("/c/four", "code"),
+        ],
+        &[("e0", "/a/one", "/b/three")],
+    ));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    let vb = html
+        .split("viewBox=\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .expect("the stage must carry a viewBox");
+    let nums: Vec<f64> = vb
+        .split_whitespace()
+        .map(|n| n.parse().expect("viewBox numbers"))
+        .collect();
+    assert_eq!(nums.len(), 4, "viewBox is min-x min-y width height: {vb}");
+    // Every box the markup places must lie inside the frame.
+    let mut worst_x: f64 = 0.0;
+    let mut worst_y: f64 = 0.0;
+    for chunk in html.split("translate(").skip(1) {
+        let inner = chunk.split(')').next().unwrap_or("");
+        let mut it = inner.split(',');
+        let x: f64 = it.next().unwrap_or("0").trim().parse().unwrap_or(0.0);
+        let y: f64 = it.next().unwrap_or("0").trim().parse().unwrap_or(0.0);
+        worst_x = worst_x.max(x);
+        worst_y = worst_y.max(y);
+    }
+    assert!(
+        worst_x <= nums[0] + nums[2] && worst_y <= nums[1] + nums[3],
+        "a box at ({worst_x},{worst_y}) sits outside the frame {vb}"
+    );
+}
+
+/// **The arrangement.** Hives used to be stacked in ONE column, so a 14-hive colony
+/// was a 3672-pixel-tall strip: correct, deterministic, and unreadable. Hives are
+/// packed into rows now, and this is the discriminator — a layout that regresses to
+/// a single column fails here even though every other layout test stays green.
+#[test]
+fn hives_are_packed_into_rows_and_not_a_single_column() {
+    let Some(root) = shipped_canvy() else { return };
+    // Six hives, two cells each: enough that a column arrangement is unmistakable.
+    let mut nodes: Vec<(String, &str)> = Vec::new();
+    for h in ["a", "b", "c", "d", "e", "f"] {
+        nodes.push((format!("/{h}/one"), "llm"));
+        nodes.push((format!("/{h}/two"), "store"));
+    }
+    let as_refs: Vec<(&str, &str)> = nodes.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(&as_refs, &[]))),
+            json!({}),
+        ),
+    ));
+
+    // The hive rectangles carry their own x/y, which is the arrangement itself.
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    for chunk in html.split("<g class=\"hive\"").skip(1) {
+        let rect = chunk.split("/>").next().unwrap_or("");
+        let get = |k: &str| -> f64 {
+            rect.split(&format!("{k}=\""))
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0)
+        };
+        xs.push(get(" x"));
+        ys.push(get(" y"));
+    }
+    assert_eq!(xs.len(), 6, "six hives must be drawn: {html}");
+    let distinct_x = {
+        let mut v = xs.clone();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.dedup();
+        v.len()
+    };
+    assert!(
+        distinct_x > 1,
+        "every hive sits at the same x — that is the single column: {xs:?}"
+    );
+    let width = xs.iter().cloned().fold(0.0_f64, f64::max);
+    let height = ys.iter().cloned().fold(0.0_f64, f64::max);
+    assert!(
+        width >= height,
+        "six equal hives must spread sideways at least as far as downwards, \
+         got width {width} height {height}"
+    );
+}
+
+/// **The client's own test suite, run.** It was in the tree and in the inventory
+/// list above, and nothing ever executed it — not CI, not `cargo test`, not the
+/// release routine. A test file that only exists is a comment.
+///
+/// That is the process half of the two defects a browser found on 2026-08-17: the
+/// geometry had 19 green property tests, the hook had none, and nobody would have
+/// noticed either way. Now `cargo test` runs it, and a client-side regression is a
+/// red Rust test.
+///
+/// Skips when `node` is absent, like every other guard in this file — a missing
+/// interpreter is not a failing canvas.
+#[test]
+fn the_clients_own_tests_pass() {
+    let Some(root) = shipped_canvy() else { return };
+    let script = root.join("render/client/surface.test.js");
+    let out = match std::process::Command::new("node").arg(&script).output() {
+        Ok(o) => o,
+        Err(_) => return, // no node on this host
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("all green"),
+        "the canvas client's tests must pass:\n{stdout}\n{stderr}"
+    );
+    // The suite must actually have run something — an empty file "passes" too.
+    assert!(
+        stdout.matches("  ok ").count() >= 20,
+        "too few client assertions ran; did the suite lose its cases?\n{stdout}"
+    );
+}
+
 /// A cell path is database content. A name that could close a tag must not.
 #[test]
 fn a_name_that_looks_like_markup_comes_out_escaped() {
