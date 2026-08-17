@@ -192,6 +192,47 @@ fn html_of(out: &[Value]) -> String {
     panic!("no surface reply in {out:?}");
 }
 
+/// The `(x, y)` of a hive box in the markup, by its `data-hive`.
+fn hive_box(html: &str, hive: &str) -> (i64, i64) {
+    let needle = format!("data-hive=\"{hive}\">");
+    let after = html
+        .split(&needle)
+        .nth(1)
+        .unwrap_or_else(|| panic!("no hive box for {hive} in {html}"));
+    let rect = after.split("/>").next().unwrap_or("");
+    let num = |k: &str| -> i64 {
+        rect.split(&format!("{k}=\""))
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no {k} in {rect}"))
+    };
+    (num("x"), num("y"))
+}
+
+/// The `translate(x,y)` of each named node, in the order asked for.
+fn node_positions(html: &str, ids: &[&str]) -> Vec<(i64, i64)> {
+    ids.iter()
+        .map(|id| {
+            let needle = format!("data-node=\"{id}\"");
+            let after = html
+                .split(&needle)
+                .nth(1)
+                .unwrap_or_else(|| panic!("no node {id} in {html}"));
+            let t = after
+                .split("translate(")
+                .nth(1)
+                .and_then(|r| r.split(')').next())
+                .unwrap_or_else(|| panic!("no transform for {id}"));
+            let mut it = t.split(',');
+            (
+                it.next().unwrap().trim().parse().unwrap(),
+                it.next().unwrap().trim().parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
 /// The store operations in an emission list, decoded from their tool_call turns.
 fn store_ops(out: &[Value]) -> Vec<Value> {
     let mut ops = Vec::new();
@@ -598,6 +639,112 @@ fn the_clients_own_tests_pass() {
     assert!(
         stdout.matches("  ok ").count() >= 20,
         "too few client assertions ran; did the suite lose its cases?\n{stdout}"
+    );
+}
+
+/// **A hive is draggable too, and it costs ONE row.** Reported right after the
+/// canvas became usable: the boxes moved, the groups did not.
+///
+/// A hive box is derived from where its members ended up (`hive_boxes`) and is
+/// never stored — that is what makes dragging a cell out of a crowd grow its hive
+/// instead of stranding it outside a stale rectangle. So moving a hive cannot mean
+/// "store the rectangle": it means storing one OFFSET for the group, which the
+/// layout applies to its members before their own saved positions win. Two store
+/// ops per hive drag, exactly like a cell — not two per member.
+#[test]
+fn dragging_a_hive_writes_one_row_and_moves_its_members() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[("/a/one", "llm"), ("/a/two", "store"), ("/b/three", "code")],
+        &[],
+    );
+    let before = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let a_before = hive_box(&before, "a");
+    let b_before = hive_box(&before, "b");
+
+    // The drop: the hive `a` box is let go 500 right and 300 down of where it sat.
+    let target = (a_before.0 + 500, a_before.1 + 300);
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(snapshot_rows(graph)),
+            json!({}),
+            json!({
+                "canvy_origin": "render",
+                "canvy_event": "hive:moved",
+                "canvy_moved_id": "a",
+                "canvy_moved_x": target.0.to_string(),
+                "canvy_moved_y": target.1.to_string(),
+            }),
+        ),
+    );
+
+    let ops = store_ops(&out);
+    assert_eq!(
+        ops.len(),
+        2,
+        "one delete and one insert for the GROUP, not per member: {ops:?}"
+    );
+    assert_eq!(ops[0]["operation"], "delete");
+    assert_eq!(ops[0]["where"]["kind"], "hive");
+    assert_eq!(ops[0]["where"]["id"], "a");
+    assert_eq!(ops[1]["row"]["kind"], "hive");
+    assert_eq!(ops[1]["row"]["x"], target.0);
+    assert_eq!(ops[1]["row"]["y"], target.1);
+
+    // And the picture it answers with has the group there, with its members.
+    let after = html_of(&out);
+    assert_eq!(
+        hive_box(&after, "a"),
+        target,
+        "the hive box must be rendered where it was dropped"
+    );
+    assert_eq!(
+        hive_box(&after, "b"),
+        b_before,
+        "and a hive nobody touched must not move"
+    );
+    let moved: Vec<(i64, i64)> = node_positions(&after, &["a/one", "a/two"]);
+    let stayed: Vec<(i64, i64)> = node_positions(&before, &["a/one", "a/two"]);
+    for (m, s) in moved.iter().zip(stayed.iter()) {
+        assert_eq!(
+            (m.0 - s.0, m.1 - s.1),
+            (500, 300),
+            "every member moves with its hive, by the same delta"
+        );
+    }
+}
+
+/// A saved cell position still wins over the offset of its hive: the precedence is
+/// cell, then hive, then automatic. Without this, moving a hive would silently
+/// undo every hand-placed cell inside it.
+#[test]
+fn a_saved_cell_position_survives_a_hive_move() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+    let mut rows = snapshot_rows(graph);
+    let arr = rows.as_array_mut().unwrap();
+    arr.push(json!({"kind": "node", "id": "a/one", "x": 4000, "y": 4000}));
+    arr.push(json!({"kind": "hive", "id": "a", "x": 900, "y": 900}));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    assert_eq!(
+        node_positions(&html, &["a/one"])[0],
+        (4000, 4000),
+        "the cell keeps the position somebody gave it"
+    );
+    let two = node_positions(&html, &["a/two"])[0];
+    assert!(
+        two.0 >= 900 && two.1 >= 900,
+        "and its neighbour follows the hive offset, got {two:?}"
     );
 }
 

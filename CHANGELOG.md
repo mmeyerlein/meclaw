@@ -9,6 +9,33 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.12.2] — 2026-08-17
+
+### Added
+
+- **A hive can be dragged, and it costs one row.** Grab a hive anywhere inside its
+  frame — the empty space is the handle — and the frame, its label and every cell
+  in it move together; on release the client sends one `hive:moved` with the
+  group's new box origin and the server writes one row for the group, whatever its
+  size. Twenty cells do not become forty store round trips on an interactive path.
+  Reported the moment the cells became draggable, and rightly: a fifty-cell picture
+  is arranged in groups, not one box at a time.
+
+  What is stored is an **offset**, never the rectangle. The rectangle stays derived
+  from where the members ended up, which is what lets a cell dragged out of a crowd
+  grow its hive instead of being stranded outside a stale frame. Precedence reads
+  one way: a cell somebody placed by hand, then the offset of its hive, then the
+  automatic layout — so moving a hive never silently undoes a hand-placed cell
+  inside it.
+
+### Fixed
+
+- **`pointer-events: all` on the hive frame.** An SVG rect with `fill: none`
+  receives pointer events on its *stroke* only, so without this a hive would have
+  been grabbable by its one-pixel dashed border and nothing else. The cells still
+  win inside it, because the nodes group paints after the hives group and therefore
+  gets the event first.
+
 ## [0.12.1] — 2026-08-17
 
 ### Fixed

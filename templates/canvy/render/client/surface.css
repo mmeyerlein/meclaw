@@ -96,8 +96,17 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 .canvy .node{ cursor:grab; }
 .canvy .node:active{ cursor:grabbing; }
 .canvy path.edge{ fill:none; stroke:var(--edge); stroke-width:1.4; }
-.canvy .hive rect{ fill:none; stroke:var(--line); stroke-dasharray:4 3; }
-.canvy .hive text{ fill:var(--muted); font:11px system-ui,sans-serif; }
+/* `pointer-events:all` is load-bearing, not a tweak: an SVG rect with `fill:none`
+   receives pointer events on its STROKE only, so a hive would have been grabbable
+   by its 1px dashed border and nothing else. With it, the empty space inside a
+   hive is the group's handle — and the cells still win, because the nodes group
+   paints after the hives group and therefore gets the event first. */
+.canvy .hive rect{ fill:none; stroke:var(--line); stroke-dasharray:4 3;
+  pointer-events:all; cursor:grab; }
+.canvy .hive text{ fill:var(--muted); font:11px system-ui,sans-serif;
+  cursor:grab; user-select:none; }
+.canvy .hive.dragging rect{ stroke:var(--accent); stroke-dasharray:none; cursor:grabbing; }
+.canvy .hive.dragging text{ fill:var(--accent); }
 .canvy .node text.nm{ fill:var(--ink); font:12px system-ui,sans-serif; }
 .canvy .node text.ty{ fill:var(--muted); font:10px system-ui,sans-serif; }
 .canvy .legend{ position:absolute; right:.75rem; bottom:.5rem;

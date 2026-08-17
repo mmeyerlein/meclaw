@@ -252,7 +252,7 @@ def hive_block(members, layer):
     return rel, width, height
 
 
-def auto_layout(nodes, edges, saved):
+def auto_layout(nodes, edges, saved, hive_at=None):
     """Where every box sits. A saved position always wins.
 
     Two levels, and the outer one is the one that decides whether the picture is
@@ -272,6 +272,7 @@ def auto_layout(nodes, edges, saved):
     """
     ids = [n["id"] for n in nodes]
     layer = flow_layers(ids, edges)
+    hive_at = hive_at or {}
     by_hive = {}
     for n in nodes:
         by_hive.setdefault(hive_of(n["id"]), []).append(n["id"])
@@ -287,14 +288,27 @@ def auto_layout(nodes, edges, saved):
         if shelf_x > PAD_SIDE and shelf_x + w > SHELF_W:
             shelf_y += shelf_h + HIVE_GAP_Y
             shelf_x, shelf_h = PAD_SIDE, 0
+        # A hive somebody moved keeps the place they put it: the SAVED value is
+        # the box origin (what `hive_boxes` derives), so the block is translated
+        # by the difference, members and all. Storing the rectangle itself would
+        # be the wrong thing to store — the box is derived, which is what lets a
+        # cell dragged out of a crowd GROW its hive instead of being stranded
+        # outside a stale frame. One row per hive, whatever its size.
+        ox, oy = shelf_x, shelf_y
+        if hive in hive_at:
+            ox = hive_at[hive][0] + PAD_SIDE
+            oy = hive_at[hive][1] + PAD_TOP
         for i, (rx, ry) in rel.items():
-            pos[i] = (shelf_x + rx, shelf_y + ry)
+            pos[i] = (ox + rx, oy + ry)
+        # The shelf advances by the AUTOMATIC size regardless, so moving one hive
+        # never reshuffles the others.
         shelf_x += w + HIVE_GAP_X
         shelf_h = max(shelf_h, h)
 
-    # A saved position always wins, and one saved box must not move its
-    # neighbours: the automatic layout above is only the default for a box
-    # nobody has touched.
+    # Precedence, and it only reads one way: a cell that somebody placed by hand
+    # keeps its place, then the offset of its hive, then the automatic layout. A
+    # hive move that silently undid every hand-placed cell inside it would make
+    # the two gestures fight each other.
     for i, xy in saved.items():
         if i in pos:
             pos[i] = xy
@@ -548,6 +562,7 @@ def main():
         ]
 
     saved = {}
+    hive_at = {}
     camera = (0, 0, 1000)
     graph = {}
     for r in rows:
@@ -555,6 +570,12 @@ def main():
         if kind == "node":
             try:
                 saved[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
+            except (TypeError, ValueError):
+                continue
+        elif kind == "hive":
+            # Where a GROUP was put. Same shape as a node row, different `kind`.
+            try:
+                hive_at[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
             except (TypeError, ValueError):
                 continue
         elif kind == "camera":
@@ -601,8 +622,30 @@ def main():
     # rendered where it is written, from ONE input.
     # From `context`, not from `hop`: see the promotion in the hive's edge.
     moved_id = str(ctx.get("canvy_moved_id") or "")
+    event = str(ctx.get("canvy_event") or "")
     writes = []
-    if moved_id:
+    if moved_id and event == "hive:moved":
+        # A group was dropped. One row for the group — never one per member: a
+        # 20-cell hive would otherwise cost 40 store round trips on an
+        # interactive path, and the members' own rows would then have to be kept
+        # consistent with a box nobody stores.
+        try:
+            hx, hy = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
+        except (TypeError, ValueError):
+            hx = hy = None
+        if hx is not None:
+            hive_at[moved_id] = (hx, hy)
+            writes.append(
+                store_op("delete", table="canvas", where={"kind": "hive", "id": moved_id})
+            )
+            writes.append(
+                store_op(
+                    "insert",
+                    table="canvas",
+                    row={"kind": "hive", "id": moved_id, "x": hx, "y": hy},
+                )
+            )
+    elif moved_id:
         try:
             mx, my = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
         except (TypeError, ValueError):
@@ -643,7 +686,7 @@ def main():
             }
         )
 
-    pos = auto_layout(nodes, edges, saved)
+    pos = auto_layout(nodes, edges, saved, hive_at)
     for n in nodes:
         n["x"], n["y"] = pos[n["id"]]
     hives = hive_boxes(nodes, pos)

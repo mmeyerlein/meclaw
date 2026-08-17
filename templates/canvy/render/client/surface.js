@@ -191,6 +191,29 @@
     });
   }
 
+  /// The cells that belong to a hive: its DIRECT children, which is exactly the
+  /// grouping the server draws a box around (`hive_of` is the parent path, not an
+  /// ancestor test). A nested hive is its own group with its own box.
+  function membersOf(el, hive) {
+    const prefix = hive + "/";
+    return Array.from(el.querySelectorAll("[data-node]")).filter(function (g) {
+      const id = g.getAttribute("data-node") || "";
+      return id.startsWith(prefix) && id.slice(prefix.length).indexOf("/") === -1;
+    });
+  }
+
+  /// A hive group's `<rect>` and `<text>`, so a drag can move the frame with its
+  /// contents instead of leaving it behind for one round trip.
+  function hiveParts(g) {
+    return {rect: g.querySelector ? g.querySelector("rect") : null,
+            text: g.querySelector ? g.querySelector("text") : null};
+  }
+
+  function numAttr(el, k) {
+    const v = parseFloat(el && el.getAttribute ? el.getAttribute(k) : NaN);
+    return isFinite(v) ? v : 0;
+  }
+
   /// The provisional line during a drag: straight, centre to centre.
   function rubberBand(p, a, b) {
     const ca = centre(a), cb = centre(b);
@@ -260,6 +283,7 @@
     wire() {
       const el = this.el, hook = this;
       let drag = null;
+      let hive = null;
       let pan = null;
       let frame = null;
 
@@ -281,6 +305,35 @@
       this.onDown = function (ev) {
         const g = ev.target.closest("[data-node]");
         if (!g) {
+          // Not a cell. A hive is the next thing worth grabbing: its frame and
+          // its label are the group's handle, and moving a group is the gesture
+          // that makes a 50-cell picture arrangeable at all — one drag instead of
+          // twenty.
+          const hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          if (hg) {
+            const id = hg.getAttribute("data-hive");
+            const parts = hiveParts(hg);
+            const members = membersOf(el, id);
+            const ids = members.map(m => m.getAttribute("data-node"));
+            hive = {
+              id: id,
+              g: hg,
+              parts: parts,
+              origin: {x: numAttr(parts.rect, "x"), y: numAttr(parts.rect, "y")},
+              label: {x: numAttr(parts.text, "x"), y: numAttr(parts.text, "y")},
+              members: members.map(m => ({g: m, at: boxOf(m)})),
+              from: userPoint(el, ev),
+              delta: {x: 0, y: 0},
+              // Every edge with an end inside this hive moves with it.
+              edges: Array.from(el.querySelectorAll("path.edge")).filter(function (p) {
+                return ids.indexOf(p.getAttribute("data-from")) >= 0 ||
+                       ids.indexOf(p.getAttribute("data-to")) >= 0;
+              }),
+            };
+            hg.classList && hg.classList.add("dragging");
+            ev.preventDefault();
+            return;
+          }
           // Empty canvas: pan. A picture larger than its frame with no way to
           // move is the same defect as no picture at all.
           pan = {from: {x: ev.clientX, y: ev.clientY},
@@ -299,6 +352,38 @@
       };
 
       this.onMove = function (ev) {
+        if (hive) {
+          const now = userPoint(el, ev);
+          hive.delta = {x: now.x - hive.from.x, y: now.y - hive.from.y};
+          if (frame) return;
+          frame = requestAnimationFrame(function () {
+            frame = null;
+            if (!hive) return;
+            const dx = Math.round(hive.delta.x), dy = Math.round(hive.delta.y);
+            if (hive.parts.rect) {
+              hive.parts.rect.setAttribute("x", hive.origin.x + dx);
+              hive.parts.rect.setAttribute("y", hive.origin.y + dy);
+            }
+            if (hive.parts.text) {
+              hive.parts.text.setAttribute("x", hive.label.x + dx);
+              hive.parts.text.setAttribute("y", hive.label.y + dy);
+            }
+            const boxes = {};
+            hive.members.forEach(function (m) {
+              m.g.setAttribute("transform",
+                "translate(" + (m.at.x + dx) + "," + (m.at.y + dy) + ")");
+            });
+            el.querySelectorAll("[data-node]").forEach(function (g) {
+              boxes[g.getAttribute("data-node")] = boxOf(g);
+            });
+            hive.edges.forEach(function (p) {
+              const a = boxes[p.getAttribute("data-from")];
+              const b = boxes[p.getAttribute("data-to")];
+              if (a && b) rubberBand(p, a, b);
+            });
+          });
+          return;
+        }
         if (pan) {
           hook.cam.x = pan.origin.x + (ev.clientX - pan.from.x);
           hook.cam.y = pan.origin.y + (ev.clientY - pan.from.y);
@@ -328,6 +413,21 @@
       };
 
       this.onUp = function (ev) {
+        if (hive) {
+          const done = hive;
+          hive = null;
+          done.g.classList && done.g.classList.remove("dragging");
+          // The BOX origin, which is what the server stores for a group — one row
+          // per hive, whatever its size. The members' own positions are not sent:
+          // the server applies the group's offset to them and keeps any position
+          // somebody gave a single cell by hand.
+          hook.pushEvent("hive:moved", {
+            id: done.id,
+            x: Math.round(done.origin.x + done.delta.x),
+            y: Math.round(done.origin.y + done.delta.y),
+          });
+          return;
+        }
         if (pan) {
           pan = null;
           el.classList.remove("panning");

@@ -138,6 +138,7 @@ Three kinds share one `canvas` table, discriminated by `kind`:
 | `kind` | carries |
 |---|---|
 | `node` | `id`, `x`, `y` — where one box sits |
+| `hive` | `id`, `x`, `y` — where a GROUP was put, as its box origin |
 | `camera` | `x`, `y`, `z` — the viewport, zoom as integer per-mille |
 | `graph` | `doc` — the whole `/colony/graph` answer |
 
@@ -183,7 +184,7 @@ Three things are the client's and only the client's, all of them in
 | | |
 |---|---|
 | **every edge path** | the server sends endpoints and a lane, never a `d` — one routing algorithm, one language |
-| **the drag** | between pointerdown and pointerup; on release it says "the user let go at 700,240" and the server answers with where the box *is* |
+| **the drag** | a cell, or a whole hive; between pointerdown and pointerup; on release it says "the user let go at 700,240" and the server answers with where the box *is* |
 | **pan and zoom** | drag the empty canvas, wheel to zoom around the cursor |
 
 **`id` and `phx-hook` on the canvas element are load-bearing.** A LiveView hook
@@ -194,6 +195,27 @@ green. They were green because they all asserted about the markup and none about
 the seam between the markup and the client. Two tests now cover it: one reads the
 hook name out of `surface.js` and looks for it in the rendered markup, and one
 mounts the hook against a hand-built DOM.
+
+### Moving a group
+
+Grab a hive anywhere inside its frame — the empty space is the handle — and the
+frame, its label and every cell in it move together. On release the client sends
+**one** event carrying the group's new box origin, and the server writes **one**
+row for it, whatever the hive's size. Twenty cells do not become forty store round
+trips on an interactive path.
+
+What is stored is an offset, not the rectangle. The rectangle stays derived from
+where the members ended up, which is what lets a cell dragged out of a crowd GROW
+its hive instead of being stranded outside a stale frame. The precedence reads one
+way and only one way:
+
+    a cell somebody placed by hand  >  the offset of its hive  >  the automatic layout
+
+so moving a hive never silently undoes a hand-placed cell inside it.
+
+A hive's members are its **direct** children, which is exactly the grouping the
+server draws a box around. A nested hive is its own group, with its own box, moved
+on its own.
 
 ## Editing the picture
 

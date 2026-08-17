@@ -146,9 +146,14 @@ console.log("edge routing");
 console.log("\nthe hook");
 {
   global.document = {};                       // the hook's own guard needs this
-  // The drag coalesces its DOM writes into one animation frame. Run it straight
-  // through: the test wants the arithmetic, not the scheduling.
-  global.requestAnimationFrame = (f) => { f(); return 1; };
+  // The drag coalesces its DOM writes into one animation frame. The shim QUEUES
+  // like the real thing rather than running inline: a synchronous shim clears the
+  // hook's `frame` guard before the hook assigns it, so the guard stays set and
+  // every later move is dropped — which is exactly how the hive drag below first
+  // "failed" while the code was right.
+  const raf = [];
+  global.requestAnimationFrame = (f) => { raf.push(f); return raf.length; };
+  const flush = () => { const q = raf.splice(0); q.forEach(f => f()); };
   delete require.cache[require.resolve("./surface.js")];
   require("./surface.js");
   const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
@@ -188,6 +193,11 @@ console.log("\nthe hook");
     },
   };
 
+  function boxAttr(g) {
+    const m = /translate\((-?[\d.]+),(-?[\d.]+)\)/.exec(g.getAttribute("transform"));
+    return {x: +m[1], y: +m[2]};
+  }
+
   const sent = [];
   const hook = Object.create(Canvy);
   hook.el = el;
@@ -202,6 +212,7 @@ console.log("\nthe hook");
   // A drag: press on a box, move, let go. One event, carrying where it landed.
   el.listeners.pointerdown({target: a, clientX: 100, clientY: 100, preventDefault() {}});
   el.listeners.pointermove({target: a, clientX: 160, clientY: 140});
+  flush();
   el.listeners.pointerup({target: a, clientX: 160, clientY: 140});
   ok("letting go of a box sends exactly one event", sent.length === 1, JSON.stringify(sent));
   ok("and it is node:moved with the drop position",
@@ -218,6 +229,36 @@ console.log("\nthe hook");
   ok("dragging the empty canvas pans the view", vp.getAttribute("transform") !== before,
      vp.getAttribute("transform"));
   ok("and panning tells the server nothing", sent.length === 1);
+
+  // Dragging a HIVE: the frame, its label and every member move together, and the
+  // server hears one event carrying the group's new box origin. Reported the
+  // moment the cells became draggable — "hives lassen sich aber noch nicht wieder
+  // verschieben" — because a 50-cell picture is arranged in groups, not one box at
+  // a time.
+  const rect = elem({x: "0", y: "0", width: "300", height: "100"}, "rect");
+  const label = elem({x: "8", y: "18"}, "text");
+  const hiveG = elem({"data-hive": "a"});
+  hiveG.classList = {add() {}, remove() {}};
+  hiveG.querySelector = (sel) => (sel === "rect" ? rect : sel === "text" ? label : null);
+  hiveG.closest = function (sel) { return sel === "[data-hive]" ? this : null; };
+  const aBefore = boxAttr(a), bBefore = boxAttr(b);
+  el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
+  el.listeners.pointermove({clientX: 120, clientY: 60});
+  flush();
+  el.listeners.pointerup({clientX: 120, clientY: 60});
+  ok("the hive frame follows the drag",
+     rect.getAttribute("x") === "120" && rect.getAttribute("y") === "60",
+     rect.getAttribute("x") + "," + rect.getAttribute("y"));
+  ok("its label follows too",
+     label.getAttribute("x") === "128" && label.getAttribute("y") === "78");
+  ok("and both members move by the same delta",
+     boxAttr(a).x === aBefore.x + 120 && boxAttr(a).y === aBefore.y + 60 &&
+     boxAttr(b).x === bBefore.x + 120 && boxAttr(b).y === bBefore.y + 60,
+     JSON.stringify([boxAttr(a), boxAttr(b)]));
+  ok("one hive:moved with the box origin, and nothing per member",
+     sent.length === 2 && sent[1].name === "hive:moved" &&
+     sent[1].payload.id === "a" && sent[1].payload.x === 120 && sent[1].payload.y === 60,
+     JSON.stringify(sent[1]));
 }
 
 console.log(fails ? `\n${fails} failing` : "\nall green");
