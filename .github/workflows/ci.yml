@@ -19,6 +19,11 @@ on:
   # narrowing this to the `deny` job would save minutes and lose that.
   schedule:
     - cron: "17 5 * * 1"
+  # A red scheduled run needs a second opinion, and asking for one should not
+  # require an empty commit. Without this, the only way to re-test the exact
+  # commit the cron tripped on is to push something -- which changes the thing
+  # under test. (Found the hard way on 2026-08-17.)
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
