@@ -213,9 +213,23 @@ def auto_layout(nodes, edges, saved):
     y_cursor = PAD_TOP
     for hive in sorted(by_hive):
         members = sorted(by_hive[hive], key=lambda i: (layer[i], i))
+        # The flow layer is computed across the WHOLE graph, but it is applied
+        # inside one hive, so it has to be COMPRESSED here, not merely shifted.
+        # The global layer of a cell is the longest chain reaching it from
+        # anywhere, and a real colony has long chains: two cells in the same hive
+        # can carry layer 5 and layer 400 because one of them is downstream of a
+        # deep pipeline elsewhere. Shifting by the minimum leaves the 395 empty
+        # rows between them.
+        #
+        # Measured on a live 46-cell / 13-hive colony: y ran to 174828 with the
+        # raw layer, 52992 shifted, and 3384 ranked. What a hive's height should
+        # say is how many flow STEPS it has inside it, and ranking is what says
+        # that. The order is preserved, so a request still sits above the thing
+        # it asks.
+        rank = {lv: r for r, lv in enumerate(sorted({layer[i] for i in members}))}
         rows = {}
         for i in members:
-            rows.setdefault(layer[i], []).append(i)
+            rows.setdefault(rank[layer[i]], []).append(i)
         height = 0
         for lv in sorted(rows):
             x = PAD_SIDE

@@ -9,6 +9,31 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.11.1] — 2026-08-17
+
+### Fixed
+
+- **`canvy`: a hive's height is its own flow depth, not the whole graph's.** The
+  flow layer is computed across the entire colony and was applied inside one hive,
+  so two cells in the same hive could sit 395 empty rows apart because one of them
+  is downstream of a deep pipeline somewhere else. Measured on a live 46-cell /
+  13-hive colony: the vertical extent was 174828 px, and is 3384 px with the layers
+  ranked per hive. Order is preserved — a request still sits above the thing it
+  asks.
+
+### Changed
+
+- **`templates/canvy/README.md` no longer claims a surface can be instantiated by
+  mutation into a running colony** ([#163](https://github.com/mmeyerlein/meclaw/issues/163)).
+  It cannot, and the reason is structural: the egress door exists only at the root
+  hive, so the lane carrying a surface's answer must be `-> /`, and a mutation may
+  not draw an edge that leaves its subtree. A surface therefore belongs in the
+  bootstrap tree of a colony that has not started yet, or in a tree of its own fed
+  from outside. Worse, placing the directory by hand instead makes the next boot
+  fail with `DanglingEndpoint`, because a pre-existing directory is not adopted —
+  so an operator following the old README could turn a healthy colony into a boot
+  loop.
+
 ## [0.11.0] — 2026-08-17
 
 ### Added

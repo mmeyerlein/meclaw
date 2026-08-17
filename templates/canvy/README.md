@@ -53,7 +53,17 @@ never the movement in between.
 
 ## Installing it
 
-### By mutation — works, but the canvas needs feeding
+### By mutation — only into a colony that has not booted yet
+
+> **A surface hive can only be created at a colony's FIRST boot**
+> ([#163](https://github.com/mmeyerlein/meclaw/issues/163)). The egress door is
+> only at the root hive, so the lane carrying the answer back must be `-> /`; a
+> mutation may not draw an edge that leaves its subtree, and `-> /` leaves every
+> subtree. So the mutation below is **rejected** (`scope_out_of_bounds`) against a
+> running colony, and placing the directory by hand instead makes the next boot
+> fail with `DanglingEndpoint` because a pre-existing directory is not adopted.
+> Until #163 is fixed, canvy belongs in the bootstrap tree of a colony you are
+> about to start — or in a tree of its own that is fed from outside.
 
 ```json
 {"scope": "/org/acme/member/alice",
