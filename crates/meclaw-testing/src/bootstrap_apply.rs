@@ -39,12 +39,12 @@ mod tests {
         write(
             td.path(),
             "main/a/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         write(
             td.path(),
             "main/b/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
 
         let colony = ColonyHandle::new();
@@ -69,12 +69,12 @@ mod tests {
         write(
             td.path(),
             "main/a/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/main/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/main/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         write(
             td.path(),
             "main/b/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/main/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/main/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let h = ColonyHandle::new();
         let _report = bootstrap_from_filesystem(td.path(), &factories(), &h.runtime())
@@ -108,12 +108,12 @@ mod tests {
         write(
             td.path(),
             "main/a/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         write(
             td.path(),
             "main/b/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let h1 = ColonyHandle::new();
         let _ = bootstrap_from_filesystem(td.path(), &factories(), &h1.runtime())
@@ -131,12 +131,12 @@ mod tests {
         write(
             td.path(),
             "main/c/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/d"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/d"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         write(
             td.path(),
             "main/d/config.json",
-            r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let h2 = ColonyHandle::with_db_path(&db_path);
         let _ = bootstrap_from_filesystem(td.path(), &factories(), &h2.runtime())

@@ -1,12 +1,12 @@
-# `cogny@1.3.0`
+# `cogny@2.0.0`
 
 The agent core as one template. Three units under one hive:
-[`collector@1`](../collector/) as `collector`, [`dispatcher@1`](../dispatcher/) as
-`split`, plus **two** `llm` brains -- `brain` on a thinking model and `brain_fast` on a
-fast one. No new cell type, no Rust.
+[`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
+template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
+`brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@1`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky@2`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and its memory is the central hive rather than a window over
@@ -22,7 +22,7 @@ talky (R-CG-2). Two talkies consulting the same core is the normal shape.
   the brain over ONE edge carrying the iteration counter and `restore_ttl` -- a second
   copy of the mechanism the talky has, with its own bound, because a consultation is a
   longer round than a chat turn.
-- **A tool round that only needs its tools.** `brain -> split -> (your tools) ->
+- **A tool round that only needs its tools.** `brain -> dispatcher -> (your tools) ->
   collector -> brain` is pre-wired except for the one lane that is genuinely
   per-instance: which cell answers to `web_search`. Adding a tool is one edge pair.
 - **A consultation that looks like a turn.** The errand arrives on the collector's
@@ -44,10 +44,15 @@ talky (R-CG-2). Two talkies consulting the same core is the normal shape.
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window}` | `code`, `store` | `collector@1` |
-| `split` | `code` | `dispatcher@1` (a single-cell template) |
+| `collector/{assemble,window}` | `code`, `store` | `collector@2` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
 | `brain` | `llm` | this template -- the thinking lane |
 | `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
+
+**The braces are an inventory, not an address list.** `collector` declares
+`params.ports: []`, so `./collector` is the only address an edge from outside may name and
+`./collector/assemble` is refused with `hive_port_boundary`; which cell inside takes the
+message is decided by the `in_` lane the edge sets.
 
 ### How the sub-units are referenced: materialised copies, pinned
 
@@ -59,7 +64,7 @@ sub-units live here as **byte copies of their `config.json` files** -- no
 
 That is a fork risk, and it is pinned rather than hoped away:
 `crates/meclaw-cells/tests/cogny_template.rs` asserts every copied `config.json` is
-byte-identical to its source template. A change to `collector@1` that does not travel
+byte-identical to its source template. A change to `collector@2` that does not travel
 into `cogny/collector/` fails there, in the same test run, instead of drifting into
 production.
 
@@ -70,23 +75,23 @@ the composite** -- an island without a crossing edge derives inactive.
 
 | port | endpoint | direction | what travels |
 |---|---|---|---|
-| consult ingress | `./collector/assemble` | in | the errand, lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
-| advice exit | `./collector/assemble` | out | `hop.route == 'answer'` -- the advice **or** a question back |
+| consult ingress | `./collector` | in | the errand, lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
+| advice exit | `./collector` | out | `hop.route == 'answer'` -- the advice **or** a question back |
 
 ```json
-{"from": "<agent>/talky/split", "to": "./cogny/collector/assemble",
+{"from": "<agent>/talky/dispatcher", "to": "./cogny/collector",
  "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id",
                               "consult_class": "'consult'", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "<agent>/talky/split", "to": "./cogny/collector/assemble",
+{"from": "<agent>/talky/dispatcher", "to": "./cogny/collector",
  "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id",
                               "consult_class": "'lookup'", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "./cogny/collector/assemble", "to": "<agent>/talky/collector/assemble",
+{"from": "./cogny/collector", "to": "<agent>/talky/collector",
  "condition": "has(hop.route) && hop.route == 'answer'",
  "modifier": {"set_hop": {"route": "'in_advice'"},
               "set_context": {"col_phase": "''"},
@@ -118,13 +123,13 @@ Five things in those edges are load-bearing, and four of them are not decoration
 - **The errand arrives as a `tool_call` turn.** Its text is the raw arguments the model
   wrote. The core's collector files that as the turn.
 
-**`./collector/assemble` is the port address, and the address is the contract.** Both
+**`./collector` is the port address, and the address is the contract.** Both
 external ports meet at that one endpoint, and the working colonies under
-[`../../examples/`](../../examples/) wire it literally as `./cogny/collector/assemble` --
+[`../../examples/`](../../examples/) wire it literally as `./cogny/collector` --
 a stable **address**, not implementation detail that happens to be reachable. Which cells
 sit behind it may be rearranged in a version bump; the address may not, and moving it is a
 breaking change to every parent that wired it: a CHANGELOG Breaking entry and a new major
-version, never a patch. The per-instance lanes below reach further in, to `./split` and to
+version, never a patch. The per-instance lanes below reach further in, to `./dispatcher` and to
 both brains, and carry the same promise for the same reason -- the examples wire those
 literally too.
 
@@ -134,9 +139,9 @@ literally too.
 tool cells and no map of them. Wiring a tool is one edge pair:
 
 ```json
-{"from": "./cogny/split", "to": "./cogny/search",
+{"from": "./cogny/dispatcher", "to": "./cogny/search",
  "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"},
-{"from": "./cogny/search", "to": "./cogny/collector/assemble",
+{"from": "./cogny/search", "to": "./cogny/collector",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
@@ -148,10 +153,10 @@ Three more lanes, all of them the parent's decision:
 
 | lane | endpoint | when |
 |---|---|---|
-| **memory** | `./collector/assemble` route `recall` out, lane `in_bundle` in | **this is where the memory leg lives now** (R-CG-1): the central hive is the core's memory, and `memory_tier` sits at THIS collector |
-| memory tool | `./cogny/split` on `hop.tool_name == 'memory_recall'` → `./collector/assemble` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above. `#88`'s query-hygiene guard exists for exactly this consumer |
-| error drain | `./cogny/brain` **and `./cogny/brain_fast`** on `hop.finish_reason == 'error' \|\| hop.finish_reason == 'content_filter'` | a failed inference. Unlike `talky@1` this composite carries **no** `errors` cell (R-CG-2 names three units and nothing else); an unwired brain error dead-letters. Two brains, two drain edges -- forgetting the second one is the quiet way to lose the lookup lane's failures |
-| housekeeping | `./collector/assemble` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
+| **memory** | `./collector` route `recall` out, lane `in_bundle` in | **this is where the memory leg lives now** (R-CG-1): the central hive is the core's memory, and `memory_tier` sits at THIS collector |
+| memory tool | `./cogny/dispatcher` on `hop.tool_name == 'memory_recall'` → `./collector` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above. `#88`'s query-hygiene guard exists for exactly this consumer |
+| error drain | `./cogny/brain` **and `./cogny/brain_fast`** on `hop.finish_reason == 'error' \|\| hop.finish_reason == 'content_filter'` | a failed inference. Unlike `talky` this composite carries **no** `errors` cell (R-CG-2 names three units and nothing else); an unwired brain error dead-letters. Two brains, two drain edges -- forgetting the second one is the quiet way to lose the lookup lane's failures |
+| housekeeping | `./collector` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
 
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
@@ -175,13 +180,13 @@ found can run a fast model under a short cap.
 
 ```
                                  context.consult_class == 'lookup'
-collector/assemble ══════════════════════════════════════════> brain_fast
+collector ══════════════════════════════════════════> brain_fast
         ║                        (everything else)                  │
         ╚════════════════════════════════════════════> brain        │
                                                           │         │
-                          split <─────(stop | tool_calls)──┴─────────┘
+                     dispatcher <─────(stop | tool_calls)──┴─────────┘
                             │
-        escalate_to_deep ───┴──> collector/assemble  in_turn, consult_class := 'consult'
+        escalate_to_deep ───┴──> collector  in_turn, consult_class := 'consult'
 ```
 
 **The class is a tool name, not an estimate.** The asking model chooses between
@@ -199,7 +204,7 @@ wrong fact. That is the north star, and it is the reason this is a lane split ra
 a cheaper memory path.
 
 **And when even the formulation will not do, the fast lane escalates.** It calls
-`escalate_to_deep` with the question restated; the split routes that call by name like any
+`escalate_to_deep` with the question restated; the dispatcher routes that call by name like any
 other, and one edge in this hive hands it back into the seam as a fresh turn with the
 class flipped to `'consult'`. The deep lane then answers, one extra assembly later. A
 misclassification costs about two seconds -- still cheaper than the fifteen this version
@@ -213,20 +218,23 @@ abolishes, and infinitely cheaper than a wrong answer.
 
 ## The internal wiring, edge by edge
 
-Ten edges in this hive's `params.graph`, plus the two the collector brings with it:
+Ten edges in this hive's `params.graph`, plus the four the sealed collector brings with
+it -- those four are its own door and store edges and are neither drawn nor wireable from
+here. Every edge below names `collector` by its HIVE path; the lane in the third column is
+what the door behind it reads:
 
 ```
-collector/assemble ==(brain, iter < 12, NOT lookup, restore_ttl)==> brain       <- THE SEAM,
-collector/assemble ==(brain, iter < 12, lookup,     restore_ttl)==> brain_fast     two lanes
-brain      --(stop | tool_calls)--> split
-brain_fast --(stop | tool_calls)--> split
-brain      --(length)-------------> collector/assemble  in_answer
-brain_fast --(length)-------------> collector/assemble  in_answer
+collector ==(brain, iter < 12, NOT lookup, restore_ttl)==> brain       <- THE SEAM,
+collector ==(brain, iter < 12, lookup,     restore_ttl)==> brain_fast     two lanes
+brain      --(stop | tool_calls)--> dispatcher
+brain_fast --(stop | tool_calls)--> dispatcher
+brain      --(length)-------------> collector  in_answer
+brain_fast --(length)-------------> collector  in_answer
 
-split --(calls)---> collector/assemble  in_calls      split --(tool)--> [your tools]
-split --(result)--> collector/assemble  in_tool
-split --(answer)--> collector/assemble  in_answer     -> and out of the advice port
-split --(tool_name == escalate_to_deep)--> collector/assemble  in_turn, class := consult
+dispatcher --(calls)---> collector  in_calls      dispatcher --(tool)--> [your tools]
+dispatcher --(result)--> collector  in_tool
+dispatcher --(answer)--> collector  in_answer     -> and out of the advice port
+dispatcher --(tool_name == escalate_to_deep)--> collector  in_turn, class := consult
 ```
 
 **The two seam conditions are complementary, and that is a correctness property, not
@@ -250,7 +258,7 @@ bundle of fifteen calls is one answer, one iteration, one restore.
 
 ## Knobs
 
-The collector's knobs are **params of `./collector/assemble`** (since `collector@1.2.0`):
+The collector's knobs are **params of `./collector`** (since `collector@1.2.0`):
 they ship with their defaults inside the sub-unit copy and are retuned in the instantiated
 tree, per core. The dispatcher's are still `${VAR:-default}` env literals that travel into the
 instance and bind **late**, at every read -- and therefore move every unit in the colony at
@@ -275,10 +283,10 @@ once.
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
 | `recoverability` | param | `""` | collector -- what may be elided, declared per tool NAME (`lookup:repeatable,write:env`). Undeclared = `unique` = never elided. **Declare the core's own tools here**, because the core is where the large results are |
-| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool; wire it at `./split` next to `memory_recall` (`hop.tool_name == 'thread_recall'` -> lane `in_thread_call`) or the stubs the curator leaves have no way back |
+| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool; wire it at `./dispatcher` next to `memory_recall` (`hop.tool_name == 'thread_recall'` -> lane `in_thread_call`) or the stubs the curator leaves have no way back |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
-| `DISPATCHER_MAX_CALLS` | env | `16` | split -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | split -- the core's OWN async tools. **`escalate_to_deep` belongs here** (1.1.0); the `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries all three |
+| `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. **`escalate_to_deep` belongs here** (1.1.0); the `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries all three |
 
 **Every `env` knob above and everywhere else in a cogny tree is an EXPERIMENTAL config
 surface.** They are colony-global by construction and will follow the collector's knobs onto
@@ -297,15 +305,23 @@ cover.
 Now the knob is set where it belongs, and the byte pin still holds:
 
 ```json
-{"op": "instantiate", "template": "cogny@1.3.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@2.0.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
 ```
 
+The key is `collector/assemble`, not `collector`. Since
+[#140](https://github.com/mmeyerlein/meclaw/issues/140) an `override_params` key is a
+cell's path inside the template, and `collector` is a valid one -- it is the sealed
+sub-unit's HIVE. A hive reads only `graph`, `ports` and `contract`, so the validator
+accepts the key, nothing consumes the params, and the core comes up configured as if the
+override had never been written. The knobs live one level down, on the `code` cell behind
+the door.
+
 **The curator knobs sat on the same edge and are now on the same footing.** A cogny core
 wants `context_window` set -- it is the topology the curator exists for -- while a talky in
-the same colony wants nothing of the kind. Set it at the core's `collector/assemble` and the
+the same colony wants nothing of the kind. Set it at the core's `collector` and the
 talky is untouched. `context_window` still defaults to off, so a core instantiated without
 the override behaves exactly as before.
 
@@ -416,4 +432,4 @@ knowledge ends.
   advisor connection end to end, from a talky's interim answer to the correlated
   follow-up in the channel.
 - The sub-units keep their own pins: `collector_window.rs`, `collector_colony.rs`,
-  `dispatcher_split.rs`.
+  `dispatcher_template.rs`.

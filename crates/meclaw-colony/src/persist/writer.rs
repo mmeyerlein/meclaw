@@ -67,6 +67,31 @@ pub enum ColonyWriteOp {
         /// Unix seconds of the status change.
         updated_at: i64,
     },
+    /// GH #169: UPDATE-only re-address of an existing `registry` row
+    /// (`UPDATE registry SET path=?, updated_at=? WHERE path=?`) — the durable
+    /// half of a `move_nodes` relocation.
+    ///
+    /// An UPDATE and not a delete-plus-insert, because the two are different
+    /// claims about the world. A move says: this is the same cell, it lives
+    /// somewhere else now. Deleting the old row and inserting a new one at the
+    /// target would re-stamp `created_at`, drop the provenance columns and mint
+    /// a second identity for a cell that only ever had one — which is precisely
+    /// the cost the issue was written about. Moving the row keeps `cell_id`,
+    /// `cell_type`, `status`, `created_at` and the three provenance columns
+    /// untouched; only the address and `updated_at` change.
+    ///
+    /// Always enqueued BEFORE the relocated node's `UpsertRegistry` (the writer
+    /// channel is FIFO), so that upsert lands on the moved row's
+    /// `ON CONFLICT(path)` branch and bumps nothing but `updated_at`.
+    MoveRegistryPath {
+        /// The address the cell is leaving (primary key of the row to move).
+        from: Path,
+        /// The address it is taking. Validated free before the mutation touched
+        /// anything, so the UPDATE cannot collide with a live row.
+        to: Path,
+        /// Unix seconds of the relocation.
+        updated_at: i64,
+    },
     /// GH #62: UPDATE-only fill of the three `registry` provenance columns
     /// (`template`, `template_version`, `instantiated_at`) for an existing row.
     ///
@@ -441,6 +466,17 @@ fn apply_op(
                 rusqlite::params![status, updated_at, path.as_str()],
             )
             .expect("set registry status");
+        }
+        ColonyWriteOp::MoveRegistryPath {
+            from,
+            to,
+            updated_at,
+        } => {
+            tx.execute(
+                "UPDATE registry SET path=?, updated_at=? WHERE path=?",
+                rusqlite::params![to.as_str(), updated_at, from.as_str()],
+            )
+            .expect("move registry path");
         }
         ColonyWriteOp::SetRegistryProvenance { path, provenance } => {
             tx.execute(

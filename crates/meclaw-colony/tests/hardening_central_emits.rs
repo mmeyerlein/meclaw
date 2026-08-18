@@ -54,7 +54,7 @@ fn registry() -> CellFactoryRegistry {
 /// contract, `emitted_header` supplies `h1: 42`. Both echo to `/down`
 /// (capture). W2b (ruling A1): the identity fallback is gone — the echo
 /// delivery to `/down` needs a wired catch-all out-edge, otherwise the emission
-/// no_routes. Catch-all `./c→/down` + `./ok→/down` (edge target == echo_to, no
+/// no_routes. Catch-all `./c→/down` + `./ok→/down` (edge target == emitted_target, no
 /// target change); `/down` is spawned before the bootstrap in every test (A8
 /// resolves against the live registry). The violation tests catch `/c`'s
 /// emission at the central emits check BEFORE routing — the edge is inert there.
@@ -71,14 +71,14 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/c/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/down"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/down"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"hop":{"h1":{"type":"number","required":true}}}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/ok/config.json"),
         r#"{"cell":{"type":"echo"},
-            "params":{"echo_to":"/down","emitted_header":{"key":"h1","value":42}},
+            "params":{"emitted_target":"/down","emitted_header":{"key":"h1","value":42}},
             "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"hop":{"h1":{"type":"number","required":true}}}}}"#,
     )
     .unwrap();

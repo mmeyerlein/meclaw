@@ -20,6 +20,7 @@
 
   const STUB = 18;      // how far a line runs straight out of a box before turning
   const LANE = 7;       // parallel edges between the same pair get separated by this
+  const MARGIN = 26;    // how far outside everything the outermost free lane runs
 
   /// Which side of the box faces the target, as a unit vector.
   ///
@@ -27,9 +28,17 @@
   /// ratio, so a wide flat box prefers its top and bottom rather than its
   /// narrow sides whenever the target is even slightly above or below.
   function side(a, b, w, h) {
-    const dx = (b.x + w / 2) - (a.x + w / 2);
-    const dy = (b.y + h / 2) - (a.y + h / 2);
-    if (Math.abs(dx) * h > Math.abs(dy) * w) {
+    // A box may carry its OWN size. A cell is 150x38 and every one of them is;
+    // a HIVE is whatever its contents make it, and an edge that addresses a hive
+    // (the boundary rule — overview § Die Hive-Grenze) has to leave and land on
+    // that rectangle, not on a cell-sized ghost at its corner.
+    const aw = a.w || w, ah = a.h || h, bw = b.w || w, bh = b.h || h;
+    const dx = (b.x + bw / 2) - (a.x + aw / 2);
+    const dy = (b.y + bh / 2) - (a.y + ah / 2);
+    // Compared against the AVERAGE half-extent, so the choice of side does not
+    // tip merely because one endpoint is a large rectangle.
+    const mw = (aw + bw) / 2, mh = (ah + bh) / 2;
+    if (Math.abs(dx) * mh > Math.abs(dy) * mw) {
       return dx >= 0 ? {x: 1, y: 0} : {x: -1, y: 0};
     }
     return dy >= 0 ? {x: 0, y: 1} : {x: 0, y: -1};
@@ -37,41 +46,260 @@
 
   /// The point where a side's outward normal leaves the box.
   function anchor(box, dir, w, h, lane) {
-    const cx = box.x + w / 2, cy = box.y + h / 2;
+    const bw = box.w || w, bh = box.h || h;
+    const cx = box.x + bw / 2, cy = box.y + bh / 2;
     // The lane offset slides the anchor ALONG the chosen side, so two edges
     // between the same pair of cells do not overlap into one line.
     const along = dir.x === 0 ? {x: 1, y: 0} : {x: 0, y: 1};
-    const limit = dir.x === 0 ? w / 2 - 12 : h / 2 - 8;
+    const limit = dir.x === 0 ? bw / 2 - 12 : bh / 2 - 8;
     const off = Math.max(-limit, Math.min(limit, lane * LANE));
     return {
-      x: cx + dir.x * (w / 2) + along.x * off,
-      y: cy + dir.y * (h / 2) + along.y * off,
+      x: cx + dir.x * (bw / 2) + along.x * off,
+      y: cy + dir.y * (bh / 2) + along.y * off,
     };
+  }
+
+  /// Does `a` wholly contain `b`?
+  ///
+  /// The case the hive boundary creates. A door edge (`{"from": "."}` — overview
+  /// § Die Hive-Grenze) runs between a hive and a cell INSIDE it: two real boxes,
+  /// but not two boxes side by side. "Which side of `a` faces `b`" has no answer
+  /// when every side of the frame faces the cell, and `side()` answered it anyway
+  /// — with the OUTWARD normal. So the line left the frame through its outer
+  /// wall, ran around the outside and came back in. All nine door edges in the
+  /// live colony were drawn that way.
+  ///
+  /// The equal-size case is excluded on purpose: two cells at the same spot
+  /// contain each other by this test, and they are not nested, they overlap.
+  function contains(a, b, w, h) {
+    const aw = a.w || w, ah = a.h || h, bw = b.w || w, bh = b.h || h;
+    return a.x <= b.x && a.y <= b.y &&
+           a.x + aw >= b.x + bw && a.y + ah >= b.y + bh &&
+           (aw > bw || ah > bh);
+  }
+
+  /// Which wall of `outer` a contained `inner` is met through, as that wall's
+  /// OUTWARD normal: the nearest one. Nearest is both the shortest way in and
+  /// the one that reads as "the door is on that side" — a hive's own frame is
+  /// where a caller's eye arrives, so the line should enter where it lands.
+  function innerSide(outer, inner, w, h) {
+    const ow = outer.w || w, oh = outer.h || h;
+    const iw = inner.w || w, ih = inner.h || h;
+    const gaps = [
+      [inner.x - outer.x, {x: -1, y: 0}],
+      [(outer.x + ow) - (inner.x + iw), {x: 1, y: 0}],
+      [inner.y - outer.y, {x: 0, y: -1}],
+      [(outer.y + oh) - (inner.y + ih), {x: 0, y: 1}],
+    ];
+    gaps.sort((p, q) => p[0] - q[0]);
+    return gaps[0][1];
+  }
+
+  /// The point on `dir`'s wall of `box` that lies opposite `toward`'s centre.
+  ///
+  /// `anchor` puts the point in the MIDDLE of the wall, which is right when the
+  /// two boxes face each other and wrong when one is a frame around the other: a
+  /// hive is metres wide, and leaving from the middle of its top wall to reach a
+  /// cell at its right edge draws a dog-leg where a straight line belongs. Both
+  /// ends of a door edge line up on the inner box, so the line goes straight in.
+  function faceAt(box, dir, w, h, toward, lane) {
+    const bw = box.w || w, bh = box.h || h;
+    const tw = toward.w || w, th = toward.h || h;
+    const cx = box.x + bw / 2, cy = box.y + bh / 2;
+    const off = (lane || 0) * LANE;
+    if (dir.x === 0) {
+      const t = toward.x + tw / 2 + off;
+      return {x: Math.max(box.x + 12, Math.min(box.x + bw - 12, t)),
+              y: cy + dir.y * (bh / 2)};
+    }
+    const t = toward.y + th / 2 + off;
+    return {x: cx + dir.x * (bw / 2),
+            y: Math.max(box.y + 8, Math.min(box.y + bh - 8, t))};
+  }
+
+  /// Where a route leaves each box, and in which direction it travels from there.
+  ///
+  /// Two different things, and they only coincide when the boxes stand apart: a
+  /// frame's anchor sits on its own wall (normal pointing OUT) while the line
+  /// from it travels IN. Keeping the anchor normal and the travel direction as
+  /// separate values is the whole fix — the old code used one vector for both,
+  /// which is exactly why a door edge was drawn inside out.
+  function ends(a, b, w, h, lane) {
+    if (contains(a, b, w, h)) {
+      const n = innerSide(a, b, w, h);
+      return {p0: faceAt(a, n, w, h, b, lane), p3: faceAt(b, n, w, h, b, lane),
+              ta: {x: -n.x, y: -n.y}, tb: n, nested: true};
+    }
+    if (contains(b, a, w, h)) {
+      const n = innerSide(b, a, w, h);
+      return {p0: faceAt(a, n, w, h, a, lane), p3: faceAt(b, n, w, h, a, lane),
+              ta: n, tb: {x: -n.x, y: -n.y}, nested: true};
+    }
+    const da = side(a, b, w, h);
+    const db = {x: -da.x, y: -da.y};
+    return {p0: anchor(a, da, w, h, lane), p3: anchor(b, db, w, h, lane),
+            ta: da, tb: db, nested: false};
   }
 
   /// An orthogonal path from box `a` to box `b`, as an SVG path string.
   ///
   /// `lane` separates parallel edges; pass the index among edges sharing this
   /// pair, centred on zero.
-  function route(a, b, w, h, lane) {
+  function route(a, b, w, h, lane, lanes) {
     lane = lane || 0;
-    const da = side(a, b, w, h);
-    const db = {x: -da.x, y: -da.y};
-    const p0 = anchor(a, da, w, h, lane);
-    const p3 = anchor(b, db, w, h, lane);
-    const p1 = {x: p0.x + da.x * STUB, y: p0.y + da.y * STUB};
-    const p2 = {x: p3.x + db.x * STUB, y: p3.y + db.y * STUB};
+    const {p0, p3, ta, tb, nested} = ends(a, b, w, h, lane);
+    // Inside a frame the two stubs point AT each other, so a stub longer than
+    // half the gap overshoots and the line doubles back on itself. A cell sitting
+    // 20 px below its hive's wall gets a short stub rather than a knot.
+    const reach = nested
+      ? Math.max(2, Math.min(STUB, (Math.abs(ta.x ? p3.x - p0.x : p3.y - p0.y)) / 2 - 1))
+      : STUB;
+    const p1 = {x: p0.x + ta.x * reach, y: p0.y + ta.y * reach};
+    const p2 = {x: p3.x + tb.x * reach, y: p3.y + tb.y * reach};
 
     // Between the two stubs, turn at most twice. Horizontal exit means travel
     // horizontally first; vertical exit means vertically first.
-    const mid = da.x !== 0
-      ? [{x: p1.x, y: p1.y}, {x: (p1.x + p2.x) / 2, y: p1.y},
-         {x: (p1.x + p2.x) / 2, y: p2.y}, {x: p2.x, y: p2.y}]
-      : [{x: p1.x, y: p1.y}, {x: p1.x, y: (p1.y + p2.y) / 2},
-         {x: p2.x, y: (p1.y + p2.y) / 2}, {x: p2.x, y: p2.y}];
+    //
+    // WHERE it turns is the whole difference between a diagram and a thicket.
+    // Turning at the midpoint puts the crossing wherever the two boxes happen to
+    // average out, which on a real colony ran 47% of the lines straight through
+    // cells they had nothing to do with. `lanes` offers the empty corridors
+    // BETWEEN the columns — the gaps the layout leaves on purpose — and the turn
+    // goes into the nearest one that actually lies on the way.
+    const horizontal = ta.x !== 0;
+    const bend = (turn) => (horizontal
+      ? [{x: p1.x, y: p1.y}, {x: turn, y: p1.y},
+         {x: turn, y: p2.y}, {x: p2.x, y: p2.y}]
+      : [{x: p1.x, y: p1.y}, {x: p1.x, y: turn},
+         {x: p2.x, y: turn}, {x: p2.x, y: p2.y}]);
 
-    const pts = [p0, ...mid, p3];
+    const from = horizontal ? p1.x : p1.y;
+    const to = horizontal ? p2.x : p2.y;
+    const offered = (lanes && (horizontal ? lanes.x : lanes.y)) || [];
+    const candidates = [corridor(offered, from, to)].concat(
+      offered.filter(v => v > Math.min(from, to) && v < Math.max(from, to))
+        .sort((u, v) => Math.abs(u - (from + to) / 2) - Math.abs(v - (from + to) / 2)));
+
+    // Try the corridors in order and take the first that touches nothing. The
+    // obstacles are known — they are the boxes on screen — so "does this line run
+    // through a cell" is a question with an answer, not a guess. Falls back to the
+    // fewest crossings when every candidate hits something, because a line has to
+    // be drawn either way.
+    const boxes = (lanes && lanes.boxes) || null;
+    let best = null, bestHits = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const hits = crossings([p0].concat(bend(candidates[i]), [p3]), boxes, w, h, a, b);
+      if (hits === 0) { best = bend(candidates[i]); bestHits = 0; break; }
+      if (hits < bestHits) { bestHits = hits; best = bend(candidates[i]); }
+    }
+
+    // Still blocked? Then a box sits on the line the anchors leave along, and no
+    // choice of turning point can help — the way past it is to step aside FIRST.
+    // One more bend, offered only when the simple path fails: a picture where
+    // every line zigzags is as hard to read as one where the lines run under the
+    // boxes, so the plain route keeps its right of way.
+    // …but never for a door edge. Stepping aside there means stepping OUT of the
+    // frame the edge is drawn inside, which is the very picture this fix removes.
+    // A door edge that clips a sibling cell is a layout complaint, not a routing
+    // one — the honest short line stays.
+    if (bestHits > 0 && !nested) {
+      const across = (lanes && (horizontal ? lanes.y : lanes.x)) || [];
+      const near = horizontal ? p1.y : p1.x;
+      const sorted = across.slice().sort(
+        (u, v) => Math.abs(u - near) - Math.abs(v - near));
+      for (let i = 0; i < sorted.length; i++) {
+        const step = horizontal
+          ? [{x: p1.x, y: p1.y}, {x: p1.x, y: sorted[i]},
+             {x: p2.x, y: sorted[i]}, {x: p2.x, y: p2.y}]
+          : [{x: p1.x, y: p1.y}, {x: sorted[i], y: p1.y},
+             {x: sorted[i], y: p2.y}, {x: p2.x, y: p2.y}];
+        if (crossings([p0].concat(step, [p3]), boxes, w, h, a, b) === 0) {
+          best = step;
+          break;
+        }
+      }
+    }
+
+    const pts = [p0].concat(best, [p3]);
     return {d: rounded(pts), start: p0, end: p3};
+  }
+
+  /// How many boxes an orthogonal polyline runs through, ignoring its own two
+  /// endpoints' boxes.
+  ///
+  /// Every segment here is axis-parallel, so this is interval arithmetic and not
+  /// sampling: cheap enough to ask once per candidate per edge, which is what
+  /// makes choosing a clear route affordable at all.
+  function crossings(pts, boxes, w, h, skipA, skipB) {
+    if (!boxes || !boxes.length) return 0;
+    let n = 0;
+    for (let b = 0; b < boxes.length; b++) {
+      const box = boxes[b];
+      if (skipA && box.x === skipA.x && box.y === skipA.y) continue;
+      if (skipB && box.x === skipB.x && box.y === skipB.y) continue;
+      const bx1 = box.x, bx2 = box.x + w, by1 = box.y, by2 = box.y + h;
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i - 1], q = pts[i];
+        const lox = Math.min(p.x, q.x), hix = Math.max(p.x, q.x);
+        const loy = Math.min(p.y, q.y), hiy = Math.max(p.y, q.y);
+        if (hix > bx1 + 0.6 && lox < bx2 - 0.6 && hiy > by1 + 0.6 && loy < by2 - 0.6) {
+          n++;
+          break;
+        }
+      }
+    }
+    return n;
+  }
+
+  /// The turning point between `from` and `to`: the free corridor closest to the
+  /// midpoint, or the midpoint itself when none lies between them. Detouring to a
+  /// corridor OUTSIDE the span would trade a crossing for a longer line, which is
+  /// not a trade worth making.
+  function corridor(list, from, to) {
+    const mid = (from + to) / 2;
+    if (!list || !list.length) return mid;
+    const lo = Math.min(from, to), hi = Math.max(from, to);
+    let best = null, bestGap = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      if (v <= lo || v >= hi) continue;
+      const gap = Math.abs(v - mid);
+      if (gap < bestGap) { bestGap = gap; best = v; }
+    }
+    return best === null ? mid : best;
+  }
+
+  /// The empty bands between the boxes, on each axis.
+  ///
+  /// Every box occupies an interval; merge them and what is left between two
+  /// merged runs is a lane no box stands in. The layout leaves these gaps
+  /// deliberately — they are the space between two columns — so routing through
+  /// them is using the arrangement rather than fighting it.
+  function freeLanes(boxes, w, h) {
+    const bands = (lo, size) => {
+      const iv = boxes.map(b => [lo(b), lo(b) + size]).sort((p, q) => p[0] - q[0]);
+      const merged = [];
+      for (const [s, e] of iv) {
+        const last = merged[merged.length - 1];
+        if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+        else merged.push([s, e]);
+      }
+      const out = [];
+      for (let i = 1; i < merged.length; i++) {
+        out.push((merged[i - 1][1] + merged[i][0]) / 2);
+      }
+      // Plus the open ground on either side of everything. Without it a row of
+      // boxes all at the same height offers no lane at all — and that is exactly
+      // the arrangement a flow layout produces, so the one case with no gap
+      // between obstacles is also the most common one.
+      if (merged.length) {
+        out.push(merged[0][0] - MARGIN);
+        out.push(merged[merged.length - 1][1] + MARGIN);
+      }
+      return out;
+    };
+    // The boxes ride along so the router can ask whether a candidate is clear.
+    return {x: bands(b => b.x, w), y: bands(b => b.y, h), boxes: boxes};
   }
 
   /// A polyline with rounded corners, so the eye follows a turn instead of
@@ -117,11 +345,12 @@
   /// result was `MNaN,NaN`, i.e. an invisible line. Every property test below
   /// passed, because they all used `route(...).d` — the defect lived in the ONE
   /// expression no test evaluated. Now there is only one way to spell it.
-  function edgePath(a, b, w, h, lane) {
-    return route(a, b, w, h, lane).d;
+  function edgePath(a, b, w, h, lane, lanes) {
+    return route(a, b, w, h, lane, lanes).d;
   }
 
-  const api = {STUB, LANE, side, anchor, route, rounded, edgePath, segmentHitsBox};
+  const api = {STUB, LANE, side, anchor, route, rounded, edgePath, segmentHitsBox,
+               freeLanes, corridor, crossings, contains, innerSide, faceAt, ends};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.TopoGeom = api;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -177,17 +406,61 @@
   }
 
   /// Fill in every edge's `d` from the endpoints the server named.
-  function drawEdges(el) {
-    const nodes = {};
+  /// Every endpoint an edge can name, as a box: the cells, and — since the
+  /// boundary rule — the hive frames. `cellsOnly` is what the corridor search
+  /// gets, because a hive is a container and never an obstacle.
+  function boxMap(el, cellsOnly) {
+    const boxes = {};
     el.querySelectorAll("[data-node]").forEach(function (g) {
-      nodes[g.getAttribute("data-node")] = boxOf(g);
+      boxes[g.getAttribute("data-node")] = boxOf(g);
     });
+    if (cellsOnly) return boxes;
+    el.querySelectorAll("[data-hive]").forEach(function (g) {
+      const id = g.getAttribute("data-hive");
+      const r = g.querySelector && g.querySelector("rect");
+      if (!id || !r || boxes[id]) return;
+      boxes[id] = {
+        x: +(r.getAttribute("x") || 0), y: +(r.getAttribute("y") || 0),
+        w: +(r.getAttribute("width") || 0), h: +(r.getAttribute("height") || 0),
+      };
+    });
+    return boxes;
+  }
+
+  /// The edges a drag has to move: the ones attached to what is being dragged,
+  /// plus the ones attached to every hive ABOVE it. A cell inside a hive changes
+  /// that hive's frame, and an edge that ends on the frame has to follow — or it
+  /// stays where the frame used to be, which is the "beim move sind keine kanten"
+  /// report: the line does not vanish, it stops being attached to anything.
+  function edgesFor(el, ids) {
+    const want = {};
+    ids.forEach(function (id) {
+      want[id] = true;
+      const parts = id.split("/");
+      for (let i = 1; i < parts.length; i++) want[parts.slice(0, i).join("/")] = true;
+    });
+    return Array.from(el.querySelectorAll("path.edge")).filter(function (p) {
+      return want[p.getAttribute("data-from")] || want[p.getAttribute("data-to")];
+    });
+  }
+
+  function drawEdges(el) {
+    const nodes = boxMap(el, true);
+    // The cells are the obstacles — a hive is a container, not something a line
+    // has to go around, and treating one as an obstacle would send every edge on
+    // a detour around the box it is drawn inside.
+    const lanes = G.freeLanes(Object.keys(nodes).map(k => nodes[k]), NODE_W, NODE_H);
+    // Hives are endpoints too — added AFTER the corridors, so a frame is never
+    // an obstacle, and with their own width and height so a line meets the
+    // rectangle rather than a cell-sized ghost in its corner.
+    const all = boxMap(el, false);
+    Object.keys(all).forEach(function (k) { if (!nodes[k]) nodes[k] = all[k]; });
     el.querySelectorAll("path.edge").forEach(function (p) {
       const a = nodes[p.getAttribute("data-from")];
       const b = nodes[p.getAttribute("data-to")];
       if (!a || !b) { p.removeAttribute("d"); return; }
       const lane = parseInt(p.getAttribute("data-lane") || "0", 10);
-      const d = G.edgePath(a, b, NODE_W, NODE_H, lane);
+      const d = G.edgePath(a, b, NODE_W, NODE_H, lane, lanes);
       p.setAttribute("d", d);
       // The fat invisible twin follows the same path — it is what a mouse hits.
       const hit = p.parentNode && p.parentNode.querySelector
@@ -208,22 +481,99 @@
     });
   }
 
-  /// The hive frames INSIDE a hive, so the nested rectangles travel with it too.
-  /// Ancestors are deliberately left alone: their frames are derived and the
-  /// server's answer grows them, which is the honest provisional picture — a
-  /// parent that stretched on the client would be guessing.
-  function nestedFrames(el, hive) {
-    const prefix = hive + "/";
-    return Array.from(el.querySelectorAll("[data-hive]")).filter(function (g) {
-      return (g.getAttribute("data-hive") || "").startsWith(prefix);
-    });
-  }
-
   /// A hive group's `<rect>` and `<text>`, so a drag can move the frame with its
   /// contents instead of leaving it behind for one round trip.
   function hiveParts(g) {
     return {rect: g.querySelector ? g.querySelector("rect") : null,
             text: g.querySelector ? g.querySelector("text") : null};
+  }
+
+  /// The layout constants, read from the markup the server rendered.
+  ///
+  /// Read and not repeated: the frames a drag computes have to be the frames the
+  /// next diff brings back, and two copies of six numbers are two layouts that
+  /// agree right up until somebody changes one of them.
+  function geometryOf(el) {
+    const n = (k, d) => {
+      const v = parseFloat(el.getAttribute(k));
+      return isFinite(v) ? v : d;
+    };
+    return {w: n("data-nw", NODE_W), h: n("data-nh", NODE_H),
+            side: n("data-pad-side", 24), top: n("data-pad-top", 30),
+            bot: n("data-pad-bot", 24), nest: n("data-nest", 18)};
+  }
+
+  /// Every hive's rectangle, recomputed from where the cells are RIGHT NOW.
+  ///
+  /// The same union the server computes: a hive's own cells padded, plus every
+  /// child's frame grown by the nesting inset. Which is why dragging a cell out
+  /// of a hive grows that hive AND every hive above it while the cursor is still
+  /// down — the frames are derived, so they can be derived again at 60 Hz instead
+  /// of waiting for a round trip. A frame that only updates on release is a frame
+  /// that lies for as long as you are looking at it.
+  function frameMap(el, geom) {
+    const own = {}, kids = {}, seen = {};
+    el.querySelectorAll("[data-node]").forEach(function (g) {
+      const id = g.getAttribute("data-node") || "";
+      const cut = id.lastIndexOf("/");
+      const h = cut < 0 ? "" : id.slice(0, cut);
+      (own[h] = own[h] || []).push(boxOf(g));
+    });
+    el.querySelectorAll("[data-hive]").forEach(function (g) {
+      const h = g.getAttribute("data-hive") || "";
+      seen[h] = true;
+      const cut = h.lastIndexOf("/");
+      const p = cut < 0 ? "" : h.slice(0, cut);
+      (kids[p] = kids[p] || []).push(h);
+    });
+    const out = {};
+    function rect(h) {
+      if (out[h]) return out[h];
+      const boxes = [];
+      if (own[h] && own[h].length) {
+        const xs = own[h].map(p => p.x), ys = own[h].map(p => p.y);
+        const x = Math.min.apply(null, xs) - geom.side;
+        const y = Math.min.apply(null, ys) - geom.top;
+        boxes.push({x: x, y: y,
+                    w: Math.max.apply(null, xs) + geom.w + geom.side - x,
+                    h: Math.max.apply(null, ys) + geom.h + geom.bot - y});
+      }
+      (kids[h] || []).forEach(function (c) {
+        const r = rect(c);
+        if (r) boxes.push({x: r.x - geom.nest, y: r.y - geom.nest,
+                           w: r.w + 2 * geom.nest, h: r.h + 2 * geom.nest});
+      });
+      if (!boxes.length) return null;
+      const x = Math.min.apply(null, boxes.map(b => b.x));
+      const y = Math.min.apply(null, boxes.map(b => b.y));
+      out[h] = {x: x, y: y,
+                w: Math.max.apply(null, boxes.map(b => b.x + b.w)) - x,
+                h: Math.max.apply(null, boxes.map(b => b.y + b.h)) - y};
+      return out[h];
+    }
+    Object.keys(seen).sort((a, b) => b.split("/").length - a.split("/").length)
+      .forEach(rect);
+    return out;
+  }
+
+  /// Redraw every hive rectangle from the current cell positions.
+  function applyFrames(el, geom) {
+    const map = frameMap(el, geom);
+    el.querySelectorAll("[data-hive]").forEach(function (g) {
+      const r = map[g.getAttribute("data-hive")];
+      if (!r) return;
+      const p = hiveParts(g);
+      if (p.rect) {
+        p.rect.setAttribute("x", Math.round(r.x));
+        p.rect.setAttribute("y", Math.round(r.y));
+        p.rect.setAttribute("width", Math.round(r.w));
+        p.rect.setAttribute("height", Math.round(r.h));
+      }
+      if (p.text) {
+        p.text.setAttribute("x", Math.round(r.x) + 8);
+        p.text.setAttribute("y", Math.round(r.y) + 18);
+      }
+    });
   }
 
   function numAttr(el, k) {
@@ -388,6 +738,7 @@
   const Canvy = {
     mounted() {
       this.cam = cameraOf(this.el);
+      this.geom = geometryOf(this.el);
       this.wire();
       applyCamera(this.el, this.cam);
       drawEdges(this.el);
@@ -397,6 +748,7 @@
     // the SSR model, it IS the model: the client owns the view, the server owns
     // the picture.
     updated() {
+      this.geom = geometryOf(this.el);
       applyCamera(this.el, this.cam);
       drawEdges(this.el);
       // The server re-renders the whole tree, so the selection's classes and the
@@ -413,6 +765,21 @@
       let pan = null;
       let frame = null;
 
+      // Remember where the operator is looking. Debounced: a wheel produces
+      // dozens of events and each render is a full page across the wire, so the
+      // camera is written once the hand comes to rest — 400 ms after the last
+      // change, which is below noticing and far above one write per tick.
+      this.saveCamera = function () {
+        if (hook.camTimer) clearTimeout(hook.camTimer);
+        hook.camTimer = setTimeout(function () {
+          hook.camTimer = null;
+          hook.pushEvent("camera:moved", {
+            x: Math.round(hook.cam.x), y: Math.round(hook.cam.y),
+            z: Math.round(hook.cam.z),
+          });
+        }, 400);
+      };
+
       // Zoom around the cursor: the point under the pointer stays under it, which
       // is the only zoom that does not feel like being teleported.
       this.onWheel = function (ev) {
@@ -426,6 +793,7 @@
         hook.cam.x += (after.x - before.x) * (z / 1000);
         hook.cam.y += (after.y - before.y) * (z / 1000);
         applyCamera(el, hook.cam);
+        hook.saveCamera();
       };
 
       // A click that did not drag is a selection. Decided on pointerUP by whether
@@ -434,6 +802,15 @@
       this.onClick = function (ev) {
         if (hook.dragged) { hook.dragged = false; return; }
         const t = ev.target;
+        // The one control in the chrome. The server offers it only when the table
+        // holds rows naming a cell or a hive the colony no longer has, and it is a
+        // press rather than a housekeeping pass because a rename and a removal are
+        // indistinguishable from the table's side — the operator is the only party
+        // who knows which happened (GH #184).
+        if (t.closest && t.closest("[data-sweep]")) {
+          hook.pushEvent("canvas:sweep", {});
+          return;
+        }
         const edge = t.closest ? t.closest("[data-edge]") : null;
         const node = t.closest ? t.closest("[data-node]") : null;
         if (node) {
@@ -449,6 +826,21 @@
       };
 
       this.onDown = function (ev) {
+        // A control is not a place on the canvas. Without this the press would
+        // fall through to "empty background, so pan", and letting go of a pan
+        // writes the camera — so every press of the sweep button would also have
+        // been a store write.
+        if (ev.target.closest && ev.target.closest("[data-sweep]")) return;
+        // Hold ctrl (or cmd) and the canvas moves, whatever is under the cursor.
+        // Panning by finding empty background is a hunt on a picture this dense —
+        // and the denser the arrangement gets, the less background there is.
+        if (ev.ctrlKey || ev.metaKey) {
+          pan = {from: {x: ev.clientX, y: ev.clientY},
+                 origin: {x: hook.cam.x, y: hook.cam.y}};
+          el.classList.add("panning");
+          ev.preventDefault();
+          return;
+        }
         const g = ev.target.closest("[data-node]");
         if (!g) {
           // Not a cell. A hive is the next thing worth grabbing: its frame and
@@ -458,34 +850,28 @@
           const hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
           if (hg) {
             const id = hg.getAttribute("data-hive");
-            const parts = hiveParts(hg);
             const members = membersOf(el, id);
             const ids = members.map(m => m.getAttribute("data-node"));
-            // Own frame first, then every frame inside it — each with the
-            // coordinates it started from, so a move is one addition and not an
-            // accumulation that drifts.
-            const frames = [hg].concat(nestedFrames(el, id)).map(function (g) {
-              const p = hiveParts(g);
-              return {
-                rect: p.rect, text: p.text,
-                rx: numAttr(p.rect, "x"), ry: numAttr(p.rect, "y"),
-                tx: numAttr(p.text, "x"), ty: numAttr(p.text, "y"),
-              };
-            });
             hive = {
               id: id,
               g: hg,
-              parts: parts,
-              frames: frames,
-              origin: {x: numAttr(parts.rect, "x"), y: numAttr(parts.rect, "y")},
+              // The block's ORIGIN as the server rendered it — never the
+              // rectangle. The rectangle is derived from the cells inside, so it
+              // moves when they do: anchoring a group to it meant a hive jumped on
+              // the next render, and dragging one cell leftwards shoved its whole
+              // hive to the right. What goes back on release is this point plus
+              // the drag, and the server keeps the difference: what it stores is
+              // the shift, because a point measured against a layout that every
+              // arriving cell changes does not survive the colony growing.
+              origin: {x: numAttr(hg, "data-ox"), y: numAttr(hg, "data-oy")},
               members: members.map(m => ({g: m, at: boxOf(m)})),
               from: userPoint(el, ev),
               delta: {x: 0, y: 0},
-              // Every edge with an end inside this hive moves with it.
-              edges: Array.from(el.querySelectorAll("path.edge")).filter(function (p) {
-                return ids.indexOf(p.getAttribute("data-from")) >= 0 ||
-                       ids.indexOf(p.getAttribute("data-to")) >= 0;
-              }),
+              // Every edge with an end inside this hive moves with it — and
+              // every edge that ends on THIS hive's frame or on one above it,
+              // because those frames move too. `edgesFor` walks each member's
+              // ancestors, which covers the hive itself and everything over it.
+              edges: edgesFor(el, ids.concat([id])),
             };
             hg.classList && hg.classList.add("dragging");
             ev.preventDefault();
@@ -500,8 +886,9 @@
         }
         const id = g.getAttribute("data-node");
         // Collect the attached edges ONCE, not per frame.
-        const attached = Array.from(el.querySelectorAll(
-          '[data-from="' + id + '"], [data-to="' + id + '"]'));
+        // Not only this cell's own edges: every hive ABOVE it changes shape while
+        // it moves, and an edge that ends on such a frame has to move with it.
+        const attached = edgesFor(el, [id]);
         drag = {id: id, g: g, origin: boxOf(g), from: userPoint(el, ev),
                 at: boxOf(g), edges: attached};
         g.setPointerCapture && g.setPointerCapture(ev.pointerId);
@@ -517,24 +904,15 @@
             frame = null;
             if (!hive) return;
             const dx = Math.round(hive.delta.x), dy = Math.round(hive.delta.y);
-            hive.frames.forEach(function (f) {
-              if (f.rect) {
-                f.rect.setAttribute("x", f.rx + dx);
-                f.rect.setAttribute("y", f.ry + dy);
-              }
-              if (f.text) {
-                f.text.setAttribute("x", f.tx + dx);
-                f.text.setAttribute("y", f.ty + dy);
-              }
-            });
-            const boxes = {};
             hive.members.forEach(function (m) {
               m.g.setAttribute("transform",
                 "translate(" + (m.at.x + dx) + "," + (m.at.y + dy) + ")");
             });
-            el.querySelectorAll("[data-node]").forEach(function (g) {
-              boxes[g.getAttribute("data-node")] = boxOf(g);
-            });
+            // Every frame follows from the cells, so moving the cells IS moving
+            // the group: the hive keeps its shape, and every hive above it grows
+            // or shrinks to hold it while the cursor is still down.
+            applyFrames(el, hook.geom);
+            const boxes = boxMap(el, false);
             hive.edges.forEach(function (p) {
               const a = boxes[p.getAttribute("data-from")];
               const b = boxes[p.getAttribute("data-to")];
@@ -559,10 +937,10 @@
           if (!drag) return;
           drag.g.setAttribute("transform",
             "translate(" + Math.round(drag.at.x) + "," + Math.round(drag.at.y) + ")");
-          const boxes = {};
-          el.querySelectorAll("[data-node]").forEach(function (g) {
-            boxes[g.getAttribute("data-node")] = boxOf(g);
-          });
+          // A cell that leaves its hive has to be seen leaving it: every frame
+          // above it grows or shrinks now, not on release.
+          applyFrames(el, hook.geom);
+          const boxes = boxMap(el, false);
           drag.edges.forEach(function (p) {
             const a = boxes[p.getAttribute("data-from")];
             const b = boxes[p.getAttribute("data-to")];
@@ -591,6 +969,7 @@
         if (pan) {
           pan = null;
           el.classList.remove("panning");
+          hook.saveCamera();
           return;
         }
         if (!drag) return;
@@ -605,12 +984,22 @@
         hook.dragged = true;            // so the click that follows does not select
       };
 
+      // Escape lets go of a selection without having to find empty canvas to
+      // click on — same reflex as every other editor.
+      this.onKey = function (ev) {
+        if (ev.key !== "Escape" && ev.key !== "Esc") return;
+        hook.sel = null;
+        clearSelection(el);
+      };
+
       el.addEventListener("pointerdown", this.onDown);
       el.addEventListener("pointermove", this.onMove);
       el.addEventListener("pointerup", this.onUp);
       el.addEventListener("pointercancel", this.onUp);
       el.addEventListener("wheel", this.onWheel, {passive: false});
       el.addEventListener("click", this.onClick);
+      const doc = el.ownerDocument || document;
+      if (doc && doc.addEventListener) doc.addEventListener("keydown", this.onKey);
     },
 
     unwire() {
@@ -620,6 +1009,8 @@
       this.el.removeEventListener("pointercancel", this.onUp);
       this.el.removeEventListener("wheel", this.onWheel);
       this.el.removeEventListener("click", this.onClick);
+      const doc = this.el.ownerDocument || document;
+      if (doc && doc.removeEventListener) doc.removeEventListener("keydown", this.onKey);
     },
   };
 

@@ -172,7 +172,7 @@ async fn add_node_mutation_spawns_addressable_cell() {
                 "diff": {"add_nodes": [{
                     "name": "n",
                     "template": "echo",
-                    "override_params": {"echo_to": "/n"}
+                    "override_params": {"emitted_target": "/n"}
                 }]}
             }),
             reply_to: None,
@@ -252,7 +252,7 @@ async fn remove_nodes_keeps_entry_inactive_not_deleted() {
                     "diff": {"add_nodes": [{
                         "name": "n_rm",
                         "template": "echo",
-                        "override_params": {"echo_to": "/n_rm"}
+                        "override_params": {"emitted_target": "/n_rm"}
                     }]}
                 }),
                 reply_to: None,
@@ -312,7 +312,7 @@ async fn remove_nodes_keeps_entry_inactive_not_deleted() {
                     "diff": {"add_nodes": [{
                         "name": "n_rm",
                         "template": "echo",
-                        "override_params": {"echo_to": "/n_rm"}
+                        "override_params": {"emitted_target": "/n_rm"}
                     }]}
                 }),
                 reply_to: None,
@@ -356,8 +356,8 @@ async fn add_edge_mutation_persists_to_db_by_committed_ack() {
     assert!(matches!(
         send(meclaw_core::serde_json::json!({
             "scope": "/", "diff": {"add_nodes": [
-                {"name": "a_e", "template": "echo", "override_params": {"echo_to": "/a_e"}},
-                {"name": "b_e", "template": "echo", "override_params": {"echo_to": "/b_e"}}
+                {"name": "a_e", "template": "echo", "override_params": {"emitted_target": "/a_e"}},
+                {"name": "b_e", "template": "echo", "override_params": {"emitted_target": "/b_e"}}
             ]}
         }))
         .await,

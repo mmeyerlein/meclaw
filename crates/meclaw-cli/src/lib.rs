@@ -546,14 +546,22 @@ pub async fn run_with_hooks_tuned(
                     .any(|c| declares_restricted_sandbox(&c.params));
                 // A8 (Phase-16 W1a, Ruling 2026-06-12): static endpoint-existence
                 // check. `--validate` has no running colony, so it cannot see
-                // runtime-spawned cells — an unresolved `params.graph` endpoint
-                // is a WARNING (exit 0). `--validate-strict` promotes it to a hard error
-                // (operator decides, nginx -t style). The registry term is empty
-                // here (no live colony); only the plan + `/colony/*` resolve.
-                let unresolved = meclaw_colony::unresolved_boot_endpoints(
-                    &plan,
-                    &std::collections::HashSet::new(),
-                );
+                // runtime-spawned cells — an unresolved edge endpoint is a
+                // WARNING (exit 0). `--validate-strict` promotes it to a hard error
+                // (operator decides, nginx -t style).
+                //
+                // GH #168: on a Reboot the plan carries the PERSISTED edges, whose
+                // endpoints may legitimately be a node whose directory is gone but
+                // whose registry row / hive scope survives (No-Delete). Both
+                // persisted universes therefore join the resolvable set — the same
+                // two terms the live boot path uses, minus the running registry it
+                // has and this dry run does not.
+                let mut known: std::collections::HashSet<String> = validate_overlay
+                    .keys()
+                    .map(|p| p.as_str().to_string())
+                    .collect();
+                known.extend(meclaw_colony::registered_hive_paths(&cli.root));
+                let unresolved = meclaw_colony::unresolved_boot_endpoints(&plan, &known);
                 for (edge_id, endpoint) in &unresolved {
                     eprintln!(
                         "validate: warning: dangling edge endpoint {} (edge {edge_id}) — \
@@ -579,6 +587,17 @@ pub async fn run_with_hooks_tuned(
                     );
                 }
                 if cli.validate_strict && !plan.unregistered_nodes.is_empty() {
+                    had_error = true;
+                }
+                // GH #178: the pre-flight surface for header-contract violations
+                // in the topology a reboot will actually run. The live boot warns
+                // and starts (committed state must not become a crash loop); here
+                // is where an operator — or CI — asks the question BEFORE the
+                // restart, and `--validate-strict` makes the answer binding.
+                for finding in &plan.header_contract_findings {
+                    eprintln!("validate: warning: header-contract violation: {finding}");
+                }
+                if cli.validate_strict && !plan.header_contract_findings.is_empty() {
                     had_error = true;
                 }
             }

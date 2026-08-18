@@ -105,7 +105,7 @@ async fn contract_view_propagates_from_template_config_json_to_spawn() {
     .unwrap();
     std::fs::write(
         tpl_dir.join("config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/dev/null"},"contract":{"version":"0.1.0","settings":{},"consumes":{},"multi_send_capable":true}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/dev/null"},"contract":{"version":"0.1.0","settings":{},"consumes":{},"multi_send_capable":true}}"#,
     )
     .unwrap();
 

@@ -150,6 +150,14 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 .canvy .node text.ty{ fill:var(--muted); font:10px system-ui,sans-serif; }
 .canvy .legend{ position:absolute; right:.75rem; bottom:.5rem;
   color:var(--muted); font:11px system-ui,sans-serif; }
+/* The sweep control lives in the legend because that is where the count it acts
+   on is written, and it inherits the legend's type so it reads as part of the
+   same sentence rather than as a piece of chrome demanding attention. It only
+   exists when there is something to shed. */
+.canvy .legend .sweep{ font:inherit; color:inherit; background:none;
+  border:1px solid var(--line); border-radius:4px; padding:1px 6px;
+  cursor:pointer; }
+.canvy .legend .sweep:hover{ color:var(--ink); border-color:var(--muted); }
 
 /* The detail panel. Fixed to the right edge rather than a flex column, because
    the canvas is one absolutely-positioned element inside a LiveView container and
@@ -176,5 +184,11 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 .canvy path.edge.hot{ stroke:var(--edge-hot); stroke-width:2.3; marker-end:url(#arh); }
 .canvy path.edge.dim{ opacity:.10; }
 .canvy .node.dim{ opacity:.22; }
+/* A cell that takes part in no edge. Disconnected, in almost every case: the
+   substrate never deletes a node, so a rewiring leaves its predecessor standing
+   here. Dimmed and dashed rather than hidden — a freshly instantiated cell that
+   is not wired yet looks identical, and that is worth seeing. */
+.canvy .node.unwired{ opacity:.45; }
+.canvy .node.unwired rect{ stroke-dasharray:5 4; }
 .canvy .node.sel rect{ stroke:var(--sel); stroke-width:2.5; }
 .canvy path.edge-hit{ fill:none; stroke:transparent; stroke-width:14; cursor:pointer; }

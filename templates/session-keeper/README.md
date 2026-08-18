@@ -1,4 +1,4 @@
-# `session-keeper@1.0.0`
+# `session-keeper@2.0.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Four cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -62,7 +62,7 @@ The consumer is the collector's `in_close` lane, so the parent edge renames the 
 way it renames every collector lane:
 
 ```json
-{"from": "./keeper/close", "to": "./collector/assemble",
+{"from": "./session-keeper", "to": "./collector",
  "condition": "hop.route == 'close'",
  "modifier": {"set_hop": {"route": "'in_close'"},
               "set_context": {"session_id": "hop.session_id"}}}
@@ -79,8 +79,9 @@ crossing edge derives inactive, and its timer never spawns.
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 | env var | default | meaning |
 |---|---|---|

@@ -1,7 +1,7 @@
 //! meclaw-os -- per-turn episodes, LLM-free (wave 9, track A).
 //!
 //! Until now an episode came into being at the NIGHT CLOSE: the collector
-//! handed its day out as one batch, `memory-drain@1` decomposed it, and the
+//! handed its day out as one batch, `memory-drain` decomposed it, and the
 //! memory hive wrote it. That is a freshness hole of up to 24 hours -- a
 //! question about the last turn can be answered wrongly, which is a direct
 //! breach of the north star ("no question may be answered wrongly").
@@ -12,7 +12,7 @@
 //! `turn_id` formula `"<session_id>#<index>"` must be the same one the close
 //! drain mints, or a filled memory (61 productive episodes) doubles. It is the
 //! same formula here because it is the same CODE -- one minter, one ledger, one
-//! high-water mark. Nothing of `memory-drain@1` changes.
+//! high-water mark. Nothing of `memory-drain` changes.
 //!
 //! Four claims are pinned:
 //!

@@ -260,70 +260,7 @@ impl ColonyDb {
     pub fn read_edges(
         &self,
     ) -> Result<Vec<crate::bootstrap::PlannedEdge>, crate::bootstrap::EdgeHydrationError> {
-        use crate::bootstrap::EdgeHydrationError as E;
-        let mut stmt = self
-            .read_conn
-            .prepare(
-                "SELECT id, from_path, to_path, condition, modifier FROM edges ORDER BY created_at",
-            )
-            .map_err(E::Sql)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                ))
-            })
-            .map_err(E::Sql)?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id_str, from_str, to_str, cond_src, mod_src) = row.map_err(E::Sql)?;
-            let id = meclaw_core::Uuid::parse_str(&id_str).map_err(|e| E::InvalidUuid {
-                edge_id: id_str.clone(),
-                error: e.to_string(),
-            })?;
-            let condition = match cond_src.as_deref() {
-                Some(s) => Some(crate::cel_eval::parse_condition(s).map_err(|e| {
-                    E::ConditionParseFailed {
-                        edge_id: id_str.clone(),
-                        condition_source: s.to_string(),
-                        parse_error: e,
-                    }
-                })?),
-                None => None,
-            };
-            let modifier = match mod_src.as_deref() {
-                Some(s) => {
-                    let spec: crate::config::ModifierSpec = meclaw_core::serde_json::from_str(s)
-                        .map_err(|e| E::ModifierJsonInvalid {
-                            edge_id: id_str.clone(),
-                            modifier_source: s.to_string(),
-                            error: e.to_string(),
-                        })?;
-                    Some(
-                        crate::cel_eval::parse_modifier(&spec).map_err(|(key, msg)| {
-                            E::ModifierParseFailed {
-                                edge_id: id_str.clone(),
-                                modifier_source: s.to_string(),
-                                parse_error: format!("{key}: {msg}"),
-                            }
-                        })?,
-                    )
-                }
-                None => None,
-            };
-            out.push(crate::bootstrap::PlannedEdge {
-                id,
-                from: meclaw_core::Path::new(&from_str),
-                to: meclaw_core::Path::new(&to_str),
-                condition,
-                modifier,
-            });
-        }
-        Ok(out)
+        read_edges_from(&self.read_conn)
     }
 
     /// Reads all persisted templates from colony.db (for in-memory registry hydration).
@@ -640,6 +577,107 @@ impl ColonyDb {
 /// reboots instead of minting a fresh one.
 pub type RegistryOverlay =
     std::collections::HashMap<meclaw_core::Path, (meclaw_core::Uuid, String)>;
+
+/// Read every persisted edge from an already-open connection.
+///
+/// Phase-13.5-Durable-Edges: re-parses CEL condition and modifier from the
+/// persisted source strings. Hard-fails on corrupt data so routing state is
+/// never silently wrong after a reboot. Shared by the runtime hydration
+/// ([`ColonyDb::read_edges`]) and the boot planner's read-only probe
+/// ([`read_persisted_edges`]) — one row-mapping, no drift.
+pub(crate) fn read_edges_from(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<crate::bootstrap::PlannedEdge>, crate::bootstrap::EdgeHydrationError> {
+    use crate::bootstrap::EdgeHydrationError as E;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, from_path, to_path, condition, modifier FROM edges ORDER BY created_at",
+        )
+        .map_err(E::Sql)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(E::Sql)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id_str, from_str, to_str, cond_src, mod_src) = row.map_err(E::Sql)?;
+        let id = meclaw_core::Uuid::parse_str(&id_str).map_err(|e| E::InvalidUuid {
+            edge_id: id_str.clone(),
+            error: e.to_string(),
+        })?;
+        let condition =
+            match cond_src.as_deref() {
+                Some(s) => Some(crate::cel_eval::parse_condition(s).map_err(|e| {
+                    E::ConditionParseFailed {
+                        edge_id: id_str.clone(),
+                        condition_source: s.to_string(),
+                        parse_error: e,
+                    }
+                })?),
+                None => None,
+            };
+        let modifier = match mod_src.as_deref() {
+            Some(s) => {
+                let spec: crate::config::ModifierSpec = meclaw_core::serde_json::from_str(s)
+                    .map_err(|e| E::ModifierJsonInvalid {
+                        edge_id: id_str.clone(),
+                        modifier_source: s.to_string(),
+                        error: e.to_string(),
+                    })?;
+                Some(
+                    crate::cel_eval::parse_modifier(&spec).map_err(|(key, msg)| {
+                        E::ModifierParseFailed {
+                            edge_id: id_str.clone(),
+                            modifier_source: s.to_string(),
+                            parse_error: format!("{key}: {msg}"),
+                        }
+                    })?,
+                )
+            }
+            None => None,
+        };
+        out.push(crate::bootstrap::PlannedEdge {
+            id,
+            from: meclaw_core::Path::new(&from_str),
+            to: meclaw_core::Path::new(&to_str),
+            condition,
+            modifier,
+        });
+    }
+    Ok(out)
+}
+
+/// GH #168/#178 — read the persisted edge table of the `colony.db` at
+/// `db_path` through a fresh READ-ONLY connection.
+///
+/// The boot planner needs the topology a reboot will actually run with, and it
+/// runs before (and beside) the colony task that owns the writable handle — so
+/// it opens its own read-only connection, exactly like
+/// [`read_registry_overlay`]. An absent file is an empty edge set (first boot);
+/// anything else is an error, because a colony.db that exists but will not
+/// yield its edges must never be quietly planned as edge-less.
+pub fn read_persisted_edges(
+    db_path: &std::path::Path,
+) -> Result<Vec<crate::bootstrap::PlannedEdge>, crate::bootstrap::EdgeHydrationError> {
+    use crate::bootstrap::EdgeHydrationError as E;
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(E::Sql)?;
+    // GH #98: boot-path read — carry the busy budget instead of dying on a
+    // momentarily locked colony.db.
+    crate::persist::apply_busy_timeout(&conn).map_err(E::Sql)?;
+    read_edges_from(&conn)
+}
 
 /// Read the identity overlay from the `registry` table of the `colony.db` at
 /// `db_path` via a fresh read-only connection.

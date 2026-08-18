@@ -83,7 +83,7 @@ async fn add_nodes_with_template_missing_settings_is_rejected_contract_incomplet
     write_template(
         &td,
         "no_settings",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/dev/null"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/dev/null"},
             "contract":{"version":"0.1.0","consumes":{}}}"#,
     );
     let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
@@ -118,7 +118,7 @@ async fn add_nodes_with_full_contract_presence_is_committed() {
     write_template(
         &td,
         "full_contract",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/dev/null"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/dev/null"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     let h = ColonyHandle::new_with_factories_at(&td, echo_factories());

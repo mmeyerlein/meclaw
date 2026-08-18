@@ -22,21 +22,24 @@ cargo build --workspace --release
 
 ## Step 1 — the example's own copy of the template library
 
-The collector's per-turn write is a **param**, and `override_params` cannot
-reach into a subtree template. So the example takes its own copy of the library
-and sets the one knob it needs there:
-
 ```bash
 cp -r templates examples/never-forgets/templates
-
-python3 - <<'EOF'
-import json
-p = "examples/never-forgets/templates/talky/collector/assemble/config.json"
-d = json.load(open(p))
-d["params"]["turn_write"] = "1"
-json.dump(d, open(p, "w"), indent=2)
-EOF
 ```
+
+That is the whole step, and it is worth knowing what it is *not* for. The
+collector's per-turn write is a **param**, and a param is set in the declaration:
+`grow.json` carries `"override_params": {"collector/assemble": {"turn_write":
+"1"}}` on the `talky` node, so nothing about this example needs an edited
+library. Since [#140](https://github.com/mmeyerlein/meclaw/issues/140) an
+`override_params` on a subtree template is addressed by the cell's path inside it
+(`collector/assemble` — the cell, not `collector`, which is the sub-unit's hive
+and would swallow the key).
+
+The copy exists for **Step 2**. A seed is a *file* in a template's `seed/`
+directory, read once when the cell is first spawned, and there is no
+`override_params` for a file — so giving the brain its `memory_recall` schema
+means writing into a template library you are allowed to write into. Point
+`--templates` at the copy and the shipped library stays untouched.
 
 `turn_write` is the freshness lane: every stored turn and every answer hands the
 conversation out again immediately. Without it the first row appears when the
@@ -141,13 +144,13 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
 ```
 18 cells:
   /drain/drain               code      /talky/errors            code
-  /drain/ledger              store     /talky/keeper/close      code
-  /memory/episodes           store     /talky/keeper/night      timer
-  /memory/keep               code      /talky/keeper/sessions   store
-  /replay                    code      /talky/keeper/stamp      code
-  /sink                      code      /talky/split             code
-  /surface                   code      /talky/summary/prep      code
-  /talky/brain               llm       /talky/summary/writer    llm
+  /drain/ledger              store     /talky/session-keeper/close      code
+  /memory/episodes           store     /talky/session-keeper/night      timer
+  /memory/keep               code      /talky/session-keeper/sessions   store
+  /replay                    code      /talky/session-keeper/stamp      code
+  /sink                      code      /talky/dispatcher             code
+  /surface                   code      /talky/summarizer/prep   code
+  /talky/brain               llm       /talky/summarizer/writer llm
   /talky/collector/assemble  code
   /talky/collector/window    store
 ```
@@ -203,8 +206,9 @@ agent about January is to say it to the agent. That is wrong here, and the
 reason is a clock: a turn re-spoken through `/surface` gets stamped with today.
 `/replay` speaks the memory's episode port *directly* instead.
 
-**It arrives at the same port the live drain uses.** After every real turn,
-`/drain/drain` puts an episode on `/memory/keep` on route `in_episode`. The
+**It arrives at the same port the live drain uses.** After every real turn, the
+drain hive `/drain` puts an episode on `/memory/keep` on route `in_episode` —
+which cell inside it does the work is the hive's business, not this lane's. The
 import lane puts an episode on `/memory/keep` on route `in_episode`. Same
 address, same shape, same lane name — and the memory behind it cannot tell them
 apart. Neither is a special case of the other. That indistinguishability is what
@@ -276,32 +280,68 @@ curl -s "http://127.0.0.1:7788/colony/trace?trace_id=$TID"
 Seventy-one hops. The spine of them, with the header keys that decide each turn:
 
 ```
-@external                 -> /surface                  {}
-/surface                  -> /talky/keeper/stamp       {route: in_turn}
-/talky/keeper/stamp       -> /talky/collector/assemble {route: in_turn}
-…                                                       (session + window bookkeeping)
-/talky/collector/assemble -> /drain/drain              {route: in_batch, iter: 0}
-/drain/drain              -> /memory/keep              {route: in_episode}
-/memory/keep              -> /memory/episodes          {route: mstore}
+@external                   -> /surface                     {}
+/surface                    -> /talky/session-keeper        {route: in_turn}
+/talky/session-keeper       -> /talky/session-keeper/stamp  {route: in_turn}
+…                                                           (session bookkeeping)
+/talky/session-keeper/stamp -> /talky/session-keeper        {route: turn}
+/talky/session-keeper       -> /talky/collector             {route: in_turn}
+/talky/collector            -> /talky/collector/assemble    {route: in_turn}
+…                                                           (window bookkeeping)
+/talky/collector/assemble   -> /talky/collector             {route: turn_write, iter: 0}
+/talky/collector            -> /drain                       {route: in_batch, iter: 0}
+/drain                      -> /drain/drain                 {route: in_batch, iter: 0}
+/drain/drain                -> /drain                       {route: episode}
+/drain                      -> /memory/keep                 {route: in_episode}
+/memory/keep                -> /memory/episodes             {route: mstore}
 
-/talky/collector/assemble -> /talky/brain              {route: brain, iter: 0}   <- inference 1
-/talky/brain              -> /talky/split              {}
-/talky/split              -> /talky/collector/assemble {route: in_memory_call,
-                                                        tool_name: memory_recall}
-/talky/collector/assemble -> /memory/keep              {route: in_recall,
-                                                        recall_query: "What did the plumber
-                                                          say about the radiator in February?",
-                                                        recall_window_from: 2026-02-01T00:00:00Z,
-                                                        recall_window_to:   2026-02-28T23:59:59Z}
-/memory/keep              -> /memory/episodes          {route: mstore}
-/memory/episodes          -> /memory/keep              {route: in_echo}
-/memory/keep              -> /talky/collector/assemble {route: in_bundle, iter: 0}
+/talky/collector/assemble   -> /talky/collector             {route: brain, iter: 0}
+/talky/collector            -> /talky/brain                 {route: brain, iter: 0}  <- inference 1
+/talky/brain                -> /talky/dispatcher            {finish_reason: tool_calls}
+/talky/dispatcher           -> /talky/collector             {route: in_memory_call,
+                                                             tool_name: memory_recall}
+/talky/collector            -> /talky/collector/assemble    {route: in_memory_call}
+/talky/collector/assemble   -> /talky/collector             {route: recall,
+                                                             recall_query: "What did the plumber
+                                                               say about the radiator in February?",
+                                                             recall_window_from: 2026-02-01T00:00:00Z,
+                                                             recall_window_to:   2026-02-28T23:59:59Z}
+/talky/collector            -> /memory/keep                 {route: in_recall, …}
+/memory/keep                -> /memory/episodes             {route: mstore}
+/memory/episodes            -> /memory/keep                 {route: in_echo}
+/memory/keep                -> /talky/collector             {route: in_bundle, iter: 0}
+/talky/collector            -> /talky/collector/assemble    {route: in_bundle, iter: 0}
 
-/talky/collector/assemble -> /talky/brain              {route: brain, iter: 1}   <- inference 2
-/talky/brain              -> /talky/split              {}
-/talky/split              -> /talky/collector/assemble {route: in_answer}
-/talky/collector/assemble -> /sink                     {route: answer, iter: 1}
+/talky/collector/assemble   -> /talky/collector             {route: brain, iter: 1}
+/talky/collector            -> /talky/brain                 {route: brain, iter: 1}  <- inference 2
+/talky/brain                -> /talky/dispatcher            {finish_reason: stop}
+/talky/dispatcher           -> /talky/collector             {route: in_answer}
+/talky/collector            -> /talky/collector/assemble    {route: in_answer}
+/talky/collector/assemble   -> /talky/collector             {route: answer, iter: 1}
+/talky/collector            -> /sink                        {route: answer, iter: 1}
 ```
+
+### Read the hive hops before you read anything else
+
+`/talky/session-keeper`, `/talky/collector` and `/drain` are **hives**, not cells.
+Nothing runs in them -- no mailbox, no task, no `cell.db`. They are still hops in
+this listing, because the colony logs the message that *arrives* at a hive and
+logs the follow-up it forwards with the hive as the sender. So every pass through
+a hive is two rows, hive on both sides of the cell that did the work:
+
+```
+/talky/collector -> /talky/collector/assemble -> /talky/collector
+```
+
+That is worth knowing before you compare your own trace against this one. The
+inverse also holds: a hive nobody addresses never appears at all. `/memory` is a
+hive here too, and it is absent from the whole listing -- every edge points at
+`/memory/keep`, so no message is ever routed to `/memory` itself.
+
+And it is where the boundary rule becomes readable rather than theoretical: the
+dispatcher's answer arrives at `/talky/collector`, not at `/talky/collector/assemble`.
+Which cell behind the hive serves the lane is the hive's business, and the trace
+shows the caller never needed to know.
 
 ### What the organism just did — the consumer asked for the window
 
@@ -321,7 +361,7 @@ per-turn memory leg every agent can have is fired the moment a turn arrives,
 answer a question about a time range, because nobody who had seen the question
 was the one asking.
 
-**From the dispatcher's side it is an ordinary tool.** `/talky/split` matched on
+**From the dispatcher's side it is an ordinary tool.** `/talky/dispatcher` matched on
 `hop.tool_name == 'memory_recall'` exactly the way it matches any other tool
 name, and an edge knew which cell answers. From the collector's side it is the
 one tool it serves itself, because it already owns the recall port — so the
@@ -470,5 +510,9 @@ provider, replays **this** `past.jsonl`, and drives the February question throug
 the whole tree. It checks that the second inference's prompt contains the
 February sentence **with its instant** and contains neither the January nor the
 March one, and the counter-test asks about April and requires the empty answer.
-The mock provides the tool call directly, which is why the test does not need
-the seed from step 2 and a live run does.
+It runs step 2 as written and then asserts the wire carried `memory_recall` in
+its tool list, because a mock returns a canned tool call whatever the brain was
+told — the assertion, not the answer, is what says a live run would have worked.
+And it pins the `turn_write` override in `grow.json` rather than trusting the
+freshness assertion alone: a setup key that reaches nothing is exactly how
+[#203](https://github.com/mmeyerlein/meclaw/issues/203) came up silently wrong.

@@ -40,7 +40,7 @@ fn write_edgeless_topology(root: &std::path::Path) {
     std::fs::write(main.join("config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
     std::fs::write(
         main.join("solo/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/solo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/solo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

@@ -46,7 +46,7 @@ async fn colony_with_a_cell_answering_into_its_own_hive() -> (
     let td = tempfile::TempDir::new().unwrap();
     let (h, rx) = ColonyHandle::new_with_marked_egress_at(&td, vec![], MARK);
     h.spawn(Path::new("/sub/a"), || {
-        EchoMockCell::new(Path::new("/sub/a")).echo_to(Path::new("/sub"))
+        EchoMockCell::new(Path::new("/sub/a")).emitted_target(Path::new("/sub"))
     })
     .await;
     h.add_hive_scope(Path::new("/")).await;
@@ -304,7 +304,7 @@ async fn a_hand_placed_hive_directory_does_not_break_the_next_boot() {
     std::fs::write(main.join("config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
     std::fs::write(
         main.join("solo/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/solo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/solo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 

@@ -74,19 +74,19 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/p/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"hop":{"h1":{"type":"string"}}}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/c/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{"hop":{"h1":{"type":"string","required":true}}}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/n/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(

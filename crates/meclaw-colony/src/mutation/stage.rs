@@ -63,6 +63,35 @@ pub struct StagedDir {
     /// `colony.db`'s `registry` row. `None` for an `adopt` entry — adopting an
     /// existing directory is not a template instantiation and invents no origin.
     pub provenance: Option<crate::config::NodeProvenance>,
+    /// GH #169: `Some` iff this entry is a **relocation** — a `move_nodes` entry
+    /// rather than an instantiation. See [`Relocation`].
+    ///
+    /// A relocated entry reaches the spawn loop through the same door as a
+    /// staged one because the two need the same thing done to them: build the
+    /// cell at `absolute_path` out of `final_path`, register it, wire it. What
+    /// differs is where the directory came from and which identity it carries,
+    /// and both of those live in here rather than in a second copy of the spawn
+    /// loop.
+    pub relocation: Option<Relocation>,
+}
+
+/// GH #169: what a [`StagedDir`] needs to know when its directory is being
+/// **moved** into place instead of instantiated there.
+///
+/// The `staging_path` of a relocating entry is the cell's own live directory,
+/// not a tree under `.staging/`, so the rename step relocates it with the same
+/// `rename(2)` it uses to land a fresh node — including the `cell.db` inside,
+/// which is the entire point of the operation.
+#[derive(Debug, Clone)]
+pub struct Relocation {
+    /// The logical address the cell is leaving. Kept so the apply can take the
+    /// old registry key out and re-point every edge that named it.
+    pub from: meclaw_core::Path,
+    /// The identity that must survive the move. A path IS a cell's identity in
+    /// every other respect, so a relocation is the one operation that has to
+    /// carry `cell_id` across a change of address deliberately — the spawn loop
+    /// mints a fresh one for everything else.
+    pub cell_id: meclaw_core::Uuid,
 }
 
 /// Unix seconds, the one time unit `colony.db` speaks.
@@ -172,6 +201,8 @@ pub fn build_staging_tree_from_templates(
                 // whatever its own config.json already said, carried through
                 // by the copy above.
                 provenance: None,
+                // GH #169: an instantiation, not a relocation.
+                relocation: None,
             });
             continue;
         }
@@ -264,6 +295,8 @@ pub fn build_staging_tree_from_templates(
             header_view,
             preexisting_target: false,
             provenance: Some(provenance),
+            // GH #169: an instantiation, not a relocation.
+            relocation: None,
         });
     }
     // Paket-2 T4 (b1): graph-swap with-side template instantiation. Each
@@ -287,6 +320,41 @@ pub fn build_staging_tree_from_templates(
             .and_then(|v| v.as_str())
             .ok_or_else(|| MutationError::Schema("swap_nodes[].with.name missing".into()))?;
         let final_path = crate::path_truth::resolve_cell_dir(root, scope, name);
+        // GH #188: look before writing, the way the `add_nodes` path above does.
+        // The with-side instantiates a FRESH cell, so an existing directory here
+        // is not a Resume — `atomic_rename_or_overwrite_all` takes its
+        // `final_path exists` branch and replaces `config.json` in place, which
+        // mints a second `cell.id` for a path that already had one and changes
+        // the `cell.type` that says how to read the `cell.db` still lying beside
+        // it. That happened with no diagnostic at all.
+        //
+        // #179 closed the half where a registry row names the target: that is a
+        // `naming_collision` before anything is staged. What reaches here is a
+        // directory nothing in the registry claims — a hand-placed tree, an
+        // aborted migration, a row cleared outside the mutation flow. The
+        // registry check cannot see it, because the registry is what it is
+        // missing from; only the filesystem knows, and only here.
+        //
+        // Refusing costs nothing the operator needs: an `add_nodes` at an
+        // existing path is a Resume (decided on FS existence in `colony.rs` step
+        // 1a, so it covers the unregistered case too) and an `add_nodes[].adopt`
+        // takes such a tree over deliberately, with the on-disk `cell.type`
+        // checked against what the diff expected. The explicit-takeover knob
+        // exists; it is just not on the with-side, and a with-side is by
+        // definition a DIFFERENT implementation, which is the one thing that
+        // must not inherit a directory by accident.
+        if final_path.exists() {
+            return Err(MutationError::NamingCollision(format!(
+                "swap_nodes[].with.name '{name}': the target path is occupied — \
+                 {} already exists on disk. The with-side instantiates a fresh \
+                 cell, so committing would overwrite that directory's \
+                 config.json and mint a second cell.id for one path. Nothing was \
+                 written. Clear the directory, or take the node that is there \
+                 over deliberately with an `add_nodes` entry (an existing path \
+                 resumes; `adopt` states the type you expect to find).",
+                final_path.display()
+            )));
+        }
         let tpl = templates
             .resolve(tpl_ref)
             .map_err(|_| MutationError::TemplateMissing(tpl_ref.into()))?;
@@ -337,6 +405,8 @@ pub fn build_staging_tree_from_templates(
             header_view,
             preexisting_target: false,
             provenance: Some(provenance),
+            // GH #169: an instantiation, not a relocation.
+            relocation: None,
         });
     }
     Ok((out, subtrees))

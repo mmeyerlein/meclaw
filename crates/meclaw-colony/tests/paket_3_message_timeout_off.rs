@@ -89,7 +89,7 @@ async fn run_backstop_disabled_variant(timeout_value: i64) {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // The hang cell: sleep_ms=300 ms in handle(); message_timeout set to
     // timeout_value (0 or -1 → backstop OFF); emits to /sink on completion.
@@ -194,7 +194,7 @@ async fn long_running_cell_ignores_message_timeout() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/lr"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/lr"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // LR cell: message_timeout=100 ms (small), but LR has no backstop wrapper →
     // the 400 ms handle() is NOT killed.  `echo_to` is NOT in the FS config

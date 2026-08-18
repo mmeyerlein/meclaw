@@ -1,8 +1,8 @@
 //! meclaw-os W10b -- the `remember` tool in a running colony (wave 10, track B).
 //!
 //! The script pins live in `w10b_inline_gate.rs`. This file asks the question
-//! the track is about, of a colony that carries the shipped `talky@1`, the
-//! shipped `memory-drain@1` and the memory hive's REAL write and extraction
+//! the track is about, of a colony that carries the shipped `talky`, the
+//! shipped `memory-drain` and the memory hive's REAL write and extraction
 //! path (`writer`, `store`, `extract-glue` -- the private templates, which is
 //! why this file stays private):
 //!
@@ -195,20 +195,25 @@ fn memory_hive(root: &std::path::Path) {
 /// plus the TWO edges the inline port needs -- the way in and the reject drain.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./surface", "to": "./talky/keeper/stamp",
+        {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
         // Wave 9: the day after every stored turn, into the drain.
-        {"from": "./talky/collector/assemble", "to": "./drain/drain",
+        // Both ends name the drain HIVE, never the cell inside it (overview
+        // § Die Hive-Grenze): the template declares `. -> ./drain` on an in_
+        // lane and `./drain -> .` on `episode`. Reaching past those doors
+        // delivers every episode twice — once to the writer and once to a hive
+        // path this graph has no exit for.
+        {"from": "./talky/collector", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./talky/collector/assemble", "to": "./drain/drain",
+        {"from": "./talky/collector", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./drain/drain", "to": "./memory/writer",
+        {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
@@ -216,7 +221,7 @@ fn main_config() -> Value {
         // WAVE 10b, edge 1 of 2: the async tool call into the inline ingress.
         // In production this edge goes straight from `split`; here it takes the
         // test barrier on the way (module note).
-        {"from": "./talky/split", "to": "./gate",
+        {"from": "./talky/dispatcher", "to": "./gate",
          "condition": "has(hop.tool_name) && hop.tool_name == 'remember'"},
         {"from": "./gate", "to": "./memory/extract-glue",
          "condition": "has(hop.route) && hop.route == 'remember'",
@@ -226,7 +231,7 @@ fn main_config() -> Value {
         // written (the defect the review found in the running colony).
         {"from": "./memory/extract-glue", "to": "/reject",
          "condition": "has(hop.route) && hop.route == 'reject'"},
-        {"from": "./talky/collector/assemble", "to": "/sink",
+        {"from": "./talky/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "./void"},
         {"from": "./talky/errors", "to": "./void",
@@ -279,13 +284,13 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     patch(root, "main/talky/collector/assemble/config.json", |v| {
         v["params"]["turn_write"] = json!("1");
     });
-    patch(root, "main/talky/keeper/night/config.json", |v| {
+    patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     for rel in [
         "main/talky/brain/config.json",
-        "main/talky/summary/writer/config.json",
+        "main/talky/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| {
             v["params"]["base_url"] = json!(base_url);

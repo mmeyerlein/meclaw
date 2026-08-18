@@ -1,7 +1,8 @@
 //! POST /messages — fire-and-forget message injection. Spec l.1644/l.1656/l.1658.
 //!
 //! Dual content-type handling (Phase 12-X T18):
-//!   * `application/json`: classic JSON `{target, body, headers?}` -> inline UBF body.
+//!   * `application/json`: classic JSON `{target, body, headers?, hop?, ttl?}` ->
+//!     inline UBF body.
 //!   * `multipart/form-data`: `target` text field + 1..n file fields; each file
 //!     streams into `DiskBlobStore`, the resulting `BlobRef`s land in the
 //!     `attachments[]` slot of the synthesized UBF body. The JSON path stays
@@ -29,7 +30,12 @@ use serde_json::{Map, Value};
 
 /// Request body for the JSON `POST /messages`. `target` is mandatory, `body` is
 /// an arbitrary JSON value (UBF validation happens downstream in routing),
-/// `headers` is optional and defaults to an empty object.
+/// `headers` and `hop` are optional and default to an empty object.
+///
+/// GH #175: `headers` and `hop` are the two header compartments, named
+/// separately and never inferred from one another. `headers` is `context`
+/// (persistent, correlation); `hop` is the first hop the caller ASSERTS —
+/// the lane a hive's own `{"from": "."}` edges condition on.
 ///
 /// TTL slice (2026-06-11): `ttl` is the optional per-initial-message override
 /// (spec § Message model, TTL semantics). Absent/`null` → colony.json
@@ -42,6 +48,11 @@ pub struct MessageRequest {
     pub body: Value,
     #[serde(default)]
     pub headers: Value,
+    /// GH #175: the OPT-IN seed for the first `hop` compartment. Absent/`null`
+    /// keeps the historical source-message shape (empty hop); an object is the
+    /// caller ASSERTING a lane — the substrate never infers one from `headers`.
+    #[serde(default)]
+    pub hop: Value,
     #[serde(default)]
     pub ttl: Option<Value>,
 }
@@ -63,20 +74,29 @@ fn validate_request_ttl(ttl: &Option<Value>) -> Result<Option<u32>, String> {
     }
 }
 
-/// Validate the optional request `headers`: absent/`null` → an empty map;
-/// an object → that object; everything else → `Err` (422 `invalid_headers`).
+/// Validate one request-level header compartment (`headers` → `context`,
+/// `hop` → `hop`): absent/`null` → an empty map; an object → that object;
+/// everything else → `Err` (422 `invalid_headers` / `invalid_hop`).
 ///
 /// W13 hardening. `ttl` on the very same request got this right and `headers`
 /// did not: a string, a number or an array used to degrade to `{}` and the
 /// caller got a 202 for a message that carried none of the correlation data
 /// they sent. Silent degradation on an ingress is the failure mode this repo
 /// treats as worse than a loud reject — the caller cannot even see it happened.
-fn validate_request_headers(headers: Value) -> Result<Map<String, Value>, String> {
-    match headers {
+///
+/// GH #175 gave the rule its second user. A compartment map is also the whole
+/// authority a seeded hop gets: an edge modifier writes `set_hop` key → value
+/// and nothing else (spec § Edge model, "edges operate strictly on the header
+/// layer"), and its one sanctioned envelope touch, `restore_ttl`, is a
+/// modifier FIELD rather than a hop key — so it is not expressible in a
+/// compartment map at all. The ingress therefore reaches exactly as far as a
+/// modifier does, and no envelope field can be forged through the seed.
+fn validate_compartment(field: &str, value: Value) -> Result<Map<String, Value>, String> {
+    match value {
         Value::Object(map) => Ok(map),
         Value::Null => Ok(Map::new()),
         other => Err(format!(
-            "headers must be a JSON object, got {}",
+            "{field} must be a JSON object, got {}",
             json_type_name(&other)
         )),
     }
@@ -214,7 +234,7 @@ async fn post_messages_json(
         }
     };
     let target = Path::new(&req.target);
-    let req_headers = match validate_request_headers(req.headers) {
+    let req_headers = match validate_compartment("headers", req.headers) {
         Ok(h) => h,
         Err(detail) => {
             return (
@@ -226,11 +246,32 @@ async fn post_messages_json(
             );
         }
     };
-    // Source message from the HTTP ingress: no previous hop. The inbound headers
-    // go into the persistent `context` compartment (correlation / long-lived);
-    // `hop` starts empty (slice 2, two-compartment model).
+    // GH #175: the caller may ASSERT the first hop. Same gate as `headers` —
+    // a mistyped compartment is a loud 422, never a silent `{}`, because a 202
+    // for a lane that was never set reappears downstream as a `hive_no_route`
+    // the caller has no way to trace back to the ingress.
+    let req_hop = match validate_compartment("hop", req.hop) {
+        Ok(h) => h,
+        Err(detail) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "invalid_hop",
+                    "detail": detail,
+                })),
+            );
+        }
+    };
+    // Source message from the HTTP ingress. The inbound headers go into the
+    // persistent `context` compartment (correlation / long-lived); `hop` is
+    // whatever the caller explicitly asserted and otherwise empty (slice 2,
+    // two-compartment model). The two are named separately and never inferred
+    // from one another — since the hive boundary rule a hive's own doors
+    // condition on `hop.route`, and without a way to say "hop" a message posted
+    // at a hive path could match no door at all (GH #175).
     let msg = MessageBuilder::new(target)
         .context(req_headers)
+        .hop(req_hop)
         .ttl(ttl)
         .body(Body::Inline(req.body))
         .build();

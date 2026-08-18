@@ -92,7 +92,7 @@ async fn phase_6_demo_roundtrip_proves_cell_is_addressable() {
             "diff": {"add_nodes": [{
                 "name": "demo",
                 "template": "echo",
-                "override_params": {"echo_to": "/observer"}
+                "override_params": {"emitted_target": "/observer"}
             }]}
         }),
         None,
@@ -158,7 +158,7 @@ async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_rep
     // Phase-11 T16: create and load the echo template directory.
     setup_template(&h, "echo", "echo").await;
 
-    // Pre-spawn a reply-observer at /observer (echo cell, echo_to=/observer_echo_target).
+    // Pre-spawn a reply-observer at /observer (echo cell, emitted_target=/observer_echo_target).
     let setup = send_mutation(
         &h,
         meclaw_core::serde_json::json!({
@@ -166,7 +166,7 @@ async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_rep
             "diff": {"add_nodes": [{
                 "name": "observer",
                 "template": "echo",
-                "override_params": {"echo_to": "/observer_echo_target"}
+                "override_params": {"emitted_target": "/observer_echo_target"}
             }]}
         }),
         None,

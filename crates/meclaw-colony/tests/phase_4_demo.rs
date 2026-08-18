@@ -47,12 +47,12 @@ async fn phase_4_boot_from_examples_tree_populates_registry_and_hive_scopes() {
     write(
         td.path(),
         "main/echo-a/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/echo-b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/echo-b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/echo-b/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/echo-a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/echo-a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // Sub-hive with two cells and one edge
     write(
@@ -65,12 +65,12 @@ async fn phase_4_boot_from_examples_tree_populates_registry_and_hive_scopes() {
     write(
         td.path(),
         "main/pool/w1/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/pool/w2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/pool/w2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/pool/w2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/pool/w1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/pool/w1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let colony = ColonyHandle::new();
@@ -101,17 +101,17 @@ async fn phase_4_edge_overrides_cell_emitted_target() {
               {"from":"/echo-a","to":"/echo-b"}
           ]}}}"#,
     );
-    // echo-a's config says echo_to=/dummy — edge should override this.
+    // echo-a's config says emitted_target=/dummy — edge should override this.
     write(
         td.path(),
         "main/echo-a/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/dummy"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/dummy"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
-    // echo-b is terminal (echo_to=/sink which doesn't exist → DLQ proves edge reached it).
+    // echo-b is terminal (emitted_target=/sink which doesn't exist → DLQ proves edge reached it).
     write(
         td.path(),
         "main/echo-b/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let colony = ColonyHandle::new();

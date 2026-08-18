@@ -44,12 +44,12 @@ fn echo_registry() -> CellFactoryRegistry {
     r
 }
 
-fn echo_cell(td: &std::path::Path, rel: &str, echo_to: &str) {
+fn echo_cell(td: &std::path::Path, rel: &str, emitted_target: &str) {
     std::fs::create_dir_all(td.join(rel)).unwrap();
     std::fs::write(
         td.join(rel).join("config.json"),
         format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"{echo_to}"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"{emitted_target}"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
         ),
     )
     .unwrap();

@@ -91,7 +91,7 @@ async fn bootstrap_stateless_stays_awake() {
     write(
         td.path(),
         "main/echo/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     let h = ColonyHandle::new();
     let report =

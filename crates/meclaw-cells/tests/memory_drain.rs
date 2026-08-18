@@ -1,4 +1,4 @@
-//! meclaw-os -- the drain adapter `memory-drain@1` (GitHub #101), script level.
+//! meclaw-os -- the drain adapter `memory-drain` (GitHub #101), script level.
 //!
 //! The memory hive writes one episode per turn (hive spec B.3/D.2), the
 //! collector hands a closed session out as ONE batch (C3). Nothing between the

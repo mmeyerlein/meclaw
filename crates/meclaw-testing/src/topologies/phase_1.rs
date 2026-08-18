@@ -37,7 +37,7 @@ pub async fn build_phase_1_topology() -> Phase1Topology {
     colony
         .spawn(Path::new("/echo-a"), move || {
             EchoMockCell::new(Path::new("/echo-a"))
-                .echo_to(Path::new("/echo-b"))
+                .emitted_target(Path::new("/echo-b"))
                 .tap_to(tap_a.clone())
         })
         .await;

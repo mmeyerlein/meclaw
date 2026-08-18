@@ -18,7 +18,7 @@
 //!
 //! The script group runs the shipped `params.script_inline` against real stdin
 //! documents. The colony group boots the shipped receptionist in front of the
-//! shipped `talky@1` template and drives three turns over two channels; both
+//! shipped `talky` template and drives three turns over two channels; both
 //! `llm` cells talk to the mock OpenAI wire, so the file spends nothing.
 
 #[path = "mock_openai.rs"]
@@ -233,7 +233,7 @@ fn an_unknown_channel_instantiates_a_talky_and_wires_it_in_one_mutation() {
     let edges = m["diff"]["add_edges"].as_array().expect("add_edges");
     assert_eq!(edges.len(), 4, "ingress, reply, write, error: {edges:?}");
     assert_eq!(edges[0]["from"], json!("./reception/greet"));
-    assert_eq!(edges[0]["to"], json!("./talky-c-42/keeper/stamp"));
+    assert_eq!(edges[0]["to"], json!("./talky-c-42/session-keeper"));
     let cond = edges[0]["condition"].as_str().unwrap();
     assert!(
         cond.contains("has(hop.chan)") && cond.contains("hop.chan == 'c-42'"),
@@ -516,7 +516,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     copy_template("talky", &root.join("templates"));
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summary/writer/config.json",
+        "templates/talky/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| v["params"]["base_url"] = json!(base_url));
     }

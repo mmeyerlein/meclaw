@@ -10,7 +10,7 @@ use meclaw_testing::wait::wait_for_message_log_count;
 async fn t34_outputs_arm_logs_with_sender_path_not_external() {
     let h = ColonyHandle::new();
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || EchoMockCell::new(Path::new("/b")))
@@ -43,7 +43,7 @@ async fn t34_outputs_arm_logs_with_sender_path_not_external() {
 async fn t35_at_external_appears_only_for_parent_null_messages() {
     let h = ColonyHandle::new();
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || EchoMockCell::new(Path::new("/b")))
@@ -76,11 +76,11 @@ async fn t35_at_external_appears_only_for_parent_null_messages() {
 async fn t36_cte_replay_returns_full_chain_no_orphan_one_null_root() {
     let h = ColonyHandle::new();
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || {
-        EchoMockCell::new(Path::new("/b")).echo_to(Path::new("/c"))
+        EchoMockCell::new(Path::new("/b")).emitted_target(Path::new("/c"))
     })
     .await;
     h.spawn(Path::new("/c"), || EchoMockCell::new(Path::new("/c")))

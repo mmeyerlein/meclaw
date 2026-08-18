@@ -6,7 +6,7 @@
 //!   3. Boot the colony + scan templates via RescanTemplates.
 //!   4. Register /sink (CaptureCell) BEFORE the probe (anti-cascade, phase-6.5 lesson).
 //!   5. Mutation: add_nodes(name="echo", template="echo-cell@1.0",
-//!      override_params={echo_to="/sink", greeting="${GREETING}"})
+//!      override_params={emitted_target="/sink", greeting="${GREETING}"})
 //!      + add_edges(/echo → /sink).
 //!   6. The outcome must be MutationOutcome::Committed.
 //!   7. Probe → /echo, check the receipt in /sink via CaptureCell.
@@ -77,7 +77,7 @@ async fn instanziieren_aus_template_via_mutation() {
     )
     .unwrap();
     // Template config.json: cell.type = "echo" (the EchoCellFactory key), params empty.
-    // override_params in the mutation diff supplies echo_to + greeting (with ${GREETING}).
+    // override_params in the mutation diff supplies emitted_target + greeting (with ${GREETING}).
     std::fs::write(
         tpl_dir.join("config.json"),
         r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
@@ -106,7 +106,7 @@ async fn instanziieren_aus_template_via_mutation() {
     // 5. Send the mutation: add_nodes with template="echo-cell@1.0.0" (a versioned
     //    reference, R3-spec conformant — the plan demo prescribes "echo-cell@1.0";
     //    "1.0.0" is the canonical SemVer form that template.json declares).
-    //    override_params: echo_to="/sink" (mandatory for EchoCellFactory),
+    //    override_params: emitted_target="/sink" (mandatory for EchoCellFactory),
     //                     greeting="${GREETING}" (substitution proof).
     let outcome = send_mutation(
         &h,
@@ -117,7 +117,7 @@ async fn instanziieren_aus_template_via_mutation() {
                     "name": "echo",
                     "template": "echo-cell@1.0.0",
                     "override_params": {
-                        "echo_to": "/sink",
+                        "emitted_target": "/sink",
                         "greeting": "${GREETING}"
                     }
                 }],

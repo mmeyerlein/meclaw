@@ -1,4 +1,4 @@
-//! meclaw-os -- the shipped `cogny@1` template, the agent core (GH #28, R-CG-2).
+//! meclaw-os -- the shipped `cogny` template, the agent core (GH #28, R-CG-2).
 //!
 //! [`talky_cogny_advisor.rs`] proved the advisor CONNECTION with the core wired
 //! by hand, because R-CG-2 deliberately shipped no template in wave 5. This file
@@ -7,7 +7,7 @@
 //!
 //! What is pinned here is exactly what a template has to carry:
 //!
-//! 1. **The copies did not fork.** `collector@1` and `dispatcher@1` live in this
+//! 1. **The copies did not fork.** `collector` and `dispatcher@1` live in this
 //!    composite as byte copies -- the substrate has no template-in-template
 //!    reference -- so a sub-template change that does not travel fails here.
 //! 2. **The core is a tool loop.** A consult errand arrives on the documented
@@ -30,7 +30,7 @@
 //! pointed at the mock OpenAI wire, the tool is a `code` cell.
 //!
 //! **R2b guard (GH #49 form).** A template travels only when `PUBLIC_TEMPLATES`
-//! in the export script names it -- `cogny@1` does since 2026-08-15, but the
+//! in the export script names it -- `cogny` does since 2026-08-15, but the
 //! guard is the mechanism, not the current answer. Every read below is guarded
 //! per file by [`shipped_cogny`]; where the template does not ship, these tests
 //! skip instead of failing on a dead `templates/` reference. That is what keeps
@@ -70,7 +70,7 @@ const COGNY_FILES: &[&str] = &[
     "collector/config.json",
     "collector/assemble/config.json",
     "collector/window/config.json",
-    "split/config.json",
+    "dispatcher/config.json",
 ];
 
 /// The one non-`config.json` file the composite ships (GH #124). The length
@@ -234,14 +234,14 @@ fn main_config() -> Value {
         // is lifted into `context.consult_class` here and nowhere else. The
         // errand itself is identical on both -- the class picks the lane, never
         // the evidence.
-        {"from": "./asker", "to": "./cogny/collector/assemble",
+        {"from": "./asker", "to": "./cogny/collector",
          "condition": "has(hop.route) && hop.route == 'consult' \
                        && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"consult_id": "hop.consult_id",
                                       "consult_class": "'consult'", "col_phase": "''"},
                       "restore_ttl": true}},
-        {"from": "./asker", "to": "./cogny/collector/assemble",
+        {"from": "./asker", "to": "./cogny/collector",
          "condition": "has(hop.route) && hop.route == 'consult' \
                        && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
@@ -249,15 +249,15 @@ fn main_config() -> Value {
                                       "consult_class": "'lookup'", "col_phase": "''"},
                       "restore_ttl": true}},
         // ── port 2: the advice goes home on the return lane ──
-        {"from": "./cogny/collector/assemble", "to": "/sink",
+        {"from": "./cogny/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'",
          "modifier": {"set_hop": {"route": "'in_advice'"},
                       "set_context": {"col_phase": "''"},
                       "restore_ttl": true}},
         // ── the one per-instance lane: which cell answers to `lookup` ──
-        {"from": "./cogny/split", "to": "./lookup",
+        {"from": "./cogny/dispatcher", "to": "./lookup",
          "condition": "has(hop.tool_name) && hop.tool_name == 'lookup'"},
-        {"from": "./lookup", "to": "./cogny/collector/assemble",
+        {"from": "./lookup", "to": "./cogny/collector",
          "condition": "has(hop.route) && hop.route == 'res'",
          "modifier": {"set_hop": {"route": "'in_tool'"}}}
     ]}}})
@@ -395,7 +395,7 @@ fn lane_of(req: &mock_openai::OpenAiRequestSnapshot) -> &str {
 /// The substrate instantiates a template by COPYING its directory, and there is
 /// no template-in-template reference to lean on -- so the composite carries
 /// materialised copies of its two sub-templates, and this pin is what keeps
-/// "carries" from decaying into "forked". A change to `collector@1` that does
+/// "carries" from decaying into "forked". A change to `collector` that does
 /// not travel into `cogny/collector/` fails here instead of in production.
 #[test]
 fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
@@ -412,7 +412,7 @@ fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
         let a = std::fs::read(src.join(&rel)).unwrap();
         let b = std::fs::read(cogny.join("collector").join(&rel)).unwrap_or_else(|e| {
             panic!(
-                "cogny/collector/{} missing ({e}) -- collector@1 grew a cell the core does not carry",
+                "cogny/collector/{} missing ({e}) -- collector grew a cell the core does not carry",
                 rel.display()
             )
         });
@@ -426,8 +426,8 @@ fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
     }
     // The dispatcher is a single-cell template: its root config IS the cell.
     let a = std::fs::read(root.join("dispatcher/config.json")).unwrap();
-    let b = std::fs::read(cogny.join("split/config.json")).unwrap();
-    assert!(a == b, "cogny/split drifted from dispatcher");
+    let b = std::fs::read(cogny.join("dispatcher/config.json")).unwrap();
+    assert!(a == b, "cogny/dispatcher drifted from dispatcher");
     checked += 1;
     assert!(checked >= 4, "the pin swept almost nothing: {checked}");
 }
@@ -467,12 +467,12 @@ fn the_core_carries_the_tool_loop_and_nothing_else() {
     want.sort();
     assert_eq!(
         found, want,
-        "cogny@1 is collector + dispatcher + brain (R-CG-2): no keeper, no summarizer, \
+        "cogny is collector + dispatcher + brain (R-CG-2): no keeper, no summarizer, \
          no proxy -- the core has no channel, no sessions and no night"
     );
 }
 
-/// The whole claim of `cogny@1` in one consultation: the errand enters on the
+/// The whole claim of `cogny` in one consultation: the errand enters on the
 /// documented ingress, the core runs its OWN tool round, and the advice leaves
 /// on the return lane under the `consult_id` it was handed. Three edges came
 /// from this test; the six that made the round came from the template.

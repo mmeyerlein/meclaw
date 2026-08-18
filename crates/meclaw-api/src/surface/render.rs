@@ -23,6 +23,13 @@
 //!   so a cell has an identity it can trust: it came from `context`, which is edge
 //!   authority, not from a body a model could have written.
 //!
+//! A reply can only be matched against a waiter that is already in the table, so
+//! the two are ordered rather than merely both-sent: `render` injects nothing
+//! until the task has confirmed the registration. Without that, the task learns
+//! of the waiter and of the reply through two different channels with no order
+//! between them, and a reply served first is dropped as "nobody waiting" while
+//! the render that earned it waits out its whole budget (GH #223).
+//!
 //! `context` is the right compartment and `hop` is not: a cell's emission
 //! inherits the inbound `context` with a fresh `hop`, which is exactly the
 //! survival property a multi-pass render needs. That is proven end to end in
@@ -87,6 +94,16 @@ enum Cmd {
     Register {
         id: String,
         waiter: oneshot::Sender<Result<String, RenderError>>,
+        /// Answered once the waiter is in the table, and never before.
+        ///
+        /// This is the ordering the whole return path rests on (GH #223). The
+        /// task learns about a waiter and about a reply through two different
+        /// channels, and `select!` gives no order between them: a reply that is
+        /// already queued when the task next runs can be served before the
+        /// `Register` it belongs to, and is then dropped as "nobody waiting".
+        /// Making `render` wait for this before it injects the request removes
+        /// the window entirely — a reply cannot exist before its waiter does.
+        registered: oneshot::Sender<()>,
     },
     Forget {
         id: String,
@@ -165,15 +182,22 @@ impl Dispatcher {
     ) -> Result<String, RenderError> {
         let id = Uuid::now_v7().to_string();
         let (waiter_tx, waiter_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel();
         if self
             .cmd
             .send(Cmd::Register {
                 id: id.clone(),
                 waiter: waiter_tx,
+                registered: registered_tx,
             })
             .await
             .is_err()
         {
+            return Err(RenderError::NoColony);
+        }
+        // Nothing is injected until the waiter is provably in the table: the
+        // request must not be able to outrun its own registration (GH #223).
+        if registered_rx.await.is_err() {
             return Err(RenderError::NoColony);
         }
 
@@ -297,7 +321,12 @@ async fn run(
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => match cmd {
-                Some(Cmd::Register { id, waiter }) => { waiting.insert(id, waiter); }
+                Some(Cmd::Register { id, waiter, registered }) => {
+                    waiting.insert(id, waiter);
+                    // AFTER the insert: the acknowledgement is what `render`
+                    // treats as "a reply for me can now be matched".
+                    let _ = registered.send(());
+                }
                 Some(Cmd::Forget { id }) => { waiting.remove(&id); }
                 Some(Cmd::Cached { surface, reply }) => {
                     let _ = reply.send(cache.get(&surface).cloned());
@@ -383,5 +412,65 @@ fn read_reply(msg: &Message) -> Result<String, RenderError> {
         None => Err(RenderError::Malformed(
             "`surface` carries neither `html` nor `error`".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The ordering GH #223 was about.** A reply is matched by looking the
+    /// request id up in the waiter table, so a request that reaches the colony
+    /// before its waiter is in that table can be answered into a table that does
+    /// not know it yet: `handle_egress` drops the reply as "nobody waiting" and
+    /// the render then waits out its entire budget for an answer that already
+    /// came and went. Under `cargo`-parallel load that happened on roughly every
+    /// fourth run of `tests/gh159_surface_render.rs`, with a different victim
+    /// each time, because `select!` picks between the two channels at random.
+    ///
+    /// `current_thread` on purpose: the render task runs to its first genuine
+    /// suspension point before this test is polled again, so "has the request
+    /// been injected yet" is a fact here and not a race. Registering by hand
+    /// rather than through `run` is what makes the gap observable at all.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_request_is_not_injected_before_its_waiter_is_registered() {
+        let (colony_tx, mut colony_rx) = mpsc::channel::<ColonyMsg>(4);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Cmd>(4);
+        let dispatcher = Arc::new(Dispatcher {
+            colony: colony_tx,
+            cmd: cmd_tx,
+            message_default_ttl: 60,
+        });
+
+        let render = tokio::spawn(async move {
+            dispatcher
+                .render(
+                    "/org/acme/canvy/render",
+                    meclaw_core::serde_json::json!({}),
+                    Duration::from_secs(30),
+                )
+                .await
+        });
+
+        let Some(Cmd::Register {
+            waiter, registered, ..
+        }) = cmd_rx.recv().await
+        else {
+            panic!("the waiter must be registered before anything else happens");
+        };
+        assert!(
+            colony_rx.try_recv().is_err(),
+            "the request reached the colony while its waiter was still in flight — \
+             a reply could arrive with nobody waiting for it and be dropped"
+        );
+
+        registered
+            .send(())
+            .expect("render must be waiting for the acknowledgement");
+        let injected = colony_rx.recv().await.expect("and only then the request");
+        assert!(matches!(injected, ColonyMsg::Route { .. }));
+
+        let _ = waiter.send(Ok("<svg/>".to_string()));
+        assert_eq!(render.await.unwrap(), Ok("<svg/>".to_string()));
     }
 }

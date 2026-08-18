@@ -42,10 +42,14 @@ async fn cell_emission_without_matching_edge_dead_letters_as_no_route() {
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
     );
     // /emitter emits to /downstream; there is no out-edge from /emitter.
+    // GH #224: this is exactly the shape a first-time colony test writes by
+    // accident. `emitted_target` names the field on the emission, not a route —
+    // without the out-edge the emission dies here rather than reaching
+    // /downstream. The param is deliberately not called `echo_to` any more.
     write(
         td.path(),
         "main/emitter/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/downstream"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/downstream"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let colony = ColonyHandle::new();
@@ -102,14 +106,14 @@ async fn catch_all_out_edge_delivers_emission_without_dead_letter() {
     write(
         td.path(),
         "main/emitter/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/nowhere"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/nowhere"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // /sink is terminal: echoes to a non-existent /void so its receipt is
     // observable as a /void DLQ entry (proves the catch-all reached /sink).
     write(
         td.path(),
         "main/sink/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/void"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/void"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let colony = ColonyHandle::new();

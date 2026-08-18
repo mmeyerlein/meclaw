@@ -732,14 +732,14 @@ sys.stdout.write(json.dumps({"header": {"route": "closed"},
 /// stamped turn out, the close request out.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./probe", "to": "./keeper/stamp",
+        {"from": "./probe", "to": "./session-keeper",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"}}},
-        {"from": "./keeper/stamp", "to": "./report",
+        {"from": "./session-keeper", "to": "./report",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_context": {"session_id": "hop.session_id"}}},
         {"from": "./report", "to": "/sink"},
-        {"from": "./keeper/close", "to": "./closed",
+        {"from": "./session-keeper", "to": "./closed",
          "condition": "hop.route == 'close'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "channel": "hop.channel"}}},
@@ -753,9 +753,9 @@ fn build_tree(td: &tempfile::TempDir, env: &str) {
     write(root, "main/config.json", &main_config());
     let template =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/session-keeper");
-    copy_cells(&template, &root.join("main/keeper"));
+    copy_cells(&template, &root.join("main/session-keeper"));
     // Two patches, both about the clock rather than about behaviour.
-    let night_path = root.join("main/keeper/night/config.json");
+    let night_path = root.join("main/session-keeper/night/config.json");
     let mut night: Value =
         serde_json::from_str(&std::fs::read_to_string(&night_path).unwrap()).unwrap();
     night["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
@@ -828,7 +828,7 @@ fn turn(channel: &str, text: &str) -> Message {
 /// once, now, without changing its plan -- and a triggered run is not
 /// distinguishable from a cron run (docs/cell-types.md § timer).
 fn fire() -> Message {
-    MessageBuilder::new(Path::new("/keeper/night"))
+    MessageBuilder::new(Path::new("/session-keeper/night"))
         .body(Body::Inline(
             json!({"messages": [], "op": "trigger", "schedule_id": SCHEDULE_ID}),
         ))
@@ -879,13 +879,13 @@ fn delivered_to(td: &tempfile::TempDir, path: &str) -> i64 {
 async fn await_close_pass(td: &tempfile::TempDir, n: i64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if delivered_to(td, "/keeper/close") >= n {
+        if delivered_to(td, "/session-keeper/close") >= n {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
             "the close pass saw {} of {n} messages within 30s",
-            delivered_to(td, "/keeper/close")
+            delivered_to(td, "/session-keeper/close")
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

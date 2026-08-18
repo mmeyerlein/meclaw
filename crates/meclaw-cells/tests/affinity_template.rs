@@ -1,4 +1,4 @@
-//! meclaw-os -- the shipped `affinity@1` template, the first hive with a
+//! meclaw-os -- the shipped `affinity` template, the first hive with a
 //! domain of its own (V8 spec, rulings of 2026-08-15).
 //!
 //! What is pinned here is what the template PROMISES, in the order the README
@@ -27,7 +27,7 @@
 //!
 //! Free of a provider by construction: this hive holds no model at all.
 //!
-//! **R2b guard (GH #49 form).** `affinity@1` is PRIVATE -- it is not in
+//! **R2b guard (GH #49 form).** `affinity` is PRIVATE -- it is not in
 //! `PUBLIC_TEMPLATES`, so it does not travel with the export. Every read below
 //! is guarded per file by [`shipped_affinity`]; in the public clone the guard
 //! exits cleanly and these tests skip instead of failing on a dead
@@ -228,33 +228,39 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
 
 // ─────────────────────────────────────────────────────────────── the topology
 
-/// The ports around the hive -- every one a literal copy of what
-/// `templates/affinity/README.md` documents, plus the probe pair that is the
-/// test's own read channel. The template draws no edge that appears here.
+/// The ports around the hive -- every one at the hive PATH, plus the probe pair
+/// that is the test's own read channel. The template draws no edge that appears
+/// here, and this graph names no cell inside it bar the probe's store read.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+        // Every contract lane names the HIVE (overview § Die Hive-Grenze). The
+        // caller asserts the lane with a set_hop; which cell behind the door
+        // serves it is not written into this graph, which is what makes the
+        // template replaceable.
         // ── in_brief: the asker's identity becomes EDGE truth, and only here ──
-        {"from": "./asker", "to": "./affinity/brief",
+        {"from": "./asker", "to": "./affinity",
          "condition": "has(hop.route) && hop.route == 'brief'",
-         "modifier": {"set_context": {"asker": "hop.audience"}}},
-        // ── out_brief / out_push: the same exit, told apart by hop.subscriber ──
-        {"from": "./affinity/brief", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'answer'"},
+         "modifier": {"set_hop": {"route": "'in_brief'"},
+                      "set_context": {"asker": "hop.audience"}}},
         // ── in_propose: the writer's identity, likewise from the edge ──
-        {"from": "./writer", "to": "./affinity/gate",
+        {"from": "./writer", "to": "./affinity",
          "condition": "has(hop.route) && hop.route == 'propose'",
-         "modifier": {"set_context": {"actor": "hop.actor"}}},
+         "modifier": {"set_hop": {"route": "'in_propose'"},
+                      "set_context": {"actor": "hop.actor"}}},
+        // ── out_brief / out_push: the same exit, told apart by hop.subscriber ──
+        {"from": "./affinity", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'answer'"},
         // ── out_ack ──
-        {"from": "./affinity/gate", "to": "/sink",
+        {"from": "./affinity", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'ack'"},
-        // ── out_error: the drain the parent MUST wire, all three code cells ──
-        {"from": "./affinity/gate", "to": "/sink",
+        // ── out_error: ONE edge. Three of them -- one per code cell inside --
+        //    was the old shape, and once all three ends name the hive the same
+        //    failure is delivered three times.
+        {"from": "./affinity", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'error'"},
-        {"from": "./affinity/brief", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'error'"},
-        {"from": "./affinity/push", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'error'"},
-        // ── the test's own read channel, straight into the store ──
+        // ── the test's own read channel, straight into the store. The one
+        //    reach past the doors this file keeps: a test that may only see the
+        //    contract cannot check what the contract wrote.
         {"from": "./probe", "to": "./affinity/store",
          "condition": "has(hop.route) && hop.route == 'pstore'",
          "modifier": {"set_context": {"affinity_origin": "'probe'"}}},
@@ -434,7 +440,7 @@ fn the_hive_carries_five_cells_and_no_model() {
     want.sort();
     assert_eq!(
         found, want,
-        "affinity@1 is store + brief + gate + push + clock: no curator, no brain"
+        "affinity is store + brief + gate + push + clock: no curator, no brain"
     );
     for rel in AFFINITY_FILES {
         let cfg = read_json(&root.join(rel));

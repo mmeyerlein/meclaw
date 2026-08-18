@@ -11,8 +11,8 @@
 //!   brain(mock) -> split -> seam -> answer
 //!
 //! Seventeen cells, and NOBODY wrote a single one of them here: one comes from
-//! `door@1`, two from `firewall@1`, eleven from `talky@1`, two from
-//! `memory-drain@1`, one from `terminal@1`. What is checked in is two config
+//! `door@1`, two from `firewall@1`, eleven from `talky`, two from
+//! `memory-drain`, one from `terminal@1`. What is checked in is two config
 //! files -- a colony default and a hive with an empty graph.
 //!
 //! Then the second declaration, on the colony that is already up and answering:
@@ -80,11 +80,11 @@ const GROWN_FROM: [(&str, &str); 5] = [
 /// The second declaration names exactly one template, and it ships too.
 const GROWN_FROM_COGNY: [(&str, &str); 1] = [("cogny", "templates/cogny")];
 
-/// One cell from `door@1`, two from `firewall@1`, eleven from `talky@1`, two
-/// from `memory-drain@1`, one from `terminal@1`.
+/// One cell from `door@1`, two from `firewall@1`, eleven from `talky`, two
+/// from `memory-drain`, one from `terminal@1`.
 const CELLS_AFTER_GROW: usize = 17;
 
-/// Plus five from `cogny@1`: the two brains -- the thinking lane and the
+/// Plus five from `cogny`: the two brains -- the thinking lane and the
 /// lookup lane of 1.1.0 -- the two collector cells and the split.
 const CELLS_AFTER_COGNY: usize = 22;
 
@@ -302,7 +302,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     }
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summary/writer/config.json",
+        "templates/talky/summarizer/writer/config.json",
         "templates/cogny/brain/config.json",
         "templates/cogny/brain_fast/config.json",
     ] {
@@ -447,16 +447,16 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
         "/surface",
         "/firewall/screen",
         "/firewall/rules",
-        "/talky/keeper/stamp",
-        "/talky/keeper/close",
-        "/talky/keeper/sessions",
-        "/talky/keeper/night",
+        "/talky/session-keeper/stamp",
+        "/talky/session-keeper/close",
+        "/talky/session-keeper/sessions",
+        "/talky/session-keeper/night",
         "/talky/collector/assemble",
         "/talky/collector/window",
-        "/talky/split",
+        "/talky/dispatcher",
         "/talky/brain",
-        "/talky/summary/prep",
-        "/talky/summary/writer",
+        "/talky/summarizer/prep",
+        "/talky/summarizer/writer",
         "/talky/errors",
         "/drain/drain",
         "/drain/ledger",
@@ -536,7 +536,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
         "/cogny/brain_fast",
         "/cogny/collector/assemble",
         "/cogny/collector/window",
-        "/cogny/split",
+        "/cogny/dispatcher",
     ] {
         assert!(
             with_core.iter().any(|p| p == expected),

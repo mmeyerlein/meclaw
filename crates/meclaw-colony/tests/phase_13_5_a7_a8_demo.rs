@@ -152,7 +152,7 @@ async fn demo_b_c_offload_then_roundtrip_to_inline() {
     .await;
     // Producer: /echo re-emits the (resolved) body to /sink.
     h.spawn(Path::new("/echo"), move || {
-        EchoMockCell::new(Path::new("/echo")).echo_to(Path::new("/sink"))
+        EchoMockCell::new(Path::new("/echo")).emitted_target(Path::new("/sink"))
     })
     .await;
     // W2b (Ruling A1): /echo's emission to /sink needs a wired catch-all out-edge

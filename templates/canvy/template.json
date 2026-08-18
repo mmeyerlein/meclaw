@@ -1,6 +1,6 @@
 {
   "name": "canvy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": {
     "purpose": "An interactive canvas served over HTTP under the render cell's own path. The picture is generated server-side by a code cell; the browser owns only the drag. The first thing it draws is the colony itself.",
     "use_when": "Somebody should see and rearrange something the colony knows, in a browser. One canvy per canvas: two canvases are two hives, told apart by their paths, which is what makes one nginx location block a complete access rule for one of them.",

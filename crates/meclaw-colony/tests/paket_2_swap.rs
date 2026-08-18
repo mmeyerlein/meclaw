@@ -22,8 +22,8 @@
 //!   Pins No-Delete (t2 was retained and is fully re-activatable).
 //!
 //! Topology (assert_single_root_dir: `td/main` -> mc-path `/`):
-//!   /t1   (echo, echo_to=/t1 — the edge overrides the emit target anyway)
-//!   /t2   (echo, echo_to=/sink_t2)
+//!   /t1   (echo, emitted_target=/t1 — the edge overrides the emit target anyway)
+//!   /t2   (echo, emitted_target=/sink_t2)
 //!   Edge (root hive config.json): from=/t1 to=/t2
 //!   /sink_t2  (CaptureCell — registry-only via h.spawn, anti-cascade)
 //!   /sink_t3  (CaptureCell — registry-only via h.spawn, anti-cascade)
@@ -38,7 +38,7 @@
 //!
 //! Positive-receipt proof (anti-cascade, sink-before-probe): a probe sent through
 //! `/t1` reaches the CaptureCell behind `/t3` (via the swung edge → t3's
-//! echo_to=/sink_t3), while `/sink_t2` receives NOTHING.
+//! emitted_target=/sink_t3), while `/sink_t2` receives NOTHING.
 
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, ContractView, DbConn, DiskBlobStore,
@@ -143,7 +143,7 @@ fn write_template(root: &std::path::Path, name: &str, echo: &str) {
     std::fs::write(
         tpl.join("config.json"),
         format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"{echo}"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"{echo}"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
         ),
     )
     .unwrap();
@@ -171,13 +171,13 @@ async fn graph_swap_swings_edge_t1_to_t3_and_deactivates_t2() {
     write(
         td.path(),
         "main/t1/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // /t2 echoes to /sink_t2.
     write(
         td.path(),
         "main/t2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // t3 template: a fresh echo cell that echoes to /sink_t3.
     write_template(td.path(), "t3_echo", "/sink_t3");
@@ -327,7 +327,7 @@ fn make_echo_build(
         let (tx, rx) = mpsc::channel::<Message>(1000);
         let (peace_tx, peace_rx) = oneshot::channel();
         let (_backstop_tx, backstop_rx) = oneshot::channel();
-        let cell = EchoMockCell::new(path.clone()).echo_to(echo_to.clone());
+        let cell = EchoMockCell::new(path.clone()).emitted_target(echo_to.clone());
         let p = path.clone();
         let o = outputs_tx.clone();
         let join = tokio::spawn(async move {
@@ -677,12 +677,12 @@ async fn rollback_swing_back_to_t2_reactivates_t2_and_deactivates_t3() {
     write(
         td.path(),
         "main/t1/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/t2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write_template(td.path(), "t3_echo", "/sink_t3");
 
@@ -777,7 +777,7 @@ async fn rollback_swing_back_to_t2_reactivates_t2_and_deactivates_t3() {
 
     // ── Positive receipt: probe through /t1 reaches /sink_t2 (t2 live again). ─
     // Anti-cascade: /sink_t2 was resolved before bootstrap. At this point t2 is
-    // active and echo_to=/sink_t2. The probe triggers the edge t1→t2.
+    // active and emitted_target=/sink_t2. The probe triggers the edge t1→t2.
     // W2b (Ruling A1): /t2's terminal echo to /sink_t2 needs a wired catch-all
     // out-edge (identity-fallback gone). /t2 is re-active post-rollback, /sink_t2
     // live.
@@ -875,15 +875,15 @@ fn bump_spawn_counter_c1(cell_dir: &std::path::Path) -> i64 {
 /// Paket-2 T11 Demo (d) — completeness: multiple in/out edges + condition/modifier.
 ///
 /// Topology:
-///   /x  (echo, echo_to=/sink_x)
-///   /t2 (echo, echo_to=/sink_d_t2 — should receive nothing after swap)
-///   /y  (echo, echo_to=/sink_d_y — downstream from t2→y edge)
+///   /x  (echo, emitted_target=/sink_x)
+///   /t2 (echo, emitted_target=/sink_d_t2 — should receive nothing after swap)
+///   /y  (echo, emitted_target=/sink_d_y — downstream from t2→y edge)
 ///   Edges in root hive config.json (persisted at bootstrap):
 ///     x → t2   (INCOMING to t2, carries condition "headers.tier == 'gold'" +
 ///                modifier set tier=headers.tier)
 ///     t2 → y   (OUTGOING from t2, no extras)
 ///
-/// Swap: t2 → t3 (template t3d_echo, echo_to=/sink_d_t3).
+/// Swap: t2 → t3 (template t3d_echo, emitted_target=/sink_d_t3).
 ///
 /// Assertions:
 ///   1. x→t3 present; t3→y present (all external edges of t2 swung).
@@ -921,13 +921,13 @@ async fn swap_completeness_multiple_edges_condition_modifier_preserved() {
     write(
         td.path(),
         "main/x/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // /t2 echoes to /sink_d_t2 (should receive nothing after swap).
     write(
         td.path(),
         "main/t2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_d_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_d_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // /y echoes to /sink_d_y.
     // Behavioral proof chain: probe→/t3 → t3 emits → t3→y edge → /y → /y echoes → /sink_d_y.
@@ -935,7 +935,7 @@ async fn swap_completeness_multiple_edges_condition_modifier_preserved() {
     write(
         td.path(),
         "main/y/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_d_y"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_d_y"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // t3d_echo template: echo to /sink_d_t3.
     write_template(td.path(), "t3d_echo", "/sink_d_t3");
@@ -951,7 +951,7 @@ async fn swap_completeness_multiple_edges_condition_modifier_preserved() {
 
     // Anti-cascade: register ALL sinks BEFORE bootstrap.
     // /sink_d_y:  behavioral proof sink — /y echoes here via the t3→y chain.
-    //             Registered before bootstrap so /y's echo_to is resolved.
+    //             Registered before bootstrap so /y's emitted_target is resolved.
     //             Behavioral proof: probe→/t3 → t3 emits → t3→y edge intercepts
     //             (replaces emission target with /y) → /y processes and echoes to
     //             /sink_d_y → /sink_d_y CaptureCell receives. Proves BOTH swung
@@ -1055,7 +1055,7 @@ async fn swap_completeness_multiple_edges_condition_modifier_preserved() {
     // ── Behavioral proof: probe to /t3 → t3→y edge → /y → /sink_d_y receives. ─
     // Semantic justification (emission-based edge routing):
     //   Colony routing is EMISSION-based. When /t3 processes the probe, it emits
-    //   to its echo_to (/sink_d_t3). Then `apply_edges(edges, /t3, headers)` fires
+    //   to its emitted_target (/sink_d_t3). Then `apply_edges(edges, /t3, headers)` fires
     //   and finds the swung t3→y edge — this REPLACES the emission target with /y.
     //   /y processes the message and echoes to /sink_d_y (the CaptureCell).
     //   /sink_d_y receiving proves: (a) t3 received the probe (live), and (b) the
@@ -1141,12 +1141,12 @@ async fn swap_invalid_template_rejected_atomically_no_partial_state() {
     write(
         td.path(),
         "main/t1/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/t2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_e_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_e_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // Deliberately do NOT write any template "no_such_template".
 
@@ -1279,12 +1279,12 @@ async fn reboot_durability_swung_edge_and_inactive_t2_survive() {
     write(
         td.path(),
         "main/t1/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/t1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/t2/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink_f_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink_f_t2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // t3f_echo template: echo to /sink_f_t3.
     write_template(td.path(), "t3f_echo", "/sink_f_t3");
@@ -1402,7 +1402,7 @@ async fn reboot_durability_swung_edge_and_inactive_t2_survive() {
 
     // (4) Positive receipt post-reboot: probe through /t1 reaches /sink_f_t3.
     // Semantic justification: /sink_f_t3 is registered BEFORE bootstrap (boot2),
-    // so it is fully resolved when the probe arrives. t3's echo_to=/sink_f_t3 was
+    // so it is fully resolved when the probe arrives. t3's emitted_target=/sink_f_t3 was
     // written by the swap (config.json overwrite, durable on disk).
     // W2b (Ruling A1): /t3's terminal echo to /sink_f_t3 needs a wired catch-all
     // out-edge (identity-fallback gone). Added post-reboot on h2 where both /t3

@@ -39,7 +39,7 @@ fn message_log_count(db_path: &std::path::Path) -> i64 {
 }
 
 /// Regression pin (c): a cell that emits to `/colony/dead_letters` (here an echo
-/// whose `echo_to` is the READ endpoint) is hard-rejected with exactly ONE
+/// whose `emitted_target` is the READ endpoint) is hard-rejected with exactly ONE
 /// `colony_endpoint_unimplemented` DLQ entry and NO self-sustaining source loop.
 /// Pre-W2d this looped: the dead_letters READ-reply (reply_to = the emitting
 /// cell) re-triggered the cell, which re-emitted, ~13 000×, while the DLQ stayed
@@ -57,7 +57,7 @@ async fn emission_to_dead_letters_endpoint_is_hard_rejected_without_loop() {
     write(
         td.path(),
         "main/looper/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/colony/dead_letters"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/colony/dead_letters"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let colony = ColonyHandle::new();

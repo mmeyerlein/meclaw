@@ -89,8 +89,9 @@ dead-letters as `no_route` -- loud, but downstream of the real mistake. The call
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 | env var | default | meaning |
 |---|---|---|

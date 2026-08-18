@@ -620,12 +620,13 @@ fn the_hive_declares_only_the_two_ports_it_needs() {
         .iter()
         .map(|p| p.as_str().unwrap())
         .collect();
-    assert_eq!(ports, vec!["./meter", "./mutator"]);
+    // Short names, because that is what the boundary compares against (GH #196).
+    assert_eq!(ports, vec!["meter", "mutator"]);
     // Everything else is interior: the judge in particular must not be
     // reachable from outside, or somebody could feed it a measurement.
-    assert!(!ports.contains(&"./judge"));
-    assert!(!ports.contains(&"./charter"));
-    assert!(!ports.contains(&"./receipts"));
+    assert!(!ports.contains(&"judge"));
+    assert!(!ports.contains(&"charter"));
+    assert!(!ports.contains(&"receipts"));
 }
 
 #[test]

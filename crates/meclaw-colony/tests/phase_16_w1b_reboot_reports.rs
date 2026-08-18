@@ -43,12 +43,12 @@ fn write_clean_tree(root: &std::path::Path) {
     .unwrap();
     std::fs::write(
         demo.join("a/config.json"),
-        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"./b"}},{CONTRACT}}}"#),
+        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"./b"}},{CONTRACT}}}"#),
     )
     .unwrap();
     std::fs::write(
         demo.join("b/config.json"),
-        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#),
     )
     .unwrap();
 }
@@ -133,7 +133,7 @@ async fn reboot_reports_unknown_cell_dir_without_registering_it() {
     std::fs::create_dir_all(td.path().join("demo/foreign")).unwrap();
     std::fs::write(
         td.path().join("demo/foreign/config.json"),
-        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#),
     )
     .unwrap();
 

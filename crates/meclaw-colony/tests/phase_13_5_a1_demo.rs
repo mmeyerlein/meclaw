@@ -1,7 +1,7 @@
 //! Phase-13.5-A1 demo: conditional routing via a CEL edge condition.
 //!
 //! Topology (assert_single_root_dir: `td/main` -> mc path `/`):
-//!   /router        (EchoCellFactory, echo_to=/router -- the edge overlays the
+//!   /router        (EchoCellFactory, emitted_target=/router -- the edge overlays the
 //!                   emit target anyway; the self path is only a fallback for
 //!                   the impossible case that NO edge matches)
 //!   /branch_gold   (CaptureCell -- registry-only via h.spawn, no FS config)
@@ -60,7 +60,7 @@ fn write_topology(td: &std::path::Path) {
     // would only apply if NO edge matched; in both tests exactly one ALWAYS does.
     fs::write(
         td.join("main/router/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/router"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/router"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -211,7 +211,7 @@ fn write_modifier_topology(td: &std::path::Path, modifier_json: &str) {
     // anyway. The self-fallback is only for the impossible no-match case.
     fs::write(
         td.join("main/router/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/router"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/router"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

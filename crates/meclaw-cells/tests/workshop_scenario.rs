@@ -2,7 +2,7 @@
 //!
 //! A deterministic `code`-cell brain (scripted tool_call bundles, no LLM)
 //! drives a real coding task through the shipped `dispatcher@1` and
-//! `collector@1` templates (both copied read-only, config.json for config.json):
+//! `collector` templates (both copied read-only, config.json for config.json):
 //!
 //!   round 0  file       writes a small Python project (module + test)
 //!   round 1  bash       runs the test — RED (exit 1), sandboxed under Landlock
@@ -12,7 +12,7 @@
 //!   round 4  web_fetch  pulls a fixture doc from a local mock server
 //!            web_search queries a local mock endpoint (2 results) — parallel
 //!   round 5  store      records the artifact in an artifacts table
-//!   round 6  timer      schedules a follow-up (+1 s) as a tool call; the ack
+//!   round 6  timer      schedules a follow-up (+3 s) as a tool call; the ack
 //!                       closes the round, the FIRE lands independently
 //!   round 7  mcp        stdio roundtrip against the line-JSON fixture child
 //!   round 8  harness    delegates a task to the stub adapter; `accepted`
@@ -95,8 +95,17 @@ elif it == 5:
     msgs = [call("c5-1", "store", {"operation": "insert", "table": "artifacts",
                                    "row": {"step": "suite-green", "detail": "calc.py patched"}})]
 elif it == 6:
+    # +3 s, not +1 s: `at` is written with SECOND precision, so `strftime`
+    # throws the sub-second part away and the real lead time is
+    # `delta - frac(now)`. At +1 s that lead is uniform in (0, 1] s, and the
+    # op still has to travel brain -> dispatcher -> timer and be INSERTed
+    # before the cell takes its active snapshot. `load_active_filter_past`
+    # drops a one-shot whose `at` is already `<= now` at snapshot time, so a
+    # lead that ran out in flight means the schedule silently never fires and
+    # the sink waits forever. +3 s leaves a lead of (2, 3] s -- two orders of
+    # magnitude over the observed hop cost, also under a loaded cargo run.
     at = (datetime.datetime.now(datetime.timezone.utc)
-          + datetime.timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+          + datetime.timedelta(seconds=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     msgs = [call("c6-1", "timer", {"op": "add",
                                    "schedule_id": "0198aaaa-aaaa-7aaa-aaaa-aaaaaaaaaaaa",
                                    "schedule_name": "workshop-followup", "at": at,
@@ -138,7 +147,7 @@ sys.stdout.write(json.dumps({"header": {"route": "turn"}, "messages": d.get("mes
 // ------------------------------------------------------------- tree building
 
 /// The shipped templates, copied config.json for config.json — the cells
-/// under test ARE the templates (pattern: `dispatcher_split.rs`).
+/// under test ARE the templates (pattern: `dispatcher_template.rs`).
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -256,7 +265,7 @@ fn main_config() -> Value {
                             "restore_ttl": true}}),
         // Brain answers: bundles to the dispatcher, the final turn back into
         // the window via in_answer, the collector's answer route to the sink.
-        json!({"from": "./brain", "to": "./split",
+        json!({"from": "./brain", "to": "./dispatcher",
                "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"}),
         json!({"from": "./brain", "to": "./collect/assemble",
                "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'",
@@ -265,29 +274,29 @@ fn main_config() -> Value {
                "condition": "has(hop.route) && hop.route == 'answer'"}),
         // Dispatcher lanes: expectation set and synthetic errors to the
         // fan-in, tools by NAME (the cell knows no topology).
-        json!({"from": "./split", "to": "./collect/assemble",
+        json!({"from": "./dispatcher", "to": "./collect/assemble",
                "condition": "has(hop.route) && hop.route == 'calls'",
                "modifier": {"set_hop": {"route": "'in_calls'"}}}),
-        json!({"from": "./split", "to": "./collect/assemble",
+        json!({"from": "./dispatcher", "to": "./collect/assemble",
                "condition": "has(hop.route) && hop.route == 'result'",
                "modifier": &in_tool}),
-        json!({"from": "./split", "to": "./shell",
+        json!({"from": "./dispatcher", "to": "./shell",
                "condition": "has(hop.tool_name) && hop.tool_name == 'bash'"}),
-        json!({"from": "./split", "to": "./fs",
+        json!({"from": "./dispatcher", "to": "./fs",
                "condition": "has(hop.tool_name) && hop.tool_name == 'file'"}),
-        json!({"from": "./split", "to": "./patch",
+        json!({"from": "./dispatcher", "to": "./patch",
                "condition": "has(hop.tool_name) && hop.tool_name == 'edit'"}),
-        json!({"from": "./split", "to": "./reader",
+        json!({"from": "./dispatcher", "to": "./reader",
                "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'"}),
-        json!({"from": "./split", "to": "./search",
+        json!({"from": "./dispatcher", "to": "./search",
                "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"}),
-        json!({"from": "./split", "to": "./artifacts",
+        json!({"from": "./dispatcher", "to": "./artifacts",
                "condition": "has(hop.tool_name) && hop.tool_name == 'store'"}),
-        json!({"from": "./split", "to": "./remind",
+        json!({"from": "./dispatcher", "to": "./remind",
                "condition": "has(hop.tool_name) && hop.tool_name == 'timer'"}),
-        json!({"from": "./split", "to": "./bridge",
+        json!({"from": "./dispatcher", "to": "./bridge",
                "condition": "has(hop.tool_name) && hop.tool_name == 'mcp'"}),
-        json!({"from": "./split", "to": "./coder",
+        json!({"from": "./dispatcher", "to": "./coder",
                "condition": "has(hop.tool_name) && hop.tool_name == 'coder'"}),
         // Fan-in: every tool result back into the collector.
         json!({"from": "./shell", "to": "./collect/assemble",
@@ -378,7 +387,7 @@ async fn boot_workshop() -> Workshop {
 
     // The tree: templates copied read-only, tool cells with real params.
     write(root, "main/config.json", &main_config());
-    copy_cells(&template_dir("dispatcher"), &root.join("main/split"));
+    copy_cells(&template_dir("dispatcher"), &root.join("main/dispatcher"));
     copy_cells(&template_dir("collector"), &root.join("main/collect"));
     // The workshop turn takes ten brain entries, so the seam cap gets headroom;
     // the round slate must carry every result of the turn for the final report.
@@ -725,7 +734,10 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (2) PLAIN order per round: within every dispatcher fan-out (grouped by
     // the consumed parent message) the expectation set reaches the collector
     // BEFORE any tool message leaves.
-    let split_rows: Vec<&LogRow> = rows.iter().filter(|r| r.from_path == "/split").collect();
+    let split_rows: Vec<&LogRow> = rows
+        .iter()
+        .filter(|r| r.from_path == "/dispatcher")
+        .collect();
     assert!(!split_rows.is_empty(), "the dispatcher routed the rounds");
     let mut bundles: std::collections::BTreeMap<String, Vec<&LogRow>> = Default::default();
     for r in &split_rows {

@@ -6,8 +6,8 @@
     "graph": {
       "edges": [
         {
-          "from": "./keeper/stamp",
-          "to": "./collector/assemble",
+          "from": "./session-keeper",
+          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'turn'",
           "modifier": {
             "set_hop": {
@@ -19,8 +19,8 @@
           }
         },
         {
-          "from": "./keeper/close",
-          "to": "./collector/assemble",
+          "from": "./session-keeper",
+          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'close'",
           "modifier": {
             "set_hop": {
@@ -32,7 +32,7 @@
           }
         },
         {
-          "from": "./collector/assemble",
+          "from": "./collector",
           "to": "./brain",
           "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
@@ -46,12 +46,12 @@
         },
         {
           "from": "./brain",
-          "to": "./split",
+          "to": "./dispatcher",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
         },
         {
           "from": "./brain",
-          "to": "./collector/assemble",
+          "to": "./collector",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
           "modifier": {
             "set_hop": {
@@ -65,8 +65,8 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')"
         },
         {
-          "from": "./split",
-          "to": "./collector/assemble",
+          "from": "./dispatcher",
+          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'calls'",
           "modifier": {
             "set_hop": {
@@ -75,8 +75,8 @@
           }
         },
         {
-          "from": "./split",
-          "to": "./collector/assemble",
+          "from": "./dispatcher",
+          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'result'",
           "modifier": {
             "set_hop": {
@@ -85,8 +85,8 @@
           }
         },
         {
-          "from": "./split",
-          "to": "./collector/assemble",
+          "from": "./dispatcher",
+          "to": "./collector",
           "condition": "has(hop.route) && hop.route == 'answer'",
           "modifier": {
             "set_hop": {
@@ -95,8 +95,8 @@
           }
         },
         {
-          "from": "./collector/assemble",
-          "to": "./summary/prep",
+          "from": "./collector",
+          "to": "./summarizer",
           "condition": "has(hop.route) && hop.route == 'write'",
           "modifier": {
             "set_hop": {
@@ -105,12 +105,12 @@
           }
         },
         {
-          "from": "./summary/prep",
+          "from": "./summarizer",
           "to": "./brain",
           "condition": "has(hop.route) && hop.route == 'summary'"
         },
         {
-          "from": "./summary/prep",
+          "from": "./summarizer",
           "to": "./errors",
           "condition": "has(hop.route) && hop.route == 'summary_error'"
         }

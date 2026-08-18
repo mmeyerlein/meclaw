@@ -15,7 +15,7 @@
 //!
 //! Anti-Cascade discipline (Phase-6.5 lesson): /sink (CaptureCell) is the
 //! positive receipt signal and is registered via `h.spawn(...)` BEFORE
-//! bootstrap so /a's first emit resolves. /a self-echoes (`echo_to = /a`);
+//! bootstrap so /a's first emit resolves. /a self-echoes (`emitted_target = /a`);
 //! the mutation edge /a -> /sink overrides the emit target when it fires, and
 //! the probe carries a low ttl so a no-match self-loop dies bounded.
 
@@ -60,7 +60,7 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -210,7 +210,7 @@ async fn a1_duplicate_add_edges_inserts_once_and_delivers_once() {
     })
     .await;
     h2.spawn(Path::new("/a"), || {
-        meclaw_testing::mocks::EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/a"))
+        meclaw_testing::mocks::EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/a"))
     })
     .await;
 

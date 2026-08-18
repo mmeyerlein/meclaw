@@ -202,26 +202,26 @@ sys.stdout.write(json.dumps([]))
 fn cogny_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         // its own seam, with its own iteration ceiling and its own restore_ttl
-        {"from": "./collector/assemble", "to": "./brain",
+        {"from": "./collector", "to": "./brain",
          "condition": "has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 6",
          "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                       "session_id": "hop.session_id",
                                       "iter": "hop.iter"},
                       "restore_ttl": true}},
-        {"from": "./brain", "to": "./split",
+        {"from": "./brain", "to": "./dispatcher",
          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"},
-        {"from": "./split", "to": "./collector/assemble",
+        {"from": "./dispatcher", "to": "./collector",
          "condition": "has(hop.route) && hop.route == 'calls'",
          "modifier": {"set_hop": {"route": "'in_calls'"}}},
-        {"from": "./split", "to": "./collector/assemble",
+        {"from": "./dispatcher", "to": "./collector",
          "condition": "has(hop.route) && hop.route == 'result'",
          "modifier": {"set_hop": {"route": "'in_tool'"}}},
-        {"from": "./split", "to": "./collector/assemble",
+        {"from": "./dispatcher", "to": "./collector",
          "condition": "has(hop.route) && hop.route == 'answer'",
          "modifier": {"set_hop": {"route": "'in_answer'"}}},
-        {"from": "./split", "to": "./lookup",
+        {"from": "./dispatcher", "to": "./lookup",
          "condition": "has(hop.tool_name) && hop.tool_name == 'lookup'"},
-        {"from": "./lookup", "to": "./collector/assemble",
+        {"from": "./lookup", "to": "./collector",
          "condition": "has(hop.route) && hop.route == 'res'",
          "modifier": {"set_hop": {"route": "'in_tool'"}}}
     ]}}})
@@ -232,19 +232,19 @@ fn main_config(silent_advisor: bool) -> Value {
     let advisor = if silent_advisor {
         "./void"
     } else {
-        "./cogny/collector/assemble"
+        "./cogny/collector"
     };
     let mut edges = vec![
-        json!({"from": "./surface", "to": "./talky/keeper/stamp",
+        json!({"from": "./surface", "to": "./talky/session-keeper",
                "condition": "has(hop.route) && hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"},
                             "set_context": {"channel": "hop.chat_id"}}}),
         // the operator's stuck-round re-check, straight at the collector
-        json!({"from": "./surface", "to": "./talky/collector/assemble",
+        json!({"from": "./surface", "to": "./talky/collector",
                "condition": "has(hop.route) && hop.route == 'sweep'",
                "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
         // the channel
-        json!({"from": "./talky/collector/assemble", "to": "/sink",
+        json!({"from": "./talky/collector", "to": "/sink",
                "condition": "has(hop.route) && hop.route == 'answer'"}),
         json!({"from": "./talky/errors", "to": "/park",
                "condition": "has(hop.route) && hop.route == 'error'"}),
@@ -254,7 +254,7 @@ fn main_config(silent_advisor: bool) -> Value {
         // `consult_id` becomes context so it survives the advisor's own chain,
         // and `col_phase` is cleared because this message comes out of ANOTHER
         // collector's chain and would otherwise arrive mid-assembly.
-        json!({"from": "./talky/split", "to": advisor,
+        json!({"from": "./talky/dispatcher", "to": advisor,
                "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
                "modifier": {"set_hop": {"route": "'in_turn'"},
                             "set_context": {"consult_id": "hop.consult_id",
@@ -262,13 +262,13 @@ fn main_config(silent_advisor: bool) -> Value {
                             "restore_ttl": true}}),
         // a second edge on the same condition: the probe that lets this test
         // read what the correlation actually was
-        json!({"from": "./talky/split", "to": "/park",
+        json!({"from": "./talky/dispatcher", "to": "/park",
                "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'"}),
     ];
     if !silent_advisor {
         // ── port 2: the answer (or the question back) comes home ──
-        edges.push(json!({"from": "./cogny/collector/assemble",
-                          "to": "./talky/collector/assemble",
+        edges.push(json!({"from": "./cogny/collector",
+                          "to": "./talky/collector",
                           "condition": "has(hop.route) && hop.route == 'answer'",
                           "modifier": {"set_hop": {"route": "'in_advice'"},
                                        "set_context": {"col_phase": "''"},
@@ -302,13 +302,13 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     patch(root, "main/talky/collector/assemble/config.json", |v| {
         v["params"]["round_idle_ms"] = json!(idle_ms);
     });
-    patch(root, "main/talky/keeper/night/config.json", |v| {
+    patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     for rel in [
         "main/talky/brain/config.json",
-        "main/talky/summary/writer/config.json",
+        "main/talky/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| {
             v["params"]["base_url"] = json!(base_url);
@@ -332,10 +332,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     patch(root, "main/cogny/collector/assemble/config.json", |v| {
         v["params"]["round_idle_ms"] = json!(idle_ms);
     });
-    std::fs::create_dir_all(root.join("main/cogny/split")).unwrap();
+    std::fs::create_dir_all(root.join("main/cogny/dispatcher")).unwrap();
     std::fs::copy(
         templates_root().join("dispatcher/config.json"),
-        root.join("main/cogny/split/config.json"),
+        root.join("main/cogny/dispatcher/config.json"),
     )
     .unwrap();
     write(

@@ -13,8 +13,8 @@
     ],
     "add_edges": [
       {
-        "from": "./talky/split",
-        "to": "./cogny/collector/assemble",
+        "from": "./talky/dispatcher",
+        "to": "./cogny/collector",
         "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
         "modifier": {
           "set_hop": {
@@ -29,8 +29,8 @@
         }
       },
       {
-        "from": "./talky/split",
-        "to": "./cogny/collector/assemble",
+        "from": "./talky/dispatcher",
+        "to": "./cogny/collector",
         "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
         "modifier": {
           "set_hop": {
@@ -45,8 +45,8 @@
         }
       },
       {
-        "from": "./cogny/collector/assemble",
-        "to": "./talky/collector/assemble",
+        "from": "./cogny/collector",
+        "to": "./talky/collector",
         "condition": "has(hop.route) && hop.route == 'answer'",
         "modifier": {
           "set_hop": {

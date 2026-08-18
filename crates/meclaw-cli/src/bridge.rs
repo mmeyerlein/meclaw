@@ -59,6 +59,10 @@ pub fn ingress_error_frame(detail: &str) -> Value {
 /// Everything except `body` is optional: a caller that only has content behaves
 /// exactly like the text format, and the envelope fields are the extra control
 /// the JSON format exists for (parity with the HTTP ingress).
+///
+/// The two header compartments are named separately and never inferred from one
+/// another: `context` is the persistent one (correlation), `hop` is the single
+/// hop the caller asserts.
 #[derive(Debug, Clone)]
 pub struct IngressFrame {
     /// Carried, never regenerated — one conversation stays one trace across the
@@ -69,8 +73,97 @@ pub struct IngressFrame {
     pub ttl: Option<u32>,
     /// The `headers.context` compartment for the source message.
     pub context: Map<String, Value>,
+    /// The `headers.hop` compartment for the source message: the lane the caller
+    /// ASSERTS, never one inferred from `context` (GH #180). Empty unless the
+    /// frame said otherwise — a hive conditions its own `{"from": "."}` doors on
+    /// `hop.route`, so without a way to say "hop" a frame addressed at a hive
+    /// path matches no door at all.
+    pub hop: Map<String, Value>,
     /// UBF body, carried verbatim — the JSON format synthesises nothing.
     pub body: Value,
+}
+
+/// Read one optional header compartment off an inbound frame: absent/`null` →
+/// an empty map, an object → that object, anything else → `Err`.
+///
+/// Mirrors `validate_compartment` on the HTTP ingress (GH #175) so the two
+/// ingresses answer a mistyped compartment the same way. A silent `{}` is the
+/// failure mode both refuse: the sender gets an accepted frame for a compartment
+/// it never set, and the consequence surfaces far from here — as a
+/// `hive_no_route` dead letter for a dropped `hop`, or as an answer the sender
+/// cannot attribute for a dropped `context` (GH #182), whose `turn_id` is the
+/// correlation key. This is the only place that still knows what was written.
+fn frame_compartment(field: &str, value: Option<&Value>) -> Result<Map<String, Value>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(Map::new()),
+        Some(Value::Object(map)) => Ok(map.clone()),
+        Some(other) => Err(format!(
+            "{field}: must be a JSON object, got {}",
+            match other {
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                _ => "value",
+            }
+        )),
+    }
+}
+
+/// Read the optional `ttl` envelope field off an inbound frame: absent/`null` →
+/// `None` (the substrate default applies), a positive integer in `1..=u32::MAX`
+/// → that budget, anything else → `Err`.
+///
+/// Mirrors `validate_request_ttl` on the HTTP ingress, which has answered `422
+/// invalid_ttl` for these inputs since 0.9.0. `ttl` is a scalar, so
+/// [`frame_compartment`] does not fit, but the failure it prevents is the same
+/// one: a string, a negative number or a float used to read as "no ttl" and the
+/// frame ran on a budget the sender never chose. That surfaces far from here as
+/// a message stopping mid-lane, which is among the harder things to trace back
+/// to a typo in a frame.
+///
+/// The range check is not decoration. The previous `as u32` cast WRAPPED, so a
+/// budget above `u32::MAX` became an unrelated small number — neither the value
+/// sent nor the default, and the only inbound field that could silently shorten
+/// a lane instead of failing.
+fn frame_ttl(value: Option<&Value>) -> Result<Option<u32>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(x) if (1..=u32::MAX as u64).contains(&x) => Ok(Some(x as u32)),
+            _ => Err(format!(
+                "ttl: must be a positive integer in 1..={}, got {n}",
+                u32::MAX
+            )),
+        },
+        Some(other) => Err(format!("ttl: must be a positive integer, got {other}")),
+    }
+}
+
+/// Read the optional `trace_id` envelope field off an inbound frame: absent/
+/// `null` → `None` (a fresh trace is minted downstream), a UUID string → that
+/// trace, anything else → `Err`.
+///
+/// The previous `and_then(Value::as_str)` gave one mistake two answers three
+/// lines apart: `"trace_id": "nope"` was refused, `"trace_id": 12345` read as
+/// "no trace_id at all" and the frame was accepted. What is lost then is not
+/// visible here — `MessageBuilder` mints a fresh trace id, the message runs and
+/// answers normally, and only the sender notices that the answer belongs to a
+/// trace it never wrote, which is exactly the correlation the JSON wire exists
+/// to preserve across the process boundary. The ingress is the last place that
+/// still knows what the caller wrote.
+///
+/// Unlike `context`, `hop` and `ttl` this has no counterpart on the HTTP
+/// ingress (`MessageRequest` carries no `trace_id`), so the rule it mirrors is
+/// the local one: absent stays absent, present must be well-formed.
+fn frame_trace_id(value: Option<&Value>) -> Result<Option<Uuid>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(
+            Uuid::parse_str(s).map_err(|e| format!("trace_id: {e}"))?,
+        )),
+        Some(other) => Err(format!("trace_id: must be a UUID string, got {other}")),
+    }
 }
 
 /// Parse one JSON stdin line into an [`IngressFrame`].
@@ -108,18 +201,11 @@ pub fn parse_ingress_frame(line: &str) -> Result<IngressFrame, String> {
         .filter(|b| b.is_object())
         .ok_or("body: required (UBF object)")?
         .clone();
-    let trace_id = match obj.get("trace_id").and_then(Value::as_str) {
-        None => None,
-        Some(s) => Some(Uuid::parse_str(s).map_err(|e| format!("trace_id: {e}"))?),
-    };
     Ok(IngressFrame {
-        trace_id,
-        ttl: obj.get("ttl").and_then(Value::as_u64).map(|t| t as u32),
-        context: obj
-            .get("context")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default(),
+        trace_id: frame_trace_id(obj.get("trace_id"))?,
+        ttl: frame_ttl(obj.get("ttl"))?,
+        context: frame_compartment("context", obj.get("context"))?,
+        hop: frame_compartment("hop", obj.get("hop"))?,
         body,
     })
 }
@@ -139,6 +225,7 @@ pub fn frame_to_message(frame: IngressFrame, user_id: Uuid, chat_id: Uuid) -> Me
         trace_id,
         ttl,
         mut context,
+        hop,
         body,
     } = frame;
     context
@@ -152,6 +239,7 @@ pub fn frame_to_message(frame: IngressFrame, user_id: Uuid, chat_id: Uuid) -> Me
         .or_insert_with(|| json!(Uuid::now_v7().to_string()));
     let mut builder = MessageBuilder::new(Path::new("/"))
         .context(context)
+        .hop(hop)
         .body(Body::Inline(body));
     if let Some(trace_id) = trace_id {
         builder = builder.trace_id(trace_id);
@@ -251,6 +339,7 @@ mod tests {
         assert!(f.trace_id.is_none(), "trace_id is optional");
         assert!(f.ttl.is_none(), "ttl is optional");
         assert!(f.context.is_empty(), "context defaults to empty");
+        assert!(f.hop.is_empty(), "hop defaults to empty");
         assert!(f.body.get("messages").is_some(), "body is carried verbatim");
     }
 
@@ -304,6 +393,136 @@ mod tests {
     fn a_malformed_trace_id_is_rejected_rather_than_silently_dropped() {
         let line = r#"{"v":1,"type":"message","trace_id":"not-a-uuid","body":{}}"#;
         assert!(parse_ingress_frame(line).is_err());
+    }
+
+    // --- GH #180: the inbound `hop` seed ---
+
+    #[test]
+    fn an_inbound_hop_is_read_into_its_own_compartment() {
+        let line = r#"{"v":1,"type":"message","hop":{"route":"search"},"body":{}}"#;
+        let f = parse_ingress_frame(line).expect("must parse");
+        assert_eq!(f.hop["route"], serde_json::json!("search"));
+    }
+
+    #[test]
+    fn without_an_inbound_hop_the_compartment_is_empty() {
+        let absent = parse_ingress_frame(r#"{"v":1,"type":"message","body":{}}"#).expect("parses");
+        assert!(absent.hop.is_empty(), "absent hop is the historical shape");
+        let null = parse_ingress_frame(r#"{"v":1,"type":"message","hop":null,"body":{}}"#)
+            .expect("an explicit null is the same statement as saying nothing");
+        assert!(null.hop.is_empty());
+    }
+
+    #[test]
+    fn a_non_object_hop_is_rejected_rather_than_silently_dropped() {
+        // A silent `{}` would reappear far from here as a `hive_no_route` dead
+        // letter, and the sender has no way to trace that back to its frame.
+        for bad in [
+            r#"{"v":1,"type":"message","hop":"search","body":{}}"#,
+            r#"{"v":1,"type":"message","hop":7,"body":{}}"#,
+            r#"{"v":1,"type":"message","hop":["search"],"body":{}}"#,
+            r#"{"v":1,"type":"message","hop":true,"body":{}}"#,
+        ] {
+            match parse_ingress_frame(bad) {
+                Ok(f) => panic!("must reject {bad}, got {f:?}"),
+                Err(err) => assert!(err.contains("hop"), "must name the field: {err}"),
+            }
+        }
+    }
+
+    // --- GH #182: the inbound `context` compartment is validated too ---
+
+    #[test]
+    fn a_non_object_context_is_rejected_rather_than_silently_dropped() {
+        // `context` carries `turn_id`, the key the sender correlates the reply
+        // on. Coerced to `{}` the frame still runs and still answers, and the
+        // sender cannot tell whose answer arrived — the accepted frame is the
+        // worse outcome, so the ingress refuses it where it still knows what
+        // was written.
+        for bad in [
+            r#"{"v":1,"type":"message","context":"foo","body":{}}"#,
+            r#"{"v":1,"type":"message","context":7,"body":{}}"#,
+            r#"{"v":1,"type":"message","context":["turn_id"],"body":{}}"#,
+            r#"{"v":1,"type":"message","context":true,"body":{}}"#,
+        ] {
+            match parse_ingress_frame(bad) {
+                Ok(f) => panic!("must reject {bad}, got {f:?}"),
+                Err(err) => assert!(err.contains("context"), "must name the field: {err}"),
+            }
+        }
+    }
+
+    #[test]
+    fn without_an_inbound_context_the_compartment_is_empty() {
+        // The tightening reaches mistyped frames only: the two ways of saying
+        // nothing stay the historical shape a v1 sender relies on.
+        let absent = parse_ingress_frame(r#"{"v":1,"type":"message","body":{}}"#).expect("parses");
+        assert!(
+            absent.context.is_empty(),
+            "absent context is the historical shape"
+        );
+        let null = parse_ingress_frame(r#"{"v":1,"type":"message","context":null,"body":{}}"#)
+            .expect("an explicit null is the same statement as saying nothing");
+        assert!(null.context.is_empty());
+    }
+
+    // --- GH #187: the inbound `ttl` envelope field is validated too ---
+
+    #[test]
+    fn a_malformed_ttl_is_rejected_rather_than_silently_defaulted() {
+        // `ttl` is the hop budget. Coerced to `None` the frame runs on the
+        // colony default, and the sender only sees the consequence as a message
+        // that stops somewhere mid-lane on a budget nobody asked for — nothing
+        // there points back at the frame that mistyped it. `POST /messages`
+        // answers 422 `invalid_ttl` for exactly these inputs and has since
+        // 0.9.0, so the stdio ingress must not be the lenient one.
+        for bad in [
+            r#"{"v":1,"type":"message","ttl":"12","body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":-1,"body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":3.5,"body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":true,"body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":[7],"body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":{"n":7},"body":{}}"#,
+            // Zero is a budget no hop can be spent from; the HTTP ingress
+            // refuses it as well rather than letting it read as "no ttl".
+            r#"{"v":1,"type":"message","ttl":0,"body":{}}"#,
+        ] {
+            match parse_ingress_frame(bad) {
+                Ok(f) => panic!("must reject {bad}, got {f:?}"),
+                Err(err) => assert!(err.contains("ttl"), "must name the field: {err}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_ttl_above_the_u32_range_is_rejected_rather_than_truncated() {
+        // The quiet half of the same defect: `as u32` wraps, so a budget above
+        // `u32::MAX` used to arrive as an unrelated small number — neither the
+        // value sent nor the default, and the only ingress input that could
+        // silently shorten a lane instead of lengthening it.
+        for bad in [
+            r#"{"v":1,"type":"message","ttl":4294967296,"body":{}}"#,
+            r#"{"v":1,"type":"message","ttl":18446744073709551615,"body":{}}"#,
+        ] {
+            match parse_ingress_frame(bad) {
+                Ok(f) => panic!("must reject {bad}, got {f:?}"),
+                Err(err) => assert!(err.contains("ttl"), "must name the field: {err}"),
+            }
+        }
+        let max = parse_ingress_frame(r#"{"v":1,"type":"message","ttl":4294967295,"body":{}}"#)
+            .expect("the top of the range is still a legal budget");
+        assert_eq!(max.ttl, Some(u32::MAX));
+    }
+
+    #[test]
+    fn without_an_inbound_ttl_the_envelope_stays_absent() {
+        // The tightening reaches malformed frames only: both ways of saying
+        // nothing keep meaning "fall back to the substrate default".
+        let absent = parse_ingress_frame(r#"{"v":1,"type":"message","body":{}}"#).expect("parses");
+        assert!(absent.ttl.is_none(), "absent ttl is the historical shape");
+        let null = parse_ingress_frame(r#"{"v":1,"type":"message","ttl":null,"body":{}}"#)
+            .expect("an explicit null is the same statement as saying nothing");
+        assert!(null.ttl.is_none());
     }
 
     // --- P9 step A2: ingress frame -> source message ---
@@ -398,7 +617,41 @@ mod tests {
         }));
         let msg = frame_to_message(f, STDIO_USER_ID, Uuid::now_v7());
         assert_eq!(msg.headers.context["locale"], "de-DE");
-        assert!(msg.headers.hop.is_empty(), "hop never crosses the boundary");
+        assert!(
+            msg.headers.hop.is_empty(),
+            "a frame that asserts no lane still starts with an empty hop"
+        );
+    }
+
+    #[test]
+    fn the_frame_hop_reaches_the_message_verbatim() {
+        // GH #180: a hive distributes internally over `{"from": "."}` edges that
+        // condition on `hop.route` — without this, a stdio-driven colony cannot
+        // address a hive at all and every such frame dead-letters.
+        let f = frame(serde_json::json!({
+            "v": 1, "type": "message", "hop": {"route": "search", "depth": 2}, "body": {}
+        }));
+        let msg = frame_to_message(f, STDIO_USER_ID, Uuid::now_v7());
+        assert_eq!(msg.headers.hop["route"], "search");
+        assert_eq!(msg.headers.hop["depth"], 2, "the seed is carried verbatim");
+    }
+
+    #[test]
+    fn the_two_inbound_compartments_do_not_cross() {
+        let f = frame(serde_json::json!({
+            "v": 1, "type": "message",
+            "context": {"locale": "de-DE"}, "hop": {"route": "search"},
+            "body": {}
+        }));
+        let msg = frame_to_message(f, STDIO_USER_ID, Uuid::now_v7());
+        assert!(
+            !msg.headers.hop.contains_key("locale"),
+            "a context key must never be inferred into the hop"
+        );
+        assert!(
+            !msg.headers.context.contains_key("route"),
+            "a hop key must never leak into the persistent compartment"
+        );
     }
 
     // --- P9 step A3: message -> egress frame ---

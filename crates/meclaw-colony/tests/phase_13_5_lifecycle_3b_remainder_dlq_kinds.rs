@@ -61,7 +61,7 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/peer/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/peer"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/peer"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

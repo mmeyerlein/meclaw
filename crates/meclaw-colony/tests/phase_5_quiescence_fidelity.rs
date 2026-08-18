@@ -39,7 +39,7 @@ async fn fidelity_1_hop_external_to_a_logs_exactly_1_row() {
 async fn fidelity_2_hop_external_to_a_to_b_logs_exactly_2_rows() {
     let h = ColonyHandle::new();
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || EchoMockCell::new(Path::new("/b")))
@@ -68,11 +68,11 @@ async fn fidelity_2_hop_external_to_a_to_b_logs_exactly_2_rows() {
 async fn fidelity_3_hop_external_to_a_to_b_to_c_logs_exactly_3_rows() {
     let h = ColonyHandle::new();
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || {
-        EchoMockCell::new(Path::new("/b")).echo_to(Path::new("/c"))
+        EchoMockCell::new(Path::new("/b")).emitted_target(Path::new("/c"))
     })
     .await;
     h.spawn(Path::new("/c"), || EchoMockCell::new(Path::new("/c")))

@@ -535,13 +535,13 @@ fn write(root: &std::path::Path, rel: &str, v: &Value) {
 /// itself knows neither cell.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./brain", "to": "./split", "condition": "has(hop.finish_reason)"},
-        {"from": "./split", "to": "/sink", "condition": "has(hop.route) && hop.route == 'calls'"},
-        {"from": "./split", "to": "/sink", "condition": "has(hop.route) && hop.route == 'result'"},
-        {"from": "./split", "to": "/sink", "condition": "has(hop.route) && hop.route == 'answer'"},
-        {"from": "./split", "to": "./search",
+        {"from": "./brain", "to": "./dispatcher", "condition": "has(hop.finish_reason)"},
+        {"from": "./dispatcher", "to": "/sink", "condition": "has(hop.route) && hop.route == 'calls'"},
+        {"from": "./dispatcher", "to": "/sink", "condition": "has(hop.route) && hop.route == 'result'"},
+        {"from": "./dispatcher", "to": "/sink", "condition": "has(hop.route) && hop.route == 'answer'"},
+        {"from": "./dispatcher", "to": "./search",
          "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"},
-        {"from": "./split", "to": "./fetch",
+        {"from": "./dispatcher", "to": "./fetch",
          "condition": "has(hop.tool_name) && hop.tool_name == 'web_fetch'"},
         {"from": "./search", "to": "/sink", "condition": "has(hop.route) && hop.route == 'res'"},
         {"from": "./fetch", "to": "/sink", "condition": "has(hop.route) && hop.route == 'res'"}
@@ -552,7 +552,7 @@ fn build_tree(td: &tempfile::TempDir, env: &str) {
     let root = td.path();
     std::fs::write(root.join(".env"), env).unwrap();
     write(root, "main/config.json", &main_config());
-    copy_cells(&template_dir(), &root.join("main/split"));
+    copy_cells(&template_dir(), &root.join("main/dispatcher"));
     let finish = json!({"finish_reason": {"type": "string",
                                           "values": ["stop", "tool_calls"], "required": true}});
     write(

@@ -60,12 +60,12 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/sub/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sub/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sub/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/sub/b/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sub/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sub/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

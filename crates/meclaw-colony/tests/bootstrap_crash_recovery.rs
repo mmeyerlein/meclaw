@@ -113,13 +113,13 @@ fn write_topology(root: &std::path::Path, workspace: &std::path::Path) {
     .unwrap();
     std::fs::write(
         main.join("ok/config.json"),
-        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{contract}}}"#),
+        format!(r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{contract}}}"#),
     )
     .unwrap();
     std::fs::write(
         main.join("ok/fragile/config.json"),
         format!(
-            r#"{{"cell":{{"type":"requires-dir"}},"params":{{"echo_to":"/sink","requires":"{}"}},{contract}}}"#,
+            r#"{{"cell":{{"type":"requires-dir"}},"params":{{"emitted_target":"/sink","requires":"{}"}},{contract}}}"#,
             workspace.display()
         ),
     )

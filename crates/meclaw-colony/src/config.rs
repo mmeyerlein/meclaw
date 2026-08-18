@@ -182,6 +182,61 @@ pub struct HiveParams {
     /// [`crate::mutation::required_drains`]).
     #[serde(default)]
     pub required_drains: Option<Vec<DrainSpec>>,
+    /// GH #173 — **opt-in** contract: the lanes this hive accepts at its own
+    /// path and the lanes it emits back out of it.
+    ///
+    /// A hive is the abstraction boundary (`docs/meclaw-overview.md` § Die
+    /// Hive-Grenze), and until this field existed it was the one unit a person
+    /// instantiates that had nothing machine-readable to check an instantiation
+    /// against — the interface was prose in `description`, and the prose named
+    /// cells three levels down. A declaration in terms of `hop.route` values
+    /// says the same thing in the only vocabulary that survives a
+    /// reimplementation: a replacement template with a different inside can
+    /// satisfy the same lanes.
+    ///
+    /// `None` (key absent) is the historical behaviour and stays vacuous. See
+    /// [`crate::mutation::hive_contract`] for what is checked.
+    #[serde(default)]
+    pub contract: Option<HiveContractSpec>,
+}
+
+/// GH #173 — a hive's `params.contract`: its interface, stated in lanes.
+///
+/// Deliberately NOT the top-level `contract` block. That key is taken and means
+/// something else: a CELL's `version`/`settings`/`consumes`/`emits`, where
+/// `emits` is a per-output body+hop `EmitSpec` map. One word cannot carry two
+/// shapes, and a hive's `params` is already where its wiring surface lives
+/// (`graph`, `ports`, `required_drains`) — so this joins them.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HiveContractSpec {
+    /// Lanes a caller may send INTO the hive path.
+    #[serde(default)]
+    pub accepts: Vec<LaneSpec>,
+    /// Lanes the hive sends back OUT through its own path.
+    #[serde(default)]
+    pub emits: Vec<LaneSpec>,
+}
+
+/// One lane of a hive contract: a `hop.route` value plus what it means.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LaneSpec {
+    /// The `hop.route` value that IS this lane. The whole abstraction rests on
+    /// this being a route and not a cell name.
+    pub route: String,
+    /// `context` keys a caller must have promoted by the time a message enters
+    /// on this lane. **Declared, not enforced**: a promotion three edges
+    /// upstream is indistinguishable from a missing one to anything that reads
+    /// a single edge, so a machine check here would be guesswork. It is written
+    /// down so a builder can read it, and so the hive's own prose has one place
+    /// to live instead of a free-text paragraph.
+    #[serde(default)]
+    pub context: Vec<String>,
+    /// What this lane is for, in the hive's own words. Travels verbatim into a
+    /// rejection — a refusal that cannot say what it protects is a refusal
+    /// people route around (same reasoning as `required_drains[].because`).
+    pub because: String,
 }
 
 /// One `params.required_drains` entry of a hive.
@@ -525,10 +580,10 @@ mod tests {
     fn parses_cell_with_params_block() {
         let raw = json!({
             "cell": {"type": "echo"},
-            "params": {"echo_to": "/foo"}
+            "params": {"emitted_target": "/foo"}
         });
         let cfg: ParsedConfig = serde_json::from_value(raw).unwrap();
         assert_eq!(cfg.cell.cell_type, "echo");
-        assert_eq!(cfg.params["echo_to"], "/foo");
+        assert_eq!(cfg.params["emitted_target"], "/foo");
     }
 }

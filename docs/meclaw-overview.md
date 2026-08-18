@@ -33,6 +33,7 @@ The DSL is hierarchical (directories, paths `/main/sub/leaf`); the actor substra
 - **The graph decides everything.** Routing, filtering, fan-out, exclusively through edges.
 - **Hierarchy is DSL, the substrate is flat.** Directory nesting and hierarchical paths in the DSL, implemented flat as a central path registry in the colony. Routing in an O(1) lookup, no hop-by-hop cascade.
 - **Hives are scope markers.** Directories with `type: "hive"` mark authority and mutation boundaries for their subtree. No own actor type, no own task, no own mailbox. They additionally act as a **logical transit node in the routing graph**, evaluated by colony, not an actor, not a delivery.
+- **The hive is the abstraction boundary.** Communication across a hive boundary always goes **through the hive**: an edge from outside addresses the hive, never a cell inside it. Whoever stands outside knows the hive's **contract** — which messages it accepts and which it emits — and **not** how it is built inside. Without that boundary a template is not a class but a thing to copy: see § The hive boundary.
 - **Colony is the authority.** For lifecycle, registry, templates, routing. All cells register directly with colony. It writes `config.json` **only on instantiation** (the re-dedicated `swap_nodes` graph swap no longer rewrites an existing `config.json`, see § Mutation operations).
 - **Everything is a message, on the data plane** (cell-to-cell traffic, tool calls, uniform body format). **Control commands to the colony** (mutations, param updates, supervisor events, external API calls) **are internally typed inbox commands**, same UBF data model, same sequential colony task. Entry paths including the live cell entry, a cell emitting to `/colony/mutations` is dispatched directly: see § Mutation format.
 - **Tool-loops are topology, not cell responsibility.** llm cells have no inner loop.
@@ -204,7 +205,7 @@ its `cell_id` in `colony.db`; entries there are never deleted, only marked inact
 
 **Flow on graph mutation (EDA, verdict reply to `reply_to`)**:
 
-1. Someone (cell, builder, external API) sends a mutation message to `/colony/mutations` with `hop.msg_type == "mutation"` and a diff (see "Mutation format"). The diff carries a path prefix as scope (typically the path of a hive scope marker). The sender learns the outcome from the verdict reply to `reply_to` (if set, see step 4).
+1. Someone (cell, builder, external API) sends a mutation message to `/colony/mutations` with a diff (see "Mutation format"). The target is the only thing that identifies it; no header is read (§ Mutation format). The diff carries a path prefix as scope (typically the path of a hive scope marker). The sender learns the outcome from the verdict reply to `reply_to` (if set, see step 4).
 2. Colony validates in a single stage: schema, match patterns against the current registry, cycle check in the post_state, edge schema compatibility, template existence, filesystem preparation, `.env` variables. On error: logging + reply to `reply_to` (if set). With a flat substrate, colony has all the information needed for single-stage validation (no old two-stage model anymore).
 3. On success: mark the mutation as `in_flight` in `colony.db`, build all new cell directories under `{root}/.staging/<mutation_id>/<cell_name>/` (`config.json` with substituted values and assigned UUIDs, possibly `cell.db` from seed), then move them sequentially via `rename(2)` to the final paths (atomic per directory on POSIX), atomic per directory but **NOT transactional across all directories**: if a `rename(2)` fails after others have already succeeded, the earlier renames stand in the live tree (audit model, no rollback). The substrate handles this half-state loudly (strict-fail, § Validation) instead of papering over it as a clean reject. Registry edits are executed: new cells spawn and are registered under their path, disconnected cells are marked inactive, the registry entry and the filesystem remain, the tasks end gracefully (see "Connectivity and activity"). Then mark as `committed` in `colony.db`. On a crash between `in_flight` and `committed`: recovery pass at the next startup (see "Startup algorithm"). For the rationale of the staging pattern see "Filesystem layout" → `.staging/`.
 4. Cell inits run asynchronously. On init failure: restart one_for_one (N retries, default 5), then `failed` status. Symptoms visible via the routing cascade (`reply_to` → `/colony/dead_letters`). The mutation verdict itself goes as a reply to `reply_to` (if set): `{"mutation":{"id":…,"outcome":"committed"}}` on success, `"outcome":"rejected"` plus `error_code`/`details` on rejection (`build_mutation_reply`, see § Dynamics / builder pattern). The ack covers the mutation commit, **not** the success of the asynchronous cell inits.
@@ -251,9 +252,248 @@ The same schema describes the graph in two write usages:
 
 ---
 
+## The hive boundary
+
+**The rule:** an edge that crosses a hive boundary has the **hive** as its
+endpoint — never a cell inside it. Access from outside is **abstract and
+functional, never structural and direct**: an edge asks for something by content,
+without knowing the structure. The **inner** edge that receives that request is
+what knows what to do about it.
+
+**This holds for all hives and all templates, as a matter of principle** — ruled
+2026-08-18 (GH #197, GH #200) and written down here by GH #227. Not only for the
+ones already sealed, not only for newly built ones, not only for the ones named
+below. A hive without `params.ports` is a hive the rule is not **enforced** on —
+not one the rule does not **bind**.
+
+### The three requirements
+
+Normative, in the order they get broken in practice:
+
+1. **The address is the hive.** An edge from outside **must** have the hive path
+   as its endpoint. `<hive>/<cell>` is not an address, and
+   `<hive>/<subhive>/<cell>` is less of one — including where the substrate still
+   resolves it today for want of a declaration.
+
+2. **A lane is named functionally.** A lane name (`hop.route`, declared in
+   `params.contract`) **must** say *what the caller wants*, never *where it lands
+   inside*. `writer`, `recall`, `render`, `refresh`, `policy`, `invoke`, `meter`
+   are inner cell names. Renaming a port into a lane of the **same name**
+   satisfies the letter of the first requirement and misses its point: the caller
+   still knows the layout, it has merely written it into a different field. A
+   lane is called `in_turn`, `in_batch`, `in_brief`, `in_propose` — it is a
+   request, not a place.
+
+3. **The inner edge is the only place structure may be known.** What used to be
+   the caller's job — knowing which cell handles a request — becomes a
+   **condition on the hive's own distributing edge** (`{"from": "."}`). That
+   knowledge may live there because it is replaced together with the inside it
+   describes. It may not live outside, because outside it writes a foreign layout
+   into a foreign topology.
+
+The three hold together: (1) without (2) only moves the caller's knowledge of the
+inside into another field. (2) without (3) leaves the mapping from lane to cell
+written down nowhere, and the message becomes a dead letter.
+
+### Why this reads as a requirement and not as a description
+
+A template is a **class** (§ Core principles, § Template system). A class is
+interchangeable: you replace one implementation with another that has the same
+contract and a different inside, without touching the callers. That is what
+`contract` is for.
+
+If a caller instead draws an edge to `<hive>/keeper/stamp`, it has written the
+template's **internal layout** into its own topology. A replacement template would
+have to carry an identically named cell in the same place, or every edge breaks.
+Nothing is interchangeable any more, and the contract describes something nobody
+uses — it is decoration.
+
+The cost is also visible. A topology whose edges reach across every level into
+other hives' internals cannot be read as a picture. A graph of hive-to-hive edges
+can be taken in at a glance; one of edges into foreign internals never can.
+
+**And the reason this section is now written in the imperative:** the rule was
+already here — as the description of a mechanism — and the whole colony was
+migrated onto it in a single day. That same day still produced four separate
+defects:
+
+- ten shipped templates that were sealed only retroactively;
+- four hives whose ports are the names of their inner cells (GH #197);
+- `access`, which declared as a port the exact bypass its own README names as a
+  weakness (GH #200);
+- shipped prose naming addresses the boundary refuses — in one case as a runnable
+  command (GH #203).
+
+Every one of those is somebody who read this section and did **not** conclude
+that it bound them. A mechanism you describe reads like an offer; a requirement
+does not. That is why the rule now stands before its reasoning instead of after
+it.
+
+### What a template author has to do
+
+Four things, all checkable, all in the template's own files.
+`templates/README.md` § The hive boundary says the same where a template author
+actually reads; the **order** in which an existing hive is brought there is in
+`rewiring.en.md` § Putting an existing hive behind its boundary.
+
+1. **`params.ports: []`** in the hive marker's `config.json`. The empty list is
+   not a missing entry, it is the statement "the hive path is the only address".
+   A hive with **no** `ports` key is unsealed, and therefore unfinished.
+2. **Doors from the inside:** one edge per accepted lane, with `"from": "."`, a
+   `condition` testing the lane, and a `to` naming the inner cell that serves it.
+   That is requirement 3, written down.
+3. **`params.contract`** with `accepts` and `emits`, in lane names per
+   requirement 2 — the list the substrate checks the doors against
+   (`config.en.md` § `params.contract`).
+4. **No address in its prose that the boundary would refuse.** `template.json`
+   and the README describe lanes, not cells. This is not cosmetic: the
+   `description` slots are the interface a caller reads, and a `from:`/`to:` in
+   them is a wiring instruction (GH #203; the test
+   `gh203_documented_port_addresses` puts exactly that question to the real
+   boundary validator).
+
+### What it looks like
+
+**Outside** — the caller knows a hive and a lane, and nothing else:
+
+```json
+{"from": "./proxy", "to": "./talky",
+ "modifier": {"set_hop": {"route": "'in_turn'"}}}
+```
+
+**Inside** — the hive distributes on its own, with edges whose `from` is the hive
+itself (`"."`). Here, and only here, is it written down which cell serves the
+lane:
+
+```json
+{"from": ".", "to": "./session-keeper",
+ "condition": "has(hop.route) && hop.route == 'in_turn'"}
+```
+
+Where the inner target is itself a hive, the same rule applies one level down: the
+door names the sub-hive's path and a lane, never a cell inside it.
+
+**What is wrong with these** — both write structure outward, the second more
+quietly than the first:
+
+```json
+{"from": "./proxy", "to": "./talky/session-keeper/stamp"}
+{"from": "./proxy", "to": "./memory",
+ "modifier": {"set_hop": {"route": "'writer'"}}}
+```
+
+The first breaks requirement 1 and is refused with `hive_port_boundary` wherever
+ports are declared. The second addresses the hive correctly and still breaks
+requirement 2: `writer` is the name of a cell inside, and a hive that rebuilds its
+write path takes the lane with it. Functionally the lane would be something like
+`in_episode` — *take this turn into your memory* — and what that means internally
+is the door's business.
+
+Both shapes are already carried by the substrate: a hive path may be the `from`
+and the `to` endpoint of an edge, and colony evaluates it as a transit node
+(§ Hive paths as target: transit evaluation). The hive gets no mailbox and no
+task; the evaluation is a branch of the one routing layer.
+
+**From outside the colony** — the HTTP ingress asserts the same lane through the
+`hop` field of `POST /messages` (GH #175, § HTTP endpoints):
+
+```json
+{"target": "/talky", "hop": {"route": "in_turn"},
+ "body": {"messages": [{"origin": "user", "type": "text", "text": "…"}]}}
+```
+
+A freshly sealed hive is thereby verifiable without addressing any of its
+interior cells — the door is opened from outside, which is what the rule asks for.
+
+**A hive's contract is a statement about messages, not about cells:** which
+`hop.route` values it accepts, which it emits, what a parent must promote to
+`context.*` first. What lies behind the boundary — one cell, twelve cells, a
+sub-hive — is the hive's own business and may change at any time.
+
+### What this means for `params.ports`
+
+`params.ports` (GH #133) seals a hive: a mutation whose edge reaches past a
+declared port into the interior is rejected with `hive_port_boundary`. That is the
+**enforcement** of the rule, not its definition — the rule holds for a hive
+without the declaration too, and such a hive is therefore not one with a special
+dispensation, but one whose seal is still missing.
+
+A port is the name of a lane, not the address of a cell. A hive whose ports are
+the names of its inner cells only moves the boundary by one step: the caller then
+has to know that the entry cell is called `stamp`.
+
+There is exactly one target shape, and `ports: []` and `params.contract` are two
+halves of it (§ The hive contract): the address is the hive path, the lane is the
+port. A hive whose `ports` are still interior cell names is mid-migration; a hive
+with no `ports` at all has not started one.
+
+### The hive contract (`params.contract`)
+
+The contract is a list of lanes in `params.contract`, which makes it checkable
+rather than readable (details and enforcement table: `config.en.md`
+§ `params.contract`):
+
+```json
+"contract": {
+  "accepts": [{"route": "in_batch", "context": ["session_id"],
+               "because": "one closed session as a single write batch"}],
+  "emits":   [{"route": "episode", "because": "one message per turn"}]
+}
+```
+
+Three things are enforced, all of them for **mutations** only and all of them
+through the real router instead of a text comparison (`hive_contract`):
+
+1. An edge onto the hive path whose `set_hop.route` is constant must name an
+   `accepts` lane — the typo is refused instead of becoming a dead letter.
+2. Every `accepts` lane must have a door (`{"from": "."}` inward).
+3. Every `emits` lane must lead back out through the hive path.
+
+(2) and (3) are why the contract does not decay into decoration: rearranging the
+inside is free, rearranging it so a promised lane loses its door is not. At
+**boot** it only warns — the birth topology is sovereign (the same rule as GH #133
+and GH #147).
+
+What the substrate **cannot** check is requirement 2: no validator can see whether
+a lane name was chosen functionally or structurally — `writer` is as valid a
+string as `in_episode`. That is the point at which the rule depends on a reader,
+and the reason it is stated here as a requirement rather than as advice.
+
+### Current state and migration
+
+**Named honestly, because a spec that does not know reality is no help:** the
+topologies built before this rule wire almost exclusively into internals. That is
+legacy, not a model. In a real colony (Egon, 2026-08-18) exactly **one** of 129
+edges addressed a hive.
+
+The shipped library is not there yet either, in three stages:
+
+| State | Templates |
+|---|---|
+| `ports: []` + `contract` — done | `collector`, `session-keeper`, `summarizer`, `memory-drain`, `affinity` (with their copies inside `talky` and `cogny`) |
+| ports are inner cell names — migration under way (GH #197) | `canvy`, `memory-hive`, `access`, `steward` |
+| no `ports` key — migration not started | `talky`, `cogny`, `llm-unit`, `receptionist`, `firewall` and others |
+
+For new hives the rule applies from now on, without exception. Existing ones are
+converted one at a time — state the contract, build the `{"from": "."}`
+distribution inside, move the callers onto the hive, declare `params.ports` — and
+each conversion is its own reviewable change. The order, and the five traps that
+are the same every time, are in `rewiring.en.md` § Putting an existing hive
+behind its boundary.
+
+**What is enforced today**: `hive_port_boundary` where ports are declared and
+`hive_contract` where lanes are declared, both for mutations only (the boot
+`params.graph` is the author's sovereign birth draft, see § Validation; boot
+warns). **What is not enforced today**: everything else in this section — in
+particular whether a hive is sealed and carries a contract at all, and what its
+lanes are called. Not enforced does not mean optional: the rule binds, the
+substrate only checks part of it.
+
+---
+
 ## Mutation format (builder → colony)
 
-A mutation is a message to `/colony/mutations` with `hop.msg_type == "mutation"` whose body carries a **diff** plus a **scope**. Colony validates in a single stage, executes, replies to `reply_to` on error. Entry paths today: the HTTP edge (phase 12, direct translation) and the internal bootstrap inbox command. A message emitted by a cell to `/colony/mutations` is **dispatched directly** (W2b ruling 2026-06-12): the outputs arm recognizes a `/colony/*` target and routes it BEFORE edge evaluation via `route()` to the virtual endpoint (see § Routing errors "Outputs arm: three disjoint cases", case 1), no out-edge needed/possible. Cell-emitted mutations/reads (EDA) are thereby a first-class delivery path; an unknown `/colony/<x>` endpoint lands in the DLQ as `colony_endpoint_unimplemented`.
+A mutation is a message to `/colony/mutations` whose body carries a **diff** plus a **scope**. **The target is the only thing that identifies it**: dispatch goes by path alone and no header is read. `hop.msg_type == "mutation"` is a widespread **application convention** — templates set the key and condition their mutation edge on it (§ Routing conditions) so that the right one of a cell's several emissions takes the mutation lane — but meclaw-core does not know it as a special case and checks it nowhere. Colony validates in a single stage, executes, replies to `reply_to` on error. Entry paths today: the HTTP edge (phase 12, direct translation) and the internal bootstrap inbox command. A message emitted by a cell to `/colony/mutations` is **dispatched directly** (W2b ruling 2026-06-12): the outputs arm recognizes a `/colony/*` target and routes it BEFORE edge evaluation via `route()` to the virtual endpoint (see § Routing errors "Outputs arm: three disjoint cases", case 1), no out-edge needed/possible. Cell-emitted mutations/reads (EDA) are thereby a first-class delivery path; an unknown `/colony/<x>` endpoint lands in the DLQ as `colony_endpoint_unimplemented`.
 
 ```json
 {
@@ -263,7 +503,8 @@ A mutation is a message to `/colony/mutations` with `hop.msg_type == "mutation"`
     "remove_nodes": [ { "match": { ... } } ],
     "add_edges":    [ { "from": "...", "to": "...", "condition": "...", "modifier": { "set_context": {}, "delete_context": [], "set_hop": {}, "delete_hop": [] } } ],
     "remove_edges": [ { "match": { ... } } ],
-    "swap_nodes":   [ { "match": { ... }, "with": { "template": "..." } } ]
+    "swap_nodes":   [ { "match": { ... }, "with": { "template": "..." } } ],
+    "move_nodes":   [ { "match": { "name": "..." }, "to": "..." } ]
   },
   "ctx": { "key": "value" }
 }
@@ -271,7 +512,7 @@ A mutation is a message to `/colony/mutations` with `hop.msg_type == "mutation"`
 
 **`scope`** is an absolute path prefix, typically the path of a hive scope marker. All relative paths in the diff are resolved against this scope. Mutations whose paths would lie outside the scope are rejected during validation.
 
-**`diff`** contains the change operations. Order irrelevant; colony computes the post_state after applying all operations and validates _that_, not partial states. Thereby an `add_edges` edge may point to a node that newly arrives in the same diff via `add_nodes`.
+**`diff`** contains the change operations. Order irrelevant; colony computes the post_state after applying all operations and validates _that_, not partial states. Thereby an `add_edges` edge may name any address the diff itself puts a node at, and that is all three creating operations: `add_nodes[].name`, the instantiate form of `swap_nodes[].with`, and `move_nodes[].to` (GH #198). Relocating and wiring in one committed mutation is exactly what `move_nodes` was built for: there is no window in which a lane hangs twice or not at all. The converse holds for addresses the diff VACATES (`remove_nodes`, `swap_nodes[].match`, `move_nodes[].match`, GH #194) — those are no longer endpoints afterwards, and an edge naming one is rejected. The existing-node form of `swap_nodes[].with` (no `template`) puts nothing anywhere: it references a node that is already there or that the same diff creates via `add_nodes`.
 
 **`ctx`** provides values for `${ctx.<key>}` substitutions in the diff (see "Variable substitution"). It is resolved when applying the diff, before validation runs.
 
@@ -283,7 +524,8 @@ A mutation is a message to `/colony/mutations` with `hop.msg_type == "mutation"`
 | `remove_nodes` | Removes all edges in which the referenced nodes participate → the nodes are disconnected and marked inactive (including subtree cascade at hives). Registry entry, filesystem, and `cell_id` remain (no-delete, see "Connectivity and activity"). |
 | `add_edges` | New edges in colony's edge table, scoped |
 | `remove_edges` | Remove edges from the edge table, scoped. **Applied before `add_edges`**, so an edge can be replaced in ONE mutation (old one out, new one in) with the lane never missing in between. The other way round, the `match` pattern deleted the edge the same diff had just inserted (GitHub #158). |
-| `swap_nodes` | **Graph swap**: swings **all external edges** of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template **or** an already existing cell. The old cell remains **disconnected and preserved** (no-delete policy; swappable back at any time by swinging the edges back). `swap_nodes` is thereby a pure edge/topology diff, **no** `config.json` rewrite of an existing cell, **no** `cell.db` migration, **no** `cell_id` takeover (the new implementation has its own identity), and inherits the atomicity model of the edge mutation. |
+| `swap_nodes` | **Graph swap**: swings **all external edges** of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template **or** an already existing cell. The old cell remains **disconnected and preserved** (no-delete policy; swappable back at any time by swinging the edges back). `swap_nodes` is thereby a pure edge/topology diff, **no** `config.json` rewrite of an existing cell, **no** `cell.db` migration, **no** `cell_id` takeover (the new implementation has its own identity), and inherits the atomicity model of the edge mutation. Condition for the instantiate form: the `with` target path is free — in the registry (naming collision) **and** on the filesystem. A directory already lying there that no registry row names (a hand-placed tree, the residue of an aborted migration) is refused by name rather than overwritten; taking it over is done with an `add_nodes` at the same path (a resume) or an `add_nodes[].adopt` stating the `cell.type` expected there. |
+| `move_nodes` | **Relocation**: moves a cell to a different address — `{"match": {"name": "fetch"}, "to": "talky/fetch"}`. A path IS a cell's identity, which is why this is the only operation that changes one: the directory is moved with `rename(2)` (carrying `config.json`, `cell.id` and **`cell.db`**), the registry row is re-addressed by an UPDATE (`cell_id`, `created_at` and `instantiated_at` survive), and **every** edge naming the old path names the new one afterwards, condition and modifier verbatim. One committed mutation, with no window in which the lane is wired twice or not at all. Against `swap_nodes`: a swap swings edges onto a **different** implementation with its own identity and its own `cell.db`; a move is the opposite — the same cell, a different address. Conditions: the target lies inside the mutation scope, the target is free (registry, hive scopes, filesystem), its parent directory already exists, and the source is **not a hive** and has nothing beneath it (a half-moved hive would leave its children addressed under a path that no longer exists, so it is refused by name rather than done by halves). The parent hive's `params.graph` is **not** rewritten: since GH #168 the persisted edge table is the boot topology on a reboot — the file is seed, not state. |
 
 **Match pattern for `remove_*` and `swap_nodes`**: a pattern references nodes/edges by properties (`name`, `template`, for edges `from`/`to`/`condition`/`modifier`), **not by UUID**. A pattern is a pattern, not an identity: `{from, to}` alone hits **every** edge between the pair rather than the one that was meant — pass `condition`/`modifier` too when exactly one is to be hit. The pattern must have at least one hit in the current registry, otherwise the mutation is rejected. Names are unique per scope (naming-collision reject in validation); a UUID reference as a disambiguation fallback is **not** provided.
 
@@ -295,7 +537,7 @@ Single-stage in colony. Before application, the hypothetical post_state is compu
 - **Match patterns**: each pattern in `remove_*`/`swap_nodes` hits ≥1 element in the pre_state.
 - **Naming uniqueness**: no two nodes have the same name within the same scope after applying the diff.
 - **Cycle freedom**: the post_state graph has no cycles over `from`/`to` edges (insofar as the application forbids cycles; meclaw-core does not generally reject on cycles).
-- **Edge schema compatibility**: all edges reference existing nodes in the post_state; `condition` parses as valid CEL; `modifier` (if set) conforms to the `{set?, delete?}` schema, and all expressions in `modifier.set.*` parse as valid CEL. Edge endpoints resolve relative to the mutation `scope` at **any depth within the scope** (`./name`, `./unit/dispatch`), against the post_state, diff-new nodes included (also subtree nodes at depth). Containment stays sharp: endpoints that resolve outside the scope (`../x`, absolute paths) are `scope_out_of_bounds` (§ Scope), the parent wires downward into its own subtree, never out. A depth path to a non-existent node is `edge_schema`.
+- **Edge schema compatibility**: all edges reference existing nodes in the post_state; `condition` parses as valid CEL; `modifier` (if set) conforms to the `{set?, delete?}` schema, and all expressions in `modifier.set.*` parse as valid CEL. Edge endpoints resolve relative to the mutation `scope` at **any depth within the scope** (`./name`, `./unit/dispatch`), against the post_state, diff-new nodes included (also subtree nodes at depth, and this diff's own swap and move targets). Spelling decides nothing: `foo` and `./foo` are the same node, on either side of the diff. Containment stays sharp: endpoints that resolve outside the scope (`../x`, absolute paths) are `scope_out_of_bounds` (§ Scope), the parent wires downward into its own subtree, never out. A depth path to a non-existent node is `edge_schema`.
 - **Template existence**: all `add_nodes`/`swap_nodes` reference templates that exist in colony's templates registry.
 - **`.env` variables**: all `${ENV_VAR}` in the `override_params` have values in `.env`.
 
@@ -309,7 +551,7 @@ On an error **before** the atomic rename phase (schema, match, cycle, edge schem
 }
 ```
 
-`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary`.
+`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary` | `hive_contract`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter codes carry (§ "Canonical `error_code` strings"): new reject reasons **extend** the list, existing ones never change their string form. A condition may therefore match on a code, but it must not assume the list is complete — an unknown code is a future code, not a bug. Notes on the substrate codes:
 
@@ -323,6 +565,7 @@ These strings are part of the stable mutation API contract, with the same promis
 - `resume_type_mismatch`: resume (single-cell as well as subtree) at an occupied path whose existing `type` deviates from the template (F2 ruling, paket 5).
 - `contract_incomplete`: a `config.json` to be loaded (boot walk or mutation staging, non-hive) does not declare the required keys `contract.version`/`settings`/`consumes`, or declares them type-wrong (`docs/config.md` § contract).
 - `hive_port_boundary` (GH #133): an `add_edges` endpoint reaches into a hive that declared its ports (`params.ports`, opt-in — see `cell-types.md` § `hive`) while the edge's other endpoint lies outside that hive: a deep endpoint past the port, which would bypass whatever the hive puts in front of it. Pre-destructive, emitted by `validate_hive_port_boundary` (`mutation/port_boundary.rs`) before staging. A hive without the declaration is not sealed and never produces this code. **Mutations only** (ruling 2026-08-15): a hive's `params.graph` at boot is the colony author's sovereign birth design and is never rejected by the seal, which guards the runtime instead; boot-time enforcement, if it ever comes, arrives as its own opt-in switch rather than by widening this one.
+- `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in — see `config.en.md` § `params.contract`) and something contradicts it. Two shapes: an `add_edges` edge onto the hive path stamps a constant `hop.route` the hive does not accept; or the hive's own graph no longer carries a lane it promises (an `accepts` lane with no door, an `emits` lane with no exit through the hive path). Pre-destructive, emitted by `mutation/hive_contract.rs`; checked with the real router (`apply_edges`) rather than by comparing text, and an edge whose route is only knowable at runtime is not judged. A hive without the declaration never produces this code. **Mutations only** — boot warns, for the same reason the port seal does.
 
 `uuid_provider_exhausted` is **not** live code: the enum variant `MutationError::UuidProviderExhausted` was dead code (`Uuid::now_v7()` is infallible, never constructed; additionally mapped as the string `"uuid_provider"` instead of `"uuid_provider_exhausted"`) and **was removed with paket 7** (D-034; verified 2026-06-10: 0 code hits). The note remains as re-discovery protection.
 
@@ -661,7 +904,7 @@ Auth (once phase-12 hardening): uniform middleware in front of `axum`'s router, 
 
 ### Stdin/stdout bridge (direct mode)
 
-In the default mode a stdin/stdout bridge runs: stdin is converted into messages to the root cell (one line = one message), stdout shows messages emitted from the root cell. **The default format is text** (grep/Unix-conformant, structurally identical to `proxy`): one stdin line of raw text → a UBF body with exactly one `user` turn (`{messages:[{origin:"user",type:"text",text:"<zeile>"}]}`) plus a fresh `turn_id`; to stdout the `text` of the last `assistant` turn of an emitted message is written (analogous to the `proxy` inbound). This text format is byte-identical to v0.1.0 and **remains the default**. Since P9 (0.1.9) there is additionally the opt-in flag `--stdio-format json` = **wire v1**: one JSON line per message, at startup a `ready` frame carrying the protocol integer `v` (asserted strictly) and the reported release `version`, then `message` and `error` frames in both directions — with envelope reach-through for `trace_id` (carried), `ttl` (decremented) and `context` (explicitly mapped), cf. HTTP `POST /messages`. **`v` is strict and there is no negotiation**: the bridge asserts the integer it expects and fails on anything else, and neither side advertises what it could speak. That is the frozen shape of wire v1 — a **v2 can only ship together with a negotiation step**, never as a bumped integer on the same handshake, because a bare bump would leave every existing peer with a hard failure and no way to ask for the old wire.
+In the default mode a stdin/stdout bridge runs: stdin is converted into messages to the root cell (one line = one message), stdout shows messages emitted from the root cell. **The default format is text** (grep/Unix-conformant, structurally identical to `proxy`): one stdin line of raw text → a UBF body with exactly one `user` turn (`{messages:[{origin:"user",type:"text",text:"<zeile>"}]}`) plus a fresh `turn_id`; to stdout the `text` of the last `assistant` turn of an emitted message is written (analogous to the `proxy` inbound). This text format is byte-identical to v0.1.0 and **remains the default**. Since P9 (0.1.9) there is additionally the opt-in flag `--stdio-format json` = **wire v1**: one JSON line per message, at startup a `ready` frame carrying the protocol integer `v` (asserted strictly) and the reported release `version`, then `message` and `error` frames in both directions — with envelope reach-through for `trace_id` (carried, GH #190: absent or `null` = a fresh trace minted downstream, a UUID string = exactly that trace carried unchanged across the process boundary, every other JSON type — as well as a string that is not a UUID — = `invalid_frame` rather than a silently minted fresh trace the sender can no longer correlate its reply on), `ttl` (decremented, GH #187: absent or `null` = the substrate default, a positive integer in `1..=4294967295` = that hop budget, every other value — a string, a negative number, a float, `0`, or one above `u32::MAX` — = `invalid_frame` rather than a silent fallback to the default or, above the range, a wrapped and unrelated small number), `context` (explicitly mapped, GH #182: absent or `null` = an empty context, an object lands verbatim in the `context` compartment, every other JSON type = `invalid_frame` rather than a silent `{}` — a silently dropped context costs the sender the `turn_id` it correlates the reply on) and `hop` (an opt-in seed, GH #180: absent or `null` = an empty hop, an object lands verbatim in the `hop` compartment, every other JSON type = `invalid_frame` rather than a silent `{}`), cf. HTTP `POST /messages`. The hop reach-through is **one-directional**: inbound the caller asserts the lane (without it a line sent at a hive path matches no door, § The hive boundary), outbound the frame carries `context` back and **no** `hop` — a hop is a single-hop compartment and has no meaning on the far side. An additional **optional inbound** field is not a v2: what is frozen is the shape a reader must be able to parse, and a v1 sender that never writes `hop` behaves unchanged. Neither is **tightening an existing** inbound field (GH #182, GH #187, GH #190): what is frozen is that shape and the negotiation step, not the strictness of inbound validation — a sender whose `context`, `ttl` and `trace_id` are well-formed notices nothing, and one whose are not was already losing the compartment, running on a budget it never chose, or answering under a trace it never wrote, only without being told. **`v` is strict and there is no negotiation**: the bridge asserts the integer it expects and fails on anything else, and neither side advertises what it could speak. That is the frozen shape of wire v1 — a **v2 can only ship together with a negotiation step**, never as a bumped integer on the same handshake, because a bare bump would leave every existing peer with a hard failure and no way to ask for the old wire.
 
 **Discipline**: the bridge is an I/O detail of the `meclaw-cli` crate, **not a cell type**. The root cell stays exchangeable (hive scope, llm cell, builder, …) without bridge code needing adjustment. Rejected were: an own `stdio` cell type (it would break the "cells know no topology" discipline, because the cell would implicitly know it is hanging on a stdin endpoint, and additionally an unnecessary entry in the cell-type catalog) as well as "interactive use only via `proxy` or HTTP API" (contradicts the self-description "brings the LLM into the Unix shell").
 
@@ -1656,14 +1899,15 @@ blobs/<uuid-v7>.<ext>.meta.json  # sidecar with authoritative metadata
 
 ## No-delete policy (event-sourcing at the filesystem level)
 
-- **No file in `{root}` is ever deleted or moved.** Only new files/directories arise.
+- **No file in `{root}` is ever deleted.** Only new files/directories arise.
+- **Relocating is not deleting** (GH #169): `move_nodes` renames a cell's directory with `rename(2)`. Nothing is lost in the process — `config.json`, `cell.id` and `cell.db` travel as the same inode, the registry row is re-addressed rather than deleted and re-created, and every edge names the new address afterwards. The policy protects data and identity, not path constancy for its own sake: a file that is somewhere else is not a file that is gone. What it still forbids is quiet disposal, which is why a move is a named, validated, atomically committed operation and never a side effect.
 - **Instances are immortal**: a once-instantiated cell stays forever on the filesystem, keeps its `cell.db`, is findable via UUID.
 - **Disconnect instead of delete**: cells no longer needed lose their edges
   (`remove_edges`/`remove_nodes`) and thereby become inactive, no longer routed, no
   tasks. They continue to exist on the filesystem and in `colony.db` and can be reconnected at any time
   via `add_edges` (or a renewed `add_nodes` at the same path), with
   the same `cell_id` and a resumed `cell.db` (see "Connectivity and activity").
-- **Paths are eternally stable**: a central advantage for the "cells know no topology, but paths are reliable" discipline.
+- **Paths are stable until somebody changes one on purpose**: a central advantage for the "cells know no topology, but paths are reliable" discipline. The only way to change a path is `move_nodes` — a mutation that stands in the mutation log and carries everything that keys on the path with it.
 - **Hierarchy as builder discipline**: the trigger of instantiation (builder, CLI, API) chooses path and name deliberately to avoid root-directory pollution (e.g. `memory/2026-05-16_user_xyz/`).
 - **Audit trail built in**: every state ever run, every message log is preserved.
 - **Backup strategy trivial**: the whole `{root}` is a snapshot, Git-capable.
@@ -2166,7 +2410,7 @@ HTTP endpoints are 1:1 the `/colony/*` paths (see "/colony as a virtual endpoint
 
 `POST /messages` is the only HTTP endpoint that can inject a message with an arbitrary target. All other routes are 1:1 their internal `/colony/*` paths (the symmetry statement in the section "/colony as a virtual endpoint").
 
-`POST /messages` is fire-and-forget in phase 12: a response of **202 Accepted** with `{message_id}`; any cell answer runs via the routing cascade, not back via HTTP. A synchronous request/response roundtrip (an ephemeral reply sink) is deferred to phase 13+. The JSON request body is `{target, body, headers?, ttl?}`: the optional `ttl` field sets the TTL of the initial message (only positive integers ≤ `u32::MAX`; any other value → `422 invalid_ttl`); without the field, `colony.json` `message_default_ttl` applies. The optional `headers` field is answered the same way: absent or `null` means no inbound headers, an object goes into the `context` compartment, and every other JSON type → `422 invalid_headers` — an ingress that silently degraded a mistyped `headers` to `{}` would hand back a 202 for a message carrying none of the caller's correlation data. The `headers` object is additionally **not size-limited** — the ingress validates the UBF *body* against the schema and lets the headers through whatever their size, by design (a cap would be a breaking change and is not planned, sizes are watched by a standing measurement, [#141](https://github.com/mmeyerlein/meclaw/issues/141)). The multipart path has no `ttl` form field (uploads, not conversation turns), there the `colony.json` default always applies. **Multipart is the one producer of the `attachments[]` slot**: it streams every file into the blob store and answers, next to `message_id`, with the `BlobRef`s it created. The other end, whoever reads those refs, is the **consuming cell declaring `consumes.body.attachments`** (§ "`attachments[]` schema"; first consumer: `cell-types.md` § `llm`). Because the synthesized upload body is attachments-only, the usual flow is two-step: upload, then send the returned `BlobRef`s together with the conversation turns to the consuming cell over the JSON path.
+`POST /messages` is fire-and-forget in phase 12: a response of **202 Accepted** with `{message_id}`; any cell answer runs via the routing cascade, not back via HTTP. A synchronous request/response roundtrip (an ephemeral reply sink) is deferred to phase 13+. The JSON request body is `{target, body, headers?, hop?, ttl?}`: the optional `ttl` field sets the TTL of the initial message (only positive integers ≤ `u32::MAX`; any other value → `422 invalid_ttl`); without the field, `colony.json` `message_default_ttl` applies. The optional `headers` field is answered the same way: absent or `null` means no inbound headers, an object goes into the `context` compartment, and every other JSON type → `422 invalid_headers` — an ingress that silently degraded a mistyped `headers` to `{}` would hand back a 202 for a message carrying none of the caller's correlation data. The optional `hop` field (GH #175) is the **opt-in seed for the `hop` compartment**: absent or `null` means an empty hop (the historical source-message shape), an object lands verbatim in the `hop` compartment, and every other JSON type → `422 invalid_hop`. It is deliberately **not** "headers go to hop": both compartments are named separately, and the substrate never infers one from the other — a seeded hop is the caller **asserting a lane**. It is needed since the hive boundary rule (§ The hive boundary): a hive distributes internally over `{"from": "."}` edges conditioned on `hop.route`, so a message posted straight at a hive path with no hop matched no door and dead-lettered as `hive_no_route`. **Its reach is a modifier's reach and not one step further**: a `modifier.set_hop` writes key → value into exactly this compartment (§ Edge model — "edges operate strictly on the header layer"), and its one sanctioned envelope touch, `restore_ttl`, is a modifier **field** rather than a hop key — not expressible in a compartment map at all. Envelope names inside a seeded hop therefore stay inert data; the envelope-setter authority is untouched. The multipart path has no `hop` form field (same reasoning as `ttl`). The `headers` object is additionally **not size-limited** — the ingress validates the UBF *body* against the schema and lets the headers through whatever their size, by design (a cap would be a breaking change and is not planned, sizes are watched by a standing measurement, [#141](https://github.com/mmeyerlein/meclaw/issues/141)). The multipart path has no `ttl` form field (uploads, not conversation turns), there the `colony.json` default always applies. **Multipart is the one producer of the `attachments[]` slot**: it streams every file into the blob store and answers, next to `message_id`, with the `BlobRef`s it created. The other end, whoever reads those refs, is the **consuming cell declaring `consumes.body.attachments`** (§ "`attachments[]` schema"; first consumer: `cell-types.md` § `llm`). Because the synthesized upload body is attachments-only, the usual flow is two-step: upload, then send the returned `BlobRef`s together with the conversation turns to the consuming cell over the JSON path.
 
 **Op bodies over `POST /messages`** (GitHub #17): `body` is validated against the UBF schema, so a pure control message too, a timer op, a `params` update, needs one of the three central slots. The honest one is `"messages": []`: an op message carries no conversation turns. The op fields themselves travel next to it as cell-specific top-level slots (`{"messages": [], "op": "trigger", "schedule_id": "…"}`), exactly as the body format provides for. Without a central slot the ingress answers `422 invalid_ubf_body`. There is deliberately **no** op route and no validation bypass: the HTTP layer checks the envelope, the cell checks the op. Every cell op surface is thereby reachable from outside without the API having to know cell types.
 
@@ -2228,7 +2472,7 @@ The `error` token is machine-readable and stable; `detail` is **free text for a 
 ## Dynamics / builder pattern
 
 - Every cell (or an external API client) may send mutation messages to `/colony/mutations`, permission is a topology question, not an identity check.
-- The mutation format is a **diff** with five optional operations: `add_nodes`, `add_edges`, `remove_nodes`, `remove_edges`, `swap_nodes` (see the section "Mutation format" above), plus a `scope` field (the path prefix for the mutation) and a `ctx` block (for `${ctx.*}` substitution).
+- The mutation format is a **diff** with six optional operations: `add_nodes`, `add_edges`, `remove_nodes`, `remove_edges`, `swap_nodes`, `move_nodes` (see the section "Mutation format" above), plus a `scope` field (the path prefix for the mutation) and a `ctx` block (for `${ctx.*}` substitution).
 - Colony validates in a single stage, executes staging + an atomic filesystem rename + registry edits, completes the mutation in `colony.db`.
 - **Builder-hive** = a **hive scope** (not a single actor) that bundles several specialized cells under a path prefix, typically an `llm` cell for natural-language request understanding and diff generation, a `code` cell for mutation diff construction and validation, optionally a `code` cell for template-discovery aggregation (reads on `/colony/templates`) and a collector or memory hive for multi-step builder conversations. The final mutation diff is emitted by the outermost cell of the builder-hive (or a dedicated output hive) to `/colony/mutations`. Rationale for a hive instead of a single cell: the builder task is multi-stage (understanding → discovery → diff construction → validation), each stage benefits from its own cell with a clear contract, and a hive bundles them as an authority and mutation boundary. Usually lives under `/main/builder/` or similar, outputs run via the normal edge topology to `/colony/mutations`.
 - Consistent with the no-delete policy: cells are never deleted, they become inactive through edge withdrawal (the registry entry remains, marked inactive; filesystem and `cell_id` remain) and can be reactivated via `add_edges` or a renewed `add_nodes` at the same path; `swap_nodes` swings, for template upgrades, the external edges onto a new or different implementation (a graph swap, the old cell remains disconnected and preserved, see "Connectivity and activity" and § Mutation operations).

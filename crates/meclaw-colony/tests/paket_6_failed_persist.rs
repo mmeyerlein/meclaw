@@ -121,7 +121,7 @@ async fn exhaustion_marks_failed_persisted_no_respawn() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // The hang cell: hangs forever, small message_timeout so the B-backstop
     // fires quickly, AND `restart_limit: 0` so the FIRST backstop already
@@ -225,7 +225,7 @@ async fn failed_cell_survives_reboot_fully_wired_no_spawn() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -386,7 +386,7 @@ async fn failed_cell_routing_dead_letters_cell_inactive_distinct() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),

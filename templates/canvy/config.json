@@ -19,7 +19,8 @@
               "canvy_event": "hop.event",
               "canvy_moved_id": "hop.moved_id",
               "canvy_moved_x": "hop.moved_x",
-              "canvy_moved_y": "hop.moved_y"
+              "canvy_moved_y": "hop.moved_y",
+       "canvy_moved_z": "hop.moved_z"
             }
           }
         },

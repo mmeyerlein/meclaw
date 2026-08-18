@@ -72,7 +72,7 @@ fn secret_template_config() -> String {
         r#"{{
           "cell": {{"type": "echo"}},
           "params": {{
-            "echo_to": "/sink",
+            "emitted_target": "/sink",
             "api_key": "${{SECRET_API_KEY}}",
             "base_url": "${{BASE_URL:-https://fallback.example}}",
             "owner": "${{ctx.user_id}}",
@@ -233,7 +233,7 @@ fn unresolvable_env_var_still_rejects_the_instantiation() {
         td.path(),
         "needy",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink","key":"${{UNSET_XYZ}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink","key":"${{UNSET_XYZ}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
     let diff = json!({"add_nodes": [{"name": "n1", "template": "needy"}]});
@@ -264,7 +264,7 @@ fn override_params_from_the_diff_stay_tokens_on_disk() {
         td.path(),
         "plain",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},"contract":{{{CONTRACT_TAIL}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},"contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
     let env = env_with_secrets();
@@ -321,7 +321,7 @@ fn subtree_rebirth_keeps_every_node_free_of_secrets() {
         &tpl,
         "notifier/config.json",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},"contract":{{{CONTRACT_TAIL},"settings":{{"bot_token":{{"type":"string","default":"${{SECRET_BOT_TOKEN}}"}}}}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},"contract":{{{CONTRACT_TAIL},"settings":{{"bot_token":{{"type":"string","default":"${{SECRET_BOT_TOKEN}}"}}}}}}}}"#
         ),
     );
 
@@ -385,7 +385,7 @@ fn boot_resolves_the_token_the_instance_carries() {
         td.path(),
         "main/a/config.json",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink","api_key":"${{SECRET_API_KEY}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink","api_key":"${{SECRET_API_KEY}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
     std::fs::write(
@@ -426,7 +426,7 @@ fn unresolvable_token_fails_the_boot_and_names_the_variable() {
         td.path(),
         "main/a/config.json",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink","api_key":"${{SECRET_API_KEY}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink","api_key":"${{SECRET_API_KEY}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
     // No `.env` at all -- the variable has no value and no default.
@@ -457,7 +457,7 @@ fn only_an_explicit_empty_default_yields_an_empty_value() {
         td.path(),
         "main/a/config.json",
         &format!(
-            r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink","api_key":"${{OPTIONAL_KEY:-}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink","api_key":"${{OPTIONAL_KEY:-}}"}},"contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
     let plan = meclaw_colony::plan_bootstrap(td.path(), &echo_factories(), &Default::default())

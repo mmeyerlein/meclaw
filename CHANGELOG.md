@@ -9,6 +9,1009 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.14.0] — 2026-08-18
+
+### Breaking
+
+- **Every sealed hive template gets a new major, and an interior address stops
+  resolving.** Template ports are one of the four public-contract surfaces
+  (README § Stability), and sealing a hive behind `ports: []` retires every
+  address inside it. A caller who wired `talky/keeper/stamp`,
+  `collector/assemble` or `drain/drain` has a topology the mutation validation
+  now refuses with `hive_port_boundary` — not a warning and not a dead letter,
+  a rejected `add_edges`. The seal itself and its reasoning are under
+  **Changed** below; what follows is the version arithmetic and the migration.
+
+  | Template | Was | Now | Why |
+  |---|---|---|---|
+  | `affinity` | 1.0.0 | **2.0.0** | `brief`, `gate` and `push` were declared ports and are none |
+  | `collector` | 1.2.0 | **2.0.0** | `./assemble` was the address every caller used |
+  | `session-keeper` | 1.0.0 | **2.0.0** | `./stamp` and `./close` were the ingress and the sweep |
+  | `summarizer` | 1.0.0 | **2.0.0** | `./prep` was the batch address |
+  | `memory-drain` | 1.0.0 | **2.0.0** | `./drain` was the batch address |
+  | `talky` | 1.2.0 | **2.0.0** | three sub-units renamed, two of them sealed |
+  | `cogny` | 1.3.0 | **2.0.0** | `split` renamed, `collector` sealed |
+  | `receptionist` | 1.0.0 | 1.1.0 | its own entry is unchanged; its shipped defaults now name hive paths |
+  | `canvy` | 0.1.0 | **0.2.0** | not a port change — see below |
+  | `access`, `steward` | 1.0.0 | 1.0.1 | `params.ports` respelled, same ports (#196) |
+  | `builder-librarian` | 1.0.0 | 1.0.1 | its seed corpus was rebuilt from the sources this release changed |
+
+  **The migration is the same edit everywhere: drop the last segment and name
+  the lane.** An interior address carried its meaning in the path; a hive path
+  carries it on `hop.route`, and a door edge inside the hive picks the lane up.
+  So an edge that used to read
+
+  ```json
+  {"from": "./surface", "to": "./talky/keeper/stamp",
+   "modifier": {"set_hop": {"route": "'in_turn'"}}}
+  ```
+
+  becomes `"to": "./talky/session-keeper"` with the identical modifier. The
+  `set_hop.route` was already there in most wirings, because the interior cell
+  discriminated on it too — which is why for a great many edges this is a
+  one-token change. Where it was **not** there, add it: an edge onto a
+  contracted hive whose lane is missing or misspelled is refused with
+  `hive_contract` and the hive's own sentence explaining what the lane is for.
+  The lanes each template accepts and emits are in its `params.contract`, and
+  the four composite ports are in `talky`'s and `cogny`'s `template.json`.
+
+  Address by address: `collector/assemble` → `collector` (lanes `in_turn`,
+  `in_calls`, `in_tool`, `in_answer`, `in_bundle`, `in_advice`, `in_close`,
+  `in_prune`, `in_batch`, `in_round_sweep`, `in_memory_call`; out on `brain`,
+  `recall`, `answer`, `write`, `turn_write`, `prune`) · `keeper/stamp` and
+  `keeper/close` → `session-keeper` (`in_turn`, `in_sweep`; out `turn`,
+  `close`) · `summary/prep` → `summarizer` (`in_batch`; out `summary`,
+  `summary_error`) · `<drain>/drain` → `<drain>` (`in_batch`; out `episode`) ·
+  `affinity/brief` and `affinity/gate` → `affinity` (`in_brief`, `in_propose`;
+  out `answer`, `ack`, `error`).
+
+  **The renames are a second, independent edit,** and they bite exactly the
+  edges the first one does not: an instance carries its template's name, so
+  `split` is now `dispatcher`, `keeper` is `session-keeper` and `summary` is
+  `summarizer`. Inside `talky` and `cogny` that means the DIRECTORY moved, so a
+  parent edge naming `./agent/split` finds no such node at all, which the edge
+  endpoint check refuses before the boundary check ever looks at it.
+  `dispatcher` is the one sub-unit that stayed addressable — it declares no
+  ports and is a single cell — so `./agent/split` → `./agent/dispatcher` is the
+  whole change there, and the tool lanes keep their conditions verbatim.
+
+  **A running colony is not affected and does not need to be migrated.**
+  Instantiation copies the subtree, so an instance built before this release
+  holds its own bytes, keeps its own interior addresses and keeps working —
+  including the topologies that reach into it. What changes is what you get the
+  NEXT time you instantiate, and a wiring recipe written against the old shape
+  will be refused rather than silently mis-wired. That refusal is the point: the
+  same recipe applied to `memory-drain` before the seal delivered every episode
+  twice, because the door and the interior cell were both reachable and both
+  fired.
+
+  **`canvy@0.2.0` is in this list for a different reason.** Its ports are
+  unchanged and nothing about addressing it moved; what changed is the shape of
+  a row in its own `cell.db`. A hive's position is stored as the shift it was
+  dragged by rather than as a box origin (`kind` `hive` → `hive_shift`, #170),
+  because both rectangles the origin could be measured against move on their own
+  when the colony grows. A row in the old shape is read once through the layout
+  it was written against and rewritten, so a hand-made arrangement comes back
+  exactly as it was left — the bump says the stored shape changed, not that a
+  caller has anything to do.
+
+### Added
+
+- **`llm-unit@1.1.0` files its own failures, and the lane is unit-private**
+  ([#218](https://github.com/mmeyerlein/meclaw/issues/218)). The unit's
+  `state` store declared an `errors(id, kind, payload)` table that nothing could
+  write. #214 established why: a `store` accepts only a `tool_call` turn carrying
+  a store-native op, an edge modifier rewrites headers and never a body, and the
+  `llm`'s error emission is a plain report — so no edge can perform the
+  translation, and the table stayed in the schema as the thing a writer would
+  target. A sixth cell, `scribe`, is that writer: two internal edges,
+  `llm -(finish_reason == 'error')-> scribe -(route == 'estore')-> state`.
+
+  | column | value |
+  |---|---|
+  | `id` | `<trace_id>:<turn_id>:<iter>` — the message chain, and where in the tool loop it happened |
+  | `kind` | `hop.error_code`, the closed spec enum, so the column groups |
+  | `payload` | JSON: `detail`, `source`, `turn_id`, `iter`, `model`, `latency_ms` |
+
+  **The lane is unit-private: the unit records and forwards nothing**, which was
+  the open decision in the issue. A parent already has its lane and it is still
+  mandatory — `./llm finish_reason == 'error'` is a documented exit port, and
+  edge evaluation fans out, so `scribe` and the parent's drain both fire on one
+  emission. A second forward-out port would duplicate a working one. And a parent
+  could not read the table in any case: `state` is unit-private and database
+  isolation has no exception (#160), so "records AND forwards" would be a forward
+  standing next to a write nothing outside can observe.
+
+  Nothing changes for a caller: the same drain edge, the same ports, a MINOR bump
+  because a cell and two edges are additive. What changes is what an operator
+  finds afterwards — the unit can now answer "what went wrong in here" by itself.
+  One asymmetry is named in the README rather than left to be discovered: before
+  1.1.0 an unwired error lane fell back to `reply_to` into `prep`'s echo guard,
+  and now the internal edge matches instead. Either way the task never answers,
+  so the drain stays mandatory and the row is a forensic record, not a
+  notification.
+
+- **`hop` can be seeded at both ingresses**
+  ([#175](https://github.com/mmeyerlein/meclaw/issues/175),
+  [#180](https://github.com/mmeyerlein/meclaw/issues/180)). `POST /messages` and
+  the stdio JSON wire take an optional `hop` sibling of `body`/`headers`:
+
+  ```json
+  {"target": "/talky", "headers": {"session_id": "s1"},
+   "hop": {"route": "in_turn"}, "body": {"messages": [...]}}
+  ```
+
+  Both ingresses put every inbound header into `context` and started `hop` empty,
+  which is right for a source message and made it impossible to address a HIVE.
+  Since the boundary rule a hive distributes on `hop.route`, so a message posted
+  at a hive path matched no door and dead-lettered as `hive_no_route` whatever the
+  caller wrote. Verifying a freshly sealed hive meant driving a full turn through
+  some interior cell — breaking the very rule the door exists for.
+
+  Deliberately NOT "headers go to hop": the two-compartment model is right, and
+  what was missing is a way to say which compartment you mean. A seeded hop
+  reaches exactly `Headers.hop` and nothing else — the same surface a modifier's
+  `set_hop` reaches. The one thing a modifier can do that a compartment map
+  cannot is `restore_ttl`, and that is a modifier FIELD rather than a hop key, so
+  it is not expressible here at all. The envelope stays out of reach by
+  construction rather than by a blocklist.
+
+- **A hive declares its interface, and the declaration is checked**
+  ([#173](https://github.com/mmeyerlein/meclaw/issues/173)).
+
+  ```json
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [{"route": "in_batch", "context": ["session_id"],
+                   "because": "one closed session as a single write batch"}],
+      "emits":   [{"route": "episode", "because": "one message per turn"}]
+    }
+  }
+  ```
+
+  A template is supposed to be a class: instantiate it, wire to its interface,
+  swap it later for another implementation with a different inside. For hive
+  templates none of that held. `contract` was a CELL property; a hive had
+  `description` prose, and the prose named cells three levels down ("Ingress:
+  `./keeper/stamp`"). So the one unit a person actually instantiates was the one
+  unit with nothing machine-readable to check an instantiation against, and every
+  caller wrote the template's internal layout into its own topology.
+
+  `params.contract` states the interface in the only vocabulary that survives a
+  reimplementation: LANES — the `hop.route` values the hive accepts at its own
+  path and the ones it emits back out of it. No cell of the hive appears in it,
+  which is what makes the inside free to change.
+
+  Three checks, all on the mutation path, all run through the real router rather
+  than by comparing condition strings (the shipped templates open a whole family
+  of lanes with one `startsWith('in_')`, which no text comparison can read):
+
+  1. an edge onto the hive path whose `set_hop.route` is a constant must name an
+     accepted lane — the typo is refused instead of becoming a runtime dead
+     letter that reads like a model failure;
+  2. every accepted lane must have a door (`{"from": "."}` inward);
+  3. every emitted lane must lead back out through the hive path.
+
+  (2) and (3) are what keep the declaration from decaying into decoration:
+  rearranging the inside is free, rearranging it so a promised lane loses its
+  door is not. Rejections carry the hive's own `because` sentence and the token
+  `hive_contract`.
+
+  **Opt-in and backwards-compatible.** A hive without `params.contract` behaves
+  exactly as before, which is the state of every hive instantiated so far — a
+  live colony picks the contract up when it next instantiates from a template.
+  Boot only warns; the birth `params.graph` stays the author's sovereign design,
+  the same rule as GH #133 and GH #147. A hive whose path carries no edge at all
+  is dormant, not broken, so a contracted hive can still be taken out with
+  `remove_nodes`.
+
+  Shipped with a contract: the templates already sealed behind their boundary —
+  `collector`, `session-keeper`, `summarizer`, `memory-drain`, `affinity`, and
+  their byte-identical copies inside `talky` and `cogny`.
+
+- **`move_nodes`: a cell can change its address without losing what it is**
+  ([#169](https://github.com/mmeyerlein/meclaw/issues/169)).
+
+  ```json
+  {"move_nodes": [{"match": {"name": "fetch"}, "to": "talky/fetch"}]}
+  ```
+
+  A path is a cell's identity, so until now there was no operation that changed
+  one. Tidying a capability into the hive it belongs to meant `add_nodes` at the
+  new path, `add_edges` for every edge the old node had, `remove_nodes` on the
+  old one and an operator wipe outside the mutation flow — in practice two
+  mutations. The cost was not the typing: the new node got a new `cell_id`, a new
+  `instantiated_at` and a fresh empty `cell.db` while the old one sat orphaned
+  beside it, every condition and modifier was re-entered by hand at the new
+  address, and between the two mutations the lane was either wired twice (the
+  call fans out and runs twice) or not at all (it dead-letters).
+
+  One committed mutation now does all of it. The directory is moved with
+  `rename(2)`, so `config.json`, `cell.id` and `cell.db` travel as one inode; the
+  registry row is re-addressed by an UPDATE, so `cell_id`, `created_at` and
+  `instantiated_at` survive; and every edge naming the old path names the new one
+  afterwards, condition and modifier carried verbatim.
+
+  It is deliberately not `swap_nodes`, which is the closest existing operation
+  and the opposite intent: a swap swings edges onto a **different**
+  implementation with its own identity and its own `cell.db`. A move keeps the
+  cell and changes where it lives.
+
+  Refused rather than half-done: a target outside the mutation scope, a target
+  that is not free (registry, hive scopes, filesystem), a target whose parent
+  directory does not exist yet, and — for this first version — a **hive** or any
+  node with something beneath it. Moving a hive means moving every child's
+  registry row, every subtree-internal edge and the hive scope itself, and a
+  half-moved hive leaves its children addressed under a path that no longer
+  exists, which is the boot failure
+  [#168](https://github.com/mmeyerlein/meclaw/issues/168) is about.
+
+  A move does **not** rewrite the parent hive's `params.graph`, and does not need
+  to: since #168 the persisted edge table is the boot topology on a reboot, and
+  the file is seed rather than state. It also does not touch the canvas store's
+  node positions — those live in another cell's own `cell.db`, which § Database
+  isolation puts out of the colony's reach. The canvas re-places a node it does
+  not recognise.
+
+  The **no-delete policy** now says what it always meant: nothing in `{root}` is
+  deleted, and a relocation is not a deletion — the file is not lost, it is
+  elsewhere. Paths are stable until somebody changes one on purpose, and the only
+  way to do that is a named, validated, atomically committed mutation.
+
+### Changed
+
+- **The hive boundary is documented as a rule, not as a mechanism** (#227). The
+  rule was already in `docs/meclaw-overview.md`, the whole colony was migrated
+  onto it in one day — and that same day produced four separate defects (#197,
+  #200, #203, and ten templates sealed only retroactively). Each one is somebody
+  reading a description of how the substrate behaves and not concluding that it
+  binds them. § The hive boundary is therefore rewritten rather than extended:
+  the rule and its scope ("all hives and all templates") stand first, followed by
+  three numbered requirements — the address is the hive; **a lane is named
+  functionally**, for what the caller wants and never for where it lands inside;
+  **the inner edge is the only place structure may be known**. The last two are
+  the halves that `ports: []` alone never said, and they are what the #197
+  migration had to add after the fact. New with them: what a template author
+  concretely has to do (`ports: []`, `{"from": "."}` doors, a `params.contract`,
+  no address in the prose the boundary would refuse), a worked counter-example of
+  an edge that addresses the hive correctly and still names a cell in its lane,
+  and an honest three-stage table of where the shipped library actually stands.
+  `docs/config.md` § `params.contract` now opens with the same requirement and
+  carries the structural-to-functional lane renaming table; `templates/README.md`
+  states it where a template author actually reads, including why the canonical
+  `talky` wiring example is the legacy shape. `docs/rewiring.md` keeps the
+  procedure and the two now point at each other. Both language versions.
+
+- **Every shipped hive template stands behind its own boundary.** An edge
+  crossing a hive's boundary names the hive, and the hive distributes internally
+  with `{"from": "."}` edges — the rule was documented and the templates did not
+  follow it. Callers wired straight at `talky/keeper/stamp`, `collector/assemble`,
+  `drain/drain`: three levels into somebody else's arrangement. Sealed with
+  `ports: []`, door edges and a stated contract: `summarizer`, `memory-drain`,
+  `affinity`, `session-keeper`, `collector`, `cogny`, `talky`, `dispatcher`,
+  `receptionist`, `canvy`.
+
+  **A seal is a change to every caller**, including the ones that ship: sealing
+  `memory-drain` broke four test colonies and two shipped examples, all of which
+  addressed `./drain/drain` — reaching past the door delivered each episode twice
+  and dead-lettered the second. And some folds are rewrites rather than
+  repointings: three sibling error exits that each named an interior cell become
+  ONE edge after folding, which then fires three times.
+
+  Renamed, per the rule that an instance carries its template's name: `split` →
+  `dispatcher`, `keeper` → `session-keeper`, `summary` → `summarizer`.
+
+  New: `docs/rewiring.md` (and `.en`) — the four places a topology lives, why
+  innermost-first, why an in-door is never a catch-all, and the order that ends
+  with "start, wait for an answer, and roll everything back if it does not come".
+
+- **The overview no longer claims a mutation is recognised by `hop.msg_type`**
+  ([#181](https://github.com/mmeyerlein/meclaw/issues/181)). Nothing reads that
+  key; dispatch is by target path alone. The correction is not a deletion,
+  though: `hop.msg_type == "mutation"` is a widespread APPLICATION convention —
+  `receptionist/greet`, `steward/mutator` and `builder-hive/deploy` all set it and
+  condition their mutation edge on it. It is now described as what it is, which
+  also makes the paragraph agree with the document's own insistence elsewhere
+  that `msg_type` is an application convention core knows nothing about.
+
+- **The stdio JSON wire rejects a non-object `context` with `invalid_frame`**
+  ([#182](https://github.com/mmeyerlein/meclaw/issues/182)). A string, a number or
+  an array in that field used to be coerced to `{}` and the frame ran anyway —
+  taking `turn_id` with it, which is the key the sender correlates the reply on.
+  The message was processed, the answer came back, and the sender could not tell
+  whose answer it was; nothing along the way said the frame was wrong. It is now
+  refused at the ingress, the one place that still knows what the caller wrote,
+  with the field named. This is the same call `POST /messages` made for `headers`
+  in 0.9.0, and the same one `hop` already got on both ingresses
+  ([#175](https://github.com/mmeyerlein/meclaw/issues/175),
+  [#180](https://github.com/mmeyerlein/meclaw/issues/180)).
+
+  **It is a behaviour change on an existing field and deliberately not a wire v2.**
+  What wire v1 freezes is the frame shape a reader must be able to parse and the
+  rule that `v` rises only together with a negotiation step; inbound strictness is
+  neither. A sender whose `context` is well-formed — or absent, or `null` — is
+  unaffected. A sender that ships a malformed `context` today starts receiving an
+  `error` frame instead of silence: it was already losing the compartment, it just
+  had no way to find out.
+
+- **The stdio JSON wire rejects a malformed `ttl` with `invalid_frame`**
+  ([#187](https://github.com/mmeyerlein/meclaw/issues/187)). A `"ttl": "12"`, a
+  `-1` or a `3.5` used to read as "no ttl at all": the frame was accepted and the
+  message ran on the colony default. `ttl` is the hop budget, so getting it
+  silently wrong does not fail here — it fails as a message that stops somewhere
+  mid-lane on a budget nobody asked for, which is among the harder things to
+  trace back to a typo in a frame. A `ttl` above `u32::MAX` was worse still: the
+  cast wrapped, so the message ran on an unrelated small number that was neither
+  the value sent nor the default. The stdio ingress now accepts a positive
+  integer in `1..=4294967295` and names the field on anything else — the same
+  answer `POST /messages` has given as `422 invalid_ttl` since 0.9.0. This closes
+  the last envelope asymmetry between the two ingresses, after `hop`
+  ([#175](https://github.com/mmeyerlein/meclaw/issues/175),
+  [#180](https://github.com/mmeyerlein/meclaw/issues/180)) and `context`
+  ([#182](https://github.com/mmeyerlein/meclaw/issues/182)).
+
+  **Behaviour change on an existing field, and deliberately not a wire v2**, on
+  the same reasoning as #182: what wire v1 freezes is the frame shape and the
+  negotiation step, not the strictness of inbound validation. A sender whose
+  `ttl` is a legal budget — or absent, or `null` — is unaffected and still falls
+  back to the substrate default. A sender that ships a malformed one starts
+  receiving an `error` frame instead of a message running on a budget it did not
+  choose.
+
+- **The stdio JSON wire rejects a `trace_id` of the wrong JSON type with
+  `invalid_frame`** ([#190](https://github.com/mmeyerlein/meclaw/issues/190)).
+  A `"trace_id": "nope"` was already refused, but a `12345`, an object, an array
+  or a `true` read as "no trace_id at all": the frame was accepted and a fresh
+  trace id was minted for it. One mistake, two answers, three lines apart — and
+  the silent half is the one that costs the most, because a trace is the only
+  thing tying a conversation together across the process boundary. The message
+  runs and answers as if nothing happened; what is gone is the sender's ability
+  to recognise the answer as belonging to its own trace, and nowhere downstream
+  is there anything left pointing at the frame that dropped it. The stdio
+  ingress now accepts a UUID string and names the field on anything else. There
+  is no HTTP counterpart to align with here — `MessageRequest` carries no
+  `trace_id` — so this closes the asymmetry inside the parser rather than one
+  between the two ingresses, and with it the last inbound field on the stdio
+  frame that could degrade in silence, after `hop`
+  ([#180](https://github.com/mmeyerlein/meclaw/issues/180)), `context`
+  ([#182](https://github.com/mmeyerlein/meclaw/issues/182)) and `ttl`
+  ([#187](https://github.com/mmeyerlein/meclaw/issues/187)).
+
+  **Behaviour change on an existing field, and deliberately not a wire v2**, on
+  the same reasoning as #182 and #187: what wire v1 freezes is the frame shape
+  and the negotiation step, not the strictness of inbound validation. A sender
+  whose `trace_id` is a UUID string — or absent, or `null` — is unaffected and
+  still gets a trace minted for it when it says nothing. A sender that ships a
+  wrong-typed one starts receiving an `error` frame instead of an answer under a
+  trace it never wrote.
+
+### Fixed
+
+- **`hive_scopes` has no delete path, and nothing said whether that was
+  deliberate** ([#192](https://github.com/mmeyerlein/meclaw/issues/192)). Ruled
+  intended, no code change; what was owed was the sentence. `docs/config.md` §
+  "Snapshot vs. Live-Read" and its English twin now state it where the table is
+  described: a hive has no registry row, so `hive_scopes` is the second list that
+  tells the colony an address holds a transit rather than something it can
+  deliver to; `remove_nodes` is disconnect-instead-of-delete everywhere, so a
+  scope row outliving its hive is the no-delete policy applied consistently
+  rather than an omission in one table; and it is load-bearing, because #186 made
+  the table the boot authority for which nodes are hives *because* it is
+  append-only — a hive whose directory was wiped is still read as a transit
+  instead of as a contract-less cell. The one place it becomes a real decision is
+  a hive relocation, which `move_nodes` refuses by name today, and the policy
+  already frames the answer: the scope row moves with the hive.
+
+- **`examples/never-forgets` forked the template library to set one param**
+  ([#220](https://github.com/mmeyerlein/meclaw/issues/220)). The flagship
+  walkthrough's setup copied the whole library and edited
+  `talky/collector/assemble/config.json` so that `turn_write` was on. Since #140
+  that is one key in the declaration, and `grow.json` now carries
+  `"override_params": {"collector/assemble": {"turn_write": "1"}}` on the `talky`
+  node — the file the reader POSTs is where the setting lives, instead of a
+  `python3` heredoc two steps earlier that nothing downstream mentions again.
+
+  **The library copy stays, and the prose now says what it is actually for.**
+  Step 2 writes the brain's `seed/system.jsonl`, and a seed is a *file* read once
+  at spawn — no `override_params` reaches a file, so the reader still needs a
+  library he may write into. What went away is the second reason, the one that
+  had stopped being true.
+
+  `crates/meclaw-cells/tests/never_forgets_example.rs` stops patching the copied
+  config and applies the shipped `grow.json` verbatim, which is now the whole
+  setting. A new `grow_json_sets_the_per_turn_lane_at_instantiation` pins the
+  key **and** its path: `collector` alone is the sub-unit's hive and would take
+  the override in silence (#212), which is the failure mode #203 already shipped
+  once. Removing the override turns two tests red — the pin, and the freshness
+  assertion that finds today's turn in the episode table.
+
+  While in the file: its "Pinned" paragraph still said the test does not need
+  the step-2 seed because the mock answers with a canned tool call. That has been
+  false since #142 — the test runs the step and then asserts `memory_recall` was
+  on the wire, which is the only thing that says a live run would have worked.
+
+- **The tool-lane adapter pattern argued from a reject that no longer exists**
+  ([#219](https://github.com/mmeyerlein/meclaw/issues/219)).
+  `workshop/cookbook/tool-lane-rewrap-adapter.md` opened with "## The root cause
+  (R10)" and taught the adapter as a workaround for `override_params` being
+  refused on a subtree template. #140 removed that reject, so the entry was
+  teaching a workaround by citing a constraint the validator contradicts.
+
+  **The pattern stays, and its rationale is now the one the substrate actually
+  gives.** `llm-unit/dispatch` emits the model's `arguments` as the body
+  verbatim, and an edge modifier writes `set_context` / `delete_context` /
+  `set_hop` / `delete_hop` / `restore_ttl` and nothing else — no modifier can
+  touch `messages[]`. So when a non-`code` builtin consumes its own arg shape
+  (`mcp` wants `{name, arguments}`, `edit` wants `{op, path, find, replace}`),
+  only a cell between the two can rewrite the body. The second half is
+  sharper still: `edit`'s `op` and `path` are fixed by the adapter *because* a
+  tool schema describes what the model may write and has no construct for a
+  value the topology sets. `override_params['prep']` re-authors what is
+  **offered**; it cannot supply an argument that was never sent.
+
+  What #140 does remove is written down as such: the "you only ever get
+  `web_search`" premise, and with it the 1→N splitter form. Declare one tool per
+  lane in `prep`, and the dispatcher's `hop.tool_name` fans them by edge
+  condition with no cell in the middle — so `corpus/15-multi-send-grenze` is no
+  longer listed as a proof of this pattern, only as the multi-send and fan-in
+  receipt it also is. The two remaining proofs are flagged as pre-#140 trees:
+  their `hop.tool_name == 'web_search'` condition and `editadapter`'s own R10
+  comment are historical, the body translation in them is not.
+
+- **The example hop chains named a hive where the trace names a hive AND the cell
+  behind it** ([#210](https://github.com/mmeyerlein/meclaw/issues/210)). The
+  boundary-seal rewrite turned `/talky/collector/assemble` into `/talky/collector`
+  everywhere, including in the trace excerpts of `examples/never-forgets` and
+  `examples/meclaw-os`, on the unstated assumption that a hive either replaces the
+  cell in a trace or is invisible in one. Measured against a running colony, it is
+  neither: a hive gets its own `message_log` row when a message arrives at it and
+  a second one as the sender of what it forwards, so a transit reads hive, cell,
+  hive. Both chains were replaced with the real ones, both READMEs and the
+  never-forgets walkthrough now say plainly that a hive transit is a visible hop —
+  and that a hive nobody addresses (`/memory`, `/firewall`) never appears at all.
+  Pinned by `gh210_a_hive_transit_is_its_own_hop`.
+
+- **Two build products and every shipped version are now gated**
+  ([#217](https://github.com/mmeyerlein/meclaw/issues/217),
+  [#221](https://github.com/mmeyerlein/meclaw/issues/221)). `builder-hive` is
+  generated, and its generator had drifted out of the tree it generates in the
+  worst possible direction: `main()` began with `rmtree`, which eats the
+  hand-written `README.md` and `LIFT.md`, so the safe move was never to run it —
+  and the drift therefore grew by construction. Its `--check` reports MISSING,
+  STRAY and CHANGED per file, and STRAY carries its own repair line, because a
+  leftover file survives a regeneration untouched and "regenerate" would be
+  advice that visibly does nothing.
+
+  Separately, nothing checked that a shipped `template.json` carries a version a
+  builder can name. `"version": 1` is not a parse error — the reader takes
+  `as_str()`, so a number becomes `None` and the template is simply unreachable
+  by `name@version` while sitting on disk. That shipped once already. All 32
+  descriptors are now asked four questions, each answered by the substrate rather
+  than by the test: it parses, a version reaches the row, the resolver can read
+  it, and the registry resolves `name@version` back to the directory it came from
+  — the last one also catching two directories claiming one identity.
+
+- **The docs stopped naming template major lines that had moved**
+  ([#206](https://github.com/mmeyerlein/meclaw/issues/206),
+  [#222](https://github.com/mmeyerlein/meclaw/issues/222)). Roughly 50 sites said
+  `talky@1`, `cogny@1`, `affinity@1` in the present tense after those lines went
+  to 2. Rewritten to the bare name, which cannot go stale again. Historical
+  statements were left standing — "since `collector@1.2.0`" is a record of when
+  something happened and is still true — as were the `@1`s that are still
+  accurate, so several mixed lists are half-rewritten on purpose.
+
+- **A surface render could wait out its whole budget for an answer that had
+  already arrived** ([#223](https://github.com/mmeyerlein/meclaw/issues/223)).
+  The render dispatcher learns of a waiting request and of the cell's reply
+  through two different channels, and `tokio::select!` gives no order between
+  them. `render` registered its waiter and injected the request in one breath,
+  without waiting for the registration to land — so a reply that was already
+  queued when the dispatcher task next ran could be served *before* the
+  registration it belonged to, be dropped as "nobody waiting", and leave the
+  render that earned it sitting out its full budget before reporting a timeout
+  for a page the cell had drawn correctly. `render` now waits for the
+  registration to be acknowledged before anything is injected: a reply cannot
+  exist before its waiter does.
+
+  It was found as a flaky test — `crates/meclaw-api/tests/gh159_surface_render.rs`
+  failed on roughly a quarter of loaded runs, with a different victim each time
+  — but the defect was in the dispatcher, not in the test. One dispatcher serves
+  every surface request in a colony, and a colony under concurrent joins is
+  exactly the load that opens the window; on the socket path the cost was a 15 s
+  dead join.
+
+- **The `builder-hive` template is generated or the build is red**
+  ([#217](https://github.com/mmeyerlein/meclaw/issues/217)).
+  `templates/builder-hive/` is a build product of
+  `workshop/tools/build_builder_hive.py` — the cell scripts live there as real
+  python because an inline script buried in JSON is unreviewable — and nothing
+  compared the product against its sources, so "generated" said nothing about
+  "current". It had already gone wrong twice, both found by hand while fixing
+  #215: `main()` did `shutil.rmtree(OUT)`, which deletes the hand-written
+  `README.md` and `LIFT.md`, and the shipped `config.json` carried `has(hop.*)`
+  guards the generator did not, so a regeneration reverted them silently.
+
+  Worse than the librarian corpus #205 closed, because the two reinforce each
+  other: once running the generator destroys hand-written prose, the safe move is
+  to not run it — which is exactly what lets the other drift grow.
+
+  `--check` regenerates into a temp directory and diffs the two TREES, naming the
+  path for each of MISSING, STRAY (a cell renamed in `CELLS` leaves its old
+  directory behind, and that one is not repaired by regenerating) and CHANGED.
+  `README.md` and `LIFT.md` are named once as non-products and kept out of both
+  the write path and the comparison — the two exclusions fail in opposite
+  directions, one eats the files and the other reports them as permanent drift.
+  Wired into `cargo test` and, unguarded, into CI's `gates` job, so a runner
+  without a `python3` cannot make the gate disappear.
+
+- **The prose stopped configuring colonies that come up unconfigured, and
+  stopped naming template versions the library no longer has**
+  ([#212](https://github.com/mmeyerlein/meclaw/issues/212),
+  [#213](https://github.com/mmeyerlein/meclaw/issues/213),
+  [#206](https://github.com/mmeyerlein/meclaw/issues/206),
+  [#211](https://github.com/mmeyerlein/meclaw/issues/211),
+  [#216](https://github.com/mmeyerlein/meclaw/issues/216)). Five documentation
+  defects from the 0.14.0 pass, one of which misconfigured a colony silently.
+
+  `templates/cogny/README.md`'s instantiation recipe set the collector's knobs
+  with `"override_params": {"collector": {…}}`. Those are params of
+  `collector/assemble`, and `collector` is the sealed sub-unit's **hive** — a
+  cell that reads only `graph`, `ports`, `required_drains` and `contract`. Since
+  #140 an `override_params` key is a cell path inside the template, and a hive
+  path is a valid one: the validator accepts it, nothing consumes the params,
+  and the core comes up as if the override had never been written. Same class as
+  #203 — a documented recipe that runs and does nothing — and the same class as
+  R10's original complaint, arriving through a door #140 could not have closed
+  because it predates the seals. Every `override_params` in `templates/**`,
+  `examples/**` and `docs/**` was resolved against the template its own recipe
+  names; this was the only inert one, and
+  `crates/meclaw-cells/tests/gh212_documented_override_params.rs` now asks the
+  substrate (`parse_subtree` for which cells are hives, `HiveParams` for whether
+  the hive reads what is set) rather than a list kept beside the check.
+
+  Six places still described `override_params` as **rejected** on a subtree
+  template, citing R10 — a claim #140 superseded and `validate.rs` contradicts in
+  as many words. A reader of any of them concludes they must fork a template to
+  parameterise it, which is exactly the workaround #140 removed. Corrected in
+  `templates/collector/README.md`, `templates/llm-unit/{template.json,
+  prep/config.json}`, both `examples/never-forgets` documents and two test doc
+  comments. `templates/collector/README.md`'s params example was headed
+  `…/collector/config.json`, the hive again, and now names
+  `…/collector/assemble/config.json`.
+
+  Twenty-three sites claimed in the present tense that the library offers
+  `talky@1`, `collector@1` or `memory-drain@1`; all five templates went to
+  `2.0.0` in this release. Rewritten to the bare name, which resolves to the
+  highest available version and cannot go stale again. Historical forms ("since
+  `collector@1.2.0`") are records and stay. One of the twenty-three was not
+  shorthand but an instruction: `workshop/AGENTS.md` told builders to
+  instantiate `llm-unit@1`, and semver ranges are not parsed, so that string in
+  a mutation comes back `TemplateMissing`.
+
+  Also: five knob rows in `templates/talky/README.md` § Knobs carried three
+  cells in a four-column table, so every value rendered one column left and the
+  `where` column — the one saying whether a knob is a colony-global `.env` line
+  or a per-instance param — was empty. And
+  `crates/meclaw-cells/tests/slack_template_smoke.rs` described `llm-unit` as
+  carrying a `"version": 1` defect that `1b99f284` fixed; the failure class it
+  illustrates is real and is now written as the record it is.
+
+  `templates/README.md`'s library table gained the `llm-unit` row it was missing
+  ([#209](https://github.com/mmeyerlein/meclaw/issues/209)).
+
+- **The shipped templates stopped documenting addresses the boundary refuses**
+  ([#203](https://github.com/mmeyerlein/meclaw/issues/203)). The sub-unit renames
+  were applied mechanically — `keeper` → `session-keeper` — which replaced the
+  leading segment and kept the trailing one, and the trailing one is exactly what
+  the seal retired. So `talky/README.md` announced "**these four addresses are the
+  port contract**" and listed `./session-keeper/stamp`, which validates nowhere.
+  27 occurrences across 16 files, including five the report had not found.
+
+  The worst was not prose: `examples/never-forgets/WALKTHROUGH.md` carries a
+  runnable command that patches `templates/talky/collector/config.json`, and
+  `turn_write` is a param of `assemble` while the sealed collector hive reads only
+  `graph`/`ports`/`contract`. Following the walkthrough wrote a key nothing reads
+  and brought the example up with **no per-turn writes at all**, silently.
+
+  The talky and cogny diagrams are redrawn rather than patched — cogny's two were
+  half-renamed, `split` in one and `dispatcher` in the next — and now say which
+  nodes are sealed hives and that the lane column is what the door behind each one
+  reads. Two checks keep it honest: `gh203_documented_port_addresses.rs` pushes
+  every literal `from:`/`to:` in a template's prose through the REAL port boundary,
+  and `gh204_declared_defaults_match_the_inline.rs` compares every
+  `contract.settings.<x>.default` against the `${VAR:-default}` the colony
+  actually resolves (69 defaults).
+
+- **`receptionist` gives one answer for where its ingress is**
+  ([#204](https://github.com/mmeyerlein/meclaw/issues/204)). The knob had three
+  values: the inline default said `session-keeper` (right), the machine-readable
+  `contract.settings.ingress.default` said `session-keeper/stamp` (a sealed
+  address), and the README said `session- session-keeper` — a rename substitution
+  that had run over its own output. The declared default is the half tooling
+  reads, so it was the one that mattered most.
+
+- **The librarian corpus is generated or the build is red**
+  ([#205](https://github.com/mmeyerlein/meclaw/issues/205),
+  [#207](https://github.com/mmeyerlein/meclaw/issues/207),
+  [#208](https://github.com/mmeyerlein/meclaw/issues/208)). `docs.jsonl` describes
+  the template library and had drifted 289 lines — three stale versions, eight
+  templates missing entirely — with nothing to notice. It is now pinned by a
+  regeneration diff in CI *and* in the test suite, deliberately in both: the Rust
+  test skips where `python3` is absent, and a gate that can silently vanish is not
+  one. A source that is present and unparseable is now a hard failure naming the
+  file and the parse error, rather than a row that quietly disappears — and the
+  test relays that reason instead of advising a regeneration that cannot help.
+
+- **Three templates ship with the README the library says they have**
+  ([#209](https://github.com/mmeyerlein/meclaw/issues/209)). `builder-librarian`,
+  `builder-hive` and `llm-unit` had none, while `templates/README.md` defines a
+  template as "a directory, a README and a `template.json`".
+
+- **The builder-librarian's seed corpus is generated or the build is red**
+  ([#205](https://github.com/mmeyerlein/meclaw/issues/205)).
+  `templates/builder-librarian/store/seed/docs.jsonl` is a build product of
+  `workshop/tools/build_librarian_seed.py`, chunked out of the spec, the
+  cookbook, the corpus briefs, the template catalogue and the pinned error
+  codes. It is also a committed file, and nothing compared the two, so it was
+  free to describe a tree that had moved on. It did: 289 lines stale, carrying
+  `memory-hive@1.2.0`, `collector@1.2.0` and `talky@1.2.0` after all three had
+  been rev'd, with eight templates missing outright. It was rebuilt in this
+  release, which fixes today and nothing after it.
+
+  A stale corpus here is worse than no corpus. The librarian exists to answer
+  "what templates are there and what do they do", and BM25 scores a stale
+  answer exactly as highly as a true one, so no reader downstream can tell
+  them apart — the retrieval is confident and wrong, which is the shape of
+  error that survives review.
+
+  The generator grew a `--check` mode in the shape of `scripts/canvy_sync.py`:
+  regenerate into a temp file, byte-compare against the committed one, exit
+  non-zero on any difference with the regeneration command in the message. It
+  runs from two places — `crates/meclaw-cells/tests/librarian_seed_corpus.rs`
+  so `cargo test` catches it, and the `gates` job in CI so it is still caught
+  where the test skips for want of a `python3`. A source named literally
+  (`docs/cell-types.md` and the three like it) that goes missing is now a hard
+  error rather than a quietly smaller corpus, which was the same silence one
+  level down.
+
+- **The boot topology is the edge table, not the hive's `config.json`**
+  ([#168](https://github.com/mmeyerlein/meclaw/issues/168),
+  [#178](https://github.com/mmeyerlein/meclaw/issues/178)). Two reports, one
+  question: which edge set is the authority when the colony boots. On a **Reboot**
+  the persisted `colony.db` edge table is; on a **FirstBoot** the `config.json`
+  files are. That was already the rule everywhere else — `colony_task` has always
+  hydrated from `colony.db` and logged "params.graph hints ignored" — and the
+  bootstrap PLANNER was the only reader still believing the file.
+
+  What it cost before: `remove_nodes` took edges out of the table while the hive's
+  `config.json` kept declaring them, so removing the directory too sent the colony
+  into a systemd crash loop on `DanglingEndpoint`. And the header-contract check
+  ran on the `config.json` view alone, so **declaring a hive's doors could turn a
+  colony that had run for days into one that would not boot**: the new incoming
+  edge stopped the node being a graph entry, while the setter that really promotes
+  the key sat on a mutation edge the check could not see.
+
+  `header_edges` is now derived from `plan.edges`, so the check structurally
+  cannot see a different graph than the colony runs. More visible edges means more
+  obligations, so the landing differs by boot kind: a FirstBoot violation is still
+  a hard refusal, while a Reboot **reports every offending node and boots** —
+  refusing there would hand the operator a crash loop after the writes are already
+  on disk. `meclaw --validate --validate-strict` turns the same list into a
+  non-zero exit as a pre-flight. Spec edges are still parsed and CEL-validated; a
+  malformed file stays a loud error, it just no longer decides the topology.
+
+- **The hive-scope table is the boot topology too**
+  ([#186](https://github.com/mmeyerlein/meclaw/issues/186)). The other half of the
+  same cut: `header_hives` still came from the filesystem walk, so on a Reboot a
+  persisted edge whose `from` is a hive whose directory was removed was read as a
+  cell with no contract — contributing nothing to the fan-in walk — instead of as
+  the transit pass-through it is.
+
+- **An edge can address a node the same diff creates at depth**
+  ([#166](https://github.com/mmeyerlein/meclaw/issues/166)). The post-state node
+  set held `add_nodes[].name` as written while the multi-segment endpoint check
+  resolved to an absolute path, so the two namespaces never met and a diff-new
+  node one level down was invisible to its own edge — on both ends. Single-segment
+  names took the other branch, which is why every everyday mutation was fine. The
+  overview already promised this worked; the fix makes the promise true.
+
+- **A deep `add_nodes` name is checked against the paths that exist**
+  ([#179](https://github.com/mmeyerlein/meclaw/issues/179)). The same asymmetry on
+  the identity check, and the destructive half: a multi-segment name matched
+  nothing in the collision set, so an instantiation over a live cell produced no
+  `naming_collision` and went to staging. No-Delete protected the `cell.db` bytes,
+  but the cell's identity was re-minted and its config overwritten. Two spellings
+  of one deep path in a single diff (`unit/n1` + `./unit/n1`) **panicked the
+  colony task** outright. `scoped_name` now decides once which namespace a diff
+  name belongs to, and every identity check goes through it.
+
+- **An edge inside a hive is drawn inside it**
+  ([#174](https://github.com/mmeyerlein/meclaw/issues/174)). The surface router
+  had one notion of "which side" doing two jobs — where an edge attaches to a box,
+  and which way it then travels. Those agree for two boxes side by side and are
+  exactly opposite for a frame around a cell, so every door edge left its frame,
+  looped around the outside and came back. 9 of 9 drawn inside out.
+
+- **A stored arrangement survives a cell being added**
+  ([#170](https://github.com/mmeyerlein/meclaw/issues/170)). A hive row held a
+  point measured against the computed flow layout — and that layout is a function
+  of the whole node set, so one added cell silently redefined the reference every
+  stored anchor was measured against. A row now holds the SHIFT it was dragged by,
+  which no arrival can redefine. Measured on a 53-cell colony adding 6 cells:
+  hand-placed cells moved 17 of 53 → **0 of 53**, hive frames 6 of 19 → **0 of 19**.
+
+- **The canvas does not report its own writes as failures**
+  ([#183](https://github.com/mmeyerlein/meclaw/issues/183)). The store answers
+  every request including write acknowledgements, and the renderer reported each
+  ack to the surface as "the canvas store did not return rows". The store stamps
+  the op onto its own reply, so the discriminator is stated rather than guessed —
+  but the ORDER is the whole guard: a SQL error carries both `error_code` and
+  `operation`, so reading the operation first would have silenced exactly the
+  failed writes the error branch exists for.
+
+- **A canvas row that names nothing is reported, and swept only when asked**
+  ([#184](https://github.com/mmeyerlein/meclaw/issues/184)). Rows for cells and
+  hives that no longer exist accumulated for ever. They are NOT swept
+  automatically, and the reason is worth stating: a render-time sweep cannot tell
+  a rename from a removal, because the substrate had no rename — a renamed hive is
+  one name that vanished plus another that appeared. On the reported colony all
+  four dead rows were renames, so an eager sweep would have deleted four
+  hand-placed positions and nothing else. The legend reports the count and offers
+  one control; pressing it is the operator asserting the one fact the server
+  cannot infer.
+
+- **A `required_drains` port written `./recall` still insists**
+  ([#202](https://github.com/mmeyerlein/meclaw/issues/202)). `params.required_drains[].port`
+  is documented as the same shape as `params.ports`, and since
+  [#196](https://github.com/mmeyerlein/meclaw/issues/196) that shape accepts both
+  spellings of one node. The drain reader re-derived a stricter rule instead —
+  it refused anything containing a `/` — so `"./recall"` was warned about and
+  dropped, and a hive that declared a drain requirement silently had none. Broken
+  twice over for that spelling: past the guard the port path came out
+  `/main/mem/./recall`, which no resolved endpoint can equal, so the requirement
+  could not have fired even if it had survived.
+
+  Same severity shape as #196 and the opposite direction of the rest of this
+  family: lenient, silent, and it removes a guarantee rather than refusing a
+  valid diff. A `required_drains` entry exists to insist that an error lane is
+  wired; what stopped applying is the insistence.
+
+  Both readers now share `canonical_port_name`, so the two readers of one
+  documented shape agree by construction. No shipped template and no live colony
+  spelled a drain port that way, so nothing that used to commit is refused now.
+
+- **A resume target is the node it names, however it is spelled**
+  ([#201](https://github.com/mmeyerlein/meclaw/issues/201)). An `add_nodes` at an
+  existing path is a Reconnect/Resume — the same node keeping its `cell_id` and
+  its `cell.db` — and is deliberately not a `naming_collision`. The list that
+  carries that exemption, `resume_names`, was collected AS WRITTEN and then
+  subtracted from `registry_names`, which hold canonical registry short names.
+  `"./fetch" != "fetch"`, so a resume target spelled the canonical way never
+  cancelled its own registry entry and the Resume was refused:
+
+  ```
+  add_nodes 'fetch'    at existing /fetch    -> committed
+  add_nodes './fetch'  at existing /fetch    -> naming_collision "./fetch"
+  ```
+
+  Short-name-only and depth-invisible: the deep half is answered from
+  `deep_registry_paths`, filtered by `resume_targets`, and those were pushed
+  resolved from the start — the same asymmetry #199 found one file over.
+  Lenient-opposite (a legitimate Resume refused, nothing committed wrong), which
+  is presumably why it outlived its siblings. The name goes through `scoped_name`
+  now, so nothing on the mutation surface is keyed on how a caller happened to
+  spell a name.
+
+- **An `add_nodes` named `./successor` is the node a forward reference finds**
+  ([#199](https://github.com/mmeyerlein/meclaw/issues/199)). The existing-node
+  form of `swap_nodes[].with` may forward-reference a node an `add_nodes` of the
+  same diff is creating. The set that answers it, `add_names`, was collected AS
+  WRITTEN and then consulted as the short-name namespace, which strips the
+  canonical `./` prefix before comparing — so `./successor` sat in a set only
+  ever queried with `successor`, and an `add_nodes` written the canonical way was
+  invisible to the reference in either spelling (`match_no_hit`, on a diff whose
+  own node was right there). Its resolved twin `add_paths` was always correct,
+  which is why the defect was short-name-only and depth-invisible.
+
+  #189's exact shape at the one call site #189 did not touch. Lenient-opposite —
+  a valid diff refused, nothing committed wrong — which is why it survived four
+  passes over this family. `add_names` is canonicalised through `scoped_name`
+  now, so no call site in the mutation validator compares a spelling.
+
+- **A diff can wire what it moves or swaps in**
+  ([#198](https://github.com/mmeyerlein/meclaw/issues/198)). `swap_nodes[].with.name`
+  (the instantiate form) and `move_nodes[].to` are addresses the diff CREATES.
+  Neither reached the post-state node view the endpoint check is answered from,
+  so an edge in the same diff naming one was refused:
+
+  ```json
+  {"move_nodes": [{"match": {"name": "fetch"}, "to": "unit/fetch"}],
+   "add_edges":  [{"from": "./anchor", "to": "./unit/fetch"}]}
+  ```
+
+  → `edge_schema: to='./unit/fetch' unknown`.
+
+  This undercut the argument both operations were built on. An `add_edges` edge
+  may point at a node arriving in the same diff via `add_nodes` because splitting
+  into two mutations means choosing between a window where a lane is wired twice
+  and one where it is not wired at all; `move_nodes` was shipped (#169) to be the
+  relocation with no such window — and a caller who wanted to give the relocated
+  cell one extra lane in the same breath could not.
+
+  The view's insert side is now built from `diff_path_claims`, the enumeration
+  that already answers "which entries put a node at a path" for the duplicate-claim
+  check (#195), rather than from a second list beside it. Both halves of the view
+  — short names and absolute paths — are reached through one `occupy`, the mirror
+  of #194's `vacate`. The existing-node form of `swap_nodes[].with` stays out for
+  the same reason it is no claim: it references a node the pre-state or an
+  `add_nodes` of the diff already contributes, and creates nothing of its own.
+
+  Lenient-opposite: a valid diff was refused, nothing committed wrong. An
+  endpoint no entry of the diff creates is still `edge_schema`, and an address
+  the diff VACATES is still no endpoint (#194).
+
+- **A `params.ports` entry written `./policy` is the port `policy`, and one that
+  can never match is reported instead of ignored**
+  ([#196](https://github.com/mmeyerlein/meclaw/issues/196)). The port boundary
+  compares the SHORT name of a resolved endpoint against each declared entry, so
+  a declaration spelled with the canonical `./` prefix compared equal to nothing
+  at all. `templates/access` (`["./policy", "./invoke", "./store"]`) and
+  `templates/steward` (`["./meter", "./mutator"]`) were therefore sealed exactly
+  as strictly as `ports: []` — the hive path the only address — while their own
+  READMEs presented those ports as the way in. A mutation wiring a documented
+  port was rejected as `hive_port_boundary`, with a message that named the
+  boundary rather than the spelling.
+
+  Entries are now canonicalised on read, the way every other reader on the
+  mutation surface already handles the prefix (#189, #193), so both spellings
+  land on one name and a colony instantiated from either template keeps working
+  without touching its frozen `config.json`. An entry that can never name a
+  direct child — a deep name, `.`, `..`, or nothing — is reported at `warn` and
+  dropped, which is what `params.required_drains` has always done with the same
+  shape. That silence was the real defect: the templates looked configured, were
+  not, and said nothing, because neither had ever been instantiated.
+
+  The two shipped declarations are written as short names now (a spelling
+  change, not an interface change), and `gh196_shipped_hive_ports` runs every
+  shipped `params.ports` through the substrate's own reader and boundary, so a
+  declaration that opens no door cannot ship again.
+
+- **An `add_nodes` name written `./foo` can be addressed as an edge endpoint in
+  the same diff** ([#189](https://github.com/mmeyerlein/meclaw/issues/189)).
+  `./foo` and `foo` are the same path, and the rest of the mutation surface
+  treats them as such — but the post-state node set took the name as written
+  while the endpoint lookup strips the prefix first. So
+
+  ```json
+  {"add_nodes": [{"name": "./foo", "template": "echo"}],
+   "add_edges": [{"from": "./bar", "to": "./foo"}]}
+  ```
+
+  was rejected with `edge_schema: to='./foo' unknown` while the identical diff
+  spelling the name `foo` committed. The message was misleading on top of it: it
+  called the endpoint unknown when the node was right there in the same diff,
+  under a name differing by two characters. The insert now canonicalises like
+  every other reader, so both spellings land on one key.
+
+- **A `remove_nodes` written `./foo` takes `foo` out of the post-state, so an
+  edge cannot be wired onto it in the same diff**
+  ([#193](https://github.com/mmeyerlein/meclaw/issues/193)). The last place in
+  the endpoint check that compared a spelling instead of a name. `remove_nodes`
+  dropped its `match.name` from the post-state node set **as written**, so
+
+  ```json
+  {"remove_nodes": [{"match": {"name": "./foo"}}],
+   "add_edges":    [{"from": "./bar", "to": "./foo"}]}
+  ```
+
+  committed an edge onto the very node it was disconnecting, while the identical
+  diff spelling the name `foo` was refused as `edge_schema`. This is the lenient
+  direction of #189 — it accepted a diff it should refuse — and it left behind a
+  committed lane pointing at an inactive node, which is what the endpoint check
+  exists to prevent.
+
+  **Behaviour change:** such a diff now rejects as `edge_schema`, whichever way
+  either side spells the name. A `remove_nodes` that no edge in the same diff
+  contradicts is unaffected and still commits, prefix or no prefix.
+
+- **A `swap_nodes[].with` no longer writes over a directory that is already at
+  its target path** ([#188](https://github.com/mmeyerlein/meclaw/issues/188)).
+  `add_nodes` looks at its target before staging — an existing directory makes
+  the entry a Resume and nothing is copied over it. The with-side never looked.
+  It staged a fresh template tree and let the apply take its `final_path exists`
+  branch, which replaces `config.json` in place: a second `cell.id` for a path
+  that already had one, a different `cell.type` reading the `cell.db` beside it,
+  and no diagnostic anywhere.
+
+  [#179](https://github.com/mmeyerlein/meclaw/issues/179) closed the half where
+  the target carries a registry row. What was left is a directory nothing in the
+  registry claims — a hand-placed tree, the residue of an aborted migration, a
+  row cleared outside the mutation flow. The registry cannot see it, because the
+  registry is what it is missing from.
+
+  **Behaviour change:** such a diff now rejects as `naming_collision`, and the
+  message names the directory it found and the diff entry that aimed there,
+  instead of the mutation committing in silence. Nothing is written. Re-taking
+  that path needs no manual wipe: an `add_nodes` at an existing directory is a
+  Resume (decided on filesystem existence, so it covers an unregistered
+  directory too), and an `add_nodes[].adopt` entry takes such a tree over
+  deliberately with the on-disk `cell.type` checked against what the diff
+  expected.
+
+- **A node the same diff is taking out is no longer a valid edge endpoint — at
+  any depth, and for `swap_nodes` and `move_nodes` as well as `remove_nodes`**
+  ([#194](https://github.com/mmeyerlein/meclaw/issues/194)). The endpoint check
+  answers "will this node be there?" from two sets: the scope's short names, and
+  the absolute paths of everything that exists at any depth. #193 taught the
+  `remove_nodes` loop to subtract from the first. The second arrived as the
+  **pre**-state and nothing was ever taken out of it — and for a node that
+  already existed at depth, that is exactly the set the check reads. So
+
+  ```json
+  {"remove_nodes": [{"match": {"name": "talky/split"}}],
+   "add_edges":    [{"from": "./anchor", "to": "./talky/split"}]}
+  ```
+
+  committed, and the lane sat in `colony.db` pointing at a node the same
+  mutation had disconnected. Newly reachable since
+  [#179](https://github.com/mmeyerlein/meclaw/issues/179) made a deep
+  `match.name` hit at all.
+
+  The same question asked of the two operations written while that set was
+  assumed immutable answers the same way, and there it was never depth-only:
+
+  - a `swap_nodes[].match.name` names the node being **replaced**. Its edges are
+    swung onto the target, but the swing runs over the edges that were there
+    before the diff — so a lane the same diff added onto the replaced node was
+    not carried along and was left naming a disconnected cell.
+  - a `move_nodes[].match.name` names an address the mutation **vacates**. The
+    directory leaves by `rename(2)` and the registry row is re-addressed, so an
+    edge naming the old address committed onto a path with nothing at it.
+
+  **Behaviour change:** all three now reject as `edge_schema` when an
+  `add_edges` in the same diff names the node they are taking out, in either
+  spelling and at any depth. A `remove_nodes`, `swap_nodes` or `move_nodes` that
+  no edge in the same diff contradicts is unaffected and still commits — the
+  swap still swings its existing lanes onto the target, the move still carries
+  its own along to the new address.
+
+- **Two entries of one diff can no longer claim the same path**
+  ([#195](https://github.com/mmeyerlein/meclaw/issues/195)). The naming checks
+  measure a diff against the registry, which arrives resume-filtered on purpose:
+  an `add_nodes` at an existing path is a Reconnect/Resume, not a collision.
+  Beside that sat the only in-diff bookkeeping there was, and it tracked
+  `add_nodes` entries among themselves and nothing else. A claim from any other
+  entry of the same diff fell between the two — the registry check had been told
+  to ignore the path, and the in-diff check was not looking at that side.
+
+  So a `swap_nodes[].with.name` equal to an `add_nodes` target in the same diff
+  passed. Where the path already existed,
+  [#188](https://github.com/mmeyerlein/meclaw/issues/188)'s staging guard
+  refuses the destructive outcome — but with the generic occupied-path message,
+  which advises clearing the directory or adopting it deliberately. That is
+  advice for a leftover tree and wrong here, where the diff itself is what wants
+  the path twice. Where the path did **not** already exist, nothing refused it
+  at all: two trees were staged onto one path and the second apply failed
+  halfway, which strict-fails the whole colony task. The same hole was open for
+  two `swap_nodes[].with` at one name, and for a `swap_nodes[].with` against a
+  `move_nodes[].to`.
+
+  **Behaviour change:** a diff in which two entries claim one path now rejects
+  as `naming_collision` before anything is staged, and the message names both
+  entries by position and the path they share, instead of describing a directory
+  that is not the problem. The claim set spans `add_nodes` (resume targets
+  included — a resume is not a collision against the registry, but it is still
+  this diff claiming that path), the instantiate form of `swap_nodes[].with`,
+  and `move_nodes[].to`. Claims are compared as resolved paths, so `unit/n` and
+  `./unit/n` are one claim.
+
+  Unchanged: a lone `add_nodes` at an existing path is still a Resume and still
+  commits, keeping the node's identity. The existing-node form of
+  `swap_nodes[].with` carries no `template`, references a node instead of
+  creating one, and is deliberately not a claim — a `with.name` forward-
+  referencing this diff's own `add_nodes` keeps resolving.
+
 ## [0.13.0] — 2026-08-17
 
 The canvas was correct and unreadable. Its stylesheet was copied from a working

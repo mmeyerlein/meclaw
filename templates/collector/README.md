@@ -1,4 +1,4 @@
-# `collector@1.2.0`
+# `collector@2.0.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -98,7 +98,7 @@ is the authority, this table is its prose.
 
 **`./assemble` is the port address, and the address is the contract.** Every lane in and
 every route out crosses that one endpoint, and the working colonies under
-[`../../examples/`](../../examples/) address it literally as `<parent>/collector/assemble`
+[`../../examples/`](../../examples/) address it literally as `<parent>/collector`
 -- it is a stable **address**, not implementation detail that happens to be reachable. The
 second cell, `./window`, is internal and may be rearranged in a version bump; `./assemble`
 may not, and moving it is a breaking change to every parent that wired it: a CHANGELOG
@@ -261,7 +261,7 @@ dispatcher routes it by `hop.tool_name`, and the cell behind that edge is **this
 because the collector owns the slate the stub points at.
 
 ```jsonc
-{"from": "./split", "to": "./collector/assemble",
+{"from": "./dispatcher", "to": "./collector",
  "condition": "hop.route == 'tool' && hop.tool_name == 'thread_recall'",
  "modifier": {"set_hop": {"route": "'in_thread_call'"}}}
 ```
@@ -333,14 +333,31 @@ route is gone -- there is no `COLLECTOR_*` fallback left to read. Three conseque
 }
 ```
 
-**What `override_params` cannot do, and why.** `add_nodes[].override_params` is **rejected**
-on a subtree template (`schema`, R10 ruling 2026-06-11: there is no sub-cell addressing, and
-the earlier silent no-op was worse than a reject). `collector` is a two-cell subtree, so the
-knobs cannot be set in the `add_nodes` entry that instantiates it -- neither before this
-change nor after it. The tree writer sets them **in the instantiated tree**: write the values
-into `…/assemble/config.json` after the mutation lands, or have the parent that owns the tree
-write the file directly. `params` are read when the cell spawns, so the value is live from the
-next boot of that cell.
+**What `override_params` does, and the one key that looks right and is not.**
+`add_nodes[].override_params` reaches these knobs at birth. On a subtree template it is
+**addressed** ([#140](https://github.com/mmeyerlein/meclaw/issues/140), which superseded the
+R10 blanket reject of 2026-06-11 -- R10's finding was a flat override that committed as a
+silent no-op, and addressing removes the cause instead of the feature): each key is a cell's
+path inside the template, `""` being the subtree root.
+
+```json
+{"add_nodes": [{"name": "collector", "template": "collector",
+                "override_params": {"assemble": {"turn_write": "1", "max_iter": 12}}}]}
+```
+
+The knobs are params of `assemble`, so the key is `assemble` -- and from a composite that
+carries a collector as a sub-unit (`talky`, `cogny`) it is `collector/assemble`, never
+`collector`. **A key that stops at a HIVE is the trap**: `""` here, the sub-unit's root
+there, both valid cell paths and both accepted. A hive reads only `graph`, `ports`,
+`required_drains` and `contract`, so params set on one are read by nothing and the instance
+comes up unconfigured with no diagnostic anywhere
+([#212](https://github.com/mmeyerlein/meclaw/issues/212)). A key that names no cell at all is
+the loud case R10 protected: refused pre-destructively, with the template's actual cells in
+the message.
+
+Setting them **in the instantiated tree** stays available and is what a parent that owns the
+tree does: write the values into `…/assemble/config.json` after the mutation lands. `params`
+are read when the cell spawns, so the value is live from the next boot of that cell.
 
 A colony-global value is still reachable where one is actually wanted: a param may carry a
 `${VAR}`-substitution token, which resolves at bootstrap and at mutation instantiation exactly
@@ -485,12 +502,12 @@ Two edges, and neither of them is new machinery:
 
 ```jsonc
 // 1. the dispatcher's memory lane -- the same shape as any tool edge
-{"from": "./split", "to": "./collector/assemble",
+{"from": "./dispatcher", "to": "./collector",
  "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
  "modifier": {"set_hop": {"route": "'in_memory_call'"}}}
 
 // 2. the recall port the per-turn leg already used, carrying five keys now
-{"from": "./collector/assemble", "to": "<memory hive>/recall",
+{"from": "./collector", "to": "<memory hive>/recall",
  "condition": "hop.route == 'recall'",
  "modifier": {"set_context": {"recall_query": "hop.recall_query",
                               "memory_tier": "hop.memory_tier",
@@ -571,7 +588,7 @@ properties depend on that and neither is decorative:
   time. A second consumer with its own numbering is a second memory, not a faster one.
 - The consumer's own idempotence -- not the collector's -- is what makes the repetition
   free. The day is handed out *whole* every time; a consumer that recognises what it has
-  already taken writes only the difference. `memory-drain@1` is built exactly that way.
+  already taken writes only the difference. `memory-drain` is built exactly that way.
 
 The close route keeps its consumers and its cadence. It becomes the **safety net**: a turn
 the per-turn lane lost (a restart, a lane switched on mid-session) is still in the close
@@ -727,12 +744,12 @@ role a provider knows. In the store it keeps its own role, so a batch and a prun
 still tell an event from a user's word.
 
 ```json
-{ "from": "./split", "to": "/agent/cogny/collector/assemble",
+{ "from": "./dispatcher", "to": "/agent/cogny/collector",
   "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
   "modifier": {"set_hop": {"route": "'in_turn'"},
                "set_context": {"consult_id": "hop.consult_id"},
                "restore_ttl": true} },
-{ "from": "/agent/cogny/collector/assemble", "to": "./collector/assemble",
+{ "from": "/agent/cogny/collector", "to": "./collector",
   "condition": "has(hop.route) && hop.route == 'answer'",
   "modifier": {"set_hop": {"route": "'in_advice'"}, "restore_ttl": true} }
 ```

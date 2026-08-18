@@ -89,6 +89,60 @@ knob surface it had closed —, and
 standing watch: unbounded by design, measured every few weeks rather than
 capped.
 
+0.14.0 is a flank of its own, and it came out of a migration rather than a
+plan. Putting every hive behind its boundary turned the mutation validator's
+oldest assumption — that a diff name means what it is spelled — into a family of
+defects that had been invisible because the everyday case is a single-segment
+name. Twelve of them, each found by fixing the one before it, three of them
+destructive: an instantiation could re-mint a live cell's identity
+([#179](https://github.com/mmeyerlein/meclaw/issues/179)), an edge could commit
+onto a node the same diff disconnected
+([#194](https://github.com/mmeyerlein/meclaw/issues/194)), and two entries of one
+ordinary diff could take the colony down mid-apply
+([#195](https://github.com/mmeyerlein/meclaw/issues/195)). One function decides
+what a diff name means now, and every call site in the validator and in
+`colony.rs` goes through it.
+
+The same release closes the two boot questions the migration exposed
+([#168](https://github.com/mmeyerlein/meclaw/issues/168),
+[#178](https://github.com/mmeyerlein/meclaw/issues/178)) with one rule — on a
+reboot the persisted tables are the topology, on a first boot the files are —,
+adds `move_nodes` ([#169](https://github.com/mmeyerlein/meclaw/issues/169)) so a
+relocation stops being an add-and-forget that loses the cell's `cell.db`, and
+lets both ingresses seed a `hop`
+([#175](https://github.com/mmeyerlein/meclaw/issues/175),
+[#180](https://github.com/mmeyerlein/meclaw/issues/180)) so a sealed hive's own
+door can be knocked on without driving a paid turn through its inside.
+
+## Before the channel round: three rulings
+
+The next stream — one talky per channel, the connectors moved out of `access`
+into channel hives of their own, `access` left holding a vault — is blocked on
+three questions that are decisions rather than implementations, and all three
+were surfaced by building 0.14.0 rather than by planning it:
+
+[#197](https://github.com/mmeyerlein/meclaw/issues/197) — a hive now declares its
+interface in lanes ([#173](https://github.com/mmeyerlein/meclaw/issues/173)), but
+four hives still expose inner cell names as ports (`canvy`, `memory-hive`,
+`access`, `steward`). Migrating them behind their boundary costs design work per
+template and touches the live colony; a port alias costs an indirection in
+addressing — the one thing the boundary migration spent itself removing. Same
+decision the channel round needs.
+
+[#200](https://github.com/mmeyerlein/meclaw/issues/200) — `templates/access`
+declares `store` a port, which its own README describes as the bypass port
+discipline is supposed to prevent, and omits `sweep`, which the same README calls
+a MUST. Invisible until [#196](https://github.com/mmeyerlein/meclaw/issues/196)
+made the declaration take effect. `access` is the vault template, so what it
+seals is a security statement rather than a typo.
+
+[#185](https://github.com/mmeyerlein/meclaw/issues/185) — "this cell is an
+ingress" is inferred from having no incoming edge. That held while the header
+check was half-blind; now that it sees the running graph, a genuine ingress that
+also receives replies loses the branch. #178 landed as report-don't-refuse on a
+reboot precisely so this cannot brick a colony while it is open, but a first boot
+still refuses, and a proxy in a channel hive is exactly the shape at issue.
+
 ## Later: memory, after the measurement
 
 **The stall is over: the memory hive shipped publicly in 0.9.0**, test suite
@@ -162,8 +216,8 @@ The good first issues from the first public wave — #3 and #4 — shipped with
 0.5.0 as `retry@1.0.0` and `archive-bridge@1.0.0`. The template surface is open: a
 template is a directory, a README and a `template.json`, and the fourteen listed
 in [`templates/README.md`](templates/README.md) are the worked examples — eleven
-single-purpose ones plus three composites: `talky@1.2.0`, which carries four of
-them as sub-units, `cogny@1.3.0`, which carries two, and `memory-hive@1.4.0`, the
+single-purpose ones plus three composites: `talky@2.0.0`, which carries four of
+them as sub-units, `cogny@2.0.0`, which carries two, and `memory-hive@1.4.0`, the
 agent memory as a hive of ten cells. New ones are welcome.
 
 ## Shipped
@@ -171,6 +225,12 @@ agent memory as a hive of ten cells. New ones are welcome.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.14.0 — a name means one thing.** A migration that put every hive behind
+  its boundary walked into the mutation validator's oldest assumption and left
+  twelve defects behind, three of them destructive. One function decides what a
+  diff name means now. Plus `move_nodes`, a machine-readable hive contract, a
+  seedable `hop` at both ingresses, one rule for what the boot topology is, and a
+  canvas arrangement that survives a cell being added.
 - **v0.10.7 — a liveness check that perturbs what it measures is not one.**
   The 0.10.6 repair of a flaky test was worse than the flake; the Monday cron
   caught it within hours. The assertion is removed, not replaced.

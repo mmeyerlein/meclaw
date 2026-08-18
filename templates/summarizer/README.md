@@ -1,4 +1,4 @@
-# `summarizer@1.0.0`
+# `summarizer@2.0.0`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -61,13 +61,14 @@ writes `handover`, and this hive writes nothing else.
 
 ## Ports
 
-The entry lane goes **into `./prep`**. The parent edge names the lane and consumes
-exactly the collector's close-batch form (`messages[]` the whole day in order, the raw
-round rows in the top-level slot `rounds`, `hop.session_id` / `turn_count` /
-`round_count` the sizes):
+The entry lane goes **onto the hive path itself**: `params.ports` is `[]`, so
+`<summarizer>` is the only address and the `in_` lane the edge names is what the door
+inside picks up. The parent edge consumes exactly the collector's close-batch form
+(`messages[]` the whole day in order, the raw round rows in the top-level slot `rounds`,
+`hop.session_id` / `turn_count` / `round_count` the sizes):
 
 ```json
-{"from": "<collector>/assemble", "to": "<summarizer>/prep",
+{"from": "<collector>", "to": "<summarizer>",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"}}}
 ```
@@ -76,7 +77,8 @@ round rows in the top-level slot `rounds`, `hop.session_id` / `turn_count` /
 |---|---|---|
 | `in_batch` | the collector's close lane (route `write`) | shapes the day into the prompt, asks the writer |
 
-Exits leave **from `./prep`** on `hop.route`. **Where they lead is the parent's wiring,
+Exits leave **from the hive path** on `hop.route` -- `./prep -> .` is the out-door, so a
+parent drains `<summarizer>` and never the cell behind it. **Where they lead is the parent's wiring,
 not this hive's** -- the template does not know its target (Track E / the agent tree
 decides):
 
@@ -95,8 +97,9 @@ crossing edge derives inactive and never spawns. Instantiation needs `ctx.model`
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 | env var | default | meaning |
 |---|---|---|

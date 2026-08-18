@@ -58,7 +58,7 @@ never the movement in between.
 ```json
 {"scope": "/org/acme/member/alice",
  "ctx": {},
- "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.1.0"}]}}
+ "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.2.0"}]}}
 ```
 
 That is the whole installation. No restart, no lane to grant, no edge for the
@@ -138,7 +138,7 @@ Three kinds share one `canvas` table, discriminated by `kind`:
 | `kind` | carries |
 |---|---|
 | `node` | `id`, `x`, `y` — where one box sits |
-| `hive` | `id`, `x`, `y` — where a GROUP was put, as its box origin |
+| `hive_shift` | `id`, `x`, `y` — how far a GROUP was pushed by hand |
 | `camera` | `x`, `y`, `z` — the viewport, zoom as integer per-mille |
 | `graph` | `doc` — the whole `/colony/graph` answer |
 
@@ -204,24 +204,55 @@ frame, its label and every cell in it move together. On release the client sends
 row for it, whatever the hive's size. Twenty cells do not become forty store round
 trips on an interactive path.
 
-What is stored is an offset, not the rectangle. The rectangle stays derived from
-where the members ended up, which is what lets a cell dragged out of a crowd GROW
-its hive instead of being stranded outside a stale frame. The precedence reads one
-way and only one way:
+What is stored is the shift itself — how far the hand pushed the group, measured
+against nothing. Neither rectangle it could be measured against survives a colony
+that lives: its own frame is derived from the members, so it moves whenever one of
+them moves; its corner in the automatic layout moves whenever any cell ANYWHERE
+arrives, because that layout is a function of the whole node set. The second one
+shipped, and instantiating six cells in a hand-arranged colony walked 12 of its 19
+frames off (GH #170). A shift cannot be reinterpreted by a colony growing.
+
+The rectangle stays derived from where the members ended up, which is what lets a
+cell dragged out of a crowd GROW its hive instead of being stranded outside a stale
+frame. The precedence reads one way and only one way:
 
     a cell somebody placed by hand  >  the offset of its hive  >  the automatic layout
 
-so moving a hive never silently undoes a hand-placed cell inside it.
+so moving a hive never silently undoes a hand-placed cell inside it. A row in the
+older shape — the box origin rather than the shift — is read once through the
+layout it was written against and rewritten, so an arrangement made before GH #170
+comes back exactly as it was left.
 
 A hive's frame is the frame around its **whole subtree**, so dragging one takes
 every cell and every nested frame below it. Ancestors are deliberately left alone
 during the drag: their frames are derived, and the server's answer grows them — a
 parent that stretched on the client would be guessing.
 
+### Rows that name nothing
+
+A position outlives the thing it describes. Remove a cell and its row stays; rename
+a hive and the row keeps the old name. The picture is unharmed — a row naming
+nothing is skipped — but the table drifts away from the registry, and a count over
+it stops meaning anything.
+
+The legend says how many such rows there are and offers a **sweep**. It is a press
+and not a housekeeping pass on purpose: **the colony has no rename**. A mutation
+says `remove_nodes` and `add_nodes`, so a renamed hive is a name that vanished and
+a different name that appeared, and nothing in the table can tell that from a
+removal. On the 53-cell colony this was written against, all four hive rows naming
+nothing were renames — `talky/keeper` → `talky/session-keeper`, `archive` →
+`day-archive`, and two more — so a render that swept on its own initiative would
+have deleted four hand-placed group positions and nothing else. The snapshot
+arrives on a timer as well, so "absent from the picture" also reads as "the tick
+has not run since this cell arrived".
+
+The operator who removed the cell is the only one who knows which happened, so the
+deletion is their gesture. A press with nothing to shed writes nothing (GH #184).
+
 ### Hive in hive
 
 Every ancestor of every cell is a hive and gets a frame, whether or not it holds a
-cell of its own: `/org/acme/member/al/assistants/egon/talky/keeper` draws seven
+cell of its own: `/org/acme/member/al/assistants/egon/talky/session-keeper` draws seven
 nested frames. The layout is recursive and the same shape at every depth — a hive's
 own cells on top as rows by flow depth, its child hives packed into shelves below —
 so a parent packs its children by their size without knowing anything about their

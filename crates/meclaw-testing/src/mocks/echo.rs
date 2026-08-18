@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 pub struct EchoMockCell {
     own_path: Path,
-    echo_to: Option<Path>,
+    emitted_target: Option<Path>,
     tap_to: Option<mpsc::Sender<Path>>,
     emitted_headers: Map<String, Value>,
 }
@@ -18,15 +18,20 @@ impl EchoMockCell {
     pub fn new(own_path: Path) -> Self {
         Self {
             own_path,
-            echo_to: None,
+            emitted_target: None,
             tap_to: None,
             emitted_headers: Map::new(),
         }
     }
 
-    /// Forward output to `target`.
-    pub fn echo_to(mut self, target: Path) -> Self {
-        self.echo_to = Some(target);
+    /// Set the `target` field written on this cell's emission.
+    ///
+    /// This is NOT a delivery address: the colony's outputs arm routes a cell
+    /// emission by the EMITTING cell's out-edges, and the matching edge overlays
+    /// the target. Without an out-edge the emission dead-letters as `no_route`,
+    /// whatever this field says. Wire an edge (or a catch-all out-edge) as well.
+    pub fn emitted_target(mut self, target: Path) -> Self {
+        self.emitted_target = Some(target);
         self
     }
 
@@ -53,7 +58,7 @@ impl Cell for EchoMockCell {
         sink: &OutputSink,
     ) -> impl std::future::Future<Output = ()> + Send {
         let own_path = self.own_path.clone();
-        let echo_to = self.echo_to.clone();
+        let emitted_target = self.emitted_target.clone();
         let tap_to = self.tap_to.clone();
         let emitted_headers = self.emitted_headers.clone();
         let sink = sink.clone();
@@ -61,7 +66,7 @@ impl Cell for EchoMockCell {
             if let Some(tap) = &tap_to {
                 let _ = tap.send(own_path.clone()).await;
             }
-            let Some(target) = echo_to else { return };
+            let Some(target) = emitted_target else { return };
 
             // Robust against non-UBF inputs (source messages with Null body).
             let input_messages: Vec<Value> = match &msg.body {
@@ -116,7 +121,7 @@ mod tests {
             None,
         );
         let mut cell = EchoMockCell::new(Path::new("/a"))
-            .echo_to(Path::new("/b"))
+            .emitted_target(Path::new("/b"))
             .tap_to(tap_tx);
         let msg = MessageBuilder::new(Path::new("/a")).build();
         cell.handle(msg, &sink).await;
@@ -167,7 +172,7 @@ mod tests {
             None,
         );
         let mut cell = EchoMockCell::new(Path::new("/a"))
-            .echo_to(Path::new("/b"))
+            .emitted_target(Path::new("/b"))
             .with_emitted_header("forwarded_by", json!("/a"));
         let input = MessageBuilder::new(Path::new("/a"))
             .body(Body::Inline(json!({
@@ -199,7 +204,7 @@ mod tests {
             meclaw_core::Headers::new(),
             None,
         );
-        let mut cell = EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"));
+        let mut cell = EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"));
         let input = MessageBuilder::new(Path::new("/a")).build();
         cell.handle(input, &sink).await;
         let em = out_rx.recv().await.unwrap();

@@ -72,7 +72,9 @@ async fn adopt_registers_existing_node_fresh_id_validated_active() {
     write(
         td.path(),
         "main/foo/config.json",
-        &format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        &format!(
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#
+        ),
     );
 
     let h = ColonyHandle::new_with_echo_at(td.path());
@@ -138,7 +140,9 @@ async fn adopt_type_mismatch_rejects_pre_destructively() {
     write(
         td.path(),
         "main/foo/config.json",
-        &format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        &format!(
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#
+        ),
     );
     let h = ColonyHandle::new_with_echo_at(td.path());
 
@@ -175,7 +179,7 @@ async fn adopt_invalid_existing_config_rejects() {
     write(
         td.path(),
         "main/bad/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"}}"#,
     );
     let h = ColonyHandle::new_with_echo_at(td.path());
 
@@ -204,7 +208,9 @@ async fn adopt_with_template_is_schema_reject() {
     write(
         td.path(),
         "main/foo/config.json",
-        &format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        &format!(
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#
+        ),
     );
     let h = ColonyHandle::new_with_echo_at(td.path());
 
@@ -234,7 +240,9 @@ async fn adopt_without_type_is_schema_reject() {
     write(
         td.path(),
         "main/foo/config.json",
-        &format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        &format!(
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#
+        ),
     );
     let h = ColonyHandle::new_with_echo_at(td.path());
 
@@ -295,7 +303,9 @@ async fn adopt_spawn_failure_preserves_existing_dir_and_sweeps_staging() {
     write(
         td.path(),
         "main/foo/config.json",
-        &format!(r#"{{"cell":{{"type":"echo"}},"params":{{"echo_to":"/sink"}},{CONTRACT}}}"#),
+        &format!(
+            r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/sink"}},{CONTRACT}}}"#
+        ),
     );
     // The builder's pre-placed cell.db — a sentinel that MUST survive a failed adopt.
     let cell_db = td.path().join("main/foo/cell.db");

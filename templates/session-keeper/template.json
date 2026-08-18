@@ -1,6 +1,6 @@
 {
   "name": "session-keeper",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": {
     "purpose": "A session as a channel GENERATION, modelled on a phone call: it begins with a turn, it ends deterministically, and the fluid transition in between belongs to it. The keeper mints the id at the surface and stamps every inbound turn with it, keeps one idle clock per channel, and ends a generation at night by arithmetic -- a timer plus an idle threshold, never a model judgement. Reopening is lazy: nothing pre-creates a session, the next turn opens the next generation by itself.",
     "use_when": "In front of an agent's context assembly, wherever a conversation needs a beginning and an end instead of one endless thread -- a day boundary for the window, a scope for the episode a memory hive is handed, an anchor for 'this call' versus 'yesterday'. Wire the ingress lane, the stamped-turn exit and the close port in the SAME mutation that instantiates it; an island without a crossing edge stays inactive.",

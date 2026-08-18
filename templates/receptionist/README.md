@@ -1,4 +1,4 @@
-# `receptionist@1.0.0`
+# `receptionist@1.1.0`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -8,7 +8,7 @@ Rust.
 etiquette, formatting and pacing differ per channel, and one `talky` in front of
 many chats mixes their windows into one. The receptionist is the front door that
 keeps them apart: the first turn of a channel nobody has met makes it
-instantiate a fresh [`talky@1`](../talky/) for exactly that channel -- **one**
+instantiate a fresh [`talky`](../talky/) for exactly that channel -- **one**
 mutation carrying the `add_nodes` **and** all four crossing port edges -- and
 the turn that triggered it follows the ingress edge that mutation just drew.
 
@@ -97,13 +97,13 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
 {"scope": "/", "ctx": {"model": "openai/gpt-4o-mini"}, "diff": {
   "add_nodes": [{"name": "talky-<key>", "template": "talky"}],
   "add_edges": [
-    {"from": "./reception/greet", "to": "./talky-<key>/keeper/stamp",
+    {"from": "./reception/greet", "to": "./talky-<key>/session-keeper",
      "condition": "has(hop.route) && hop.route == 'turn' && has(hop.chan) && hop.chan == '<key>'",
      "modifier": {"set_hop": {"route": "'in_turn'"},
                   "set_context": {"channel": "hop.chan_raw"}}},
-    {"from": "./talky-<key>/collector/assemble", "to": "<RECEPTIONIST_REPLY_TO>",
+    {"from": "./talky-<key>/collector", "to": "<RECEPTIONIST_REPLY_TO>",
      "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
-    {"from": "./talky-<key>/collector/assemble", "to": "<RECEPTIONIST_WRITE_TO>",
+    {"from": "./talky-<key>/collector", "to": "<RECEPTIONIST_WRITE_TO>",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"}}},
     {"from": "./talky-<key>/errors", "to": "<RECEPTIONIST_ERROR_TO>",
@@ -128,8 +128,9 @@ one agent.
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 All `${VAR:-default}`, environment class, bound late at every read.
 
@@ -137,8 +138,8 @@ All `${VAR:-default}`, environment class, bound late at every read.
 |---|---|---|
 | `RECEPTIONIST_MODEL` | `openai/gpt-4o-mini` | the `ctx.model` handed to every instance. Convention K-H2 (Lane B): put the RESOLVED literal in `.env` |
 | `RECEPTIONIST_TEMPLATE` | `talky` | the composite to instantiate; also the instance name prefix |
-| `RECEPTIONIST_INGRESS` | `keeper/stamp` | entry port inside the composite |
-| `RECEPTIONIST_REPLY_FROM` | `collector/assemble` | the cell emitting answers and write batches |
+| `RECEPTIONIST_INGRESS` | `session-keeper` | the composite's entry, as a path relative to the instance root |
+| `RECEPTIONIST_REPLY_FROM` | `collector` | the sub-unit emitting answers and write batches |
 | `RECEPTIONIST_ERROR_FROM` | `errors` | the composite's error drain |
 | `RECEPTIONIST_REPLY_TO` | (empty) | scope-relative answer target; empty = no edge |
 | `RECEPTIONIST_WRITE_TO` | (empty) | scope-relative batch target; empty = no edge |

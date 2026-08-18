@@ -12,7 +12,7 @@
 //! drives the whole story:
 //!
 //!   1. THREE MONTHS GO IN, model-free. Prepared turns with staggered
-//!      `happened_at` enter over the import lane, cross `memory-drain@1` and
+//!      `happened_at` enter over the import lane, cross `memory-drain` and
 //!      land in the episode table, each under the instant it was said. The
 //!      only clock this leg touches is `recorded_at`.
 //!   2. A QUESTION COMES IN TODAY. The brain (mock wire) answers it with a
@@ -74,7 +74,7 @@ const GROWN_FROM: [(&str, &str); 4] = [
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
 /// marker is a scope, not a cell) and fifteen grown ones: one from `door@1`,
-/// eleven from `talky@1`, two from `memory-drain@1`, one from `terminal@1`.
+/// eleven from `talky`, two from `memory-drain`, one from `terminal@1`.
 const CELLS_AFTER_GROW: usize = 18;
 
 /// The three months of the story live in `past.jsonl`, next to the seed -- the
@@ -214,14 +214,12 @@ fn grow_json_only_names_templates_that_ship() {
 
     // The two edges GH #78 is made of. Without the first the model's call is
     // routed nowhere; without the second the collector asks into a void and the
-    // round parks until the idle exit. Both are the PARENT's job -- `talky@1`
+    // round parks until the idle exit. Both are the PARENT's job -- `talky`
     // ships neither, on purpose.
     let edges = grow["diff"]["add_edges"].as_array().expect("add_edges");
     assert!(
-        edges
-            .iter()
-            .any(|e| e["to"] == json!("./talky/collector/assemble")
-                && e["modifier"]["set_hop"]["route"] == json!("'in_memory_call'")),
+        edges.iter().any(|e| e["to"] == json!("./talky/collector")
+            && e["modifier"]["set_hop"]["route"] == json!("'in_memory_call'")),
         "the dispatcher's memory lane is not wired"
     );
     let recall = edges
@@ -239,6 +237,48 @@ fn grow_json_only_names_templates_that_ship() {
             "the recall edge drops {key}, so the window never reaches the memory"
         );
     }
+}
+
+/// GH #220: the per-turn lane is set IN the declaration, not by forking the
+/// library.
+///
+/// `turn_write` is what makes the memory fresh during a session instead of at
+/// the nightly close, and the example used to set it by copying the whole
+/// template library and editing one `config.json`. Since GH #140
+/// `override_params` on a subtree template is addressed by the cell's path
+/// inside it, so one key on the `talky` node does the same thing where the
+/// reader can see it.
+///
+/// This is pinned rather than left to the freshness assertion alone because of
+/// how GH #203 failed: a documented setup step that writes a key nothing reads
+/// brings the example up with NO per-turn writes and says nothing about it. The
+/// path `collector/assemble` is the one that must survive here -- `collector`
+/// alone is the sub-unit's hive, and a hive reads `graph`/`ports`/
+/// `required_drains`/`contract` and would swallow this key in silence (GH #212).
+#[test]
+fn grow_json_sets_the_per_turn_lane_at_instantiation() {
+    let grow = read_json(&example_path("grow.json"));
+    let talky = grow["diff"]["add_nodes"]
+        .as_array()
+        .expect("add_nodes")
+        .iter()
+        .find(|n| n["template"] == json!("talky"))
+        .expect("the talky node");
+    assert_eq!(
+        talky["override_params"]["collector/assemble"]["turn_write"],
+        json!("1"),
+        "the per-turn lane left the declaration -- either it moved somewhere a \
+         reader can see, or this example is back to a freshness hole of up to a day"
+    );
+
+    // The shipped default is empty, so the override is the whole difference.
+    let shipped = read_json(&repo_path("templates/talky/collector/assemble/config.json"));
+    assert_eq!(
+        shipped["params"]["turn_write"],
+        json!(""),
+        "the library now ships the lane on -- then the override is decoration and \
+         the README paragraph explaining it is wrong"
+    );
 }
 
 // ══════════════════════════════════════════════════ 2. the colony under test
@@ -269,21 +309,27 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     }
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summary/writer/config.json",
+        "templates/talky/summarizer/writer/config.json",
     ] {
         patch(&root.join(rel), |v| {
             v["params"]["base_url"] = json!(base_url)
         });
     }
-    // The per-turn lane is a collector PARAM since `collector@1.2.0`, and
-    // `override_params` cannot reach the sub-cells of a subtree template (R10) --
-    // so the example takes its own copy of the library and sets the knob there,
-    // which is exactly the step its README prints. `memory_call_tier` needs no
-    // setting: `"1"` is the shipped default.
-    patch(
-        &root.join("templates/talky/collector/assemble/config.json"),
-        |v| v["params"]["turn_write"] = json!("1"),
-    );
+    // The per-turn lane is NOT patched here any more (GH #220). It is a
+    // collector param, and since GH #140 `override_params` reaches a subtree
+    // template's sub-cells by path, so `grow.json` carries
+    // `{"collector/assemble": {"turn_write": "1"}}` on the talky node -- the
+    // declaration the reader POSTs is the whole setting, and this test applies
+    // that file verbatim. `grow_json_sets_the_per_turn_lane_at_instantiation`
+    // pins the key; the freshness assertion at the end of the main test is what
+    // proves it arrived. `memory_call_tier` needs no setting: `"1"` is the
+    // shipped default.
+    //
+    // The library copy above stays, and not for this: WALKTHROUGH step 2 writes
+    // the brain's `system.jsonl` INTO it. A seed is a file in the template's
+    // `seed/` directory, read once at spawn -- there is no override_params for
+    // it, so the reader who wants the model to see `memory_recall` needs a
+    // library he may write to.
     seed_the_recall_tool(root);
     std::fs::write(
         root.join(".env"),
@@ -555,9 +601,9 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "/memory/keep",
         "/memory/episodes",
         "/surface",
-        "/talky/keeper/stamp",
+        "/talky/session-keeper/stamp",
         "/talky/collector/assemble",
-        "/talky/split",
+        "/talky/dispatcher",
         "/talky/brain",
         "/drain/drain",
         "/drain/ledger",

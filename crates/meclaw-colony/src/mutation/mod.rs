@@ -5,9 +5,11 @@
 
 pub mod apply;
 pub mod header_views;
+pub mod hive_contract;
 pub mod hook;
 pub mod port_boundary;
 pub mod recovery;
+pub(crate) mod relocate;
 pub mod rename;
 pub mod required_drains;
 pub mod stage;
@@ -156,6 +158,14 @@ pub enum MutationError {
     /// learns the work was not done. Raised pre-destructively, like the port
     /// boundary. Carries the constellation plus the hive's own reason string.
     RequiredDrainMissing(String),
+    /// GH #173: a hive declared its interface as lanes (`params.contract`) and
+    /// something contradicts it. Two shapes: an `add_edges` entry stamps a
+    /// `hop.route` the hive does not accept, or the hive's own graph no longer
+    /// carries a lane it promises (an accepted lane with no door behind it, an
+    /// emitted lane with no exit out through the hive path). Raised
+    /// pre-destructively, like the port boundary. Carries the constellation
+    /// plus the hive's own reason string.
+    HiveContract(String),
     /// Deep-Audit F2: an atomic rename sequence failed AFTER its first committed
     /// `rename(2)` — earlier renames already stand in the live tree (audit-model,
     /// no rollback). This is NOT a clean pre-destructive reject. The call-site
@@ -186,6 +196,7 @@ impl MutationError {
             Self::ContractIncomplete(_) => "contract_incomplete",
             Self::HivePortBoundary(_) => "hive_port_boundary",
             Self::RequiredDrainMissing(_) => "required_drain_missing",
+            Self::HiveContract(_) => "hive_contract",
             // Never reached: the call-site panics (strict-fail) before any EDA
             // reply. Defensive fallback to "schema" so the spec error_code enum
             // (overview Z.293) stays unchanged — LiveTreeMutated is a strict-fail
@@ -264,6 +275,14 @@ mod tests {
         assert_eq!(
             MutationError::HivePortBoundary("x".into()).error_code(),
             "hive_port_boundary"
+        );
+    }
+
+    #[test]
+    fn hive_contract_maps_to_error_code() {
+        assert_eq!(
+            MutationError::HiveContract("x".into()).error_code(),
+            "hive_contract"
         );
     }
 

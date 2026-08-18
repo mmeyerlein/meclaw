@@ -42,15 +42,15 @@ async fn colony_with_two_cells() -> (
 ) {
     let td = tempfile::TempDir::new().unwrap();
     let (h, rx) = ColonyHandle::new_with_marked_egress_at(&td, vec![], MARK);
-    // `echo_to` is not optional garnish: an EchoMockCell without it emits
+    // `emitted_target` is not optional garnish: an EchoMockCell without it emits
     // nothing at all, so a cascade test built on the bare constructor proves
     // only that silence stays silent.
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"))
     })
     .await;
     h.spawn(Path::new("/b"), || {
-        EchoMockCell::new(Path::new("/b")).echo_to(Path::new("/"))
+        EchoMockCell::new(Path::new("/b")).emitted_target(Path::new("/"))
     })
     .await;
     h.add_hive_scope(Path::new("/")).await;

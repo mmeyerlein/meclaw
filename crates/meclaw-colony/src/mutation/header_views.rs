@@ -362,6 +362,50 @@ pub fn build_post_state_header_views(
         }
     }
 
+    // ── Step 9b' mirror: move_nodes — the node and its edges change address ──
+    //
+    // The header-contract check is about a node's SURROUNDINGS: which keys reach
+    // it along the edges that lead to it. A move changes exactly that, and it is
+    // the one operation that changes it without changing the graph's shape — so
+    // a post-state built without this mirror would judge the moved cell where it
+    // no longer is, and find nothing where it now is. The direction that matters
+    // is the second: moving a cell out of the hive whose ingress promoted a key
+    // it requires is precisely the mistake a locality check should catch.
+    //
+    // The node view travels under the new key; the edges are re-pointed the same
+    // way the swap arm above re-points them (`plan_edge_swing` semantics),
+    // except that a move can produce no self-loop — the target was validated
+    // free, so no edge can already name it.
+    if let Some(ms) = diff_subst.get("move_nodes").and_then(|v| v.as_array()) {
+        for m in ms {
+            let (Some(from_name), Some(to_name)) = (
+                m.get("match")
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str()),
+                m.get("to").and_then(|v| v.as_str()),
+            ) else {
+                continue; // schema-validate (upstream) reports the missing field.
+            };
+            let from = super::resolve_scoped_path(scope, from_name)
+                .as_str()
+                .to_string();
+            let to = super::resolve_scoped_path(scope, to_name)
+                .as_str()
+                .to_string();
+            if let Some(view) = node_views.remove(&from) {
+                node_views.insert(to.clone(), view);
+            }
+            for e in post_edges.iter_mut() {
+                if e.from == from {
+                    e.from = to.clone();
+                }
+                if e.to == from {
+                    e.to = to.clone();
+                }
+            }
+        }
+    }
+
     // ── Step 9c mirror: subtree internal edges (dedup) ──────────────────────
     for e in subtree_edges {
         push_dedup(&mut post_edges, e);

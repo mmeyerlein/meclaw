@@ -44,6 +44,8 @@ Detailed spec of the built-in cell types. On conflict between this file and `mec
 
 **Effect in the DSL**: directory nesting groups cells into a logical unit (e.g. `/main/tool-loop/dispatcher`, `/main/tool-loop/collector`). Mutations can use the hive path as a scope field. All diff operations within it are resolved relative to this path prefix, and colony rejects mutations whose paths would lie outside the scope.
 
+**The hive boundary — binding**: an edge that crosses a hive boundary has the **hive** as its endpoint, never a cell inside it. From outside you know the hive's contract (which messages it accepts, which it emits), not how it is built; inside, the hive distributes on its own, with edges whose `from` is itself (`{"from": ".", "to": "./<cell>", "condition": …}`). Only that makes a template an interchangeable class — a caller addressing `<hive>/<inner-cell>` has written the internal layout into its own topology. In full, with reasoning, mechanics and migration state: `meclaw-overview.en.md` § The hive boundary. Enforcement today is `params.ports` (§ below, GH #133); the rule holds without the declaration too.
+
 **Effect in routing, transit, no delivery**: a hive is from the sender's view an **addressable target**, in the substrate a **transit hop**. When a message with `target = <hive-path>` arrives, colony does **not** deliver it into a mailbox (there is none). Instead it evaluates the hive's out-edges (`EdgeTable` entries with `from = <hive-path>`) as part of its single routing layer: CEL `condition` against headers, apply `modifier`, regular routing hop per match to the respective `to` path, TTL decremented per hop. No hive-owned evaluator, no separate routing logic. See `meclaw-overview.md` section "Hive paths as target: transit evaluation". On no matching out-edge: dead letter with `error_code = "hive_no_route"`. Graph reads for a hive scope run over `/colony/graph?scope=<hive_path>` (see `meclaw-overview.md` section "Visibility / read paths").
 
 **Connectivity of the hive**: whether a hive is active is decided exclusively by the edges of the
@@ -53,7 +55,7 @@ entire subtree. This is exactly what makes hives the attachment point for comple
 instantiated subtree template is attached to its hive path via edges. The attacher does not need
 to know the internal structure.
 
-**`params`**: **exclusively `graph`, `ports` and `required_drains`** (the `HiveParams` deserializer is `deny_unknown_fields`; any other key is a boot error):
+**`params`**: **exclusively `graph`, `ports`, `required_drains` and `contract`** (the `HiveParams` deserializer is `deny_unknown_fields`; any other key is a boot error):
 - `graph` (optional): initial desired graph for the subtree (format see `meclaw-overview.md` section "Graph schema"). Colony reads this at filesystem bootstrap and enters the declared cells into the registry and the edges into `colony.db`. After the first bootstrap, the persisted edge table in `colony.db` is the truth. `params.graph` is only an initial hint.
 - `ports` (optional, GH #133): array of short names of DIRECT children — the endpoints a parent is meant to wire. **Opt-in, and the presence of the key is the switch.** Without it nothing changes: every interior node may be wired from anywhere, which is the behaviour every topology shipped before this field. With it the hive scope is **sealed** and colony's mutation validation rejects an `add_edges` endpoint that reaches past the port (`error_code: "hive_port_boundary"`, pre-destructive — nothing is staged, spawned or wired). What stays legal: an edge between two nodes inside the hive (any depth), an edge onto the **hive path itself** (the transit address), an edge onto a declared port, and the hive marker wiring its own children. What is rejected: an edge that pairs an interior **non-port** node with an endpoint outside the hive — in either direction, because a reply lane wired straight out of an interior cell bypasses the port exactly as an inbound lane does. An empty list is legal and means "the hive path is the only address". Two deliberate limits: the check covers a mutation's `add_edges` and **not the bootstrap** (see below), and a port is a **direct** child — a node below a port is not the port.
 
@@ -71,6 +73,16 @@ to know the internal structure.
   "params": { "ports": ["brief", "gate"], "graph": { "edges": [ … ] },
               "required_drains": [ { "port": "gate", "hop": { "route": "reject" },
                                      "because": "a refused input leaves the hive here" } ] }
+  ```
+
+- `contract` (optional, GH #173): `{accepts, emits}` — the **hive's contract**, as a list of lanes (`hop.route` values) instead of prose. Full description and enforcement table in `config.en.md` § `params.contract`; in short: a mutation edge onto the hive path whose `set_hop.route` is constant must name an `accepts` lane, every `accepts` lane must have a door inward, and every `emits` lane must lead back out through the hive path — otherwise `error_code: "hive_contract"`, pre-destructive. **Opt-in like `ports`**, checked with the same `apply_edges` as `required_drains`, and the boot only warns.
+
+  ```json
+  "params": { "ports": [], "graph": { "edges": [ … ] },
+              "contract": { "accepts": [ { "route": "in_batch", "context": ["session_id"],
+                                           "because": "one closed session as a single write batch" } ],
+                            "emits":   [ { "route": "episode",
+                                           "because": "one message per turn of the batch" } ] } }
   ```
 
 No scope-owned `dead_letters` override: the dead-letter queue is always `/colony/dead_letters` (hive = authority and mutation boundary, **not** DLQ boundary). Otherwise no hive-type-owned fields. In particular no routing configuration, no mailbox size, no own emission-mode statement. Hives have no actor and no mailbox; their routing role is passive transit evaluation by colony over the `params.graph` edges.

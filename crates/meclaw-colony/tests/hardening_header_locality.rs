@@ -53,19 +53,19 @@ fn write_hop_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/p/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"hop":{"h1":{"type":"string"}}}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/c/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{"hop":{"h1":{"type":"string","required":true}}}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/t/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -88,17 +88,17 @@ fn write_context_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/s/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/x/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/c2/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/s"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/s"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{"context":{"c1":{"type":"string","required":true}}}}}"#,
     )
     .unwrap();
@@ -123,12 +123,12 @@ fn write_transit_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/entry/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sub"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sub"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/x/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/entry"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/entry"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -138,7 +138,7 @@ fn write_transit_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/sub/cellA/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{"hop":{"hmark":{"type":"string","required":true}}}}}"#,
     )
     .unwrap();

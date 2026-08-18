@@ -44,44 +44,11 @@ pub fn validate_post_state_full(
     let obj = diff
         .as_object()
         .expect("validate_post_state covered schema");
-    if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
-        // Befund 7: in-diff name uniqueness, mirroring `validate_naming_and_match`.
-        let mut seen_in_diff: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for n in adds {
-            let name = n
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("add_nodes[].name missing".into()))?;
-            if registry_names.iter().any(|r| r == name) || !seen_in_diff.insert(name) {
-                return Err(MutationError::NamingCollision(name.into()));
-            }
-        }
-    }
-    if let Some(rems) = obj.get("remove_nodes").and_then(|v| v.as_array()) {
-        for r in rems {
-            let pat_name = r
-                .get("match")
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("remove_nodes[].match.name missing".into()))?;
-            if !registry_names.iter().any(|r| r == pat_name) {
-                return Err(MutationError::MatchNoHit(pat_name.into()));
-            }
-        }
-    }
-    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
-        for s in swaps {
-            let pat_name = s
-                .get("match")
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("swap_nodes[].match.name missing".into()))?;
-            if !registry_names.iter().any(|r| r == pat_name) {
-                return Err(MutationError::MatchNoHit(pat_name.into()));
-            }
-        }
-    }
-    Ok(())
+    // GH #179: the identity checks live in ONE place. This entry point carries no
+    // scope and no depth information (its callers are the pre-R12 wrappers), so
+    // it passes root scope and empty depth sets — the short-name behaviour it
+    // always had, minus the second copy of the rules that drifted from it.
+    validate_naming_and_match(obj, registry_names, &[], "/", &[], &[])
 }
 
 /// T11b — extends T11's checks with edge_schema (endpoints exist in post_state)
@@ -165,9 +132,189 @@ pub fn validate_post_state_with_edges_and_subtree(
     )
 }
 
+/// GH #166 / #179 — the ONE namespace every check that asks "does this path
+/// already exist" has to resolve a diff name in.
+///
+/// A diff name is a SHORT name only while it carries no `/` once the canonical
+/// `./` prefix is stripped (Befund 6: `./a` and `a` denote the same node). Then
+/// it lives in the scope's own namespace, where names are unique per scope
+/// (spec Z.265). A name that still carries a `/` addresses a PATH — the
+/// containment guard resolves multi-segment names against the scope and only
+/// refuses `..` segments and absolute names, so `unit/q` is the sanctioned way
+/// to name a node one level below the scope — and a path means nothing until it
+/// is resolved. Comparing it against a set of short names matches nothing, which
+/// is silence, not a verdict.
+///
+/// Splitting this decision per check is how the two halves of the same defect
+/// arose: the endpoint check (#166) and the identity checks (#179) each read the
+/// name in one namespace and looked it up in another, in opposite directions.
+pub(crate) enum ScopedName<'a> {
+    /// Tested in the scope's short-name namespace (`registry_names` & co).
+    Short(&'a str),
+    /// Tested in the absolute-path namespace (`deep_*_paths` & co).
+    Deep(String),
+}
+
+/// Classify `name` into the namespace it is to be tested in — see [`ScopedName`].
+pub(crate) fn scoped_name<'a>(scope: &str, name: &'a str) -> ScopedName<'a> {
+    let stripped = name.strip_prefix("./").unwrap_or(name);
+    if stripped.contains('/') {
+        ScopedName::Deep(
+            crate::mutation::resolve_scoped_path(scope, stripped)
+                .as_str()
+                .to_string(),
+        )
+    } else {
+        ScopedName::Short(stripped)
+    }
+}
+
+/// Whether `name` already names a node, tested in whichever namespace the name
+/// itself selects (see [`ScopedName`]). `short_names` and `deep_paths` are the
+/// two spellings of the SAME pre-state set; a caller that has no depth
+/// information passes an empty `deep_paths` and keeps the short-name behaviour.
+pub(crate) fn name_is_taken(
+    scope: &str,
+    name: &str,
+    short_names: &[String],
+    deep_paths: &[String],
+) -> bool {
+    match scoped_name(scope, name) {
+        ScopedName::Short(s) => short_names.iter().any(|n| n == s),
+        ScopedName::Deep(p) => deep_paths.contains(&p),
+    }
+}
+
+/// One entry of a diff that will put a node AT a path — see [`diff_path_claims`].
+struct PathClaim {
+    /// The name exactly as the operator wrote it. The post-state view needs it
+    /// unresolved because it is consulted in BOTH namespaces and only
+    /// `scoped_name` decides which one a given spelling asks.
+    name: String,
+    /// `name` resolved against the scope: the single namespace two claims are
+    /// compared in, since the apply side renames onto the resolved path.
+    path: String,
+    /// `add_nodes[2].name 'q'` — what a duplicate-claim message points at.
+    entry: String,
+}
+
+/// GH #195 — every path this diff CLAIMS, in the order the operator wrote them,
+/// resolved against the scope and labelled with the entry that claims it.
+///
+/// A claim is an entry that will put a node at a path: `add_nodes[].name`, the
+/// INSTANTIATE form of `swap_nodes[].with` (`template` + `name`, which stages a
+/// fresh template tree), and `move_nodes[].to`. The existing-node form of
+/// `swap_nodes[].with` carries no `template` — it references a node that is
+/// there or that an `add_nodes` in the same diff is creating, and referencing is
+/// not claiming.
+///
+/// `add_nodes` resume targets are in the set. A resume is deliberately NOT a
+/// collision against the registry — the same node keeps its identity — but it is
+/// still this diff saying "that path is mine", and a second entry aiming there
+/// is the thing this catches.
+///
+/// Malformed entries are skipped rather than reported: their own checks raise
+/// the `Schema` errors, and reordering those would change what a broken diff is
+/// told.
+///
+/// GH #198 — this is also the set of nodes the diff makes ADDRESSABLE, so
+/// [`validate_edges_and_cycle`] builds the insert side of its post-state view
+/// from it. "Which entries put a node at a path" is one question; answering it
+/// in two places is how #166 came to cover `add_nodes` and neither of the other
+/// two, and how a `move_nodes` could not be wired in the diff that performed it.
+fn diff_path_claims(
+    scope: &str,
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+) -> Vec<PathClaim> {
+    let mut claims: Vec<PathClaim> = Vec::new();
+    let mut push = |name: &str, entry: String| {
+        claims.push(PathClaim {
+            name: name.to_string(),
+            path: crate::mutation::resolve_scoped_path(scope, name)
+                .as_str()
+                .to_string(),
+            entry,
+        });
+    };
+    if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
+        for (i, n) in adds.iter().enumerate() {
+            if let Some(name) = n.get("name").and_then(|v| v.as_str()) {
+                push(name, format!("add_nodes[{i}].name '{name}'"));
+            }
+        }
+    }
+    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
+        for (i, s) in swaps.iter().enumerate() {
+            let Some(with) = s.get("with").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            // Instantiate form only — see the note above.
+            if !with.contains_key("template") {
+                continue;
+            }
+            if let Some(name) = with.get("name").and_then(|v| v.as_str()) {
+                push(name, format!("swap_nodes[{i}].with.name '{name}'"));
+            }
+        }
+    }
+    if let Some(moves) = obj.get("move_nodes").and_then(|v| v.as_array()) {
+        for (i, m) in moves.iter().enumerate() {
+            if let Some(to) = m.get("to").and_then(|v| v.as_str()) {
+                push(to, format!("move_nodes[{i}].to '{to}'"));
+            }
+        }
+    }
+    claims
+}
+
+/// GH #195 — refuse a diff in which two entries claim one path.
+///
+/// The pre-state sets this used to be left to cannot answer it. They arrive
+/// resume-filtered, so an `add_nodes` at an existing path is taken out of them
+/// on purpose, and the only in-diff bookkeeping there was tracked `add_nodes`
+/// among themselves. A claim from any other entry was therefore invisible: a
+/// `swap_nodes[].with` at a resume target got the generic occupied-path message
+/// (advice for a leftover directory, wrong here), and at a FRESH name nothing
+/// refused it at all — two trees staged onto one path and the second apply
+/// failed halfway, which is `LiveTreeMutated` and strict-fails the whole colony
+/// task rather than the mutation.
+///
+/// Claims are compared as RESOLVED paths, the one namespace decision
+/// `scoped_name` makes everywhere else on this surface (#179): the apply side
+/// renames onto the resolved path, so `unit/n1` and `./unit/n1` are one target.
+fn reject_duplicate_claims(
+    scope: &str,
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+) -> Result<(), MutationError> {
+    let claims = diff_path_claims(scope, obj);
+    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for PathClaim { path, entry, .. } in &claims {
+        if let Some(first) = seen.insert(path.as_str(), entry.as_str()) {
+            return Err(MutationError::NamingCollision(format!(
+                "{entry} and {first} both claim {path} in this diff. One path holds \
+                 one node, so whichever entry is applied second lands on what the \
+                 first one just put there. Nothing was written — give them \
+                 different names, or drop one of the two entries."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Inner helper: naming-collision + match-no-hit checks, shared between
 /// `validate_post_state_full` and `validate_post_state_with_templates`.
 /// Does NOT check `add_nodes[].template` against factories (that is caller's job).
+///
+/// `scope` + `deep_registry_paths` / `deep_hive_paths` (GH #179) are the
+/// absolute-path twins of `registry_names` / `hive_match_names`: the same
+/// pre-state, spelled the way a multi-segment name has to be looked up (see
+/// [`name_is_taken`]). Colony-global is safe for both — `validate_scope_containment`
+/// runs BEFORE this and rejects `..`/absolute names, so a resolved deep name is
+/// scope-contained by construction and cannot borrow a node from a foreign scope
+/// the way an un-filtered SHORT name could. `deep_registry_paths` MUST have the
+/// caller's resume targets removed, exactly as `registry_names` has its resume
+/// short-names removed: an `add_nodes` at an existing path is a Resume, not a
+/// duplicate, at depth as at level one.
 ///
 /// `hive_match_names`: SCOPE-FILTERED hive short-names (parent path == guard_scope),
 /// mirroring `registry_names`. For `swap_nodes`, a match.name that refers to a HIVE
@@ -183,18 +330,21 @@ fn validate_naming_and_match(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
     registry_names: &[String],
     hive_match_names: &[String],
+    scope: &str,
+    deep_registry_paths: &[String],
+    deep_hive_paths: &[String],
 ) -> Result<(), MutationError> {
+    // GH #195: the diff against ITSELF, before it is measured against the
+    // pre-state — a path claimed twice by one diff is a different problem from a
+    // path that was already occupied, and the pre-state check cannot name it.
+    reject_duplicate_claims(scope, obj)?;
     if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
-        // Befund 7: track names seen WITHIN this diff so an in-diff duplicate is
-        // caught here (naming_collision) — before staging, where the second
-        // rename(2) failed as a `schema` IO error and stranded the first node.
-        let mut seen_in_diff: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for n in adds {
             let name = n
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| MutationError::Schema("add_nodes[].name missing".into()))?;
-            if registry_names.iter().any(|r| r == name) || !seen_in_diff.insert(name) {
+            if name_is_taken(scope, name, registry_names, deep_registry_paths) {
                 return Err(MutationError::NamingCollision(name.into()));
             }
         }
@@ -206,7 +356,7 @@ fn validate_naming_and_match(
                 .and_then(|v| v.get("name"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| MutationError::Schema("remove_nodes[].match.name missing".into()))?;
-            if !registry_names.iter().any(|r| r == pat_name) {
+            if !name_is_taken(scope, pat_name, registry_names, deep_registry_paths) {
                 return Err(MutationError::MatchNoHit(pat_name.into()));
             }
         }
@@ -221,14 +371,79 @@ fn validate_naming_and_match(
             // PRE-STATE check: cell registry OR hive scope (hive is a valid swap source
             // because it carries external edges). Both sets are scope-filtered by the
             // caller — a hive in a foreign scope must NOT satisfy this short-name match.
-            let in_registry = registry_names.iter().any(|r| r == pat_name);
-            let in_hives = hive_match_names.iter().any(|h| h == pat_name);
+            let in_registry = name_is_taken(scope, pat_name, registry_names, deep_registry_paths);
+            let in_hives = name_is_taken(scope, pat_name, hive_match_names, deep_hive_paths);
             if !in_registry && !in_hives {
                 return Err(MutationError::MatchNoHit(pat_name.into()));
             }
         }
     }
     Ok(())
+}
+
+/// Take `name` out of BOTH spellings of the post-state view (GH #194).
+///
+/// The view an endpoint is looked up in is two sets — `nodes` for short names,
+/// `deep` for absolute paths — and `scoped_name` decides which one a given
+/// endpoint asks. A diff entry that takes a node out therefore has to reach
+/// both, or the endpoint check answers from the half the removal never touched:
+/// that is precisely how a deep `remove_nodes` and an `add_edges` naming the
+/// same node ended up committing a lane onto a disconnected cell.
+///
+/// The short branch subtracts the resolved path as well. No spelling reaches a
+/// short-named node through the deep namespace today (containment refuses the
+/// `..` that would be needed), but leaving one half standing is exactly the
+/// asymmetry this whole family of defects is made of.
+fn vacate(
+    scope: &str,
+    name: &str,
+    nodes: &mut std::collections::HashSet<String>,
+    deep: &mut std::collections::HashSet<String>,
+) {
+    match scoped_name(scope, name) {
+        ScopedName::Short(s) => {
+            nodes.remove(s);
+            deep.remove(crate::mutation::resolve_scoped_path(scope, s).as_str());
+        }
+        ScopedName::Deep(abs) => {
+            nodes.remove(abs.as_str());
+            deep.remove(abs.as_str());
+        }
+    }
+}
+
+/// Put `name` into BOTH spellings of the post-state view (GH #198).
+///
+/// The mirror image of [`vacate`], and deliberately its exact shape: the view is
+/// two sets, `scoped_name` decides which one an endpoint asks, and an entry that
+/// reaches only one half leaves the other half answering from a state that never
+/// existed. That asymmetry is what this whole family of defects is made of — it
+/// was the corrupting direction in #194 and the obstructing one here.
+///
+/// The short branch contributes the resolved path as well. No single-segment
+/// endpoint is looked up in the deep namespace today, so it changes no verdict;
+/// leaving one half of the view standing is the thing that keeps costing an
+/// issue apiece.
+fn occupy(
+    scope: &str,
+    name: &str,
+    nodes: &mut std::collections::HashSet<String>,
+    deep: &mut std::collections::HashSet<String>,
+) {
+    match scoped_name(scope, name) {
+        ScopedName::Short(s) => {
+            nodes.insert(s.to_string());
+            deep.insert(
+                crate::mutation::resolve_scoped_path(scope, s)
+                    .as_str()
+                    .to_string(),
+            );
+        }
+        ScopedName::Deep(abs) => {
+            nodes.insert(abs.clone());
+            deep.insert(abs);
+        }
+    }
 }
 
 /// Inner helper: edge-schema + cycle checks over the post-state graph.
@@ -245,6 +460,15 @@ fn validate_naming_and_match(
 /// NOT relaxed: `validate_scope_containment` ran before this and already
 /// rejected `..`/absolute endpoints (`scope_out_of_bounds`), so a resolved
 /// depth path is within scope by construction.
+///
+/// GH #194 — `deep_endpoint_paths` is the PRE-state and the caller has no way to
+/// know what this diff does to it, so the subtraction happens here, next to the
+/// short-name one, through the same [`vacate`]. Three entries take a path out of
+/// the post-state view and all three go through it: `remove_nodes` (disconnect),
+/// `swap_nodes[].match` (the node being replaced — its edges are swung onto the
+/// target, but the swing runs over the PRE-diff edges, so a lane this diff adds
+/// onto it is not carried along), and `move_nodes[].match` (an address the
+/// mutation vacates by `rename(2)`).
 #[allow(clippy::too_many_arguments)]
 fn validate_edges_and_cycle(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
@@ -274,6 +498,19 @@ fn validate_edges_and_cycle(
             .iter()
             .map(|s| (*s).to_string()),
     );
+    // GH #194: the pre-state absolute-path half of the same view. It used to be
+    // consulted straight from the caller's slice, which is why every subtraction
+    // below missed it — for a node that already existed at depth, this is the
+    // set the endpoint check actually reads.
+    let mut deep: HashSet<String> = deep_endpoint_paths.iter().cloned().collect();
+    // GH #193/#194: every entry that takes a node out of the post-state view
+    // goes through `vacate`, which canonicalises through the same `scoped_name`
+    // the endpoint check asks and reaches BOTH spellings of the view. Taken as
+    // written (#193) or subtracted from one half only (#194), a node on its way
+    // out stayed addressable and an `add_edges` in the same diff wired a lane
+    // onto it — the one thing this check exists to prevent. That is the LENIENT
+    // direction, which is why it outlives its neighbours every time: it accepts
+    // what it should refuse, and nothing complains at the time.
     if let Some(rems) = obj.get("remove_nodes").and_then(|v| v.as_array()) {
         for r in rems {
             if let Some(name) = r
@@ -281,16 +518,62 @@ fn validate_edges_and_cycle(
                 .and_then(|v| v.get("name"))
                 .and_then(|v| v.as_str())
             {
-                nodes.remove(name);
+                vacate(scope, name, &mut nodes, &mut deep);
             }
         }
     }
-    if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
-        for n in adds {
-            if let Some(name) = n.get("name").and_then(|v| v.as_str()) {
-                nodes.insert(name.into());
+    // GH #194: a `swap_nodes[].match.name` is a node on its way out too. Its
+    // edges are swung onto the target — but `plan_edge_swing` runs over the
+    // edges that were there BEFORE the diff, so a lane this same diff adds onto
+    // the replaced node is not swung with them and is left naming a cell that
+    // has been disconnected.
+    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
+        for s in swaps {
+            if let Some(name) = s
+                .get("match")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                vacate(scope, name, &mut nodes, &mut deep);
             }
         }
+    }
+    // GH #194: a `move_nodes[].match.name` is an ADDRESS the mutation vacates.
+    // The directory leaves by `rename(2)` and the registry row is re-addressed,
+    // so after the move there is nothing at the old path at all — an edge naming
+    // it is not merely dead, it points at ground the colony no longer knows.
+    if let Some(moves) = obj.get("move_nodes").and_then(|v| v.as_array()) {
+        for m in moves {
+            if let Some(name) = m
+                .get("match")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                vacate(scope, name, &mut nodes, &mut deep);
+            }
+        }
+    }
+    // GH #166/#189/#198: and every entry that PUTS a node at a path goes into it,
+    // through the one enumeration that already answers "which entries do that" —
+    // `diff_path_claims`, which #195 wrote to compare a diff against itself.
+    //
+    // #166 gave `add_nodes` this treatment so an `add_edges` may point at a node
+    // arriving in the same diff, and named the reason: splitting into two
+    // mutations means choosing between a window where a lane is wired twice and
+    // one where it is not wired at all. The two other creating entries were left
+    // out. `move_nodes` is the operation shipped (#169) to have no such window,
+    // and a caller could not give the relocated cell one extra lane in the same
+    // breath; a `swap_nodes[].with` instantiate stages a fresh tree and the
+    // swing only carries the lanes that were there BEFORE the diff, so a new one
+    // had to be expressible here or not at all.
+    //
+    // Driving both sides of the view from one enumeration is the point: the
+    // second list is what drifts. The existing-node form of `swap_nodes[].with`
+    // stays out of it for the same reason it is no claim (#195) — it references
+    // a node that the pre-state or an `add_nodes` of this diff already puts in
+    // the view, and it creates nothing of its own.
+    for claim in diff_path_claims(scope, obj) {
+        occupy(scope, &claim.name, &mut nodes, &mut deep);
     }
     // Existing edges are part of the post_state graph, but Befund 2 removed the
     // topological cycle gate — they no longer need to be accumulated here. The
@@ -334,17 +617,22 @@ fn validate_edges_and_cycle(
             // restriction). Resolve it against `scope` and test in the
             // absolute-path namespace: `deep_endpoint_paths` (pre-state at any
             // depth) ∪ `nodes` (which carries the absolute
-            // `subtree_node_endpoints` — diff-new nodes, Befund-6 semantics at
-            // depth). Befund-6 short-name semantics for single segments are
-            // byte-unchanged.
+            // `subtree_node_endpoints` and — GH #166 — the scope-resolved
+            // multi-segment `add_nodes` names: diff-new nodes, Befund-6
+            // semantics at depth). Befund-6 short-name semantics for single
+            // segments are byte-unchanged.
+            // GH #179: the namespace decision itself is `scoped_name` now — the
+            // same one the identity checks use, so the endpoint check and the
+            // "does this path already exist" checks can no longer drift apart
+            // the way they did between #166 and #179.
+            // GH #194: `deep` rather than the caller's `deep_endpoint_paths`,
+            // because the pre-state is not the post-state — the diff's own
+            // removals have been subtracted from it above, exactly as they are
+            // from `nodes`. One view, both spellings.
             let known = |endpoint: &str| -> bool {
-                let stripped = endpoint.strip_prefix("./").unwrap_or(endpoint);
-                if stripped.contains('/') {
-                    let abs = crate::mutation::resolve_scoped_path(scope, endpoint);
-                    deep_endpoint_paths.iter().any(|p| p == abs.as_str())
-                        || nodes.contains(abs.as_str())
-                } else {
-                    nodes.contains(stripped)
+                match scoped_name(scope, endpoint) {
+                    ScopedName::Short(s) => nodes.contains(s),
+                    ScopedName::Deep(abs) => deep.contains(&abs) || nodes.contains(abs.as_str()),
                 }
             };
             if !known(from) {
@@ -502,6 +790,8 @@ pub fn validate_post_state_with_templates(
         subtree_internal_edges,
         "/",
         &[],
+        &[],
+        &[],
     )
 }
 
@@ -514,6 +804,16 @@ pub fn validate_post_state_with_templates(
 /// edge paths scope-relative WITHOUT a depth restriction. Containment is not
 /// relaxed: `validate_scope_containment` runs before this (caller order) and
 /// rejects `..`/absolute endpoints as `scope_out_of_bounds`.
+///
+/// GH #179 — `deep_registry_paths` / `deep_hive_paths` do the same for the NODE
+/// IDENTITY checks (`add_nodes[].name`, `remove_nodes`/`swap_nodes` `match.name`,
+/// `swap_nodes[].with.name`): the absolute-path twins of `registry_names` /
+/// `hive_match_names`, so a multi-segment name is compared against the paths
+/// that exist instead of against a set of short names it can never equal.
+/// `deep_registry_paths` MUST come resume-filtered from the caller (see
+/// `validate_naming_and_match`). Distinct from `deep_endpoint_paths`, which is
+/// the union of both and NOT resume-filtered — an edge may address a node that
+/// is being resumed, an instantiation may not collide with it.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_post_state_with_templates_scoped(
     diff: &JsonValue,
@@ -528,6 +828,8 @@ pub fn validate_post_state_with_templates_scoped(
     subtree_internal_edges: &[(String, String)],
     scope: &str,
     deep_endpoint_paths: &[String],
+    deep_registry_paths: &[String],
+    deep_hive_paths: &[String],
 ) -> Result<(), MutationError> {
     // Ebene 0a: diff must be an object.
     let obj = diff
@@ -538,7 +840,14 @@ pub fn validate_post_state_with_templates_scoped(
     // Pass the SCOPE-FILTERED `hive_match_names` so a swap_nodes match.name can resolve
     // against a hive in pre-state ONLY within the mutation scope (spec Z.265) — a hive
     // in a foreign scope must not produce a short-name false-positive (Paket-5 T4).
-    validate_naming_and_match(obj, registry_names, hive_match_names)?;
+    validate_naming_and_match(
+        obj,
+        registry_names,
+        hive_match_names,
+        scope,
+        deep_registry_paths,
+        deep_hive_paths,
+    )?;
 
     // Build lookup map for template → cell_type.
     let ct_map: std::collections::HashMap<&str, &str> = template_to_cell_type
@@ -664,19 +973,44 @@ pub fn validate_post_state_with_templates_scoped(
     // T5 Part 1: collect add_names (scope-bound, from add_nodes in this same diff)
     // so that `with.name` (existing form) can forward-reference a node being added
     // in the same composite diff. The post-state set = registry_names ∪ add_names.
+    //
+    // GH #199: canonicalised through `scoped_name`, not collected as written.
+    // `name_is_taken` below consults this set as the SHORT-NAME namespace, and
+    // it strips the canonical `./` prefix before comparing — so a raw
+    // `./successor` sat in a set that is only ever queried with `successor`, and
+    // an `add_nodes` spelled the canonical way was invisible to a forward
+    // reference in EITHER spelling. #189's exact shape at the one call site
+    // #189 did not touch, lenient-opposite (a valid diff refused, nothing
+    // committed wrong), which is why it outlived four passes over this family.
     let add_names: Vec<String> = obj
         .get("add_nodes")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|n| {
-                    n.get("name")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
+                .filter_map(|n| n.get("name").and_then(|v| v.as_str()))
+                .map(|name| match scoped_name(scope, name) {
+                    ScopedName::Short(s) => s.to_string(),
+                    // A deep name is never queried in the short namespace; it is
+                    // answered from `add_paths` below. Keeping the resolved form
+                    // here rather than the raw one means no entry of this set is
+                    // a spelling.
+                    ScopedName::Deep(abs) => abs,
                 })
                 .collect()
         })
         .unwrap_or_default();
+    // GH #179: the same forward-reference set spelled as absolute paths, for a
+    // multi-segment `with.name` (see `name_is_taken`). This half was always
+    // correct — `resolve_scoped_path` normalises the prefix — which is exactly
+    // why the defect was depth-invisible and short-name-only.
+    let add_paths: Vec<String> = add_names
+        .iter()
+        .map(|n| {
+            crate::mutation::resolve_scoped_path(scope, n)
+                .as_str()
+                .to_string()
+        })
+        .collect();
     if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
         for s in swaps {
             let match_name = s
@@ -693,6 +1027,9 @@ pub fn validate_post_state_with_templates_scoped(
                 registry_names,
                 &add_names,
                 templates,
+                scope,
+                deep_registry_paths,
+                &add_paths,
             )?;
         }
     }
@@ -741,17 +1078,25 @@ pub fn validate_post_state_with_templates_scoped(
 /// (scope-bound). The effective post-state set for the existing-form check is:
 /// `registry_names ∪ add_names`.
 ///
+/// GH #179 — `scope`, `deep_registry_paths` and `add_paths` are the absolute-path
+/// twins of `registry_names` and `add_names`; a `with.name` carrying a `/` is a
+/// path and is looked up as one (see `name_is_taken`).
+///
 /// # Invariant
 ///
 /// `match.name` (t2 in the swap source) is still checked against PRE-STATE only
 /// (via `validate_naming_and_match` / `validate_post_state_full`). Only the
 /// `with.name` TARGET gains forward-reference resolution here.
+#[allow(clippy::too_many_arguments)]
 fn validate_swap_with_entry_full(
     with_val: &JsonValue,
     match_name: &str,
     registry_names: &[String],
     add_names: &[String],
     templates: &crate::templates::TemplatesRegistry,
+    scope: &str,
+    deep_registry_paths: &[String],
+    add_paths: &[String],
 ) -> Result<(), MutationError> {
     let with_obj = with_val
         .as_object()
@@ -778,8 +1123,13 @@ fn validate_swap_with_entry_full(
             .and_then(|v| v.as_str())
             .ok_or_else(|| MutationError::Schema("swap_nodes[].with.name missing".into()))?;
 
-        // Rule 4 (Strict-Regel b): target name collision.
-        if registry_names.iter().any(|r| r == name) {
+        // Rule 4 (Strict-Regel b): target name collision. GH #179: the with-side
+        // is where this check carries the most weight — staging has no
+        // existence-skip here (unlike an `add_nodes` Resume), so the apply
+        // reaches the live directory and overwrites its `config.json`, re-minting
+        // a `cell.id` that is assigned exactly once per path. A multi-segment
+        // name has to be looked up as the path it is.
+        if name_is_taken(scope, name, registry_names, deep_registry_paths) {
             return Err(MutationError::NamingCollision(name.into()));
         }
 
@@ -822,7 +1172,12 @@ fn validate_swap_with_entry_full(
         // T13: identity-swap guard — with.name == match.name (same node, same scope)
         // would drop every external edge of t2 (all swung edges become t3→t3 self-loops
         // and are silently dropped). Loud reject instead of silent edge-loss.
-        if name == match_name {
+        // GH #179: compared as PATHS — `unit/q` and `./unit/q` are the same node,
+        // and the guard exists to stop exactly that node from being swapped with
+        // itself.
+        if crate::mutation::resolve_scoped_path(scope, name)
+            == crate::mutation::resolve_scoped_path(scope, match_name)
+        {
             return Err(MutationError::Schema(
                 "swap_nodes[].with.name must differ from match.name".into(),
             ));
@@ -834,8 +1189,8 @@ fn validate_swap_with_entry_full(
         // `add_nodes` in the same composite diff is VALID — the node will exist at
         // apply time. Cross-scope rejection still applies (a name absent from BOTH
         // sets is rejected as MatchNoHit, preserving A2 scope-binding).
-        let in_pre_state = registry_names.iter().any(|r| r == name);
-        let in_add_names = add_names.iter().any(|a| a == name);
+        let in_pre_state = name_is_taken(scope, name, registry_names, deep_registry_paths);
+        let in_add_names = name_is_taken(scope, name, add_names, add_paths);
         if !in_pre_state && !in_add_names {
             return Err(MutationError::MatchNoHit(name.into()));
         }
@@ -1078,6 +1433,25 @@ pub fn validate_scope_containment(
                 .and_then(|v| v.as_str())
             {
                 check(name)?;
+            }
+        }
+    }
+    // GH #169: a `move_nodes` addresses two paths and both are the mutation's
+    // business — the cell it takes and the ground it puts it on. A target
+    // outside the scope would let a mutation scoped to one hive relocate a cell
+    // into a hive it has no authority over, which is exactly the reach this
+    // guard exists to deny.
+    if let Some(ms) = obj.get("move_nodes").and_then(|v| v.as_array()) {
+        for m in ms {
+            if let Some(name) = m
+                .get("match")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                check(name)?;
+            }
+            if let Some(to) = m.get("to").and_then(|v| v.as_str()) {
+                check(to)?;
             }
         }
     }
@@ -2710,8 +3084,16 @@ mod tests {
 
         // Should PASS: t3 is reachable via post-state (registry ∪ add_names).
         // match_name = "t2" (the source being swapped); with.name = "t3" ≠ "t2".
-        let result =
-            validate_swap_with_entry_full(&with_val, "t2", &registry_names, &add_names, &templates);
+        let result = validate_swap_with_entry_full(
+            &with_val,
+            "t2",
+            &registry_names,
+            &add_names,
+            &templates,
+            "/",
+            &[],
+            &[],
+        );
         assert!(
             result.is_ok(),
             "with.name forward ref from add_nodes must pass: {result:?}"
@@ -2725,6 +3107,9 @@ mod tests {
             &registry_names,
             &add_names,
             &templates,
+            "/",
+            &[],
+            &[],
         )
         .unwrap_err();
         assert_eq!(
@@ -3529,6 +3914,8 @@ mod tests {
             &[],
             "/",
             &deep,
+            &[],
+            &[],
         );
         assert!(result.is_ok(), "depth endpoint must validate: {result:?}");
     }
@@ -3557,6 +3944,8 @@ mod tests {
             &subtree_nodes,
             &[],
             "/",
+            &[],
+            &[],
             &[],
         );
         assert!(
@@ -3588,6 +3977,8 @@ mod tests {
             &[],
             "/",
             &[],
+            &[],
+            &[],
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");
@@ -3618,6 +4009,8 @@ mod tests {
             &[],
             "/main",
             &deep_in_scope,
+            &[],
+            &[],
         );
         assert!(result.is_ok(), "in-scope depth node must match: {result:?}");
 
@@ -3635,6 +4028,8 @@ mod tests {
             &[],
             "/main",
             &deep_foreign,
+            &[],
+            &[],
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");

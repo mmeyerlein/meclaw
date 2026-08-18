@@ -65,7 +65,7 @@ fn write_echo_template(ws: &std::path::Path) {
     std::fs::write(tpl.join("template.json"), r#"{"name":"echo-tpl"}"#).unwrap();
     std::fs::write(
         tpl.join("config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

@@ -178,20 +178,24 @@ pub fn collect_required_drains<'a>(
             continue;
         };
         for d in hp.required_drains.unwrap_or_default() {
-            // A port name is a short name of a direct child, exactly like
-            // `params.ports` — same shape, same reason (a port is a member of
-            // this scope, not a node somewhere below it).
-            if d.port.contains('/') || d.port == "." || d.port == ".." || d.port.is_empty() {
+            // GH #202: a port name is a short name of a direct child, exactly
+            // like `params.ports` — so it is decided by the same function and
+            // not by a second, stricter opinion. The re-derived rule here used
+            // to refuse every `/`, which dropped the `./recall` spelling that
+            // `params.ports` accepts: the hive kept its declaration and lost
+            // its guarantee, silently, in the lenient direction.
+            let Some(port) = crate::mutation::port_boundary::canonical_port_name(&d.port) else {
                 tracing::warn!(
                     hive = %s,
                     port = %d.port,
-                    "required_drains[].port must be the short name of a direct child — ignoring"
+                    "required_drains[].port must be the short name of a direct child — this entry \
+                     can never name a port, ignoring"
                 );
                 continue;
-            }
+            };
             out.push(DrainRequirement {
                 hive_path: s.to_string(),
-                port_path: format!("{s}/{}", d.port),
+                port_path: format!("{s}/{port}"),
                 hop: d.hop,
                 because: d.because,
             });
@@ -293,6 +297,67 @@ mod tests {
             t.insert(e);
         }
         t
+    }
+
+    // ---- the config.json reader ----
+
+    /// Plant one hive `config.json` in a throwaway colony root and let the real
+    /// reader say which requirements it sees. The reader is the whole subject
+    /// here: a requirement it drops is a requirement that never runs.
+    fn collect_from(params: &str) -> Vec<DrainRequirement> {
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("main/mem")).unwrap();
+        std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+        std::fs::write(
+            root.join("main/mem/config.json"),
+            format!(r#"{{"cell":{{"type":"hive"}},"params":{params}}}"#),
+        )
+        .unwrap();
+        let paths = [Path::new("/mem")];
+        collect_required_drains(root, paths.iter())
+    }
+
+    #[test]
+    fn collect_canonicalises_a_drain_port_written_with_the_dot_slash_prefix() {
+        // GH #202: `port` is documented as the same shape as `params.ports`,
+        // which since #196 accepts both spellings of one node. This reader used
+        // to refuse anything containing a `/`, so `./recall` was warned about
+        // and dropped and the hive that insisted on a drain silently had no
+        // insistence left — lenient in the direction that removes a guarantee.
+        let got = collect_from(
+            r#"{"required_drains":[{"port":"./recall","hop":{"route":"reject"},
+                "because":"a half window leaves here"}]}"#,
+        );
+        assert_eq!(
+            got,
+            vec![DrainRequirement {
+                hive_path: "/mem".into(),
+                port_path: "/mem/recall".into(),
+                hop: BTreeMap::from([("route".to_string(), "reject".to_string())]),
+                because: "a half window leaves here".into(),
+            }],
+            "both spellings name one port, and the port path is one a resolved endpoint can equal"
+        );
+    }
+
+    #[test]
+    fn collect_drops_a_drain_port_that_could_never_name_a_direct_child() {
+        // A deep name is not a port and never can be. Dropping keeps the check
+        // honest: a requirement whose port path no endpoint can equal would sit
+        // there looking enforced while enforcing nothing.
+        let got = collect_from(
+            r#"{"required_drains":[
+                {"port":"recall/leg","hop":{"route":"reject"},"because":"deep"},
+                {"port":"..","hop":{"route":"reject"},"because":"dots"},
+                {"port":"","hop":{"route":"reject"},"because":"empty"},
+                {"port":"glue","hop":{"route":"reject"},"because":"the one that can match"}]}"#,
+        );
+        assert_eq!(
+            got.iter().map(|r| r.port_path.as_str()).collect::<Vec<_>>(),
+            vec!["/mem/glue"],
+            "only the entry that can name a child survives"
+        );
     }
 
     #[test]

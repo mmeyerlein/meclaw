@@ -323,6 +323,47 @@ mod tests {
         assert!(!result, "expected false for non-matching condition");
     }
 
+    /// The two forms a hive-boundary contract needs, checked empirically rather
+    /// than assumed: a route tested against a LIST of accepted lanes, and a
+    /// prefix test. A hive that says "I accept every `in_*` route" is writing one
+    /// of these two into an edge, and cel 0.13's support for them is not
+    /// something the overview's function-scope note covers (it names `has()`,
+    /// the `in` key-existence form, `contains` and `int()`).
+    #[test]
+    fn evaluate_condition_supports_the_forms_a_hive_contract_needs() {
+        let list =
+            parse_condition("has(hop.route) && hop.route in ['in_turn', 'in_tool', 'in_answer']")
+                .expect("a value-in-list condition must parse");
+        for (route, want) in [("in_tool", true), ("in_turn", true), ("brain", false)] {
+            let mut hop = Map::new();
+            hop.insert("route".into(), Value::String(route.into()));
+            assert_eq!(
+                evaluate_condition(&list, &Map::new(), &hop).expect("eval"),
+                want,
+                "route {route} against the accepted list"
+            );
+        }
+
+        let prefix = parse_condition("has(hop.route) && hop.route.startsWith('in_')")
+            .expect("a startsWith condition must parse");
+        for (route, want) in [("in_bundle", true), ("brain", false), ("i", false)] {
+            let mut hop = Map::new();
+            hop.insert("route".into(), Value::String(route.into()));
+            assert_eq!(
+                evaluate_condition(&prefix, &Map::new(), &hop).expect("eval"),
+                want,
+                "route {route} against the in_ prefix"
+            );
+        }
+
+        // The guard that makes either form safe on a message with no route at
+        // all: `has()` short-circuits before the member test runs.
+        let mut empty = Map::new();
+        empty.insert("other".into(), Value::String("x".into()));
+        assert!(!evaluate_condition(&list, &Map::new(), &empty).expect("eval"));
+        assert!(!evaluate_condition(&prefix, &Map::new(), &empty).expect("eval"));
+    }
+
     #[test]
     fn evaluate_condition_ternary_returns_correct_branch() {
         let c = parse_condition("hop.finish_reason == 'tool_calls' ? true : false").unwrap();

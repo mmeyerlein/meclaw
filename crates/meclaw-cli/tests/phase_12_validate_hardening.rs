@@ -117,6 +117,13 @@ async fn validate_with_multiple_root_dirs_returns_err() {
 /// unit-side (`boot_state_unreadable_tables_returns_inconsistent`); data
 /// corruption inside readable tables stays loud at the hydration layer
 /// (`phase_16_hive_scope_hydration_hard_fail`).
+///
+/// GH #168: the row now carries a real UUID. It never did before because
+/// nothing read it — `--validate` planned the `config.json` edges and left the
+/// table alone. A reboot's plan IS the table now, so `edges.id = 'id1'` would
+/// be read, and an id that is not a UUID is data the runtime hydration already
+/// treats as fatal. The pin here is the CLASSIFICATION (edges-only ⇒ Reboot,
+/// not Inconsistent); the fixture's id was incidental to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_with_edges_only_colony_db_passes_as_reboot() {
     // Build a colony.db with only the edges table populated.
@@ -130,7 +137,8 @@ async fn validate_with_edges_only_colony_db_passes_as_reboot() {
         // Only edges has data (registry=0, edges=1, hive_scopes=0) — formerly
         // misread as Inconsistent, now a Reboot.
         conn.execute(
-            "INSERT INTO edges (id, from_path, to_path, created_at) VALUES ('id1', '/a', '/b', 0)",
+            "INSERT INTO edges (id, from_path, to_path, created_at) \
+             VALUES ('01890a5d-ac96-774b-bcce-b302099a8057', '/a', '/b', 0)",
             [],
         )
         .unwrap();

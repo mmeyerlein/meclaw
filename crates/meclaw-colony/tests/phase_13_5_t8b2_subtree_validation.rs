@@ -90,12 +90,12 @@ fn write_valid_subtree_template(root: &std::path::Path) {
     write(
         &tpl,
         "inner_a/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         &tpl,
         "inner_b/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 
@@ -112,12 +112,12 @@ fn write_cyclic_subtree_template(root: &std::path::Path) {
     write(
         &tpl,
         "inner_a/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         &tpl,
         "inner_b/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 
@@ -133,7 +133,7 @@ fn write_escaping_subtree_template(root: &std::path::Path) {
     write(
         &tpl,
         "inner_a/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 
@@ -144,7 +144,7 @@ fn write_single_cell_template(root: &std::path::Path) {
     write(
         &tpl,
         "config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 

@@ -130,6 +130,75 @@ console.log("edge routing");
   ok("rounded over a route object throws — the old defect", threw);
 }
 
+// --- 7b. routing through the gaps the layout leaves
+//
+// The turn used to happen at the midpoint between the two boxes, which is wherever
+// they happen to average out — on the live colony that put 47% of the lines
+// straight through cells they had nothing to do with, and a picture whose lines
+// run under unrelated boxes cannot be followed with the eye. The layout leaves
+// gaps between its columns on purpose; the router now turns in one of them.
+{
+  // Source left, target right, and an unrelated box parked exactly on the
+  // midpoint — the case that produced the crossing.
+  const a = {x: 0, y: 0}, b = {x: 800, y: 200};
+  const blocker = {x: 380, y: 0};
+  const lanes = G.freeLanes([a, b, blocker], W, H);
+  const naive = points(G.edgePath(a, b, W, H, 0));
+  const routed = points(G.edgePath(a, b, W, H, 0, lanes));
+  const hits = (pts) => {
+    for (let i = 1; i < pts.length; i++) {
+      if (G.segmentHitsBox(pts[i - 1], pts[i], blocker, W, H)) return true;
+    }
+    return false;
+  };
+  ok("the midpoint turn runs through the box in the way", hits(naive));
+  ok("routing through a free corridor does not", !hits(routed));
+
+  // A corridor is only worth taking if it lies on the way. One far off to the
+  // side must be ignored rather than turned into a detour.
+  const far = G.corridor([-5000, 9000], 0, 800);
+  ok("a corridor outside the span is ignored", far === 400, String(far));
+  ok("with no corridors at all it is still the midpoint",
+     G.corridor([], 0, 800) === 400 && G.corridor(null, 0, 800) === 400);
+
+  // A box sitting ON the line the anchors leave along cannot be routed around by
+  // any choice of turning point — the way past it is to step aside first. That
+  // path costs one more bend, so it is offered only when the plain one fails.
+  {
+    const src = {x: 0, y: 0}, dst = {x: 900, y: 0};
+    const wall = {x: 300, y: 0};                       // same row, dead ahead
+    const ctx = G.freeLanes([src, dst, wall], W, H);
+    const p = points(G.edgePath(src, dst, W, H, 0, ctx));
+    let hit = false;
+    for (let i = 1; i < p.length; i++) {
+      if (G.segmentHitsBox(p[i - 1], p[i], wall, W, H)) hit = true;
+    }
+    ok("a box straight ahead is stepped around, not driven through", !hit,
+       JSON.stringify(p));
+    // ...and the plain route keeps its right of way when nothing is in the way:
+    // a picture where every line zigzags reads no better than one where they run
+    // under the boxes.
+    const clear = G.freeLanes([src, dst], W, H);
+    const plain = points(G.edgePath(src, dst, W, H, 0, clear));
+    let turns = 0;
+    for (let i = 2; i < plain.length; i++) {
+      const before = Math.abs(plain[i-1].x - plain[i-2].x) > Math.abs(plain[i-1].y - plain[i-2].y);
+      const after = Math.abs(plain[i].x - plain[i-1].x) > Math.abs(plain[i].y - plain[i-1].y);
+      if (before !== after) turns++;
+    }
+    ok("an unobstructed run stays straight", turns === 0, `${turns} turns`);
+  }
+
+  // And the free bands are the gaps BETWEEN the boxes, never inside one.
+  const bands = G.freeLanes([{x: 0, y: 0}, {x: 400, y: 0}], W, H).x;
+  ok("two boxes leave one gap between them, plus the open ground on either side",
+     bands.length === 3, JSON.stringify(bands));
+  ok("the inner lane sits between them",
+     bands.some(v => v > 150 && v < 400), JSON.stringify(bands));
+  ok("and the outer lanes clear everything",
+     bands.some(v => v < 0) && bands.some(v => v > 550), JSON.stringify(bands));
+}
+
 // --- 8. THE HOOK ITSELF, mounted against a fake DOM
 //
 // Everything above tests geometry. Nothing tested the hook, and the hook is where
@@ -145,7 +214,18 @@ console.log("edge routing");
 // landed.
 console.log("\nthe hook");
 {
-  global.document = {};                       // the hook's own guard needs this
+  // A document that can carry a listener, because Escape is bound there: a
+  // selection has to be releasable without hunting for empty canvas to click.
+  const docListeners = {};
+  global.document = {
+    addEventListener(n, f) { docListeners[n] = f; },
+    removeEventListener(n) { delete docListeners[n]; },
+  };
+  // Debounced writes (the camera) need a clock the test can advance.
+  const timers = [];
+  global.setTimeout = (f) => { timers.push(f); return timers.length; };
+  global.clearTimeout = () => {};
+  const tick = () => { const q = timers.splice(0); q.forEach(f => f()); };
   // The drag coalesces its DOM writes into one animation frame. The shim QUEUES
   // like the real thing rather than running inline: a synchronous shim clears the
   // hook's `frame` guard before the hook assigns it, so the guard stays set and
@@ -166,7 +246,13 @@ console.log("\nthe hook");
       getAttribute(k) { return k in this.attrs ? String(this.attrs[k]) : null; },
       setAttribute(k, v) { this.attrs[k] = v; },
       removeAttribute(k) { delete this.attrs[k]; },
-      closest(sel) { return sel === "[data-node]" && "data-node" in this.attrs ? this : null; },
+      // Attribute selectors only, and matched against this element alone: the
+      // stub has no parents. That is enough for every `closest` the hook makes,
+      // and the `#detail` lookup keeps answering null exactly as it did.
+      closest(sel) {
+        const m = /^\[([\w-]+)/.exec(sel);
+        return m && m[1] in this.attrs ? this : null;
+      },
     };
   }
 
@@ -175,8 +261,16 @@ console.log("\nthe hook");
   const b = elem({"data-node": "a/two", transform: "translate(400,300)"});
   const e = elem({"data-from": "a/one", "data-to": "a/two", "data-lane": "0"}, "path");
   const vp = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
+  // The frames present in the picture. Empty until the hive is introduced below,
+  // which is also a test: a picture with no hives must not blow up on a drag.
+  let hives = [];
   const el = {
     classList: {add() {}, remove() {}},
+    // The geometry the server rendered — the client reads it rather than keeping
+    // a second copy of the numbers.
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     listeners: {},
     addEventListener(n, f) { this.listeners[n] = f; },
     removeEventListener(n) { delete this.listeners[n]; },
@@ -184,6 +278,7 @@ console.log("\nthe hook");
     querySelectorAll(sel) {
       if (sel === "[data-node]") return [a, b];
       if (sel === "path.edge") return [e];
+      if (sel === "[data-hive]") return hives;
       if (sel.startsWith("[data-from=")) {
         const id = sel.match(/"([^"]+)"/)[1];
         return [e].filter(p => p.getAttribute("data-from") === id ||
@@ -230,6 +325,30 @@ console.log("\nthe hook");
      vp.getAttribute("transform"));
   ok("and panning tells the server nothing", sent.length === 1);
 
+  // The sweep control. The server offers it only when the table holds rows naming
+  // a cell or a hive the colony no longer has, and pressing it is the operator
+  // saying "those names are gone", which is the one fact the server cannot infer
+  // (GH #184). It must not double as a canvas gesture: falling through to the pan
+  // would make every press write the camera as well.
+  {
+    // A browser fires a click after every pointerup, and the hook swallows the
+    // one that closes a drag. The drags above were never given theirs, so hand it
+    // over now rather than starting from a state a browser never produces.
+    el.listeners.click({target: elem({})});
+    const button = elem({"data-sweep": "1"});
+    const camBefore = vp.getAttribute("transform");
+    el.listeners.pointerdown({target: button, clientX: 10, clientY: 10, preventDefault() {}});
+    el.listeners.pointermove({clientX: 90, clientY: 60});
+    el.listeners.pointerup({clientX: 90, clientY: 60});
+    ok("pressing the sweep control does not pan the canvas",
+       vp.getAttribute("transform") === camBefore, vp.getAttribute("transform"));
+    ok("and it does not move the camera either", sent.length === 1, JSON.stringify(sent));
+    el.listeners.click({target: button});
+    ok("clicking it asks the server to sweep",
+       sent.length === 2 && sent[1].name === "canvas:sweep", JSON.stringify(sent));
+    sent.pop();
+  }
+
   // Dragging a HIVE: the frame, its label and every member move together, and the
   // server hears one event carrying the group's new box origin. Reported the
   // moment the cells became draggable — "hives lassen sich aber noch nicht wieder
@@ -237,28 +356,79 @@ console.log("\nthe hook");
   // a time.
   const rect = elem({x: "0", y: "0", width: "300", height: "100"}, "rect");
   const label = elem({x: "8", y: "18"}, "text");
-  const hiveG = elem({"data-hive": "a"});
+  // `data-ox`/`data-oy` is the block's anchor, and it is deliberately NOT where
+  // the rectangle currently is: the two are the same only until somebody moves a
+  // cell, and a drag that added its delta to the rectangle is what made a dropped
+  // hive jump on the next render.
+  const hiveG = elem({"data-hive": "a", "data-ox": "-40", "data-oy": "-15"});
   hiveG.classList = {add() {}, remove() {}};
   hiveG.querySelector = (sel) => (sel === "rect" ? rect : sel === "text" ? label : null);
   hiveG.closest = function (sel) { return sel === "[data-hive]" ? this : null; };
+  hives = [hiveG];
+
+  // A cell dragged out of its hive GROWS the hive, while the cursor is still
+  // down. The frame is derived from the cells, so it can be derived again every
+  // frame — and a frame that only catches up on release is a frame that lies for
+  // as long as you are looking at it.
+  el.listeners.pointerdown({target: a, clientX: 100, clientY: 100, preventDefault() {}});
+  el.listeners.pointermove({target: a, clientX: 40, clientY: 40});
+  flush();
+  el.listeners.pointerup({target: a, clientX: 40, clientY: 40});
+  ok("dragging a cell out grows its hive immediately",
+     rect.getAttribute("x") === "0" && rect.getAttribute("y") === "-20",
+     rect.getAttribute("x") + "," + rect.getAttribute("y"));
+  sent.length = 0;
+
   const aBefore = boxAttr(a), bBefore = boxAttr(b);
+  const wBefore = rect.getAttribute("width"), hBefore = rect.getAttribute("height");
   el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
   el.listeners.pointermove({clientX: 120, clientY: 60});
   flush();
   el.listeners.pointerup({clientX: 120, clientY: 60});
   ok("the hive frame follows the drag",
-     rect.getAttribute("x") === "120" && rect.getAttribute("y") === "60",
+     rect.getAttribute("x") === "120" && rect.getAttribute("y") === "40",
      rect.getAttribute("x") + "," + rect.getAttribute("y"));
+  ok("and keeps its size — a move is not a resize",
+     rect.getAttribute("width") === wBefore && rect.getAttribute("height") === hBefore,
+     rect.getAttribute("width") + "x" + rect.getAttribute("height"));
   ok("its label follows too",
-     label.getAttribute("x") === "128" && label.getAttribute("y") === "78");
+     label.getAttribute("x") === "128" && label.getAttribute("y") === "58",
+     label.getAttribute("x") + "," + label.getAttribute("y"));
   ok("and both members move by the same delta",
      boxAttr(a).x === aBefore.x + 120 && boxAttr(a).y === aBefore.y + 60 &&
      boxAttr(b).x === bBefore.x + 120 && boxAttr(b).y === bBefore.y + 60,
      JSON.stringify([boxAttr(a), boxAttr(b)]));
-  ok("one hive:moved with the box origin, and nothing per member",
-     sent.length === 2 && sent[1].name === "hive:moved" &&
-     sent[1].payload.id === "a" && sent[1].payload.x === 120 && sent[1].payload.y === 60,
-     JSON.stringify(sent[1]));
+  ok("one hive:moved carrying the ANCHOR plus the delta, not the rectangle",
+     sent.length === 1 && sent[0].name === "hive:moved" &&
+     sent[0].payload.id === "a" && sent[0].payload.x === 80 && sent[0].payload.y === 45,
+     JSON.stringify(sent[0]));
+
+  // CTRL-DRAG PANS, whatever is under the cursor. On a dense arrangement there is
+  // barely any empty background left to grab, and the denser it gets — which is
+  // the direction arranging goes — the worse that gets.
+  {
+    const camBefore = vp.getAttribute("transform");
+    const posBefore = boxAttr(a);
+    el.listeners.pointerdown({target: a, clientX: 500, clientY: 500, ctrlKey: true,
+                              preventDefault() {}});
+    el.listeners.pointermove({target: a, clientX: 560, clientY: 530});
+    flush();
+    el.listeners.pointerup({target: a, clientX: 560, clientY: 530});
+    ok("ctrl-drag on a cell moves the canvas, not the cell",
+       vp.getAttribute("transform") !== camBefore &&
+       boxAttr(a).x === posBefore.x && boxAttr(a).y === posBefore.y,
+       vp.getAttribute("transform") + " / " + JSON.stringify(boxAttr(a)));
+    // ...and the view it left is remembered, once the hand comes to rest. The
+    // camera was read back on every render and never written, so a reload threw
+    // away the zoom and the corner somebody had just navigated to.
+    tick();
+    const last = sent[sent.length - 1];
+    ok("and the new view is saved",
+       !!last && last.name === "camera:moved" &&
+       typeof last.payload.x === "number" && typeof last.payload.z === "number",
+       JSON.stringify(last));
+    sent.length = 0;
+  }
 
   // HIVE IN HIVE. A hive's frame is the frame around its whole SUBTREE, so a drag
   // has to take the nested frames and the deep cells with it — moving only the
@@ -278,6 +448,9 @@ console.log("\nthe hook");
   innerG.closest = function (sel) { return sel === "[data-hive]" ? this : null; };
   const nested = {
     classList: {add() {}, remove() {}},
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     listeners: {},
     addEventListener(n, f) { this.listeners[n] = f; },
     removeEventListener(n) { delete this.listeners[n]; },
@@ -299,11 +472,16 @@ console.log("\nthe hook");
   nested.listeners.pointermove({clientX: 70, clientY: 30});
   flush();
   nested.listeners.pointerup({clientX: 70, clientY: 30});
+  // Both frames are DERIVED from the one cell that moved: the deep frame is that
+  // cell padded, and the frame above it is the deep frame grown by the nesting
+  // inset. So this also pins the containment — an ancestor is strictly bigger
+  // than its child, by the same constant, wherever the drag ends up.
   ok("the dragged hive's own frame moves",
-     innerRect.getAttribute("x") === "80" && innerRect.getAttribute("y") === "40",
+     innerRect.getAttribute("x") === "78" && innerRect.getAttribute("y") === "32",
      innerRect.getAttribute("x") + "," + innerRect.getAttribute("y"));
-  ok("a NESTED frame moves with it",
-     deepRect.getAttribute("x") === "90" && deepRect.getAttribute("y") === "50",
+  ok("a NESTED frame moves with it, one inset inside its parent",
+     deepRect.getAttribute("x") === "96" && deepRect.getAttribute("y") === "50" &&
+     +deepRect.getAttribute("x") - +innerRect.getAttribute("x") === 18,
      deepRect.getAttribute("x") + "," + deepRect.getAttribute("y"));
   ok("and a cell two levels down moves too",
      boxAttr(deepCell).x === 120 && boxAttr(deepCell).y === 80,
@@ -360,6 +538,9 @@ console.log("\nselection");
   const vp2 = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
   const board = {
     classList: classList(),
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     listeners: {},
     addEventListener(n, f) { this.listeners[n] = f; },
     removeEventListener(n) { delete this.listeners[n]; },
@@ -371,6 +552,12 @@ console.log("\nselection");
       if (sel.startsWith("[data-from=")) return [];
       return [];
     },
+  };
+  // Escape is bound on the document, so this section needs its own.
+  const keys = {};
+  global.document = {
+    addEventListener(n, f) { keys[n] = f; },
+    removeEventListener(n) { delete keys[n]; },
   };
   const hook3 = Object.create(Canvy);
   hook3.el = board;
@@ -404,6 +591,183 @@ console.log("\nselection");
   ok("clicking the background clears everything",
      !cellA.classList.has("sel") && !e1.classList.has("hot") &&
      panel.innerHTML.indexOf("Click a cell") >= 0);
+
+  // Escape lets go, without hunting for empty canvas to click on. Same reflex as
+  // every other editor, and on a picture this dense the background is the hardest
+  // thing to hit.
+  e1.closest = (sel) => (sel === "[data-edge]" ? e1 : null);
+  board.listeners.click({target: e1});
+  ok("an edge can be selected again", e1.classList.has("hot"));
+  keys.keydown({key: "Escape"});
+  ok("Escape drops the selection", !e1.classList.has("hot") && !e1.classList.has("dim"));
+  ok("and empties the panel", panel.innerHTML.indexOf("Click a cell or an edge") >= 0,
+     panel.innerHTML.slice(0, 80));
+  ok("and it is forgotten, so the next diff does not bring it back",
+     !hook3.sel, String(hook3.sel));
+}
+
+// ── An edge that addresses a HIVE ───────────────────────────────────────────
+//
+// The boundary rule (overview § Die Hive-Grenze) says a caller talks to a hive,
+// not into it. The server has always written such an edge into the markup; the
+// client dropped it, because `data-to` named something no `[data-node]` answered
+// to and an endpoint without a box gets no `d`. In a real colony that meant 44
+// edges into the void, and the picture claimed there were none.
+{
+  const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
+  const cell = elem({"data-node": "a/one", transform: "translate(100,100)"});
+  const rect = elem({x: "400", y: "80", width: "300", height: "160"}, "rect");
+  const hiveG = elem({"data-hive": "b"});
+  hiveG.querySelector = (sel) => (sel === "rect" ? rect : null);
+  const toHive = elem({"data-from": "a/one", "data-to": "b", "data-lane": "0"}, "path");
+  const fromHive = elem({"data-from": "b", "data-to": "a/one", "data-lane": "1"}, "path");
+  const vp = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
+  const el = {
+    classList: {add() {}, remove() {}},
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) { return sel === "g.viewport" ? vp : null; },
+    querySelectorAll(sel) {
+      if (sel === "[data-node]") return [cell];
+      if (sel === "path.edge") return [toHive, fromHive];
+      if (sel === "[data-hive]") return [hiveG];
+      return [];
+    },
+  };
+  const hook = Object.create(Canvy);
+  hook.el = el;
+  hook.pushEvent = () => {};
+  hook.mounted();
+
+  const d1 = toHive.getAttribute("d"), d2 = fromHive.getAttribute("d");
+  ok("an edge TO a hive is drawn", !!d1 && /^M[-\d.]+,[-\d.]+/.test(d1), String(d1));
+  ok("an edge FROM a hive is drawn", !!d2 && /^M[-\d.]+,[-\d.]+/.test(d2), String(d2));
+  ok("and neither carries NaN", !/NaN/.test(String(d1) + String(d2)),
+     String(d1) + " | " + String(d2));
+
+  // It has to meet the FRAME. The hive spans x 400..700; an edge that treated it
+  // as a 150-wide cell at its corner would land at 400..550 and cut the box.
+  const xs = String(d1).match(/-?[\d.]+/g).map(Number).filter((_, i) => i % 2 === 0);
+  ok("and it stops at the hive's own rectangle, not at a cell-sized ghost",
+     Math.max.apply(null, xs) <= 700 && Math.max.apply(null, xs) >= 380,
+     String(d1));
+}
+
+// ── …and it has to move with the drag ───────────────────────────────────────
+//
+// "beim move sind keine kanten": a cell inside a hive changes that hive's FRAME
+// while it moves, and an edge that ends on the frame was not in the set the drag
+// collected — that set was built from the dragged cell's own id. So the line
+// stayed where the frame used to be and read as detached.
+{
+  const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
+  const raf2 = [];
+  global.requestAnimationFrame = (f) => { raf2.push(f); return raf2.length; };
+  const inner = elem({"data-node": "b/one", transform: "translate(420,100)"});
+  const rect = elem({x: "400", y: "80", width: "300", height: "160"}, "rect");
+  const label = elem({}, "text");
+  const hiveG = elem({"data-hive": "b", "data-ox": "400", "data-oy": "80"});
+  hiveG.querySelector = (sel) => (sel === "rect" ? rect : sel === "text" ? label : null);
+  hiveG.closest = function (sel) { return sel === "[data-hive]" ? this : null; };
+  const far = elem({"data-node": "a/one", transform: "translate(100,100)"});
+  // The edge under test ends on the HIVE, not on the cell being dragged.
+  const onFrame = elem({"data-from": "a/one", "data-to": "b", "data-lane": "0"}, "path");
+  const vp = elem({"data-cx": "0", "data-cy": "0", "data-cz": "1000"});
+  const el = {
+    classList: {add() {}, remove() {}},
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) { return sel === "g.viewport" ? vp : null; },
+    querySelectorAll(sel) {
+      if (sel === "[data-node]") return [inner, far];
+      if (sel === "path.edge") return [onFrame];
+      if (sel === "[data-hive]") return [hiveG];
+      return [];
+    },
+  };
+  const hook = Object.create(Canvy);
+  hook.el = el;
+  hook.pushEvent = () => {};
+  hook.mounted();
+  const before = onFrame.getAttribute("d");
+  ok("the frame edge starts out drawn", !!before, String(before));
+
+  inner.closest = (sel) => (sel === "[data-node]" ? inner : null);
+  el.listeners.pointerdown({target: inner, clientX: 0, clientY: 0,
+                            button: 0, preventDefault() {}});
+  el.listeners.pointermove({clientX: 260, clientY: 140, preventDefault() {}});
+  raf2.splice(0).forEach(f => f());
+
+  ok("dragging a cell moves the edge that ends on its hive's frame",
+     onFrame.getAttribute("d") !== before,
+     "before " + before + " now " + onFrame.getAttribute("d"));
+  ok("and the moved edge carries no NaN",
+     !/NaN/.test(String(onFrame.getAttribute("d"))),
+     String(onFrame.getAttribute("d")));
+}
+
+// ── A door edge: one box INSIDE the other ───────────────────────────────────
+//
+// The shape the boundary rule produces (overview § Die Hive-Grenze): `.` -> the
+// cell that serves the door. Two real rectangles, but nested, and "which side of
+// the frame faces the cell" has no answer — every side does. The old router
+// asked `side()` anyway and got the frame's OUTWARD normal, so the line left the
+// hive through its outer wall, ran around the outside and came back in. All nine
+// door edges in the live colony were drawn that way.
+{
+  const frame = {x: 100, y: 100, w: 400, h: 300};
+  const cases = [
+    ["cell near the top",    {x: 300, y: 130}],
+    ["cell near the bottom", {x: 300, y: 340}],
+    ["cell near the left",   {x: 120, y: 240}],
+    ["cell near the right",  {x: 330, y: 240}],
+    ["cell right at a wall", {x: 300, y: 108}],   // gap smaller than one stub
+  ];
+  for (const [name, cell] of cases) {
+    for (const [dir, a, b] of [["out", frame, cell], ["in", cell, frame]]) {
+      const r = G.route(a, b, W, H, 0);
+      const pts = points(r.d);
+      const out = pts.filter(p => p.x < frame.x - 0.6 || p.y < frame.y - 0.6 ||
+                                  p.x > frame.x + frame.w + 0.6 ||
+                                  p.y > frame.y + frame.h + 0.6);
+      ok(`stays inside the frame (${name}, ${dir})`, out.length === 0, r.d);
+      // …and it goes straight there. A path much longer than the gap it spans is
+      // the detour this fix removes, whichever shape the detour happens to take.
+      let len = 0;
+      for (let i = 1; i < pts.length; i++) {
+        len += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
+      }
+      const span = Math.abs(r.end.x - r.start.x) + Math.abs(r.end.y - r.start.y);
+      ok(`no detour (${name}, ${dir})`, len <= Math.max(span, 8) * 1.35 + 1,
+         `${len.toFixed(1)} for a span of ${span.toFixed(1)} — ${r.d}`);
+      ok(`no NaN (${name}, ${dir})`, !/NaN/.test(r.d), r.d);
+    }
+  }
+
+  // Two cells at the very same spot overlap, they are not nested — the equal-size
+  // guard in `contains`. Without it the identical-box case above would be routed
+  // as a door edge and collapse to a zero-length line.
+  ok("identical boxes are not treated as nested",
+     !G.contains({x: 0, y: 0}, {x: 0, y: 0}, W, H));
+  ok("but a frame around a cell is",
+     G.contains(frame, {x: 300, y: 130}, W, H));
+
+  // The wall chosen is the NEAREST one: a cell hard against the left wall is met
+  // from the left, not from wherever the centres happen to average out.
+  const left = G.innerSide(frame, {x: 108, y: 240}, W, H);
+  ok("the nearest wall is the door", left.x === -1 && left.y === 0,
+     JSON.stringify(left));
+  const bottom = G.innerSide(frame, {x: 300, y: 356}, W, H);
+  ok("…on whichever side that is", bottom.x === 0 && bottom.y === 1,
+     JSON.stringify(bottom));
 }
 
 console.log(fails ? `\n${fails} failing` : "\nall green");

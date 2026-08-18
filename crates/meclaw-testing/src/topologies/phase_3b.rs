@@ -57,7 +57,7 @@ pub async fn build_phase_3b_topology() -> Phase3bTopology {
     colony
         .spawn(Path::new("/a"), move || {
             EchoMockCell::new(Path::new("/a"))
-                .echo_to(Path::new("/b"))
+                .emitted_target(Path::new("/b"))
                 .with_emitted_header("forwarded_by", json!("/a"))
         })
         .await;
@@ -65,7 +65,7 @@ pub async fn build_phase_3b_topology() -> Phase3bTopology {
     colony
         .spawn(Path::new("/b"), move || {
             EchoMockCell::new(Path::new("/b"))
-                .echo_to(Path::new("/c"))
+                .emitted_target(Path::new("/c"))
                 .with_emitted_header("forwarded_by", json!("/b"))
         })
         .await;

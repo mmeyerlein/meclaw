@@ -1,4 +1,4 @@
-//! Wave 11 -- the curator: continuous context-window management in `collector@1`.
+//! Wave 11 -- the curator: continuous context-window management in `collector`.
 //!
 //! The collector could bound one ITEM (`tool_chars`) and it could
 //! drop whole ITERATIONS (`round_bytes`), but nothing in it ever knew

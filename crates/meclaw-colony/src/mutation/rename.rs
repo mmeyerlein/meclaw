@@ -198,6 +198,8 @@ mod tests {
             header_view: crate::mutation::validate::HeaderNodeView::default(),
             preexisting_target: false,
             provenance: None,
+            // GH #169: an instantiation, not a relocation.
+            relocation: None,
         }
     }
 

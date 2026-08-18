@@ -169,12 +169,12 @@ async fn stateful_survivor_heals_via_backstop_then_retry_disconnect_commits() {
     write(
         td.path(),
         "main/keep/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/keep"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/keep"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),

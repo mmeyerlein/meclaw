@@ -390,7 +390,7 @@ async fn d_nachbar_incidental_neighbour_mutation_leaves_failed() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -401,7 +401,7 @@ async fn d_nachbar_incidental_neighbour_mutation_leaves_failed() {
     write(
         td.path(),
         "main/other/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/other"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/other"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let hang = Arc::new(AtomicBool::new(true));
@@ -482,12 +482,12 @@ async fn d_hive_cascade_recompute_leaves_failed() {
     write(
         td.path(),
         "main/x/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/y/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/y"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/y"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // Sub-hive /h with internal wiring `./src -> ./flip`, so once /h is gated
     // active /h/flip is connected and wakeable.
@@ -499,7 +499,7 @@ async fn d_hive_cascade_recompute_leaves_failed() {
     write(
         td.path(),
         "main/h/src/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/h/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/h/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -578,7 +578,7 @@ async fn d_route_i_direct_add_edges_reactivates_with_receipt() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -675,7 +675,7 @@ async fn d_route_ii_add_nodes_resume_reactivates_with_receipt() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -794,7 +794,7 @@ async fn d_loop_reconnect_then_recrash_refails_bounded() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
@@ -806,7 +806,7 @@ async fn d_loop_reconnect_then_recrash_refails_bounded() {
     write(
         td.path(),
         "main/other/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/flip"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let hang = Arc::new(AtomicBool::new(true));

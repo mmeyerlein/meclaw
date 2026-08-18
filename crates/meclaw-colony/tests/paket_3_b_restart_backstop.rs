@@ -73,7 +73,7 @@ async fn backstop_triggers_restart_and_restores_stop_wiring() {
     write(
         td.path(),
         "main/anchor/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hang"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // The hang cell: hangs forever in handle(), small message_timeout so the
     // B-backstop fires quickly.

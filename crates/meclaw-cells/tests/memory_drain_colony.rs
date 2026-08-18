@@ -163,16 +163,25 @@ fn code_cell(script: &str, hop: Value) -> Value {
 /// writer.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./probe", "to": "./drain/drain",
+        // Both ends name the drain HIVE, never the cell inside it (overview
+        // § Die Hive-Grenze): the template declares `. -> ./drain` on an in_
+        // lane and `./drain -> .` on `episode`, and reaching past those doors
+        // would deliver the episode twice — once to the writer and once to a
+        // hive path this graph has no exit for.
+        {"from": "./probe", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./drain/drain", "to": "./memory/writer",
+        {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
                                       "happened_at": "hop.happened_at"}}},
         {"from": "./probe", "to": "/sink"},
+        // The ledger receipt is the exception this test needs and the boundary
+        // rule tolerates: it is not the hive's contract but a probe INTO it, the
+        // positive receipt the idempotence gate is measured against. A test that
+        // may only see a hive's doors cannot tell "skipped" from "never ran".
         {"from": "./drain/ledger", "to": "/park"},
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'enqueue'"},

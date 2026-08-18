@@ -60,7 +60,7 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -168,7 +168,7 @@ async fn reboot_mixed_tree_known_keeps_id_new_is_reported_not_adopted() {
     std::fs::create_dir_all(td.path().join("main/b")).unwrap();
     std::fs::write(
         td.path().join("main/b/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 
@@ -221,7 +221,7 @@ async fn phase_13_5_lifecycle_3a_orphan_overlay_entry_does_not_crash_or_remint()
     std::fs::create_dir_all(td.path().join("main/b")).unwrap();
     std::fs::write(
         td.path().join("main/b/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 

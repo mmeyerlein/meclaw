@@ -2,7 +2,7 @@
 //!
 //! The script pins live in `w9a_per_turn_episodes.rs`. This file asks the
 //! question the track is actually about, and it asks it of a COLONY that
-//! contains the shipped `talky@1`, the shipped `memory-drain@1` and the memory
+//! contains the shipped `talky`, the shipped `memory-drain` and the memory
 //! hive's real write path (writer + `episodes` surface, the pinned snapshots of
 //! GH #125, drift-locked by `x2_hive_fixture_drift.rs`):
 //!
@@ -169,29 +169,34 @@ fn memory_write_path(root: &std::path::Path) {
 /// not on a second edge into the hive.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./surface", "to": "./talky/keeper/stamp",
+        {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
-        {"from": "./surface", "to": "./talky/keeper/close",
+        {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         // THE per-turn lane.
-        {"from": "./talky/collector/assemble", "to": "./drain/drain",
+        // Both ends name the drain HIVE, never the cell inside it (overview
+        // § Die Hive-Grenze): the template declares `. -> ./drain` on an in_
+        // lane and `./drain -> .` on `episode`. Reaching past those doors
+        // delivers every episode twice — once to the writer and once to a hive
+        // path this graph has no exit for.
+        {"from": "./talky/collector", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
         // The safety net, unchanged: the close batch into the same entry.
-        {"from": "./talky/collector/assemble", "to": "./drain/drain",
+        {"from": "./talky/collector", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./drain/drain", "to": "./memory/writer",
+        {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
                                       "happened_at": "hop.happened_at"}}},
-        {"from": "./talky/collector/assemble", "to": "/sink",
+        {"from": "./talky/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "/park"},
         {"from": "./talky/errors", "to": "./void",
@@ -235,13 +240,13 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     patch(root, "main/talky/collector/assemble/config.json", |v| {
         v["params"]["turn_write"] = json!("1");
     });
-    patch(root, "main/talky/keeper/night/config.json", |v| {
+    patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     for rel in [
         "main/talky/brain/config.json",
-        "main/talky/summary/writer/config.json",
+        "main/talky/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| {
             v["params"]["base_url"] = json!(base_url);

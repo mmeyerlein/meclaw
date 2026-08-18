@@ -1,10 +1,10 @@
-# `talky@1.2.0`
+# `talky@2.0.0`
 
 A whole conversational agent as one template. Five units under one hive:
-[`session-keeper@1`](../session-keeper/) as `keeper`, [`collector@1`](../collector/) as
-`collector`, [`dispatcher@1`](../dispatcher/) as `split`,
-[`summarizer@1`](../summarizer/) as `summary`, plus an `llm` brain and one error
-collector. No new cell type, no Rust.
+[`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
+[`dispatcher@1`](../dispatcher/) and [`summarizer@2`](../summarizer/) -- each carrying
+its template's own name -- plus an `llm` brain and one error collector. No new cell
+type, no Rust.
 
 **The Egon rollout wired this by hand.** Keeper in the ingress, collector at the seam,
 dispatcher for the fan-out, summarizer on the close path -- twenty-two edges, each of
@@ -22,7 +22,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
   over ONE edge, and that edge carries the two things the loop needs: the iteration
   counter and `restore_ttl`. A tool round is a dozen routing hops; without the restoring
   edge the fifth round dies mid fan-in with nothing emitted towards the surface.
-- **A tool round that only needs its tools.** `brain -> split -> (your tools) ->
+- **A tool round that only needs its tools.** `brain -> dispatcher -> (your tools) ->
   collector -> brain` is pre-wired except for the one lane that is genuinely
   per-instance: which cell answers to `web_search`. Adding a tool is one edge pair, never
   a topology change.
@@ -39,12 +39,19 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 
 | path | type | from |
 |---|---|---|
-| `keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@1` |
-| `collector/{assemble,window}` | `code`, `store` | `collector@1` |
-| `split` | `code` | `dispatcher@1` (a single-cell template) |
+| `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector@2` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
 | `brain` | `llm` | this template |
-| `summary/{prep,writer}` | `code`, `llm` | `summarizer@1` |
+| `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2` **(sealed)** |
 | `errors` | `code` | this template |
+
+**The braces are an inventory, not an address list.** The three sealed sub-units declare
+`params.ports: []`, so `./session-keeper`, `./collector` and `./summarizer` are the only
+addresses an edge from outside may name; `./session-keeper/stamp` and
+`./collector/assemble` are refused with `hive_port_boundary`. Which cell inside picks the
+message up is decided by the `in_` lane the edge sets, by the hive's own door edges. That
+is what lets the inside of a sub-unit change without touching a caller.
 
 ### How the sub-units are referenced: materialised copies, pinned
 
@@ -56,7 +63,7 @@ sub-units live here as **byte copies of their `config.json` files** -- no
 
 That is a fork risk, and it is pinned rather than hoped away:
 `crates/meclaw-cells/tests/talky_composite.rs` asserts every copied `config.json` is
-byte-identical to its source template. A change to `collector@1` that does not travel
+byte-identical to its source template. A change to `collector@2` that does not travel
 into `talky/collector/` fails there, in the same test run, instead of drifting into
 production.
 
@@ -68,17 +75,17 @@ its timer never spawns.
 
 | port | endpoint | direction | what travels |
 |---|---|---|---|
-| ingress | `./keeper/stamp` | in | the surface turn, lane `in_turn` |
-| reply | `./collector/assemble` | out | `hop.route == 'answer'` |
-| write | `./collector/assemble` | out | `hop.route == 'write'` -- the closed session as one batch |
+| ingress | `./session-keeper` | in | the surface turn, lane `in_turn` |
+| reply | `./collector` | out | `hop.route == 'answer'` |
+| write | `./collector` | out | `hop.route == 'write'` -- the closed session as one batch |
 | error drain | `./errors` | out | `hop.route == 'error'` |
 
 Optional, and off unless the instance switches it on: a fifth exit `turn_write` on
-`./collector/assemble`, the **same** batch after every stored turn -- see "Per-turn
+`./collector`, the **same** batch after every stored turn -- see "Per-turn
 episodes" below.
 
-**These four addresses are the port contract.** `./keeper/stamp`,
-`./collector/assemble`, `./split` and `./errors` are stable **addresses**, not
+**These four addresses are the port contract.** `./session-keeper`,
+`./collector`, `./dispatcher` and `./errors` are stable **addresses**, not
 implementation detail that happens to be reachable: the working colonies under
 [`../../examples/`](../../examples/) wire them literally, and so does anything
 built from this template. Internal cell names inside the composite may be
@@ -90,13 +97,13 @@ a new major version, not a patch.
 Plus, per instance, the two **advisor lanes** to an agent core -- see below.
 
 ```json
-{"from": "<surface>", "to": "./talky/keeper/stamp",
+{"from": "<surface>", "to": "./talky/session-keeper",
  "condition": "has(hop.user_id) && int(hop.user_id) == 12345",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"channel": "hop.chat_id"}}},
-{"from": "./talky/collector/assemble", "to": "<reply sink>",
+{"from": "./talky/collector", "to": "<reply sink>",
  "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
-{"from": "./talky/collector/assemble", "to": "<day archive or memory>",
+{"from": "./talky/collector", "to": "<day archive or memory>",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"}}},
 {"from": "./talky/errors", "to": "<drain or alarm>",
@@ -125,9 +132,9 @@ through deliberately.
 tool cells and no map of them. Wiring a tool is one edge pair:
 
 ```json
-{"from": "./talky/split", "to": "./search",
+{"from": "./talky/dispatcher", "to": "./search",
  "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"},
-{"from": "./search", "to": "./talky/collector/assemble",
+{"from": "./search", "to": "./talky/collector",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
@@ -137,7 +144,7 @@ with a log line per lane per message. A tool name nobody answers to dead-letters
 stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
 **One tool is served inside the composite:** `memory_recall` (GH #78). It is wired like any
-other tool -- `./talky/split` on `hop.tool_name == 'memory_recall'` -- except that the cell
+other tool -- `./talky/dispatcher` on `hop.tool_name == 'memory_recall'` -- except that the cell
 behind the edge is the collector itself (`set_hop {"route": "'in_memory_call'"}`), because
 it already owns the recall port. Its schema and the second half of the wiring live in
 [`../collector/README.md`](../collector/README.md) § The memory tool.
@@ -170,13 +177,13 @@ Three more optional lanes, all of them the parent's decision:
 
 | lane | endpoint | when |
 |---|---|---|
-| memory recall | `./collector/assemble` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
-| memory tool | `./talky/split` on `hop.tool_name == 'memory_recall'` → `./collector/assemble` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above |
-| forced sweep | `./keeper/close` lane `in_sweep` | an operator or a second schedule |
-| housekeeping | `./collector/assemble` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
-| per-turn write | `./collector/assemble` route `turn_write` out | only with `turn_write` set -- see below |
-| memory lookup | `./talky/split` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
-| inline extraction | `./talky/split` on `hop.tool_name == 'remember'` -> the hive's `inline-extraction` port, **plus** its `inline-reject` egress back into `./errors` | the write leg of the front model -- see "The memory tool `remember`" |
+| memory recall | `./collector` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
+| memory tool | `./talky/dispatcher` on `hop.tool_name == 'memory_recall'` → `./collector` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above |
+| forced sweep | `./session-keeper` lane `in_sweep` | an operator or a second schedule |
+| housekeeping | `./collector` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
+| per-turn write | `./collector` route `turn_write` out | only with `turn_write` set -- see below |
+| memory lookup | `./talky/dispatcher` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
+| inline extraction | `./talky/dispatcher` on `hop.tool_name == 'remember'` -> the hive's `inline-extraction` port, **plus** its `inline-reject` egress back into `./errors` | the write leg of the front model -- see "The memory tool `remember`" |
 
 ### Per-turn episodes (`turn_write`)
 
@@ -188,11 +195,11 @@ and every stored answer. No model call is involved: this is the collector's own 
 leaving one turn earlier.
 
 ```json
-{"from": "./talky/collector/assemble", "to": "./memdrain/drain",
+{"from": "./talky/collector", "to": "./memdrain",
  "condition": "has(hop.route) && hop.route == 'turn_write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}},
-{"from": "./talky/collector/assemble", "to": "./memdrain/drain",
+{"from": "./talky/collector", "to": "./memdrain",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}}
@@ -200,7 +207,7 @@ leaving one turn earlier.
 
 **Both edges into the same consumer, or not at all.** The two routes carry the same
 conversation in the same order; a consumer that recognises what it has already taken --
-`memory-drain@1` does, through its ledger -- writes only the difference and mints the
+`memory-drain` does, through its ledger -- writes only the difference and mints the
 same ids either way. Two *different* consumers would be two memories. And the write route
 keeps its own job: it is the safety net that catches the turns the per-turn lane lost,
 and the count gate over its batch is what proves none went missing.
@@ -212,26 +219,36 @@ a path that is model-free by design.
 
 ## The internal wiring, edge by edge
 
-Twelve edges in this hive's `params.graph`, plus the ten the four sub-units bring with
-them. Read it as the round it is:
+Twelve edges in this hive's `params.graph`, plus the eighteen the four sub-units bring
+with them. Every one of the twelve names a sub-unit **by its path**: three of the five
+nodes below are sealed hives, so the address is the hive and the lane in the third column
+is what the door behind it reads. Read it as the round it is:
 
 ```
-keeper/stamp  --(turn, session_id -> context)-->  collector/assemble  in_turn
-keeper/close  --(close, session_id -> context)->  collector/assemble  in_close
+session-keeper --(turn, session_id -> context)-->  collector   in_turn
+session-keeper --(close, session_id -> context)->  collector   in_close
 
-collector/assemble ==(brain, int(hop.iter) < 12, restore_ttl)==> brain     <- THE SEAM
-brain --(stop | tool_calls)--> split
-brain --(length)-------------> collector/assemble  in_answer
-brain --(error | content_filter)--> errors
+collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
+brain --(stop | tool_calls)------> dispatcher
+brain --(length)-----------------> collector    in_answer
+brain --(error | content_filter)-> errors
 
-split --(calls)---> collector/assemble  in_calls      split --(tool)--> [your tools]
-split --(result)--> collector/assemble  in_tool
-split --(answer)--> collector/assemble  in_answer
+dispatcher --(calls)---> collector   in_calls    dispatcher --(tool)--> [your tools]
+dispatcher --(result)--> collector   in_tool
+dispatcher --(answer)--> collector   in_answer
 
-collector/assemble --(write)--> summary/prep  in_batch     (AND out of the write port)
-summary/prep --(summary)------> brain          <- system.handover, no provider call
-summary/prep --(summary_error)-> errors
+collector --(write)----------> summarizer  in_batch   (AND out of the write port)
+summarizer --(summary)------> brain           <- system.handover, no provider call
+summarizer --(summary_error)-> errors
+
+[sealed]  session-keeper   collector   summarizer      [plain cells]  brain  dispatcher  errors
 ```
+
+**The eighteen are not drawn here, and that is the point.** A sealed sub-unit distributes
+internally on its own `{"from": "."}` door edges -- `session-keeper` alone has nine of
+them, `collector` four, `summarizer` five -- and none of that is visible to, or wireable
+by, the hive above. What the twelve edges above state is the whole of talky's own
+topology.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter` (default 8), which
@@ -258,12 +275,12 @@ connection is two edges plus one knob.
 ```
 
 ```json
-{"from": "./talky/split", "to": "/agent/cogny/collector/assemble",
+{"from": "./talky/dispatcher", "to": "/agent/cogny/collector",
  "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "/agent/cogny/collector/assemble", "to": "./talky/collector/assemble",
+{"from": "/agent/cogny/collector", "to": "./talky/collector",
  "condition": "has(hop.route) && hop.route == 'answer'",
  "modifier": {"set_hop": {"route": "'in_advice'"},
               "set_context": {"col_phase": "''"},
@@ -322,7 +339,7 @@ called**, not by a number anybody had to measure. So the talky's brain carries T
 tools, and the cogny's ingress edge turns the choice into `context.consult_class`:
 
 ```json
-{"from": "./talky/split", "to": "/agent/cogny/collector/assemble",
+{"from": "./talky/dispatcher", "to": "/agent/cogny/collector",
  "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id", "col_phase": "''",
@@ -353,7 +370,7 @@ answer a question asked this afternoon.
 ```
 
 ```json
-{"from": "./talky/split", "to": "/agent/memory/extract-glue",
+{"from": "./talky/dispatcher", "to": "/agent/memory/extract-glue",
  "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
  "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'"}}},
 {"from": "/agent/memory/extract-glue", "to": "./talky/errors",
@@ -433,21 +450,25 @@ is also the whole reason wave 9 came first.
 Two classes since `collector@1.2.0`. The **env** knobs are `${VAR:-default}` literals that
 travel into the instance and bind **late**, at every read, so a `.env` change plus a reboot
 moves them without touching a config -- and they move every unit in the colony at once. The
-**param** knobs ship with their defaults inside `./collector/assemble/config.json` and are
+**param** knobs ship with their defaults inside `./collector/config.json` and are
 retuned per instance with `override_params` on `collector/assemble.params.<name>`, so this
-talky can differ from the cogny next to it.
+talky can differ from the cogny next to it. That deep key is **not** an edge endpoint and
+the port boundary does not apply to it: `override_params` is addressed by the cell's path
+inside the template (GH #140), which is how a sealed sub-unit stays tunable at birth while
+being unwireable from outside.
 
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 | knob | where | default | unit |
 |---|---|---|---|
-| `KEEPER_IDLE_MS` | env | `7200000` | keeper -- silence before a generation may end (2 h) |
-| `KEEPER_NIGHT_CRON` | env | `0 0,30 22-23,0-3 * * *` | keeper -- the sweep, **in UTC** (summer image of 00:00-05:30 CEST) |
-| `KEEPER_CLOSE_LIMIT` | env | `50` | keeper -- generations one firing may seal |
+| `KEEPER_IDLE_MS` | env | `7200000` | session-keeper -- silence before a generation may end (2 h) |
+| `KEEPER_NIGHT_CRON` | env | `0 0,30 22-23,0-3 * * *` | session-keeper -- the sweep, **in UTC** (summer image of 00:00-05:30 CEST) |
+| `KEEPER_CLOSE_LIMIT` | env | `50` | session-keeper -- generations one firing may seal |
 | `window_turns` | param | `12` | collector -- newest turns entering the context |
 | `window_bytes` | param | `8000` | collector -- byte cap over the window |
 | `turn_chars` | param | `4000` | collector -- per-turn cap before the byte cap |
@@ -462,12 +483,12 @@ tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collec
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
 | `turn_write` | param | `""` | collector -- empty = off; set, the day leaves on route `turn_write` after every stored turn |
 | `context_window` | param | `0` | collector -- the curator's budget in tokens; `0` = curation off. A channel voice is the shape the curator was **not** built for; leave it off unless the window is genuinely large. The full curator table is in [`collector`](../collector/#knobs) |
-| `DISPATCHER_MAX_CALLS` | env | `16` | split -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | (empty) | split -- comma-separated tools that answer on their own lane instead of inside the round (`consult_cogny,ask_memory,remember`). The key is colony-global, so in practice ONE list carries every async name of the tree |
-| `SUMMARIZER_RECENT_TURNS` | `12` | summary -- newest turns travelling verbatim |
-| `SUMMARIZER_PHASEOUT_CHARS` | `200` | summary -- per-turn cap on the phased-out turns |
-| `SUMMARIZER_TOOL_CHARS` | `200` | summary -- per-item cap on tool previews |
-| `SUMMARIZER_ROUND_LINES` | `40` | summary -- tool-activity lines at most |
+| `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round (`consult_cogny,ask_memory,remember`). The key is colony-global, so in practice ONE list carries every async name of the tree |
+| `SUMMARIZER_RECENT_TURNS` | env | `12` | summarizer -- newest turns travelling verbatim |
+| `SUMMARIZER_PHASEOUT_CHARS` | env | `200` | summarizer -- per-turn cap on the phased-out turns |
+| `SUMMARIZER_TOOL_CHARS` | env | `200` | summarizer -- per-item cap on tool previews |
+| `SUMMARIZER_ROUND_LINES` | env | `40` | summarizer -- tool-activity lines at most |
 
 **`ctx.model` is the one instantiation-class knob** and it is strict: `add_nodes` without
 it is rejected with `ctx_key_missing`. Two equally valid forms (session ruling
@@ -476,7 +497,7 @@ resolves `MODEL_<ROLE>` from `.env` itself), or pass the **`${MODEL_<ROLE>}` tok
 verbatim so the cell re-resolves it from `.env` at spawn — the examples use the token
 form to stay vendor-neutral. Both `llm` cells
 read the same key; a cheaper summarizer is one `override_params` on
-`summary/writer.params.model`, and a subscription or another provider for the brain is
+`summarizer/writer.params.model`, and a subscription or another provider for the brain is
 `override_params` on `brain.params` (`provider`, `auth`, `auth_ref`, `base_url`).
 
 **The TTL budget.** With `restore_ttl` on the seam the colony default of 64 carries the
@@ -532,18 +553,19 @@ Two things to have ready before the mutation:
   no idle window ever waits for the core (one-millisecond window, two sweeps, nothing
   swept).
 - `crates/meclaw-cells/tests/talky_composite.rs` -- the shipped template in a running
-  colony against the mock OpenAI wire: one turn through keeper, seam, brain, split, a
-  tool and back to the seam (two provider calls, the second one carrying the tool
-  result, the answer carrying the minted session id and `iter=1`); a close whose batch
+  colony against the mock OpenAI wire: one turn through session-keeper, seam, brain,
+  dispatcher, a tool and back to the seam (two provider calls, the second one carrying
+  the tool result, the answer carrying the minted session id and `iter=1`); a close
+  whose batch
   reaches the write port AND becomes the handover that the NEXT generation's prompt
   carries -- with exactly one extra provider call, which is what proves the system
   update is silent. Plus the byte-identity pin over the four sub-unit copies.
 - `crates/meclaw-cells/tests/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
-  that carries this composite, the shipped `memory-drain@1` and the memory hive's real
+  that carries this composite, the shipped `memory-drain` and the memory hive's real
   write path: one turn, and the turn AND the answer are `episodes` rows before anything
   closes; then the close batch runs into the same drain and moves no row.
 - `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- the `remember` lane in a
-  colony that carries this composite, the shipped `memory-drain@1` and the memory hive's
+  colony that carries this composite, the shipped `memory-drain` and the memory hive's
   real write AND extraction path: one turn whose single response carries the answer and
   the tool call, the answer in the channel untouched, and the fact a candidate on the
   episode of the turn it answered, under the drain's own `turn_id`. Plus the other half,
@@ -551,5 +573,5 @@ Two things to have ready before the mutation:
   payload leaves through `inline-reject`, writes nothing, covers no turn -- and the
   channel got its sentence anyway.
 - The sub-units keep their own pins: `session_keeper.rs`, `collector_window.rs`,
-  `collector_colony.rs`, `dispatcher_split.rs`, `summarizer_prep.rs`,
+  `collector_colony.rs`, `dispatcher_template.rs`, `summarizer_prep.rs`,
   `summarizer_colony.rs`.

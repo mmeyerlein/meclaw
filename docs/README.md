@@ -51,9 +51,8 @@ that say so in their own first paragraph. If they disagree with the overview,
 the overview is right and the detail spec is a bug.
 
 **Language.** The trio is written in German and maintained with an English twin
-alongside it (`X.md` German, `X.en.md` English); the newer documents — this
-index, the glossary, `costs` and `store-backed-tool-loop` — are English-only and
-have no German twin. Publication resolves that: the English side is what ships,
+alongside it (`X.md` German, `X.en.md` English); the newer documents — this index, the glossary, `costs` and
+`store-backed-tool-loop` — are English-only and have no German twin. Publication resolves that: the English side is what ships,
 under the plain `X.md` name. So a published tree is entirely English and
 contains no `.en.md` file at all, which is why every link on this page points at
 the plain name. Drift between a pair is a release gate, not a matter of

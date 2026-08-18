@@ -91,7 +91,7 @@ fn reject_payload() -> meclaw_core::serde_json::Value {
 }
 
 /// A mutation that commits: add an echo node under a loaded echo template.
-/// `echo_to` is required for the echo cell to spawn — set it so the mutation
+/// `emitted_target` is required for the echo cell to spawn — set it so the mutation
 /// reaches `committed` instead of failing at the spawn step.
 fn commit_payload(name: &str) -> meclaw_core::serde_json::Value {
     meclaw_core::serde_json::json!({
@@ -99,7 +99,7 @@ fn commit_payload(name: &str) -> meclaw_core::serde_json::Value {
         "diff": { "add_nodes": [{
             "name": name,
             "template": "echo",
-            "override_params": {"echo_to": "/"}
+            "override_params": {"emitted_target": "/"}
         }]}
     })
 }
@@ -221,7 +221,7 @@ async fn committed_mutation_leaves_single_committed_row_no_reject() {
 }
 
 /// (e′) The demarcation from the other side: an APPLY-stage failure (echo node
-/// without the required `echo_to` param → spawn fails AFTER validation, after the
+/// without the required `emitted_target` param → spawn fails AFTER validation, after the
 /// `in_flight` row is written) leaves a `status='failed'` row — NEVER a
 /// `rejected` one. Validate-Reject and Apply-failed are distinct classes; the
 /// `INSERT OR IGNORE` reject path must not conflate them into a duplicate row.
@@ -230,7 +230,7 @@ async fn apply_stage_spawn_failure_logs_failed_not_rejected() {
     let h = ColonyHandle::new_with_echo();
     setup_template(&h, "echo", "echo").await;
 
-    // echo template loaded, but no `echo_to` override → passes validation,
+    // echo template loaded, but no `emitted_target` override → passes validation,
     // fails at the spawn step (Apply stage).
     let outcome = send_mutation(
         &h,

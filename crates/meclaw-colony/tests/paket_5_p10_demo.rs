@@ -159,12 +159,12 @@ async fn malformed_match_per_arm_rejects_not_skips() {
     write(
         td.path(),
         "main/a/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/b/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
@@ -291,12 +291,12 @@ async fn same_name_in_foreign_scope_not_matched_by_validator() {
     write(
         td.path(),
         "main/x/dup/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/x/dup"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/x/dup"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         td.path(),
         "main/x/target/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/x/target"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/x/target"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // Scope /y: a sibling hive containing NEITHER `shared` nor `dup`, just an
     // unrelated cell `other` so /y is a real, populated scope.
@@ -308,7 +308,7 @@ async fn same_name_in_foreign_scope_not_matched_by_validator() {
     write(
         td.path(),
         "main/y/other/config.json",
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/y/other"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/y/other"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let h = ColonyHandle::new_with_factories_at(&td, echo_factories());

@@ -3,8 +3,31 @@
     "type": "hive"
   },
   "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_batch",
+          "context": [
+            "session_id"
+          ],
+          "because": "one closed session as a single write batch; the ledger is keyed on the promoted session_id and a batch without one cannot be told apart from its own repeat"
+        }
+      ],
+      "emits": [
+        {
+          "route": "episode",
+          "because": "one message per turn of the batch, for the memory hive's turn-write ingress"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./drain",
+          "condition": "has(hop.route) && hop.route.startsWith('in_')"
+        },
         {
           "from": "./drain",
           "to": "./ledger",
@@ -21,6 +44,11 @@
           "from": "./ledger",
           "to": "./drain",
           "condition": "context.drain_origin == 'drain'"
+        },
+        {
+          "from": "./drain",
+          "to": ".",
+          "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'lstore'"
         }
       ]
     }
@@ -28,6 +56,8 @@
   "description": {
     "purpose": "Scope marker of the drain hive: the adapter that turns one closed session - handed out by a collector as ONE write batch - into N single-turn episodes on the memory hive's turn-write ingress, plus the ledger that makes a second delivery a skip. It sits BEFORE the hive's writer port and outside the hive (GH #101, R-MD-1): the memory hive is not changed by a single line.",
     "use_when": "One per talky whose closed sessions should reach the central memory. Wire the two ports in the SAME mutation that instantiates it: the talky's 'write' route into ./drain as lane in_batch, and ./drain's 'episode' route into the memory hive's turn-write port.",
+    "contract_in": "Every message whose `hop.route` starts with `in_`. One lane is in use: in_batch — one closed session as a single write batch. The caller must promote `session_id` into `context` on its own edge; the ledger is keyed on it and a batch without one cannot be told apart from its own repeat.",
+    "contract_out": "`episode` — one message per turn of the batch, for the memory hive's turn-write ingress, leaving through the hive path. The ledger write (`lstore`) stays inside: that a second delivery is a skip is this hive's promise, not something a caller arranges.",
     "not_in_scope": "No extraction, no summarising, no recall, no LLM call - the write path is synchronous and model-free by spec. No second write path into memory: everything goes through the existing writer, which is the point of the adapter. No session lifecycle of its own; the keeper closes the session and the collector produces the batch."
   }
 }

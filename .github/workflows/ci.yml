@@ -69,6 +69,21 @@ jobs:
       # pins the existing count per package and fails when it grows.
       - name: unwrap/expect budget
         run: python3 .github/gates/unwrap_budget.py
+      # GH #205 -- the builder-librarian's seed corpus is generated from the
+      # spec, the cookbook and the template catalogue, and is committed, so it
+      # can describe a tree that no longer exists. It did, for 289 lines. The
+      # equivalent Rust test skips where python3 is absent; this step does not,
+      # so the gate cannot quietly disappear on a runner without an interpreter.
+      - name: builder-librarian seed corpus
+        run: python3 workshop/tools/build_librarian_seed.py --check
+      # GH #217 -- templates/builder-hive/ is generated from python sources in
+      # workshop/tools/build_builder_hive.py and committed, so it can hold cells
+      # that no longer match the sources they came from. It already had, twice,
+      # and one of the two drifts was self-reinforcing: the generator used to
+      # delete the hand-written README.md and LIFT.md, which made not running it
+      # the safe move. Unguarded here for the same reason as the step above.
+      - name: builder-hive template tree
+        run: python3 workshop/tools/build_builder_hive.py --check
 
   deny:
     runs-on: ubuntu-latest

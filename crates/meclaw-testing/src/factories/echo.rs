@@ -1,6 +1,20 @@
 //! `EchoCellFactory` — phase-4 test factory. Wraps `EchoMockCell` so the
 //! filesystem bootstrap can spawn echo cells from `config.json` params.
 //!
+//! # `params.emitted_target` is a field, not a delivery address (GH #224)
+//!
+//! `emitted_target` writes the `target` field of the cell's emission. It does
+//! NOT decide where that emission goes. The colony's outputs arm routes a cell
+//! emission by the EMITTING cell's out-edges: a matching edge overlays the
+//! target, and an emission that matches no out-edge dead-letters as `no_route`
+//! (Ruling A1) no matter what `emitted_target` says.
+//!
+//! So a test topology needs BOTH: this param (otherwise the cell emits nothing
+//! at all — see `EchoMockCell::emitted_target`) AND an out-edge from the cell
+//! (a `graph.edges` entry in the parent hive, an `add_edges` mutation, or a
+//! catch-all out-edge). The param was called `echo_to` until GH #224, which
+//! read as a promise of delivery the factory never made.
+//!
 //! Parser invariant (see the `meclaw_colony::CellFactory` docs): `validate_params`
 //! and `spawn_cell` share `parse_params_internal`.
 
@@ -14,7 +28,9 @@ pub struct EchoCellFactory;
 /// Parsed Echo cell parameters (typed form of `params` block).
 #[derive(Debug, Clone)]
 pub(crate) struct EchoParams {
-    pub echo_to: Path,
+    /// `target` field written on the emission — NOT a route. The out-edge
+    /// decides delivery; see the module doc.
+    pub emitted_target: Path,
     pub emitted_header: Option<(String, JsonValue)>,
 }
 
@@ -22,10 +38,10 @@ impl EchoCellFactory {
     /// Shared parse path for `validate_params` and `spawn_cell` (see
     /// the `meclaw_colony::CellFactory` docs — parser invariant).
     pub(crate) fn parse_params_internal(raw: &JsonValue) -> Result<EchoParams, String> {
-        let echo_to_str = raw
-            .get("echo_to")
+        let emitted_target_str = raw
+            .get("emitted_target")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "params.echo_to missing or not a string".to_string())?;
+            .ok_or_else(|| "params.emitted_target missing or not a string".to_string())?;
         let emitted_header = match raw.get("emitted_header") {
             None => None,
             Some(obj) => {
@@ -40,7 +56,7 @@ impl EchoCellFactory {
             }
         };
         Ok(EchoParams {
-            echo_to: Path::new(echo_to_str),
+            emitted_target: Path::new(emitted_target_str),
             emitted_header,
         })
     }
@@ -74,7 +90,7 @@ impl EchoCellFactory {
         let (peace_tx, peace_rx) = tokio::sync::oneshot::channel();
         // Backstop pair (P3-B-restart): never fired for this stateless test cell.
         let (_backstop_tx, backstop_rx) = tokio::sync::oneshot::channel();
-        let mut cell = EchoMockCell::new(path.clone()).echo_to(params.echo_to);
+        let mut cell = EchoMockCell::new(path.clone()).emitted_target(params.emitted_target);
         if let Some((k, v)) = params.emitted_header {
             cell = cell.with_emitted_header(&k, v);
         }
@@ -156,37 +172,37 @@ mod tests {
     use meclaw_core::serde_json::json;
 
     #[test]
-    fn parse_minimal_with_echo_to_only() {
-        let raw = json!({"echo_to": "/target"});
+    fn parse_minimal_with_emitted_target_only() {
+        let raw = json!({"emitted_target": "/target"});
         let p = EchoCellFactory::parse_params_internal(&raw).unwrap();
-        assert_eq!(p.echo_to.as_str(), "/target");
+        assert_eq!(p.emitted_target.as_str(), "/target");
         assert!(p.emitted_header.is_none());
     }
 
     #[test]
     fn parse_with_emitted_header_object() {
         let raw = json!({
-            "echo_to": "/target",
+            "emitted_target": "/target",
             "emitted_header": {"key": "via", "value": "/here"}
         });
         let p = EchoCellFactory::parse_params_internal(&raw).unwrap();
-        assert_eq!(p.echo_to.as_str(), "/target");
+        assert_eq!(p.emitted_target.as_str(), "/target");
         let (k, v) = p.emitted_header.unwrap();
         assert_eq!(k, "via");
         assert_eq!(v, json!("/here"));
     }
 
     #[test]
-    fn parse_missing_echo_to_returns_error() {
+    fn parse_missing_emitted_target_returns_error() {
         let raw = json!({});
         let err = EchoCellFactory::parse_params_internal(&raw).unwrap_err();
-        assert!(err.contains("echo_to"));
+        assert!(err.contains("emitted_target"));
     }
 
     #[test]
     fn parse_emitted_header_missing_key_returns_error() {
         let raw = json!({
-            "echo_to": "/x",
+            "emitted_target": "/x",
             "emitted_header": {"value": 42}
         });
         let err = EchoCellFactory::parse_params_internal(&raw).unwrap_err();
@@ -200,7 +216,7 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(16);
         let factory = EchoCellFactory;
         let params = EchoParams {
-            echo_to: Path::new("/dst"),
+            emitted_target: Path::new("/dst"),
             emitted_header: None,
         };
         let (sender, _join, _peace_rx, _backstop_rx) =
@@ -212,11 +228,11 @@ mod tests {
     #[test]
     fn validate_params_passes_for_valid_input() {
         let f = EchoCellFactory;
-        f.validate_params(&json!({"echo_to": "/x"})).unwrap();
+        f.validate_params(&json!({"emitted_target": "/x"})).unwrap();
     }
 
     #[test]
-    fn validate_params_returns_error_on_missing_echo_to() {
+    fn validate_params_returns_error_on_missing_emitted_target() {
         let f = EchoCellFactory;
         assert!(f.validate_params(&json!({})).is_err());
     }
@@ -253,7 +269,7 @@ mod tests {
         let spawned = f
             .spawn_cell(
                 Path::new("/src"),
-                json!({"echo_to": "/dst"}),
+                json!({"emitted_target": "/dst"}),
                 out_tx,
                 std::path::PathBuf::new(),
                 meclaw_colony::ContractView::default(),

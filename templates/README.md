@@ -20,30 +20,78 @@ from it keeps running.
 A template is also self-contained: it has no edges leaving its own subtree. Wiring it into a
 colony is the job of the mutation that instantiates it (see below).
 
+## The hive boundary
+
+Every template that is a hive is bound by one rule, and it is a requirement rather than a
+convention:
+
+> An edge is laid at the HIVE. Access from outside happens abstractly and functionally, never
+> structurally and directly. An edge asks for something by content, without knowing the
+> structure. The inner edge that receives that request is what knows what to do about it.
+
+Ruled 2026-08-18 ([#197](https://github.com/mmeyerlein/meclaw/issues/197),
+[#200](https://github.com/mmeyerlein/meclaw/issues/200)) and specified in
+[`../docs/meclaw-overview.md`](../docs/meclaw-overview.md) § The hive boundary. **It binds
+every hive and every template** -- a hive that declares no `params.ports` is one the substrate
+does not enforce it on, not one it does not apply to. Which templates have arrived and which
+have not is the table in that section.
+
+### Authoring a hive template: four things, all checkable
+
+1. **`params.ports: []`** in the hive marker's `config.json`. The empty list is not an omission,
+   it is the statement "the hive path is the only address". No `ports` key at all means unsealed,
+   which means unfinished.
+2. **A door per accepted lane** -- an edge with `"from": "."`, a `condition` testing the lane,
+   and a `to` naming the inner cell that serves it. This is the only place the structure of the
+   inside may be known.
+3. **`params.contract`** with `accepts` and `emits`, and **lane names that say what the caller
+   wants, never where it lands inside**. `writer`, `recall`, `render`, `policy` are inner cell
+   names; renaming a port into a lane of the same name satisfies the letter of rule 1 and misses
+   its point. The test: does the name survive a reimplementation of the inside?
+4. **No address in your prose that the boundary would refuse.** `template.json` and the README
+   describe lanes, not cells -- the `description` slots are the interface a caller reads, and a
+   `from:`/`to:` in them is a wiring instruction, which is why
+   [#203](https://github.com/mmeyerlein/meclaw/issues/203) was a defect and not a typo. The gate
+   is `crates/meclaw-cells/tests/gh203_documented_port_addresses.rs`, and it asks the real
+   boundary validator.
+
+### Wiring one: address the hive, name the lane
+
+An edge from outside points at the hive path and carries its request on `hop.route`:
+
+```json
+{"from": "./ingress", "to": "./agent",
+ "modifier": {"set_hop": {"route": "'in_turn'"}}}
+```
+
+Which lanes a hive accepts and emits is in its `params.contract`. If you find yourself needing
+a segment after the hive name, the answer is not a longer address -- it is a lane whose name
+says what you wanted, and a door inside the hive that knows where that belongs.
+
 ## The library
 
 | Template | Version | What it is |
 |---|---|---|
 | [`archive-bridge`](archive-bridge/) | 1.0.0 | Turns an llm's last answer into a store-native insert -- and swallows the store's reply echo, so an append-only archive costs one cell instead of a loop. |
-| [`cogny`](cogny/) | 1.3.0 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. |
-| [`collector`](collector/) | 1.2.0 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
+| [`cogny`](cogny/) | 2.0.0 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. |
+| [`collector`](collector/) | 2.0.0 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
 | [`dispatcher`](dispatcher/) | 1.0.0 | The fan-out half of a tool loop: splits a brain's `tool_call` bundle into one routable message per call, announces the round to the fan-in, and passes a final answer through. |
 | [`door`](door/) | 1.0.0 | The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, an empty hop -- and puts the turn on a named lane, carrying the channel identity with it. |
 | [`firewall`](firewall/) | 1.0.0 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
-| [`memory-drain`](memory-drain/) | 1.0.0 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
-| [`memory-hive`](memory-hive/) | 1.2.0 | Agent memory as a hive: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Ten cells, no Rust. |
-| [`receptionist`](receptionist/) | 1.0.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
+| [`memory-drain`](memory-drain/) | 2.0.0 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
+| [`memory-hive`](memory-hive/) | 1.4.0 | Agent memory as a hive: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Ten cells, no Rust. |
+| [`receptionist`](receptionist/) | 1.1.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
 | [`retry`](retry/) | 1.0.0 | A bounded retry loop around one tool, as a single cell. At the cap the give-up lane hands the last error on with its `error_code` intact. |
-| [`session-keeper`](session-keeper/) | 1.0.0 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
-| [`steward`](steward/) | 1.0.0 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
-| [`summarizer`](summarizer/) | 1.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
-| [`talky`](talky/) | 1.2.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`session-keeper`](session-keeper/) | 2.0.0 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
+| [`steward`](steward/) | 1.0.1 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
+| [`summarizer`](summarizer/) | 2.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
+| [`talky`](talky/) | 2.0.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
 | [`vault`](vault/) | 1.0.0 | A secret store with no operation that returns a secret -- not a policy over a store, but a cell type whose route surface has no read on it. Secrets enter over the user channel only; the broker may ask it to USE one. |
 | [`terminal`](terminal/) | 1.0.0 | The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane without a destination yet still HAS one -- the message arrives, the trace records it, and the dead-letter queue stays empty. |
 
 Read a template's `template.json` before wiring it -- the `description` slots (`purpose`,
-`use_when`, `not_in_scope`, `examples`) document its named ports, which is what you need in
-order to connect it. `cogny` and `talky` are composites: they carry byte-identical copies of the
+`use_when`, `not_in_scope`, `examples`) say what it is for, and for a hive its `params.contract`
+says which lanes it accepts and emits, which is what you need in order to connect it. `cogny` and `talky` are composites: they carry byte-identical copies of the
 smaller templates as sub-units, so instantiating one of them pulls in nothing that is not in
 this table.
 
@@ -64,21 +112,27 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 
 Because a template has no outgoing edges, the node above lands connected to nothing -- and a
 subtree that nothing crosses into derives inactive, so its long-running cells never spawn. Wire
-the ports in the **same** mutation: one `add_edges` entry from an already active cell into the
-template's entry port is enough to bring the whole subtree up on that one recompute.
+it in the **same** mutation: one `add_edges` entry from an already active cell onto the
+template's own path is enough to bring the whole subtree up on that one recompute.
 
 ```bash
 curl -s -X POST http://127.0.0.1:7777/colony/mutations \
   -H 'Content-Type: application/json' \
   -d '{"scope":"/","ctx":{"model":"openai/gpt-4o-mini"},"diff":{
         "add_nodes":[{"name":"agent","template":"talky"}],
-        "add_edges":[{"from":"./ingress","to":"./agent/keeper/stamp"}]
+        "add_edges":[{"from":"./ingress","to":"./agent/session-keeper"}]
       }}'
 ```
 
 The `ctx` block feeds the `${ctx.*}` placeholders a template declares -- `talky` wants a resolved
-model literal. Which ports exist, and which of them are mandatory, is written in the template's
-own `template.json`.
+model literal.
+
+**That edge is the legacy shape, and it is worth knowing why.** `talky` is a composite that has
+not been put behind its own boundary yet (§ The hive boundary), so it declares no lanes of its
+own and the entry addressed here is its inner `session-keeper` hive. A template that HAS arrived
+is wired at its own path with a lane -- `{"from": "./ingress", "to": "./agent",
+"modifier": {"set_hop": {"route": "'in_turn'"}}}` -- and that is the shape to build against. The
+lanes a sealed hive accepts are in its `params.contract`.
 
 Working colonies built this way live in [`../examples/`](../examples/). Start with
 [`hello`](../examples/hello/README.md) for the model itself, then
@@ -89,9 +143,9 @@ declare are in [`../docs/cell-types.md`](../docs/cell-types.md).
 ## Versioning
 
 A reference in a mutation is either `name` or `name@major.minor.patch`. With a version it is an
-**exact** match (`talky@1.2.0`); without one, the highest version on disk wins. Semver ranges
-(`^`, `~`) are not parsed today, so `talky@1` is not a resolvable reference -- when you see
-`talky@1` in prose here or in an issue, it names the major line of the template, not a string you
+**exact** match (`talky@2.0.0`); without one, the highest version on disk wins. Semver ranges
+(`^`, `~`) are not parsed today, so `talky@2` is not a resolvable reference -- when you see
+`talky@2` in prose here or in an issue, it names the major line of the template, not a string you
 put in a mutation.
 
 Version numbers here move only forward, and a bump never reaches a colony that is already
@@ -101,8 +155,8 @@ the old one and move the edges -- never something that happens to you between re
 the reason the copy exists.
 
 **Where pinning stops working today, and the intent.** A template lives in exactly one
-directory, so a version bump **replaces** it: after `talky` goes to `1.2.0`, a mutation asking
-for `talky@1.1.0` finds nothing and is rejected, even though that is precisely the request a
+directory, so a version bump **replaces** it: after `talky` goes to `2.0.0`, a mutation asking
+for `talky@1.2.0` finds nothing and is rejected, even though that is precisely the request a
 pin is supposed to survive. The pin protects a *running* instance (it already holds its copy);
 it does not protect a *new* instantiation reproducing an old one. That asymmetry is a gap, not
 a design. The intent: **starting with 0.9.0, superseded template versions remain available**,
@@ -119,7 +173,7 @@ that read them, template by template, over the `0.x` line. Until a template's mi
 any `0.x` release, and the template README is the only place that says what it is called today.
 
 The migration is tracked in
-[#138](https://github.com/mmeyerlein/meclaw/issues/138); `collector@1`
+[#138](https://github.com/mmeyerlein/meclaw/issues/138); the `collector@1.2.0` migration
 ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the reference pattern, and every
 migration keeps its defaults bit-identical. What does **not** move: provider credentials and
 endpoints stay in `.env`, because a secret in a `config.json` is a secret in the repository.

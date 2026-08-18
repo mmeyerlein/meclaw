@@ -318,6 +318,21 @@ pub struct BootstrapPlan {
     /// a cell (no `cell_id`, no spawn, no registry entry). On a `FirstBoot` the
     /// walk IS the source of truth, so this stays empty there.
     pub unregistered_nodes: Vec<McPath>,
+    /// GH #178: header-contract violations found on a **Reboot**, in the
+    /// topology the colony will actually run with (the persisted edge table).
+    ///
+    /// A reboot's topology is committed state — every mutation edge in it
+    /// passed the same check at the moment it was wired. Refusing to start
+    /// over a violation found here would hand the operator a crash loop after
+    /// the writes are already on disk, with no way back but a rollback. So the
+    /// boot REPORTS: one string per offending node, naming the node, the key
+    /// and which rule failed, warned per finding by
+    /// `bootstrap_from_filesystem` and promoted to a non-zero exit by
+    /// `--validate --validate-strict`. On a `FirstBoot` the file IS the
+    /// topology and somebody is authoring it right now — there the same
+    /// violation stays a hard `BootstrapError::HeaderContractViolation`, and
+    /// this stays empty.
+    pub header_contract_findings: Vec<String>,
 }
 
 /// Probe for cell.db integrity. Returns `Ok(())` for absent or healthy DBs and
@@ -429,18 +444,27 @@ pub fn plan_bootstrap_with_env(
     let registered_hives = registered_hive_paths(root);
 
     // Slice 6 (Phase-14-B as build-time error): collect per-node contract views
-    // (keyed by absolute meclaw path) and per-edge modifier key-sets, then run
-    // the pure `validate_header_contract_locality` once the walk is done. Empty
-    // `consumes` ⇒ vacuously true ⇒ existing topologies never break.
+    // (keyed by absolute meclaw path), then run the pure
+    // `validate_header_contract_locality` once the walk is done, over the edge
+    // set the colony will actually run with (see the authority cut below).
+    // Empty `consumes` ⇒ vacuously true ⇒ existing topologies never break.
     let mut header_nodes: std::collections::BTreeMap<
         String,
         crate::mutation::validate::HeaderNodeView,
     > = std::collections::BTreeMap::new();
-    let mut header_edges: Vec<crate::mutation::validate::HeaderEdgeView> = Vec::new();
+    // GH #168/#178: the edges the `config.json` files DECLARE. On a FirstBoot
+    // that is the topology; on a Reboot it is the seed the colony grew out of,
+    // parsed here so a malformed CEL condition/modifier in a file is still a
+    // loud error, but NOT planned (the edge table is the authority then).
+    let mut spec_edges: Vec<PlannedEdge> = Vec::new();
     // F1 fix: absolute hive paths for the locality check — an edge with a hive
     // `from` is a transit pass-through and contributes the fan-in intersection
     // of the hive's inbound edges (same key walk the runtime performs).
-    let mut header_hives: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    //
+    // GH #186: the hives the tree DECLARES, the exact twin of `spec_edges`
+    // above. On a FirstBoot that is the answer; on a Reboot the persisted
+    // `hive_scopes` table is (see the authority cut below).
+    let mut spec_hives: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     let root_dir = match assert_single_root_dir(root) {
         Ok(d) => d,
@@ -565,7 +589,7 @@ pub fn plan_bootstrap_with_env(
             plan.hives.push(PlannedHive {
                 path: mc_path.clone(),
             });
-            header_hives.insert(mc_path.as_str().to_string());
+            spec_hives.insert(mc_path.as_str().to_string());
             // A hive without a `params` block is valid (no edges declared).
             let params_value = if cfg.params.is_null() {
                 serde_json::json!({})
@@ -633,22 +657,7 @@ pub fn plan_bootstrap_with_env(
                 }
                 let from_abs = McPath::resolve(&mc_path, &spec.from);
                 let to_abs = McPath::resolve(&mc_path, &spec.to);
-                // Slice 6: project this edge's `ModifierSpec` key-sets into a
-                // `HeaderEdgeView` (from/to as absolute meclaw paths — same
-                // namespace as the per-node contract keys collected below).
-                let mut edge_view = crate::mutation::validate::HeaderEdgeView {
-                    from: from_abs.as_str().to_string(),
-                    to: to_abs.as_str().to_string(),
-                    ..Default::default()
-                };
-                if let Some(m) = &spec.modifier {
-                    edge_view.set_context = m.set_context.keys().cloned().collect();
-                    edge_view.delete_context = m.delete_context.iter().cloned().collect();
-                    edge_view.set_hop = m.set_hop.keys().cloned().collect();
-                    edge_view.delete_hop = m.delete_hop.iter().cloned().collect();
-                }
-                header_edges.push(edge_view);
-                plan.edges.push(PlannedEdge {
+                spec_edges.push(PlannedEdge {
                     id: Uuid::now_v7(),
                     from: from_abs,
                     to: to_abs,
@@ -852,6 +861,94 @@ pub fn plan_bootstrap_with_env(
         }
     }
 
+    // ── The boot topology: one authority (GH #168, GH #178, GH #186) ────────
+    //
+    // A colony that has never committed an InitialApply has nothing but its
+    // files, so the walk is the source. A colony that HAS — a `Reboot` — is a
+    // different question, and the runtime has always answered it the same way:
+    // `colony_task` hydrates `EdgeTable` from `colony.db` and logs
+    // "params.graph hints ignored". The planner did not. It kept validating the
+    // `config.json` blocks, which are written once at instantiation and never
+    // rewritten, so two things went wrong at once:
+    //
+    //   * GH #168 — an edge a `remove_nodes` had taken out of the edge table was
+    //     still declared in the file. Wipe the endpoint's directory (the only
+    //     way to get rid of a node) and the boot died on `DanglingEndpoint`,
+    //     over a lane the operator had removed on purpose. A rebuild from the
+    //     tree also brought the removed lanes back — so "committed" was true
+    //     only as long as nobody read the tree.
+    //   * GH #178 — mutation edges were invisible to the header-contract check
+    //     below, which therefore ran on a PARTIAL graph. Partial is worse than
+    //     empty: writing a hive's doors into its own `config.json` gave an
+    //     interior cell an incoming edge, which took away the lenient
+    //     ingress-at-birth branch, while the setter that really promotes the key
+    //     sat on a mutation edge the check could not see.
+    //
+    //   * GH #186 — the same question about the OTHER half of a graph. Which
+    //     paths are hives decided the shape of the fan-in walk below: an edge
+    //     whose `from` is a hive is a transit pass-through and contributes its
+    //     hive's inbound intersection, while a `from` that is not a known hive
+    //     is read as a cell and contributes only that cell's `emits.hop`. A
+    //     hive whose directory was wiped is absent from the walk but still in
+    //     `hive_scopes` (scope rows are append-only, like the registry), so the
+    //     check read a transit as a contract-less cell and the intersection came
+    //     out empty — a violation reported against a topology that delivers the
+    //     key. Quietly wrong, which is worse than loudly absent.
+    //
+    // All three are the same defect: the file was treated as state. It is the
+    // seed. From here on `plan.edges` and `header_hives` — and with them the
+    // endpoint check, the activity recompute and the header contract — describe
+    // the graph the colony will run with, and nothing downstream has to ask
+    // which boot this is.
+    let header_hives: std::collections::BTreeSet<String>;
+    if matches!(boot_state, BootState::Reboot) {
+        match crate::persist::colony_db::read_persisted_edges(&root.join("colony.db")) {
+            Ok(persisted) => plan.edges = persisted,
+            Err(e) => {
+                // A colony.db that exists but will not yield its edges must never
+                // be planned as edge-less — that would boot a routing-blind
+                // colony. Loud, and the same class the runtime hydration treats
+                // as fatal.
+                errors.push(BootstrapError::InconsistentColonyDb {
+                    reason: format!("edge hydration: {e}"),
+                });
+            }
+        }
+        // The scope rows this colony committed — already read above for the
+        // adoption question, and the same answer to "is this path a hive". No
+        // union with the walk is needed: a hive directory the colony registered
+        // has its row here, and one it did not is the unregistered case the walk
+        // deliberately skipped.
+        header_hives = registered_hives.iter().cloned().collect();
+    } else {
+        plan.edges = spec_edges;
+        header_hives = spec_hives;
+    }
+
+    // Slice 6: project the RUNNING edges' modifier key-sets into the view the
+    // locality check consumes (from/to as absolute meclaw paths — the same
+    // namespace as the per-node contract keys collected during the walk).
+    // Derived from `plan.edges` rather than collected alongside it, so the
+    // check can never again see a different graph than the colony runs.
+    let header_edges: Vec<crate::mutation::validate::HeaderEdgeView> = plan
+        .edges
+        .iter()
+        .map(|e| {
+            let mut view = crate::mutation::validate::HeaderEdgeView {
+                from: e.from.as_str().to_string(),
+                to: e.to.as_str().to_string(),
+                ..Default::default()
+            };
+            if let Some(m) = &e.modifier {
+                view.set_context = m.source.set_context.keys().cloned().collect();
+                view.delete_context = m.source.delete_context.iter().cloned().collect();
+                view.set_hop = m.source.set_hop.keys().cloned().collect();
+                view.delete_hop = m.source.delete_hop.iter().cloned().collect();
+            }
+            view
+        })
+        .collect();
+
     // A7 (Phase-16 W1a, Ruling 2026-06-12 — Option B, recompute-mirror): the
     // FIRST bootstrap derives activity with the SAME rule as the mutation
     // recompute — "a node's activity is the result of the last connectivity
@@ -929,7 +1026,23 @@ pub fn plan_bootstrap_with_env(
         .filter(|(path, _)| active_paths.contains(path.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    if let Err(crate::mutation::MutationError::EdgeSchema(reason)) =
+    //
+    // GH #178, the landing: on a Reboot the check finally sees the mutation
+    // edges, which means it can find defects that were invisible until now — in
+    // a topology that is ALREADY committed, whose every mutation edge passed
+    // this same check at the moment it was wired. Refusing to start there hands
+    // the operator a crash loop after the writes are on disk, and the only way
+    // back is a rollback. So a Reboot REPORTS, per offending node, naming the
+    // node + key + rule (`bootstrap_from_filesystem` warns per finding,
+    // `--validate --validate-strict` makes it an error — that is the "see what
+    // would break before it becomes a boot error" surface). A FirstBoot is the
+    // other case entirely: the file IS the topology and somebody is authoring it
+    // right now, so it stays a hard, loud boot failure. Same rule, different
+    // answer to "who can still act on this".
+    if matches!(boot_state, BootState::Reboot) {
+        plan.header_contract_findings =
+            collect_header_contract_findings(&active_header_nodes, &header_edges, &header_hives);
+    } else if let Err(crate::mutation::MutationError::EdgeSchema(reason)) =
         crate::mutation::validate::validate_header_contract_locality(
             &active_header_nodes,
             &header_edges,
@@ -940,6 +1053,54 @@ pub fn plan_bootstrap_with_env(
     }
 
     errors.into_result(plan)
+}
+
+/// GH #178 — every header-contract violation in one pass, not just the first.
+///
+/// [`crate::mutation::validate::validate_header_contract_locality`] returns on
+/// the first offending node, which is the right shape for a mutation (one
+/// wiring, one refusal) and the wrong one for a boot report: an operator
+/// staring at a colony that used to come up needs the whole list, not one
+/// finding per restart.
+///
+/// The check is per-node — a node's obligations depend on the graph and on the
+/// OTHER nodes' `emits`, never on the other nodes' requirements — so asking it
+/// one node at a time is the same question, answered exhaustively. Each pass
+/// keeps the full contract map (the `emits.hop` lookups in the fan-in walk need
+/// it) and blanks every other node's REQUIREMENTS, so exactly one node carries
+/// an obligation. Pure: no FS, no DB.
+fn collect_header_contract_findings(
+    node_contracts: &std::collections::BTreeMap<String, crate::mutation::validate::HeaderNodeView>,
+    edges: &[crate::mutation::validate::HeaderEdgeView],
+    hives: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for node in node_contracts.keys() {
+        let view = &node_contracts[node];
+        if view.required_hop.is_empty() && view.required_context.is_empty() {
+            continue;
+        }
+        let one_asks: std::collections::BTreeMap<
+            String,
+            crate::mutation::validate::HeaderNodeView,
+        > = node_contracts
+            .iter()
+            .map(|(k, v)| {
+                let mut v = v.clone();
+                if k != node {
+                    v.required_hop.clear();
+                    v.required_context.clear();
+                }
+                (k.clone(), v)
+            })
+            .collect();
+        if let Err(crate::mutation::MutationError::EdgeSchema(reason)) =
+            crate::mutation::validate::validate_header_contract_locality(&one_asks, edges, hives)
+        {
+            findings.push(reason);
+        }
+    }
+    findings
 }
 
 /// Boot-state classification for colony.db (T20, E9; truth table re-cut for
@@ -1073,7 +1234,11 @@ pub fn probe_boot_state(db_path: &std::path::Path) -> Result<BootState, Bootstra
 /// Absent database (first boot) or an unreadable one → empty set; the caller
 /// only consults it on a Reboot, where an empty set means "nothing is
 /// registered", which is the conservative direction: report, do not adopt.
-fn registered_hive_paths(root: &std::path::Path) -> std::collections::HashSet<String> {
+///
+/// GH #168: also the hive half of the boot endpoint-existence check. A reboot
+/// plans the persisted edge table, and an edge may name a hive whose directory
+/// is gone — the registry overlay cannot vouch for a hive, this table can.
+pub fn registered_hive_paths(root: &std::path::Path) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     let db_path = root.join("colony.db");
     if !db_path.exists() {

@@ -54,7 +54,7 @@ pub use blob::{
 };
 pub use bootstrap::{
     BootState, BootstrapError, BootstrapErrors, BootstrapPlan, PlannedCell, PlannedEdge,
-    PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state,
+    PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state, registered_hive_paths,
 };
 pub use bootstrap_apply::{
     BootstrapReport, apply_bootstrap_plan, bootstrap_from_filesystem,

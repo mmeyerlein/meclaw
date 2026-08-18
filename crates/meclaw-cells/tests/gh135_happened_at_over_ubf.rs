@@ -1,6 +1,6 @@
 //! Wave 13 -- event time reaches the drain over a UBF-valid body (GitHub #135).
 //!
-//! `memory-drain@1`'s `turns_of` reads `happened_at` off each turn, so that a
+//! `memory-drain`'s `turns_of` reads `happened_at` off each turn, so that a
 //! replay which KNOWS when something was said keeps the bi-temporal split
 //! instead of having the writer stamp its own clock over the whole import. The
 //! branch worked at script level and described a route that could not exist:

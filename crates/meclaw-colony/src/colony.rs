@@ -2804,7 +2804,19 @@ fn sweep_reject_residue(
         // entry's `final_path` is the builder's pre-placed directory (with its
         // `cell.db`) — removing it would be a No-Delete-Policy violation + data
         // loss. The adopted dir stays; only the staging residue is swept below.
-        if !sd.preexisting_target && !registry.contains_key(&sd.absolute_path) {
+        // GH #169: nor a relocation target. The directory there is the moved
+        // cell itself, `cell.db` included — deleting it would turn a spawn
+        // failure into the data loss the whole operation exists to avoid. It is
+        // already covered by `preexisting_target` above, which a relocation sets
+        // for exactly this reason; the explicit test is here so the guard cannot
+        // be lost to a future reading of that flag as "the directory predates
+        // the mutation". A relocation whose spawn fails leaves the cell at its
+        // new address, unregistered in RAM and disconnected — the audit model,
+        // and a state the next boot walks into and adopts.
+        if !sd.preexisting_target
+            && sd.relocation.is_none()
+            && !registry.contains_key(&sd.absolute_path)
+        {
             let _ = std::fs::remove_dir_all(&sd.final_path);
         }
     }
@@ -3127,7 +3139,18 @@ pub(crate) async fn handle_mutation(
                     };
                 }
             }
-            resume_names.push(name.to_string());
+            // The short-name list is subtracted from `registry_names`, which hold
+            // CANONICAL registry short names — so what goes in has to be canonical
+            // too. Pushed as written, an `add_nodes` spelled `./fetch` never
+            // cancelled its own registry entry and a legitimate Resume was refused
+            // as a `naming_collision` (GH #201). A deep name has no business in
+            // this list at all: `resume_targets` below carries the resolved path,
+            // which is what the deep half of the check consults.
+            if let crate::mutation::validate::ScopedName::Short(short) =
+                crate::mutation::validate::scoped_name(guard_scope, name)
+            {
+                resume_names.push(short.to_string());
+            }
             resume_targets.push(target);
         }
     }
@@ -3253,6 +3276,32 @@ pub(crate) async fn handle_mutation(
             }
         })
         .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
+        .collect();
+    // GH #179: the absolute-path twins of `registry_names` / `hive_match_names`
+    // above — the SAME pre-state, spelled the way a multi-segment diff name has
+    // to be looked up. `add_nodes[].name` and `match.name` may name a node one or
+    // more levels below the scope (the containment guard resolves them against
+    // the scope and only refuses `..`/absolute), and such a name matches nothing
+    // in a set of short names — so `naming_collision` stayed silent on an
+    // occupied deep path and `match_no_hit` fired on every populated one.
+    //
+    // Colony-global rather than scope-filtered, unlike the short-name sets: a
+    // resolved deep name is scope-contained by construction
+    // (`validate_scope_containment` ran above), so it cannot borrow a node from a
+    // foreign scope the way a bare short name could.
+    //
+    // Resume targets leave the collision set here exactly as their short names
+    // leave `registry_names`: an `add_nodes` at an existing path is a
+    // Reconnect/Resume (overview Z.170-180), the same node keeping its identity,
+    // not a duplicate.
+    let deep_registry_paths: Vec<String> = registry
+        .keys()
+        .filter(|p| !resume_targets.iter().any(|t| t == *p))
+        .map(|p| p.as_str().to_string())
+        .collect();
+    let deep_hive_paths: Vec<String> = hive_scopes
+        .paths()
+        .map(|p| p.as_str().to_string())
         .collect();
     let existing_edges: Vec<(String, String)> = edges
         .iter()
@@ -3489,6 +3538,8 @@ pub(crate) async fn handle_mutation(
         &all_subtree_internal_edges,
         guard_scope,
         &deep_endpoint_paths,
+        &deep_registry_paths,
+        &deep_hive_paths,
     ) {
         send_eda_reject(
             &id,
@@ -3548,6 +3599,42 @@ pub(crate) async fn handle_mutation(
         };
     }
 
+    // GH #173: the outward half of the hive contract. Runs next to the port
+    // boundary and for the same reason — both answer "may this edge be drawn",
+    // both are pure over the diff, and both are cheaper than staging. The port
+    // boundary says WHERE an edge may land; the contract says WHICH LANE it may
+    // carry once it lands on the hive path. Opt-in: only hives that declared
+    // `params.contract` contribute, and an edge whose route is computed rather
+    // than stated is left alone.
+    let hive_contracts =
+        crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
+    if let Err(err) = crate::mutation::hive_contract::check_inbound_lanes(
+        &diff_subst,
+        guard_scope,
+        &hive_contracts,
+    ) {
+        send_eda_reject(
+            &id,
+            &err,
+            reply_to.as_ref(),
+            trace_id,
+            parent_message_id,
+            registry,
+            hive_scopes,
+            dead_letters,
+            log_tx,
+            &blob_store,
+            blob_inline_max_bytes,
+            &payload,
+        )
+        .await;
+        return MutationOutcome::Rejected {
+            id: Some(id),
+            error_code: err.error_code().into(),
+            details: format!("{err:?}"),
+        };
+    }
+
     // Paket-5 T1/T2 (P10a / D-031): validate-time reject for malformed / no-hit
     // `remove_edges` patterns — parity with remove_nodes / swap_nodes (Z.272).
     // Build the F6 edge-view (absolute endpoints + stored condition/modifier
@@ -3581,6 +3668,124 @@ pub(crate) async fn handle_mutation(
             error_code: err.error_code().into(),
             details: format!("{err:?}"),
         };
+    }
+
+    // GH #169: `move_nodes` — the relocation's whole pre-destructive gate, in
+    // one place. The source must be a cell that exists and has nothing beneath
+    // it, the target must be free in every namespace that can hold ground
+    // (registry, hive scopes, this diff's own claims, the filesystem), and
+    // neither end may be a hive. Scope containment is NOT re-checked here:
+    // `validate_scope_containment` ran above and already refused `..` segments
+    // and absolute names, which is what makes the resolved paths below
+    // scope-contained by construction.
+    // The names this diff's own `add_nodes` claim — a move and an instantiation
+    // aiming at one free path are two claims on it, and whichever applies second
+    // lands on a directory that by then exists.
+    let add_names_in_diff: Vec<String> = diff_subst
+        .get("add_nodes")
+        .and_then(|v| v.as_array())
+        .map(|adds| {
+            adds.iter()
+                .filter_map(|n| n.get("name").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let planned_moves = match crate::mutation::relocate::plan_moves(guard_scope, &diff_subst, root)
+        .and_then(|moves| {
+            crate::mutation::relocate::validate_move_nodes(
+                &moves,
+                guard_scope,
+                &registry_names,
+                &deep_registry_paths,
+                &hive_match_names,
+                &deep_hive_paths,
+                &add_names_in_diff,
+                &|mv| crate::mutation::relocate::TargetGround {
+                    occupied: mv.to_dir.exists(),
+                    parent_exists: mv.to_dir.parent().is_some_and(|p| p.is_dir()),
+                },
+            )
+            .map(|()| moves)
+        }) {
+        Ok(moves) => moves,
+        Err(err) => {
+            send_eda_reject(
+                &id,
+                &err,
+                reply_to.as_ref(),
+                trace_id,
+                parent_message_id,
+                registry,
+                hive_scopes,
+                dead_letters,
+                log_tx,
+                &blob_store,
+                blob_inline_max_bytes,
+                &payload,
+            )
+            .await;
+            return MutationOutcome::Rejected {
+                id: Some(id),
+                error_code: err.error_code().into(),
+                details: format!("{err:?}"),
+            };
+        }
+    };
+    // GH #169: the stop-wiring question, asked before anything moves. A move
+    // takes the source's registry entry out and re-registers the cell at the new
+    // address, so an `Awake` cell whose task cannot be peace-stopped would be
+    // left running with no entry naming it — the same silent "task ⇔ active"
+    // zombie the step-10b guard exists to prevent, and refused the same way.
+    for mv in &planned_moves {
+        let Some(entry) = registry.get(&mv.from) else {
+            continue; // validate guaranteed the hit; a miss is not this guard's.
+        };
+        if matches!(entry.status, CellStatus::Awake) && entry.stop_tx.is_none() {
+            let details = format!(
+                "move of Awake cell {} without live stop-wiring — the old task could not be \
+                 stopped and would outlive its address",
+                mv.from.as_str()
+            );
+            tracing::warn!(path = %mv.from.as_str(), "{details}");
+            return MutationOutcome::Rejected {
+                id: Some(id),
+                error_code: STOP_WIRING_UNAVAILABLE_ERROR_CODE.into(),
+                details,
+            };
+        }
+    }
+    // GH #169: read each relocating node's own `config.json` NOW, while the
+    // reject is still free. A relocation names no template — the cell is built
+    // at its new address from the configuration it already carries — so a file
+    // that cannot be read, substituted, parsed or compiled has to stop the
+    // mutation here, not half-way through a rename sequence.
+    let mut relocated_nodes = Vec::with_capacity(planned_moves.len());
+    for mv in &planned_moves {
+        match crate::mutation::relocate::read_relocated_node(&mv.from_dir, &env) {
+            Ok(node) => relocated_nodes.push(node),
+            Err(err) => {
+                send_eda_reject(
+                    &id,
+                    &err,
+                    reply_to.as_ref(),
+                    trace_id,
+                    parent_message_id,
+                    registry,
+                    hive_scopes,
+                    dead_letters,
+                    log_tx,
+                    &blob_store,
+                    blob_inline_max_bytes,
+                    &payload,
+                )
+                .await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: err.error_code().into(),
+                    details: format!("{err:?}"),
+                };
+            }
+        }
     }
 
     // Slice 1 (roadmap Z.138): 14-B header-contract locality on the FULL
@@ -3764,6 +3969,104 @@ pub(crate) async fn handle_mutation(
 
     // Apply sequence step 7: optional crash-injection hook.
     crate::mutation::hook::park_after_rename().await;
+
+    // Apply sequence step 7b (GH #169): `move_nodes` — the relocation itself.
+    //
+    // A move is one `rename(2)` and three re-addressings, and it is written here
+    // rather than as its own pipeline because the cell that comes out the other
+    // end needs exactly what a staged one needs: a task built at the new path, a
+    // registry entry, a place in `node_contracts`. So each relocated node joins
+    // `staged` and the step-9 spawn loop does that part, told by
+    // `StagedDir.relocation` to carry the old identity over instead of minting a
+    // fresh one. The edges follow in step 9c, beside the swap that shares their
+    // mechanics.
+    //
+    // Order inside one entry matters. The old task is peace-stopped and its
+    // entry taken out FIRST: a running cell emits from the path it was born
+    // with, so leaving it alive past the rename would give it an address no edge
+    // names any more, and its `cell.db` handle would be the second one open on a
+    // file the new task is about to claim. The mailbox remainder is not lost —
+    // the `Stopped` message finds no entry at the old path and drains it to the
+    // DLQ, the same route a `remove_nodes` disconnect takes.
+    let mut staged = staged;
+    for (mv, node) in planned_moves.iter().zip(relocated_nodes) {
+        let Some(mut entry) = registry.remove(&mv.from) else {
+            // Cannot happen: validate hit the registry. Not worth a panic in the
+            // colony task — the move simply does not happen, loudly.
+            tracing::error!(
+                path = %mv.from.as_str(),
+                "move_nodes: the validated source vanished from the registry before apply"
+            );
+            continue;
+        };
+        let cell_id = entry.cell_id;
+        if matches!(entry.status, CellStatus::Awake)
+            && let Some(stop) = entry.stop_tx.take()
+        {
+            let _ = stop.send(());
+            if let Some(rx) = entry.death_ack_rx.take() {
+                // Bounded, like every other death-ack wait: a cell that will not
+                // come down must not hold the mutation open forever. The wait is
+                // for `cell.db` to be closed before the directory moves — on a
+                // timeout the rename still happens (POSIX renames the inode, so
+                // no write is lost) and the stale handle dies with its task.
+                let _ = tokio::time::timeout(term_timeout(), rx).await;
+            }
+        }
+        drop(entry);
+        node_contracts.remove(&mv.from);
+
+        if let Err(e) = std::fs::rename(&mv.from_dir, &mv.to_dir) {
+            // The target was validated free and its parent validated present, so
+            // this is an environment failure, not a diff failure — and by now the
+            // cell is unregistered, which is a live-tree effect in RAM. Same class
+            // as a mid-rename failure: strict-fail rather than report a clean
+            // reject that would be a lie about the colony's state.
+            panic!(
+                "move_nodes strict-fail (mutation {id}): rename {:?} -> {:?}: {e}",
+                mv.from_dir, mv.to_dir
+            );
+        }
+        // The durable half of the relocation, enqueued BEFORE the spawn loop's
+        // `UpsertRegistry` for the new path (the writer channel is FIFO): the row
+        // is moved by UPDATE, so that upsert lands on `ON CONFLICT(path)` and
+        // bumps nothing but `updated_at`. `cell_id`, `created_at` and the three
+        // provenance columns — `instantiated_at` among them — stay as they were,
+        // which is the difference between moving a cell and replacing it.
+        let _ = log_tx
+            .send(crate::persist::writer::ColonyWriteOp::MoveRegistryPath {
+                from: mv.from.clone(),
+                to: mv.to.clone(),
+                updated_at: crate::mutation::stage::unix_now(),
+            })
+            .await;
+        staged.push(crate::mutation::stage::StagedDir {
+            // The directory is already at its final place; `staging_path` names
+            // where it came from, so the reject sweep can tell a relocation from
+            // a freshly renamed-in instantiation and leave it alone.
+            staging_path: mv.from_dir.clone(),
+            final_path: mv.to_dir.clone(),
+            absolute_path: mv.to.clone(),
+            template: node.cell_type,
+            params: node.params,
+            contract_view: node.contract_view,
+            cell_timeout: node.cell_timeout,
+            idle_timeout_ms: node.idle_timeout_ms,
+            message_timeout: node.message_timeout,
+            mailbox_size: node.mailbox_size,
+            header_view: node.header_view,
+            // Never sweepable: the directory holds the moved cell's `cell.db`.
+            preexisting_target: true,
+            // A relocation is not a template instantiation and invents no
+            // origin — the node's provenance is already in its own
+            // `config.json` and in the row that just moved with it.
+            provenance: None,
+            relocation: Some(crate::mutation::stage::Relocation {
+                from: mv.from.clone(),
+                cell_id,
+            }),
+        });
+    }
 
     // Apply sequence step 8: remove_nodes — Phase-13.5-Lifecycle-3b Task 6
     // (SCOPE 4, spec Z.260): `remove_nodes` = Disconnect, NOT Delete. The node's
@@ -3964,7 +4267,16 @@ pub(crate) async fn handle_mutation(
             // No wake mechanic: an eager cell is re-spawned (not woken). A stray
             // delivery dead-letters loudly (F1-KH2 Schicht 2).
             let wake: Option<crate::WakeFn> = None;
-            let cell_id = Uuid::now_v7();
+            // GH #169: a relocation carries the identity it already had. A path is
+            // a cell's identity everywhere else, so this is the one place where a
+            // change of address must NOT read as a new cell — the registry row was
+            // moved, not re-inserted, and a fresh UUID here would leave the row and
+            // the RAM entry disagreeing about who lives at the path.
+            let cell_id = sd
+                .relocation
+                .as_ref()
+                .map(|r| r.cell_id)
+                .unwrap_or_else(Uuid::now_v7);
             registry.insert(
                 sd.absolute_path.clone(),
                 RegistryEntry {
@@ -4061,7 +4373,16 @@ pub(crate) async fn handle_mutation(
         // NotYetSpawned). NO self-send (correction 2) — the mutation arm holds
         // &mut registry, and ColonyMsg::Register/RegisterDormant would block the
         // select! loop.
-        let cell_id = Uuid::now_v7();
+        // GH #169: a relocation carries the identity it already had. A path is
+        // a cell's identity everywhere else, so this is the one place where a
+        // change of address must NOT read as a new cell — the registry row was
+        // moved, not re-inserted, and a fresh UUID here would leave the row and
+        // the RAM entry disagreeing about who lives at the path.
+        let cell_id = sd
+            .relocation
+            .as_ref()
+            .map(|r| r.cell_id)
+            .unwrap_or_else(Uuid::now_v7);
         match spawned {
             crate::SpawnedCellKind::Active {
                 sender,
@@ -4272,6 +4593,63 @@ pub(crate) async fn handle_mutation(
             involved.push(t2);
             involved.push(t3);
         }
+    }
+
+    // Apply sequence step 9b' (GH #169): `move_nodes` edge re-pointing.
+    //
+    // The same helper the swap above uses, for the opposite reason. A swap
+    // swings the edges of one cell onto ANOTHER cell; a move swings them onto
+    // the SAME cell at another address. Mechanically that is one operation —
+    // "every edge naming path A now names path B, condition and modifier
+    // carried verbatim" — so it is one function, and the two call-sites are what
+    // give it its two meanings.
+    //
+    // Runs after step 7b did the rename and step 9 registered the cell at its
+    // new address, and feeds the same step-10 buffers, so the whole relocation
+    // is one commit: there is no instant at which the lane is wired to both
+    // addresses or to neither.
+    //
+    // Only edges naming the old path EXACTLY are touched, which is
+    // `plan_edge_swing`'s existing rule and here also a boundary: a move of a
+    // node with a subtree beneath it would need the subtree-internal edges moved
+    // too, and that is refused in validation rather than half-done.
+    for mv in &planned_moves {
+        let plan = crate::mutation::swap::plan_edge_swing(&mv.from, &mv.to, edges);
+        // INSERT-BEFORE-REMOVE, as in the swap: the new lane exists before the
+        // old one goes.
+        for sw in plan.inserts {
+            let edge_id = Uuid::now_v7();
+            edges.insert(crate::edge_table::Edge {
+                id: edge_id,
+                from: sw.from.clone(),
+                to: sw.to.clone(),
+                condition: sw.condition,
+                modifier: sw.modifier,
+            });
+            inserted_edge_ids.push(edge_id);
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
+                id: edge_id.to_string(),
+                from: sw.from.as_str().into(),
+                to: sw.to.as_str().into(),
+                created_at: now_edges,
+                condition: sw.cond_src,
+                modifier: sw.mod_src,
+            });
+        }
+        for old_id in plan.remove_ids {
+            let removed = edges.iter().find(|e| e.id == old_id).cloned();
+            if let Some(edge) = removed {
+                edges.remove(&old_id);
+                write_buffer.push(crate::persist::writer::ColonyWriteOp::RemoveEdge {
+                    id: old_id.to_string(),
+                });
+                removed_edges_saved.push(edge);
+            }
+        }
+        // Only the new address is seeded. The old one is not a node any more —
+        // it has no registry entry, so the recompute would find nothing there,
+        // and asking it to would be asking about a cell that has moved out.
+        involved.push(mv.to.clone());
     }
 
     // Apply sequence step 9c (Paket-5 T12, P9 per-node subtree merge resume):
@@ -4849,6 +5227,33 @@ pub(crate) async fn handle_mutation(
             crate::mutation::required_drains::check_required_drains(&drain_reqs, edges)
     {
         tracing::warn!(reason = %format!("{err:?}"), "required drain missing — rejecting mutation");
+        for eid in &inserted_edge_ids {
+            edges.remove(eid);
+        }
+        for edge in std::mem::take(&mut removed_edges_saved) {
+            edges.insert(edge);
+        }
+        return MutationOutcome::Rejected {
+            id: Some(id),
+            error_code: err.error_code().into(),
+            details: format!("{err:?}"),
+        };
+    }
+
+    // GH #173: the inward half of the hive contract — every lane a contracted
+    // hive promises must still have a door (or an exit) once this diff stands.
+    // Post-state for the same reason as the drains above: the mutation that
+    // instantiates a hive brings its own internal graph with it, and a pre-state
+    // check would refuse exactly that mutation. Same rollback, same
+    // pre-destructive window.
+    //
+    // The contracts were already collected before staging; re-using that list
+    // keeps one filesystem read per mutation, and a hive added by THIS diff has
+    // no contract to break yet — its `config.json` is what the diff installs.
+    if !hive_contracts.is_empty()
+        && let Err(err) = crate::mutation::hive_contract::check_lane_doors(&hive_contracts, edges)
+    {
+        tracing::warn!(reason = %format!("{err:?}"), "hive contract broken — rejecting mutation");
         for eid in &inserted_edge_ids {
             edges.remove(eid);
         }
@@ -7247,7 +7652,7 @@ mod tests {
 
         let (a_in_tx, a_in_rx) = mpsc::channel(8);
         let a = EchoMockCell::new(Path::new("/a"))
-            .echo_to(Path::new("/b"))
+            .emitted_target(Path::new("/b"))
             .tap_to(tap_a_tx);
         let a_join = tokio::spawn(cell_task(
             Path::new("/a"),
@@ -7578,9 +7983,9 @@ mod tests {
             .unwrap();
         ack_rx.await.unwrap();
 
-        // Register /a/b/d as forwarder (echo_to ../c).
+        // Register /a/b/d as forwarder (emitted_target ../c).
         let (d_in_tx, d_in_rx) = mpsc::channel(8);
-        let d = EchoMockCell::new(Path::new("/a/b/d")).echo_to(Path::new("../c"));
+        let d = EchoMockCell::new(Path::new("/a/b/d")).emitted_target(Path::new("../c"));
         let d_join = tokio::spawn(cell_task(
             Path::new("/a/b/d"),
             d_in_rx,
@@ -8122,7 +8527,7 @@ mod tests {
         // and forwards to /listener.
         let (src_in_tx, src_in_rx) = mpsc::channel(8);
         let src_cell = EchoMockCell::new(Path::new("/src"))
-            .echo_to(Path::new("/listener"))
+            .emitted_target(Path::new("/listener"))
             .with_emitted_header("finish_reason", json!("tool_calls"));
         let src_join = tokio::spawn(cell_task(
             Path::new("/src"),
@@ -8262,7 +8667,7 @@ mod tests {
 
         // /src emits a content (target is overridden by the fan-out edges).
         let (src_in_tx, src_in_rx) = mpsc::channel(8);
-        let src_cell = EchoMockCell::new(Path::new("/src")).echo_to(Path::new("/sink_a"));
+        let src_cell = EchoMockCell::new(Path::new("/src")).emitted_target(Path::new("/sink_a"));
         let src_join = tokio::spawn(cell_task(
             Path::new("/src"),
             src_in_rx,

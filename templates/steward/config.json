@@ -4,8 +4,8 @@
   },
   "params": {
     "ports": [
-      "./meter",
-      "./mutator"
+      "meter",
+      "mutator"
     ],
     "graph": {
       "edges": [

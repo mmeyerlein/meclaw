@@ -1,7 +1,7 @@
 //! Phase-3a demo topology.
 //!
 //! Layout:
-//!   /a/forwarder → EchoMockCell with echo_to("./receiver"), taps own path
+//!   /a/forwarder → EchoMockCell with emitted_target("./receiver"), taps own path
 //!   /a/receiver  → terminal capture cell (pushes every Message into an mpsc tap)
 //!
 //! Used by integration tests to verify:
@@ -65,7 +65,7 @@ pub async fn build_phase_3a_topology() -> Phase3aTopology {
     colony
         .spawn(Path::new("/a/forwarder"), move || {
             EchoMockCell::new(Path::new("/a/forwarder"))
-                .echo_to(Path::new("../receiver"))
+                .emitted_target(Path::new("../receiver"))
                 .tap_to(tap_f.clone())
         })
         .await;

@@ -24,7 +24,7 @@ fn write_echo_template(root: &std::path::Path) {
     std::fs::write(tpl.join("template.json"), r#"{"name":"echo"}"#).unwrap();
     std::fs::write(
         tpl.join("config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -86,7 +86,7 @@ async fn phase_6_demo_crash_recovery_marks_in_flight_as_failed() {
                         "diff": {"add_nodes": [{
                             "name": "crash_target",
                             "template": "echo",
-                            "override_params": {"echo_to": "/crash_target"}
+                            "override_params": {"emitted_target": "/crash_target"}
                         }]}
                     }),
                     reply_to: None,

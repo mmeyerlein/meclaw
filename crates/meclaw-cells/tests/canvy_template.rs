@@ -1,4 +1,4 @@
-//! GH #159 — the shipped `canvy@0.1.0` template.
+//! GH #159 — the shipped `canvy@0.2.0` template.
 //!
 //! What is pinned here is what the template PROMISES:
 //!
@@ -158,6 +158,16 @@ fn store_reply(rows: Value) -> Value {
     })
 }
 
+/// A store reply whose text is NOT a result set: an error string, or the `null`
+/// payload every write answers with.
+fn store_reply_text(text: &str) -> Value {
+    json!({
+        "messages": [
+            { "origin": "tool", "type": "tool_result", "id": "x", "text": text }
+        ]
+    })
+}
+
 /// A minimal `/colony/graph` answer, as the snapshot row holds it.
 fn graph_doc(nodes: &[(&str, &str)], edges: &[(&str, &str, &str)]) -> Value {
     json!({
@@ -194,12 +204,20 @@ fn html_of(out: &[Value]) -> String {
 
 /// The `(x, y)` of a hive box in the markup, by its `data-hive`.
 fn hive_box(html: &str, hive: &str) -> (i64, i64) {
-    let needle = format!("data-hive=\"{hive}\">");
+    let needle = format!("data-hive=\"{hive}\"");
     let after = html
         .split(&needle)
         .nth(1)
         .unwrap_or_else(|| panic!("no hive box for {hive} in {html}"));
-    let rect = after.split("/>").next().unwrap_or("");
+    // Split at the `<rect` first: the group now carries `data-ox`/`data-oy`, and
+    // a naive search for `x="` would find the tail of `data-ox="`.
+    let rect = after
+        .split("<rect")
+        .nth(1)
+        .unwrap_or("")
+        .split("/>")
+        .next()
+        .unwrap_or("");
     let num = |k: &str| -> i64 {
         rect.split(&format!("{k}=\""))
             .nth(1)
@@ -217,7 +235,15 @@ fn hive_frame(html: &str, hive: &str) -> (i64, i64, i64, i64) {
         .split(&needle)
         .nth(1)
         .unwrap_or_else(|| panic!("no hive box for {hive} in {html}"));
-    let rect = after.split("/>").next().unwrap_or("");
+    // Split at the `<rect` first: the group now carries `data-ox`/`data-oy`, and
+    // a naive search for `x="` would find the tail of `data-ox="`.
+    let rect = after
+        .split("<rect")
+        .nth(1)
+        .unwrap_or("")
+        .split("/>")
+        .next()
+        .unwrap_or("");
     let num = |k: &str| -> i64 {
         rect.split(&format!("{k}=\""))
             .nth(1)
@@ -424,6 +450,86 @@ fn a_refused_write_produces_an_error_and_no_html() {
     let err = out[0]["surface"]["error"].as_str().unwrap();
     assert!(err.contains("write_surface_violation"), "{err}");
     assert!(out[0]["surface"].get("html").is_none());
+}
+
+/// **The store's answer to a write this cell asked for is not a failure.**
+///
+/// The `./store -> ./render` edge fires on EVERY store reply, acknowledgements
+/// included. An ack is not a result set, so `rows_of` answers `None` for it —
+/// correctly — and render turned that `None` into a visible error on the surface.
+/// So every drag reported its own two position writes to the browser as "the
+/// canvas store did not return rows", and #170's one-time conversion produced 32
+/// such reports on a real colony's first render (GH #183).
+///
+/// What tells the two apart is the store's own reply header: `build_tool_result`
+/// stamps the `operation` it ran on every answer, and that header is this cell's
+/// `hop` — one edge back, so it survives.
+#[test]
+fn the_answer_to_renders_own_write_is_not_a_failure_report() {
+    let Some(root) = shipped_canvy() else { return };
+    for op in ["insert", "delete"] {
+        let out = run_shipped(
+            &root,
+            "render",
+            stdin_doc_ctx(
+                // What a write really answers with: the payload of a non-select op
+                // is `null`, which is precisely why `rows_of` cannot classify it.
+                store_reply(Value::Null),
+                json!({ "operation": op, "rows_affected": 1 }),
+                json!({ "canvy_origin": "render" }),
+            ),
+        );
+        assert!(
+            out.is_empty(),
+            "the answer to render's own {op} must end the chain silently, not be \
+             reported to the surface as a failure: {out:?}"
+        );
+    }
+}
+
+/// **A store that really did fail still reaches the surface.**
+///
+/// The guard above must not become a blanket silence. A read that came back as
+/// something other than rows is a genuine defect an operator has to see — it is
+/// how the missing `columns` argument was found in the first place.
+#[test]
+fn a_store_error_on_the_read_still_reaches_the_surface() {
+    let Some(root) = shipped_canvy() else { return };
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply_text("no such table: canvas"),
+            json!({ "operation": "select", "rows_affected": 0 }),
+            json!({ "canvy_origin": "render" }),
+        ),
+    );
+    assert_eq!(out.len(), 1, "{out:?}");
+    let err = out[0]["surface"]["error"].as_str().unwrap();
+    assert!(err.contains("no such table"), "{err}");
+}
+
+/// **A write that FAILED is not an acknowledgement.**
+///
+/// A SQL error is a normal `tool_result` and not an error message (brainstorm
+/// E5), so the store stamps BOTH the operation it ran and an `error_code` on the
+/// same reply. The two guards therefore have an order: the failure is read first,
+/// and only an answer with no `error_code` counts as an echo of our own write.
+#[test]
+fn a_write_that_failed_is_not_mistaken_for_an_acknowledgement() {
+    let Some(root) = shipped_canvy() else { return };
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply_text("UNIQUE constraint failed: canvas.id"),
+            json!({ "operation": "insert", "rows_affected": 0, "error_code": "sql_error" }),
+            json!({ "canvy_origin": "render" }),
+        ),
+    );
+    assert_eq!(out.len(), 1, "{out:?}");
+    let err = out[0]["surface"]["error"].as_str().unwrap();
+    assert!(err.contains("sql_error"), "{err}");
 }
 
 /// No snapshot yet is a sentence, not an empty canvas: an operator must be able
@@ -672,9 +778,12 @@ fn the_clients_own_tests_pass() {
 /// A hive box is derived from where its members ended up (`hive_boxes`) and is
 /// never stored — that is what makes dragging a cell out of a crowd grow its hive
 /// instead of stranding it outside a stale rectangle. So moving a hive cannot mean
-/// "store the rectangle": it means storing one OFFSET for the group, which the
+/// "store the rectangle": it means storing one SHIFT for the group, which the
 /// layout applies to its members before their own saved positions win. Two store
 /// ops per hive drag, exactly like a cell — not two per member.
+///
+/// The client names the origin it was handed plus the drag; what is written is the
+/// difference, because only a shift survives a colony that grows (GH #170).
 #[test]
 fn dragging_a_hive_writes_one_row_and_moves_its_members() {
     let Some(root) = shipped_canvy() else { return };
@@ -715,11 +824,11 @@ fn dragging_a_hive_writes_one_row_and_moves_its_members() {
         "one delete and one insert for the GROUP, not per member: {ops:?}"
     );
     assert_eq!(ops[0]["operation"], "delete");
-    assert_eq!(ops[0]["where"]["kind"], "hive");
+    assert_eq!(ops[0]["where"]["kind"], "hive_shift");
     assert_eq!(ops[0]["where"]["id"], "a");
-    assert_eq!(ops[1]["row"]["kind"], "hive");
-    assert_eq!(ops[1]["row"]["x"], target.0);
-    assert_eq!(ops[1]["row"]["y"], target.1);
+    assert_eq!(ops[1]["row"]["kind"], "hive_shift");
+    assert_eq!(ops[1]["row"]["x"], 500);
+    assert_eq!(ops[1]["row"]["y"], 300);
 
     // And the picture it answers with has the group there, with its members.
     let after = html_of(&out);
@@ -744,31 +853,420 @@ fn dragging_a_hive_writes_one_row_and_moves_its_members() {
     }
 }
 
-/// A saved cell position still wins over the offset of its hive: the precedence is
-/// cell, then hive, then automatic. Without this, moving a hive would silently
-/// undo every hand-placed cell inside it.
+/// **Moving a group moves the group.** A hand-placed cell travels with its hive,
+/// keeping its position RELATIVE to the group — because the alternative, which this
+/// view shipped with, is that the two gestures fight: the hive offset was applied
+/// only to cells nobody had touched, so a hive with one hand-placed cell in it had
+/// no single position at all, and the cell was left behind every time the group
+/// moved.
+///
+/// The mechanism is what makes it hold: a stored cell position lives in the
+/// layout's own space, BEFORE the shifts of the hives above it, so the two add up
+/// instead of overriding each other.
 #[test]
-fn a_saved_cell_position_survives_a_hive_move() {
+fn a_hand_placed_cell_travels_with_its_hive() {
     let Some(root) = shipped_canvy() else { return };
     let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+    let plain = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let untouched = node_positions(&plain, &["a/two"])[0];
+
     let mut rows = snapshot_rows(graph);
     let arr = rows.as_array_mut().unwrap();
     arr.push(json!({"kind": "node", "id": "a/one", "x": 4000, "y": 4000}));
-    arr.push(json!({"kind": "hive", "id": "a", "x": 900, "y": 900}));
+    arr.push(json!({"kind": "hive_shift", "id": "a", "x": 900, "y": 900}));
     let html = html_of(&run_shipped(
         &root,
         "render",
         stdin_doc_pass2(store_reply(rows), json!({})),
     ));
+
     assert_eq!(
         node_positions(&html, &["a/one"])[0],
-        (4000, 4000),
-        "the cell keeps the position somebody gave it"
+        (4900, 4900),
+        "the hand-placed cell keeps its offset from the group it belongs to"
     );
-    let two = node_positions(&html, &["a/two"])[0];
+    assert_eq!(
+        node_positions(&html, &["a/two"])[0],
+        (untouched.0 + 900, untouched.1 + 900),
+        "and its neighbour follows the same shift"
+    );
+}
+
+/// **GH #170 — a stored arrangement survives the colony growing.** Instantiate a
+/// cell in a colony somebody arranged by hand and the hand-placed hives moved,
+/// every one of them: 12 of 19 frames on the colony this was reported from, and
+/// 17 of 53 hand-placed cells with them. Nothing about the new cell said where
+/// they should go; it was the reference point that moved underneath them.
+///
+/// A hive row used to hold a POINT in the flow layout's space, re-read on every
+/// render as a delta against that layout's own idea of the same corner — and the
+/// flow layout is a function of the WHOLE node set, so one arrival redefined the
+/// point every stored hive was measured against. Here `a/new` arrives beside
+/// `a/b`, which pushes `a/c`'s computed corner 72 pixels down, and the anchored
+/// `a/c` and both of its hand-placed cells answered by walking 72 pixels UP.
+///
+/// The arrangement is made the way an operator makes one — a drag — and whatever
+/// row that drag writes IS the arrangement. This test never spells that row out,
+/// so what it pins is the property and not the shape the property is stored in.
+#[test]
+fn an_arriving_cell_leaves_a_stored_arrangement_where_it_was() {
+    let Some(root) = shipped_canvy() else { return };
+    let before_nodes: &[(&str, &str)] = &[
+        ("/a/own", "llm"),
+        ("/a/b/one", "llm"),
+        ("/a/b/two", "store"),
+        ("/a/c/three", "code"),
+        ("/a/c/four", "code"),
+    ];
+    let before_edges: &[(&str, &str, &str)] = &[
+        ("e1", "/a/own", "/a/b/one"),
+        ("e2", "/a/b/one", "/a/b/two"),
+        ("e3", "/a/b/two", "/a/c/three"),
+        ("e4", "/a/c/three", "/a/c/four"),
+    ];
+    // Both cells of `a/c` are placed by hand. That is what makes the hive an
+    // arrangement rather than a layout, and what the arrival must not disturb.
+    let pinned = |graph: Value| {
+        let mut rows = snapshot_rows(graph);
+        let arr = rows.as_array_mut().unwrap();
+        arr.push(json!({"kind": "node", "id": "a/c/three", "x": 240, "y": 400}));
+        arr.push(json!({"kind": "node", "id": "a/c/four", "x": 480, "y": 400}));
+        rows
+    };
+    let graph = graph_doc(before_nodes, before_edges);
+
+    // …and the hive itself is dragged 300 right and 200 down.
+    let corner = hive_box(
+        &html_of(&run_shipped(
+            &root,
+            "render",
+            stdin_doc_pass2(store_reply(pinned(graph.clone())), json!({})),
+        )),
+        "a/c",
+    );
+    let drag = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(pinned(graph.clone())),
+            json!({}),
+            json!({
+                "canvy_origin": "render",
+                "canvy_event": "hive:moved",
+                "canvy_moved_id": "a/c",
+                "canvy_moved_x": (corner.0 + 300).to_string(),
+                "canvy_moved_y": (corner.1 + 200).to_string(),
+            }),
+        ),
+    );
+    let written = store_ops(&drag)
+        .into_iter()
+        .find(|o| o["operation"] == "insert")
+        .expect("a hive drag writes a row")["row"]
+        .clone();
+
+    let arrangement = |graph: Value| {
+        let mut rows = pinned(graph);
+        rows.as_array_mut().unwrap().push(written.clone());
+        rows
+    };
+    let before = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(arrangement(graph)), json!({})),
+    ));
+
+    // One cell is instantiated, wired into a hive the arrangement never touched.
+    // Nothing else changes.
+    let mut nodes = before_nodes.to_vec();
+    nodes.push(("/a/new", "code"));
+    let mut edges = before_edges.to_vec();
+    edges.push(("e5", "/a/own", "/a/new"));
+    let after = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(arrangement(graph_doc(&nodes, &edges))),
+            json!({}),
+        ),
+    ));
+
+    assert_eq!(
+        node_positions(&after, &["a/c/three", "a/c/four"]),
+        node_positions(&before, &["a/c/three", "a/c/four"]),
+        "a cell somebody placed by hand may only move when a hand moves it"
+    );
+    assert_eq!(
+        hive_frame(&after, "a/c"),
+        hive_frame(&before, "a/c"),
+        "and the frame those cells make must not move either"
+    );
+}
+
+/// A canvas whose table has outlived part of its colony: `a/one` and the hive `a`
+/// are still there, `a/gone` and the hive `b` are not.
+fn rows_naming_nothing() -> Value {
+    let mut rows = snapshot_rows(graph_doc(&[("/a/one", "code"), ("/a/two", "code")], &[]));
+    let list = rows.as_array_mut().unwrap();
+    list.push(json!({"kind": "node", "id": "a/one", "x": 700, "y": 300}));
+    list.push(json!({"kind": "node", "id": "a/gone", "x": 11, "y": 22}));
+    list.push(json!({"kind": "hive_shift", "id": "a", "x": 40, "y": 50}));
+    list.push(json!({"kind": "hive_shift", "id": "b", "x": 60, "y": 70}));
+    rows
+}
+
+/// **A row that names nothing is never swept behind the operator's back.**
+///
+/// From the table's side a rename and a removal are the SAME event: the colony has
+/// no rename operation at all (`add_nodes` / `remove_nodes` — see
+/// `mutation/validate.rs`), so a rename IS a removal plus an arrival under a name
+/// the row cannot know. On the colony this was reported from, all four hive rows
+/// naming nothing were renames — `talky/keeper` -> `talky/session-keeper`,
+/// `talky/summary` -> `talky/summarizer`, `archive` -> `day-archive`,
+/// `memdrain` -> `memory-drain` — so an eager sweep would have thrown away four
+/// hand-placed group positions and nothing else. A stale snapshot reads the same
+/// way again: the topology arrives on a timer, so "not in the picture" also means
+/// "the timer has not run since this cell was added".
+///
+/// So the render reports and never deletes. This also keeps #183 shut: a join that
+/// finds stale rows must stay a read, or every render becomes a write.
+#[test]
+fn a_row_that_names_nothing_is_reported_and_not_swept() {
+    let Some(root) = shipped_canvy() else { return };
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows_naming_nothing()), json!({})),
+    );
     assert!(
-        two.0 >= 900 && two.1 >= 900,
-        "and its neighbour follows the hive offset, got {two:?}"
+        store_ops(&out).is_empty(),
+        "a join must not shed rows on its own: {:?}",
+        store_ops(&out)
+    );
+    let html = html_of(&out);
+    assert!(
+        html.contains("2 rows name nothing"),
+        "the picture has to say what the table is carrying: {html}"
+    );
+    assert!(
+        html.contains("data-sweep"),
+        "and offer the one gesture that can decide it: {html}"
+    );
+}
+
+/// **A colony with nothing to shed offers nothing to press.**
+#[test]
+fn the_sweep_is_offered_only_when_there_is_something_to_shed() {
+    let Some(root) = shipped_canvy() else { return };
+    let mut rows = snapshot_rows(graph_doc(&[("/a/one", "code")], &[]));
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "node", "id": "a/one", "x": 700, "y": 300}));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    assert!(!html.contains("data-sweep"), "{html}");
+    assert!(!html.contains("name nothing"), "{html}");
+}
+
+/// **The sweep sheds exactly the rows that name nothing, and only when asked.**
+///
+/// The operator is the only party that knows whether a name went away or moved,
+/// so the deletion is their gesture and the render is only ever the reporter.
+#[test]
+fn a_sweep_sheds_exactly_the_rows_that_name_nothing() {
+    let Some(root) = shipped_canvy() else { return };
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(rows_naming_nothing()),
+            json!({ "operation": "select", "rows_affected": 5 }),
+            json!({ "canvy_origin": "render", "canvy_event": "canvas:sweep" }),
+        ),
+    );
+    let ops = store_ops(&out);
+    assert_eq!(
+        ops.len(),
+        2,
+        "one delete per orphan row and no more: {ops:?}"
+    );
+    for op in &ops {
+        assert_eq!(op["operation"], "delete", "{op}");
+    }
+    let shed: Vec<(String, String)> = ops
+        .iter()
+        .map(|o| {
+            (
+                o["where"]["kind"].as_str().unwrap_or("").to_string(),
+                o["where"]["id"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        shed.contains(&("node".to_string(), "a/gone".to_string())),
+        "{shed:?}"
+    );
+    assert!(
+        shed.contains(&("hive_shift".to_string(), "b".to_string())),
+        "{shed:?}"
+    );
+    for (_, id) in &shed {
+        assert!(
+            id != "a/one" && id != "a",
+            "the sweep touched something the colony still has: {shed:?}"
+        );
+    }
+    // And the picture still comes back: a sweep is a render that also wrote.
+    assert!(html_of(&out).contains("data-node=\"a/one\""));
+}
+
+/// **A second sweep writes nothing.** Idempotent by the same rule the #170
+/// conversion converges by: a pass that finds nothing to do must do nothing, or
+/// every press becomes a write and every write an answer (GH #183).
+#[test]
+fn a_sweep_with_nothing_to_shed_writes_nothing() {
+    let Some(root) = shipped_canvy() else { return };
+    let mut rows = snapshot_rows(graph_doc(&[("/a/one", "code"), ("/a/two", "code")], &[]));
+    let list = rows.as_array_mut().unwrap();
+    list.push(json!({"kind": "node", "id": "a/one", "x": 700, "y": 300}));
+    list.push(json!({"kind": "hive_shift", "id": "a", "x": 40, "y": 50}));
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(rows),
+            json!({ "operation": "select", "rows_affected": 4 }),
+            json!({ "canvy_origin": "render", "canvy_event": "canvas:sweep" }),
+        ),
+    );
+    assert!(
+        store_ops(&out).is_empty(),
+        "a sweep with nothing to shed must write nothing: {:?}",
+        store_ops(&out)
+    );
+}
+
+/// **The conversion, once.** The colonies this shipped to hold hive rows in the old
+/// shape — a point in the flow layout's space — and re-arranging a 50-cell canvas
+/// by hand is not a migration path. So the point is read once, through the very
+/// layout it was written against, and rewritten as the shift it always meant.
+///
+/// Two properties, and the fix is worthless without either: the picture after the
+/// conversion is the picture before it, and the conversion CONVERGES — a render
+/// that finds no old row writes nothing, or the surface writes to its own store on
+/// every join for ever.
+#[test]
+fn an_old_hive_point_is_converted_to_a_shift_exactly_once() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+    let plain = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let corner = hive_box(&plain, "a");
+
+    let mut rows = snapshot_rows(graph.clone());
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "hive", "id": "a", "x": corner.0 + 500, "y": corner.1 + 300}));
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    );
+
+    let ops = store_ops(&out);
+    assert_eq!(ops.len(), 2, "one row in, one row out: {ops:?}");
+    assert_eq!(ops[0]["operation"], "delete");
+    assert_eq!(ops[0]["where"]["kind"], "hive");
+    assert_eq!(ops[1]["row"]["kind"], "hive_shift");
+    assert_eq!(ops[1]["row"]["x"], 500);
+    assert_eq!(ops[1]["row"]["y"], 300);
+
+    // The same colony, with the converted row in place of the old one.
+    let mut converted = snapshot_rows(graph);
+    converted
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "hive_shift", "id": "a", "x": 500, "y": 300}));
+    let second = run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(converted), json!({})),
+    );
+    assert!(
+        store_ops(&second).is_empty(),
+        "a converted colony writes nothing on a join: {:?}",
+        store_ops(&second)
+    );
+    assert_eq!(
+        hive_frame(&html_of(&second), "a"),
+        hive_frame(&html_of(&out), "a"),
+        "and it is the same picture on both sides of the conversion"
+    );
+}
+
+/// **A drop lands where it was let go, and stays there.** Reported as "after a
+/// move, the moved elements jump back again": the client names
+/// an absolute point, and inside a hive somebody had moved, that point is only
+/// where it is BECAUSE of the hive's offset. Storing it verbatim re-applied the
+/// offset on the next render, so every drop inside a moved hive landed one shift
+/// away from the cursor.
+#[test]
+fn a_drop_inside_a_moved_hive_does_not_jump() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+    let mut rows = snapshot_rows(graph.clone());
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "hive_shift", "id": "a", "x": 900, "y": 900}));
+
+    // Drop `a/one` at an absolute point, exactly as the browser reports it.
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(rows.clone()),
+            json!({}),
+            json!({
+                "canvy_origin": "render",
+                "canvy_event": "node:moved",
+                "canvy_moved_id": "a/one",
+                "canvy_moved_x": "1500",
+                "canvy_moved_y": "1200",
+            }),
+        ),
+    );
+    assert_eq!(
+        node_positions(&html_of(&out), &["a/one"])[0],
+        (1500, 1200),
+        "the box is drawn where it was dropped"
+    );
+
+    // Now replay what the store holds afterwards: the SAME picture has to come back.
+    let ops = store_ops(&out);
+    let row = &ops[1]["row"];
+    let mut again = rows;
+    again.as_array_mut().unwrap().push(json!({
+        "kind": "node", "id": "a/one", "x": row["x"], "y": row["y"],
+    }));
+    let replay = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(again), json!({})),
+    ));
+    assert_eq!(
+        node_positions(&replay, &["a/one"])[0],
+        (1500, 1200),
+        "and it is still there on the next render — no jump"
     );
 }
 
@@ -1525,5 +2023,450 @@ fn the_documented_colony_lane_is_conditional() {
     assert_eq!(
         tick[0]["header"]["route"], "ask_colony",
         "the condition in the README names this marker"
+    );
+}
+
+/// **The flow reads left to right.** A turn travels through a colony, and the
+/// picture is only legible if it travels across the page the way a reader's eye
+/// does. The first arrangement stacked flow rank downwards, so a chain of four
+/// cells was a column and the horizontal axis carried nothing at all.
+///
+/// A chain also must not be split by the wrapping: wrapping exists so a block that
+/// outgrows a screen folds into rows, and a four-cell chain does not.
+#[test]
+fn a_chain_runs_across_the_page() {
+    let Some(root) = shipped_canvy() else { return };
+    let cells = [
+        ("/h/one", "proxy"),
+        ("/h/two", "llm"),
+        ("/h/three", "code"),
+        ("/h/four", "store"),
+    ];
+    let edges = [
+        ("e1", "/h/one", "/h/two"),
+        ("e2", "/h/two", "/h/three"),
+        ("e3", "/h/three", "/h/four"),
+    ];
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(&cells, &edges))),
+            json!({}),
+        ),
+    ));
+    let at = node_positions(&html, &["h/one", "h/two", "h/three", "h/four"]);
+    for pair in at.windows(2) {
+        assert!(
+            pair[1].0 > pair[0].0,
+            "each step of the chain sits to the RIGHT of the one that feeds it: {at:?}"
+        );
+        assert_eq!(
+            pair[1].1, pair[0].1,
+            "and on the same line, so the chain is one straight run: {at:?}"
+        );
+    }
+}
+
+/// **A hive is anchored by its block, not by its rectangle.** The rectangle is
+/// derived from the cells inside it, so it moves whenever they do — anchoring a
+/// group to it meant that dragging one cell leftwards out of a hive shoved the
+/// whole group to the right on the next render, and that a dropped hive never
+/// landed twice in the same place.
+#[test]
+fn a_hive_carries_an_anchor_that_its_contents_cannot_move() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+    let anchor_of = |html: &str| -> (i64, i64) {
+        let after = html.split("data-hive=\"a\"").nth(1).unwrap_or("");
+        let head = after.split('>').next().unwrap_or("");
+        let num = |k: &str| -> i64 {
+            head.split(&format!("{k}=\""))
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("no {k} in {head}"))
+        };
+        (num("data-ox"), num("data-oy"))
+    };
+
+    let plain = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let before = anchor_of(&plain);
+    let frame_before = hive_box(&plain, "a");
+
+    // Drag one cell far to the upper left. The frame HAS to grow to hold it...
+    let mut rows = snapshot_rows(graph);
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "node", "id": "a/one", "x": -900, "y": -700}));
+    let after = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    assert!(
+        hive_box(&after, "a").0 < frame_before.0,
+        "the frame must grow to hold a cell dragged out of it"
+    );
+    // ...and the anchor must not have moved with it.
+    assert_eq!(
+        anchor_of(&after),
+        before,
+        "the anchor is the block's, so what is inside the block cannot shift it"
+    );
+}
+
+/// **Where the operator is looking is part of the arrangement.** The camera was
+/// read back on every render and never once written, so a reload threw away the
+/// zoom and the corner of a 2000-pixel picture somebody had just navigated to —
+/// while every box position survived, which made it read like a fluke rather than
+/// a missing write.
+#[test]
+fn the_camera_is_remembered() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm")], &[]);
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_ctx(
+            store_reply(snapshot_rows(graph.clone())),
+            json!({}),
+            json!({
+                "canvy_origin": "render",
+                "canvy_event": "camera:moved",
+                "canvy_moved_x": "-320",
+                "canvy_moved_y": "180",
+                "canvy_moved_z": "1750",
+            }),
+        ),
+    );
+    let ops = store_ops(&out);
+    assert_eq!(
+        ops.len(),
+        2,
+        "one delete and one insert for the view: {ops:?}"
+    );
+    assert_eq!(ops[0]["where"]["kind"], "camera");
+    assert_eq!(ops[1]["row"]["kind"], "camera");
+    assert_eq!(ops[1]["row"]["x"], -320);
+    assert_eq!(ops[1]["row"]["z"], 1750);
+
+    // And it comes back on the next render, as the transform on the viewport.
+    let mut rows = snapshot_rows(graph);
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "camera", "id": "view", "x": -320, "y": 180, "z": 1750}));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+    assert!(
+        html.contains("translate(-320,180) scale(1.75)"),
+        "the stored view has to be the one rendered: {html}"
+    );
+}
+
+/// A cell move must not disturb the view, and the camera write must not disturb a
+/// position: they are separate rows, and the emission carries every slot the hive's
+/// edge promotes — an emission missing one does not merely skip the promotion, the
+/// edge stops matching and the write dead-letters as `no_route`.
+#[test]
+fn every_store_emission_carries_the_zoom_slot() {
+    let Some(root) = shipped_canvy() else { return };
+    let out = run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(&[("/a/one", "llm")], &[]))),
+            json!({}),
+        ),
+    );
+    for m in &out {
+        let canvas = m
+            .get("header")
+            .filter(|h| h.get("route").and_then(Value::as_str) == Some("canvas"));
+        if let Some(h) = canvas {
+            assert!(
+                h.get("moved_z").is_some(),
+                "every canvas emission needs the slot the edge reads: {h:?}"
+            );
+        }
+    }
+}
+
+/// **Moving an outer hive moves everything under it — sub-hives included.**
+///
+/// Reported as "when I move an outer hive, the one code cell inside it is not
+/// carried along properly": what actually happened was the reverse, and worse.
+/// EVERY cell inside a sub-hive stayed put and the one cell that sat in no
+/// sub-hive was the only thing that travelled — so the report read as "one cell
+/// misbehaves" when it was the only one behaving.
+///
+/// The cause: an inner hive's stored anchor was compared against the origin as it
+/// stood AFTER its parent had been shifted, so each inner anchor said "put me back
+/// exactly where I was" and cancelled the parent's move. Anchors are measured in
+/// the untouched layout; the shifts of the hives above simply add on top.
+#[test]
+fn moving_an_outer_hive_takes_the_inner_ones_with_it() {
+    let Some(root) = shipped_canvy() else { return };
+    // An outer hive with a loose cell of its own AND two sub-hives, one nested two
+    // deep — the shape that produced the report.
+    let cells = [
+        ("/top/loose", "code"),
+        ("/top/inner/one", "llm"),
+        ("/top/inner/deep/two", "store"),
+        ("/top/other/three", "code"),
+    ];
+    let plain = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(snapshot_rows(graph_doc(&cells, &[]))),
+            json!({}),
+        ),
+    ));
+    let anchor = hive_box(&plain, "top");
+    let ids = [
+        "top/loose",
+        "top/inner/one",
+        "top/inner/deep/two",
+        "top/other/three",
+    ];
+    let before = node_positions(&plain, &ids);
+
+    // The sub-hives have anchors of their own — somebody arranged them first,
+    // which is the state the defect needed.
+    let inner = hive_box(&plain, "top/inner");
+    let other = hive_box(&plain, "top/other");
+    let arrange = |extra: Vec<Value>| -> Value {
+        let mut rows = snapshot_rows(graph_doc(&cells, &[]));
+        let arr = rows.as_array_mut().unwrap();
+        arr.push(json!({"kind": "hive_shift", "id": "top/inner", "x": 40, "y": 60}));
+        arr.push(json!({"kind": "hive_shift", "id": "top/other", "x": -30, "y": 10}));
+        arr.extend(extra);
+        rows
+    };
+    let arranged = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(arrange(vec![])), json!({})),
+    ));
+    let placed = node_positions(&arranged, &ids);
+
+    // Now drag the OUTER hive. Everything under it must move by the same delta.
+    let moved = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(
+            store_reply(arrange(vec![
+                json!({"kind": "hive_shift", "id": "top", "x": 500, "y": 300}),
+            ])),
+            json!({}),
+        ),
+    ));
+    let after = node_positions(&moved, &ids);
+
+    for (k, id) in ids.iter().enumerate() {
+        assert_eq!(
+            (after[k].0 - placed[k].0, after[k].1 - placed[k].1),
+            (500, 300),
+            "{id} must travel with the hive that contains it"
+        );
+    }
+    // And the inner arrangement is preserved, not flattened back to automatic.
+    assert_ne!(
+        placed[1], before[1],
+        "the sub-hive's own anchor still has to do something"
+    );
+
+    // The FRAMES have to travel too, and they are the half a cell check cannot
+    // see: a hive box is drawn from the cells it contains, so a frame could in
+    // principle be recomputed to the same place while its contents moved away
+    // underneath it. Then the box and its contents have come apart, every cell
+    // assertion above still passes, and the picture is wrong.
+    for hive in ["top", "top/inner", "top/other"] {
+        let (px, py) = hive_box(&arranged, hive);
+        let (mx, my) = hive_box(&moved, hive);
+        assert_eq!(
+            (mx - px, my - py),
+            (500, 300),
+            "the {hive} frame must travel with the hive that contains it"
+        );
+    }
+
+    // ...and the sub-hives really were arranged away from where the automatic
+    // layout put them, or the frame check above proves nothing: it would be
+    // comparing two computed layouts that agree because nobody touched either.
+    assert_ne!(
+        hive_box(&arranged, "top/inner"),
+        inner,
+        "the stored shift has to move the inner hive's frame"
+    );
+    assert_ne!(
+        hive_box(&arranged, "top/other"),
+        other,
+        "the stored shift has to move the other hive's frame"
+    );
+    // The outer hive was never shifted by hand — it moves only because its
+    // children did, which is what makes it the interesting one to drag later.
+    assert_ne!(
+        hive_box(&arranged, "top"),
+        anchor,
+        "an outer frame follows the cells it contains"
+    );
+}
+
+/// **A cell nobody placed does not land on one somebody did.** In an arrangement
+/// made by hand every cell carries a stored position, so a cell instantiated
+/// later is the only one the automatic layout still places — into a picture that
+/// layout no longer describes. Adding six tool cells to a fifty-cell colony put
+/// three of them on top of hand-placed ones (GH #167), which reads as a
+/// rendering fault and costs the operator the drag the layout was there to save.
+///
+/// The rule this pins: a stored position never moves, and a cell without one is
+/// offered its computed spot first and the nearest free one after that.
+#[test]
+fn a_new_cell_gives_way_to_the_hand_placed_ones() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(&[("/a/one", "llm"), ("/a/two", "store")], &[]);
+
+    // `two` is pinned exactly where the layout would otherwise put `one`, so the
+    // collision is certain rather than a happy accident of this graph's shape.
+    let computed = node_positions(
+        &html_of(&run_shipped(
+            &root,
+            "render",
+            stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+        )),
+        &["a/one"],
+    )[0];
+
+    let mut rows = snapshot_rows(graph);
+    rows.as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "node", "id": "a/two", "x": computed.0, "y": computed.1}));
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+
+    let placed = node_positions(&html, &["a/one", "a/two"]);
+    assert_eq!(
+        placed[1], computed,
+        "the hand-placed cell is the one that must not move"
+    );
+    assert_ne!(
+        placed[0], placed[1],
+        "and the new cell must not be left sitting on top of it"
+    );
+    let (dx, dy) = (
+        (placed[0].0 - placed[1].0).abs(),
+        (placed[0].1 - placed[1].1).abs(),
+    );
+    assert!(
+        dx >= 150 || dy >= 38,
+        "the two boxes still overlap: {placed:?}"
+    );
+}
+
+/// **A colony nobody has arranged is untouched by that rule.** Without a single
+/// stored position there is nothing to give way to, and the flow layout does not
+/// overlap itself — so the picture has to come out byte-identical to the one
+/// before the rule existed. This is the guard against a collision pass that
+/// quietly starts rearranging a layout it was only supposed to repair.
+#[test]
+fn the_settling_pass_does_nothing_to_an_untouched_colony() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[
+            ("/a/one", "llm"),
+            ("/a/two", "store"),
+            ("/a/three", "code"),
+            ("/b/four", "timer"),
+        ],
+        &[("e1", "/a/one", "/a/two"), ("e2", "/a/two", "/a/three")],
+    );
+    let once = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let twice = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph)), json!({})),
+    ));
+    assert_eq!(once, twice, "the render is deterministic");
+    let p = node_positions(&once, &["a/one", "a/two", "a/three", "b/four"]);
+    for i in 0..p.len() {
+        for j in (i + 1)..p.len() {
+            assert!(
+                (p[i].0 - p[j].0).abs() >= 150 || (p[i].1 - p[j].1).abs() >= 38,
+                "the untouched layout overlaps on its own: {:?} vs {:?}",
+                p[i],
+                p[j]
+            );
+        }
+    }
+}
+
+/// **A cell that hangs on nothing says so.** `remove_nodes` drops every edge and
+/// keeps the node — no-delete — so rewiring a lane leaves the cell it replaced
+/// standing in the picture, drawn exactly like a live one. Three of those
+/// appeared after one tool move, and nothing in the markup told them apart from
+/// the cells doing the work.
+///
+/// A heuristic, deliberately: the graph endpoint reports no activity, and a cell
+/// instantiated one second ago and not yet wired looks the same. So it dims
+/// rather than hides — both states are worth seeing.
+#[test]
+fn a_cell_with_no_edges_is_drawn_as_unwired() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[
+            ("/a/one", "llm"),
+            ("/a/two", "store"),
+            ("/a/lonely", "bash"),
+        ],
+        &[("e1", "/a/one", "/a/two")],
+    );
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph)), json!({})),
+    ));
+
+    for id in ["a/one", "a/two"] {
+        let tag = html
+            .split(&format!("data-node=\"{id}\""))
+            .next()
+            .and_then(|h| h.rsplit("<g class=\"").next())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !tag.contains("unwired"),
+            "{id} takes part in an edge and must not be marked unwired"
+        );
+    }
+    let lonely = html
+        .split("data-node=\"a/lonely\"")
+        .next()
+        .and_then(|h| h.rsplit("<g class=\"").next())
+        .unwrap_or_default();
+    assert!(
+        lonely.contains("unwired"),
+        "the cell with no edge at all has to carry the marker, got class {lonely:?}"
+    );
+    assert!(
+        std::fs::read_to_string(root.join("render/client/surface.css"))
+            .unwrap()
+            .contains(".node.unwired"),
+        "and the stylesheet has to have something to say about it"
     );
 }

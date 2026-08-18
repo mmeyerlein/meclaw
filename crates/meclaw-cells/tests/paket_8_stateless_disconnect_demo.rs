@@ -94,7 +94,7 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/anchor/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/anchor"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/anchor"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -579,7 +579,7 @@ fn write_topology_a_late(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/live-anchor/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/live-anchor"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/live-anchor"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

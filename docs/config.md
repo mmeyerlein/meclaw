@@ -41,7 +41,7 @@ Two of the four blocks have fundamentally different authority. This separation i
 
 **Only `id` and `type` are immutable.** They identify the node instance and its cell type across the entire lifetime. **Effectiveness rule** for all other fields: changes to `cell` or `params` fields (via new instantiation at the path or a new template) take effect **at the next spawn/wake** of the cell. The running cell task does not re-read `config.json` (see § Access, "Read-once").
 
-**Special case hive scope marker** (`cell.type: "hive"`): only `cell` and `params` are relevant. `params` contains the optional `graph` block (initial desired graph, see `meclaw-overview.md` section "Graph schema") and the optional `ports` list (GH #133, see `cell-types.md` section `hive`) plus the optional `required_drains` list (GH #147: `{port, hop, because}` — which ports may only be wired from outside once their paired egress is consumed outside the hive), no `dead_letters` override (the `HiveParams` deserializer is `deny_unknown_fields`; the DLQ is always `/colony/dead_letters`). A `contract` block is not evaluated, because hive scope markers are not actors and do not participate in the message flow (see `cell-types.md` section `hive`). In the `cell` block, only `id` and `type` are relevant. `timeout`, `message_timeout`, `idle_timeout_ms`, and `mailbox_size` are ignored (no actor, no mailbox, no `handle()` call). A `description` is allowed, but only serves discovery by builders; `emits_meaning` and `consumes_meaning` are omitted.
+**Special case hive scope marker** (`cell.type: "hive"`): only `cell` and `params` are relevant. `params` contains the optional `graph` block (initial desired graph, see `meclaw-overview.md` section "Graph schema") and the optional `ports` list (GH #133, see `cell-types.md` section `hive`) plus the optional `required_drains` list (GH #147: `{port, hop, because}` — which ports may only be wired from outside once their paired egress is consumed outside the hive), no `dead_letters` override (the `HiveParams` deserializer is `deny_unknown_fields`; the DLQ is always `/colony/dead_letters`). Since GH #173 there is also the optional `params.contract` block — the hive's machine-readable **contract**, see § `params.contract` (hive). The **top-level** `contract` block stays unevaluated on a hive: that key belongs to the cell and carries a different shape there (`version`/`settings`/`consumes`/`emits`, where `emits` is an `EmitSpec` map per output). One word cannot carry two shapes, and the hive's wiring surface lives in `params` anyway (`graph`, `ports`, `required_drains`) — so the contract joined them. In the `cell` block, only `id` and `type` are relevant. `timeout`, `message_timeout`, `idle_timeout_ms`, and `mailbox_size` are ignored (no actor, no mailbox, no `handle()` call). A `description` is allowed, but only serves discovery by builders; `emits_meaning` and `consumes_meaning` are omitted.
 
 ### `cell`
 
@@ -164,6 +164,120 @@ Cell-type-specific. Each cell type defines its own `params` structure (see `cell
 
 **Convention for I/O cells**: every cell that performs I/O operations of indeterminate duration (HTTP, DB, subprocess, filesystem, MCP calls) declares a `params.external_timeout_ms` field (or a semantically more fitting name like `query_timeout_ms` for `store`). The cell implementation wraps **every** such operation with `tokio::time::timeout` and, on elapsed, emits a regular error message (`header.finish_reason: "error"`, cell-type-specific `error_code` like `provider_timeout` / `query_timeout` / `script_timeout`). This is concept A in `meclaw-overview.md` section "Timeouts", the primary protection, set precisely per operation, manageable by the operator. **`cell.message_timeout`** (in the `cell` block) is the coarse backstop for cell hangs and lies considerably above `external_timeout_ms` (concept B in the same section).
 
+### `params.contract` (hive only) — the contract, in lanes
+
+GH #173. A template is a **class**: instantiate it, wire to its interface, swap
+it later for another implementation with a different inside. For hive templates
+none of that held. `contract` was a CELL property; a hive had `description`
+prose, and the prose named cells three levels down ("Ingress: `./keeper/stamp`").
+So every instantiation wrote the template's internal layout into the caller's own
+topology.
+
+**The contract is not an optional leaflet; it is the form in which a hive meets
+the binding boundary rule** (`meclaw-overview.en.md` § The hive boundary — the
+rule holds for all hives and all templates). Three requirements from there land
+exactly here in the file:
+
+1. **The address is the hive** — hence `"ports": []` next to the contract.
+2. **A lane is named functionally** — hence `accepts[].route` and `emits[].route`
+   are requests, not places (see "How a lane is named" below).
+3. **The inner edge is the only place structure may be known** — hence the
+   mapping from lane to cell lives in the `{"from": "."}` edges of `params.graph`,
+   and nowhere else.
+
+`params.contract` says the same thing in the only vocabulary that survives a
+reimplementation — **lanes**, i.e. `hop.route` values:
+
+```json
+"params": {
+  "ports": [],
+  "contract": {
+    "accepts": [
+      {"route": "in_batch",
+       "context": ["session_id"],
+       "because": "one closed session as a single write batch"}
+    ],
+    "emits": [
+      {"route": "episode",
+       "because": "one message per turn of the batch"}
+    ]
+  },
+  "graph": { "edges": [ … ] }
+}
+```
+
+Read as: *send me a message at MY path whose `hop.route` is `in_batch`, and I
+will hand you back messages at MY path whose `hop.route` is `episode`.* No cell
+of the hive appears anywhere — which is what makes the inside free to change.
+
+| Key | Content |
+|---|---|
+| `accepts[]` | Lanes a caller may send **into** the hive path. |
+| `emits[]` | Lanes the hive sends back **out** through its own path. |
+| `…[].route` | The `hop.route` value that **is** the lane. Never a cell name — the whole abstraction rests on this. |
+| `…[].context` | `context` keys a caller must have promoted beforehand. **Declared, not enforced** (see below). |
+| `…[].because` | What the lane is for, in the hive's own words. Travels verbatim into a rejection. |
+
+**How a lane is named.** A lane name **must** say what the caller wants, never
+where it lands inside. This is the half of the boundary rule that `ports: []`
+alone does not state — a port that becomes a lane of the same name is the same
+interior cell name in a different field:
+
+| instead of (structural) | functional | because |
+|---|---|---|
+| `writer` | `in_episode` | the caller hands over a turn; whether a cell called `writer` receives it is the hive's business |
+| `recall` | `in_query` | what is asked for is memory, not a recall cell |
+| `render` | `in_view` | what is wanted is a picture, not the invocation of a renderer |
+| `policy` | `in_decide` | what is requested is a decision, not the route to one |
+
+The test: **does the name survive a reimplementation of the inside?** If a rebuild
+that breaks no promise makes the lane name wrong, the name was structural.
+
+**Enforcement levels:**
+
+| Check | When | Effect |
+|---|---|---|
+| An `add_edges` edge onto the hive path whose `set_hop.route` is **constant** must name an `accepts` lane | mutation | reject `hive_contract`, pre-destructive |
+| Every `accepts` lane must route **inward** from the hive path (have a door) | mutation (post-state) | reject `hive_contract`, rollback |
+| Every `emits` lane must route **outward** through the hive path from **some** interior cell | mutation (post-state) | reject `hive_contract`, rollback |
+| the same two checks | boot | `warn!` only — the birth topology is sovereign (as with GH #133/#147) |
+| `accepts[].context` | — | declaration only |
+
+The check runs the **real router** (`apply_edges`) rather than comparing
+condition strings: the migrated templates open a whole family of lanes with a
+single `hop.route.startsWith('in_')`, and no text comparison finds `in_batch` in
+that. The caller's stamped route is read the same way — the edge's own
+`set_hop.route` expression is compiled and evaluated against **empty** headers. A
+literal (`'in_batch'`) yields a string; anything reading the incoming message
+(`hop.upstream_route`) fails and is skipped. **A check that cannot place an edge
+must never reject it.**
+
+**What is deliberately not checked:**
+
+- **A hive with no edge at its path.** A contract is a statement about the hive
+  *path*; if no edge touches that path, the hive is an island — freshly
+  instantiated, or disconnected by `remove_nodes` — and its contract is dormant.
+  Without this exception a contracted hive could not be removed at all.
+- **`accepts[].context`.** A promotion made three edges upstream is
+  indistinguishable from a missing one to anything reading a single edge. Written
+  down for a reader, not enforced against a guess.
+- **How a lane is named.** `writer` is as valid a string as `in_episode`; no
+  validator can see whether a name was chosen functionally or structurally. The
+  requirement binds regardless — it rests on a reader, not on a check.
+- **A caller's subscription condition.** The shipped topologies tell some lanes
+  apart by a **second** hop key (`hop.round_capped`) that a route-only probe does
+  not carry — that check would refuse correct wirings, so it does not exist.
+
+**Relation to `params.ports`.** A port is the name of a lane, not the address of
+a cell (`meclaw-overview.en.md` § The hive boundary). `ports: []` **and** a
+`contract` are the two halves of **one** target shape, and every hive **is meant
+to** arrive there: the address is the hive path, the lane is the port, and the
+inside is nobody's business. A hive whose `ports` are still interior cell names
+(`canvy`, `memory-hive`, `access`, `steward` — migration in GH #197) has not
+finished getting there: it may carry a contract already, but a caller still has to
+know a cell name. A hive with **no** `ports` key has not started — that is the
+unsealed state, not an exemption from the rule.
+
 ### `contract`
 
 The `contract` keys are organized by **enforcement level**; not all of them are substrate-enforced in v0.1.0:
@@ -239,7 +353,7 @@ Split into `body` (content slots) and **the two header compartments** `context` 
 ```
 
 - If a required value is missing: cell is not called, error message to `reply_to` (if set), otherwise dead letter.
-- **Mutation/locality validator**: the build-time validator uses `emits.hop` (what the cell produces) together with `consumes.context` + `consumes.hop` (what the downstream cell expects) to statically check locality and reachability of a header value. A `hop` value is only available at the immediately following hop (unless an edge carries it forward via `set_context`), a `context` value across the entire lifecycle. Hive transits participate in the fan-in intersection: an edge with a hive `from` is a transit pass-through and contributes `set_hop` of this edge ∪ the intersection of the contributions of all inbound edges of the hive (recursively across multi-stage transits, cycle-safe). The same key walk the runtime performs at transit (`hop` expires only at a cell emission, not at the transit). **Participation/status filter at boot:** at bootstrap, the locality checker carries contract obligations **only for active nodes**, nodes that participate in the active graph. A registered but **disconnected/inactive** node (persisted `colony.db` status at reboot **or** island derived as inactive from t0 at first boot) is pure bookkeeping: it is rehydrated (stable `cell_id`), but at boot is subject to **no** contract enforcement. The full check resides at the **mutation moment** that connects it (participation rule + transit-aware intersection). Thus the check is uniform across both boot kinds: inactive ⇒ no boot obligation; active-and-wired ⇒ sharply checked.
+- **Mutation/locality validator**: the build-time validator uses `emits.hop` (what the cell produces) together with `consumes.context` + `consumes.hop` (what the downstream cell expects) to statically check locality and reachability of a header value. A `hop` value is only available at the immediately following hop (unless an edge carries it forward via `set_context`), a `context` value across the entire lifecycle. Hive transits participate in the fan-in intersection: an edge with a hive `from` is a transit pass-through and contributes `set_hop` of this edge ∪ the intersection of the contributions of all inbound edges of the hive (recursively across multi-stage transits, cycle-safe). The same key walk the runtime performs at transit (`hop` expires only at a cell emission, not at the transit). **Participation/status filter at boot:** at bootstrap, the locality checker carries contract obligations **only for active nodes**, nodes that participate in the active graph. A registered but **disconnected/inactive** node (persisted `colony.db` status at reboot **or** island derived as inactive from t0 at first boot) is pure bookkeeping: it is rehydrated (stable `cell_id`), but at boot is subject to **no** contract enforcement. The full check resides at the **mutation moment** that connects it (participation rule + transit-aware intersection). Thus the check is uniform across both boot kinds: inactive ⇒ no boot obligation; active-and-wired ⇒ sharply checked. **Which graph is checked (GH #178):** the one the colony actually runs with. On a first boot those are the `params.graph` edges of the `config.json` files; on a reboot it is the persisted edge table — the same authority the boot loads its edges from. Since GH #186 the same cut also answers which paths are hives: on a reboot the persisted `hive_scopes` table, on a first boot the `config.json` walk. Otherwise the checker read a hive whose directory had been removed as a cell with no contract — a transit pass-through became a node that contributes nothing, and the fan-in intersection came out empty even though the topology delivers the key. Before, a reboot's checker saw only the files, i.e. a **partial** graph, and partial is worse than empty here: a hive that wrote down its doors gave an interior cell an incoming edge and thereby took away the lenient "no incoming edge ⇒ ingress-at-birth" branch, while the `set_context` setter sat on a mutation edge the checker could not see. **And how a finding lands:** on a first boot the file IS the topology and somebody is writing it right now — a violation is a loud boot failure. On a reboot the topology is committed state whose mutation edges already passed this same check when they were wired; a violation is **reported** (`tracing::warn` per finding, naming node + key + rule) and the colony starts. Refusing there would be a crash loop after the writes are already on disk. To see the finding before the restart, or to enforce it in CI, use `meclaw --validate --validate-strict` — there the same finding is a non-zero exit.
 
 **Every key declared in `consumes.body` is mandatory.** There is no optional `consumes.body` field: `validate_consumes` (`crates/meclaw-core/src/contract.rs`) requires every declared key in the incoming body and otherwise reports `required consumes.body '{key}' missing`. **Consequent rule for `/colony` roundtrips:** a `/colony` endpoint answer (`{"mutation":{…}}`, `{"rescan":{"status":"ok"}}`) is **not** a UBF body, it carries no `messages[]` and therefore bounces off every contract that declares `messages`. A cell that runs a `/colony` roundtrip therefore declares an **empty** `consumes.body`.
 
@@ -347,6 +461,12 @@ Not every artifact under `{root}` is read again when a colony boots. Knowing whi
 
 **Birth snapshot in `cell.db`.** A cell's `cell.db` is created at its first spawn and seeded exactly once, on `OpenStatus::Created`. `timer` copies `params.schedules` and `store` loads `seed/*.jsonl` at that moment and never again. After the first boot, `cell.db` is the truth: editing `params.schedules` in `config.json` changes neither an existing schedule nor adds a new one. The runtime params overlay (`cell.db` `params` table) likewise wins over the `config.json` birth params for the keys it holds. To make a `config.json` edit of a birth-snapshot field take effect, the cell must start without a `cell.db`.
 
-**Birth snapshot in `colony.db`.** A node's `cell_id` is minted once and carried in the `registry` table, stable across reboots. `params.graph.edges` and hive scopes are applied on the first boot and persisted; on a reboot they are hydrated from `colony.db` and the `params.graph` hints are ignored. On a reboot, a cell directory absent from the registry is reported but never adopted — registration happens only through instantiation or mutation. The `templates` index is a scan snapshot holding absolute filesystem paths; a boot re-scans only when the table is empty, otherwise an explicit `--rescan-templates` is required.
+**Birth snapshot in `colony.db`.** A node's `cell_id` is minted once and carried in the `registry` table, stable across reboots. `params.graph.edges` and hive scopes are applied on the first boot and persisted; on a reboot they are hydrated from `colony.db` and the `params.graph` hints are ignored — since GH #168 by the bootstrap **planner** too, which used to validate them and die on an edge a mutation had long since removed. On a reboot, a cell directory absent from the registry is reported but never adopted — registration happens only through instantiation or mutation. The `templates` index is a scan snapshot holding absolute filesystem paths; a boot re-scans only when the table is empty, otherwise an explicit `--rescan-templates` is required.
+
+**`hive_scopes` has no delete path, and that is the policy rather than a gap in it.** There is no `DELETE FROM hive_scopes` anywhere in the crate: the first apply writes the rows, a mutation adds one for every hive it creates, and nothing ever removes one. The first reason is structural: a hive has no registry row. The `registry` holds cells — mailbox, status, `cell_id` — and a hive is not a cell, so the colony needs a second list to know that an address holds a hive rather than something it can deliver to. That distinction is what routing turns on: an edge into a cell delivers into its mailbox; an edge into a hive delivers nothing, the colony reads the hive's own edges and routes on. Transit versus delivery, and the colony must know which it is looking at.
+
+The missing delete is therefore not a special case: `remove_nodes` is disconnect-instead-of-delete. The edges go, the registry entry stays, the directory stays. Nothing is deleted anywhere, so a scope row outliving its hive is the same no-delete policy applied consistently, not an omission in one table. The consequence is accepted deliberately: a path that was once a hive keeps being a hive to every reader of the table, the boot's fan-in walk included.
+
+**And it is load-bearing.** GH #186 made `hive_scopes` the boot authority for which nodes are hives on a reboot *because* the table is append-only. A stale row is helpful there: a hive whose directory was wiped is still read as a transit rather than as a contract-less cell (§ `contract`, mutation/locality validator). The question only becomes a real decision at a hive **relocation**, which `move_nodes` refuses today; under this policy the answer is already framed — a hive moves by its scope row moving with it, not by one being deleted and another created.
 
 **Consequences for backup and restore.** The restore unit of a cell is its directory, not its `config.json`: restoring the config restores the declaration, never the birth-snapshot state. The restore unit of a colony is `{root}` as a whole, including `blobs/` and the SQLite WAL sidecars `*.db-wal` / `*.db-shm` — a backup that matches `*.db` alone can restore a colony that boots cleanly and runs the state from before the last writes. A restored tree whose `colony.db` came along keeps its identity; a config-only copy is a new colony with re-minted `cell_id`s. After relocating a tree, run `--rescan-templates` so the template index points at the new root, and `--validate --validate-strict` to surface cell directories the restored registry does not know.

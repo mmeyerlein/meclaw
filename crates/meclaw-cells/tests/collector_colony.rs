@@ -42,9 +42,11 @@ fn template_dir() -> std::path::PathBuf {
 /// Retunes the collector knobs of an ALREADY COPIED instance, in that
 /// instance's own `assemble/config.json`.
 ///
-/// That is the whole per-instance mechanism since `collector@1.2.0`: the knobs
-/// are params, `add_nodes[].override_params` cannot address the sub-cells of a
-/// subtree template (R10), and the tree writer therefore sets them in the tree.
+/// That is one of the two per-instance mechanisms since `collector@1.2.0`: the
+/// knobs are params, and a tree writer that already owns the tree sets them in
+/// the tree. The other is `add_nodes[].override_params`, which addresses a
+/// subtree template's sub-cells by path since GH #140 (`{"assemble": {…}}`);
+/// this helper retunes an ALREADY COPIED instance, where birth is long past.
 /// The key assertion is deliberate -- a knob name that does not exist used to
 /// be a silently ignored `.env` line and is now a failing test.
 fn tune(root: &std::path::Path, knobs: &[(&str, &str)]) {
@@ -266,49 +268,49 @@ fn write(root: &std::path::Path, rel: &str, v: &Value) {
 /// a tree that has no tools wires three of them.
 fn main_config(with_tools: bool) -> Value {
     let mut edges = vec![
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"}}}),
         // The close port and the batch it produces. A tree that never closes a
         // session simply never takes these two edges.
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'close'",
                "modifier": {"set_hop": {"route": "'in_close'"}}}),
-        json!({"from": "./collector/assemble", "to": "/sink",
+        json!({"from": "./collector", "to": "/sink",
                "condition": "hop.route == 'write'"}),
         // The prune port and its report (GH #76). The template never fires
         // this itself; here the probe stands in for the timer a parent tree
         // would wire to the lane.
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'prune'",
                "modifier": {"set_hop": {"route": "'in_prune'"}}}),
         // The round sweep port (GH #103): the same timer stand-in asks
         // whether any tool round is stuck behind the idle window.
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'sweep'",
                "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
-        json!({"from": "./collector/assemble", "to": "/sink",
+        json!({"from": "./collector", "to": "/sink",
                "condition": "hop.route == 'prune'"}),
-        json!({"from": "./collector/assemble", "to": "./brain",
+        json!({"from": "./collector", "to": "./brain",
                "condition": "hop.route == 'brain'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
                                             "iter": "hop.iter"}}}),
-        json!({"from": "./brain", "to": "./collector/assemble",
+        json!({"from": "./brain", "to": "./collector",
                "condition": "hop.finish_reason == 'stop'",
                "modifier": {"set_hop": {"route": "'in_answer'"}}}),
-        json!({"from": "./collector/assemble", "to": "/sink",
+        json!({"from": "./collector", "to": "/sink",
                "condition": "hop.route == 'answer'"}),
     ];
     if with_tools {
         edges.push(json!({"from": "./brain", "to": "./dispatch",
                           "condition": "hop.finish_reason == 'tool_calls'"}));
-        edges.push(json!({"from": "./dispatch", "to": "./collector/assemble",
+        edges.push(json!({"from": "./dispatch", "to": "./collector",
                           "condition": "hop.route == 'asst'",
                           "modifier": {"set_hop": {"route": "'in_calls'"}}}));
         edges.push(json!({"from": "./dispatch", "to": "./tool",
                           "condition": "hop.route == 'tool'"}));
-        edges.push(json!({"from": "./tool", "to": "./collector/assemble",
+        edges.push(json!({"from": "./tool", "to": "./collector",
                           "condition": "hop.route == 'res'",
                           "modifier": {"set_hop": {"route": "'in_tool'"}}}));
     }
@@ -1046,41 +1048,41 @@ sys.stdout.write(json.dumps(
 /// the collector, and the recall port it already had for the per-turn leg.
 fn memory_main_config(with_memo: bool) -> Value {
     let mut edges = vec![
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"}}}),
-        json!({"from": "./probe", "to": "./collector/assemble",
+        json!({"from": "./probe", "to": "./collector",
                "condition": "hop.route == 'sweep'",
                "modifier": {"set_hop": {"route": "'in_round_sweep'"}}}),
-        json!({"from": "./collector/assemble", "to": "./brain",
+        json!({"from": "./collector", "to": "./brain",
                "condition": "hop.route == 'brain'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
                                             "iter": "hop.iter"}}}),
-        json!({"from": "./brain", "to": "./collector/assemble",
+        json!({"from": "./brain", "to": "./collector",
                "condition": "hop.finish_reason == 'stop'",
                "modifier": {"set_hop": {"route": "'in_answer'"}}}),
-        json!({"from": "./collector/assemble", "to": "/sink",
+        json!({"from": "./collector", "to": "/sink",
                "condition": "hop.route == 'answer'"}),
-        json!({"from": "./brain", "to": "./split",
+        json!({"from": "./brain", "to": "./dispatcher",
                "condition": "hop.finish_reason == 'tool_calls'"}),
-        json!({"from": "./split", "to": "./collector/assemble",
+        json!({"from": "./dispatcher", "to": "./collector",
                "condition": "hop.route == 'calls'",
                "modifier": {"set_hop": {"route": "'in_calls'"}}}),
         // An ordinary tool: the dispatcher names it, this edge knows the cell.
-        json!({"from": "./split", "to": "./tool",
+        json!({"from": "./dispatcher", "to": "./tool",
                "condition": "hop.route == 'tool' && hop.tool_name == 'fake_tool'"}),
-        json!({"from": "./tool", "to": "./collector/assemble",
+        json!({"from": "./tool", "to": "./collector",
                "condition": "hop.route == 'res'",
                "modifier": {"set_hop": {"route": "'in_tool'"}}}),
         // THE new edge (GH #78). Same form, same condition key -- the tool
         // whose cell happens to be the collector itself.
-        json!({"from": "./split", "to": "./collector/assemble",
+        json!({"from": "./dispatcher", "to": "./collector",
                "condition": "hop.route == 'tool' && hop.tool_name == 'memory_recall'",
                "modifier": {"set_hop": {"route": "'in_memory_call'"}}}),
     ];
     if with_memo {
-        edges.push(json!({"from": "./collector/assemble", "to": "./memo",
+        edges.push(json!({"from": "./collector", "to": "./memo",
                           "condition": "hop.route == 'recall'",
                           "modifier": {"set_context": {
                               "recall_query": "hop.recall_query",
@@ -1088,7 +1090,7 @@ fn memory_main_config(with_memo: bool) -> Value {
                               "memory_call_id": "hop.memory_call_id",
                               "recall_window_from": "hop.recall_window_from",
                               "recall_window_to": "hop.recall_window_to"}}}));
-        edges.push(json!({"from": "./memo", "to": "./collector/assemble",
+        edges.push(json!({"from": "./memo", "to": "./collector",
                           "condition": "hop.route == 'bundle'",
                           "modifier": {"set_hop": {"route": "'in_bundle'"}}}));
     }
@@ -1111,7 +1113,7 @@ fn build_memory_tree(td: &tempfile::TempDir, knobs: &[(&str, &str)], with_memo: 
         "main/brain/config.json",
         &code_cell(MEMORY_BRAIN, &[], finish_hop()),
     );
-    write(root, "main/split/config.json", &dispatcher_config());
+    write(root, "main/dispatcher/config.json", &dispatcher_config());
     write(
         root,
         "main/tool/config.json",
@@ -1200,4 +1202,76 @@ async fn a_memory_call_without_a_wired_port_ends_in_the_rounds_idle_exit() {
     );
 
     h.shutdown().await;
+}
+
+// ── The hive boundary (meclaw-overview § Die Hive-Grenze) ────────────────────
+//
+// Everything above wires to `./collector` — the shape every caller in
+// this repo grew up with, and the shape the boundary rule retires. What follows
+// is the same conversation with every edge addressed to the HIVE, so a caller
+// never names a cell inside it.
+
+/// The same wiring as `main_config`, with one difference that is the whole
+/// point: `./collector` instead of `./collector`, in both directions.
+fn main_config_via_hive() -> Value {
+    json!({
+        "cell": {"type": "hive"},
+        "params": {"graph": {"edges": [
+            {"from": "./probe", "to": "./collector",
+             "condition": "hop.route == 'turn'",
+             "modifier": {"set_hop": {"route": "'in_turn'"}}},
+            {"from": "./collector", "to": "./brain",
+             "condition": "hop.route == 'brain'",
+             "modifier": {"set_context": {"turn_id": "hop.turn_id",
+                                          "session_id": "hop.session_id",
+                                          "iter": "hop.iter"}}},
+            {"from": "./brain", "to": "./collector",
+             "condition": "hop.finish_reason == 'stop'",
+             "modifier": {"set_hop": {"route": "'in_answer'"}}},
+            {"from": "./collector", "to": "/sink",
+             "condition": "hop.route == 'answer'"}
+        ]}}
+    })
+}
+
+/// **A caller talks to the hive, not into it.** The turn enters at the collector's
+/// own path, the hive hands it to whatever is behind the boundary, and the answer
+/// leaves the same way — so the caller's topology contains no name from inside the
+/// template and survives any rearrangement of it.
+///
+/// Both directions are exercised on purpose: an inbound-only test would pass on a
+/// hive whose exit still reaches out of an interior cell, which is the same breach
+/// seen from the other end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_crosses_the_collector_at_its_hive_path() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    std::fs::write(root.join(".env"), "").unwrap();
+    write(root, "main/config.json", &main_config_via_hive());
+    copy_cells(&template_dir(), &root.join("main/collector"));
+    tune(root, &[]);
+    write(
+        root,
+        "main/probe/config.json",
+        &code_cell(PROBE, &["turn", "close", "prune", "sweep"], json!({})),
+    );
+    write(
+        root,
+        "main/brain/config.json",
+        &code_cell(BRAIN, &[], finish_hop()),
+    );
+
+    let (h, mut rx, _park_rx) = boot(&td).await;
+    let answer = say(&h, &mut rx, "hello through the door").await;
+    assert!(
+        answer.contains("hello through the door"),
+        "the turn has to come back through the hive, got {answer:?}"
+    );
+
+    // And the caller's own topology names nothing from inside the template.
+    let wiring = meclaw_core::serde_json::to_string(&main_config_via_hive()).unwrap();
+    assert!(
+        !wiring.contains("collector/"),
+        "a caller that names a cell inside the hive has written its layout down"
+    );
 }

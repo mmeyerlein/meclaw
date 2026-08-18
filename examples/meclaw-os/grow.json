@@ -42,7 +42,7 @@
       },
       {
         "from": "./firewall/screen",
-        "to": "./talky/keeper/stamp",
+        "to": "./talky/session-keeper",
         "condition": "has(hop.route) && hop.route == 'pass'",
         "modifier": {
           "set_hop": {
@@ -70,13 +70,13 @@
         }
       },
       {
-        "from": "./talky/collector/assemble",
+        "from": "./talky/collector",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./talky/collector/assemble",
-        "to": "./drain/drain",
+        "from": "./talky/collector",
+        "to": "./drain",
         "condition": "has(hop.route) && hop.route == 'write'",
         "modifier": {
           "set_hop": {
@@ -93,7 +93,7 @@
         "condition": "has(hop.route) && hop.route == 'error'"
       },
       {
-        "from": "./drain/drain",
+        "from": "./drain",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'episode'",
         "modifier": {

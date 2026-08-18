@@ -28,11 +28,11 @@ async fn edge_overrides_cell_emitted_target() {
 
     colony
         .spawn(Path::new("/src"), move || {
-            EchoMockCell::new(Path::new("/src")).echo_to(Path::new("/dummy"))
+            EchoMockCell::new(Path::new("/src")).emitted_target(Path::new("/dummy"))
         })
         .await;
 
-    // Edge /src -> /receiver overrides /src's echo_to=/dummy.
+    // Edge /src -> /receiver overrides /src's emitted_target=/dummy.
     colony
         .add_edge(Uuid::now_v7(), Path::new("/src"), Path::new("/receiver"))
         .await;
@@ -80,7 +80,7 @@ async fn no_edge_dead_letters_as_no_route() {
 
     colony
         .spawn(Path::new("/src"), move || {
-            EchoMockCell::new(Path::new("/src")).echo_to(Path::new("/dst"))
+            EchoMockCell::new(Path::new("/src")).emitted_target(Path::new("/dst"))
         })
         .await;
 

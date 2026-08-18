@@ -902,7 +902,7 @@ mod tests {
     async fn cell_task_dispatches_to_echo() {
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
-        let cell = EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/b"));
+        let cell = EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"));
         let _join = tokio::spawn(cell_task(Path::new("/a"), in_rx, out_tx, cell, None, None));
 
         in_tx

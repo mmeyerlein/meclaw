@@ -42,16 +42,26 @@ import uuid
 
 # The layout constants, from the Python reference this ports (topology_html.py).
 NODE_W, NODE_H = 150, 38
-GAP_X, GAP_Y = 60, 40
+# Between two columns of the flow, and between two boxes stacked in one column.
+# The horizontal gap is the larger one on purpose: the flow reads left to right,
+# and the eye needs the steps along that axis to be the obvious ones.
+GAP_X, GAP_Y = 90, 34
+# The air between two wrapped rows of columns — bigger than the gap inside a
+# column, so a wrap reads as "the flow continues below" and not as a new branch.
+ROW_GAP = 70
+# How wide a block may get relative to its height before its columns wrap.
+TARGET_RATIO = 2.0
+# ...and how wide it has to be before wrapping is considered at all. A four-cell
+# chain is a 918-pixel stripe and perfectly readable as one; breaking it into a
+# tower to satisfy a ratio makes the flow harder to follow, not easier. Wrapping
+# is a remedy for blocks that outgrow a screen, not a rule about shape.
+WRAP_MIN_W = 1100
 PAD_TOP, PAD_SIDE, PAD_BOT = 30, 24, 24
-# How wide a shelf of hives may grow before the next one wraps to a new row, and
-# the air between two hive boxes. `SHELF_W` is a target and not a limit: a single
-# hive wider than this still gets its own row rather than being cut.
-SHELF_W = 2400
-HIVE_GAP_X, HIVE_GAP_Y = 90, 80
-# How much more room each level towards the ROOT gets, so an ancestor's frame
-# strictly contains its descendants' instead of sharing an edge.
-NEST_PAD = 14
+# How far INSIDE its parent a hive's frame sits. Constant, not a function of
+# depth: an ancestor is bigger than its child by this much at every level, which
+# is what makes nesting readable without measuring, and what lets the client
+# recompute a frame during a drag with the same arithmetic the server used.
+NEST = 18
 # How many depths the stylesheet has a tint for. Deeper hives keep the last one.
 # Ten, because a real colony gets deep: `/org/<org>/member/<who>/assistants/<name>/
 # talky/keeper` is already eight, and two hives at different depths sharing a colour
@@ -116,6 +126,7 @@ def store_op(operation, **rest):
             "moved_id": "",
             "moved_x": "",
             "moved_y": "",
+            "moved_z": "",
         },
         "messages": [
             {
@@ -203,61 +214,136 @@ def hive_of(path):
     return p.rsplit("/", 1)[0] if "/" in p else ""
 
 
-def flow_layers(ids, edges):
-    """A layer per node: one below every node that feeds it.
+def element_of(path, hive):
+    """Which element of `hive` a cell belongs to: itself, or the child hive.
 
-    Longest-path from the sources, with a visit cap so a cycle cannot spin. A
-    colony graph has cycles by design (every request/reply pair is one), so this
-    is a drawing heuristic and not a topological sort.
+    A hive is laid out over ITS OWN elements — the cells that live directly in it
+    and the child hives, each as one block. So an edge to a cell three levels
+    down is, from here, an edge to the child hive that contains it. Projecting
+    edges this way is what makes the flow visible at every level instead of only
+    at the leaves.
     """
+    if hive:
+        if not path.startswith(hive + "/"):
+            return None
+        rest = path[len(hive) + 1:]
+    else:
+        rest = path
+    head = rest.split("/", 1)[0]
+    return (hive + "/" + head) if hive else head
+
+
+def back_edges(ids, pairs):
+    """The edges that point backwards in a depth-first walk.
+
+    A colony graph is full of cycles by design — every request/reply pair is one,
+    and a picture that tries to rank a cycle either spins or produces nonsense.
+    So the walk names the edges that close a loop, ranking ignores them, and they
+    are still DRAWN: they are precisely the "and back up again" lanes, and they
+    read correctly once the forward flow has decided the columns.
+    """
+    out = {}
+    for a, b in pairs:
+        out.setdefault(a, []).append(b)
+    state = {}
+    back = set()
+    for root in ids:
+        if state.get(root):
+            continue
+        state[root] = 1
+        stack = [(root, sorted(set(out.get(root, [])), reverse=True))]
+        while stack:
+            node, rest = stack[-1]
+            if not rest:
+                state[node] = 2
+                stack.pop()
+                continue
+            nxt = rest.pop()
+            if state.get(nxt) == 1:
+                back.add((node, nxt))
+            elif not state.get(nxt):
+                state[nxt] = 1
+                stack.append((nxt, sorted(set(out.get(nxt, [])), reverse=True)))
+    return back
+
+
+def columns_of(ids, pairs):
+    """A column per element: one to the RIGHT of everything that feeds it.
+
+    Left to right is the direction a turn travels, so it is the direction the
+    picture puts it in. Longest path from the sources, on the graph with its back
+    edges removed — which terminates, because what is left is a DAG.
+    """
+    back = back_edges(ids, pairs)
+    fwd = [(a, b) for (a, b) in pairs if a != b and (a, b) not in back]
     incoming = {i: [] for i in ids}
-    for e in edges:
-        if e["from"] in incoming and e["to"] in incoming:
-            incoming[e["to"]].append(e["from"])
-    layer = {i: 0 for i in ids}
-    for _ in range(min(len(ids), 64)):
+    for a, b in fwd:
+        incoming[b].append(a)
+    col = {i: 0 for i in ids}
+    for _ in range(len(ids) + 1):
         changed = False
         for i in ids:
-            want = max([layer[s] + 1 for s in incoming[i]], default=0)
-            if want > layer[i]:
-                layer[i] = want
+            want = max([col[s] + 1 for s in incoming[i]], default=0)
+            if want != col[i]:
+                col[i] = want
                 changed = True
         if not changed:
             break
-    return layer
+    return col, fwd
 
 
-def hive_block(members, layer):
-    """One hive laid out on its own, relative to (0, 0): rows by flow rank.
+def spine_of(ids, fwd, col):
+    """The elements on a LONGEST chain through the flow.
 
-    The flow layer is computed across the WHOLE graph, but it is applied inside
-    one hive, so it has to be COMPRESSED here, not merely shifted. The global
-    layer of a cell is the longest chain reaching it from anywhere, and a real
-    colony has long chains: two cells in the same hive can carry layer 5 and
-    layer 400 because one of them is downstream of a deep pipeline elsewhere.
-    Shifting by the minimum leaves the 395 empty rows between them.
-
-    Measured on a live 46-cell / 13-hive colony: y ran to 174828 with the raw
-    layer, 52992 shifted, and 3384 ranked. What a hive's height should say is how
-    many flow STEPS it has inside it, and ranking is what says that. The order is
-    preserved, so a request still sits above the thing it asks.
-
-    Returns `(relative positions, width, height)`.
+    They are drawn on one line, at the top of their column, so the main current
+    is a straight run across the picture and everything else hangs off it. That
+    is the whole difference between a diagram you read and a field of boxes: a
+    reader needs one line to follow before they can see what branches off it.
     """
-    rank = {lv: r for r, lv in enumerate(sorted({layer[i] for i in members}))}
-    rows = {}
-    for i in members:
-        rows.setdefault(rank[layer[i]], []).append(i)
-    rel = {}
-    width = 0
-    for lv in sorted(rows):
-        x = 0
-        for i in rows[lv]:
-            rel[i] = (x, lv * (NODE_H + GAP_Y))
-            x += NODE_W + GAP_X
-        width = max(width, x - GAP_X)
-    height = (max(rows) + 1) * (NODE_H + GAP_Y) - GAP_Y
-    return rel, width, height
+    outgoing = {i: [] for i in ids}
+    for a, b in fwd:
+        outgoing[a].append(b)
+    height = {i: 0 for i in ids}
+    for i in sorted(ids, key=lambda k: -col[k]):     # sinks first
+        height[i] = max([height[j] + 1 for j in outgoing[i]], default=0)
+    longest = max([col[i] + height[i] for i in ids], default=0)
+    return {i for i in ids if col[i] + height[i] == longest}
+
+
+def order_columns(cols, fwd, spine):
+    """The vertical order inside each column: spine on top, branches below.
+
+    Barycentre passes — each element wants to sit level with its neighbours in
+    the previous column — alternating forwards and backwards, which is the
+    standard way to pull crossings out of a layered drawing. The spine is pinned
+    to the top row throughout: a main line that wanders up and down between
+    columns is exactly as hard to follow as no main line at all.
+    """
+    order = {c: sorted(members) for c, members in cols.items()}
+    nbr_in, nbr_out = {}, {}
+    for a, b in fwd:
+        nbr_in.setdefault(b, []).append(a)
+        nbr_out.setdefault(a, []).append(b)
+    rank = {}
+    for c in order:
+        order[c] = sorted(order[c], key=lambda i: (0 if i in spine else 1, i))
+        for k, i in enumerate(order[c]):
+            rank[i] = k
+
+    def barycentre(i, src):
+        near = [rank[n] for n in src.get(i, []) if n in rank]
+        return sum(near) / float(len(near)) if near else rank[i]
+
+    for step in range(4):
+        src = nbr_in if step % 2 == 0 else nbr_out
+        for c in sorted(order, reverse=bool(step % 2)):
+            order[c] = sorted(
+                order[c],
+                key=lambda i: (0 if i in spine else 1, barycentre(i, src), i),
+            )
+            for k, i in enumerate(order[c]):
+                rank[i] = k
+    return order
 
 
 def hive_tree(ids):
@@ -289,175 +375,384 @@ def own_cells(ids_by_hive, hive):
     return ids_by_hive.get(hive, [])
 
 
-def layout_subtree(hive, kids, ids_by_hive, layer):
-    """Lay out one hive and everything under it, relative to (0, 0).
+def split_tall_columns(order, size):
+    """Break a column that has grown into a tower into side-by-side columns.
 
-    The shape is the same at every depth, which is what makes nesting work at all:
-    a hive's OWN cells go on top as rows by flow rank, its child hives are packed
-    into shelves underneath, and the whole thing reports one size. A parent then
-    packs its children by that size without knowing anything about their insides.
+    Everything that shares a flow rank shares a column, and a colony has plenty
+    of elements with no edge between them at all — six independent hives all land
+    in the first column and stack into a strip, which is precisely the shape this
+    view was reported unusable for the first time. Nothing about that is a flow
+    statement: they are peers, so they belong beside each other.
 
-    Returns `(positions, width, height)` — positions keyed by cell id.
+    The order inside the column is preserved, so the spine stays first and the
+    barycentre work above is not undone.
     """
-    pos = {}
-    members = sorted(own_cells(ids_by_hive, hive), key=lambda i: (layer[i], i))
-    width = height = 0
-    if members:
-        rel, w, h = hive_block(members, layer)
-        for i, (rx, ry) in rel.items():
-            pos[i] = (rx, ry)
-        width, height = w, h
+    out = []
+    for c in sorted(order):
+        members = order[c]
+        wide = max(size[i][0] for i in members)
+        tall = sum(size[i][1] for i in members) + GAP_Y * (len(members) - 1)
+        if len(members) < 2 or tall <= TARGET_RATIO * wide:
+            out.append(members)
+            continue
+        k = (TARGET_RATIO * tall / float(wide)) ** 0.5
+        k = min(len(members), max(1, int(k) + (1 if k > int(k) else 0)))
+        per = len(members) // k + (1 if len(members) % k else 0)
+        for start in range(0, len(members), per):
+            out.append(members[start:start + per])
+    return out
 
+
+def place_columns(order, size):
+    """Put the ordered columns on the plane, wrapping when the run gets too long.
+
+    A colony is a long thin thing: `keeper` is four cells in one chain, and drawn
+    as pure left-to-right that is a 918x92 stripe. Stack a few of those and the
+    whole picture came out 8232x848 — a ratio of ten to one, which a screen can
+    only show by shrinking every label past reading. The first version of this
+    view failed the other way round, as one tall column; both are the same
+    mistake, which is letting one axis carry all of the structure.
+
+    So the columns wrap like text: left to right along a row, then down and back
+    to the left. Within a row the flow still reads the way it runs, and a chain
+    longer than the row is broken between columns — never inside one, so no step
+    of the flow is ever split.
+
+    `TARGET_RATIO` is what "readable" means here: a block roughly twice as wide as
+    it is tall, at every depth, so the whole nest stays close to the shape of the
+    screen it is shown on.
+    """
+    groups = split_tall_columns(order, size)
+    cols = list(range(len(groups)))
+    order = {c: groups[c] for c in cols}
+    col_w = {c: max(size[i][0] for i in order[c]) for c in cols}
+    col_h = {
+        c: sum(size[i][1] for i in order[c]) + GAP_Y * (len(order[c]) - 1)
+        for c in cols
+    }
+    total_w = sum(col_w.values()) + GAP_X * max(0, len(cols) - 1)
+    tallest = max(col_h.values())
+
+    # How many rows to break into: with `k` rows the block is roughly
+    # `total_w / k` wide and `k * tallest` high, and asking those to sit at the
+    # target ratio gives `k = sqrt(total_w / (ratio * tallest))`. Deriving the
+    # limit from the summed column AREA instead looks similar and is wrong — a
+    # chain of flat columns has almost no area, so every block became a tower,
+    # which is the same unreadable shape this started from.
+    limit = total_w
+    if total_w > WRAP_MIN_W and total_w > TARGET_RATIO * tallest:
+        rows = max(1, int(round((total_w / float(TARGET_RATIO * tallest)) ** 0.5)))
+        limit = max(total_w / float(rows), max(col_w.values()))
+
+    place = {}
+    x, y_row, row_h = PAD_SIDE, PAD_TOP, 0
+    for c in cols:
+        if x > PAD_SIDE and x - PAD_SIDE + col_w[c] > limit:
+            y_row += row_h + ROW_GAP
+            x, row_h = PAD_SIDE, 0
+        y = y_row
+        for i in order[c]:
+            place[i] = (x, y)
+            y += size[i][1] + GAP_Y
+        x += col_w[c] + GAP_X
+        row_h = max(row_h, col_h[c])
+    return place
+
+
+def layout_block(hive, kids, ids_by_hive, pairs):
+    """One hive and everything under it, laid out relative to its own frame.
+
+    The same shape at every depth, which is what makes nesting work: a hive's
+    elements are its own cells AND its child hives — a child is one block with
+    one size, and the parent never looks inside it. Elements are placed left to
+    right by flow, stacked top to bottom within a column, spine first.
+
+    Returns `(positions, width, height)` with (0, 0) at the frame's top-left
+    corner, so a parent can place the block by its frame and nothing else.
+    """
     children = kids.get(hive, [])
-    if children:
-        # A child hive needs room for its own frame on every side, so it is inset
-        # by one padding step; that inset is also what keeps the derived boxes
-        # strictly nested instead of sharing an edge.
-        shelf_y = height + (HIVE_GAP_Y if members else 0)
-        shelf_x, shelf_h = 0, 0
-        for child in children:
-            cpos, cw, ch = layout_subtree(child, kids, ids_by_hive, layer)
-            if shelf_x > 0 and shelf_x + cw > SHELF_W:
-                shelf_y += shelf_h + HIVE_GAP_Y
-                shelf_x, shelf_h = 0, 0
-            for i, (rx, ry) in cpos.items():
-                pos[i] = (shelf_x + rx + PAD_SIDE, shelf_y + ry + PAD_TOP)
-            shelf_x += cw + 2 * PAD_SIDE + HIVE_GAP_X
-            shelf_h = max(shelf_h, ch + 2 * PAD_TOP)
-            width = max(width, shelf_x - HIVE_GAP_X)
-        height = shelf_y + shelf_h
-    return pos, width, height
+    sub = {c: layout_block(c, kids, ids_by_hive, pairs) for c in children}
+
+    size = {i: (NODE_W, NODE_H) for i in ids_by_hive.get(hive, [])}
+    for c in children:
+        # A child's element is its frame plus the inset it will sit at, so no two
+        # frames can touch however the columns fall.
+        size[c] = (sub[c][1] + 2 * NEST, sub[c][2] + 2 * NEST)
+    ids = sorted(size)
+    if not ids:
+        return {}, 0, 0
+
+    projected = set()
+    for a, b in pairs:
+        ea, eb = element_of(a, hive), element_of(b, hive)
+        if ea in size and eb in size and ea != eb:
+            projected.add((ea, eb))
+
+    col, fwd = columns_of(ids, sorted(projected))
+    spine = spine_of(ids, fwd, col)
+    cols = {}
+    for i in ids:
+        cols.setdefault(col[i], []).append(i)
+    order = order_columns(cols, fwd, spine)
+
+    place = place_columns(order, size)
+
+    pos = {}
+    for i in ids:
+        px, py = place[i]
+        if i in sub:
+            for k, (rx, ry) in sub[i][0].items():
+                pos[k] = (px + NEST + rx, py + NEST + ry)
+        else:
+            pos[i] = (px, py)
+
+    # The frame: this hive's own cells padded, plus every child's frame grown by
+    # the nesting inset. The same union the renderer computes from the finished
+    # positions, so the block reports exactly the rectangle that will be drawn.
+    boxes = []
+    own = [pos[i] for i in ids_by_hive.get(hive, [])]
+    if own:
+        boxes.append(box_of(own))
+    for c in children:
+        cx, cy = place[c]
+        boxes.append((cx, cy, sub[c][1] + 2 * NEST, sub[c][2] + 2 * NEST))
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    w = max(b[0] + b[2] for b in boxes) - x0
+    h = max(b[1] + b[3] for b in boxes) - y0
+    return {i: (p[0] - x0, p[1] - y0) for i, p in pos.items()}, w, h
 
 
-def auto_layout(nodes, edges, saved, hive_at=None):
-    """Where every box sits. A saved position always wins.
+def flow_layout(nodes, edges):
+    """The picture with nothing moved: every box, and every hive's block corner.
 
-    Three levels, and each one only knows about the next: cells inside a hive are
-    rows by flow depth, so a request sits above the thing it asks; a hive's child
-    hives are packed into shelves below its own cells; the top level packs whatever
-    has no parent. Recursive, so depth costs nothing.
-
-    Stacking everything in one column was the first version and was reported
-    unusable: 14 hives became a 3672-pixel strip two boxes wide, every hive at the
-    same x, one bit of information where a screen offers two dimensions. Drawing
-    only a cell's DIRECT parent was the second: a colony is a tree and the picture
-    showed none of it.
-
-    Deterministic: same input, same output, so a changed picture means a changed
-    colony.
+    A function of the WHOLE node set — column ranks, barycentre order and block
+    sizes all change when a single cell arrives. That is what it is for: it is
+    where a cell nobody has placed goes. It is also exactly why nothing STORED may
+    be expressed against it, and the only stored thing that ever was — a hive row
+    in the old shape — is read through it once, on the way in, and rewritten.
     """
-    ids = [n["id"] for n in nodes]
-    layer = flow_layers(ids, edges)
-    hive_at = hive_at or {}
     ids_by_hive = {}
     for n in nodes:
         ids_by_hive.setdefault(hive_of(n["id"]), []).append(n["id"])
-    kids = hive_tree(ids)
+    kids = hive_tree([n["id"] for n in nodes])
+    pairs = sorted({(e["from"], e["to"]) for e in edges})
 
-    pos = {}
-    # The root level: cells with no hive at all, then every top-level hive.
-    shelf_x, shelf_y, shelf_h = PAD_SIDE, PAD_TOP, 0
-    loose = sorted(own_cells(ids_by_hive, ""), key=lambda i: (layer[i], i))
-    if loose:
-        rel, w, h = hive_block(loose, layer)
-        for i, (rx, ry) in rel.items():
-            pos[i] = (shelf_x + rx, shelf_y + ry)
-        shelf_y += h + HIVE_GAP_Y
+    pos, _, _ = layout_block("", kids, ids_by_hive, pairs)
+    # Before anything is moved a block's corner and its frame's corner are the
+    # same point, so one union over the untouched positions gives both.
+    return pos, {h: xy[:2] for h, xy in hive_frames(pos).items()}
 
-    for hive in kids.get("", []):
-        sub, w, h = layout_subtree(hive, kids, ids_by_hive, layer)
-        if shelf_x > PAD_SIDE and shelf_x + w > SHELF_W:
-            shelf_y += shelf_h + HIVE_GAP_Y
-            shelf_x, shelf_h = PAD_SIDE, 0
-        ox, oy = shelf_x, shelf_y
-        for i, (rx, ry) in sub.items():
-            pos[i] = (ox + rx, oy + ry)
-        shelf_x += w + HIVE_GAP_X
-        shelf_h = max(shelf_h, h)
 
-    # A hive somebody moved keeps the place they put it, and takes its WHOLE
-    # subtree along. What is stored is an offset, never the rectangle: the
-    # rectangle stays derived, which is what lets a cell dragged out of a crowd
-    # grow its hive instead of being stranded outside a stale frame. Applied
-    # shallowest-first, so moving a parent and then a child reads as the child
-    # having been placed inside the parent's new position.
-    # The SAME `deepest` the renderer uses, or the padding differs between the box
-    # that was dragged and the box the delta is computed from, and every hive move
-    # lands a few pixels off.
-    deepest = max((i.count("/") for i in pos), default=1)
-    for hive in sorted(hive_at, key=lambda h: (h.count("/"), h)):
-        members = [i for i in pos if i.startswith(hive + "/")]
-        if not members:
-            continue
-        cur = box_of([pos[i] for i in members], hive.count("/") + 1, deepest)
-        dx = hive_at[hive][0] - cur[0]
-        dy = hive_at[hive][1] - cur[1]
-        for i in members:
-            pos[i] = (pos[i][0] + dx, pos[i][1] + dy)
+def auto_layout(nodes, edges, saved, shifts=None):
+    """Where every box sits, and where every hive's block ended up.
 
-    # Precedence, and it only reads one way: a cell that somebody placed by hand
-    # keeps its place, then the offset of its hive, then the automatic layout. A
-    # hive move that silently undid every hand-placed cell inside it would make
-    # the two gestures fight each other.
+    Four steps, in this order and for a reason:
+
+    1. the automatic flow layout, recursively, one block per hive;
+    2. a hand-placed CELL wins over it;
+    3. a hand-placed HIVE moves its whole subtree, hand-placed cells included —
+       moving a group has to move the group, or the two gestures fight;
+    4. the origins are reported back, because that is what a hive drag is
+       measured from.
+
+    What is stored for a hive is its SHIFT — how far a person pushed the group —
+    and never a point. Two rectangles it could otherwise be measured against are
+    both wrong, and each was shipped:
+
+    * its own frame, which is derived from the cells and therefore moves whenever
+      one of them moves. A dropped hive jumped on the next render, and a cell
+      dragged leftwards out of a hive shoved the whole group to the right.
+    * its corner in the flow layout, which moves whenever ANY cell anywhere
+      arrives, because the flow layout is a function of the whole node set. One
+      instantiated cell then silently redefined the point every stored hive was
+      measured against, and 12 of 19 frames in a hand-arranged colony walked off
+      (GH #170).
+
+    A shift is measured against nothing. It is what the drag was, so adding a
+    cell cannot reinterpret it, and a hive whose cells all carry a stored
+    position is fully determined by those positions plus one constant.
+
+    Deterministic: same input, same output, so a changed picture means a changed
+    colony.
+
+    Returns `(positions, origins, offsets)` — where the boxes are, where each
+    hive's block ended up, and how far each hive was shifted by hand.
+    """
+    shifts = shifts or {}
+    pos, origins = flow_layout(nodes, edges)
+
     for i, xy in saved.items():
         if i in pos:
             pos[i] = xy
-    return pos
+
+    # Shifts compose by addition and in any order: a nested hive's own shift is a
+    # number of its own, so it neither cancels its parent's nor repeats it. That
+    # is what the previous shape needed a frozen copy of the untouched origins to
+    # fake — reading an inner hive's stored point against the CURRENT picture made
+    # it mean "put me back exactly here", which cancelled its parent's move and
+    # left only the cells sitting in no sub-hive travelling.
+    offsets = {}
+    for hive in sorted(shifts, key=lambda h: (h.count("/"), h)):
+        if hive not in origins:
+            continue
+        dx, dy = shifts[hive]
+        if not dx and not dy:
+            continue
+        for i in list(pos):
+            if i.startswith(hive + "/"):
+                pos[i] = (pos[i][0] + dx, pos[i][1] + dy)
+        for h in list(origins):
+            if h == hive or h.startswith(hive + "/"):
+                origins[h] = (origins[h][0] + dx, origins[h][1] + dy)
+        offsets[hive] = (dx, dy)
+
+    # Only a STORED position counts as placed by hand. A cell that merely rides
+    # along inside a hive somebody dragged was positioned by this layout, not by
+    # a person — and if two dragged hives overlap, letting those cells give way
+    # is the behaviour that was asked for ("overlapping hives rarely make sense").
+    settle(pos, set(saved))
+    return pos, origins, offsets
 
 
-def box_of(points, depth, deepest=None):
-    """The frame around a set of cell positions, padded for its depth.
+def settle(pos, placed):
+    """Push the cells nobody placed by hand out of the ones somebody did.
 
-    The padding grows towards the ROOT: an ancestor gets strictly more room than
-    its descendants, which is what makes a parent's frame strictly CONTAIN a
-    child's instead of sharing an edge with it. Two boxes that touch read as two
-    boxes bumping into each other; nesting has to be visible without measuring.
+    In an arrangement made by hand every cell carries a stored position and the
+    automatic layout is only a fallback. A cell that is instantiated later has
+    no stored position, so it is placed by a layout computed for a picture that
+    no longer exists — and it lands on top of a pinned cell often enough that
+    the first thing an operator does after wiring something is drag it out of
+    the way. That is the work the layout is for.
+
+    So: a hand-placed cell never moves, and a cell without a position is offered
+    its computed spot first and the nearest free one after that. Search order is
+    by distance and then by (dx, dy), which keeps it deterministic — the same
+    colony renders the same picture twice.
+
+    A no-op on a colony nobody has arranged: with nothing pinned there is
+    nothing to collide with, because the layout itself does not overlap.
     """
-    deepest = depth if deepest is None else deepest
-    step = max(0, deepest - depth) * NEST_PAD
+    step_x, step_y = NODE_W + GAP_X, NODE_H + GAP_Y
+
+    def free(box, taken):
+        x, y = box
+        for (ox, oy) in taken:
+            if x < ox + NODE_W and ox < x + NODE_W and y < oy + NODE_H and oy < y + NODE_H:
+                return False
+        return True
+
+    taken = [pos[i] for i in sorted(placed) if i in pos]
+    for i in sorted(k for k in pos if k not in placed):
+        if free(pos[i], taken):
+            taken.append(pos[i])
+            continue
+        # Rings of grid steps around the computed spot, nearest first. Bounded:
+        # a colony that fills eight rings in every direction has a layout
+        # problem this cannot fix, and an unbounded search would hang the render.
+        spot = None
+        for ring in range(1, 9):
+            candidates = []
+            for dx in range(-ring, ring + 1):
+                for dy in range(-ring, ring + 1):
+                    if max(abs(dx), abs(dy)) != ring:
+                        continue
+                    # Right and down before left and up: the flow reads that
+                    # way, so a cell that has to give way should give way along
+                    # it rather than against it.
+                    candidates.append((abs(dx) + abs(dy), dx < 0, dy < 0, dx, dy))
+            for _, _, _, dx, dy in sorted(candidates):
+                cand = (pos[i][0] + dx * step_x, pos[i][1] + dy * step_y)
+                if free(cand, taken):
+                    spot = cand
+                    break
+            if spot:
+                break
+        pos[i] = spot or pos[i]
+        taken.append(pos[i])
+
+
+def total_offset(path, offsets):
+    """The combined shift of every hive above `path`."""
+    dx = dy = 0
+    for h, (ox, oy) in offsets.items():
+        if path.startswith(h + "/"):
+            dx += ox
+            dy += oy
+    return dx, dy
+
+
+def box_of(points):
+    """The padded frame around a set of cell positions."""
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
-    x = min(xs) - PAD_SIDE - step
-    y = min(ys) - PAD_TOP - step
-    w = (max(xs) + NODE_W + PAD_SIDE + step) - x
-    h = (max(ys) + NODE_H + PAD_BOT + step) - y
-    return (x, y, w, h)
+    x = min(xs) - PAD_SIDE
+    y = min(ys) - PAD_TOP
+    return (x, y, (max(xs) + NODE_W + PAD_SIDE) - x, (max(ys) + NODE_H + PAD_BOT) - y)
 
 
-def hive_boxes(nodes, pos):
-    """One box per hive, derived from where its members ended up.
+def hive_frames(pos):
+    """One rectangle per hive: `{hive: (x, y, w, h)}`.
 
-    Derived and never stored, which is what makes dragging a cell out of a crowd
-    GROW its hive instead of stranding the cell outside a stale rectangle — and
-    what makes a parent follow when a hive inside it moves.
+    Its own cells, padded, unioned with every child's frame grown by the nesting
+    inset. Recursive, so a hive that holds nothing but sub-hives still gets a
+    frame, and an ancestor is strictly bigger than its child at every level.
 
-    A hive's members are every cell BELOW it, at any depth, not only its direct
-    children: that is the whole of hive-in-hive. `/a` is the frame around
-    everything under `/a`, `/a/b` the frame around everything under `/a/b`, and a
-    hive that holds nothing but sub-hives still gets a frame — previously it got
-    none, so the deepest structure in the colony was the only structure drawn.
+    Derived and never stored, which is what makes a cell dragged out of a crowd
+    GROW its hive — and every hive ABOVE it — instead of being stranded outside a
+    stale rectangle. The client computes the same union during a drag, from the
+    same constants, so the frames follow the cursor instead of waiting for the
+    round trip.
     """
-    groups = {}
-    for n in nodes:
-        parts = n["id"].split("/")[:-1]
-        for k in range(1, len(parts) + 1):
-            groups.setdefault("/".join(parts[:k]), []).append(pos[n["id"]])
-    if not groups:
-        return []
-    deepest = max(h.count("/") + 1 for h in groups)
+    kids = hive_tree(list(pos))
+    own = {}
+    for i in pos:
+        own.setdefault(hive_of(i), []).append(pos[i])
+    out = {}
+
+    def rect(h):
+        if h in out:
+            return out[h]
+        boxes = [box_of(own[h])] if own.get(h) else []
+        for c in kids.get(h, []):
+            cx, cy, cw, ch = rect(c)
+            boxes.append((cx - NEST, cy - NEST, cw + 2 * NEST, ch + 2 * NEST))
+        if not boxes:
+            return (0, 0, 0, 0)
+        x = min(b[0] for b in boxes)
+        y = min(b[1] for b in boxes)
+        out[h] = (x, y, max(b[0] + b[2] for b in boxes) - x,
+                  max(b[1] + b[3] for b in boxes) - y)
+        return out[h]
+
+    for h in sorted(kids, key=lambda k: -k.count("/")):
+        if h:
+            rect(h)
+    return out
+
+
+def hive_boxes(nodes, pos, origins=None):
+    """The hive rectangles, ready to render."""
+    origins = origins or {}
+    frames = hive_frames(pos)
     boxes = []
-    for h in sorted(groups):
-        depth = h.count("/") + 1
-        x, y, w, ht = box_of(groups[h], depth, deepest)
+    for h in sorted(frames):
+        x, y, w, ht = frames[h]
+        ox, oy = origins.get(h, (x, y))
         boxes.append(
             {
                 "id": h,
                 "name": h.rsplit("/", 1)[-1],
-                "depth": depth,
+                "depth": h.count("/") + 1,
                 "x": x,
                 "y": y,
                 "w": w,
                 "h": ht,
+                # What a drag is measured FROM: the block's origin, not this
+                # rectangle. The client sends this point plus the drag, and the
+                # server keeps the difference.
+                "ox": ox,
+                "oy": oy,
             }
         )
     return boxes
@@ -487,14 +782,23 @@ def edge_lanes(edges):
 def node_svg(n):
     # `data-node` is what the drag hook grabs; `data-from`/`data-to` on an edge is
     # how it finds the lines belonging to a box without being told.
+    #
+    # `unwired` says the cell takes part in no edge at all. In this substrate that
+    # is almost always a DISCONNECTED cell — `remove_nodes` drops every edge and
+    # keeps the node (no-delete), so a rewiring leaves its predecessor standing in
+    # the picture looking exactly like a live one. It is a heuristic and not an
+    # answer (the graph endpoint does not report activity), which is why it dims
+    # rather than hides: a cell instantiated a second ago and not yet wired looks
+    # the same, and that is a state worth seeing too.
     return (
-        '<g class="node" data-node="%s" data-w="%d" data-h="%d" '
+        '<g class="node%s" data-node="%s" data-w="%d" data-h="%d" '
         'transform="translate(%d,%d)">'
         '<rect width="%d" height="%d" rx="6" fill="%s" stroke="%s"/>'
         '<text class="nm" x="8" y="16">%s</text>'
         '<text class="ty" x="8" y="30">%s</text>'
         "</g>"
     ) % (
+        " unwired" if n.get("unwired") else "",
         esc(n["id"]),
         NODE_W,
         NODE_H,
@@ -514,14 +818,22 @@ def hive_svg(h):
     # the palette should keep the deepest colour rather than fall back to none —
     # a hive with no tint would read as "not a hive".
     depth = max(1, min(HIVE_DEPTH_TINTS, h["depth"]))
+    # `data-ox`/`data-oy` is the block's ANCHOR, and it is what a drag adds its
+    # delta to. Not the rectangle: the rectangle is derived from the contents, so
+    # it moves whenever a cell inside it moves. Anchoring a group to an edge that
+    # its own contents can push around is why a dropped hive jumped on the next
+    # render, and why dragging a cell leftwards out of a hive shoved the whole
+    # group to the right.
     return (
-        '<g class="hive depth-%d" data-hive="%s">'
+        '<g class="hive depth-%d" data-hive="%s" data-ox="%d" data-oy="%d">'
         '<rect x="%d" y="%d" width="%d" height="%d" rx="10"/>'
         '<text x="%d" y="%d">%s</text>'
         "</g>"
     ) % (
         depth,
         esc(h["id"]),
+        h["ox"],
+        h["oy"],
         h["x"],
         h["y"],
         h["w"],
@@ -588,7 +900,7 @@ def frame(nodes, hives):
     return (x0, y0, right - x0 + PAD_SIDE, bottom - y0 + PAD_BOT)
 
 
-def render(nodes, hives, edges, camera, title):
+def render(nodes, hives, edges, camera, title, stale=0):
     box = frame(nodes, hives)
     parts = [
         # `id` + `phx-hook` are the contract with `client/surface.js`, and they are
@@ -598,7 +910,14 @@ def render(nodes, hives, edges, camera, title):
         # nothing can be dragged. That was the state of every join until
         # 2026-08-17, with all the server-side tests green, because they all
         # asserted about the markup and none about the seam.
-        '<div class="canvy" id="canvy" phx-hook="Canvy" data-title="%s">' % esc(title),
+        # The geometry constants ride along so the client can recompute a frame
+        # DURING a drag with the same arithmetic the server used. Two copies of
+        # the numbers would be two layouts that agree until they do not; one copy
+        # in the markup is the only version where a frame cannot drift.
+        '<div class="canvy" id="canvy" phx-hook="Canvy" data-title="%s" '
+        'data-nw="%d" data-nh="%d" data-pad-side="%d" data-pad-top="%d" '
+        'data-pad-bot="%d" data-nest="%d">'
+        % (esc(title), NODE_W, NODE_H, PAD_SIDE, PAD_TOP, PAD_BOT, NEST),
         '<svg class="stage" xmlns="http://www.w3.org/2000/svg" '
         'viewBox="%d %d %d %d" preserveAspectRatio="xMidYMid meet">' % box,
         # The arrowheads. The stylesheet has asked for `url(#ar)` since the first
@@ -643,9 +962,26 @@ def render(nodes, hives, edges, camera, title):
         '<p class="empty">Click a cell or an edge.</p>'
         "</aside>"
     )
+    # What the table is carrying that the picture is not. A row naming a cell or a
+    # hive the colony no longer has is invisible — it is skipped at layout time —
+    # so without this line the only symptom of a table drifting away from the
+    # registry is a count that quietly stops meaning anything (GH #184).
+    #
+    # It is a button and not a housekeeping pass because the deletion needs a fact
+    # the server does not have: whether that name was removed or renamed. Pressing
+    # it is the operator saying so, which is the only place that sentence exists.
+    tail = ""
+    if stale:
+        tail = (
+            ' &middot; <button type="button" class="sweep" data-sweep="1" title="'
+            "These rows name a cell or a hive this colony no longer has. A rename "
+            "looks exactly the same from here, so nothing is deleted until you say "
+            'so.">%s &mdash; sweep</button>'
+            % ("1 row names nothing" if stale == 1 else "%d rows name nothing" % stale)
+        )
     parts.append(
-        '<div class="legend">%d cells, %d hives, %d edges</div>'
-        % (len(nodes), len(hives), len(edges))
+        '<div class="legend">%d cells, %d hives, %d edges%s</div>'
+        % (len(nodes), len(hives), len(edges), tail)
     )
     parts.append("</div>")
     return "".join(parts)
@@ -691,11 +1027,23 @@ def main():
         out["header"]["moved_id"] = str(value.get("id") or "")
         out["header"]["moved_x"] = str(value.get("x") or "")
         out["header"]["moved_y"] = str(value.get("y") or "")
-        out["header"]["cam"] = json.dumps(value.get("camera") or {})
+        # The third number, and the only one a cell move does not use: the zoom.
+        out["header"]["moved_z"] = str(value.get("z") or "")
         return [out]
 
     # ---- pass 2: the store answered.
     rows = rows_of(body)
+    # WHICH answer this is. The store stamps the op it just ran on its own reply
+    # (`build_tool_result`: `operation`, `rows_affected`, `duration_ms`, plus
+    # `error_code` when it failed), and those headers are this cell's `hop` —
+    # the reply travels ONE edge, so unlike the request's own hop they survive.
+    #
+    # This is the same kind of discriminator as `canvy_origin` above and for the
+    # same reason: it is stated by somebody else, not inferred from whether a body
+    # happens to parse. `rows_of` cannot make this call — a write's payload is
+    # `null` and an error's payload is a sentence, and neither is a result set.
+    operation = str(hop.get("operation") or "")
+
     if hop.get("error_code"):
         # A refused write. One corrective render, because a picture claiming a
         # position the database does not hold is worse than a visible failure.
@@ -704,6 +1052,25 @@ def main():
                 {"error": "the canvas store refused a write: %s" % hop.get("error_code")}
             )
         ]
+
+    if operation in ("insert", "delete"):
+        # The store has acknowledged a write this cell itself sent. There is
+        # nothing left to do and nothing to report: the writes go out ALONGSIDE
+        # the picture in the same pass, so the browser already has the answer and
+        # the ack arrives after it, addressed to nobody.
+        #
+        # Checked AFTER `error_code`, and the order is the whole guard: a SQL
+        # failure is a normal `tool_result` carrying both headers (brainstorm E5),
+        # so reading the operation first would silence exactly the refused writes
+        # the branch above exists for. An answer that names a write and reports no
+        # failure is an ack and cannot be anything else.
+        #
+        # Before this branch existed, `rows_of` answered `None` for an ack — an
+        # ack is not a result set — and the `None` below turned every one of them
+        # into "the canvas store did not return rows" on the surface. Two per
+        # drag, and 32 in one go on the first render after #170's conversion
+        # (GH #183). Silence is the correct answer to one's own echo.
+        return []
 
     if rows is None:
         # The store answered, and it was not a result set. One visible failure,
@@ -715,7 +1082,8 @@ def main():
         ]
 
     saved = {}
-    hive_at = {}
+    shifts = {}
+    legacy = {}
     camera = (0, 0, 1000)
     graph = {}
     for r in rows:
@@ -725,10 +1093,20 @@ def main():
                 saved[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
             except (TypeError, ValueError):
                 continue
-        elif kind == "hive":
-            # Where a GROUP was put. Same shape as a node row, different `kind`.
+        elif kind == "hive_shift":
+            # How far a GROUP was pushed. Same shape as a node row, different
+            # `kind` — and a different meaning, which is why it is a different
+            # word: a node row says where a box IS, this one says how far a hand
+            # moved a block, and the two must never be read for each other.
             try:
-                hive_at[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
+                shifts[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
+            except (TypeError, ValueError):
+                continue
+        elif kind == "hive":
+            # The old shape of the row above: a POINT in the flow layout's space,
+            # converted below and never written again.
+            try:
+                legacy[str(r.get("id"))] = (int(r.get("x") or 0), int(r.get("y") or 0))
             except (TypeError, ValueError):
                 continue
         elif kind == "camera":
@@ -771,56 +1149,7 @@ def main():
         ]
     )
 
-    # A move overrides both the saved position and the automatic one. This is
-    # what keeps the picture and the database from disagreeing: the box is
-    # rendered where it is written, from ONE input.
-    # From `context`, not from `hop`: see the promotion in the hive's edge.
-    moved_id = str(ctx.get("canvy_moved_id") or "")
-    event = str(ctx.get("canvy_event") or "")
-    writes = []
-    if moved_id and event == "hive:moved":
-        # A group was dropped. One row for the group — never one per member: a
-        # 20-cell hive would otherwise cost 40 store round trips on an
-        # interactive path, and the members' own rows would then have to be kept
-        # consistent with a box nobody stores.
-        try:
-            hx, hy = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
-        except (TypeError, ValueError):
-            hx = hy = None
-        if hx is not None:
-            hive_at[moved_id] = (hx, hy)
-            writes.append(
-                store_op("delete", table="canvas", where={"kind": "hive", "id": moved_id})
-            )
-            writes.append(
-                store_op(
-                    "insert",
-                    table="canvas",
-                    row={"kind": "hive", "id": moved_id, "x": hx, "y": hy},
-                )
-            )
-    elif moved_id:
-        try:
-            mx, my = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
-        except (TypeError, ValueError):
-            mx = my = None
-        if mx is not None:
-            saved[moved_id] = (mx, my)
-            # Delete then insert, in one emission and in that order: a position is
-            # presentation state, so the row is REPLACED rather than appended. The
-            # no-delete promise protects what was said and what was learned; where
-            # a rectangle sits is neither.
-            writes.append(
-                store_op("delete", table="canvas", where={"kind": "node", "id": moved_id})
-            )
-            writes.append(
-                store_op(
-                    "insert",
-                    table="canvas",
-                    row={"kind": "node", "id": moved_id, "x": mx, "y": my},
-                )
-            )
-
+    wired = {e["from"] for e in edges} | {e["to"] for e in edges}
     nodes = []
     for n in raw_nodes:
         if not isinstance(n, dict):
@@ -837,18 +1166,211 @@ def main():
                 "type": ctype,
                 "fill": fill,
                 "stroke": stroke,
+                "unwired": path not in wired,
             }
         )
 
-    pos = auto_layout(nodes, edges, saved, hive_at)
+    # The rows that name nothing any more: a position for a cell the colony does
+    # not have, a shift for a hive that is not in the picture. Computed here,
+    # BEFORE the conversion below adds to `shifts`, so it describes what is on
+    # disk and not what this pass is about to put there.
+    #
+    # Reported, never swept on a render's own initiative, and that restraint is
+    # the whole of GH #184. From the table's side a rename and a removal are the
+    # same event, because the colony HAS no rename: a mutation says `remove_nodes`
+    # and `add_nodes`, so a renamed hive is a name that vanished and a different
+    # name that appeared, and no row can know they are the same hand-placed group.
+    # On the colony this was reported from, all four hive rows naming nothing were
+    # renames (`talky/keeper` -> `talky/session-keeper`, `talky/summary` ->
+    # `talky/summarizer`, `archive` -> `day-archive`, `memdrain` ->
+    # `memory-drain`), so a sweep at render time would have deleted four
+    # hand-placed group positions and nothing else at all.
+    #
+    # A stale snapshot reads identically: the topology arrives on a timer, so
+    # "absent from the picture" also means "the timer has not run since this cell
+    # was instantiated". The one party that can tell a removal from a rename is
+    # the operator who performed it, so the deletion is their gesture — the
+    # `canvas:sweep` event below — and this pass only counts.
+    cells = {n["id"] for n in nodes}
+    hive_paths = {h for h in hive_tree(sorted(cells)) if h}
+    stale = [
+        ("node", i) for i in sorted(saved) if i not in cells
+    ] + [
+        ("hive_shift", i) for i in sorted(shifts) if i not in hive_paths
+    ]
+
+    writes = []
+
+    # A hive row used to hold a POINT: the block's corner as the flow layout would
+    # have put it, applied as a delta against that same layout's corner on every
+    # render. The flow layout is a function of the whole node set, so instantiating
+    # one cell redefined the corner every stored hive was measured against and the
+    # arrangement walked off underneath the operator — 12 of 19 frames on the
+    # colony this was reported from (GH #170). What is stored now is the shift.
+    #
+    # Converted here, against the very layout those rows were written against, so
+    # the picture after the conversion is the picture before it. The old row is
+    # deleted whether or not it could be converted: a row naming a hive that no
+    # longer exists would otherwise be re-converted on every render for ever, and
+    # a migration that does not converge is a write loop.
+    if legacy:
+        _, clean = flow_layout(nodes, edges)
+        for hive in sorted(legacy):
+            writes.append(
+                store_op("delete", table="canvas", where={"kind": "hive", "id": hive})
+            )
+            if hive in shifts or hive not in clean:
+                continue
+            shift = (legacy[hive][0] - clean[hive][0], legacy[hive][1] - clean[hive][1])
+            shifts[hive] = shift
+            writes.append(
+                store_op(
+                    "insert",
+                    table="canvas",
+                    row={"kind": "hive_shift", "id": hive, "x": shift[0], "y": shift[1]},
+                )
+            )
+
+    # The layout as it stands BEFORE this request's move, which is the space a
+    # drop has to be translated out of: the client names an absolute point on the
+    # screen, and a cell inside a hive somebody moved sits at that point only
+    # because of the hive's offset. Storing the absolute number would re-apply
+    # that offset on the next render and land the box one shift away — the "it
+    # jumps back" report.
+    pos, origins, offsets = auto_layout(nodes, edges, saved, shifts)
+
+    # A move overrides both the saved position and the automatic one. This is
+    # what keeps the picture and the database from disagreeing: the box is
+    # rendered where it is written, from ONE input.
+    # From `context`, not from `hop`: see the promotion in the hive's edge.
+    moved_id = str(ctx.get("canvy_moved_id") or "")
+    event = str(ctx.get("canvy_event") or "")
+    # Only a MOVE invalidates the layout above. The conversion does not: it ran
+    # before that layout and is already in it.
+    moved = False
+    if event == "canvas:sweep":
+        # The operator has looked at the count in the legend and said: those names
+        # are gone for good. That sentence is the one thing a render cannot infer
+        # (see `stale` above), so it is asked for and never assumed.
+        #
+        # `stale` is empty on a colony with nothing to shed, so this writes NOTHING
+        # on a second press — the same convergence rule the conversion above obeys,
+        # and the reason a press cannot turn into a stream of write answers
+        # (GH #183). Nothing here touches the layout either: a row that names
+        # nothing was never in the picture to begin with.
+        for kind, ident in stale:
+            writes.append(
+                store_op("delete", table="canvas", where={"kind": kind, "id": ident})
+            )
+        stale = []
+    elif event == "camera:moved":
+        # Where the operator is LOOKING is part of the arrangement. It was read
+        # back on every render and never once written, so a reload threw away the
+        # zoom and the corner of a 2000-pixel picture somebody had just navigated
+        # to. One row, replaced, exactly like a position.
+        try:
+            cx, cy, cz = (
+                int(ctx.get("canvy_moved_x")),
+                int(ctx.get("canvy_moved_y")),
+                int(ctx.get("canvy_moved_z")),
+            )
+        except (TypeError, ValueError):
+            cx = None
+        if cx is not None:
+            camera = (cx, cy, cz)
+            writes.append(store_op("delete", table="canvas", where={"kind": "camera"}))
+            writes.append(
+                store_op(
+                    "insert",
+                    table="canvas",
+                    row={"kind": "camera", "id": "view", "x": cx, "y": cy, "z": cz},
+                )
+            )
+    elif moved_id and event == "hive:moved":
+        # A group was dropped. One row for the group — never one per member: a
+        # 20-cell hive would otherwise cost 40 store round trips on an
+        # interactive path, and the members' own rows would then have to be kept
+        # consistent with a box nobody stores.
+        try:
+            hx, hy = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
+        except (TypeError, ValueError):
+            hx = hy = None
+        # A hive that is not in the picture has no origin to measure the drag
+        # against, so there is nothing to record. Guarded HERE and not in the
+        # `elif` above, or the drop would fall through and be written as a CELL
+        # position under the hive's own path.
+        if hx is not None and moved_id in origins:
+            # What the client names is the origin it was handed in the markup plus
+            # the drag, so the drag alone is the difference against that origin —
+            # and the shift on record grows by exactly that much. Subtracting the
+            # rendered origin also settles the nested case for free: it already
+            # carries what the hives ABOVE this one have shifted, so dropping a
+            # nested hive cannot record its parent's move a second time.
+            ox, oy = origins[moved_id]
+            dx, dy = shifts.get(moved_id, (0, 0))
+            shift = (dx + hx - ox, dy + hy - oy)
+            shifts[moved_id] = shift
+            moved = True
+            writes.append(
+                store_op(
+                    "delete", table="canvas", where={"kind": "hive_shift", "id": moved_id}
+                )
+            )
+            writes.append(
+                store_op(
+                    "insert",
+                    table="canvas",
+                    row={
+                        "kind": "hive_shift",
+                        "id": moved_id,
+                        "x": shift[0],
+                        "y": shift[1],
+                    },
+                )
+            )
+    elif moved_id:
+        try:
+            mx, my = int(ctx.get("canvy_moved_x")), int(ctx.get("canvy_moved_y"))
+        except (TypeError, ValueError):
+            mx = my = None
+        if mx is not None:
+            # Out of screen space and into the layout's own: subtract the shift
+            # of every hive above this cell, so the stored number survives the
+            # next render unchanged.
+            ox, oy = total_offset(moved_id, offsets)
+            mx, my = mx - ox, my - oy
+            saved[moved_id] = (mx, my)
+            moved = True
+            # Delete then insert, in one emission and in that order: a position is
+            # presentation state, so the row is REPLACED rather than appended. The
+            # no-delete promise protects what was said and what was learned; where
+            # a rectangle sits is neither.
+            writes.append(
+                store_op("delete", table="canvas", where={"kind": "node", "id": moved_id})
+            )
+            writes.append(
+                store_op(
+                    "insert",
+                    table="canvas",
+                    row={"kind": "node", "id": moved_id, "x": mx, "y": my},
+                )
+            )
+
+    if moved:
+        pos, origins, offsets = auto_layout(nodes, edges, saved, shifts)
     for n in nodes:
         n["x"], n["y"] = pos[n["id"]]
-    hives = hive_boxes(nodes, pos)
+    hives = hive_boxes(nodes, pos, origins)
 
-    html = render(nodes, hives, edges, camera, graph.get("scope") or "/")
+    html = render(nodes, hives, edges, camera, graph.get("scope") or "/", len(stale))
     return writes + [surface_reply({"html": html})]
 
 
 if __name__ == "__main__":
     out = main()
-    sys.stdout.write(json.dumps(out if len(out) > 1 else out[0]))
+    # A single emission is written as an object, several as an array — and an
+    # empty list stays an empty array, which is how a `code` cell says "nothing to
+    # send" (`parse_stdout_json`: a top-level array of length 0 is zero emissions).
+    # The `out[0]` shorthand this replaces raised IndexError on that case, which is
+    # exactly the pass the guard above introduced: the answer to one's own write.
+    sys.stdout.write(json.dumps(out[0] if len(out) == 1 else out))

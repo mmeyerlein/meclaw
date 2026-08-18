@@ -429,7 +429,7 @@ async fn transit_hop_trace_chain_is_gapless() {
     .await;
     // Source cell echoes to the hive path /hive.
     h.spawn(Path::new("/source"), || {
-        EchoMockCell::new(Path::new("/source")).echo_to(Path::new("/hive"))
+        EchoMockCell::new(Path::new("/source")).emitted_target(Path::new("/hive"))
     })
     .await;
     // W2 (A1): /source → /hive now needs a wired edge (identity gone); the
@@ -512,7 +512,7 @@ async fn transit_hop_trace_chain_is_gapless_over_hive_chain() {
     })
     .await;
     h.spawn(Path::new("/source"), || {
-        EchoMockCell::new(Path::new("/source")).echo_to(Path::new("/a"))
+        EchoMockCell::new(Path::new("/source")).emitted_target(Path::new("/a"))
     })
     .await;
     // W2 (A1): /source → /a now needs a wired edge (identity gone); the hive
@@ -663,7 +663,7 @@ async fn add_edges_mutation_with_hive_endpoint_accepted_and_fires() {
     let td = TempDir::new().unwrap();
     // FS topology under main/:
     //   /        root hive (no out-edges)
-    //   /a       echo cell, echo_to=/a (self-loop fallback if no edge fires)
+    //   /a       echo cell, emitted_target=/a (self-loop fallback if no edge fires)
     //   /hub     nested hive, bootstrap out-edge from="." to="./inner"
     //   /hub/inner   internal cell — registered as a CaptureCell via h.spawn
     std::fs::create_dir_all(td.path().join("main/a")).unwrap();
@@ -675,7 +675,7 @@ async fn add_edges_mutation_with_hive_endpoint_accepted_and_fires() {
     .unwrap();
     std::fs::write(
         td.path().join("main/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(

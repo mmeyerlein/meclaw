@@ -1,7 +1,7 @@
 # `dispatcher@1.0.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
-Its counterpart is the fan-**in**: [`collector@1`](../collector/), which assembles the
+Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
 round and re-enters the brain. Splitting the two is the point (`R-OS-2`): routing a call
 to a tool and assembling a context window are different jobs, and a cell that did both
 would be the monolith the DSL exists to avoid.
@@ -66,15 +66,15 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 The tool lanes guard the key they discriminate on:
 
 ```json
-{ "from": "./split", "to": "./collect/assemble",
+{ "from": "./dispatcher", "to": "./collect/assemble",
   "condition": "has(hop.route) && hop.route == 'calls'",
   "modifier": {"set_hop": {"route": "'in_calls'"}} },
-{ "from": "./split", "to": "./collect/assemble",
+{ "from": "./dispatcher", "to": "./collect/assemble",
   "condition": "has(hop.route) && hop.route == 'result'",
   "modifier": {"set_hop": {"route": "'in_tool'"}} },
-{ "from": "./split", "to": "./search",
+{ "from": "./dispatcher", "to": "./search",
   "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'" },
-{ "from": "./split", "to": "./shell",
+{ "from": "./dispatcher", "to": "./shell",
   "condition": "has(hop.tool_name) && hop.tool_name == 'bash'" }
 ```
 
@@ -89,8 +89,9 @@ edge with a log line per lane per message. Same rule as everywhere else --
 **Env knobs are an experimental surface.** Until this template's knobs move onto the `params`
 block of the cells that read them, their names carry no compatibility promise and may change in
 any `0.x` release; provider credentials keep living in `.env` either way. The migration is
-tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with `collector@1`
-([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the reference pattern.
+tracked in [#138](https://github.com/mmeyerlein/meclaw/issues/138), with the
+`collector@1.2.0` migration ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) as the
+reference pattern.
 
 | env var | default | meaning |
 |---|---|---|
@@ -185,6 +186,6 @@ The OpenAI unwrap is the only content work the cell does: the `llm` cell emits a
 the arguments alone. The `id` survives that unwrap unchanged -- everything downstream
 correlates on it.
 
-Pinned in [`crates/meclaw-cells/tests/dispatcher_split.rs`](../../crates/meclaw-cells/tests/dispatcher_split.rs):
+Pinned in [`crates/meclaw-cells/tests/dispatcher_template.rs`](../../crates/meclaw-cells/tests/dispatcher_template.rs):
 the script half runs the shipped `script_inline` against real stdin documents, the colony
 half boots this template and routes a two-tool round through real edges.

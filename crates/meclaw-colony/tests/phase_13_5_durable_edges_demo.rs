@@ -13,7 +13,7 @@
 //!                               boot-state heuristic needed all three tables
 //!                               non-empty for a Reboot — since #89 any
 //!                               non-empty, marker-less state is a Reboot).
-//!   td/main/a/config.json     — `/a`: echo cell, `echo_to = /a` (self-loop).
+//!   td/main/a/config.json     — `/a`: echo cell, `emitted_target = /a` (self-loop).
 //!                               The mutation edge /a -> /sink overrides the
 //!                               emit target when it fires; the self-loop is
 //!                               only the no-match fallback, and probes carry a
@@ -79,7 +79,7 @@ fn write_topology(td: &std::path::Path) {
     // it fires, otherwise the self-loop dies via the probe's low ttl.
     std::fs::write(
         td.join("main/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -109,7 +109,7 @@ async fn reboot_topology(h: &ColonyHandle) -> mpsc::Receiver<Message> {
     })
     .await;
     h.spawn(Path::new("/a"), || {
-        EchoMockCell::new(Path::new("/a")).echo_to(Path::new("/a"))
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/a"))
     })
     .await;
     sink_rx

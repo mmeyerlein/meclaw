@@ -593,6 +593,19 @@ pub async fn bootstrap_from_filesystem_with_env(
              instantiation/mutation-only); mutate with `adopt` to register it"
         );
     }
+    // GH #178: header-contract violations found in the topology this reboot will
+    // actually run. Committed state, so the boot proceeds — but it says WHAT it
+    // found and WHERE, because a finding an operator cannot see is a finding
+    // that costs a restart to discover. `--validate --validate-strict` is the
+    // pre-flight surface that turns the same list into a non-zero exit.
+    for finding in &plan.header_contract_findings {
+        tracing::warn!(
+            finding = %finding,
+            "reboot found a header-contract violation in the persisted topology — the \
+             colony starts, the obligation is NOT satisfied; re-wire it or relax the \
+             contract (`meclaw --validate --validate-strict` lists these before a boot)"
+        );
+    }
     // A8 (Phase-16 W1a, Ruling 2026-06-12): boot endpoint-existence check
     // against the LIVE colony — plan cells/hives ∪ already-live registry paths
     // (runtime-spawned sinks registered before bootstrap) ∪ `/colony/*`. An
@@ -603,8 +616,14 @@ pub async fn bootstrap_from_filesystem_with_env(
     // overlay entry — a node whose FS dir was removed but whose `cell_id`/status
     // persist (No-Delete-Policy) — is a legitimate edge endpoint even though it
     // is not in the FS plan and is not re-spawned into the live registry.
+    // GH #168: a hive has no registry row, so the overlay cannot vouch for one
+    // whose directory is gone while its edges live on in the table. The
+    // `hive_scopes` table is the hive half of the same "this colony registered
+    // it" answer, and a reboot now plans the persisted edges — so it belongs in
+    // the resolvable universe for exactly the reason the overlay does.
     let mut registry_paths = snapshot_registry_paths(runtime).await;
     registry_paths.extend(overlay.keys().map(|p| p.as_str().to_string()));
+    registry_paths.extend(crate::bootstrap::registered_hive_paths(root));
     let unresolved = unresolved_boot_endpoints(&plan, &registry_paths);
     if !unresolved.is_empty() {
         let mut errors = BootstrapErrors::new();
@@ -614,12 +633,13 @@ pub async fn bootstrap_from_filesystem_with_env(
         return Err(errors);
     }
     let report = apply_bootstrap_plan(plan, factories, runtime).await;
-    warn_on_missing_drains_after_boot(root, runtime).await;
+    warn_on_declared_hive_rules_after_boot(root, runtime).await;
     Ok(report)
 }
 
-/// GH #147, the boot half: say it out loud when a hive port that declared a
-/// paired drain is wired without one.
+/// GH #147 and GH #173, the boot half: say it out loud when a hive's own
+/// declarations no longer match the topology it woke up with — a paired drain
+/// that nobody consumes, a contract lane with no door behind it.
 ///
 /// A warning, never a refusal — the mutation path is where this rule bites,
 /// because that is somebody changing a colony they did not necessarily build.
@@ -629,7 +649,7 @@ pub async fn bootstrap_from_filesystem_with_env(
 /// Runs after apply, so it sees the topology the colony actually woke up with —
 /// including the edges rehydrated from `colony.db`, which the plan does not
 /// carry.
-async fn warn_on_missing_drains_after_boot(root: &std::path::Path, runtime: &ColonyRuntime) {
+async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime: &ColonyRuntime) {
     let (ack_tx, ack_rx) = oneshot::channel();
     if runtime
         .inbox_tx
@@ -658,6 +678,10 @@ async fn warn_on_missing_drains_after_boot(root: &std::path::Path, runtime: &Col
         .map(|e| (e.from.clone(), e.to.clone(), e.condition.clone()))
         .collect();
     crate::mutation::required_drains::warn_on_missing_drains(&reqs, &edges);
+    // GH #173: the same graph answers the second question — does every lane a
+    // hive promises still have a door? One ReadGraph, two declarations checked.
+    let contracts = crate::mutation::hive_contract::collect_hive_contracts(root, hive_paths.iter());
+    crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &edges);
 }
 
 /// Snapshot the set of registered node paths from the running colony (A8).
@@ -746,6 +770,7 @@ mod tests {
             cells: vec![make_cell("/a"), make_cell("/b")],
             edges: vec![make_edge("/a", "/b")],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
         assert!(d.is_empty(), "no dangling endpoints expected, got {d:?}");
@@ -762,6 +787,7 @@ mod tests {
             // /sink is a registry-only cell (h.spawn), not in the FS plan.
             edges: vec![make_edge("/a", "/sink")],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
         assert_eq!(d.len(), 1, "one dangling endpoint expected, got {d:?}");
@@ -778,6 +804,7 @@ mod tests {
             cells: vec![make_cell("/b")],
             edges: vec![make_edge("/ghost", "/b")],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
         assert_eq!(d.len(), 1, "one dangling endpoint expected, got {d:?}");
@@ -794,6 +821,7 @@ mod tests {
             cells: vec![],
             edges: vec![make_edge("/x", "/y")],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
         assert_eq!(d.len(), 2, "two dangling endpoints expected, got {d:?}");
@@ -815,6 +843,7 @@ mod tests {
             // /pool is a hive → known → not dangling.
             edges: vec![make_edge("/a", "/pool")],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
         assert!(
@@ -841,6 +870,7 @@ mod tests {
                 make_edge("/a", "/bogus"),            // typo → flagged
             ],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let mut registry: HashSet<String> = HashSet::new();
         registry.insert("/sink".to_string());
@@ -900,6 +930,7 @@ mod tests {
             cells: vec![],
             edges: vec![],
             unregistered_nodes: vec![],
+            header_contract_findings: vec![],
         };
         let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel(8);
         let (outputs_tx, _) = tokio::sync::mpsc::channel(8);

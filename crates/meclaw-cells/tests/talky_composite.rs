@@ -1,4 +1,4 @@
-//! meclaw-os -- the `talky@1` composite in a running colony (GH #112).
+//! meclaw-os -- the `talky` composite in a running colony (GH #112).
 //!
 //! The four sub-templates have their own pins (`session_keeper.rs`,
 //! `collector_window.rs` / `collector_colony.rs`, `dispatcher_split.rs`,
@@ -156,28 +156,28 @@ sys.stdout.write(json.dumps({"header": {"route": "archived"},
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         // ingress: the surface turn, with the channel promotion the keeper needs
-        {"from": "./surface", "to": "./talky/keeper/stamp",
+        {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
         // the operator lane of the keeper (a forced sweep)
-        {"from": "./surface", "to": "./talky/keeper/close",
+        {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         // reply exit
-        {"from": "./talky/collector/assemble", "to": "/sink",
+        {"from": "./talky/collector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
         // write exit -- the instance decides the target
-        {"from": "./talky/collector/assemble", "to": "./archive",
+        {"from": "./talky/collector", "to": "./archive",
          "condition": "has(hop.route) && hop.route == 'write'"},
         {"from": "./archive", "to": "/park"},
         // error drain
         {"from": "./talky/errors", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'error'"},
         // tool lanes: OUTSIDE the composite, keyed on the name
-        {"from": "./talky/split", "to": "./weather",
+        {"from": "./talky/dispatcher", "to": "./weather",
          "condition": "has(hop.tool_name) && hop.tool_name == 'weather'"},
-        {"from": "./weather", "to": "./talky/collector/assemble",
+        {"from": "./weather", "to": "./talky/collector",
          "condition": "has(hop.route) && hop.route == 'res'",
          "modifier": {"set_hop": {"route": "'in_tool'"}}}
     ]}}})
@@ -220,13 +220,13 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // behaviour: a schedule the test can trigger, and both llm cells pointed at
     // the mock. The shipped `${ctx.model}` is an INSTANTIATION substitution; a
     // tree booted from disk carries a literal.
-    patch(root, "main/talky/keeper/night/config.json", |v| {
+    patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
     });
     for rel in [
         "main/talky/brain/config.json",
-        "main/talky/summary/writer/config.json",
+        "main/talky/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| {
             v["params"]["base_url"] = json!(base_url);
@@ -337,9 +337,9 @@ fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
     let root = templates_root();
     let mut checked = 0usize;
     for (sub, unit) in [
-        ("session-keeper", "keeper"),
+        ("session-keeper", "session-keeper"),
         ("collector", "collector"),
-        ("summarizer", "summary"),
+        ("summarizer", "summarizer"),
     ] {
         let src = root.join(sub);
         let dst = root.join("talky").join(unit);
@@ -362,8 +362,8 @@ fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
     }
     // The dispatcher is a single-cell template: its root config IS the cell.
     let a = std::fs::read(root.join("dispatcher/config.json")).unwrap();
-    let b = std::fs::read(root.join("talky/split/config.json")).unwrap();
-    assert!(a == b, "talky/split drifted from dispatcher");
+    let b = std::fs::read(root.join("talky/dispatcher/config.json")).unwrap();
+    assert!(a == b, "talky/dispatcher drifted from dispatcher");
     checked += 1;
     assert!(checked >= 10, "the pin swept almost nothing: {checked}");
 }

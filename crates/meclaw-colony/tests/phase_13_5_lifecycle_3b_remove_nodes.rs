@@ -48,12 +48,12 @@ fn write_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/a/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/b/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -225,7 +225,7 @@ fn write_hive_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/x/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/x"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     // Internal hive wiring lives in the hive's own config.json graph (relative
@@ -240,12 +240,12 @@ fn write_hive_topology(td: &std::path::Path) {
     .unwrap();
     std::fs::write(
         td.join("main/h/c1/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/h/c1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/h/c1"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     std::fs::write(
         td.join("main/h/c2/config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/h/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/h/c2"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

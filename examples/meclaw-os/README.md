@@ -38,8 +38,8 @@ ship -- generic, ten lines each, and needed by every tree.
 |---|---|---|
 | `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
 | `/firewall` | [`firewall@1`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
-| `/talky` | [`talky@1`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer, and an `llm` brain, with all twelve internal edges pre-wired. |
-| `/drain` | [`memory-drain@1`](../../templates/memory-drain/) | 2 cells. Turns a closed session into one episode per turn, idempotently. |
+| `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer, and an `llm` brain, with all twelve internal edges pre-wired. |
+| `/drain` | [`memory-drain`](../../templates/memory-drain/) | 2 cells. Turns a closed session into one episode per turn, idempotently. |
 | `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for four lanes that have not been decided yet. |
 
 ```
@@ -48,18 +48,18 @@ ship -- generic, ten lines each, and needed by every tree.
   POST /messages
         |
         v
-    /surface ──turn──> /firewall/screen ──pass──> /talky/keeper/stamp
+    /surface ──turn──> /firewall/screen ──pass──> /talky/session-keeper
                             │                       ⋮
                             │                 (the composite's own
                             │                  twelve internal edges:
-                            │                  seam, brain, split,
+                            │                  seam, brain, dispatcher,
                             │                  loopback, close path)
                             │                       ⋮
-                            │              /talky/collector/assemble
+                            │              /talky/collector
                             │                    │           │
                             │              answer│           │write
                             │                    v           v
-                            └──reject──────>  /sink  <──episode── /drain/drain
+                            └──reject──────>  /sink  <──episode── /drain
                                                 ^
                             /talky/errors ──error┘
 ```
@@ -117,9 +117,25 @@ TID=$(curl -s 'http://127.0.0.1:7777/colony/trace?limit=1' | jq -r '.trace[0].tr
 curl "http://127.0.0.1:7777/ui/trace?trace_id=$TID"
 ```
 
-The hop chain reads `@external -> /surface -> /firewall/screen -> (three store hops in the
-firewall) -> /talky/keeper/stamp -> /talky/collector/assemble -> /talky/brain ->
-/talky/split -> /talky/collector/assemble -> /sink`.
+The hop chain, with the firewall's three store round trips and the collector's window
+bookkeeping folded away:
+
+```
+@external -> /surface -> /firewall/screen -> (three round trips to /firewall/rules) ->
+/talky/session-keeper -> /talky/session-keeper/stamp -> (two round trips to
+/talky/session-keeper/sessions) -> /talky/session-keeper -> /talky/collector ->
+/talky/collector/assemble -> /talky/collector -> /talky/brain -> /talky/dispatcher ->
+/talky/collector -> /talky/collector/assemble -> /talky/collector -> /sink
+```
+
+**A hive is a hop in that chain, and it appears twice per transit.** `/talky/collector`
+and `/talky/session-keeper` are hives: no mailbox, no cell task, nothing runs in them. The
+colony still logs the message that *arrives* at a hive, and logs the forwarded follow-up
+with the hive as its sender -- so a message crossing a hive reads `-> /talky/collector ->
+/talky/collector/assemble -> /talky/collector ->`, hive, cell, hive. `/firewall` is a hive
+too and never shows up, because every edge addresses `/firewall/screen` directly and
+nothing is ever routed to `/firewall` itself. A hive is in the trace when it is
+**addressed**, not because it exists.
 
 `headers` on an HTTP post land in the message's **context** compartment, which is why the
 channel identity survives every later hop -- and why the firewall rate-limits per channel and
@@ -173,9 +189,9 @@ The composite carries no tool cells on purpose -- which tools an agent has is th
 nobody else can decide for you. Adding one is an edge pair in a third mutation:
 
 ```json
-{"from": "./talky/split", "to": "./weather",
+{"from": "./talky/dispatcher", "to": "./weather",
  "condition": "has(hop.tool_name) && hop.tool_name == 'get_weather'"},
-{"from": "./weather", "to": "./talky/collector/assemble",
+{"from": "./weather", "to": "./talky/collector",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
@@ -197,7 +213,7 @@ them), and the drain's `episode` port has no memory hive to write into in this d
 it is wired so you can see the episodes leave, one per turn of a closed session.
 
 This is a proof of concept on a frozen schema. Read
-[`talky@1`](../../templates/talky/README.md) next -- it is the longest of the template
+[`talky`](../../templates/talky/README.md) next -- it is the longest of the template
 READMEs because it is the one that pays off.
 
 ## Pinned

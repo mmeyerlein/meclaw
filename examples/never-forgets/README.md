@@ -62,8 +62,8 @@ cannot decide which database your life goes into.
 | node | from template | what it brings |
 |---|---|---|
 | `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
-| `/talky` | [`talky@1`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
-| `/drain` | [`memory-drain@1`](../../templates/memory-drain/) | 2 cells. Turns a stored turn into an episode, idempotently. |
+| `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
+| `/drain` | [`memory-drain`](../../templates/memory-drain/) | 2 cells. Turns a stored turn into an episode, idempotently. |
 | `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for the lanes this example does not decide. |
 
 Eighteen cells in the registry, three of them checked in -- the hive marker is a
@@ -112,12 +112,12 @@ machinery:
 
 ```jsonc
 // the dispatcher's memory lane -- the same shape as any tool edge
-{"from": "./talky/split", "to": "./talky/collector/assemble",
+{"from": "./talky/dispatcher", "to": "./talky/collector",
  "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
  "modifier": {"set_hop": {"route": "'in_memory_call'"}}},
 
 // the recall port, carrying the window the model named
-{"from": "./talky/collector/assemble", "to": "./memory/keep",
+{"from": "./talky/collector", "to": "./memory/keep",
  "condition": "has(hop.route) && hop.route == 'recall'",
  "modifier": {"set_hop": {"route": "'in_recall'"},
               "set_context": {"recall_query": "hop.recall_query",
@@ -183,18 +183,11 @@ OPENROUTER_API_KEY=sk-...
 MODEL_BRAIN=openai/gpt-4o-mini
 EOF
 
-# The collector's knobs are params, not environment (collector@1.2.0), and
-# `override_params` cannot reach into a subtree template (R10). So the example
-# takes its OWN copy of the library and sets the one knob it needs there --
-# which is exactly what the test for this example does.
+# A library you may write into. NOT for the collector's knobs -- those are params
+# and grow.json sets them (see below). This copy exists for the next step: a seed
+# is a FILE in the template's seed/ directory, and no override_params reaches a
+# file. Pointing --templates here leaves the shipped library untouched.
 cp -r templates examples/never-forgets/templates
-python3 - <<'EOF'
-import json
-p = "examples/never-forgets/templates/talky/collector/assemble/config.json"
-d = json.load(open(p))
-d["params"]["turn_write"] = "1"
-json.dump(d, open(p, "w"), indent=2)
-EOF
 
 # Give the brain the tool. WITHOUT THIS STEP THE EXAMPLE DOES NOT WORK: the lane
 # is wired, but the model never sees a memory_recall to call, so it answers from
@@ -238,6 +231,21 @@ EOF
                         --templates ./examples/never-forgets/templates \
                         --daemon --api 127.0.0.1:7788
 ```
+
+The collector's knobs are params, not environment, and `grow.json` sets the one
+this example needs on the `talky` node:
+
+```jsonc
+{"name": "talky", "template": "talky",
+ "override_params": {"collector/assemble": {"turn_write": "1"}}}
+```
+
+Since [GH #140](https://github.com/mmeyerlein/meclaw/issues/140) an
+`override_params` on a subtree template is **addressed by the cell's path inside
+it**, so the knob is set where the declaration is read. The path is
+`collector/assemble` and not `collector`: the latter is the sub-unit's hive,
+which reads `graph`, `ports`, `required_drains` and `contract` and would take
+this key without anyone consuming it.
 
 `turn_write` is the per-turn lane: every stored turn and every
 answer hands the conversation out again immediately, so the memory is fresh
@@ -298,13 +306,34 @@ TID=$(curl -s 'http://127.0.0.1:7788/colony/trace?limit=1' | jq -r '.trace[0].tr
 curl "http://127.0.0.1:7788/ui/trace?trace_id=$TID"
 ```
 
-`@external -> /surface -> /talky/keeper/stamp -> /talky/collector/assemble ->
-/talky/brain -> /talky/split -> /talky/collector/assemble -> /memory/keep ->
-/memory/episodes -> /memory/keep -> /talky/collector/assemble -> /talky/brain ->
-/talky/split -> /talky/collector/assemble -> /sink`.
+The spine of it, with the window and session bookkeeping and the concurrent
+turn-write leg into `/drain` left out -- the trace has those too:
+
+```
+@external -> /surface -> /talky/session-keeper -> /talky/session-keeper/stamp ->
+/talky/session-keeper -> /talky/collector -> /talky/collector/assemble ->
+/talky/collector -> /talky/brain -> /talky/dispatcher -> /talky/collector ->
+/talky/collector/assemble -> /talky/collector -> /memory/keep ->
+/memory/episodes -> /memory/keep -> /talky/collector ->
+/talky/collector/assemble -> /talky/collector -> /talky/brain ->
+/talky/dispatcher -> /talky/collector -> /talky/collector/assemble ->
+/talky/collector -> /sink
+```
 
 Two inferences, one round trip through memory in between, and the second
 inference is the one that ran with February in its context window.
+
+**A hive transit is a hop, and it is in the trace twice.** `/talky/collector` is
+a hive, not a cell -- it has no mailbox and nothing runs in it. It still gets a
+message-log row when a message arrives at it, and a second one as the sender of
+what it forwards, which is why the chain reads `... -> /talky/collector ->
+/talky/collector/assemble -> /talky/collector -> ...` around every pass through
+the collector. Counting a hive out because "a trace names the cells that handled
+the turn" is the single easiest way to lose an hour against your own trace.
+
+A hive shows up when something **addresses** it, not because it exists. `/memory`
+is a hive as well, and it never appears above: every edge here points straight at
+`/memory/keep`, so nothing is ever routed to `/memory` itself.
 
 Ask the same question about **April** and the memory says nothing was said in
 that window -- rather than handing back February because it was the nearest
@@ -344,7 +373,8 @@ applies **this** declaration -- the files, not copies of them -- against a mock
 provider, replays **this** `past.jsonl` and drives the March question through
 the whole tree. It measures what is checked in (six files, no edge in the root
 hive, both timestamp columns present), that `grow.json` names only templates
-that ship, that the recall edge carries the window keys -- and then the claim
+that ship, that it sets `turn_write` on `collector/assemble` at instantiation,
+that the recall edge carries the window keys -- and then the claim
 itself: the second inference's prompt contains the February sentence **with its
 instant**, and contains neither the January nor the March one. The counter-test
 asks about April and requires the empty answer. If the example rots, those tests

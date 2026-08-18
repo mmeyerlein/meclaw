@@ -1,4 +1,4 @@
-# `memory-drain@1.0.0`
+# `memory-drain@2.0.0`
 
 The adapter between a closed session and the central memory (GitHub #101).
 
@@ -15,11 +15,11 @@ memory hive changes**, the P15 invariance gate stays untouched, and nothing inve
 second write path.
 
 ```
-<talky>/collector/assemble --route write--> ./drain --route episode--> <memory>/writer
-                                              |  ^
-                                     route lstore|  |context.drain_origin == 'drain'
-                                              v  |
-                                            ./ledger
+<talky>/collector --route write--> ./drain --route episode--> <memory>/writer
+                                     |  ^
+                       route lstore  |  |  context.drain_origin == 'drain'
+                                     v  |
+                                 ./ledger
 ```
 
 ## Two cells
@@ -45,11 +45,11 @@ dormant (the island-activation rule).
 {"scope": "/agent", "ctx": {}, "diff": {
   "add_nodes": [{"name": "drain", "template": "memory-drain"}],
   "add_edges": [
-    {"from": "./talky/collector/assemble", "to": "./drain/drain",
+    {"from": "./talky/collector", "to": "./drain",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"},
                   "set_context": {"session_id": "hop.session_id"}}},
-    {"from": "./drain/drain", "to": "./memory/writer",
+    {"from": "./drain", "to": "./memory/writer",
      "condition": "has(hop.route) && hop.route == 'episode'",
      "modifier": {"set_context": {"session_id": "hop.session_id",
                                   "turn_id": "hop.turn_id",
@@ -61,10 +61,12 @@ The `write` route usually already has a consumer (a summarizer, an archive). Thi
 **second parent edge on the same route** — supported, and the form the S2 receipt named as
 the way to fan a batch out (§ 6, limit 2). The drain adds a lane, it does not take one.
 
-**`./drain` is the port contract.** Both the entry and the exit sit on it, it is a stable
-**address** rather than implementation detail that happens to be reachable, and the working
-colonies under [`../../examples/`](../../examples/) wire `./drain/drain` literally. What is
-behind it may change in a version bump; the address may not — moving it is a breaking change
+**`./drain` is the port contract, and it is the HIVE.** Both the entry and the exit sit on
+the hive path itself: the template declares `. -> ./drain` on an in_ lane and `./drain -> .`
+on `episode`, and `params.ports` is `[]` — the hive path is the only address (overview,
+§ Die Hive-Grenze). Earlier versions of this file wired `./drain/drain`, the cell inside;
+that worked, and it also wrote this template's internals into every parent's topology. What
+is behind the door may change in a version bump; the address may not — moving it is a breaking change
 to every parent that wired it, and it gets a CHANGELOG Breaking entry and a new major
 version, not a patch.
 

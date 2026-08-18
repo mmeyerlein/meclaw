@@ -90,12 +90,12 @@ fn write_subtree_template(root: &std::path::Path) {
     write(
         &tpl,
         "inner_a/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         &tpl,
         "inner_b/config.json",
-        r#"{"cell":{"type":"echo_sub"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo_sub"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 
@@ -153,7 +153,7 @@ async fn add_nodes_subtree_registers_all_cells_inactive_with_hive_scope_and_inte
     let h = ColonyHandle::new_with_factories_at(&td, vec![("echo_sub".to_string(), factory)]);
     rescan_templates(&h, td.path().join("templates")).await;
 
-    // A terminal /sink so the echo cells' echo_to target is resolvable (they
+    // A terminal /sink so the echo cells' emitted_target target is resolvable (they
     // never run here, but keep the topology honest).
     h.spawn(meclaw_core::Path::new("/sink"), || {
         EchoMockCell::new(meclaw_core::Path::new("/sink"))

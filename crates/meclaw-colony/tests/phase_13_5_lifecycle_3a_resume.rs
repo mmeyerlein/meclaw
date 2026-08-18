@@ -58,7 +58,7 @@ fn write_topology(td: &std::path::Path) {
     std::fs::write(tpl_dir.join("template.json"), r#"{"name":"echo"}"#).unwrap();
     std::fs::write(
         tpl_dir.join("config.json"),
-        r#"{"cell":{"type":"echo"},"params":{"echo_to":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

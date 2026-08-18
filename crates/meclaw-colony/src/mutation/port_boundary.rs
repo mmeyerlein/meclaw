@@ -60,8 +60,11 @@ use meclaw_core::JsonValue;
 pub struct SealedHive {
     /// Absolute logical path of the hive scope (e.g. `/main/affinity`).
     pub path: String,
-    /// Declared port names — short names of DIRECT children. May be empty
-    /// ("the hive path itself is the only address").
+    /// Declared port names — short names of DIRECT children, canonical (GH
+    /// #196): the `./` a template may spell them with is gone by the time they
+    /// arrive here, and an entry that could never name a direct child was
+    /// reported and dropped at read. May be empty ("the hive path itself is the
+    /// only address").
     pub ports: Vec<String>,
 }
 
@@ -92,6 +95,32 @@ impl SealedHive {
         };
         !rest.is_empty() && !rest.contains('/') && self.ports.iter().any(|p| p == rest)
     }
+}
+
+/// GH #196/#202 — the one place that decides what a port name in a hive's
+/// `params` NAMES.
+///
+/// Two spellings, one node: `./policy` and `policy` denote the same direct child
+/// (Befund 6), and every other reader on the mutation surface already strips the
+/// canonical prefix before deciding anything (#189, #193). The boundary compares
+/// SHORT names, so an entry written the first way used to compare equal to
+/// nothing at all — a hive that believed it had ports and was sealed shut.
+///
+/// `None` means the entry can never name a direct child, whatever the topology:
+/// a deep name, `.`, `..`, or nothing. The caller reports it rather than keeping
+/// it, because an entry that matches nothing is indistinguishable from an entry
+/// that was never written — and that silence is the whole defect of #196.
+///
+/// Shared with [`crate::mutation::required_drains`] since #202, because
+/// `params.required_drains[].port` is documented as the same shape and had
+/// re-derived a stricter rule of its own: two readers of one documented shape
+/// now agree by construction rather than by coincidence.
+pub(crate) fn canonical_port_name(raw: &str) -> Option<&str> {
+    let name = raw.strip_prefix("./").unwrap_or(raw);
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return None;
+    }
+    Some(name)
 }
 
 /// PURE — no FS, no DB. Reject every `add_edges` entry that crosses a sealed
@@ -217,9 +246,28 @@ pub fn collect_sealed_hives<'a>(
             continue;
         };
         if let Some(ports) = hp.ports {
+            let mut canonical = Vec::with_capacity(ports.len());
+            for raw in &ports {
+                match canonical_port_name(raw) {
+                    Some(name) => canonical.push(name.to_string()),
+                    // GH #196: loud, not inert. A declaration nobody could
+                    // match sealed two shipped templates shut in silence, and
+                    // the same silence is what `required_drains` produced for
+                    // its own port names until #202 put both readers on this
+                    // function. Dropping keeps the seal fail-closed: an entry
+                    // that opens no door must not be read as one that opens
+                    // every door.
+                    None => tracing::warn!(
+                        hive = %s,
+                        port = %raw,
+                        "params.ports[] must be the short name of a direct child — this entry can \
+                         never match an endpoint, ignoring"
+                    ),
+                }
+            }
             out.push(SealedHive {
                 path: s.to_string(),
-                ports,
+                ports: canonical,
             });
         }
     }
@@ -371,6 +419,75 @@ mod tests {
     }
 
     // ---- the config.json reader ----
+
+    #[test]
+    fn collect_canonicalises_a_port_written_with_the_dot_slash_prefix() {
+        // GH #196: `./policy` and `policy` denote the same node (Befund 6), and
+        // the boundary compares SHORT names — so a declaration written the first
+        // way matched nothing and sealed the hive as strictly as `ports: []`,
+        // while its own README presented the ports as the way in.
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("main/aff")).unwrap();
+        std::fs::write(
+            root.join("main/aff/config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"ports":["./brief","gate"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+
+        let paths = [meclaw_core::Path::new("/aff")];
+        let got = collect_sealed_hives(root, paths.iter());
+        assert_eq!(
+            got,
+            vec![SealedHive {
+                path: "/aff".into(),
+                ports: vec!["brief".into(), "gate".into()],
+            }],
+            "both spellings land on one short name"
+        );
+    }
+
+    #[test]
+    fn collect_drops_a_port_declaration_that_could_never_match() {
+        // A deep name is not a port and never can be: a port is a member of the
+        // scope, not a node somewhere below it. Dropping it keeps the seal
+        // fail-closed, and the warning is what makes the drop findable — an
+        // inert declaration that says nothing is the whole defect of #196.
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("main/aff")).unwrap();
+        std::fs::write(
+            root.join("main/aff/config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"ports":["brief/sub","..","","gate"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+
+        let paths = [meclaw_core::Path::new("/aff")];
+        let got = collect_sealed_hives(root, paths.iter());
+        assert_eq!(
+            got,
+            vec![SealedHive {
+                path: "/aff".into(),
+                ports: vec!["gate".into()],
+            }],
+            "only the entry that can match survives, and the hive stays sealed"
+        );
+    }
+
+    #[test]
+    fn a_port_name_is_a_short_name_in_either_spelling() {
+        assert_eq!(canonical_port_name("./brief"), Some("brief"));
+        assert_eq!(canonical_port_name("brief"), Some("brief"));
+        // What can never name a direct child of the hive.
+        assert_eq!(canonical_port_name("brief/sub"), None);
+        assert_eq!(canonical_port_name("./brief/sub"), None);
+        assert_eq!(canonical_port_name("."), None);
+        assert_eq!(canonical_port_name(".."), None);
+        assert_eq!(canonical_port_name("./"), None);
+        assert_eq!(canonical_port_name(""), None);
+    }
 
     #[test]
     fn collect_reads_the_opt_in_declaration_and_ignores_the_open_hive() {

@@ -96,7 +96,7 @@ fn make_echo_build(
         let (tx, rx) = mpsc::channel::<Message>(1000);
         let (peace_tx, peace_rx) = oneshot::channel();
         let (_backstop_tx, backstop_rx) = oneshot::channel();
-        let cell = EchoMockCell::new(path.clone()).echo_to(echo_to.clone());
+        let cell = EchoMockCell::new(path.clone()).emitted_target(echo_to.clone());
         let p = path.clone();
         let o = outputs_tx.clone();
         let join = tokio::spawn(async move {
