@@ -69,21 +69,20 @@ jobs:
       # pins the existing count per package and fails when it grows.
       - name: unwrap/expect budget
         run: python3 .github/gates/unwrap_budget.py
-      # GH #205 -- the builder-librarian's seed corpus is generated from the
-      # spec, the cookbook and the template catalogue, and is committed, so it
-      # can describe a tree that no longer exists. It did, for 289 lines. The
-      # equivalent Rust test skips where python3 is absent; this step does not,
-      # so the gate cannot quietly disappear on a runner without an interpreter.
-      - name: builder-librarian seed corpus
-        run: python3 workshop/tools/build_librarian_seed.py --check
-      # GH #217 -- templates/builder-hive/ is generated from python sources in
-      # workshop/tools/build_builder_hive.py and committed, so it can hold cells
-      # that no longer match the sources they came from. It already had, twice,
-      # and one of the two drifts was self-reinforcing: the generator used to
-      # delete the hand-written README.md and LIFT.md, which made not running it
-      # the safe move. Unguarded here for the same reason as the step above.
-      - name: builder-hive template tree
-        run: python3 workshop/tools/build_builder_hive.py --check
+      # GH #234 -- two gates USED to stand here: `build_librarian_seed.py
+      # --check` (GH #205) and `build_builder_hive.py --check` (GH #217),
+      # guarding the two committed trees that are generated. Do not put them
+      # back. Both generators live under workshop/, which is not part of this
+      # tree and is not meant to be, so the steps could not pass here -- they
+      # failed on a missing file, which says nothing about whether the artifacts
+      # drifted.
+      #
+      # They now run where their sources are: as R11 of the release gate, in the
+      # tree that has workshop/, before an export is built. The shipped Rust
+      # twins (librarian_seed_corpus.rs, builder_hive_template_tree.rs) cover
+      # this clone and skip when no generator is present -- which here is
+      # always, so a green run of theirs asserts nothing about the corpus. That
+      # is intentional: the assertion belongs to the tree that can make it.
 
   deny:
     runs-on: ubuntu-latest
