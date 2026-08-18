@@ -189,6 +189,45 @@ fn is_sealed_with_doors(hp: &HiveParams) -> bool {
     hp.ports.as_ref().is_some_and(|p| p.is_empty()) && hp.graph.edges.iter().any(|e| e.from == ".")
 }
 
+/// GH #176 — the second way an edge can be an exit: it CREATES the lane on its
+/// way out instead of carrying it.
+///
+/// A failure lane recognises something only the inside knows (an `llm` cell's
+/// `hop.finish_reason`, a store echo's `hop.operation`, a `hop.msg_type`) and
+/// TRANSLATES it into a route on the boundary edge. A probe carrying
+/// `hop.route` never satisfies such a condition, so the router alone cannot see
+/// the exit. The substrate reads the edge's own `set_hop.route` for exactly
+/// this case (`hive_contract::door_states_lane`); the template sweep has to
+/// read it the same way, or it refuses a lane a live colony accepts.
+///
+/// Mirrors the substrate's three verdicts: no `set_hop.route` names no lane; a
+/// constant that is a different lane names someone else's; an expression that
+/// reads the message is not judged and counts.
+fn edge_states_lane(spec: &meclaw_colony::config::EdgeSpec, route: &str) -> bool {
+    let Some(src) = spec.modifier.as_ref().and_then(|m| m.set_hop.get("route")) else {
+        return false;
+    };
+    match constant_route(src) {
+        Some(stated) => stated == route,
+        None => true,
+    }
+}
+
+/// A single-quoted CEL string literal, or `None` for anything computed.
+fn constant_route(src: &str) -> Option<&str> {
+    let t = src.trim();
+    let inner = t.strip_prefix('\'')?.strip_suffix('\'')?;
+    (!inner.contains('\'')).then_some(inner)
+}
+
+/// True iff SOME edge crossing the hive path outward names `route` on itself.
+fn an_exit_names_lane(hp: &HiveParams, route: &str) -> bool {
+    hp.graph
+        .edges
+        .iter()
+        .any(|e| e.to == "." && edge_states_lane(e, route))
+}
+
 #[test]
 fn every_sealed_hive_template_declares_its_lanes() {
     let missing: Vec<String> = shipped_hives()
@@ -206,7 +245,14 @@ fn every_sealed_hive_template_declares_its_lanes() {
 fn every_declared_lane_has_a_door_in_the_templates_own_graph() {
     let mut checked = 0usize;
     for (name, hp) in shipped_hives() {
-        let Some(c) = contract_of(&hp) else { continue };
+        let Some(mut c) = contract_of(&hp) else {
+            continue;
+        };
+        // An emit the boundary edge NAMES is already accounted for (GH #176),
+        // and the router cannot be asked about it: the probe would have to
+        // satisfy a condition written about the hive's insides. Everything else
+        // goes through the real check unchanged.
+        c.emits.retain(|l| !an_exit_names_lane(&hp, &l.route));
         check_lane_doors(std::slice::from_ref(&c), &table_for(&hp))
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         checked += 1;
@@ -240,9 +286,10 @@ fn every_lane_the_graph_opens_is_declared() {
         for spec in hp.graph.edges.iter().filter(|e| e.to == ".") {
             let src = Path::new(&format!("{HIVE}/{}", spec.from.trim_start_matches("./")));
             let covered = c.emits.iter().any(|l| {
-                apply_edges(&table, &src, &probe(&l.route))
-                    .iter()
-                    .any(|d| d.target.as_str() == HIVE)
+                edge_states_lane(spec, &l.route)
+                    || apply_edges(&table, &src, &probe(&l.route))
+                        .iter()
+                        .any(|d| d.target.as_str() == HIVE)
             });
             assert!(
                 covered,

@@ -239,7 +239,7 @@ that breaks no promise makes the lane name wrong, the name was structural.
 |---|---|---|
 | An `add_edges` edge onto the hive path whose `set_hop.route` is **constant** must name an `accepts` lane | mutation | reject `hive_contract`, pre-destructive |
 | Every `accepts` lane must route **inward** from the hive path (have a door) | mutation (post-state) | reject `hive_contract`, rollback |
-| Every `emits` lane must route **outward** through the hive path from **some** interior cell | mutation (post-state) | reject `hive_contract`, rollback |
+| Every `emits` lane must route **outward** through the hive path from **some** interior cell — carried out, or produced by the door itself | mutation (post-state) | reject `hive_contract`, rollback |
 | the same two checks | boot | `warn!` only — the birth topology is sovereign (as with GH #133/#147) |
 | `accepts[].context` | — | declaration only |
 
@@ -251,6 +251,21 @@ that. The caller's stamped route is read the same way — the edge's own
 literal (`'in_batch'`) yields a string; anything reading the incoming message
 (`hop.upstream_route`) fails and is skipped. **A check that cannot place an edge
 must never reject it.**
+
+**An exit may also CREATE the lane** (GH #176). A probe carrying only `hop.route`
+finds exits that already *carry* the lane, and nothing else. A hive's failure
+lane does not work that way: the door recognises something only the inside knows
+— an `llm` cell's `hop.finish_reason` — and **translates** it into a lane on the
+way out, which is exactly what the boundary is for. So the exit check also reads
+the door's own `set_hop.route`: if it names the declared lane as a constant and
+the edge crosses the hive path, that is an exit for the lane, even where its
+condition is unreachable for a route probe. The condition is deliberately **not**
+evaluated: whether the door ever fires is a statement about the messages the
+inside produces, whether it names the lane is a statement about the door. A door
+that names a **different** lane is no exit for this one, and a door that names
+the lane on an edge that stays **inside** is not either — a caller cannot receive
+what never crosses the boundary. If the expression is computed rather than
+constant, the sentence above applies again: unplaceable is not rejectable.
 
 **What is deliberately not checked:**
 
@@ -366,6 +381,19 @@ Split into `body` (content slots) and **the two header compartments** `context` 
 ```
 
 The only key the substrate knows is **`inbound_edges`**: the `from` paths of every edge pointing at the cell's **own** path. A declaring cell receives a read-only handle at spawn (`meclaw_colony::NeighbourhoodView`) that asks exactly that one question — live against colony's in-memory `EdgeTable`, bounded by the cell's own operation timeout, self-scoped. Not the graph (that is `/colony/graph`), not a scope, not its own outbound edges, and never another node's. Without the declaration the handle does not exist.
+
+**`contract.ingress` — a cell declares that it is an entry point (GH #185).** A block beside `consumes`/`emits`, in the same grammar and for the same reason as `consumes.topology`: a capability that is declared rather than inferred from the shape of the graph.
+
+```json
+"contract": { "ingress": { "context": ["chat_id"] } }
+```
+
+The value is the **list of context keys** this cell may mint when a message is born — not a boolean. The list may only **narrow** the standard set (`INGRESS_CONTEXT_KEYS`), never widen it; a key outside it is refused by name. A boolean would have granted the whole standard set to anything saying "I am an entry", which is the same all-or-nothing generosity as the inference this block replaces.
+
+**What it replaces:** until GH #185 the header check read "has no incoming edge" as "is the graph's entry". That held while the check saw only `config.json` edges. Now that it sees the running graph, a genuine entry that also receives replies — the ordinary shape of a proxy — loses exactly that branch. The declaration makes the question locally answerable: adding an unrelated edge no longer changes the answer.
+
+**Why not under `emits`:** cells emit `hop`; `context` is edge authority alone (§ Access). The birth of a message is the sanctioned exception to that, not a cell emission — so the block sits beside it rather than under it.
+
 
 This replaces the last direct `colony.db` read in the tree (the `vault` unlock attestation); § Database isolation has had **no** exception since. First and only consumer today: `vault` — a cell that cannot verify its neighbourhood stays LOCKED, which is why a `vault` `config.json` without this declaration never unlocks.
 

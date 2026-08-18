@@ -331,6 +331,12 @@ it.
 
 ### What a template author has to do
 
+**Every hive template that ships satisfies this** as of 2026-08-18
+([#197](https://github.com/mmeyerlein/meclaw/issues/197),
+[#228](https://github.com/mmeyerlein/meclaw/issues/228)): the library carries no
+unsealed hive any more, so a new one has worked examples rather than a rule and
+a set of counter-examples.
+
 Four things, all checkable, all in the template's own files.
 `templates/README.md` § The hive boundary says the same where a template author
 actually reads; the **order** in which an existing hive is brought there is in
@@ -376,6 +382,7 @@ door names the sub-hive's path and a lane, never a cell inside it.
 **What is wrong with these** — both write structure outward, the second more
 quietly than the first:
 
+<!-- gate:counter-example refused=./talky/session-keeper/stamp -->
 ```json
 {"from": "./proxy", "to": "./talky/session-keeper/stamp"}
 {"from": "./proxy", "to": "./memory",
@@ -447,7 +454,11 @@ through the real router instead of a text comparison (`hive_contract`):
 1. An edge onto the hive path whose `set_hop.route` is constant must name an
    `accepts` lane — the typo is refused instead of becoming a dead letter.
 2. Every `accepts` lane must have a door (`{"from": "."}` inward).
-3. Every `emits` lane must lead back out through the hive path.
+3. Every `emits` lane must lead back out through the hive path — either carried
+   by a message that already has it, or CREATED by the out-door itself
+   (GH #176): a door that recognises `hop.finish_reason` and turns it into a
+   lane with `set_hop.route` is an exit for that lane. A door that names a
+   **different** lane is not (`config.en.md` § `params.contract`).
 
 (2) and (3) are why the contract does not decay into decoration: rearranging the
 inside is free, rearranging it so a promised lane loses its door is not. At
@@ -525,7 +536,7 @@ A mutation is a message to `/colony/mutations` whose body carries a **diff** plu
 | `add_edges` | New edges in colony's edge table, scoped |
 | `remove_edges` | Remove edges from the edge table, scoped. **Applied before `add_edges`**, so an edge can be replaced in ONE mutation (old one out, new one in) with the lane never missing in between. The other way round, the `match` pattern deleted the edge the same diff had just inserted (GitHub #158). |
 | `swap_nodes` | **Graph swap**: swings **all external edges** of an implementation (`match`) atomically onto another (`with`), the other being either freshly instantiated from a template **or** an already existing cell. The old cell remains **disconnected and preserved** (no-delete policy; swappable back at any time by swinging the edges back). `swap_nodes` is thereby a pure edge/topology diff, **no** `config.json` rewrite of an existing cell, **no** `cell.db` migration, **no** `cell_id` takeover (the new implementation has its own identity), and inherits the atomicity model of the edge mutation. Condition for the instantiate form: the `with` target path is free — in the registry (naming collision) **and** on the filesystem. A directory already lying there that no registry row names (a hand-placed tree, the residue of an aborted migration) is refused by name rather than overwritten; taking it over is done with an `add_nodes` at the same path (a resume) or an `add_nodes[].adopt` stating the `cell.type` expected there. |
-| `move_nodes` | **Relocation**: moves a cell to a different address — `{"match": {"name": "fetch"}, "to": "talky/fetch"}`. A path IS a cell's identity, which is why this is the only operation that changes one: the directory is moved with `rename(2)` (carrying `config.json`, `cell.id` and **`cell.db`**), the registry row is re-addressed by an UPDATE (`cell_id`, `created_at` and `instantiated_at` survive), and **every** edge naming the old path names the new one afterwards, condition and modifier verbatim. One committed mutation, with no window in which the lane is wired twice or not at all. Against `swap_nodes`: a swap swings edges onto a **different** implementation with its own identity and its own `cell.db`; a move is the opposite — the same cell, a different address. Conditions: the target lies inside the mutation scope, the target is free (registry, hive scopes, filesystem), its parent directory already exists, and the source is **not a hive** and has nothing beneath it (a half-moved hive would leave its children addressed under a path that no longer exists, so it is refused by name rather than done by halves). The parent hive's `params.graph` is **not** rewritten: since GH #168 the persisted edge table is the boot topology on a reboot — the file is seed, not state. |
+| `move_nodes` | **Relocation**: moves a cell to a different address — `{"match": {"name": "fetch"}, "to": "helpdesk/fetch"}`. A path IS a cell's identity, which is why this is the only operation that changes one: the directory is moved with `rename(2)` (carrying `config.json`, `cell.id` and **`cell.db`**), the registry row is re-addressed by an UPDATE (`cell_id`, `created_at` and `instantiated_at` survive), and **every** edge naming the old path names the new one afterwards, condition and modifier verbatim. One committed mutation, with no window in which the lane is wired twice or not at all. Against `swap_nodes`: a swap swings edges onto a **different** implementation with its own identity and its own `cell.db`; a move is the opposite — the same cell, a different address. Conditions: the target lies inside the mutation scope, the target is free (registry, hive scopes, filesystem), its parent directory already exists, and the source is **not a hive** and has nothing beneath it (a half-moved hive would leave its children addressed under a path that no longer exists, so it is refused by name rather than done by halves). The parent hive's `params.graph` is **not** rewritten: since GH #168 the persisted edge table is the boot topology on a reboot — the file is seed, not state. |
 
 **Match pattern for `remove_*` and `swap_nodes`**: a pattern references nodes/edges by properties (`name`, `template`, for edges `from`/`to`/`condition`/`modifier`), **not by UUID**. A pattern is a pattern, not an identity: `{from, to}` alone hits **every** edge between the pair rather than the one that was meant — pass `condition`/`modifier` too when exactly one is to be hit. The pattern must have at least one hit in the current registry, otherwise the mutation is rejected. Names are unique per scope (naming-collision reject in validation); a UUID reference as a disambiguation fallback is **not** provided.
 
@@ -2300,11 +2311,17 @@ The `llm` A-timeout wraps the whole provider roundtrip **including the complete 
 
 The colony loop emits a liveness tick **at the top of every iteration** on a bounded channel (`try_send`, never blocks); an interval arm at the very bottom of the `biased select!` wakes it ~10x/s for that purpose even when there is nothing to do. A supervisor task **outside** the colony task drains that channel once per `watchdog_period_ms` and counts empty periods. After `watchdog_threshold` consecutive empty periods that is a **trip**.
 
+**The tick carries a phase (GH #165).** It is no longer a bare `()` but `Working` or `Parked`, and the loop says it **before** it can block — a blocked loop reports nothing, so the report has to happen on the way in. `Working` is emitted at the top of the iteration (before the durable-write flush) and at the top of the inbox arm; `Parked` immediately before the `select!`. Everything between a `Working` and the next `Parked` is **one** work item, so the supervisor can ask "how long has it been on ONE work item" instead of only "how long has it been quiet".
+
+**A second, working witness (GH #165).** Alongside the supervisor runs a `run_liveness_witness` task that must **finish one unit of real work** per supervisor period (a trip through the run queue, a freshly spawned task, a fixed CPU quantum) and reports it exactly the way the colony reports its heartbeat. It is judged by the **same** rule as the colony: `watchdog_threshold` consecutive periods with no completed unit. The reason: `supervisor_lag` is too weak a discriminator — the supervisor is `sleep`-driven and a starved runtime still wakes a timer roughly on schedule. A witness that has to finish something does not get that courtesy.
+
 **What the watchdog sees, and what it does not.** It detects a colony task that is **gone** (panic -> loop gone -> heartbeat channel closed) and one that does **not iterate** for the full limit (wedged in an `.await`, or with a single iteration that takes longer than the limit). It does **not** detect a live loop whose cells block each other; there the heartbeat keeps flowing.
 
 **Armed after boot (issue #6).** The supervisor counts nothing until the filesystem bootstrap has completed. A boot is not a steady state: the colony task hydrates its tables before its select loop sends its first heartbeat. A boot that fails never arms, so the report is the boot failure and never a trip.
 
 **The limit is a statement about a SINGLE iteration.** The default `5 x 100 ms = 500 ms` says: no iteration of the colony loop may take longer than half a second. In a release build that is ample for routing and ordinary message work, but it also covers the operations that run **synchronously inside the colony task**, because the colony is the only write authority: an instantiating mutation creates cell directories, opens `cell.db` files, runs migrations and spawns cells. On a debug build or a busy machine such a mutation can exceed 500 ms, and then the trip is **correctly measured and still not a defect**. The three `colony.json` fields exist for exactly those cases (GH #84).
+
+**Two limits instead of one (GH #165).** The 500 ms limit is unchanged and applies to the **parked** loop: a loop with nothing in flight that still fails to answer has no excuse. A loop that has **declared** a work item gets a separate, larger limit: `WORK_ITEM_BUDGET_FACTOR = 10` x the window, 5 s by default. This is **not** a widening of the window — the window that catches a colony task which stopped iterating is exactly the one it was; it is a second limit for the case the first one cannot speak to. A declared work item that outlives that limit too is fatal again: the budget bounds the suppression, it does not remove it.
 
 **What a trip does** (`watchdog_on_trip`):
 
@@ -2318,20 +2335,24 @@ The colony loop emits a liveness tick **at the top of every iteration** on a bou
 ```
 meclaw: watchdog trip - colony heartbeat lost for 5 consecutive supervisor periods of 100 ms
   [starved=colony_loop silent_for=500ms nominal_window=500ms supervisor_lag=0ms
+   in_flight_work=false work_item_budget=5000ms witness=kept witness_missed=0/5
    beats_seen=3 armed_for=801ms colony_task=alive cells_at_boot=3 on_trip=exit]
 ```
 
-`supervisor_lag` is the discriminator: the supervisor is a Tokio task in the same process, so its **own** lateness says whether anyone got CPU at all. `starved` is derived from it:
+`starved` is the diagnosis, derived from three pieces of evidence — the witness (GH #165), the loop's last declared phase (GH #165) and `supervisor_lag` (GH #84):
 
 | `starved` | Meaning |
 |---|---|
-| `colony_task_gone` | The heartbeat channel is closed; the task is dead (panic), not slow. |
+| `colony_task_gone` | The heartbeat channel is closed; the task is dead (panic), not slow. That is a proof, not an inference. |
+| `host_runtime` | The independent witness failed the same rule in the same window: a task with no relation to the colony did not get through either. The observation says something about the host and nothing about the colony. |
+| `slow_work_item` | The loop had declared a work item and is still inside it, below `work_item_budget`. An operation is taking long, which is not a defect. |
+| `stuck_work_item` | The same declared work item outlived `work_item_budget` too. An operation that never returns is a wedge whatever its name. |
 | `process_scheduling` | The supervisor's own periods came in at least twice as slow as configured: the whole process was off CPU, and this observation says **nothing** against the colony loop. |
-| `colony_loop` | The supervisor kept its schedule; the colony loop alone stopped iterating. |
+| `colony_loop` | Every control held: the supervisor kept its schedule, the witness kept finishing work, and the loop was parked with nothing in flight — and still went quiet. This is the only silence that implicates the colony. |
 
 `cells_at_boot` is deliberately the boot count and not "active cells now": the registry belongs to the colony, and at trip time the colony by definition is not answering.
 
-**Production keeps `exit`.** A trip in production is a process that can no longer be trusted; the non-zero exit is the contract Ops depends on.
+**Production keeps `exit` — but `exit` now means "on a corroborated finding" (GH #165).** A trip ends the process only when the evidence actually implicates the colony loop (`colony_loop` or `stuck_work_item`) or the task is provably gone (`colony_task_gone`). `host_runtime`, `slow_work_item` and `process_scheduling` are logged loudly, the supervisor keeps supervising and the process lives. Flipping the default to `log-only` would have been the wrong correction: that switches off the response instead of repairing the inference.
 
 ---
 

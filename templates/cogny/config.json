@@ -3,8 +3,28 @@
     "type": "hive"
   },
   "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "because": "a question for this agent core -- a consult or a lookup; context.consult_class picks the model tier"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "the core's answer, for whoever asked"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
         {
           "from": "./collector",
           "to": "./brain",
@@ -105,6 +125,11 @@
             },
             "restore_ttl": true
           }
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'"
         }
       ]
     }

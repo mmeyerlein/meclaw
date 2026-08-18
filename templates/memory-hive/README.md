@@ -1,4 +1,4 @@
-# `memory-hive@1`
+# `memory-hive@2.0.0`
 
 Agent memory as a hive of existing cell types — no new cell type, no Rust. Eleven cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
@@ -275,24 +275,27 @@ The store query layer (P3) and the graph/vector legs (P4) carry the reads: predi
 `order_by`/`limit`, BM25 `search`, `traverse` and `similar` all run IN the store, so the code
 cells rank and fuse instead of fetching everything.
 
-## Ports
+## Lanes
 
-The hive is an **island**: instantiate `add_nodes` and the port `add_edges` in ONE mutation,
+The hive is an **island**: instantiate `add_nodes` and the `add_edges` in ONE mutation,
 otherwise the subtree stays inactive and `cron` never spawns (the island-activation pattern:
 an island without a crossing edge is never woken, so the mutation that creates the subtree has
 to be the mutation that connects it).
 
-**The ports below are enforced, not advisory** (GH #133). `config.json` declares them:
+**The address is the hive; the lane is the port** (GH #197, ruling 2026-08-18). `config.json`
+declares an empty port list and a contract in lanes:
 
 ```json
-"params": { "ports": ["writer", "recall", "extract-glue"], "graph": { … } }
+"params": { "ports": [], "contract": { "accepts": […], "emits": […] }, "graph": { … } }
 ```
 
-A mutation whose `add_edges` reaches any other cell of this hive from outside — `./memory/store`,
-`./memory/extractor`, `./memory/dreamer`, … — is rejected with `error_code:
-"hive_port_boundary"`, pre-destructively, in either direction. Inside the hive nothing changes:
-the internal graph wires whatever it likes, at any depth. Wire the three endpoints below, or the
-hive path itself.
+A mutation whose `add_edges` reaches ANY cell of this hive from outside — `./memory/store`,
+`./memory/writer`, `./memory/recall`, `./memory/extract-glue`, … — is rejected with `error_code:
+"hive_port_boundary"`, pre-destructively, in either direction. There is no exception any more:
+`writer`, `recall` and `extract-glue` used to be ports, which meant every caller had to know
+what the inside was called and no rearrangement of the interior was possible without breaking
+them. Wire the **hive path** and put the lane on `hop.route`. Inside the hive nothing changes:
+the internal graph wires whatever it likes, at any depth.
 
 **And the store is writable only from inside** (GH #132): `store/config.json` declares
 `"write_surface": "internal"`, so a write op (`insert`/`update`/`delete`/`create_table`/
@@ -303,29 +306,37 @@ writers (`writer`, `recall`, `extract-glue`, `dream-glue`, `embed`) all live in 
 nothing about the shipped topology changes; what changes is that the memory can no longer be
 edited past its own lanes.
 
-| Port | Direction | Endpoint | The edge must carry |
-|---|---|---|---|
-| turn-write | in | `./memory/writer` | optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest; `session_id`/`turn_id` are ingress context keys and travel by themselves |
-| recall-request | in | `./memory/recall` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below) |
-| inline-extraction | in | `./memory/extract-glue` | `set_context: {store_origin: "'inline'", mem_phase: "'inline'"}` -- and the front model's persona carries the block from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
-| extraction-flush | in | `./memory/extract-glue` | `set_context: {mem_phase: "'flush'"}` — drain the queue now, whatever the batch gate would say. Add `flush_reclaim: "'1'"` to also recover batches whose chain died; that sweep is **lease-gated** (GH #72) and never takes back a claim younger than `MEMORY_BATCH_CLAIM_LEASE_MIN` |
-| recall-response | out | `./memory/recall` → your consumer | condition `hop.route == 'bundle'` |
-| inline-reject | out | `./memory/extract-glue` → your drain | condition `hop.route == 'reject'` — **not optional once the inline ingress is wired, and since GH #147 that is enforced rather than asked for.** The hive declares the pairing in `params.required_drains`, so a mutation that wires the ingress alone comes back `required_drain_missing` and changes nothing; put both edges in the same mutation and it commits. A rejected block on an undrained egress is an unrouted dead end, so nobody ever learns the memory was not written — a colony that ran the inline lane for weeks with only `recall-reject` drained is where that lesson comes from |
-| recall-reject | out | `./memory/recall` → your drain | condition `hop.route == 'reject'` — a HALF window (exactly one of `recall_window_from`/`_to` non-empty) is a caller bug and leaves here at request entry, before the leg fan. **Drain it**: unrouted it is a dead end, and the caller waits for a bundle that never comes. Declared in `params.required_drains` too, so wiring `recall` without it is refused the same way |
+| Lane | Direction | The edge must carry |
+|---|---|---|
+| `in_episode` | in → `./memory` | one turn (or a closed session batch) to remember. `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller |
+| `in_remember` | in → `./memory` | nothing beyond the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
+| `in_flush` | in → `./memory` | nothing; the door stamps `mem_phase: "flush"`. Add `flush_reclaim: "'1'"` on the hop to also recover batches whose chain died — that sweep is **lease-gated** (GH #72) and never takes back a claim younger than `MEMORY_BATCH_CLAIM_LEASE_MIN` |
+| `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** Two things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
+
+**The drain used to be enforced and is not any more, and that is a real loss.**
+`params.required_drains` (GH #147) pairs a PORT with the route it must drain, and it fires when
+something outside the hive wires that port. A sealed hive has no ports, so the declaration could
+never fire again; a rule that cannot fire is worse than no rule, because it reads like one. The
+two entries were removed with the seal rather than left as decoration. Tracked as a substrate
+gap: `required_drains` has no way to say "this LANE must be drained"
+([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 
 `recall_query`, `memory_tier`, `recall_as_of`, `recall_window_from`, `recall_window_to`,
 `happened_at`, `store_origin` are **not** ingress context keys (that list is closed: `turn_id`,
-`session_id`, `user_id`, `chat_id`, `locale`). They are promoted from `hop` by the port edge —
-the `rag_question` pattern.
+`session_id`, `user_id`, `chat_id`, `locale`). They are promoted from `hop` by the caller's edge onto
+the hive — the `rag_question` pattern.
 
 **A second consumer is where the hive's own bookkeeping starts to travel** (GH #152).
 `mem_phase` and `recall_id` belong to this hive and are *persistent* context: once a consumer
 has asked once, they ride along in everything that consumer emits afterwards — including an
 errand it hands to a **second** agent, whose collector then asks this hive with a phase it never
-set. The request entry recognises that case by the hop the port edge stamps (`phase: "recall"`)
-and starts a fresh chain regardless of what the context carried, so a caller does not have to
-know about keys it does not own. **Nothing is required of the caller here** — but if you write
-an edge into this port by hand and want to be explicit, `delete_context: ["mem_phase",
+set. The request entry recognises that case by the hop the hive's own door edge stamps
+(`phase: "recall"`) and starts a fresh chain regardless of what the context carried, so a caller
+does not have to know about keys it does not own. Since GH #197 that stamp is genuinely the
+hive's business: the door `. -> ./recall` sets it, and no caller can get it wrong. **Nothing is
+required of the caller here** — but if you want to be explicit, `delete_context: ["mem_phase",
 "recall_id"]` says the same thing at the wiring level. Before the fix this was a *silent* stall:
 the request parked, the caller waited for a bundle that never came, and there was no error, no
 dead letter and no log line to find.
@@ -343,8 +354,8 @@ expression reads a missing hop key fails, and a failed modifier makes the colony
 edge — so the caller must ALWAYS send both keys, if need be as an empty string. Omitting them
 does not fall back to a point query; it silently drops the entire recall request. Empty +
 empty = point query on `recall_as_of` (or "now"), both filled = interval, exactly one filled =
-`hop.route == 'reject'` out of the `recall-reject` port. Both filled **on a tier-0 request** is
-the one case the lane cannot answer: the bundle comes back through `recall-response` as usual
+`hop.route == 'reject'` out of the hive on the `reject` lane. Both filled **on a tier-0 request** is
+the one case the lane cannot answer: the bundle comes back on the `bundle` lane as usual
 and says so, with `hop.window_ignored = "1"` and a `window_ignored` block in the body (0.2.0 P7).
 
 **Who derives the window is CURRENT DESIGN, not a settled boundary.** The rule above — the hive
@@ -958,16 +969,17 @@ curl -s -X POST http://127.0.0.1:7792/colony/mutations -H 'Content-Type: applica
  "scope":"/","ctx":{},"diff":{
   "add_nodes":[{"name":"memory","template":"memory-hive"}],
   "add_edges":[
-   {"from":"./anchor","to":"./memory/writer","condition":"has(hop.route) && hop.route == \"write\""},
-   {"from":"./anchor","to":"./memory/recall","condition":"has(hop.route) && hop.route == \"recall\"",
-    "modifier":{"set_context":{"recall_query":"hop.recall_query","memory_tier":"hop.memory_tier",
+   {"from":"./anchor","to":"./memory","condition":"has(hop.route) && hop.route == \"write\"",
+    "modifier":{"set_hop":{"route":"'"'"'in_episode'"'"'"}}},
+   {"from":"./anchor","to":"./memory","condition":"has(hop.route) && hop.route == \"recall\"",
+    "modifier":{"set_hop":{"route":"'"'"'in_query'"'"'"},
+     "set_context":{"recall_query":"hop.recall_query","memory_tier":"hop.memory_tier",
      "recall_as_of":"hop.recall_as_of","recall_window_from":"hop.recall_window_from",
      "recall_window_to":"hop.recall_window_to"}}},
-   {"from":"./anchor","to":"./memory/extract-glue","condition":"has(hop.route) && hop.route == \"inline\"",
-    "modifier":{"set_context":{"store_origin":"'"'"'inline'"'"'","mem_phase":"'"'"'inline'"'"'"}}},
-   {"from":"./memory/recall","to":"./capture","condition":"has(hop.route) && hop.route == \"bundle\""},
-   {"from":"./memory/recall","to":"./capture","condition":"has(hop.route) && hop.route == \"reject\""},
-   {"from":"./memory/extract-glue","to":"./capture","condition":"has(hop.route) && hop.route == \"reject\""}]}}'
+   {"from":"./anchor","to":"./memory","condition":"has(hop.route) && hop.route == \"inline\"",
+    "modifier":{"set_hop":{"route":"'"'"'in_remember'"'"'"}}},
+   {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"bundle\""},
+   {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"reject\""}]}}'
 curl -s http://127.0.0.1:7792/colony/registry     # 10 hive cells active; cron Awake
 ```
 
@@ -977,8 +989,9 @@ long-running `cron` must be `Awake`.
 
 **G4** — two negative fixtures in the same workshop tree pin the rejection paths:
 `memory_hive_env_missing` (`env_var_missing`; the four no-default variables) and
-`memory_hive_unknown_port` (`edge_schema`, guards against wiring a port that does not
-exist — `./memory/decay`). Both are one-line variations of the positive root above.
+`memory_hive_unknown_port` (guards against naming a cell of the hive from outside — `./memory/decay`;
+under the seal every such endpoint is refused, whether the cell exists or not). Both are one-line
+variations of the positive root above.
 
 ## Probe sequences
 

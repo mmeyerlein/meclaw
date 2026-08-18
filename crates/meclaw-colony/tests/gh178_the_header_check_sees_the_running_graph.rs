@@ -131,12 +131,16 @@ async fn sealing_a_hive_does_not_brick_a_colony_whose_setter_is_a_mutation_edge(
     cell(td.path(), "main/entry", "/h", "{}");
     hive(td.path(), "main/h", r#"{"graph":{"edges":[]}}"#);
     cell(td.path(), "main/h/a", "/h/b", "{}");
-    cell(
-        td.path(),
-        "main/h/b",
-        "/h/b",
-        r#"{"context":{"chat_id":{"type":"string","required":true}}}"#,
-    );
+    // GH #185 re-cut: `/h/b` asks for `chat_id` only from the SECOND boot on.
+    // It used to be allowed to ask at the first one too, because an island with
+    // no incoming edge was read as the graph entry and handed the standard
+    // header set. That inference is gone — `/h/b` is not an ingress, it is a
+    // cell whose promoter arrives later, by mutation. Tightening the contract
+    // under a colony that has been running is exactly the shape this file is
+    // about (see the reported-not-refused test below), and it leaves what the
+    // test pins untouched: at the second boot the setter really is there, on a
+    // mutation edge, and sealing the hive must not take it away.
+    cell(td.path(), "main/h/b", "/h/b", "{}");
 
     // The colony is wired by mutation, the way a grown one is: a lane into the
     // hive, and the promotion inside it. Nothing of this is in any file.
@@ -150,6 +154,13 @@ async fn sealing_a_hive_does_not_brick_a_colony_whose_setter_is_a_mutation_edge(
         ],
     )
     .await;
+
+    cell(
+        td.path(),
+        "main/h/b",
+        "/h/b",
+        r#"{"context":{"chat_id":{"type":"string","required":true}}}"#,
+    );
 
     // The boundary-rule migration: the hive writes down its own doors.
     hive(

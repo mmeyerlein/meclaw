@@ -1077,7 +1077,10 @@ fn collect_header_contract_findings(
     let mut findings = Vec::new();
     for node in node_contracts.keys() {
         let view = &node_contracts[node];
-        if view.required_hop.is_empty() && view.required_context.is_empty() {
+        if view.required_hop.is_empty()
+            && view.required_context.is_empty()
+            && view.ingress_context.is_empty()
+        {
             continue;
         }
         let one_asks: std::collections::BTreeMap<
@@ -1090,6 +1093,15 @@ fn collect_header_contract_findings(
                 if k != node {
                     v.required_hop.clear();
                     v.required_context.clear();
+                    // GH #185: another node's ingress DECLARATION is a provider
+                    // fact (like `emits_hop`) and has to survive, or this pass
+                    // would invent unreachable keys. Its VALIDITY is that
+                    // node's own finding, reported in its own pass — so only
+                    // the claims that hold travel along, and each pass reports
+                    // exactly one node.
+                    v.ingress_context.retain(|k| {
+                        crate::mutation::validate::INGRESS_CONTEXT_KEYS.contains(&k.as_str())
+                    });
                 }
                 (k.clone(), v)
             })

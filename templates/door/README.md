@@ -38,7 +38,7 @@ Entry is `POST /messages` targeted at the instance. Exactly one lane leaves it:
 
 ```json
 [
-  { "from": "./surface", "to": "./firewall/screen",
+  { "from": "./surface", "to": "./firewall",
     "condition": "has(hop.route) && hop.route == 'turn'",
     "modifier": {"set_hop": {"route": "'in_turn'"},
                  "set_context": {"channel": "hop.chat_id"}} }

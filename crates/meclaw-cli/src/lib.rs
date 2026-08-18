@@ -10,7 +10,7 @@ pub mod vault_cli;
 pub use factories::built_in_factories;
 /// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
 /// so the CLI re-exports the substrate's type instead of mirroring it.
-pub use meclaw_colony::watchdog::{WatchdogOnTrip, WatchdogTrip};
+pub use meclaw_colony::watchdog::{HostWitness, WatchdogOnTrip, WatchdogTrip};
 
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -766,7 +766,8 @@ pub async fn run_with_hooks_tuned(
     let inbox_self_tx = inbox_tx.clone();
     // Deep-Audit F3: heartbeat channel — the colony loop emits ~10×/s; the
     // supervisor below counts misses and triggers a clean stop on colony death.
-    let (heartbeat_tx, heartbeat_rx) = tokio::sync::mpsc::channel::<()>(8);
+    let (heartbeat_tx, heartbeat_rx) =
+        tokio::sync::mpsc::channel::<meclaw_colony::watchdog::Beat>(8);
 
     // Step 5.3 — Direct-Mode egress channel: root-hive HiveNoRoute → stdout.
     // Only set in Direct-Mode; --daemon/--api paths leave egress as None → DLQ
@@ -849,6 +850,18 @@ pub async fn run_with_hooks_tuned(
     let (wd_fatal_tx, wd_fatal_rx) =
         tokio::sync::oneshot::channel::<meclaw_colony::watchdog::WatchdogTrip>();
     let (wd_arm_tx, wd_arm_rx) = tokio::sync::oneshot::channel::<()>();
+    // GH #165: the second observer. A supervisor that only sleeps cannot tell a
+    // wedged colony loop from a host that is not getting anything done — it wakes
+    // on time either way, which is how a compile on the same box killed a healthy
+    // colony three times in a day with `supervisor_lag=0ms` in the record. This
+    // task has to FINISH WORK once per supervisor period; the supervisor holds it
+    // to the same bar it holds the colony to, and a colony trip whose witness
+    // failed the same test never ends the process.
+    let (wd_witness_tx, wd_witness_rx) = tokio::sync::mpsc::channel::<()>(8);
+    tokio::spawn(meclaw_colony::watchdog::run_liveness_witness(
+        wd_witness_tx,
+        watchdog.period,
+    ));
     tokio::spawn(meclaw_colony::watchdog::run_watchdog(
         heartbeat_rx,
         wd_trip_tx,
@@ -856,6 +869,7 @@ pub async fn run_with_hooks_tuned(
         watchdog.period,
         wd_arm_rx,
         watchdog.on_trip,
+        Some(wd_witness_rx),
     ));
 
     // Bootstrap from filesystem (reads config.json files, plans + applies).
@@ -924,6 +938,14 @@ pub async fn run_with_hooks_tuned(
             let line = format!("{trip} cells_at_boot={cells_at_boot} on_trip={on_trip}");
             if fatal {
                 eprintln!("meclaw: watchdog trip — {line}");
+            } else if trip.witness() == meclaw_colony::watchdog::HostWitness::Failed {
+                // GH #165: reported, not acted on. The independent witness missed
+                // the same window, so this observation says something about the
+                // host and nothing about the colony.
+                eprintln!(
+                    "meclaw: watchdog trip (uncorroborated — an independent worker \
+                     missed the same window; the colony keeps running) — {line}"
+                );
             } else {
                 eprintln!("meclaw: watchdog trip (log-only, the colony keeps running) — {line}");
             }

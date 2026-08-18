@@ -658,9 +658,10 @@ async fn final_answer_coupled_to_turn() {
 /// (validate-only, no spawn, no HTTP). Asserts `Ok`:
 ///
 /// - `consumes.context.turn_id` required at billing/tech/capture is reachable via
-///   the ingress root (turn_id ∈ INGRESS_CONTEXT_KEYS; router has no incoming edge
-///   → it IS the ingress root; the path router→billing/tech/capture carries no
-///   delete_context for turn_id).
+///   the ingress root — `/router` DECLARES `contract.ingress.context: turn_id`
+///   (GH #185: it used to qualify by having no incoming edge, which was a fact
+///   about the graph rather than about the cell), and the path
+///   router→billing/tech/capture carries no delete_context for turn_id.
 /// - `agent_target` lives only in Edge conditions (not in any `consumes.hop`) →
 ///   hop-locality rule is vacuously satisfied (no required hop keys anywhere).
 ///
@@ -688,7 +689,7 @@ fn validator_accepts_multi_agent_topology() {
 ///
 /// Copies the 14-D tree and mutates `main/config.json`: adds
 /// `"modifier": {"delete_context": ["turn_id"]}` to the `router→billing` edge.
-/// This severs the ingress-at-birth path for `turn_id` on the billing branch —
+/// This severs the path from the declared ingress for `turn_id` on the billing branch —
 /// billing declares `consumes.context.turn_id` required, but the only incoming
 /// edge now carries a delete for that key.
 ///

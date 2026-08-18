@@ -132,7 +132,26 @@ impl Connection {
         Some(Some(ok_reply(&join_ref, &msg_ref, &topic, response)))
     }
 
-    /// A join: check the token, then render (or take the cache).
+    /// A join: check the token, then render — and fall back to the cache only if
+    /// that render does not produce a page.
+    ///
+    /// **A join is a render, not a lookup (GH #172).** The transport reconnects on
+    /// its own schedule; until it rejoins, the DOM is whatever was last drawn. That
+    /// half is the client's. This half was that the rejoin was then answered out of
+    /// the cache, so a page could be served from a render that predates the reason
+    /// the socket dropped. After a colony restart the operator kept looking at two
+    /// cell names that had been renamed minutes earlier, while the graph, the
+    /// stored snapshot and the API all agreed on the new ones — and a stale picture
+    /// and a live one are visually identical, so nothing said so.
+    ///
+    /// The cache keeps its job, one step further down: a browser arriving while the
+    /// colony is wedged still gets the last picture rather than an error or a blank
+    /// frame. Freshest when it can, never blank when it cannot.
+    ///
+    /// This is affordable because the return path is ordered now: a render's waiter
+    /// is provably in the table before the request is injected (GH #223), so a join
+    /// that renders gets an answer instead of waiting out its whole budget for one
+    /// that was dropped as "nobody waiting".
     async fn join(&mut self, topic: &str, payload: &Value) -> Result<Value, String> {
         let expected = format!("lv:{}", session::container_id(&self.cell_path));
         if topic != expected {
@@ -149,11 +168,24 @@ impl Connection {
         }
         self.joined = Some(topic.to_string());
 
-        if let Some(html) = self.dispatcher.cached(&self.cell_path).await {
-            return Ok(tree(&html));
-        }
-        self.ask(json!({ "event": "surface:join", "value": {} }))
+        match self
+            .ask(json!({ "event": "surface:join", "value": {} }))
             .await
+        {
+            Ok(rendered) => Ok(rendered),
+            Err(reason) => match self.dispatcher.cached(&self.cell_path).await {
+                Some(html) => {
+                    tracing::warn!(
+                        surface = %self.cell_path,
+                        %reason,
+                        "the surface did not render for this join; serving the last \
+                         picture, which may be older than the colony"
+                    );
+                    Ok(tree(&html))
+                }
+                None => Err(reason),
+            },
+        }
     }
 
     /// An event: pass it to the cell verbatim.
@@ -352,6 +384,139 @@ mod tests {
             assert_eq!(v[4]["status"], "ok", "{event}");
             assert_eq!(v[4]["response"], json!({}), "{event}");
         }
+    }
+
+    // ---- a join is a render, not a lookup (GH #172) ---------------------------
+
+    use super::super::render::{REQUEST_ID, SURFACE_PATH};
+    use meclaw_colony::ColonyMsg;
+    use meclaw_core::{Body, MessageBuilder, Path};
+
+    /// One egress reply, as the colony's door hands it over.
+    fn egress(request: &str, html: &str) -> meclaw_core::Message {
+        let mut ctx = meclaw_core::serde_json::Map::new();
+        ctx.insert(REQUEST_ID.to_string(), json!(request));
+        ctx.insert(SURFACE_PATH.to_string(), json!(CELL));
+        MessageBuilder::new(Path::new("/"))
+            .context(ctx)
+            .body(Body::Inline(json!({ "surface": { "html": html } })))
+            .build()
+    }
+
+    /// A connection whose colony answers every render with `html`, and whose cache
+    /// has been primed with an older picture first.
+    async fn conn_with_a_live_colony(
+        cached: &str,
+        answer: &'static str,
+    ) -> (Connection, tokio::task::JoinHandle<()>) {
+        let (colony_tx, mut colony_rx) = tokio::sync::mpsc::channel::<ColonyMsg>(8);
+        let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(8);
+        let (dispatcher, _run) = super::super::render::Dispatcher::new(
+            colony_tx,
+            egress_rx,
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+
+        // Prime the cache: a reply nobody waits for is cached, which is exactly how
+        // a page rendered before a restart is still there after one.
+        egress_tx.send(egress("nobody", cached)).await.unwrap();
+        for _ in 0..200 {
+            if dispatcher.cached(CELL).await.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            dispatcher.cached(CELL).await.as_deref(),
+            Some(cached),
+            "the cache must hold the old picture before the join"
+        );
+
+        let colony = tokio::spawn(async move {
+            while let Some(ColonyMsg::Route { msg, .. }) = colony_rx.recv().await {
+                let id = msg
+                    .headers
+                    .context
+                    .get(REQUEST_ID)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if egress_tx.send(egress(&id, answer)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        (Connection::new(CELL.to_string(), dispatcher), colony)
+    }
+
+    /// **A join is a render, not a lookup.** The transport reconnects on its own
+    /// schedule — Phoenix backs off after a socket drop — and until it rejoins the
+    /// DOM is whatever was last drawn. That part is the client's. What was ours is
+    /// that the rejoin was then answered out of the cache, so a page could be
+    /// served from a render that predates the reason the socket dropped: after a
+    /// colony restart the operator kept looking at two cell names that had been
+    /// renamed minutes earlier, while the graph, the snapshot and the API all
+    /// agreed on the new ones (GH #172).
+    ///
+    /// The cache exists so a browser arriving mid-render is not left blank. A
+    /// rejoin after a drop is the exact case where "whatever we had" is the wrong
+    /// answer, and the cost of the right one is one render per reconnect.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_join_renders_rather_than_serving_the_cached_picture() {
+        let (mut c, colony) = conn_with_a_live_colony("<svg>OLD</svg>", "<svg>NEW</svg>").await;
+        let topic = format!("lv:{}", session::container_id(CELL));
+        let token = session::mint(CELL);
+        let v = parse(
+            c.handle_text(&frame(&topic, "phx_join", json!({ "session": token })))
+                .await,
+        );
+        assert_eq!(v[4]["status"], "ok", "{v}");
+        assert_eq!(
+            v[4]["response"]["rendered"]["0"], "<svg>NEW</svg>",
+            "the join was answered from a render that predates the restart: {v}"
+        );
+        colony.abort();
+    }
+
+    /// **…and the cache is what a failed render falls back to.** That is the job it
+    /// was built for: a browser that arrives while the colony is wedged should see
+    /// the last picture with the client's own disconnected marking on it, not an
+    /// error and not a blank frame. Rendering first and reading the cache second
+    /// keeps both properties — freshest when it can, never blank when it cannot.
+    #[tokio::test]
+    async fn a_join_whose_render_fails_still_serves_the_cached_picture() {
+        let (colony_tx, colony_rx) = tokio::sync::mpsc::channel::<ColonyMsg>(1);
+        let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(1);
+        let (dispatcher, _run) = super::super::render::Dispatcher::new(
+            colony_tx,
+            egress_rx,
+            meclaw_core::MESSAGE_DEFAULT_TTL,
+        );
+        egress_tx
+            .send(egress("nobody", "<svg>LAST</svg>"))
+            .await
+            .unwrap();
+        for _ in 0..200 {
+            if dispatcher.cached(CELL).await.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        // Only now: with the colony's inbox gone every render fails at once.
+        drop(colony_rx);
+
+        let mut c = Connection::new(CELL.to_string(), dispatcher);
+        let topic = format!("lv:{}", session::container_id(CELL));
+        let token = session::mint(CELL);
+        let v = parse(
+            c.handle_text(&frame(&topic, "phx_join", json!({ "session": token })))
+                .await,
+        );
+        assert_eq!(
+            v[4]["status"], "ok",
+            "a blank page is worse than an old one: {v}"
+        );
+        assert_eq!(v[4]["response"]["rendered"]["0"], "<svg>LAST</svg>");
     }
 
     /// A frame that is not a vsn 2.0.0 tuple closes the connection instead of being

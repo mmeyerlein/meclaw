@@ -29,11 +29,27 @@ needs to know nothing about MeClaw.
 | `probe` | asks `/colony/graph`, writes the snapshot | sit in a browser's request path |
 | `client/` | this hive's own JS and CSS | live in the binary |
 
-The hive seals itself with `ports: ["render", "refresh"]`: no later mutation can
-wire around the render cell straight into the store. The HTTP layer is not an
-edge and so not covered by that seal — what keeps it honest is the **route**,
-which can only ever address a cell that declared `cell.surface`, and the store
-does not.
+## The boundary
+
+The hive seals itself with **`ports: []`**: the hive path is the only address,
+and no edge reaches a cell in here — not the store, and not the render cell
+either. What a caller asks for rides on `hop.route`:
+
+| lane | direction | carries |
+|---|---|---|
+| `in_refresh` | in | take the topology snapshot **now**, instead of at the next tick |
+| `surface` | out | the drawn page, on the marked egress, back to the browser that asked |
+
+Which cell serves a lane is this hive's business and is stated exactly once, on
+the hive's own door edge. `canvy@0.2` declared `ports: ["render", "refresh"]`,
+which are the names of two cells in here — a caller had to know the inside in
+order to address it. Both addresses are retired; an edge that used to name
+`./canvy/refresh` becomes `./canvy` with
+`modifier.set_hop.route: "'in_refresh'"`.
+
+The HTTP layer is not an edge and so not covered by the seal — what keeps it
+honest is the **route**, which can only ever address a cell that declared
+`cell.surface`, and the store does not.
 
 ## Two round trips, and the numbers
 
@@ -58,7 +74,7 @@ never the movement in between.
 ```json
 {"scope": "/org/acme/member/alice",
  "ctx": {},
- "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.2.0"}]}}
+ "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.3.0"}]}}
 ```
 
 That is the whole installation. No restart, no lane to grant, no edge for the

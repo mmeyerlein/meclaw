@@ -3,8 +3,35 @@
     "type": "hive"
   },
   "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "context": [
+            "channel"
+          ],
+          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one"
+        }
+      ],
+      "emits": [
+        {
+          "route": "pass",
+          "because": "the turn survived every rule; this is the only lane into the agent behind it"
+        },
+        {
+          "route": "reject",
+          "because": "the turn was refused. hop.reject_reason and hop.rule_id say what happened; what to do about it is the parent's decision"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./screen",
+          "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
         {
           "from": "./screen",
           "to": "./rules",
@@ -24,6 +51,32 @@
           "from": "./rules",
           "to": "./screen",
           "condition": "context.store_origin == 'firewall'"
+        },
+        {
+          "from": "./screen",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pass'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./screen",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "store_origin"
+            ]
+          }
         }
       ]
     }

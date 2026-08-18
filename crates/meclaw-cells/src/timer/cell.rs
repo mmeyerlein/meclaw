@@ -209,6 +209,14 @@ impl LongRunningCell for TimerCell {
                 }
             };
 
+            // GH #231: ONE clock read decides this whole op. The guard below
+            // and the snapshot at the end of every successful branch share it,
+            // so a one-shot the guard accepted as "still ahead" cannot be
+            // dropped as "already past" by the re-read a few microseconds
+            // later. That gap between the accepting check and the planning
+            // read is the window this issue was reported from.
+            let op_now = chrono::Utc::now();
+
             let op = match crate::timer::op::TimerOp::parse(&op_val) {
                 Ok(o) => o,
                 Err(e) => {
@@ -230,6 +238,27 @@ impl LongRunningCell for TimerCell {
             };
             match op {
                 crate::timer::op::TimerOp::Add(row) => {
+                    // GH #231: a one-shot whose `at` has passed by the time the
+                    // op is processed is refused here, before the INSERT. It is
+                    // never planned (`load_active_filter_past` and
+                    // `compute_next_occurrence` both drop it), so accepting it
+                    // would store exactly the thing the spec's `add` validation
+                    // exists to prevent — a schedule that sits there and never
+                    // fires. The op that ran out of lead time in flight now
+                    // says so instead of being swallowed.
+                    if let crate::timer::schedule::ScheduleKind::At(at) = &row.kind
+                        && let Some(detail) = past_at_detail("add", *at, op_now)
+                    {
+                        crate::timer::emit::emit_op_error(
+                            sink,
+                            &msg,
+                            "at_in_past",
+                            &detail,
+                            tool_call_id.as_deref(),
+                        )
+                        .await;
+                        return;
+                    }
                     let row_for_call = row.clone();
                     let inserted = db
                         .call_with_timeout(move |c| {
@@ -239,7 +268,7 @@ impl LongRunningCell for TimerCell {
                     let schedule_id = row.schedule_id;
                     match inserted {
                         Ok(Ok(())) => {
-                            send_setactive_snapshot(db, reconfig_tx).await;
+                            send_setactive_snapshot(db, reconfig_tx, op_now).await;
                             // GH #81: the answer a tool loop waits for. Only when
                             // the op arrived as a `tool_call` -- the raw-body path
                             // stays unacked, as it always was.
@@ -330,6 +359,22 @@ impl LongRunningCell for TimerCell {
                         .await;
                         return;
                     }
+                    // GH #231: the same refusal on the modify lane — moving a
+                    // one-shot to a time that has already passed would leave an
+                    // active row nothing will ever plan.
+                    if let Some(at) = new_at
+                        && let Some(detail) = past_at_detail("modify", at, op_now)
+                    {
+                        crate::timer::emit::emit_op_error(
+                            sink,
+                            &msg,
+                            "at_in_past",
+                            &detail,
+                            tool_call_id.as_deref(),
+                        )
+                        .await;
+                        return;
+                    }
                     let n = match db
                         .call_with_timeout(move |c| {
                             crate::timer::db::modify_schedule_fields(
@@ -366,7 +411,7 @@ impl LongRunningCell for TimerCell {
                         )
                         .await;
                     } else {
-                        send_setactive_snapshot(db, reconfig_tx).await;
+                        send_setactive_snapshot(db, reconfig_tx, op_now).await;
                         // GH #81: the answer a tool loop waits for. Only when
                         // the op arrived as a `tool_call` -- the raw-body path
                         // stays unacked, as it always was.
@@ -471,7 +516,7 @@ impl LongRunningCell for TimerCell {
                         )
                         .await;
                     } else {
-                        send_setactive_snapshot(db, reconfig_tx).await;
+                        send_setactive_snapshot(db, reconfig_tx, op_now).await;
                         // GH #81: the answer a tool loop waits for. Only when
                         // the op arrived as a `tool_call` -- the raw-body path
                         // stays unacked, as it always was.
@@ -623,16 +668,50 @@ fn build_fire_content(
     content
 }
 
+/// GH #231: the detail line for a one-shot whose `at` is not in the future, or
+/// `None` when it still is.
+///
+/// The comparison is `at <= now`, the same boundary `load_active_filter_past`
+/// draws — an op is refused exactly when the plan would have dropped it, so the
+/// two can never disagree about one schedule. Both instants are rendered with
+/// millisecond precision: the case this exists for is a lead time that ran out
+/// in flight, and at second precision the message would read as two identical
+/// timestamps.
+fn past_at_detail(
+    op: &str,
+    at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    use chrono::SecondsFormat;
+    if at > now {
+        return None;
+    }
+    Some(format!(
+        "{op}: `at` {} is not in the future (now {}) — a one-shot in the past is \
+         never scheduled, so nothing was stored. If the time was still ahead when \
+         the request was made, its lead time ran out while the op was in flight; \
+         ask for a later one.",
+        at.to_rfc3339_opts(SecondsFormat::Millis, true),
+        now.to_rfc3339_opts(SecondsFormat::Millis, true),
+    ))
+}
+
 /// Helper: loads the current active snapshot fresh from `cell.db` (including the
 /// past-one-shot filter) and sends it as `SetActive` to the I/O task.
 /// Fire-and-forget — on a full channel or a dead receiver the helper swallows
 /// silently.
+///
+/// `now` is the op's own clock read, not a fresh one (GH #231): the filter must
+/// draw its line at the same instant the op was accepted against, otherwise a
+/// one-shot can be accepted and then immediately filtered out of the plan it was
+/// accepted into.
 async fn send_setactive_snapshot(
     db: &mut DbConn,
     reconfig_tx: &mpsc::Sender<crate::timer::io::TimerReconfig>,
+    now: chrono::DateTime<chrono::Utc>,
 ) {
     let snap = db
-        .call_with_timeout(|c| crate::timer::db::load_active_filter_past(c, chrono::Utc::now()))
+        .call_with_timeout(move |c| crate::timer::db::load_active_filter_past(c, now))
         .await
         .ok()
         .and_then(|r| r.ok())

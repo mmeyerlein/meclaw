@@ -32,9 +32,9 @@ Entry is any turn on any lane; there is no exit.
 
 ```json
 [
-  { "from": "./firewall/screen", "to": "./sink",
+  { "from": "./firewall", "to": "./sink",
     "condition": "has(hop.route) && hop.route == 'reject'" },
-  { "from": "./talky/errors", "to": "./sink",
+  { "from": "./talky", "to": "./sink",
     "condition": "has(hop.route) && hop.route == 'error'" }
 ]
 ```
@@ -46,7 +46,7 @@ looking at -- that is what makes one instance enough for every unfinished lane i
 
 The moment a lane knows where it belongs. Each edge that pointed here gets a real
 destination instead -- an answer back out through a channel `proxy`, a rejection into a
-log store, an error onto an alarm, an episode into a memory hive's turn-write port. The
+log store, an error onto an alarm, an episode into a memory hive on its in_episode lane. The
 template is a scaffold with an honest name, not a component to build on.
 
 If a lane's only consumer really is the trace (audit copies, fire-and-forget mirrors),

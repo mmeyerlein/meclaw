@@ -158,6 +158,23 @@ async fn colony_json_sets_the_watchdog_deadline_on_the_production_path() {
             "the trip must be actionable and name {needle} — was: {msg}"
         );
     }
+    // GH #165: the end-to-end receipt that the corroboration is REAL on the
+    // production path and did not merely fail to load. The colony was parked
+    // (nothing in flight), the independent witness kept finishing its work units
+    // on the same runtime — so this trip implicates the colony loop and is
+    // correctly fatal. If either control had been missing or broken, the process
+    // would have kept running and this test would have hung instead.
+    for needle in [
+        "in_flight_work=false",
+        "witness=kept",
+        "starved=colony_loop",
+    ] {
+        assert!(
+            msg.contains(needle),
+            "the trip must be corroborated, not merely measured — {needle} missing \
+             in: {msg}"
+        );
+    }
 }
 
 /// GH #84 half 1, the other half: reachable must not mean changed. A colony root

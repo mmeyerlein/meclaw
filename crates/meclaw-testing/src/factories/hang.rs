@@ -192,7 +192,10 @@ mod tests {
             spawn_count: Arc::new(AtomicU32::new(0)),
         });
         let (_cell, _conn) = factory
-            .build_cell_with_open_db(&cell_dir, &meclaw_core::serde_json::json!({"sleep_ms": 5}))
+            .build_cell_with_open_db(
+                &cell_dir,
+                &meclaw_core::serde_json::json!({"sleep_ms": 5, "emitted_target": "/sink"}),
+            )
             .unwrap();
         assert_eq!(factory.spawn_count.load(Ordering::Relaxed), 1);
         assert!(cell_dir.join("cell.db").exists());

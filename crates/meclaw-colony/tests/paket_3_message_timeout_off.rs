@@ -94,7 +94,7 @@ async fn run_backstop_disabled_variant(timeout_value: i64) {
     // The hang cell: sleep_ms=300 ms in handle(); message_timeout set to
     // timeout_value (0 or -1 → backstop OFF); emits to /sink on completion.
     let config = format!(
-        r#"{{"cell":{{"type":"hang","message_timeout":{}}},"params":{{"sleep_ms":300,"echo_to":"/sink"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#,
+        r#"{{"cell":{{"type":"hang","message_timeout":{}}},"params":{{"sleep_ms":300,"emitted_target":"/sink"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#,
         timeout_value
     );
     write(td.path(), "main/hang/config.json", &config);
@@ -197,7 +197,7 @@ async fn long_running_cell_ignores_message_timeout() {
         r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/lr"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     // LR cell: message_timeout=100 ms (small), but LR has no backstop wrapper →
-    // the 400 ms handle() is NOT killed.  `echo_to` is NOT in the FS config
+    // the 400 ms handle() is NOT killed.  `emitted_target` is NOT in the FS config
     // here — it is injected via the factory (LongRunningReceiptFactory).
     write(
         td.path(),

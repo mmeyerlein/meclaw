@@ -680,8 +680,25 @@ async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime:
     crate::mutation::required_drains::warn_on_missing_drains(&reqs, &edges);
     // GH #173: the same graph answers the second question — does every lane a
     // hive promises still have a door? One ReadGraph, two declarations checked.
+    //
+    // GH #176: the contract half needs one thing the drain half does not — the
+    // edge's `modifier`. A hive's failure exit recognises something interior
+    // and STAMPS the lane, and a check that only sees conditions cannot tell
+    // that door from a missing one.
     let contracts = crate::mutation::hive_contract::collect_hive_contracts(root, hive_paths.iter());
-    crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &edges);
+    let contract_edges: Vec<crate::mutation::hive_contract::BootEdge> = graph
+        .edges
+        .iter()
+        .map(|e| {
+            (
+                e.from.clone(),
+                e.to.clone(),
+                e.condition.clone(),
+                e.modifier.clone(),
+            )
+        })
+        .collect();
+    crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &contract_edges);
 }
 
 /// Snapshot the set of registered node paths from the running colony (A8).

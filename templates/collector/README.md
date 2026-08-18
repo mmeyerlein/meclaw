@@ -744,12 +744,12 @@ role a provider knows. In the store it keeps its own role, so a batch and a prun
 still tell an event from a user's word.
 
 ```json
-{ "from": "./dispatcher", "to": "/agent/cogny/collector",
-  "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+{ "from": "./dispatcher", "to": "/front/cogny",
+  "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
   "modifier": {"set_hop": {"route": "'in_turn'"},
                "set_context": {"consult_id": "hop.consult_id"},
                "restore_ttl": true} },
-{ "from": "/agent/cogny/collector", "to": "./collector",
+{ "from": "/front/cogny", "to": "./collector",
   "condition": "has(hop.route) && hop.route == 'answer'",
   "modifier": {"set_hop": {"route": "'in_advice'"}, "restore_ttl": true} }
 ```

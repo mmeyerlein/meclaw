@@ -13,7 +13,7 @@
 //! Topology (modelled on `phase_13_lifecycle_demo`):
 //!   td.path()/main/config.json              (hive, root)
 //!   td.path()/main/cell-000/config.json     (persist_mock, idle_timeout_ms=120,
-//!                                            echo_to=/sink)
+//!                                            emitted_target=/sink)
 //!   ... cell-001 .. cell-049 ...
 //!   /sink                                   (CaptureCell, registered directly
 //!                                            via h.spawn BEFORE bootstrap for
@@ -48,7 +48,7 @@ fn write_phase_13_demo_fixture(root: &std::path::Path, n: usize, idle_ms: u64) {
         std::fs::write(
             dir.join("config.json"),
             format!(
-                r#"{{"cell":{{"type":"persist_mock","idle_timeout_ms":{idle_ms}}},"params":{{"echo_to":"/sink"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+                r#"{{"cell":{{"type":"persist_mock","idle_timeout_ms":{idle_ms}}},"params":{{"emitted_target":"/sink"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
             ),
         )
         .unwrap();
@@ -100,7 +100,7 @@ async fn phase_13_demo_50_cells_lifecycle_with_db_resume() {
         vec![("persist_mock".to_string(), persist_factory.clone())],
     );
 
-    // Register /sink BEFORE bootstrap (anti-cascade: every /cell-NNN echo_to
+    // Register /sink BEFORE bootstrap (anti-cascade: every /cell-NNN emitted_target
     // emission must be resolvable, otherwise it lands in the DLQ instead of the
     // sink channel).
     let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(128);

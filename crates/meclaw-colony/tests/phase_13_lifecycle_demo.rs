@@ -13,7 +13,7 @@
 //! Topology (modelled on `phase_7_5_demo::demo_production_bootstrap_spawn_with_restart`):
 //!   td.path()/main/config.json            (hive, root)
 //!   td.path()/main/persist/config.json    (persist_mock, idle_timeout_ms=120,
-//!                                          echo_to=/sink, without panic_after)
+//!                                          emitted_target=/sink, without panic_after)
 //!   /sink                                 (CaptureCell, registered directly via
 //!                                          h.spawn BEFORE bootstrap for
 //!                                          anti-cascade)
@@ -65,7 +65,7 @@ async fn lifecycle_full_cycle_with_db_resume() {
     // FS tree: root hive + stateful persist_mock with:
     //   - idle_timeout_ms = 120ms (small, keeps the test deterministic)
     //   - cell.timeout = 0 (idle model, default)
-    //   - echo_to = /sink (output lands at the sink, no self-loop)
+    //   - emitted_target = /sink (output lands at the sink, no self-loop)
     write(
         td.path(),
         "main/config.json",
@@ -74,7 +74,7 @@ async fn lifecycle_full_cycle_with_db_resume() {
     write(
         td.path(),
         "main/persist/config.json",
-        r#"{"cell":{"type":"persist_mock","idle_timeout_ms":120},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock","idle_timeout_ms":120},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     // Factory-Setup (Arc-shared: ColonyHandle + bootstrap-Registry).
@@ -88,7 +88,7 @@ async fn lifecycle_full_cycle_with_db_resume() {
         vec![("persist_mock".to_string(), persist_factory.clone())],
     );
 
-    // Register /sink BEFORE bootstrap (anti-cascade: /persist's echo_to must be
+    // Register /sink BEFORE bootstrap (anti-cascade: /persist's emitted_target must be
     // resolvable, otherwise the cell output emission lands in the DLQ).
     let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(16);
     h.spawn(Path::new("/sink"), move || {

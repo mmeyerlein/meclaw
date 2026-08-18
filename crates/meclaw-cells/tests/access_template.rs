@@ -191,10 +191,10 @@ sys.stdout.write(json.dumps({
                                       "text": msgs[-1].get("text")})}]}))
 "#;
 
-/// The probe. It reaches PAST the ports straight into `./store` -- exactly the
-/// bypass the README calls out as possible. Here it is used the two ways that
-/// are legitimate: to read what the broker wrote, and to play the operator who
-/// turns a policy row on or writes a revocation.
+/// The probe. It reaches PAST the boundary straight into `./store` -- exactly
+/// the bypass the README calls out as possible from a boot graph. Here it is
+/// used the two ways that are legitimate: to read what the broker wrote, and to
+/// play the operator who turns a policy row on or writes a revocation.
 const PROBE: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
@@ -240,42 +240,51 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
 
 // ─────────────────────────────────────────────────────────────── the topology
 
-/// The ports around the hive -- every one a literal copy of what
+/// The lanes around the hive -- every one a literal copy of what
 /// `templates/access/README.md` documents, plus the probe pair that is the
 /// test's own read channel. The template draws no edge that appears here.
 ///
-/// Note the shape of `out_connect`: exactly ONE edge leaves `./access/invoke`
-/// towards `./connector`, and nothing else in this tree can reach it. That
-/// single edge is what the whole broker is worth, and the README says so.
+/// **Every endpoint that belongs to the broker is the HIVE path** (GH #197):
+/// `params.ports` is empty, so a caller names `./access` and a lane on
+/// `hop.route`, and which cell answers is decided by the hive's own door edge.
+/// That is what makes the two invariants below invariants of an INTERFACE
+/// rather than of an arrangement — an inside rebuilt differently keeps them.
+///
+/// Note the shape of `connect`: exactly ONE edge leaves `./access` towards
+/// `./connector`, and nothing else in this tree can reach it. That single edge
+/// is what the whole broker is worth, and the README says so.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         // ── in_request: the caller's identity becomes EDGE truth, and only here ──
-        {"from": "./requester", "to": "./access/policy",
+        {"from": "./requester", "to": "./access",
          "condition": "has(hop.route) && hop.route == 'request'",
-         "modifier": {"set_context": {"requester": "hop.who"}}},
-        // ── out_grant ──
-        {"from": "./access/policy", "to": "/sink",
+         "modifier": {"set_hop": {"route": "'in_request'"},
+                      "set_context": {"requester": "hop.who"}}},
+        // ── grant ──
+        {"from": "./access", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'grant'"},
         // ── in_invoke: the same promotion, because a grant belongs to somebody ──
-        {"from": "./spender", "to": "./access/invoke",
+        {"from": "./spender", "to": "./access",
          "condition": "has(hop.route) && hop.route == 'invoke'",
-         "modifier": {"set_context": {"requester": "hop.who"}}},
-        // ── out_ack ──
-        {"from": "./access/invoke", "to": "/sink",
+         "modifier": {"set_hop": {"route": "'in_invoke'"},
+                      "set_context": {"requester": "hop.who"}}},
+        // ── ack ──
+        {"from": "./access", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'ack'"},
-        // ── out_connect: THE one edge into the connector ──
-        {"from": "./access/invoke", "to": "./connector",
+        // ── connect: THE one edge into the connector ──
+        {"from": "./access", "to": "./connector",
          "condition": "has(hop.route) && hop.route == 'connect'"},
         {"from": "./connector", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'sent'"},
-        // ── out_error: the drain the parent MUST wire, all three code cells ──
-        {"from": "./access/policy", "to": "/sink",
+        // ── error: the drain the parent MUST wire; ONE edge, because which
+        //    cell inside failed is not the caller's business ──
+        {"from": "./access", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'error'"},
-        {"from": "./access/invoke", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'error'"},
-        {"from": "./access/sweep", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'error'"},
-        // ── the test's own read channel, straight into the store ──
+        // ── the test's own read channel, straight into the store. This is the
+        //    bypass the README's `The honest limit` names: legal here only
+        //    because a BOOT graph is the sovereign birth draft and the seal is
+        //    warned about rather than enforced there. A mutation drawing it is
+        //    refused with `hive_port_boundary`, which is asserted separately. ──
         {"from": "./probe", "to": "./access/store",
          "condition": "has(hop.route) && hop.route == 'pstore'",
          "modifier": {"set_context": {"access_origin": "'probe'"}}},
@@ -1124,4 +1133,117 @@ async fn an_unknown_capability_is_denied_and_audited() {
     );
 
     h.shutdown().await;
+}
+
+// ──────────────────────────────────────────────── the boundary (GH #197, #200)
+
+/// The hive is sealed to its own path, and what it offers is stated in lanes.
+///
+/// `access@1.x` declared `params.ports: ["policy", "invoke", "store"]`. Two of
+/// those are cell names standing in for lanes, and the third was the bypass
+/// this template's own README calls out as its honest limit — a declared port
+/// straight into the store is an invitation to write a policy row without
+/// asking anybody.
+#[test]
+fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let cfg = read_json(&root.join("config.json"));
+    let ports = cfg["params"]["ports"]
+        .as_array()
+        .expect("params.ports is declared");
+    assert!(
+        ports.is_empty(),
+        "the hive path is the only address, got {ports:?}"
+    );
+
+    let lanes = |key: &str| -> Vec<String> {
+        cfg["params"]["contract"][key]
+            .as_array()
+            .unwrap_or_else(|| panic!("params.contract.{key} is declared"))
+            .iter()
+            .map(|l| {
+                assert!(
+                    !l["because"].as_str().expect("a lane says why").is_empty(),
+                    "a lane without a sentence is a lane nobody can wire"
+                );
+                l["route"].as_str().expect("a lane is a route").to_string()
+            })
+            .collect()
+    };
+    assert_eq!(lanes("accepts"), vec!["in_request", "in_invoke"]);
+    assert_eq!(lanes("emits"), vec!["grant", "ack", "connect", "error"]);
+    // Requirement 2: not one of them is the name of a cell in here.
+    for lane in lanes("accepts").iter().chain(lanes("emits").iter()) {
+        for cell in ["policy", "invoke", "store", "sweep", "clock", "vault"] {
+            assert_ne!(lane, cell, "'{lane}' is a cell of this hive, not a lane");
+        }
+    }
+
+    // Requirement 3: the mapping lane -> cell exists exactly once, and it is an
+    // edge of this hive's own graph.
+    let edges = cfg["params"]["graph"]["edges"].as_array().unwrap();
+    let door_to = |lane: &str| -> Vec<&str> {
+        edges
+            .iter()
+            .filter(|e| {
+                e["from"] == "."
+                    && e["condition"]
+                        .as_str()
+                        .is_some_and(|c| c.contains(&format!("'{lane}'")))
+            })
+            .map(|e| e["to"].as_str().unwrap())
+            .collect()
+    };
+    assert_eq!(door_to("in_request"), vec!["./policy"]);
+    assert_eq!(door_to("in_invoke"), vec!["./invoke"]);
+    assert_eq!(
+        edges.iter().filter(|e| e["from"] == ".").count(),
+        2,
+        "two doors, one per accepted lane: {edges:?}"
+    );
+}
+
+/// And the seal is the substrate's, not this test's opinion of it: the real
+/// port-boundary validation refuses a mutation that reaches inside, and admits
+/// the hive path itself.
+#[test]
+fn a_mutation_reaching_inside_the_broker_is_refused_by_the_real_validator() {
+    use meclaw_colony::config::HiveParams;
+    use meclaw_colony::mutation::port_boundary::{SealedHive, validate_hive_port_boundary};
+
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let params: HiveParams =
+        meclaw_core::serde_json::from_value(read_json(&root.join("config.json"))["params"].clone())
+            .expect("the shipped params parse as HiveParams");
+    let sealed = vec![SealedHive {
+        path: "/access".to_string(),
+        ports: params.ports.clone().expect("declared"),
+    }];
+
+    // The store was a declared port in 1.x. It is the one that mattered.
+    for endpoint in ["./access/store", "./access/policy", "./access/invoke"] {
+        let err = validate_hive_port_boundary(
+            &json!({"add_edges": [{"from": "./agent", "to": endpoint}]}),
+            "/",
+            &sealed,
+        )
+        .expect_err("an interior endpoint must be refused");
+        assert_eq!(err.error_code(), "hive_port_boundary", "for {endpoint}");
+    }
+
+    validate_hive_port_boundary(
+        &json!({"add_edges": [
+            {"from": "./agent", "to": "./access",
+             "modifier": {"set_hop": {"route": "'in_request'"}}},
+            {"from": "./access", "to": "./agent",
+             "condition": "has(hop.route) && hop.route == 'grant'"}
+        ]}),
+        "/",
+        &sealed,
+    )
+    .expect("the documented wiring names the hive and must stay legal");
 }

@@ -3,8 +3,89 @@
     "type": "hive"
   },
   "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "context": [
+            "channel"
+          ],
+          "because": "a turn from the surface. The caller MUST promote the channel identity to context.channel, or every chat of the colony lands on the channel `default`"
+        },
+        {
+          "route": "in_sweep",
+          "because": "an operator-forced session sweep outside the night timer"
+        },
+        {
+          "route": "in_tool",
+          "because": "one tool result, coming back from a tool cell the parent wired"
+        },
+        {
+          "route": "in_advice",
+          "because": "an advisor's answer, coming back from a second agent"
+        },
+        {
+          "route": "in_bundle",
+          "because": "a memory bundle, coming back from whatever keeps this agent's memory"
+        },
+        {
+          "route": "in_memory_call",
+          "because": "a memory tool call the front model made, handed back in"
+        },
+        {
+          "route": "in_prune",
+          "because": "a prune verdict for the context window"
+        },
+        {
+          "route": "in_round_sweep",
+          "because": "a round that ran out of iterations, swept by an operator"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "the finished turn, for the reply sink. Two sorts travel here and hop.round_capped tells them apart: a real answer and a round that hit max_iter"
+        },
+        {
+          "route": "write",
+          "because": "a closed session as one write batch, for wherever a day belongs"
+        },
+        {
+          "route": "turn_write",
+          "because": "the same batch after every stored turn, off unless the instance switches it on"
+        },
+        {
+          "route": "recall",
+          "because": "a memory read this turn needs"
+        },
+        {
+          "route": "tool",
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one"
+        },
+        {
+          "route": "error",
+          "because": "a normalised failure report. The parent MUST wire it -- unwired it dead-letters, loudly"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./session-keeper",
+          "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
+        {
+          "from": ".",
+          "to": "./session-keeper",
+          "condition": "has(hop.route) && hop.route == 'in_sweep'"
+        },
+        {
+          "from": ".",
+          "to": "./collector",
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_memory_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep')"
+        },
         {
           "from": "./session-keeper",
           "to": "./collector",
@@ -113,6 +194,36 @@
           "from": "./summarizer",
           "to": "./errors",
           "condition": "has(hop.route) && hop.route == 'summary_error'"
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'"
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'write'"
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn_write'"
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'recall'"
+        },
+        {
+          "from": "./dispatcher",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool'"
+        },
+        {
+          "from": "./errors",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
         }
       ]
     }

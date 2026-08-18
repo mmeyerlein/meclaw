@@ -73,19 +73,20 @@ says what you wanted, and a door inside the hive that knows where that belongs.
 | Template | Version | What it is |
 |---|---|---|
 | [`archive-bridge`](archive-bridge/) | 1.0.0 | Turns an llm's last answer into a store-native insert -- and swallows the store's reply echo, so an append-only archive costs one cell instead of a loop. |
-| [`cogny`](cogny/) | 2.0.0 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. |
+| [`canvy`](canvy/) | 0.3.0 | An interactive canvas the colony serves itself over HTTP: a `code` cell draws the picture server-side, the browser owns only the drag. The first thing it draws is the colony. Ask it for a fresh snapshot on `in_refresh`; the drawn page leaves on `surface`. |
+| [`cogny`](cogny/) | 3.0.0 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. |
 | [`collector`](collector/) | 2.0.0 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
 | [`dispatcher`](dispatcher/) | 1.0.0 | The fan-out half of a tool loop: splits a brain's `tool_call` bundle into one routable message per call, announces the round to the fan-in, and passes a final answer through. |
 | [`door`](door/) | 1.0.0 | The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, an empty hop -- and puts the turn on a named lane, carrying the channel identity with it. |
-| [`firewall`](firewall/) | 1.0.0 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
+| [`firewall`](firewall/) | 2.0.0 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
 | [`memory-drain`](memory-drain/) | 2.0.0 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
-| [`memory-hive`](memory-hive/) | 1.4.0 | Agent memory as a hive: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Ten cells, no Rust. |
-| [`receptionist`](receptionist/) | 1.1.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
+| [`memory-hive`](memory-hive/) | 2.0.0 | Agent memory as a hive: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Ten cells, no Rust. |
+| [`receptionist`](receptionist/) | 2.0.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
 | [`retry`](retry/) | 1.0.0 | A bounded retry loop around one tool, as a single cell. At the cap the give-up lane hands the last error on with its `error_code` intact. |
 | [`session-keeper`](session-keeper/) | 2.0.0 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
-| [`steward`](steward/) | 1.0.1 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
+| [`steward`](steward/) | 2.0.0 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
 | [`summarizer`](summarizer/) | 2.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
-| [`talky`](talky/) | 2.0.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`talky`](talky/) | 3.0.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
 | [`vault`](vault/) | 1.0.0 | A secret store with no operation that returns a secret -- not a policy over a store, but a cell type whose route surface has no read on it. Secrets enter over the user channel only; the broker may ask it to USE one. |
 | [`terminal`](terminal/) | 1.0.0 | The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane without a destination yet still HAS one -- the message arrives, the trace records it, and the dead-letter queue stays empty. |
 
@@ -120,19 +121,19 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
   -H 'Content-Type: application/json' \
   -d '{"scope":"/","ctx":{"model":"openai/gpt-4o-mini"},"diff":{
         "add_nodes":[{"name":"agent","template":"talky"}],
-        "add_edges":[{"from":"./ingress","to":"./agent/session-keeper"}]
+        "add_edges":[{"from":"./ingress","to":"./agent",
+                      "modifier":{"set_hop":{"route":"'in_turn'"}}}]
       }}'
 ```
 
 The `ctx` block feeds the `${ctx.*}` placeholders a template declares -- `talky` wants a resolved
 model literal.
 
-**That edge is the legacy shape, and it is worth knowing why.** `talky` is a composite that has
-not been put behind its own boundary yet (§ The hive boundary), so it declares no lanes of its
-own and the entry addressed here is its inner `session-keeper` hive. A template that HAS arrived
-is wired at its own path with a lane -- `{"from": "./ingress", "to": "./agent",
-"modifier": {"set_hop": {"route": "'in_turn'"}}}` -- and that is the shape to build against. The
-lanes a sealed hive accepts are in its `params.contract`.
+**That edge is the finished shape** (§ The hive boundary). Since
+[#228](https://github.com/mmeyerlein/meclaw/issues/228) every hive template that ships is sealed:
+the address is the template's own path and the request is a lane on `hop.route`. Nothing here
+names a cell inside a hive any more, which is what lets a template be swapped for another one
+arranged differently. The lanes a hive accepts and emits are in its `params.contract`.
 
 Working colonies built this way live in [`../examples/`](../examples/). Start with
 [`hello`](../examples/hello/README.md) for the model itself, then

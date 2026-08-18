@@ -5,7 +5,22 @@
 //! - T26: + overlay_from_db.
 //! - T28: + write_snapshot + Cell trait impl.
 //! - T29: + panic_after (E6 canonical order).
-//! - T37: + terminal (E7, no output → the cascade stops) + echo_to (target choice).
+//! - T37: + terminal (E7, no output → the cascade stops) + emitted_target.
+//!
+//! # `params.emitted_target` is a field, not a delivery address (GH #226)
+//!
+//! The param carries the same name and the same meaning as
+//! `EchoCellFactory`'s (GH #224): it writes the `target` field of this cell's
+//! emission and decides nothing about where that emission goes. The colony's
+//! outputs arm routes by the EMITTING cell's out-edges — a matching edge
+//! overlays the target, and an emission matching no out-edge dead-letters as
+//! `no_route` whatever this field says. A test topology therefore needs BOTH
+//! this param and an out-edge.
+//!
+//! It was called `echo_to` until GH #226, and it fell back to `msg.target`
+//! when absent, which turned a forgotten param into a self-loop emission
+//! nobody asked for. There is no fallback any more: a cell that emits must say
+//! where, and a cell that emits nothing says `terminal: true`.
 
 /// Counter-based test cell. Increments counter per handle() call and persists
 /// state via cell.db (T28).
@@ -20,9 +35,10 @@ pub struct PersistMockCell {
     pub panic_after: Option<i64>,
     /// Plan E7: if `true`, `handle()` emits no output → the cascade stops.
     pub terminal: bool,
-    /// T37 / plan E8: if `Some(path)`, sets `output.target = echo_to`.
-    /// If `None`: `target = msg.target` (self-loop behaviour without edges).
-    pub echo_to: Option<meclaw_core::Path>,
+    /// T37 / plan E8: the `target` field written on this cell's emission —
+    /// NOT a route (see the module doc). `None` only for a `terminal` cell,
+    /// which emits nothing at all.
+    pub emitted_target: Option<meclaw_core::Path>,
 }
 
 impl PersistMockCell {
@@ -30,22 +46,30 @@ impl PersistMockCell {
     /// `panic_after`: optional test field — when set, the cell panics after the
     /// counter has reached this value.
     /// `terminal`: if `true`, the cell emits no output (cascade stop).
-    /// `echo_to`: when set, `output.target` is set to this path.
+    /// `emitted_target`: the `target` field of the emission — required unless
+    /// the cell is `terminal`, because a cell that emits has to name what it
+    /// writes into that field. Absence used to mean `msg.target`; see the
+    /// module doc for why that fallback is gone (GH #226).
     pub fn from_params(params: &meclaw_core::JsonValue) -> Result<Self, String> {
         let panic_after = params.get("panic_after").and_then(|v| v.as_i64());
         let terminal = params
             .get("terminal")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let echo_to = params
-            .get("echo_to")
-            .and_then(|v| v.as_str())
-            .map(meclaw_core::Path::new);
+        let emitted_target = match params.get("emitted_target").and_then(|v| v.as_str()) {
+            Some(s) => Some(meclaw_core::Path::new(s)),
+            None if terminal => None,
+            None => {
+                return Err("params.emitted_target missing or not a string \
+                    (required unless params.terminal is true)"
+                    .to_string());
+            }
+        };
         Ok(Self {
             counter: 0,
             panic_after,
             terminal,
-            echo_to,
+            emitted_target,
         })
     }
 
@@ -150,9 +174,10 @@ impl meclaw_colony::stateful_cell::StatefulCell for PersistMockCell {
                 panic!("PersistMockCell panic_after triggered at counter={counter}");
             }
             // 4. ASYNC: output emit (skipped when terminal=true → cascade stops).
-            // target: echo_to when set, otherwise msg.target (self-loop without edges).
-            let target = self.echo_to.clone().unwrap_or_else(|| msg.target.clone());
-            if !self.terminal {
+            // target: the configured emitted_target — no fallback (GH #226).
+            if let Some(target) = self.emitted_target.clone()
+                && !self.terminal
+            {
                 let _ = sink
                     .push(meclaw_core::CellOutput {
                         target,
@@ -178,20 +203,80 @@ mod tests {
         let db_path = td.path().join("cell.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         meclaw_colony::persist::setup_cell_db(&conn).unwrap();
-        let mut c = PersistMockCell::from_params(&json!({})).unwrap();
+        let mut c = PersistMockCell::from_params(&json!({"terminal": true})).unwrap();
         c.handle_dummy();
         assert_eq!(c.counter, 1);
         c.handle_dummy();
         assert_eq!(c.counter, 2);
     }
 
+    /// GH #226: a non-terminal cell must name the target it writes. The
+    /// Phase-5 pragma (no strict param schema for the mock cell) still holds
+    /// for every other field — this is the one required one, and a non-object
+    /// `params` carries none of them.
     #[test]
     fn persist_mock_cell_from_params_rejects_non_object() {
         let p = meclaw_core::serde_json::json!(42);
-        let r = PersistMockCell::from_params(&p);
-        // Phase-5 pragma: from_params accepts arbitrary JSON (phase 5 has no strict
-        // param schema validation for the mock cell). The test expects Ok.
-        assert!(r.is_ok());
+        let Err(err) = PersistMockCell::from_params(&p) else {
+            panic!("expected a rejection, got a cell")
+        };
+        assert!(err.contains("emitted_target"), "got: {err}");
+    }
+
+    /// GH #226: the param is required for an emitting cell and absent for a
+    /// terminal one — no silent fallback to `msg.target` in either case.
+    #[test]
+    fn from_params_requires_emitted_target_unless_terminal() {
+        use meclaw_core::serde_json::json;
+        let Err(err) = PersistMockCell::from_params(&json!({})) else {
+            panic!("expected a rejection, got a cell")
+        };
+        assert!(
+            err.contains("params.emitted_target"),
+            "an emitting cell without a target must say so, got: {err}"
+        );
+        let terminal = PersistMockCell::from_params(&json!({"terminal": true}))
+            .expect("a terminal cell emits nothing and needs no target");
+        assert!(terminal.emitted_target.is_none());
+        let emitting = PersistMockCell::from_params(&json!({"emitted_target": "/sink"}))
+            .expect("a named target is accepted");
+        assert_eq!(emitting.emitted_target.unwrap().as_str(), "/sink");
+    }
+
+    /// GH #226: the emission carries the configured target verbatim. Before the
+    /// fix an absent param produced an emission to `msg.target` — a self-loop
+    /// the test author never asked for; now there is nothing to fall back to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_emits_to_the_configured_target_only() {
+        use meclaw_colony::stateful_cell::StatefulCell;
+        use meclaw_core::serde_json::json;
+        use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
+        use tokio::sync::mpsc;
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        meclaw_colony::persist::setup_cell_db(&conn).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = PersistMockCell::from_params(&json!({"emitted_target": "/sink"})).unwrap();
+        let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
+        let sink = OutputSink::new(
+            tx,
+            Path::new("/p"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            64,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        let msg = MessageBuilder::new(Path::new("/p"))
+            .body(Body::Inline(json!({"messages": []})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        let em = rx.recv().await.expect("one emission");
+        assert_eq!(
+            em.target.as_str(),
+            "/sink",
+            "the emission target is the configured one, not the inbound path"
+        );
     }
 
     #[test]
@@ -206,7 +291,7 @@ mod tests {
             rusqlite::params!["counter", "42", 0],
         )
         .unwrap();
-        let mut c = PersistMockCell::from_params(&json!({})).unwrap();
+        let mut c = PersistMockCell::from_params(&json!({"terminal": true})).unwrap();
         c.overlay_from_db(&conn).unwrap();
         assert_eq!(c.counter, 42);
     }
@@ -218,7 +303,7 @@ mod tests {
         let db_path = td.path().join("cell.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         meclaw_colony::persist::setup_cell_db(&conn).unwrap();
-        let mut c = PersistMockCell::from_params(&json!({})).unwrap();
+        let mut c = PersistMockCell::from_params(&json!({"terminal": true})).unwrap();
         c.overlay_from_db(&conn).unwrap();
         assert_eq!(
             c.counter, 0,
@@ -237,7 +322,7 @@ mod tests {
         meclaw_colony::persist::setup_cell_db(&conn).unwrap();
         let mut db = meclaw_colony::DbConn::wrap(conn, None);
 
-        let mut cell = PersistMockCell::from_params(&json!({"echo_to": "/sink"})).unwrap();
+        let mut cell = PersistMockCell::from_params(&json!({"emitted_target": "/sink"})).unwrap();
         let (tx, _rx) = mpsc::channel(8);
         let sink = OutputSink::new(
             tx,
@@ -276,7 +361,7 @@ mod tests {
         meclaw_colony::persist::setup_cell_db(&conn).unwrap();
         drop(conn);
         let mut conn2 = rusqlite::Connection::open(&db_path).unwrap();
-        let mut c = PersistMockCell::from_params(&json!({})).unwrap();
+        let mut c = PersistMockCell::from_params(&json!({"terminal": true})).unwrap();
         c.counter = 7;
         // Phase-6.5: the cell.db connection lives externally (cell_task_stateful frame).
         // write_snapshot directly (without the StatefulCell trait), as a helper test.

@@ -2,7 +2,8 @@
 //!
 //! A deterministic `code`-cell brain (scripted tool_call bundles, no LLM)
 //! drives a real coding task through the shipped `dispatcher@1` and
-//! `collector` templates (both copied read-only, config.json for config.json):
+//! `collector` templates (both copied read-only, config.json for config.json),
+//! addressed at their HIVE paths as the boundary requires (GH #232):
 //!
 //!   round 0  file       writes a small Python project (module + test)
 //!   round 1  bash       runs the test — RED (exit 1), sandboxed under Landlock
@@ -249,15 +250,29 @@ fn tool_cell(cell_type: &str, params: Value, long_running: bool) -> Value {
 /// tool lanes discriminate on `hop.tool_name` exactly as the dispatcher
 /// README prescribes. The re-entry seam carries the iteration promotion AND
 /// `restore_ttl` (GH #82).
+///
+/// **Every edge to and from the collector names the HIVE, `./collect`, never a
+/// cell inside it** (GH #232). The hive is sealed (`params.ports: []`), so its
+/// own graph owns both directions: an inbound `in_*` lane enters through the
+/// door `{"from": ".", "to": "./assemble"}`, and everything the assembler
+/// emits leaves through `{"from": "./assemble", "to": "."}` — at the hive
+/// path, which is where these edges pick it up.
+///
+/// Wiring at `./collect/assemble` used to look identical from the outside and
+/// was not: the direct edge delivered, and the hive's own out-door handed a
+/// SECOND copy to `/collect`, which nothing here listened at. Eleven
+/// `hive_no_route` dead letters per run, and a green test — the run now
+/// asserts an empty dead-letter queue, which is what makes the difference
+/// visible at all.
 fn main_config() -> Value {
     let in_tool = json!({"set_hop": {"route": "'in_tool'"}});
     let edges = vec![
         // Ingress: probe → collector turn lane.
-        json!({"from": "./probe", "to": "./collect/assemble",
+        json!({"from": "./probe", "to": "./collect",
                "condition": "has(hop.route) && hop.route == 'turn'",
                "modifier": {"set_hop": {"route": "'in_turn'"}}}),
         // THE seam: collector → brain, iteration promoted, budget restored.
-        json!({"from": "./collect/assemble", "to": "./brain",
+        json!({"from": "./collect", "to": "./brain",
                "condition": "has(hop.route) && hop.route == 'brain'",
                "modifier": {"set_context": {"turn_id": "hop.turn_id",
                                             "session_id": "hop.session_id",
@@ -267,17 +282,17 @@ fn main_config() -> Value {
         // the window via in_answer, the collector's answer route to the sink.
         json!({"from": "./brain", "to": "./dispatcher",
                "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"}),
-        json!({"from": "./brain", "to": "./collect/assemble",
+        json!({"from": "./brain", "to": "./collect",
                "condition": "has(hop.finish_reason) && hop.finish_reason == 'stop'",
                "modifier": {"set_hop": {"route": "'in_answer'"}}}),
-        json!({"from": "./collect/assemble", "to": "/sink",
+        json!({"from": "./collect", "to": "/sink",
                "condition": "has(hop.route) && hop.route == 'answer'"}),
         // Dispatcher lanes: expectation set and synthetic errors to the
         // fan-in, tools by NAME (the cell knows no topology).
-        json!({"from": "./dispatcher", "to": "./collect/assemble",
+        json!({"from": "./dispatcher", "to": "./collect",
                "condition": "has(hop.route) && hop.route == 'calls'",
                "modifier": {"set_hop": {"route": "'in_calls'"}}}),
-        json!({"from": "./dispatcher", "to": "./collect/assemble",
+        json!({"from": "./dispatcher", "to": "./collect",
                "condition": "has(hop.route) && hop.route == 'result'",
                "modifier": &in_tool}),
         json!({"from": "./dispatcher", "to": "./shell",
@@ -299,24 +314,24 @@ fn main_config() -> Value {
         json!({"from": "./dispatcher", "to": "./coder",
                "condition": "has(hop.tool_name) && hop.tool_name == 'coder'"}),
         // Fan-in: every tool result back into the collector.
-        json!({"from": "./shell", "to": "./collect/assemble",
+        json!({"from": "./shell", "to": "./collect",
                "condition": "has(hop.operation) && hop.operation == 'bash'",
                "modifier": &in_tool}),
-        json!({"from": "./fs", "to": "./collect/assemble",
+        json!({"from": "./fs", "to": "./collect",
                "condition": "has(hop.operation)", "modifier": &in_tool}),
-        json!({"from": "./patch", "to": "./collect/assemble",
+        json!({"from": "./patch", "to": "./collect",
                "condition": "has(hop.operation)", "modifier": &in_tool}),
-        json!({"from": "./reader", "to": "./collect/assemble",
+        json!({"from": "./reader", "to": "./collect",
                "condition": "has(hop.operation) && hop.operation == 'web_fetch'",
                "modifier": &in_tool}),
-        json!({"from": "./search", "to": "./collect/assemble",
+        json!({"from": "./search", "to": "./collect",
                "condition": "has(hop.operation) && hop.operation == 'web_search'",
                "modifier": &in_tool}),
-        json!({"from": "./artifacts", "to": "./collect/assemble",
+        json!({"from": "./artifacts", "to": "./collect",
                "condition": "has(hop.operation)", "modifier": &in_tool}),
         // Timer: the op ack closes the round; the FIRE goes to the sink; the
         // error lane is drained (template README discipline).
-        json!({"from": "./remind", "to": "./collect/assemble",
+        json!({"from": "./remind", "to": "./collect",
                "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_ack'",
                "modifier": &in_tool}),
         json!({"from": "./remind", "to": "/sink",
@@ -324,11 +339,11 @@ fn main_config() -> Value {
         json!({"from": "./remind", "to": "/park",
                "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'"}),
         // MCP: every emission carries mcp_tool.
-        json!({"from": "./bridge", "to": "./collect/assemble",
+        json!({"from": "./bridge", "to": "./collect",
                "condition": "has(hop.mcp_tool)", "modifier": &in_tool}),
         // Harness: accepted closes the round, result reaches the sink, the
         // rest (progress/…) is drained to /park.
-        json!({"from": "./coder", "to": "./collect/assemble",
+        json!({"from": "./coder", "to": "./collect",
                "condition": "has(hop.harness_event) && hop.harness_event == 'accepted'",
                "modifier": &in_tool}),
         json!({"from": "./coder", "to": "/sink",
@@ -571,6 +586,30 @@ fn hop<'a>(row: &'a LogRow, key: &str) -> &'a Value {
     &row.headers["hop"][key]
 }
 
+/// Every dead letter the run produced, as `sender -> target [code]`.
+///
+/// A dead letter is the substrate saying a message reached nobody. In a
+/// scenario whose whole claim is that ten rounds close, that is never a
+/// neutral fact — which is why the run is held to producing none at all
+/// (GH #232) rather than to "the assertions still pass".
+fn dead_letters(db: &std::path::Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT sender_path, original_target, error_code FROM dead_letters ORDER BY rowid")
+        .unwrap();
+    stmt.query_map([], |r| {
+        Ok(format!(
+            "{} -> {} [{}]",
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?
+        ))
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+
 /// Poll-bounded: the log writer is asynchronous, so the assertions wait for
 /// the row set to become complete (pattern: `support_14b::await_body_kind`).
 async fn read_log_until<F: Fn(&[LogRow]) -> bool>(db: &std::path::Path, done: F) -> Vec<LogRow> {
@@ -750,11 +789,11 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     for (parent, group) in &bundles {
         let calls_rowid = group
             .iter()
-            .find(|r| r.to_path == "/collect/assemble" && hop(r, "route") == "in_calls")
+            .find(|r| r.to_path == "/collect" && hop(r, "route") == "in_calls")
             .unwrap_or_else(|| panic!("round {parent}: no expectation-set delivery"))
             .rowid;
         for r in group {
-            if r.to_path != "/collect/assemble" {
+            if r.to_path != "/collect" {
                 assert!(
                     calls_rowid < r.rowid,
                     "round {parent}: tool message (rowid {}) overtook the expectation set \
@@ -768,7 +807,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (3) bash: red then green, as data on the hop.
     let shell_results: Vec<&LogRow> = rows
         .iter()
-        .filter(|r| r.from_path == "/shell" && r.to_path == "/collect/assemble")
+        .filter(|r| r.from_path == "/shell" && r.to_path == "/collect")
         .collect();
     let shell_hops: Vec<Value> = shell_results
         .iter()
@@ -789,7 +828,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (4) file: both project writes.
     let fs_results: Vec<&LogRow> = rows
         .iter()
-        .filter(|r| r.from_path == "/fs" && r.to_path == "/collect/assemble")
+        .filter(|r| r.from_path == "/fs" && r.to_path == "/collect")
         .collect();
     assert_eq!(fs_results.len(), 2, "module + test written");
     for r in &fs_results {
@@ -800,7 +839,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (5) edit: exactly one match changed.
     let patch = rows
         .iter()
-        .find(|r| r.from_path == "/patch" && r.to_path == "/collect/assemble")
+        .find(|r| r.from_path == "/patch" && r.to_path == "/collect")
         .expect("the edit round");
     assert_eq!(*hop(patch, "operation"), json!("find_replace"));
     assert_eq!(*hop(patch, "matches_changed"), json!(1));
@@ -808,19 +847,19 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (6) web_fetch 200 / web_search result_count 2.
     let fetch = rows
         .iter()
-        .find(|r| r.from_path == "/reader" && r.to_path == "/collect/assemble")
+        .find(|r| r.from_path == "/reader" && r.to_path == "/collect")
         .expect("the fetch round");
     assert_eq!(*hop(fetch, "http_status"), json!(200));
     let search = rows
         .iter()
-        .find(|r| r.from_path == "/search" && r.to_path == "/collect/assemble")
+        .find(|r| r.from_path == "/search" && r.to_path == "/collect")
         .expect("the search round");
     assert_eq!(*hop(search, "result_count"), json!(2));
 
     // (7) store: the artifact row landed.
     let artifact = rows
         .iter()
-        .find(|r| r.from_path == "/artifacts" && r.to_path == "/collect/assemble")
+        .find(|r| r.from_path == "/artifacts" && r.to_path == "/collect")
         .expect("the store round");
     assert_eq!(*hop(artifact, "operation"), json!("insert"));
     assert_eq!(*hop(artifact, "rows_affected"), json!(1));
@@ -828,7 +867,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (8) timer: the ack closed the round, the fire reached the sink.
     assert!(
         rows.iter().any(|r| r.from_path == "/remind"
-            && r.to_path == "/collect/assemble"
+            && r.to_path == "/collect"
             && hop(r, "msg_type") == "timer_op_ack"),
         "the timer ack fanned back in"
     );
@@ -843,7 +882,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (9) mcp: the stdio roundtrip answered on the tool lane.
     let mcp = rows
         .iter()
-        .find(|r| r.from_path == "/bridge" && r.to_path == "/collect/assemble")
+        .find(|r| r.from_path == "/bridge" && r.to_path == "/collect")
         .expect("the mcp round");
     assert_eq!(*hop(mcp, "mcp_tool"), json!("echo"));
     assert!(hop(mcp, "error_code").is_null());
@@ -851,7 +890,7 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     // (10) harness: accepted closed the round, the result went out fresh.
     assert!(
         rows.iter().any(|r| r.from_path == "/coder"
-            && r.to_path == "/collect/assemble"
+            && r.to_path == "/collect"
             && hop(r, "harness_event") == "accepted"),
         "the harness accepted receipt fanned back in"
     );
@@ -873,5 +912,23 @@ async fn the_workshop_drives_every_tool_cell_through_one_coding_task() {
     assert_eq!(step, "suite-green");
     assert_eq!(detail, "calc.py patched");
 
+    // (11) NOTHING was dead-lettered (GH #232).
+    //
+    // This is the assertion the fixture was missing, and the reason a real
+    // defect survived a green test for weeks: it wired at an address INSIDE
+    // the sealed collector, so every emission the hive handed out through its
+    // own out-door left a second copy at a path the fixture's graph has no
+    // edge from. Eleven `hive_no_route` dead letters per run, nothing lost
+    // (the delivered copy travelled the direct edge), every assertion green.
+    // A dead letter that is expected is a dead letter nobody reads on the day
+    // it starts meaning something else.
+    //
+    // Read after shutdown, so the asynchronous log writer has drained.
     h.shutdown().await;
+    let dlq = dead_letters(&db);
+    assert!(
+        dlq.is_empty(),
+        "the workshop dead-lettered {} message(s): {dlq:#?}",
+        dlq.len()
+    );
 }

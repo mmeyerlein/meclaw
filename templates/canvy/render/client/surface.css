@@ -192,3 +192,31 @@ button:hover{border-color:var(--accent);color:var(--accent)}
 .canvy .node.unwired rect{ stroke-dasharray:5 4; }
 .canvy .node.sel rect{ stroke:var(--sel); stroke-width:2.5; }
 .canvy path.edge-hit{ fill:none; stroke:transparent; stroke-width:14; cursor:pointer; }
+
+/* Disconnected, and therefore possibly out of date.
+
+   A picture drawn before a colony restart and a live one are pixel-identical, so
+   the operator has no way to tell them apart — that is the half of GH #172 no
+   server fix reaches. A rejoin asks for a fresh render now instead of taking the
+   cache, but the transport rejoins on its own schedule (Phoenix backs off after a
+   socket drop), and until it does, the DOM is whatever was last drawn.
+
+   The vendored client already publishes the state: `setContainerClasses` puts
+   phx-connected / phx-loading / phx-error / phx-client-error / phx-server-error
+   on the `data-phx-main` container, and only after a short delay, so a blink does
+   not flash the banner. All that was missing was a stylesheet that reads them. */
+[data-phx-main].phx-loading .canvy,
+[data-phx-main].phx-error .canvy,
+[data-phx-main].phx-client-error .canvy,
+[data-phx-main].phx-server-error .canvy{ opacity:.5; filter:saturate(.35); }
+[data-phx-main].phx-loading::after,
+[data-phx-main].phx-error::after,
+[data-phx-main].phx-client-error::after,
+[data-phx-main].phx-server-error::after{
+  content:"disconnected \2014 this picture may be out of date";
+  position:fixed; z-index:9; left:50%; top:0; transform:translateX(-50%);
+  padding:5px 14px 6px; background:var(--panel); color:var(--bad);
+  border:1px solid var(--bad); border-top:none; border-radius:0 0 8px 8px;
+  font:11.5px/1.4 ui-sans-serif,system-ui,sans-serif; letter-spacing:.02em;
+  pointer-events:none;
+}

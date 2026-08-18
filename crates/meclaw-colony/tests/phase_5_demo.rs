@@ -1,6 +1,6 @@
 //! Phase-5 demo (T37): end-to-end restore across the boot boundary.
 //!
-//! Topology: 3 PersistMockCells (/a, /b, /c) as a 3-hop chain via echo_to.
+//! Topology: 3 PersistMockCells (/a, /b, /c) as a 3-hop chain via emitted_target.
 //! /c is terminal (no output). FirstBoot 3 inputs → counter=3 in all three.
 //! Reboot 3 inputs → counter=6 (restore proof: overlay from the FirstBoot
 //! snapshot, NOT bootstrap-0).
@@ -57,14 +57,14 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
         &h1,
         Path::new("/a"),
         &dir_a,
-        meclaw_core::serde_json::json!({"echo_to": "/b"}),
+        meclaw_core::serde_json::json!({"emitted_target": "/b"}),
     )
     .await;
     spawn_persist_cell(
         &h1,
         Path::new("/b"),
         &dir_b,
-        meclaw_core::serde_json::json!({"echo_to": "/c"}),
+        meclaw_core::serde_json::json!({"emitted_target": "/c"}),
     )
     .await;
     spawn_persist_cell(
@@ -100,14 +100,14 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
         &h2,
         Path::new("/a"),
         &dir_a,
-        meclaw_core::serde_json::json!({"echo_to": "/b"}),
+        meclaw_core::serde_json::json!({"emitted_target": "/b"}),
     )
     .await;
     spawn_persist_cell(
         &h2,
         Path::new("/b"),
         &dir_b,
-        meclaw_core::serde_json::json!({"echo_to": "/c"}),
+        meclaw_core::serde_json::json!({"emitted_target": "/c"}),
     )
     .await;
     spawn_persist_cell(

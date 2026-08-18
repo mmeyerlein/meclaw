@@ -221,7 +221,7 @@ mod tests {
         let spawned = factory
             .spawn_cell(
                 Path::new("/a"),
-                meclaw_core::serde_json::json!({}),
+                meclaw_core::serde_json::json!({"terminal": true}),
                 out_tx,
                 cell_dir.clone(),
                 meclaw_colony::ContractView::default(),
@@ -266,7 +266,10 @@ mod tests {
             spawn_count: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
         let (cell, _conn) = factory
-            .build_cell_with_open_db(&cell_dir, &meclaw_core::serde_json::json!({}))
+            .build_cell_with_open_db(
+                &cell_dir,
+                &meclaw_core::serde_json::json!({"terminal": true}),
+            )
             .unwrap();
         assert_eq!(cell.counter, 0, "Bootstrap counter");
     }
@@ -283,11 +286,11 @@ mod tests {
             spawn_count: Arc::new(AtomicU32::new(0)),
         });
         let _c1 = factory
-            .build_cell_with_open_db(&cell_dir, &json!({}))
+            .build_cell_with_open_db(&cell_dir, &json!({"terminal": true}))
             .unwrap();
         assert_eq!(factory.spawn_count.load(Ordering::Relaxed), 1);
         let _c2 = factory
-            .build_cell_with_open_db(&cell_dir, &json!({}))
+            .build_cell_with_open_db(&cell_dir, &json!({"terminal": true}))
             .unwrap();
         assert_eq!(factory.spawn_count.load(Ordering::Relaxed), 2);
     }
@@ -304,7 +307,7 @@ mod tests {
 
         // 1st call: cell.db is created (counter=0 default).
         let (cell1, conn1) = factory
-            .build_cell_with_open_db(&cell_dir, &json!({}))
+            .build_cell_with_open_db(&cell_dir, &json!({"terminal": true}))
             .unwrap();
         assert_eq!(cell1.counter, 0);
         drop(cell1);
@@ -322,7 +325,7 @@ mod tests {
 
         // 3. 2nd call: build_cell_with_open_db loads the overlay AFRESH — counter=99.
         let (cell2, _conn2) = factory
-            .build_cell_with_open_db(&cell_dir, &json!({}))
+            .build_cell_with_open_db(&cell_dir, &json!({"terminal": true}))
             .unwrap();
         assert_eq!(
             cell2.counter, 99,

@@ -16,7 +16,7 @@
 //! Topology (modelled on `phase_13_lifecycle_demo`):
 //!   td.path()/main/config.json            (hive, root)
 //!   td.path()/main/persist/config.json    (persist_mock, cell.timeout = -1,
-//!                                          echo_to=/sink)
+//!                                          emitted_target=/sink)
 //!   /sink                                 (CaptureCell, registered before
 //!                                          bootstrap for anti-cascade)
 
@@ -75,7 +75,7 @@ async fn persistent_stateful_cell_never_sleeps_after_wake() {
     write(
         td.path(),
         "main/persist/config.json",
-        r#"{"cell":{"type":"persist_mock","timeout":-1},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock","timeout":-1},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     // Factory-Setup.

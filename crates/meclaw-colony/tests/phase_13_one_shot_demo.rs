@@ -65,7 +65,7 @@ async fn one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments()
     write(
         td.path(),
         "main/persist/config.json",
-        r#"{"cell":{"type":"persist_mock","timeout":1000},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock","timeout":1000},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     // Factory-Setup.

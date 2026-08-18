@@ -68,7 +68,7 @@ Four of those seven edges end in `/sink`, and that is the honest part of this ex
 answer, a rejection, an error report and a drained episode are **four different decisions**, and
 this example makes none of them for you. In a real tree the answer goes back out of the surface,
 the rejection into a log, the error onto an alarm, and the episode into a memory hive's
-turn-write port. Here they all stop in one place so you can watch them arrive in the trace.
+in_episode lane. Here they all stop in one place so you can watch them arrive in the trace.
 
 ## Run it
 
@@ -189,9 +189,9 @@ The composite carries no tool cells on purpose -- which tools an agent has is th
 nobody else can decide for you. Adding one is an edge pair in a third mutation:
 
 ```json
-{"from": "./talky/dispatcher", "to": "./weather",
+{"from": "./talky", "to": "./weather",
  "condition": "has(hop.tool_name) && hop.tool_name == 'get_weather'"},
-{"from": "./weather", "to": "./talky/collector",
+{"from": "./weather", "to": "./talky",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
@@ -225,7 +225,7 @@ and both counts (17, then 21). If the example rots, that test goes red first.
 
 ## Step three: the colony that measures itself
 
-`grow-steward.json` adds the [`steward@1`](../../templates/steward/) — seven more cells that
+`grow-steward.json` adds the [`steward@2`](../../templates/steward/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, mutate through the ordinary gated lane, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -237,13 +237,18 @@ loop that mutates the tree it runs in.
 And it arrives **unable to act**, which is the more interesting half:
 
 ```json
-{"from": "./steward/mutator", "to": "/colony/mutations", ...}
+{"from": "./steward", "to": "/colony/mutations", "condition": "has(hop.route) && hop.route == 'mutate'"}
 ```
 
 That edge is not in the declaration, and it cannot be: `/colony/*` is a virtual endpoint
 rather than a registry node, so `add_edges` refuses it by name — at any scope, from any cell,
-including from the steward's own mutator. Granting the loop its mutation lane is a **boot-time
+including from the steward itself. Granting the loop its mutation lane is a **boot-time
 act**: a human puts that edge in the seed. No amount of growing gets around it.
+
+Note the shape of the endpoint: it is the **hive**, not a cell inside it. `steward@2` is sealed
+(`params.ports: []`), so `./steward/mutator` is not an address at all any more — a caller asks
+for the `mutate` lane and never learns which cell produces it. The one edge the declaration
+*can* draw is the other lane, `error`, and it is drawn at the hive for the same reason.
 
 So the steward you grow here measures, judges and receipts, and changes nothing. That is a
 legitimate way to run it — a good one for the first weeks, in fact, because the receipts tell

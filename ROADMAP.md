@@ -60,17 +60,17 @@ three are in as of 2026-08-18, and what is left is work rather than decisions.
 The round is now four items, and they are ordered because the first one settles
 how the other three are built:
 
-- [#197](https://github.com/mmeyerlein/meclaw/issues/197) **the four
-  cell-named-port hives get migrated, not aliased.** Ruled: route (a). `canvy`,
-  `memory-hive`, `access` and `steward` expose inner cell names as ports
-  (`render`, `writer`, `policy`, `meter`); each becomes `ports: []` plus doors
-  plus a `params.contract` in lanes named for what a caller wants. A port alias
-  would have kept the deep-endpoint address shape, which is the one thing the
-  boundary exists to remove.
-- [#228](https://github.com/mmeyerlein/meclaw/issues/228) **fourteen shipped
-  templates declare no `params.ports` at all**, `talky` among them — which is
-  why the canonical instantiation example still has to name an inner hive. Same
-  work as #197 and follows it, `talky` first.
+- ~~[#197](https://github.com/mmeyerlein/meclaw/issues/197) the four
+  cell-named-port hives get migrated, not aliased~~ — **done 2026-08-18.**
+  `canvy`, `access`, `steward` and `memory-hive` are `ports: []` plus doors plus
+  a `params.contract` in lanes named for what a caller wants. A port alias would
+  have kept the deep-endpoint address shape, which is the one thing the boundary
+  exists to remove.
+- ~~[#228](https://github.com/mmeyerlein/meclaw/issues/228) fourteen shipped
+  templates declare no `params.ports` at all~~ — **done 2026-08-18.** With
+  those fourteen the library has no unsealed hive template left, and the
+  canonical instantiation example points at a hive path with a lane rather than
+  at an inner hive.
 - [#185](https://github.com/mmeyerlein/meclaw/issues/185) **a cell declares that
   it is an ingress.** Ruled: option (a). Today it is deduced from having no
   incoming edge, which stops being true the moment the check can see the running
@@ -87,10 +87,10 @@ how the other three are built:
 The rule all four serve is written down in
 [`docs/meclaw-overview.md`](docs/meclaw-overview.md) § The hive boundary, and
 what it asks of a template author is in
-[`templates/README.md`](templates/README.md) § The hive boundary. The two parts
-that bite when migrating a live hive — a topology lives in four places, not two,
-and innermost first — are in the migration guide, which does not ship yet
-([#236](https://github.com/mmeyerlein/meclaw/issues/236)).
+[`templates/README.md`](templates/README.md) § The hive boundary. The procedure for doing one
+without knocking a colony over is [`docs/rewiring.md`](docs/rewiring.md) §
+Putting an existing hive behind its boundary, including the two parts that bite —
+a topology lives in four places, not two, and innermost first.
 
 ## Next: substrate flanks
 
@@ -111,10 +111,6 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
 - [#165](https://github.com/mmeyerlein/meclaw/issues/165) the heartbeat watchdog
   cannot tell a wedged colony from a starved host, and the trip is fatal — a
   compile on the same box killed a healthy colony three times in one day
-- [#231](https://github.com/mmeyerlein/meclaw/issues/231) a one-shot timer whose
-  `at` passes between the request and the snapshot is dropped silently
-- [#226](https://github.com/mmeyerlein/meclaw/issues/226) `persist_mock` and
-  `hang` carry the same misleading `echo_to`, with a fallback that makes it worse
 - [#232](https://github.com/mmeyerlein/meclaw/issues/232) a workshop fixture
   still wires at an interior address, producing 11 `hive_no_route` dead letters
   per run
@@ -180,10 +176,9 @@ Two doc gates are open, and both are the same lesson twice:
 The template surface is open: a template is a directory, a README and a
 `template.json`. Sixteen are listed in
 [`templates/README.md`](templates/README.md) as worked examples — thirteen
-single-purpose ones plus three composites: `talky@2.0.0`, which carries four of
-them as sub-units, `cogny@2.0.0`, which carries two, and `memory-hive@1.4.0`, the
-agent memory as a hive of ten cells. `canvy@0.2.0` ships as well and is not in
-that table yet ([#235](https://github.com/mmeyerlein/meclaw/issues/235)).
+single-purpose ones plus three composites: `talky@3.0.0`, which carries four of
+them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.0.0`, the
+agent memory as a hive of ten cells. `canvy@0.3.0` ships as well.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a

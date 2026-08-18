@@ -1,14 +1,14 @@
 {
   "name": "canvy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": {
     "purpose": "An interactive canvas served over HTTP under the render cell's own path. The picture is generated server-side by a code cell; the browser owns only the drag. The first thing it draws is the colony itself.",
     "use_when": "Somebody should see and rearrange something the colony knows, in a browser. One canvy per canvas: two canvases are two hives, told apart by their paths, which is what makes one nginx location block a complete access rule for one of them.",
-    "not_in_scope": "It draws nothing its store does not hold. The topology snapshot needs the PARENT-granted lane `./probe -> /colony/graph`, which only a bootstrap config.json can write (an absolute endpoint is out of scope for any mutation) -- installed by mutation alone, the canvas is as fresh as whoever feeds its store. No realtime push: a viewer sees a change when it joins or interacts, not when another viewer moves a box. No object library beyond cells, hives and edges. No signed session token, which is only needed once a link has to survive being handed to a third party.",
+    "not_in_scope": "It draws nothing its store does not hold. The topology snapshot needs the PARENT-granted lane `./probe -> /colony/graph`, which only a bootstrap config.json can write (an absolute endpoint is out of scope for any mutation) -- installed by mutation alone, the canvas is as fresh as whoever feeds its store. No realtime push: a viewer sees a change when it joins or interacts, not when another viewer moves a box. No object library beyond cells, hives and edges. No signed session token, which is only needed once a link has to survive being handed to a third party. And no interior address: `params.ports` is empty, so the render cell and the store are not endpoints -- a caller names the hive and a lane (in_refresh in, surface out).",
     "examples": [
       "GET /surface/org/acme/member/alice/canvy/render -- the colony, draggable, arrangement persistent",
       "socket event node:moved -> render -> store -> render -> the browser (two code cell calls, ~34 ms)",
-      "refresh (timer, 60s) -> probe -> /colony/graph -> probe -> store -- one snapshot row"
+      "refresh (timer, 60s) -> probe -> /colony/graph -> probe -> store -- one snapshot row. The same snapshot on demand: an edge onto the HIVE path carrying hop.route == 'in_refresh'."
     ]
   },
   "author": "meclaw"

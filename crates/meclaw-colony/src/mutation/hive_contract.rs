@@ -51,6 +51,17 @@
 //! [`crate::edge_table::apply_edges`], the same function that routes the real
 //! message. There is no second opinion to disagree with the first.
 //!
+//! One thing the router alone cannot answer, though (GH #176): an exit that
+//! does not CARRY the lane but CREATES it. A hive's failure exit recognises
+//! something only the inside knows — an `llm` cell's `hop.finish_reason` — and
+//! translates it into a lane, which is the entire reason the boundary exists.
+//! A probe carrying `hop.route` never satisfies that condition, so the exit
+//! check reads the out-door's own `set_hop.route` as well: a door that STATES
+//! the declared lane and crosses the hive path is an exit for it, whether or
+//! not a route probe can make it fire. Stating a different lane is not, and
+//! stating the lane on an edge that stays inside is not either — a caller
+//! cannot receive what never crosses the boundary. See [`door_states_lane`].
+//!
 //! The caller's stamped route is read the same way: the edge's own
 //! `set_hop.route` expression is compiled and evaluated against EMPTY headers.
 //! A literal (`'in_batch'`) yields a string; anything that reads the incoming
@@ -140,12 +151,59 @@ fn door_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
         .any(|d| c.is_interior(d.target.as_str()))
 }
 
+/// True iff this edge's own modifier PRODUCES `route` on the message it takes.
+///
+/// GH #176. The route probe below can only find a lane a message ALREADY
+/// carries. The out-door of a failure lane does not work that way: it
+/// recognises something the inside knows — an `llm` cell's `hop.finish_reason`
+/// — and TRANSLATES it into a lane, which is the whole point of the boundary.
+/// A probe carrying `hop.route` never satisfies that condition, so without
+/// reading the modifier such a door is invisible and the hive is refused a lane
+/// it demonstrably has.
+///
+/// The condition is deliberately NOT evaluated. Whether the door ever fires is
+/// a statement about the messages the inside produces; whether it names the
+/// lane is a statement about the door, and only the second one is checkable
+/// here.
+///
+/// Three verdicts, and the middle one is the guard:
+/// - no `set_hop.route` at all → this edge names no lane, `false`;
+/// - a constant that is a DIFFERENT lane → it names someone else's, `false`;
+/// - an expression that reads the message (`hop.upstream_route`) → which lane
+///   it means is knowable only once that message exists, so it is not judged
+///   and counts. Same conservatism as [`stated_route`] on the outward half: a
+///   check that cannot say which lane an edge means must never reject it.
+fn door_states_lane(edge: &crate::edge_table::Edge, route: &str) -> bool {
+    let Some(src) = edge
+        .modifier
+        .as_ref()
+        .and_then(|m| m.source.set_hop.get("route"))
+    else {
+        return false;
+    };
+    match constant_route(src) {
+        Some(stated) => stated == route,
+        None => true,
+    }
+}
+
 /// True iff SOME node inside the hive routes `route` back out through the hive
 /// path — the hive has an exit for that lane.
 ///
 /// Every interior source is tried rather than a declared one, because which
 /// cell produces a lane is precisely the fact the contract exists to hide.
+///
+/// Two ways to be an exit, and both have to cross the hive path: an edge that
+/// CARRIES the lane out (the probe), or an edge that CREATES it on the way out
+/// (the modifier, GH #176 — see [`door_states_lane`]). Producing the lane on an
+/// edge that stays inside is not an exit: a caller cannot receive a message
+/// that never crosses the boundary.
 fn exit_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
+    if edges.iter().any(|e| {
+        c.is_interior(e.from.as_str()) && e.to.as_str() == c.hive_path && door_states_lane(e, route)
+    }) {
+        return true;
+    }
     let probe = HiveContract::probe(route);
     let mut sources: Vec<&Path> = edges
         .iter()
@@ -213,11 +271,23 @@ pub fn check_lane_doors(
 /// `Some("in_batch")`; `hop.upstream_route` reads a message that does not exist
 /// yet, fails, and yields `None` — unknown, therefore unjudged.
 fn stated_route(edge: &JsonValue) -> Option<String> {
-    let src = edge
-        .get("modifier")?
-        .get("set_hop")?
-        .get("route")?
-        .as_str()?;
+    constant_route(
+        edge.get("modifier")?
+            .get("set_hop")?
+            .get("route")?
+            .as_str()?,
+    )
+}
+
+/// The constant a `set_hop.route` EXPRESSION states, if it states one.
+///
+/// Compiles just that one expression and runs it against empty headers with the
+/// real evaluator, so there is no second opinion about what `'in_batch'` means.
+/// Anything that reads a message which does not exist yet fails to evaluate and
+/// yields `None` — unknown, not wrong. Shared by both halves of the file:
+/// outward it decides whether an `add_edges` entry may be judged at all,
+/// inward ([`door_states_lane`]) whether an out-door names the lane it claims.
+fn constant_route(src: &str) -> Option<String> {
     let mut spec = crate::config::ModifierSpec::default();
     spec.set_hop.insert("route".to_string(), src.to_string());
     let compiled = crate::cel_eval::parse_modifier(&spec).ok()?;
@@ -333,6 +403,10 @@ pub fn collect_hive_contracts<'a>(
     out
 }
 
+/// One edge as the boot check receives it from `/colony/graph`: endpoints, the
+/// `condition` source, and the `modifier` source spec as JSON.
+pub type BootEdge = (String, String, Option<String>, Option<JsonValue>);
+
 /// GH #173, the boot half: say it out loud when a hive's own graph no longer
 /// carries a lane its contract promises.
 ///
@@ -341,15 +415,12 @@ pub fn collect_hive_contracts<'a>(
 /// The birth topology is authorship, the same reason the port boundary and the
 /// required drains leave the bootstrap alone. And a colony held hostage by its
 /// own documentation would be a worse substrate than one that says so in the log.
-pub fn warn_on_broken_contracts(
-    contracts: &[HiveContract],
-    edges: &[(String, String, Option<String>)],
-) {
+pub fn warn_on_broken_contracts(contracts: &[HiveContract], edges: &[BootEdge]) {
     if contracts.is_empty() {
         return;
     }
     let mut table = EdgeTable::new();
-    for (from, to, cond) in edges {
+    for (from, to, cond, modifier) in edges {
         let condition = match cond {
             None => None,
             Some(src) => match crate::cel_eval::parse_condition(src) {
@@ -363,12 +434,22 @@ pub fn warn_on_broken_contracts(
                 }
             },
         };
+        // GH #176: the modifier travels with the edge here, because an out-door
+        // that TRANSLATES a model field into a lane is only visible through it
+        // (see `door_states_lane`). Dropping it would make boot warn about
+        // exactly the hives that got their failure lane right.
+        let modifier = modifier.as_ref().and_then(|raw| {
+            let spec =
+                meclaw_core::serde_json::from_value::<crate::config::ModifierSpec>(raw.clone())
+                    .ok()?;
+            crate::cel_eval::parse_modifier(&spec).ok()
+        });
         table.insert(crate::edge_table::Edge {
             id: meclaw_core::Uuid::now_v7(),
             from: Path::new(from),
             to: Path::new(to),
             condition,
-            modifier: None,
+            modifier,
         });
     }
     if let Err(e) = check_lane_doors(contracts, &table) {
@@ -391,6 +472,41 @@ mod tests {
             condition: cond.map(|c| parse_condition(c).expect("condition parses")),
             modifier: None,
         }
+    }
+
+    /// The same edge with a `set_hop.route` on it — a door that STAMPS a lane
+    /// rather than one that reads it.
+    fn stamping_edge(
+        from: &str,
+        to: &str,
+        cond: Option<&str>,
+        route_expr: &str,
+    ) -> crate::edge_table::Edge {
+        let mut spec = crate::config::ModifierSpec::default();
+        spec.set_hop
+            .insert("route".to_string(), route_expr.to_string());
+        crate::edge_table::Edge {
+            modifier: Some(crate::cel_eval::parse_modifier(&spec).expect("modifier parses")),
+            ..edge(from, to, cond)
+        }
+    }
+
+    /// The shape GH #176 needs: an inner failure edge that recognises the model
+    /// field and translates it into a lane on the way out.
+    fn translating_table(route_expr: &str) -> EdgeTable {
+        let mut t = EdgeTable::new();
+        t.insert(edge(
+            "/mem",
+            "/mem/glue",
+            Some("has(hop.route) && hop.route.startsWith('in_')"),
+        ));
+        t.insert(stamping_edge(
+            "/mem/glue",
+            "/mem",
+            Some("has(hop.finish_reason) && hop.finish_reason == 'error'"),
+            route_expr,
+        ));
+        t
     }
 
     fn lane(route: &str) -> Lane {
@@ -468,6 +584,82 @@ mod tests {
         let mut t = EdgeTable::new();
         t.insert(edge("/mem/glue", "/mem/store", None));
         assert!(check_lane_doors(&drain_contract(), &t).is_ok());
+    }
+
+    // ---- inward: a door that PRODUCES the lane (GH #176) ----
+
+    #[test]
+    fn a_door_that_states_a_different_lane_is_not_this_lanes_exit() {
+        // The guard on the modifier-aware probe below. This edge leaves the
+        // hive and stamps a route, but not the declared one, and its condition
+        // is unreachable for a route probe — so nothing here produces
+        // `episode`, and the refusal that stands today has to keep standing.
+        let err = check_lane_doors(&drain_contract(), &translating_table("'other'"))
+            .expect_err("a stamped lane that is not the declared one is not its exit");
+        assert!(format!("{err:?}").contains("episode"), "{err:?}");
+        assert_eq!(err.error_code(), "hive_contract");
+    }
+
+    #[test]
+    fn a_door_that_states_the_lane_but_stays_inside_is_not_an_exit() {
+        // The other half of the same guard: producing the lane is not enough,
+        // it has to leave through the hive path. A caller cannot receive a
+        // message that never crosses the boundary.
+        let mut t = EdgeTable::new();
+        t.insert(edge(
+            "/mem",
+            "/mem/glue",
+            Some("has(hop.route) && hop.route.startsWith('in_')"),
+        ));
+        t.insert(stamping_edge("/mem/glue", "/mem/store", None, "'episode'"));
+        let err = check_lane_doors(&drain_contract(), &t)
+            .expect_err("an interior hop that stamps the lane is not an exit");
+        assert!(format!("{err:?}").contains("episode"), "{err:?}");
+    }
+
+    #[test]
+    fn an_out_door_that_states_the_lane_is_its_exit() {
+        // GH #176. The door recognises a model field — a shape no route probe
+        // can reach — and CREATES the lane. Reading the modifier is the only
+        // way to see that the hive can honour what it declared.
+        assert!(check_lane_doors(&drain_contract(), &translating_table("'episode'")).is_ok());
+    }
+
+    #[test]
+    fn an_out_door_whose_lane_is_computed_is_not_judged() {
+        // Same conservatism as the outward half: which lane this door names is
+        // knowable only once a message exists, and a check that cannot say
+        // which lane an edge means must never reject it.
+        for expr in ["hop.upstream_route", "'ep' + hop.kind", "context.lane"] {
+            assert!(
+                check_lane_doors(&drain_contract(), &translating_table(expr)).is_ok(),
+                "{expr} must be left alone"
+            );
+        }
+    }
+
+    #[test]
+    fn a_door_that_stamps_something_other_than_a_route_is_not_an_exit() {
+        // `set_hop` without a `route` key says nothing about a lane.
+        let mut spec = crate::config::ModifierSpec::default();
+        spec.set_hop
+            .insert("kind".to_string(), "'failure'".to_string());
+        let mut t = EdgeTable::new();
+        t.insert(edge(
+            "/mem",
+            "/mem/glue",
+            Some("has(hop.route) && hop.route.startsWith('in_')"),
+        ));
+        t.insert(crate::edge_table::Edge {
+            modifier: Some(crate::cel_eval::parse_modifier(&spec).expect("modifier parses")),
+            ..edge(
+                "/mem/glue",
+                "/mem",
+                Some("has(hop.finish_reason) && hop.finish_reason == 'error'"),
+            )
+        });
+        let err = check_lane_doors(&drain_contract(), &t).expect_err("no lane is named here");
+        assert!(format!("{err:?}").contains("episode"), "{err:?}");
     }
 
     // ---- outward: the caller against the contract ----

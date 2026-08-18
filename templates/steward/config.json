@@ -3,12 +3,39 @@
     "type": "hive"
   },
   "params": {
-    "ports": [
-      "meter",
-      "mutator"
-    ],
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_cycle",
+          "because": "run a cycle NOW rather than at the next tick -- a cost alert or a DLQ spike is a reason not to wait for the clock"
+        }
+      ],
+      "emits": [
+        {
+          "route": "mutate",
+          "because": "the change this loop decided on, as an ordinary mutation body (scope and diff) for the colony mutation endpoint -- it passes every gate any other mutation passes"
+        },
+        {
+          "route": "error",
+          "because": "a step of the cycle could not complete; which step it was is this hive business, that it failed is the caller business"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./meter",
+          "condition": "has(hop.route) && hop.route == 'in_cycle'",
+          "modifier": {
+            "set_context": {
+              "steward_origin": "'meter'",
+              "st_phase": "''",
+              "st_carry": "''"
+            }
+          }
+        },
         {
           "from": "./clock",
           "to": "./meter",
@@ -131,13 +158,35 @@
           "from": "./receipts",
           "to": "./meter",
           "condition": "context.steward_origin == 'meter'"
+        },
+        {
+          "from": "./mutator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
+        },
+        {
+          "from": "./mutator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./meter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./probe",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the steward hive: the colony's control loop. Charter -> measure -> judge (and simulate) -> mutate through the normal lane -> health check -> measure the effect -> keep or revert -> receipt. Thirteen internal edges; the two ports are ./meter (an event may force a cycle) and ./mutator (its mutations leave the hive).",
+    "purpose": "Scope marker of the steward hive: the colony's control loop. Charter -> measure -> judge (and simulate) -> mutate through the normal lane -> health check -> measure the effect -> keep or revert -> receipt. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
     "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown steward measures nothing and changes nothing until somebody turns a row on.",
-    "not_in_scope": "No operator lane -- every change travels the same gated path any agent's mutation does. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only."
+    "not_in_scope": "No operator lane -- every change travels the same gated path any agent's mutation does. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
+    "contract_in": "One lane, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. Which cell starts it is this hive's business.",
+    "contract_out": "Two lanes, out of the hive path. mutate -- the decided change as an ordinary mutation body, for whoever is allowed to carry it to /colony/mutations. error -- a step of the cycle could not complete."
   }
 }

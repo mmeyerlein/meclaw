@@ -3,29 +3,75 @@
     "type": "hive"
   },
   "params": {
-    "ports": [
-      "writer",
-      "recall",
-      "extract-glue"
-    ],
-    "required_drains": [
-      {
-        "port": "extract-glue",
-        "hop": {
-          "route": "reject"
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_episode",
+          "because": "one conversational turn, or a closed session batch, to be remembered verbatim; `session_id` and `turn_id` travel as ingress context, `happened_at` on the hop for historical ingest"
         },
-        "because": "a block this hive refuses leaves on the reject route; undrained it is a dead end and nobody ever learns the memory was not written"
-      },
-      {
-        "port": "recall",
-        "hop": {
-          "route": "reject"
+        {
+          "route": "in_query",
+          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset"
         },
-        "because": "a half window is a caller bug and leaves here before the leg fan; undrained the caller waits for a bundle that never comes"
-      }
-    ],
+        {
+          "route": "in_remember",
+          "because": "a block the front model decided to remember NOW, in the inline contract form; it is bound to the newest user turn of the caller session, so the session must be in the context"
+        },
+        {
+          "route": "in_flush",
+          "because": "drain the extraction queue now, whatever the batch gate would say; add `flush_reclaim` on the hop to also recover batches whose chain died"
+        }
+      ],
+      "emits": [
+        {
+          "route": "bundle",
+          "because": "the answer to a question: the recalled material, fused and ranked, for whoever asked"
+        },
+        {
+          "route": "reject",
+          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_episode'"
+        },
+        {
+          "from": ".",
+          "to": "./recall",
+          "condition": "has(hop.route) && hop.route == 'in_query'",
+          "modifier": {
+            "set_hop": {
+              "phase": "'recall'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./extract-glue",
+          "condition": "has(hop.route) && hop.route == 'in_remember'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'inline'",
+              "mem_phase": "'inline'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./extract-glue",
+          "condition": "has(hop.route) && hop.route == 'in_flush'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'flush'"
+            }
+          }
+        },
         {
           "from": "./writer",
           "to": "./store",
@@ -266,13 +312,30 @@
               "mem_phase": "'answer'"
             }
           }
+        },
+        {
+          "from": "./recall",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'bundle'"
+        },
+        {
+          "from": "./recall",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./extract-glue",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one agent's memory behind four documented ports. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
-    "use_when": "Instantiate per agent tree; wire the ports from the parent scope in the same mutation.",
-    "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph."
+    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one agent's memory behind ITS OWN PATH. `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
+    "use_when": "Instantiate per agent tree; wire the lanes at the hive path in the same mutation.",
+    "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
+    "contract_in": "Four lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_flush -- drain the extraction queue now. Which cell serves a lane is this hive's business.",
+    "contract_out": "Two lanes, out of the hive path. bundle -- the answer to a question. reject -- something this hive would not take; the body says which and why."
   }
 }

@@ -1,4 +1,4 @@
-//! GH #159 — the shipped `canvy@0.2.0` template.
+//! GH #159 — the shipped `canvy` template.
 //!
 //! What is pinned here is what the template PROMISES:
 //!
@@ -252,6 +252,13 @@ fn hive_frame(html: &str, hive: &str) -> (i64, i64, i64, i64) {
             .unwrap_or_else(|| panic!("no {k} in {rect}"))
     };
     (num(" x"), num(" y"), num("width"), num("height"))
+}
+
+/// Does a cell box at `at` overlap the rectangle `r` at all?
+fn inside(at: (i64, i64), r: (i64, i64, i64, i64)) -> bool {
+    let (x, y) = at;
+    let (rx, ry, rw, rh) = r;
+    x < rx + rw && rx < x + 150 && y < ry + rh && ry < y + 38
 }
 
 /// The `translate(x,y)` of each named node, in the order asked for.
@@ -769,6 +776,47 @@ fn the_clients_own_tests_pass() {
     assert!(
         stdout.matches("  ok ").count() >= 20,
         "too few client assertions ran; did the suite lose its cases?\n{stdout}"
+    );
+}
+
+/// **A disconnected canvas says so.** A picture drawn before a colony restart and
+/// a live one are pixel-identical, and that is the half of GH #172 no server fix
+/// reaches: a join renders instead of taking the cache now, but the transport
+/// rejoins on its own schedule, and until it does the browser is holding whatever
+/// was last drawn. Minutes of it, on the report this came from.
+///
+/// The vendored LiveView client already publishes the state on the `data-phx-main`
+/// container; the stylesheet simply was not reading it. The class names are read
+/// back OUT of the shipped bundle rather than typed here, because a rule for a
+/// class nobody sets is silent — and a client-side path that only looks wired is
+/// the exact defect this template shipped once already.
+#[test]
+fn the_stylesheet_marks_the_disconnected_states_the_client_publishes() {
+    let Some(root) = shipped_canvy() else { return };
+    let css = std::fs::read_to_string(root.join("render/client/surface.css")).unwrap();
+    let bundle = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../meclaw-api/src/surface/client/phoenix_live_view.min.js");
+    let Ok(js) = std::fs::read_to_string(&bundle) else {
+        return; // the binary's vendored copy is not in this tree
+    };
+    for class in [
+        "phx-loading",
+        "phx-error",
+        "phx-client-error",
+        "phx-server-error",
+    ] {
+        assert!(
+            js.contains(&format!("\"{class}\"")),
+            "the vendored client no longer publishes `{class}`, so the rule for it is dead"
+        );
+        assert!(
+            css.contains(&format!(".{class}")),
+            "surface.css says nothing about `{class}` — a stale canvas then looks live"
+        );
+    }
+    assert!(
+        css.contains("out of date"),
+        "the marking has to be readable as words, not only as a shade of grey"
     );
 }
 
@@ -1734,19 +1782,61 @@ fn a_graph_reply_replaces_the_snapshot_row() {
 
 // ─────────────────────────────────────────────────────────── 6. the declarations
 
-/// The hive seals itself, and the two ports it names are the two it has.
+/// GH #197 — the hive is sealed to its own path, and says what it does in lanes.
+///
+/// `canvy@0.2` declared `ports: ["render", "refresh"]`, which are the names of
+/// two cells in here. That is the boundary moved one step rather than drawn: a
+/// caller had to know the inside in order to address it (overview § Die
+/// Hive-Grenze, requirement 2).
 #[test]
-fn the_hive_is_sealed_to_its_two_ports() {
+fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
     let Some(root) = shipped_canvy() else { return };
     let cfg = read_json(&root.join("config.json"));
     assert_eq!(cfg["cell"]["type"], "hive");
-    let ports: Vec<&str> = cfg["params"]["ports"]
+    let ports = cfg["params"]["ports"]
         .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert_eq!(ports, vec!["render", "refresh"], "the store is NOT a port");
+        .expect("params.ports is declared");
+    assert!(
+        ports.is_empty(),
+        "the hive path is the only address, got {ports:?}"
+    );
+
+    let lanes = |key: &str| -> Vec<String> {
+        cfg["params"]["contract"][key]
+            .as_array()
+            .unwrap_or_else(|| panic!("params.contract.{key}"))
+            .iter()
+            .map(|l| {
+                assert!(
+                    !l["because"].as_str().expect("a lane says why").is_empty(),
+                    "a lane without a sentence is a lane nobody can wire"
+                );
+                l["route"].as_str().expect("a lane is a route").to_string()
+            })
+            .collect()
+    };
+    assert_eq!(lanes("accepts"), vec!["in_refresh".to_string()]);
+    assert_eq!(lanes("emits"), vec!["surface".to_string()]);
+    // And no lane carries the name of a cell in here.
+    for lane in lanes("accepts").iter().chain(lanes("emits").iter()) {
+        for cell in ["render", "refresh", "probe", "store"] {
+            assert_ne!(lane, cell, "'{lane}' is a cell of this hive, not a lane");
+        }
+    }
+
+    // The knowledge that `in_refresh` is served by the probe lives on exactly
+    // one edge, and it is this hive's own (requirement 3).
+    let edges = cfg["params"]["graph"]["edges"].as_array().unwrap();
+    let doors: Vec<&Value> = edges.iter().filter(|e| e["from"] == ".").collect();
+    assert_eq!(doors.len(), 1, "one door in: {edges:?}");
+    assert_eq!(doors[0]["to"], "./probe");
+    assert!(
+        doors[0]["condition"]
+            .as_str()
+            .unwrap()
+            .contains("'in_refresh'")
+    );
+
     // GH #163: both of the hive's outward lanes stay INSIDE what a mutation may
     // draw, which is what makes the whole template installable into a running
     // colony. The answer goes to the hive itself and leaves through the egress
@@ -1754,7 +1844,6 @@ fn the_hive_is_sealed_to_its_two_ports() {
     // the topology lane addresses the colony's read-only endpoint, the one
     // absolute endpoint a mutation is allowed. A regression to `-> /` would make
     // the mutation `scope_out_of_bounds` again.
-    let edges = cfg["params"]["graph"]["edges"].as_array().unwrap();
     assert!(
         edges
             .iter()
@@ -2413,6 +2502,141 @@ fn the_settling_pass_does_nothing_to_an_untouched_colony() {
                 p[j]
             );
         }
+    }
+}
+
+/// **A cell that has to give way gives way INTO its own hive.** The ring search
+/// that finds it a free spot ranked candidates by distance alone, so the nearest
+/// one was as likely to be outside the group it belongs to as inside it — and a
+/// box that leaves its hive drags the frame out with it, because the frame is
+/// derived from its members. "Nearest free spot, preferring inside its own hive"
+/// is the rule GH #167 asks for, and the preference is the half that was missing.
+///
+/// The arrangement here leaves room on both sides: the spot below the crowd is
+/// free and outside the hand-placed group's rectangle, the spot above it is free
+/// and inside. Distance alone picks the one below (it did, at 42,120); the
+/// preference picks the one above.
+#[test]
+fn a_cell_that_gives_way_gives_way_into_its_own_hive() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[
+            ("/a/one", "llm"),
+            ("/a/two", "store"),
+            ("/a/three", "code"),
+            ("/a/new", "code"),
+        ],
+        &[],
+    );
+    // Where the flow layout puts the cell nobody has placed.
+    let computed = node_positions(
+        &html_of(&run_shipped(
+            &root,
+            "render",
+            stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+        )),
+        &["a/new"],
+    )[0];
+
+    // `one` is pinned exactly on that spot, so the collision is certain; `two` and
+    // `three` pull the group's rectangle left and up, so "inside the group" and
+    // "nearest by distance" point in different directions.
+    let hand = [
+        ("a/one", computed.0, computed.1),
+        ("a/two", computed.0 - 480, computed.1),
+        ("a/three", computed.0 - 480, computed.1 - 144),
+    ];
+    let mut rows = snapshot_rows(graph);
+    for (id, x, y) in hand {
+        rows.as_array_mut()
+            .unwrap()
+            .push(json!({"kind": "node", "id": id, "x": x, "y": y}));
+    }
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+
+    let ids: Vec<&str> = hand.iter().map(|(i, _, _)| *i).collect();
+    let pinned = node_positions(&html, &ids);
+    assert_eq!(
+        pinned,
+        hand.iter().map(|(_, x, y)| (*x, *y)).collect::<Vec<_>>(),
+        "a hand-placed cell is the one that must not move"
+    );
+
+    // The rectangle those three give their hive: `box_of`'s padding, 24 at the
+    // sides, 30 above, 24 below.
+    let (x0, x1) = (
+        hand.iter().map(|h| h.1).min().unwrap() - 24,
+        hand.iter().map(|h| h.1).max().unwrap() + 150 + 24,
+    );
+    let (y0, y1) = (
+        hand.iter().map(|h| h.2).min().unwrap() - 30,
+        hand.iter().map(|h| h.2).max().unwrap() + 38 + 24,
+    );
+    let at = node_positions(&html, &["a/new"])[0];
+    assert_ne!(
+        at, computed,
+        "the new cell is still sitting on the pinned one"
+    );
+    assert!(
+        at.0 >= x0 && at.0 + 150 <= x1 && at.1 >= y0 && at.1 + 38 <= y1,
+        "the new cell left its own hive to give way: {at:?} not inside \
+         ({x0},{y0})-({x1},{y1})"
+    );
+}
+
+/// **And a cell nobody placed is never left inside a foreign hive's frame.** The
+/// shift above needs a hand-placed cell in the hive to measure; a hive that has
+/// none keeps its computed block, and a neighbour dragged across it then draws its
+/// rectangle around cells that do not belong to it. That is the same defect read
+/// from the other side (GH #167) — the operator's first move is to drag the box
+/// out, which is the work the layout exists to save — so a spot inside a foreign
+/// frame counts as occupied for a cell with no stored position.
+#[test]
+fn a_new_cell_is_not_left_inside_a_foreign_hives_frame() {
+    let Some(root) = shipped_canvy() else { return };
+    let graph = graph_doc(
+        &[
+            ("/a/one", "llm"),
+            ("/a/two", "store"),
+            ("/b/x", "timer"),
+            ("/b/y", "timer"),
+        ],
+        &[],
+    );
+    let flow = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(snapshot_rows(graph.clone())), json!({})),
+    ));
+    let a = node_positions(&flow, &["a/one", "a/two"]);
+
+    // Hive `b` is dragged wide open around hive `a`'s untouched block: neither of
+    // its two cells touches one of `a`'s, but its frame swallows both.
+    let mut rows = snapshot_rows(graph);
+    for (id, x, y) in [("b/x", a[0].0 - 500, a[0].1), ("b/y", a[1].0 + 500, a[1].1)] {
+        rows.as_array_mut()
+            .unwrap()
+            .push(json!({"kind": "node", "id": id, "x": x, "y": y}));
+    }
+    let html = html_of(&run_shipped(
+        &root,
+        "render",
+        stdin_doc_pass2(store_reply(rows), json!({})),
+    ));
+
+    let b = hive_frame(&html, "b");
+    for (id, at) in ["a/one", "a/two"]
+        .iter()
+        .zip(node_positions(&html, &["a/one", "a/two"]))
+    {
+        assert!(
+            !inside(at, b),
+            "{id} is drawn inside hive `b`'s frame: {at:?} in {b:?}"
+        );
     }
 }
 

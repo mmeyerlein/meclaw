@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn default_required() -> bool {
     true
@@ -36,6 +36,31 @@ pub struct EmitsBlock {
     /// Declared hop keys this cell writes (cells only emit hop).
     #[serde(default)]
     pub hop: BTreeMap<String, EmitSpec>,
+}
+
+/// GH #185 — a cell's declaration that it is an **ingress**: the point where a
+/// message enters the colony from outside.
+///
+/// Not a message compartment and not an `emits` sibling — cells emit `hop`
+/// only, and `context` stays edge authority (config.md § emits). This block
+/// says something about the cell's PLACE, in the same spirit as
+/// `consumes.topology` (GH #160): "messages are born at me, and these are the
+/// standard header keys they are born with".
+///
+/// It replaces an inference. The build-time reachability check used to treat
+/// any node without an incoming edge as the graph entry, which is not a
+/// property of a cell at all: the ordinary connector — a proxy that accepts
+/// inbound traffic and gets the answers routed back — has an incoming edge and
+/// lost the branch, while an unrelated rewiring elsewhere could hand it back.
+/// A declaration is answerable locally and does not change its mind.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IngressBlock {
+    /// The `context` keys this cell mints when it creates a message. Bounded
+    /// by the standard header convention (`INGRESS_CONTEXT_KEYS`): a cell may
+    /// NARROW the standard set, never widen it — anything else reaches
+    /// `context` through an edge `set_context`.
+    pub context: BTreeSet<String>,
 }
 
 /// One field's consume spec — type only (no enum/values on the read side).

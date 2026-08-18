@@ -1499,10 +1499,16 @@ fn path_within(scope: &meclaw_core::Path, inner: &meclaw_core::Path) -> bool {
 }
 
 /// Standard-Header-Konvention (spec § Standard-Header-Konvention): the context
-/// keys that exist by virtue of ingress-at-birth. A node that requires one of
-/// these is reachable as soon as a path leads to it from the graph entry without
-/// an intervening `delete_context` for that key — no explicit `set_context`
-/// setter edge is needed (the value is born at ingress).
+/// keys that CAN exist by virtue of ingress-at-birth.
+///
+/// GH #185 — this is the OUTER BOUND of what a cell may claim, not a grant.
+/// Being born at ingress is something a cell declares
+/// (`contract.ingress.context`, [`HeaderNodeView::ingress_context`]); the list
+/// here limits the claim to the standard header convention. Before #185 the
+/// whole list was handed to any node that happened to have no incoming edge —
+/// an inference about the graph's shape standing in for a statement about the
+/// cell, which took the branch away from the connectors that really are
+/// entries and handed it to any island.
 pub const INGRESS_CONTEXT_KEYS: &[&str] =
     &["turn_id", "session_id", "user_id", "chat_id", "locale"];
 
@@ -1517,6 +1523,11 @@ pub struct HeaderNodeView {
     pub required_context: std::collections::BTreeSet<String>,
     /// `consumes.hop` keys this node declares `required: true`.
     pub required_hop: std::collections::BTreeSet<String>,
+    /// GH #185 — `contract.ingress.context`: the context keys this node
+    /// declares it MINTS at birth, because messages enter the colony here.
+    /// Empty ⇒ this node is not an ingress. Bounded by
+    /// [`INGRESS_CONTEXT_KEYS`]; a claim outside it is refused.
+    pub ingress_context: std::collections::BTreeSet<String>,
 }
 
 /// Project a parsed `contract` block into the [`HeaderNodeView`] the
@@ -1538,6 +1549,7 @@ pub fn header_view_from_contract(block: &crate::config::ContractBlock) -> Header
         emits_hop: block.emits.hop.keys().cloned().collect(),
         required_context: required_keys(&consumes.context),
         required_hop: required_keys(&consumes.hop),
+        ingress_context: block.ingress.context.clone(),
     }
 }
 
@@ -1582,16 +1594,23 @@ pub struct HeaderEdgeView {
 ///   key but NO incoming edge is rejected. A key not delivered by EVERY
 ///   incoming edge is rejected (`EdgeSchema`, message names node + key +
 ///   "14-B locality / fan-in intersection"). This is the collector safeguard.
+/// - **ingress declaration (GH #185):** every key a node names in
+///   `contract.ingress.context` MUST lie in [`INGRESS_CONTEXT_KEYS`]. A cell
+///   may narrow the standard header set it mints at birth; it may not invent a
+///   key that reaches `context` any other way than through an edge
+///   `set_context`. Violation → `EdgeSchema`, naming node + key.
 /// - **context REACHABILITY (presence, not freshness):** for every required
 ///   `consumes.context` key `k` at `N`, a path must exist backwards over
 ///   incoming edges to a context SETTER with NO intervening `delete_context: k`
 ///   on that path. Two setter roots count: an edge carrying `set_context: k`
-///   (source-cell promotion), OR — for a key in [`INGRESS_CONTEXT_KEYS`] — the
-///   ingress-at-birth (a path from the graph entry, i.e. a node with no
-///   incoming edge, to `N` without an intervening `delete_context: k`). No such
-///   path → `EdgeSchema` ("context presence not reachable"). This is honestly
-///   PRESENCE/reachability, NOT freshness — a key proven reachable may still be
-///   stale.
+///   (source-cell promotion), OR — GH #185 — a node on that path which DECLARES
+///   `contract.ingress.context: k`, i.e. says messages are born at it carrying
+///   `k`. `N` itself counts, which is what makes the ordinary connector shape
+///   legal: a proxy that mints `chat_id` and also receives the replies routed
+///   back to it satisfies its own requirement. No such path → `EdgeSchema`
+///   ("context presence not reachable"), and the message names the declaration
+///   an author would have to add. This is honestly PRESENCE/reachability, NOT
+///   freshness — a key proven reachable may still be stale.
 ///
 /// Empty `consumes` (no required keys) makes the check vacuously true, so
 /// existing topologies that declare no `consumes` never break.
@@ -1610,6 +1629,22 @@ pub fn validate_header_contract_locality(
     }
 
     for (node, view) in node_contracts {
+        // ── Rule 0 (GH #185): the ingress claim is bounded ──────────────────
+        // A cell may narrow the standard header set it mints at birth, never
+        // widen it. Checked before the two rules below so a nonsensical claim
+        // is named as such instead of surfacing as an unreachable key somewhere
+        // downstream.
+        for key in &view.ingress_context {
+            if !INGRESS_CONTEXT_KEYS.contains(&key.as_str()) {
+                return Err(MutationError::EdgeSchema(format!(
+                    "node '{node}' declares contract.ingress.context '{key}', which is not a \
+                     standard header key born at ingress (allowed: {}) — a key outside that set \
+                     reaches context through an edge modifier.set_context",
+                    INGRESS_CONTEXT_KEYS.join(", ")
+                )));
+            }
+        }
+
         // ── Rule 1: hop locality (fan-in intersection) ──────────────────────
         if !view.required_hop.is_empty() {
             let in_edges = incoming.get(node.as_str());
@@ -1649,16 +1684,18 @@ pub fn validate_header_contract_locality(
 
         // ── Rule 2: context reachability (presence, not freshness) ──────────
         for key in &view.required_context {
-            let is_ingress = INGRESS_CONTEXT_KEYS.contains(&key.as_str());
-            if !context_key_reachable(node, key, is_ingress, edges, &incoming) {
+            if !context_key_reachable(node, key, edges, &incoming, node_contracts) {
+                let hint = if INGRESS_CONTEXT_KEYS.contains(&key.as_str()) {
+                    format!(
+                        " — no edge promotes it and no cell on the way declares \
+                         contract.ingress.context '{key}'"
+                    )
+                } else {
+                    String::new()
+                };
                 return Err(MutationError::EdgeSchema(format!(
                     "node '{node}' requires consumes.context '{key}' but context presence \
-                     not reachable from any setter{}",
-                    if is_ingress {
-                        " or ingress-at-birth"
-                    } else {
-                        ""
-                    }
+                     not reachable from any setter{hint}"
                 )));
             }
         }
@@ -1727,15 +1764,23 @@ fn edge_provides_hop_key(
 /// `node` looking for a setter root, pruning any path that crosses a
 /// `delete_context: key`. Returns `true` iff such a path exists.
 ///
-/// Setter roots: an edge with `set_context: key` (promotion), OR — when
-/// `is_ingress` — a graph-entry node (a node with no incoming edge), which
-/// represents ingress-at-birth for the standard header keys.
+/// Setter roots: an edge with `set_context: key` (promotion), OR — GH #185 — a
+/// node that DECLARES `contract.ingress.context: key`, i.e. one that says
+/// messages are born at it carrying that key. `node` itself is on the walk, so
+/// an ingress satisfies its own requirement.
+///
+/// It used to be the second root that was inferred: a node with no incoming
+/// edge was read as the graph entry and handed every key in
+/// [`INGRESS_CONTEXT_KEYS`]. In-degree is not a property of a cell — a proxy
+/// that also receives replies has an incoming edge and lost the branch, while
+/// an unconnected island gained it — so the answer changed when an unrelated
+/// edge was added. Now nothing about the shape of the graph decides it.
 fn context_key_reachable(
     node: &str,
     key: &str,
-    is_ingress: bool,
     edges: &[HeaderEdgeView],
     incoming: &std::collections::HashMap<&str, Vec<usize>>,
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
 ) -> bool {
     use std::collections::HashSet;
     // BFS backwards over nodes; the frontier holds nodes whose incoming edges we
@@ -1746,13 +1791,15 @@ fn context_key_reachable(
         if !visited.insert(current) {
             continue;
         }
+        // GH #185 — a declared ingress is a setter root, whatever its in-degree.
+        if node_contracts
+            .get(current)
+            .is_some_and(|v| v.ingress_context.contains(key))
+        {
+            return true;
+        }
         match incoming.get(current) {
-            None => {
-                // Graph entry: ingress-at-birth satisfies the standard keys.
-                if is_ingress {
-                    return true;
-                }
-            }
+            None => {}
             Some(in_edges) => {
                 for &ei in in_edges {
                     let e = &edges[ei];
@@ -3495,6 +3542,16 @@ mod tests {
             emits_hop: keys(emits_hop),
             required_context: keys(req_ctx),
             required_hop: keys(req_hop),
+            ..Default::default()
+        }
+    }
+
+    /// GH #185 — build a [`HeaderNodeView`] that DECLARES it is an ingress
+    /// minting `ingress_ctx` at birth, and nothing else.
+    fn ingress_node(ingress_ctx: &[&str]) -> HeaderNodeView {
+        HeaderNodeView {
+            ingress_context: keys(ingress_ctx),
+            ..Default::default()
         }
     }
 
@@ -3563,15 +3620,41 @@ mod tests {
         }
     }
 
-    /// (d) Node requires an INGRESS context key (`turn_id`), reachable from the
-    /// graph entry (no intervening delete) → accepted.
+    /// (d) Node requires an INGRESS context key (`turn_id`), reachable from a
+    /// cell that DECLARES it mints the key at birth (no intervening delete)
+    /// → accepted.
+    ///
+    /// GH #185 re-cut: `src` used to qualify by having no incoming edge. That
+    /// inference is gone — it now qualifies by saying so.
     #[test]
     fn accepts_required_context_consume_for_ingress_key() {
+        let mut contracts: BTreeMap<String, HeaderNodeView> = BTreeMap::new();
+        contracts.insert("src".into(), ingress_node(&["turn_id"]));
+        contracts.insert("sink".into(), node(&[], &["turn_id"], &[]));
+        let edges = vec![edge("src", "sink")];
+        assert!(validate_header_contract_locality(&contracts, &edges, &keys(&[])).is_ok());
+    }
+
+    /// (d′) GH #185, the counter-pin: the same topology WITHOUT the declaration
+    /// is refused, and the refusal names the field to add.
+    #[test]
+    fn rejects_required_ingress_key_when_no_cell_declares_the_ingress() {
         let mut contracts: BTreeMap<String, HeaderNodeView> = BTreeMap::new();
         contracts.insert("src".into(), node(&[], &[], &[]));
         contracts.insert("sink".into(), node(&[], &["turn_id"], &[]));
         let edges = vec![edge("src", "sink")];
-        assert!(validate_header_contract_locality(&contracts, &edges, &keys(&[])).is_ok());
+        let err = validate_header_contract_locality(&contracts, &edges, &keys(&[]))
+            .expect_err("no in-degree inference grants turn_id any more");
+        match err {
+            MutationError::EdgeSchema(msg) => {
+                assert!(msg.contains("turn_id"), "names key: {msg}");
+                assert!(
+                    msg.contains("contract.ingress.context"),
+                    "names the declaration to add: {msg}"
+                );
+            }
+            other => panic!("expected EdgeSchema, got {other:?}"),
+        }
     }
 
     /// (e) Two incoming edges, BOTH deliver the required hop key → accepted.

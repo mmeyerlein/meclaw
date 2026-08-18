@@ -141,11 +141,10 @@ fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Shipped>) {
 fn every_declared_port_opens_a_door_of_the_template_that_declares_it() {
     let mut checked = 0usize;
     for t in shipped_sealed_hives() {
-        if t.declared.is_empty() {
-            // `ports: []` is the legal "transit only" seal — a deliberate empty
-            // declaration, not a declaration that failed to name anything.
-            continue;
-        }
+        // `ports: []` is not skipped: it is the finished form (GH #197), and
+        // the same question has a sharper answer there — the boundary must open
+        // ZERO doors, so a hive that quietly regained an interior address is
+        // caught by the same assertion rather than by a second one.
         let sealed = vec![meclaw_colony::mutation::port_boundary::SealedHive {
             path: HIVE.into(),
             ports: ports_the_substrate_reads(&t.config),
@@ -172,7 +171,11 @@ fn every_declared_port_opens_a_door_of_the_template_that_declares_it() {
             opened,
             t.children
         );
-        checked += t.declared.len();
+        checked += 1;
     }
-    assert!(checked >= 7, "the sweep checked almost nothing: {checked}");
+    // The floor counts TEMPLATES, not ports. It used to count ports, which made
+    // it fall as the library was migrated — and the end state of that migration
+    // is that no template declares a port at all, at which point a port count
+    // reaches zero and the sweep passes by looking at nothing.
+    assert!(checked >= 5, "the sweep checked almost nothing: {checked}");
 }

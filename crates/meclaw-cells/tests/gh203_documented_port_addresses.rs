@@ -36,6 +36,42 @@
 //! — the same rule the port check follows ("it never rejects an edge it cannot
 //! place"). The two counters at the end are what keep that conservatism from
 //! degenerating into a test that passes by looking at nothing.
+//!
+//! **`docs/` is scanned too (GH #229), and that needed a carve-out.** The scan
+//! started at `templates/` and `examples/`, which left the specification — the
+//! one document where a wrong address costs the most readers — ungated; it had
+//! kept a refused address inside the very section that defines the rule the
+//! address breaks. But that section now also teaches BY counter-example: a pair
+//! of edges shown as wrong on purpose, one breaking requirement 1 and one
+//! breaking requirement 2. A plain extension would flag the teaching material.
+//!
+//! So a fenced block may declare itself an intentional counter-example, on the
+//! line directly above its opening fence:
+//!
+//! ```text
+//! <!-- gate:counter-example refused=./talky/session-keeper/stamp -->
+//! ```
+//!
+//! **The marker names the addresses rather than merely silencing the block**,
+//! and that is the whole of the decision (the open question on GH #229). A bare
+//! "ignore this block" would let the lesson rot in silence: the day the boundary
+//! stops refusing an address, the block would quietly become a correct example
+//! labelled as wrong, and nothing would say so. Naming them turns the exemption
+//! into an assertion — the declared set must equal the set the REAL boundary
+//! refuses, so a counter-example that stops being one fails here.
+//!
+//! Naming them also keeps the pair honest, which a block-level mute could not:
+//! of the two edges taught as wrong, only the first is refused by the substrate.
+//! The second addresses the hive correctly and breaks requirement 2 — a lane
+//! named after an inner cell — which no validator can see. A mute would have
+//! implied both are refused; the marker states, in the document itself, which
+//! one the machine catches and which one only a reader can.
+//!
+//! Two more properties keep the marker from becoming a mode: it must sit
+//! directly above a fenced block (it exempts that block and nothing else), and
+//! `the_counter_example_marker_stays_a_carve_out` caps how many may exist at
+//! all. Both language twins of a document carry their own marker, which is why
+//! the cap is a handful rather than one.
 
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::mutation::port_boundary::validate_hive_port_boundary;
@@ -280,15 +316,26 @@ fn is_endpoint_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'.' | b'/' | b'-' | b'_' | b'<' | b'>')
 }
 
-/// Every shipped `.md` and `.json` under `templates/` and `examples/`.
+/// Every shipped `.md` and `.json` under `templates/`, `examples/` and `docs/`.
 ///
 /// `builder-librarian`'s seed is excluded: it is a GENERATED corpus that embeds
 /// other files verbatim, so a finding there is a duplicate of the finding in the
-/// source, reported against a file nobody edits by hand.
+/// source, reported against a file nobody edits by hand. `docs/archive/` is
+/// excluded for the opposite reason: it is a record of a past state, and a past
+/// state is allowed to contain the addresses of its own day.
+///
+/// **The sweep is by directory, never by filename, because the tree it runs in
+/// has two shapes.** In the working tree a document exists twice — `X.md`
+/// (German) and `X.en.md` (English) — and only the English one travels, renamed
+/// to `X.md` on the way out. A list of expected filenames would therefore be
+/// wrong in one of the two trees; walking whatever `.md` is present is right in
+/// both. Missing directories are skipped in silence for the same reason
+/// `collect_docs` already skips an unreadable one: the public tree carries a
+/// subset, and a subset is not a defect.
 fn shipped_docs() -> Vec<(String, String)> {
     let root = core_root();
     let mut out = Vec::new();
-    for base in ["templates", "examples"] {
+    for base in ["templates", "examples", "docs"] {
         collect_docs(&root, &root.join(base), &mut out);
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -304,7 +351,7 @@ fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(St
         let p = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if p.is_dir() {
-            if name != "builder-librarian" {
+            if !matches!(name.as_str(), "builder-librarian" | "archive") {
                 collect_docs(root, &p, out);
             }
             continue;
@@ -317,6 +364,63 @@ fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(St
         };
         out.push((p.strip_prefix(root).unwrap().display().to_string(), text));
     }
+}
+
+// ────────────────────────────────── the carve-out: addresses that are wrong on purpose
+
+/// What a document writes above a fenced block to declare it a counter-example.
+/// The value after `=` is a comma-separated list of the endpoints the document
+/// claims the boundary refuses; the closing `-->` ends it.
+const COUNTER_EXAMPLE_MARKER: &str = "<!-- gate:counter-example refused=";
+
+/// One fenced block a document declares to be an intentional counter-example.
+struct CounterExample {
+    /// Where the marker sits, for the failure message.
+    marker_line: usize,
+    /// First and last line of the fenced block it guards, 1-based, fences
+    /// included. `None` when no fence opens on the very next line — a marker
+    /// that guards nothing exempts nothing and is reported.
+    block: Option<(usize, usize)>,
+    /// The endpoints the document CLAIMS the boundary refuses in that block.
+    declared: Vec<String>,
+}
+
+/// Read every counter-example marker in one file.
+///
+/// Deliberately positional: the fence has to open on the line immediately after
+/// the marker. A marker that could float above a paragraph would be an exemption
+/// whose reach a reader has to guess at, and the reach is the whole point.
+fn counter_examples_in(text: &str) -> Vec<CounterExample> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix(COUNTER_EXAMPLE_MARKER) else {
+            continue;
+        };
+        let declared: Vec<String> = rest
+            .trim_end()
+            .trim_end_matches("-->")
+            .split(',')
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .collect();
+        let block = lines
+            .get(i + 1)
+            .filter(|l| l.trim_start().starts_with("```"))
+            .and_then(|_| {
+                lines[i + 2..]
+                    .iter()
+                    .position(|l| l.trim_start().starts_with("```"))
+                    .map(|off| (i + 2, i + 2 + off + 1))
+            });
+        out.push(CounterExample {
+            marker_line: i + 1,
+            block,
+            declared,
+        });
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────── the check
@@ -335,8 +439,15 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
     let mut seals: HashMap<String, SealedHive> = HashMap::new();
     let mut out = Vec::new();
     for (file, text) in docs {
+        let marks = counter_examples_in(text);
+        // Per marker: the endpoints the REAL boundary refused inside its block.
+        let mut refused_inside: Vec<Vec<String>> = vec![Vec::new(); marks.len()];
         for ep in endpoints_in(file, text) {
             *scanned += 1;
+            let guarded = marks.iter().position(|m| {
+                m.block
+                    .is_some_and(|(from, to)| ep.line >= from && ep.line <= to)
+            });
             let segs: Vec<&str> = ep
                 .raw
                 .split('/')
@@ -352,19 +463,58 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
                 let seal = seals
                     .entry(name.to_string())
                     .or_insert_with(|| seal_the_substrate_reads(&t.config));
-                if !boundary_admits(seal, child) {
-                    let ports = if seal.ports.is_empty() {
-                        "none — the hive path itself is the only address".to_string()
-                    } else {
-                        seal.ports.join(", ")
-                    };
-                    out.push(format!(
-                        "{}:{}: '{}' reaches '{name}/{child}', and the boundary of the sealed \
-                         template '{}' refuses it. Declared ports: {ports}. Write the hive path \
-                         and put the meaning of the dropped segment on the edge's lane.",
-                        ep.file, ep.line, ep.raw, t.rel
-                    ));
+                if boundary_admits(seal, child) {
+                    continue;
                 }
+                if let Some(k) = guarded {
+                    // Taught on purpose — recorded rather than accused, and
+                    // held against what the marker says a few lines below.
+                    if !refused_inside[k].contains(&ep.raw) {
+                        refused_inside[k].push(ep.raw.clone());
+                    }
+                    continue;
+                }
+                let ports = if seal.ports.is_empty() {
+                    "none — the hive path itself is the only address".to_string()
+                } else {
+                    seal.ports.join(", ")
+                };
+                out.push(format!(
+                    "{}:{}: '{}' reaches '{name}/{child}', and the boundary of the sealed \
+                     template '{}' refuses it. Declared ports: {ports}. Write the hive path \
+                     and put the meaning of the dropped segment on the edge's lane.",
+                    ep.file, ep.line, ep.raw, t.rel
+                ));
+            }
+        }
+        for (mark, mut refused) in marks.into_iter().zip(refused_inside) {
+            let at = format!("{file}:{}", mark.marker_line);
+            if mark.block.is_none() {
+                out.push(format!(
+                    "{at}: a counter-example marker that no fenced block opens under. It exempts \
+                     nothing and states nothing; put it on the line directly above the fence, or \
+                     remove it."
+                ));
+                continue;
+            }
+            if mark.declared.is_empty() {
+                out.push(format!(
+                    "{at}: a counter-example marker that names no refused address. The marker is \
+                     an assertion about the boundary, not a mute button — name what it refuses, \
+                     or drop the marker and fix the block."
+                ));
+                continue;
+            }
+            let mut declared = mark.declared.clone();
+            declared.sort();
+            declared.dedup();
+            refused.sort();
+            if declared != refused {
+                out.push(format!(
+                    "{at}: the counter-example claims the boundary refuses {declared:?}, and it \
+                     refuses {refused:?}. An address that stopped being refused is no longer a \
+                     counter-example — it is a correct example labelled as wrong."
+                ));
             }
         }
     }
@@ -385,6 +535,112 @@ fn every_documented_edge_endpoint_is_one_the_boundary_admits() {
     assert!(
         scanned >= 300,
         "the scan read almost no endpoints: {scanned}"
+    );
+    // And once more for `docs/` alone, because the whole of GH #229 is that a
+    // directory can be absent from the sweep while the total still looks
+    // healthy. The floor is set for the SMALLER of the two trees: the public
+    // one carries a curated subset of `docs/` and no language twins.
+    let in_docs: usize = shipped_docs()
+        .iter()
+        .filter(|(f, _)| f.starts_with("docs/"))
+        .map(|(f, t)| endpoints_in(f, t).len())
+        .sum();
+    assert!(
+        in_docs >= 20,
+        "the sweep read almost no endpoints in docs/: {in_docs}"
+    );
+}
+
+/// The test of the carve-out: it exempts by asserting, not by silencing.
+///
+/// Four synthetic documents around the same two lines the specification teaches
+/// with. They pin the decision behind the marker (GH #229): a marker that only
+/// said "skip this block" would pass the first three of these identically, and
+/// the third is exactly the day the lesson stopped being true.
+#[test]
+fn the_marker_asserts_the_refusal_it_exempts() {
+    let bad = "{\"from\": \"./proxy\", \"to\": \"./talky/session-keeper/stamp\"}";
+    let case = |body: &str| {
+        let mut scanned = 0usize;
+        findings(&[("docs/x.md".to_string(), body.to_string())], &mut scanned)
+    };
+
+    // 1. Unmarked, the block is an accusation — the state GH #229 was filed in.
+    //
+    // Two accusations for one address since GH #228 sealed the whole library:
+    // `./talky/session-keeper/stamp` crosses TWO boundaries, `talky`'s and the
+    // sub-unit's, and each seal reports the crossing it sees. The address is
+    // what the marker names, so exempting it (case 2) still silences both.
+    let plain = case(&format!("```json\n{bad}\n```"));
+    assert_eq!(plain.len(), 2, "{plain:#?}");
+    assert!(
+        plain.iter().all(|f| f.contains("session-keeper/stamp")),
+        "{plain:#?}"
+    );
+
+    // 2. Marked with what the boundary really refuses: taught, not accused.
+    let taught = case(&format!(
+        "<!-- gate:counter-example refused=./talky/session-keeper/stamp -->\n```json\n{bad}\n```"
+    ));
+    assert!(taught.is_empty(), "{taught:#?}");
+
+    // 3. The point of naming the address. A declaration the boundary no longer
+    //    backs is louder than the silence a block-level mute would have kept.
+    let stale = case(&format!(
+        "<!-- gate:counter-example refused=./talky/session-keeper/nowhere -->\n```json\n{bad}\n```"
+    ));
+    assert_eq!(stale.len(), 1, "{stale:#?}");
+    assert!(
+        stale[0].contains("no longer a counter-example"),
+        "{stale:#?}"
+    );
+
+    // 4. The reach is one fenced block, and a marker that guards none says so.
+    let loose = case(&format!(
+        "<!-- gate:counter-example refused=./a/b -->\n\n```json\n{bad}\n```"
+    ));
+    assert_eq!(loose.len(), 3, "{loose:#?}");
+    assert!(
+        loose
+            .iter()
+            .any(|f| f.contains("no fenced block opens under")),
+        "{loose:#?}"
+    );
+}
+
+/// The marker is a carve-out, and a carve-out that spreads is a mode.
+///
+/// Nothing about the scan limits how often a block may declare itself wrong on
+/// purpose, so the limit is stated here: a handful across the whole shipped
+/// tree. The number is a handful rather than one because a document exists
+/// twice in the working tree — German and English — and each twin carries its
+/// own marker; the public tree sees half of them.
+///
+/// A marker also has to earn its place twice over, and both halves are checked
+/// by the sweep itself: it must guard a fenced block, and the addresses it
+/// names must be the ones the real boundary refuses.
+#[test]
+fn the_counter_example_marker_stays_a_carve_out() {
+    let docs = shipped_docs();
+    let marked: Vec<String> = docs
+        .iter()
+        .flat_map(|(file, text)| {
+            counter_examples_in(text)
+                .into_iter()
+                .map(move |m| format!("{file}:{}", m.marker_line))
+        })
+        .collect();
+    assert!(
+        marked.len() <= 4,
+        "counter-example markers stopped being exceptional ({}): {marked:#?}",
+        marked.len()
+    );
+    // Zero would mean the marker is dead code and the section that teaches by
+    // counter-example lost its lesson, which is a finding of its own.
+    assert!(
+        !marked.is_empty(),
+        "no shipped document teaches by counter-example any more — if the pair \
+         in § the hive boundary was removed, remove the marker support with it"
     );
 }
 
@@ -424,9 +680,26 @@ fn the_scan_reports_the_addresses_this_issue_was_filed_about() {
     ];
     let mut scanned = 0usize;
     let found = findings(&shipped_before_the_fix, &mut scanned);
+    // Since GH #228 the whole library is sealed, so an address that names a hive
+    // and then keeps going crosses more than one boundary, and each seal reports
+    // the crossing it sees — `<talky>/collector/assemble` is two findings on its
+    // own. The per-address assertions below are what this test is really made
+    // of; the count only keeps it from going quiet.
+    //
+    // And the count has to be DERIVED, because one of the findings exists only
+    // in the private tree: the first line's `./agent/...` matches the template
+    // named `slack-agent` on its last segment, and `slack-agent` is not exported.
+    // A literal count passed here and failed in the public clone — which is the
+    // whole reason the export runs the suite instead of only `cargo check`. The
+    // suffix match itself is GH #238; when it becomes an equality this goes back
+    // to a literal.
+    let private_only = core_root()
+        .join("templates/slack-agent/config.json")
+        .is_file();
+    let expected = if private_only { 8 } else { 7 };
     assert_eq!(
         found.len(),
-        6,
+        expected,
         "the scan missed a known-bad address (or invented one): {found:#?}"
     );
     for (needle, whose) in [

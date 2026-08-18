@@ -22,9 +22,10 @@
 //!    `chat_id` (`sendMessage.chat_id` / `chat.postMessage.channel+thread_ts`).
 //! 2. **Promotion gone, `consumes.context.chat_id` required as shipped** — the
 //!    colony does not boot at all. The 14-B locality check walks back from the
-//!    proxy over its in-edges looking for a `set_context` setter, and a bot loop
-//!    is closed, so there is no ingress-at-birth entry to fall back on. The
-//!    reply leg cannot die silently because nothing starts.
+//!    proxy looking for a `set_context` setter, and since GH #185 the only other
+//!    root is a cell that DECLARES `contract.ingress.context: chat_id` — the
+//!    shipped proxy does not, because inside its hive the promotion edge is what
+//!    carries the key. The reply leg cannot die silently because nothing starts.
 //! 3. **Promotion gone AND the contract relaxed to `required: false`** — this is
 //!    the silent shape the issue describes, and it needs both mistakes: the
 //!    reply reaches the cell, finds no `context.chat_id`, and dies as
@@ -970,9 +971,11 @@ async fn telegram_reply_leg_dies_as_missing_chat_id_without_the_promotion() {
 }
 
 /// With the contract as shipped, the promotion cannot go missing quietly: the
-/// boot-time locality check walks back from the proxy over its in-edges looking
-/// for a `set_context` setter, and a bot loop is closed — there is no
-/// ingress-at-birth entry to fall back on. The colony refuses to start.
+/// boot-time locality check walks back from the proxy looking for a
+/// `set_context` setter, and since GH #185 the only other root is a cell that
+/// DECLARES it mints `chat_id` at birth — which the shipped proxy does not,
+/// because inside its hive the promotion edge is what carries the key. The
+/// colony refuses to start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_telegram_bot_tree_without_the_promotion_edge_does_not_boot() {
     let td = TempDir::new().expect("tempdir");

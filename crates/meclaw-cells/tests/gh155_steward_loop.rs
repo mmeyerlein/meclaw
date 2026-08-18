@@ -612,21 +612,42 @@ fn the_vault_of_this_hive_is_its_charter_and_its_stores_are_internal() {
 }
 
 #[test]
-fn the_hive_declares_only_the_two_ports_it_needs() {
+fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
+    // GH #197: this used to pin `ports == ["meter", "mutator"]`, which spelled
+    // out two CELL names — exactly what the boundary ruling of 2026-08-18 took
+    // away. What it was protecting is the property below: nothing outside can
+    // name anything inside, and what a caller may ask for is said in lanes.
     let hive = config(HIVE);
-    let ports: Vec<&str> = hive["params"]["ports"]
+    let ports = hive["params"]["ports"]
         .as_array()
-        .expect("the hive declares its ports")
-        .iter()
-        .map(|p| p.as_str().unwrap())
-        .collect();
-    // Short names, because that is what the boundary compares against (GH #196).
-    assert_eq!(ports, vec!["meter", "mutator"]);
-    // Everything else is interior: the judge in particular must not be
-    // reachable from outside, or somebody could feed it a measurement.
-    assert!(!ports.contains(&"judge"));
-    assert!(!ports.contains(&"charter"));
-    assert!(!ports.contains(&"receipts"));
+        .expect("the hive declares a port list");
+    assert!(
+        ports.is_empty(),
+        "the hive path is the address and the lane is the port: {ports:?}"
+    );
+
+    let contract = hive["params"]["contract"]
+        .as_object()
+        .expect("a sealed hive owes a contract");
+    let cells = [
+        "charter", "clock", "judge", "meter", "mutator", "probe", "receipts",
+    ];
+    let mut lanes = 0usize;
+    for side in ["accepts", "emits"] {
+        for lane in contract[side].as_array().expect("accepts/emits is a list") {
+            let route = lane["route"].as_str().expect("a lane names a route");
+            assert!(
+                !cells.contains(&route),
+                "'{route}' is a cell of this hive — a lane says what a caller wants, never where \
+                 it lands"
+            );
+            lanes += 1;
+        }
+    }
+    assert!(
+        lanes >= 3,
+        "the contract says almost nothing: {lanes} lanes"
+    );
 }
 
 #[test]
@@ -635,8 +656,11 @@ fn every_edge_of_the_hive_stays_inside_it() {
     for edge in hive["params"]["graph"]["edges"].as_array().unwrap() {
         for role in ["from", "to"] {
             let ep = edge[role].as_str().unwrap();
+            // `.` is the hive itself — the door and the exit of the sealed form
+            // (GH #197), and the one endpoint that is still inside this subtree
+            // without being below it. Everything else must be a child.
             assert!(
-                ep.starts_with("./"),
+                ep == "." || ep.starts_with("./"),
                 "a template has no edges leaving its own subtree: {ep}"
             );
         }

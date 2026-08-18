@@ -558,15 +558,17 @@ const RULE_SCHEMA: &str = r#"{"schema": {"rule_id": "text", "kind": "text", "fie
 
 /// The wiring the README documents, verbatim: `/sink` is the agent's intake
 /// (the ONLY edge a passed turn takes), `/park` is the reject drain.
+///
+/// Both ends name the firewall HIVE, never the cell inside it (GH #228): the
+/// template declares `. -> ./screen` on `in_turn` and `./screen -> .` on `pass`
+/// and `reject`, and it is the exit edges that now drop the screen's own
+/// context keys — a caller had to remember that and can no longer get it wrong.
 fn main_config() -> Value {
-    let clean = json!({"delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]});
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./fw/screen", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'pass'",
-         "modifier": clean},
-        {"from": "./fw/screen", "to": "/park",
-         "condition": "has(hop.route) && hop.route == 'reject'",
-         "modifier": clean}
+        {"from": "./fw", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'pass'"},
+        {"from": "./fw", "to": "/park",
+         "condition": "has(hop.route) && hop.route == 'reject'"}
     ]}}})
 }
 
@@ -605,7 +607,7 @@ fn turn_at(text: &str, user: &str, at: &str) -> Message {
     hop.insert("channel".into(), json!("tg:42"));
     hop.insert("user_id".into(), json!(user));
     hop.insert("recorded_at".into(), json!(at));
-    MessageBuilder::new(Path::new("/fw/screen"))
+    MessageBuilder::new(Path::new("/fw"))
         .body(Body::Inline(
             json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
         ))

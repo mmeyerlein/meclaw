@@ -112,12 +112,12 @@ machinery:
 
 ```jsonc
 // the dispatcher's memory lane -- the same shape as any tool edge
-{"from": "./talky/dispatcher", "to": "./talky/collector",
+{"from": "./talky", "to": "./talky",
  "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
  "modifier": {"set_hop": {"route": "'in_memory_call'"}}},
 
 // the recall port, carrying the window the model named
-{"from": "./talky/collector", "to": "./memory/keep",
+{"from": "./talky", "to": "./memory/keep",
  "condition": "has(hop.route) && hop.route == 'recall'",
  "modifier": {"set_hop": {"route": "'in_recall'"},
               "set_context": {"recall_query": "hop.recall_query",

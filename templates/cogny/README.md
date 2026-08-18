@@ -1,4 +1,4 @@
-# `cogny@2.0.0`
+# `cogny@3.0.0`
 
 The agent core as one template. Three units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
@@ -75,23 +75,23 @@ the composite** -- an island without a crossing edge derives inactive.
 
 | port | endpoint | direction | what travels |
 |---|---|---|---|
-| consult ingress | `./collector` | in | the errand, lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
-| advice exit | `./collector` | out | `hop.route == 'answer'` -- the advice **or** a question back |
+| consult ingress | `./cogny` | in | the errand on lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
+| advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice **or** a question back |
 
 ```json
-{"from": "<agent>/talky/dispatcher", "to": "./cogny/collector",
- "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+{"from": "<front>/talky", "to": "./cogny",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id",
                               "consult_class": "'consult'", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "<agent>/talky/dispatcher", "to": "./cogny/collector",
- "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
+{"from": "<front>/talky", "to": "./cogny",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id",
                               "consult_class": "'lookup'", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "./cogny/collector", "to": "<agent>/talky/collector",
+{"from": "./cogny", "to": "<front>/talky",
  "condition": "has(hop.route) && hop.route == 'answer'",
  "modifier": {"set_hop": {"route": "'in_advice'"},
               "set_context": {"col_phase": "''"},
@@ -139,24 +139,27 @@ literally too.
 tool cells and no map of them. Wiring a tool is one edge pair:
 
 ```json
-{"from": "./cogny/dispatcher", "to": "./cogny/search",
- "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"},
-{"from": "./cogny/search", "to": "./cogny/collector",
+{"from": "./cogny", "to": "./search",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'web_search'"},
+{"from": "./search", "to": "./cogny",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
-The `has()` is not decoration: the `calls`, `result` and `answer` emissions carry no
-`tool_name` at all, and an unguarded comparison **errors** in CEL, which skips the edge
-with a log line per lane per message.
+`hop.route == 'tool'` is the lane; the `has()` guards are not decoration either, because
+the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
+comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-Three more lanes, all of them the parent's decision:
+**What this composite does NOT declare yet**, and it is a limit rather than an omission:
+`cogny@3` seals to one lane in (`in_turn`) and one out (`answer`). Three things a parent
+may want are consequently not addressable from outside any more, and each needs a lane of
+its own before it is:
 
-| lane | endpoint | when |
-|---|---|---|
-| **memory** | `./collector` route `recall` out, lane `in_bundle` in | **this is where the memory leg lives now** (R-CG-1): the central hive is the core's memory, and `memory_tier` sits at THIS collector |
-| memory tool | `./cogny/dispatcher` on `hop.tool_name == 'memory_recall'` → `./collector` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above. `#88`'s query-hygiene guard exists for exactly this consumer |
-| error drain | `./cogny/brain` **and `./cogny/brain_fast`** on `hop.finish_reason == 'error' \|\| hop.finish_reason == 'content_filter'` | a failed inference. Unlike `talky` this composite carries **no** `errors` cell (R-CG-2 names three units and nothing else); an unwired brain error dead-letters. Two brains, two drain edges -- forgetting the second one is the quiet way to lose the lookup lane's failures |
-| housekeeping | `./collector` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
+| wanted | state |
+|---|---|
+| **memory** (route `recall` out, `in_bundle` in) | R-CG-1 puts the memory leg at this collector, but neither lane is declared at the hive path yet |
+| memory tool (`memory_recall` back into the collector) | same; inside the composite it would be a loop at the hive path, as `talky` does it |
+| error drain (a failed inference on either brain) | this composite carries **no** `errors` cell (R-CG-2 names three units and nothing else), so there is nothing to normalise the two brains into one lane; an unwired brain error dead-letters, as it did before |
+| housekeeping (`in_prune`, `in_round_sweep`) | not declared |
 
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
@@ -433,3 +436,16 @@ knowledge ends.
   follow-up in the channel.
 - The sub-units keep their own pins: `collector_window.rs`, `collector_colony.rs`,
   `dispatcher_template.rs`.
+
+## Lanes
+
+`params.ports` is empty (GH #228): the address is `./cogny` itself and what a caller wants
+rides on `hop.route`.
+
+| lane | direction | what travels |
+|---|---|---|
+| `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier |
+| `answer` | out | the core's answer, for whoever asked |
+
+Which cell takes the question and which one produces the answer is this template's
+business and may change without a caller noticing.

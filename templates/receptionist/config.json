@@ -3,8 +3,35 @@
     "type": "hive"
   },
   "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "context": [
+            "channel"
+          ],
+          "because": "a first turn from a surface, for somebody this colony has not met yet. The caller MUST promote the identity to context.channel"
+        }
+      ],
+      "emits": [
+        {
+          "route": "turn",
+          "because": "the greeting, or the handover for whoever takes over the conversation"
+        },
+        {
+          "route": "mutate",
+          "because": "the tree this reception decided to grow, as an ordinary mutation body. BOOTSTRAP ONLY -- no mutation can create the edge that carries it on to /colony/mutations"
+        }
+      ]
+    },
     "graph": {
       "edges": [
+        {
+          "from": ".",
+          "to": "./greet",
+          "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
         {
           "from": "./greet",
           "to": "./ledger",
@@ -22,6 +49,16 @@
           "from": "./ledger",
           "to": "./greet",
           "condition": "context.rec_origin == 'greet'"
+        },
+        {
+          "from": "./greet",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn'"
+        },
+        {
+          "from": "./greet",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
         }
       ]
     }

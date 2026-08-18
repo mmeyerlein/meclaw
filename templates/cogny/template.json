@@ -1,6 +1,6 @@
 {
   "name": "cogny",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": {
     "purpose": "The agent core as one template (GH #28, R-CG-1/R-CG-2): a hive that carries collector@2 as `collector` and dispatcher@1 as `dispatcher` plus TWO llm brain slots, with every internal edge pre-wired - the seam with its own iteration bound and its own restore_ttl, the dispatcher lanes, the loopback. Since 1.1.0 the seam is two-laned (GH #124): ./brain is the thinking lane, ./brain_fast the lookup lane, and the SAME assembled errand takes one of them depending on context.consult_class. Structurally a talky without a channel: no session-keeper, no summarizer, no proxy, because the core has no channel, no sessions and no night. Its conversation is the errands the channel voices send it.",
     "use_when": "One per agent, never one per channel voice - a sibling hive of the talkies at agent level (<agent>/{talky..., cogny, memory, archive}). Instantiate via add_nodes AND wire the two advisor ports plus the tool lanes via add_edges IN THE SAME MUTATION; the composite is an island until an edge crosses into it. Instantiation needs ctx.model (the THINKING model - a fast channel model there wastes the split) and ctx.model_fast (the lookup lane's model); both take a resolved literal or a MODEL_<ROLE> env token passed verbatim.",

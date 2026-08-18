@@ -1,4 +1,4 @@
-# `steward@1.0.1`
+# `steward@2.0.0`
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -103,20 +103,25 @@ without a hypothesis is a random walk with receipts.
 turns a row on. For a loop that mutates the tree it runs in, that is the only
 defensible default.
 
-## Ports
+## Lanes
 
-| port | direction | carries |
+`params.ports` is empty. The address is the hive path; the lane is `hop.route`,
+and it is named for what a caller asks for, never for the cell it lands on.
+
+| lane | direction | carries |
 |---|---|---|
-| `in_event` | in → `./meter` | an event that should force a cycle (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
-| `out_mutate` | `./mutator` → `/colony/mutations` | `hop.msg_type == 'mutation'`, the body carrying `scope` and `diff` |
+| `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
+| `mutate` | out → the hive | `hop.msg_type == 'mutation'`, the body carrying `scope` and `diff`. A parent carries it on to `/colony/mutations` |
+| `error` | out → the hive | a step of the cycle could not complete |
 
-Everything else is interior. The judge in particular is **not** a port: a cell
-that could be fed a measurement from outside would be a cell whose numbers
-nobody can vouch for.
+Which cell serves a lane is this hive's business and may change without a caller
+noticing. The judge in particular is unreachable from outside on any lane: a cell
+that could be fed a measurement from outside would be a cell whose numbers nobody
+can vouch for.
 
-A parent that does not draw `out_mutate` gets a steward that measures, judges
-and receipts and changes nothing. That is a legitimate way to run it for a
-while, and a good one for the first weeks.
+A parent that does not draw `mutate` on to `/colony/mutations` gets a steward that
+measures, judges and receipts and changes nothing. That is a legitimate way to run
+it for a while, and a good one for the first weeks.
 
 **And the steward cannot draw it itself.** `/colony/*` is a virtual endpoint
 rather than a registry node, so `add_edges` refuses it by name — at any scope,

@@ -23,6 +23,9 @@ pub struct ContractBlock {
     pub settings: Option<std::collections::BTreeMap<String, meclaw_core::SettingSpec>>,
     /// Declared input contract (presence-enforced; may be empty).
     pub consumes: Option<meclaw_core::ConsumesBlock>,
+    /// GH #185 — the cell's own statement that it is an ingress, and which
+    /// standard header keys it mints at birth. Absent ⇒ not an ingress.
+    pub ingress: meclaw_core::IngressBlock,
 }
 
 /// Hard presence check for the builder-mandatory contract keys

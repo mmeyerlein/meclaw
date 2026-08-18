@@ -611,11 +611,15 @@ def auto_layout(nodes, edges, saved, shifts=None):
     # along inside a hive somebody dragged was positioned by this layout, not by
     # a person — and if two dragged hives overlap, letting those cells give way
     # is the behaviour that was asked for ("overlapping hives rarely make sense").
-    settle(pos, set(saved))
+    #
+    # The frames are computed over the hand-placed cells ALONE. They are what a
+    # foreign hive occupies, and deriving them from the cells still being settled
+    # would be circular.
+    settle(pos, set(saved), hive_frames({i: pos[i] for i in saved if i in pos}))
     return pos, origins, offsets
 
 
-def settle(pos, placed):
+def settle(pos, placed, frames=None):
     """Push the cells nobody placed by hand out of the ones somebody did.
 
     In an arrangement made by hand every cell carries a stored position and the
@@ -630,21 +634,55 @@ def settle(pos, placed):
     by distance and then by (dx, dy), which keeps it deterministic — the same
     colony renders the same picture twice.
 
+    `frames` are the rectangles the hand-placed cells give their hives, and a spot
+    inside one that is NOT the cell's own or an ancestor of it counts as occupied
+    as well. A cell drawn through a foreign frame is the same defect read from the
+    other side: the frame is derived from its members, so a stranger inside it
+    reads as a member, and the rectangle grows around a cell that does not belong
+    to the group. A hive dragged across an untouched block does exactly that, and
+    the cells it swallowed were placed by this layout, not by a person.
+
     A no-op on a colony nobody has arranged: with nothing pinned there is
     nothing to collide with, because the layout itself does not overlap.
     """
     step_x, step_y = NODE_W + GAP_X, NODE_H + GAP_Y
+    frames = frames or {}
 
-    def free(box, taken):
+    def hits(box, x2, y2, w2, h2):
         x, y = box
+        return x < x2 + w2 and x2 < x + NODE_W and y < y2 + h2 and y2 < y + NODE_H
+
+    def free(box, taken, foreign):
         for (ox, oy) in taken:
-            if x < ox + NODE_W and ox < x + NODE_W and y < oy + NODE_H and oy < y + NODE_H:
+            if hits(box, ox, oy, NODE_W, NODE_H):
                 return False
-        return True
+        return not any(hits(box, *r) for r in foreign)
+
+    def foreign_frames(i):
+        own = hive_of(i)
+        return [
+            r
+            for h, r in sorted(frames.items())
+            if h and h != own and not own.startswith(h + "/")
+        ]
+
+    def outside_own(i, box):
+        """0 while the box stays in its own hive's rectangle, 1 once it leaves.
+
+        Sorted on FIRST inside a ring, which is what "nearest free spot,
+        preferring inside its own hive" means: a cell shoved out of a crowd
+        should give way into the group it belongs to rather than out of it, and
+        only leave when the group has no room left. Falsy for a hive nobody has
+        arranged — it has no rectangle to stay in, and the ranking then collapses
+        to the plain distance order it was before.
+        """
+        r = frames.get(hive_of(i))
+        return 0 if r is None or hits(box, *r) else 1
 
     taken = [pos[i] for i in sorted(placed) if i in pos]
     for i in sorted(k for k in pos if k not in placed):
-        if free(pos[i], taken):
+        foreign = foreign_frames(i)
+        if free(pos[i], taken, foreign):
             taken.append(pos[i])
             continue
         # Rings of grid steps around the computed spot, nearest first. Bounded:
@@ -657,13 +695,17 @@ def settle(pos, placed):
                 for dy in range(-ring, ring + 1):
                     if max(abs(dx), abs(dy)) != ring:
                         continue
+                    cand = (pos[i][0] + dx * step_x, pos[i][1] + dy * step_y)
                     # Right and down before left and up: the flow reads that
                     # way, so a cell that has to give way should give way along
-                    # it rather than against it.
-                    candidates.append((abs(dx) + abs(dy), dx < 0, dy < 0, dx, dy))
-            for _, _, _, dx, dy in sorted(candidates):
-                cand = (pos[i][0] + dx * step_x, pos[i][1] + dy * step_y)
-                if free(cand, taken):
+                    # it rather than against it. Staying inside its own hive
+                    # outranks all of that.
+                    candidates.append(
+                        (outside_own(i, cand), abs(dx) + abs(dy), dx < 0, dy < 0, cand)
+                    )
+            for c in sorted(candidates):
+                cand = c[-1]
+                if free(cand, taken, foreign):
                     spot = cand
                     break
             if spot:

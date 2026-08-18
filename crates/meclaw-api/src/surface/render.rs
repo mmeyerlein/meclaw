@@ -42,12 +42,17 @@
 //! cells, for the same reason: a lock here would be a second place where two
 //! requests can disagree about who is waiting for what.
 //!
-//! # The cache, and its one rule
+//! # The cache, and what it is for
 //!
 //! Every successful render is kept under its surface path and **replaced** the
-//! moment a newer one arrives. So it can never be older than the last change, and
-//! a second viewer joining an unchanged surface costs zero cell calls. Without it,
-//! N simultaneous joins would be N renders of the same picture.
+//! moment a newer one arrives.
+//!
+//! It is a **fallback, not an answer** (GH #172). A join renders and reads this
+//! only when that render produced nothing, because a cached page can be older than
+//! the colony — after a restart it is exactly the picture from before the restart,
+//! and a stale one is indistinguishable from a live one on screen. What it buys is
+//! the property it was built for: a browser arriving while the colony is wedged
+//! sees the last picture instead of an error or a blank frame.
 
 use meclaw_colony::ColonyMsg;
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid, serde_json::Value};

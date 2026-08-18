@@ -8,6 +8,7 @@
   "contract": {
     "version": "0.1.0",
     "settings": {},
+    "ingress": { "context": ["turn_id"] },
     "emits": {
       "hop": {
         "agent_target": { "type": "string", "values": ["billing", "tech"], "required": true }

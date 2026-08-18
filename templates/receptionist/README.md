@@ -1,4 +1,4 @@
-# `receptionist@1.1.0`
+# `receptionist@2.0.0`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -46,22 +46,24 @@ Two internal edges: `greet -> ledger` on `hop.route == 'rstore'` (promoting the
 step, the channel and the parked turn to context), and `ledger -> greet` back on
 `context.rec_origin == 'greet'`.
 
-## Ports
+## Lanes
 
+`params.ports` is empty (GH #228): the address is the hive, the lane is `hop.route`.
 Two edges, and **the parent draws both**.
 
-| port | endpoint | direction | note |
-|---|---|---|---|
-| ingress | `./greet` | in | sets `hop.route='in_turn'` and promotes `context.channel` (mandatory) |
-| mutation lane | `./greet -> /colony/mutations` | out | **bootstrap only** -- see below |
+| lane | direction | note |
+|---|---|---|
+| `in_turn` | in | the first turn of a channel. The edge promotes `context.channel` (mandatory) |
+| `mutate` | out | the tree this reception decided to grow, on to `/colony/mutations` -- **bootstrap only**, see below |
+| `turn` | out | the turn itself, on the lane its own agent answers to |
 
 ```json
-{"from": "<surface>", "to": "./reception/greet",
+{"from": "<surface>", "to": "./reception",
  "condition": "has(hop.route) && hop.route == 'turn'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"channel": "hop.chat_id"}}},
-{"from": "./reception/greet", "to": "/colony/mutations",
- "condition": "has(hop.msg_type) && hop.msg_type == 'mutation'"}
+{"from": "./reception", "to": "/colony/mutations",
+ "condition": "has(hop.route) && hop.route == 'mutate'"}
 ```
 
 **The mutation lane is bootstrap-only, and that is the point.** No mutation can
@@ -97,20 +99,20 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
 {"scope": "/", "ctx": {"model": "openai/gpt-4o-mini"}, "diff": {
   "add_nodes": [{"name": "talky-<key>", "template": "talky"}],
   "add_edges": [
-    {"from": "./reception/greet", "to": "./talky-<key>/session-keeper",
+    {"from": "./reception", "to": "./talky-<key>",
      "condition": "has(hop.route) && hop.route == 'turn' && has(hop.chan) && hop.chan == '<key>'",
      "modifier": {"set_hop": {"route": "'in_turn'"},
                   "set_context": {"channel": "hop.chan_raw"}}},
-    {"from": "./talky-<key>/collector", "to": "<RECEPTIONIST_REPLY_TO>",
+    {"from": "./talky-<key>", "to": "<RECEPTIONIST_REPLY_TO>",
      "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
-    {"from": "./talky-<key>/collector", "to": "<RECEPTIONIST_WRITE_TO>",
+    {"from": "./talky-<key>", "to": "<RECEPTIONIST_WRITE_TO>",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"}}},
-    {"from": "./talky-<key>/errors", "to": "<RECEPTIONIST_ERROR_TO>",
+    {"from": "./talky-<key>", "to": "<RECEPTIONIST_ERROR_TO>",
      "condition": "has(hop.route) && hop.route == 'error'"}]}}
 ```
 
-Those are talky's four ports, in talky's own form. A target left empty in `.env`
+Those are talky's four essential lanes, at talky's own path -- since `talky@3` there is no cell inside it a mutation could name. A target left empty in `.env`
 means the edge is **left out** rather than invented -- and an unwired answer
 lane dead-letters, loudly.
 
@@ -138,9 +140,9 @@ All `${VAR:-default}`, environment class, bound late at every read.
 |---|---|---|
 | `RECEPTIONIST_MODEL` | `openai/gpt-4o-mini` | the `ctx.model` handed to every instance. Convention K-H2 (Lane B): put the RESOLVED literal in `.env` |
 | `RECEPTIONIST_TEMPLATE` | `talky` | the composite to instantiate; also the instance name prefix |
-| `RECEPTIONIST_INGRESS` | `session-keeper` | the composite's entry, as a path relative to the instance root |
-| `RECEPTIONIST_REPLY_FROM` | `collector` | the sub-unit emitting answers and write batches |
-| `RECEPTIONIST_ERROR_FROM` | `errors` | the composite's error drain |
+| `RECEPTIONIST_INGRESS` | *(empty)* | where the turn enters the composite, relative to the instance root. Empty is the instance path itself -- what a sealed composite wants, since the lane and not the path selects the cell |
+| `RECEPTIONIST_REPLY_FROM` | *(empty)* | where answers and write batches leave the composite. Empty is the instance path itself |
+| `RECEPTIONIST_ERROR_FROM` | *(empty)* | where the error lane leaves the composite. Empty is the instance path itself |
 | `RECEPTIONIST_REPLY_TO` | (empty) | scope-relative answer target; empty = no edge |
 | `RECEPTIONIST_WRITE_TO` | (empty) | scope-relative batch target; empty = no edge |
 | `RECEPTIONIST_ERROR_TO` | (empty) | scope-relative drain target; empty = no edge |

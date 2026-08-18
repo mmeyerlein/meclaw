@@ -1,4 +1,4 @@
-# `talky@2.0.0`
+# `talky@3.0.0`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -67,46 +67,56 @@ byte-identical to its source template. A change to `collector@2` that does not t
 into `talky/collector/` fails there, in the same test run, instead of drifting into
 production.
 
-## Ports
+## Lanes
 
-**Four external ports, and the parent wires all four in the SAME mutation that
-instantiates the composite** -- an island without a crossing edge derives inactive and
-its timer never spawns.
+`params.ports` is empty (GH #228). **The address is the composite's own path**; what
+a caller wants rides on `hop.route`, and the door edges inside decide which cell that
+means. The four essential lanes are wired in the SAME mutation that instantiates the
+composite -- an island without a crossing edge derives inactive and its timer never
+spawns.
 
-| port | endpoint | direction | what travels |
-|---|---|---|---|
-| ingress | `./session-keeper` | in | the surface turn, lane `in_turn` |
-| reply | `./collector` | out | `hop.route == 'answer'` |
-| write | `./collector` | out | `hop.route == 'write'` -- the closed session as one batch |
-| error drain | `./errors` | out | `hop.route == 'error'` |
+| lane | direction | what travels |
+|---|---|---|
+| `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel` |
+| `answer` | out | the finished turn. Two sorts, told apart by `hop.round_capped` |
+| `write` | out | the closed session as one batch |
+| `error` | out | a normalised failure report. **MUST** be wired |
 
-Optional, and off unless the instance switches it on: a fifth exit `turn_write` on
-`./collector`, the **same** batch after every stored turn -- see "Per-turn
-episodes" below.
+The rest, each optional and each still at the same address:
 
-**These four addresses are the port contract.** `./session-keeper`,
-`./collector`, `./dispatcher` and `./errors` are stable **addresses**, not
-implementation detail that happens to be reachable: the working colonies under
-[`../../examples/`](../../examples/) wire them literally, and so does anything
-built from this template. Internal cell names inside the composite may be
-rearranged in a version bump; these four may not — moving one is a breaking
-change to every parent that wired it, and it gets a CHANGELOG Breaking entry and
-a new major version, not a patch.
+| lane | direction | what travels |
+|---|---|---|
+| `tool` | out | a tool call for a cell you wired; `hop.tool_name` says which |
+| `turn_write` | out | the same batch after every stored turn, off unless the instance switches it on -- see "Per-turn episodes" |
+| `recall` | out | a memory read this turn needs |
+| `in_tool` | in | one tool result coming back |
+| `in_advice` | in | an advisor's answer coming back |
+| `in_bundle` | in | a memory bundle coming back |
+| `in_memory_call` | in | a memory tool call handed back into the composite |
+| `in_sweep` | in | an operator-forced session sweep |
+| `in_prune`, `in_round_sweep` | in | the two operator lanes of the context window |
+
+**The lane names are the contract, the cell names are not.** `session-keeper`,
+`collector`, `dispatcher` and `errors` are implementation: they may be renamed, split
+or replaced in a version bump and no parent notices, because no parent addresses them.
+A lane may not -- removing or renaming one is a breaking change to every caller, and it
+gets a CHANGELOG Breaking entry and a new major version, not a patch. Which lanes exist
+and what each is for is in `params.contract`, in the template itself.
 
 
 Plus, per instance, the two **advisor lanes** to an agent core -- see below.
 
 ```json
-{"from": "<surface>", "to": "./talky/session-keeper",
+{"from": "<surface>", "to": "./talky",
  "condition": "has(hop.user_id) && int(hop.user_id) == 12345",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"channel": "hop.chat_id"}}},
-{"from": "./talky/collector", "to": "<reply sink>",
+{"from": "./talky", "to": "<reply sink>",
  "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
-{"from": "./talky/collector", "to": "<day archive or memory>",
+{"from": "./talky", "to": "<day archive or memory>",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"}}},
-{"from": "./talky/errors", "to": "<drain or alarm>",
+{"from": "./talky", "to": "<drain or alarm>",
  "condition": "has(hop.route) && hop.route == 'error'"}
 ```
 
@@ -126,27 +136,30 @@ decide which of them a user sees: guard the reply edge with `!has(hop.round_capp
 give the capped sort its own edge (the error drain is the usual target) -- or let it
 through deliberately.
 
-### Per-instance lanes (not ports of this template)
+### Per-instance lanes (not lanes of this template)
 
 **Tools stay outside.** The tool set is the per-agent choice, so the composite carries no
 tool cells and no map of them. Wiring a tool is one edge pair:
 
 ```json
-{"from": "./talky/dispatcher", "to": "./search",
- "condition": "has(hop.tool_name) && hop.tool_name == 'web_search'"},
-{"from": "./search", "to": "./talky/collector",
+{"from": "./talky", "to": "./search",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'web_search'"},
+{"from": "./search", "to": "./talky",
  "modifier": {"set_hop": {"route": "'in_tool'"}}}
 ```
 
-The `has()` is not decoration: the `calls`, `result` and `answer` emissions carry no
-`tool_name` at all, and an unguarded comparison **errors** in CEL, which skips the edge
+**Both halves of that condition matter.** `hop.route == 'tool'` is the lane -- it is what
+tells a tool call apart from the `answer`, `write` and `error` traffic that leaves on the
+same address -- and the `has()` guards are not decoration: an emission that carries no
+`tool_name` at all makes an unguarded comparison **error** in CEL, which skips the edge
 with a log line per lane per message. A tool name nobody answers to dead-letters and
 stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
 **One tool is served inside the composite:** `memory_recall` (GH #78). It is wired like any
-other tool -- `./talky/dispatcher` on `hop.tool_name == 'memory_recall'` -- except that the cell
-behind the edge is the collector itself (`set_hop {"route": "'in_memory_call'"}`), because
-it already owns the recall port. Its schema and the second half of the wiring live in
+other tool -- on the `tool` lane with `hop.tool_name == 'memory_recall'` -- except that the
+target is the composite itself, on the `in_memory_call` lane: `{"from": "./talky", "to":
+"./talky", "modifier": {"set_hop": {"route": "'in_memory_call'"}}}`. A loop at one address,
+and which cell inside answers it is none of the caller's business. Its schema and the second half of the wiring live in
 [`../collector/README.md`](../collector/README.md) § The memory tool.
 
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
@@ -195,11 +208,11 @@ and every stored answer. No model call is involved: this is the collector's own 
 leaving one turn earlier.
 
 ```json
-{"from": "./talky/collector", "to": "./memdrain",
+{"from": "./talky", "to": "./memdrain",
  "condition": "has(hop.route) && hop.route == 'turn_write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}},
-{"from": "./talky/collector", "to": "./memdrain",
+{"from": "./talky", "to": "./memdrain",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}}
@@ -275,12 +288,12 @@ connection is two edges plus one knob.
 ```
 
 ```json
-{"from": "./talky/dispatcher", "to": "/agent/cogny/collector",
+{"from": "./talky", "to": "/front/cogny",
  "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id", "col_phase": "''"},
               "restore_ttl": true}},
-{"from": "/agent/cogny/collector", "to": "./talky/collector",
+{"from": "/front/cogny", "to": "./talky",
  "condition": "has(hop.route) && hop.route == 'answer'",
  "modifier": {"set_hop": {"route": "'in_advice'"},
               "set_context": {"col_phase": "''"},
@@ -339,7 +352,7 @@ called**, not by a number anybody had to measure. So the talky's brain carries T
 tools, and the cogny's ingress edge turns the choice into `context.consult_class`:
 
 ```json
-{"from": "./talky/dispatcher", "to": "/agent/cogny/collector",
+{"from": "./talky", "to": "/front/cogny",
  "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
               "set_context": {"consult_id": "hop.consult_id", "col_phase": "''",
@@ -370,10 +383,10 @@ answer a question asked this afternoon.
 ```
 
 ```json
-{"from": "./talky/dispatcher", "to": "/agent/memory/extract-glue",
+{"from": "./talky", "to": "/front/memory",
  "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
  "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'"}}},
-{"from": "/agent/memory/extract-glue", "to": "./talky/errors",
+{"from": "/front/memory", "to": "./talky",
  "condition": "has(hop.route) && hop.route == 'reject'"}
 ```
 

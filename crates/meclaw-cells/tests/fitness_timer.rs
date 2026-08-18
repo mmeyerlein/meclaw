@@ -7,8 +7,8 @@
 //! - `add` as a `tool_call` is acked with a `tool_result` on the SAME id
 //!   (`msg_type: "timer_op_ack"`) — the fan-in of a tool round closes;
 //! - `trigger` fires an existing schedule NOW, indistinguishably from cron;
-//! - a once-schedule whose `at` lies in the past LAPSES (never fires),
-//!   proven against a positive control that does fire;
+//! - a once-schedule whose `at` lies in the past is REFUSED on the same lane
+//!   (`at_in_past`), proven against a positive control that does fire (GH #231);
 //! - op errors keep the tool lane closed too: same turn, same id, plus
 //!   `finish_reason: "error"` and the typed code.
 
@@ -74,9 +74,16 @@ async fn receipt(rx: &mut mpsc::Receiver<Message>) -> Message {
         .expect("sink channel closed")
 }
 
+/// A moment `secs` from now, rendered to the millisecond.
+///
+/// GH #231: this used to render at second precision, which truncated the
+/// requested lead to a value uniformly distributed in (0, 1] — a fixture that
+/// asked for a second of lead and sometimes granted a millisecond, and then
+/// blamed the timer for the miss. The lead a test asks for is now the lead it
+/// gets.
 fn rfc3339_in(secs: i64) -> String {
     (chrono::Utc::now() + chrono::Duration::seconds(secs))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -169,11 +176,12 @@ async fn trigger_fires_an_existing_schedule_now() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_past_at_lapses_and_never_fires_proven_against_a_control() {
-    // POC contract: the timer only plans the next occurrence AFTER now. A
-    // once-schedule already in the past is logged and dropped. The control
-    // (a future once) proves the lane itself is live — the absence of the
-    // past fire is then meaningful, not just silence.
+async fn a_past_at_is_refused_on_the_lane_proven_against_a_control() {
+    // POC contract: the timer only plans the next occurrence AFTER now, so a
+    // once-schedule already in the past never fires. GH #231 settled what the
+    // caller hears about it: the op is REFUSED (`at_in_past`, no row), not
+    // accepted into a silence. The control (a future once) proves the lane
+    // itself is live — the absence of the past fire is then meaningful.
     let (h, mut rx, _td) = topology().await;
     let past = Uuid::now_v7();
     let control = Uuid::now_v7();
@@ -186,10 +194,19 @@ async fn a_past_at_lapses_and_never_fires_proven_against_a_control() {
         "call-past",
     ))
     .await;
-    let ack = receipt(&mut rx).await;
+    let refusal = receipt(&mut rx).await;
     assert_eq!(
-        ack.headers.hop["msg_type"], "timer_op_ack",
-        "the past add is ACCEPTED (the row exists) — it just never plans"
+        refusal.headers.hop["msg_type"], "timer_op_error",
+        "the past add is REFUSED, not quietly accepted (GH #231)"
+    );
+    assert_eq!(
+        refusal.headers.hop["error_code"], "at_in_past",
+        "got: {:?}",
+        refusal.headers.hop
+    );
+    assert_eq!(
+        refusal.headers.hop["finish_reason"], "error",
+        "the tool round closes on the refusal instead of waiting"
     );
 
     h.send(op_call(
@@ -208,9 +225,9 @@ async fn a_past_at_lapses_and_never_fires_proven_against_a_control() {
     assert_eq!(fire.headers.hop["msg_type"], "control_fire");
     assert_eq!(fire.headers.hop["schedule_id"], control.to_string());
 
-    // …and nothing else does. Semantic discriminator, deliberately tight:
-    // the past fire would have been due 1h ago, so 2s of silence after the
-    // LATER control fire is conclusive.
+    // …and the refused one does not, on top of never having been stored.
+    // Semantic discriminator, deliberately tight: the past fire would have been
+    // due 1h ago, so 2s of silence after the LATER control fire is conclusive.
     let extra = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
     assert!(
         extra.is_err(),

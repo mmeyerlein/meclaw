@@ -10,6 +10,7 @@
   "contract": {
     "version": "0.1.0",
     "settings": {},
+    "ingress": { "context": ["turn_id"] },
     "multi_send_capable": true,
     "emits": {
       "body": {

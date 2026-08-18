@@ -1,4 +1,4 @@
-# `firewall@1.0.0`
+# `firewall@2.0.0`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -102,23 +102,24 @@ reference pattern.
 They are substituted into the script at instantiation (a `code` cell never sees its own
 `params`). A non-numeric or unset value falls back to the default rather than crashing.
 
-## Ports and wiring
+## Lanes and wiring
 
 ```json
 [
-  { "from": "./surface", "to": "./firewall/screen",
+  { "from": "./surface", "to": "./firewall",
     "modifier": {"set_hop": {"route": "'in_turn'"},
                  "set_context": {"channel": "hop.chat_id", "user_id": "hop.user_id"}} },
 
-  { "from": "./firewall/screen", "to": "./intake",
-    "condition": "has(hop.route) && hop.route == 'pass'",
-    "modifier": {"delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]} },
+  { "from": "./firewall", "to": "./intake",
+    "condition": "has(hop.route) && hop.route == 'pass'" },
 
-  { "from": "./firewall/screen", "to": "./drain",
-    "condition": "has(hop.route) && hop.route == 'reject'",
-    "modifier": {"delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]} }
+  { "from": "./firewall", "to": "./drain",
+    "condition": "has(hop.route) && hop.route == 'reject'" }
 ]
 ```
+
+Every endpoint is the firewall HIVE (`params.ports` is empty): `in_turn` in, `pass` and
+`reject` out. Which cell screens the turn is this template's business and may change.
 
 | edge | job |
 |---|---|
@@ -126,9 +127,11 @@ They are substituted into the script at instantiation (a `code` cell never sees 
 | pass | the only edge into the agent. `delete_context` drops the parked copy of the turn. |
 | reject | the loud lane. `hop.reject_reason` + `hop.rule_id` say what happened; what the parent does with it — drain, log, refuse politely, ban — is the parent's decision. |
 
-**Both exits must clear the firewall's context keys.** `context.fw_body` holds a full
-copy of the turn (that is how a stateless cell carries it across the store hops); left in
-place it rides along downstream and doubles the payload of every later hop.
+**Both exits clear the firewall's own context keys, and the hive does it itself now.**
+`context.fw_body` holds a full copy of the turn (that is how a stateless cell carries it
+across the store hops); left in place it rides along downstream and doubles the payload of
+every later hop. Until GH #228 remembering that was the caller's job; the `pass` and
+`reject` exits carry the `delete_context` inside, so it can no longer be forgotten.
 
 The hive's two internal edges (`./screen ⇄ ./rules`) ship inside `config.json` and need
 no wiring.

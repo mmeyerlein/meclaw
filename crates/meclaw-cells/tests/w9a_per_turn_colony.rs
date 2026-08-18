@@ -169,25 +169,24 @@ fn memory_write_path(root: &std::path::Path) {
 /// not on a second edge into the hive.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./surface", "to": "./talky/session-keeper",
+        {"from": "./surface", "to": "./talky",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
-        {"from": "./surface", "to": "./talky/session-keeper",
+        {"from": "./surface", "to": "./talky",
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         // THE per-turn lane.
-        // Both ends name the drain HIVE, never the cell inside it (overview
-        // § Die Hive-Grenze): the template declares `. -> ./drain` on an in_
-        // lane and `./drain -> .` on `episode`. Reaching past those doors
-        // delivers every episode twice — once to the writer and once to a hive
-        // path this graph has no exit for.
-        {"from": "./talky/collector", "to": "./drain",
+        // Every end names a HIVE, never a cell inside one (overview § Die
+        // Hive-Grenze): both `talky` and `drain` declare their lanes and their
+        // doors, and reaching past those doors delivers twice — once to the
+        // cell and once to a hive path this graph has no exit for.
+        {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
         // The safety net, unchanged: the close batch into the same entry.
-        {"from": "./talky/collector", "to": "./drain",
+        {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
@@ -196,10 +195,10 @@ fn main_config() -> Value {
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
                                       "happened_at": "hop.happened_at"}}},
-        {"from": "./talky/collector", "to": "/sink",
+        {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "/park"},
-        {"from": "./talky/errors", "to": "./void",
+        {"from": "./talky", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'error'"},
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'enqueue'"},

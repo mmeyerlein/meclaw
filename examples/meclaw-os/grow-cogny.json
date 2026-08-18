@@ -13,9 +13,9 @@
     ],
     "add_edges": [
       {
-        "from": "./talky/dispatcher",
-        "to": "./cogny/collector",
-        "condition": "has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
+        "from": "./talky",
+        "to": "./cogny",
+        "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'consult_cogny'",
         "modifier": {
           "set_hop": {
             "route": "'in_turn'"
@@ -29,9 +29,9 @@
         }
       },
       {
-        "from": "./talky/dispatcher",
-        "to": "./cogny/collector",
-        "condition": "has(hop.tool_name) && hop.tool_name == 'ask_memory'",
+        "from": "./talky",
+        "to": "./cogny",
+        "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'ask_memory'",
         "modifier": {
           "set_hop": {
             "route": "'in_turn'"
@@ -45,8 +45,8 @@
         }
       },
       {
-        "from": "./cogny/collector",
-        "to": "./talky/collector",
+        "from": "./cogny",
+        "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'answer'",
         "modifier": {
           "set_hop": {

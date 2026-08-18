@@ -30,7 +30,7 @@
     "add_edges": [
       {
         "from": "./surface",
-        "to": "./talky/session-keeper",
+        "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'turn'",
         "modifier": {
           "set_hop": {
@@ -57,7 +57,7 @@
         }
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./drain",
         "condition": "has(hop.route) && hop.route == 'turn_write'",
         "modifier": {
@@ -70,7 +70,7 @@
         }
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./drain",
         "condition": "has(hop.route) && hop.route == 'write'",
         "modifier": {
@@ -98,8 +98,8 @@
         }
       },
       {
-        "from": "./talky/dispatcher",
-        "to": "./talky/collector",
+        "from": "./talky",
+        "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
         "modifier": {
           "set_hop": {
@@ -108,7 +108,7 @@
         }
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./memory/keep",
         "condition": "has(hop.route) && hop.route == 'recall'",
         "modifier": {
@@ -129,7 +129,7 @@
       },
       {
         "from": "./memory/keep",
-        "to": "./talky/collector",
+        "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'bundle'",
         "modifier": {
           "set_hop": {
@@ -144,12 +144,12 @@
         }
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./talky/errors",
+        "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'error'"
       }

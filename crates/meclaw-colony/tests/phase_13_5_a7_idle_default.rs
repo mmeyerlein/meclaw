@@ -74,7 +74,7 @@ async fn bootstrap_cell_inherits_colony_json_idle_default() {
     write(
         td.path(),
         "main/persist/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/sink"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     let spawn_count = Arc::new(AtomicU32::new(0));

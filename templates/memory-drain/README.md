@@ -45,7 +45,7 @@ dormant (the island-activation rule).
 {"scope": "/agent", "ctx": {}, "diff": {
   "add_nodes": [{"name": "drain", "template": "memory-drain"}],
   "add_edges": [
-    {"from": "./talky/collector", "to": "./drain",
+    {"from": "./talky", "to": "./drain",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"},
                   "set_context": {"session_id": "hop.session_id"}}},

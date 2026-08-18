@@ -85,12 +85,12 @@ fn write_templates(root: &std::path::Path) {
     write(
         &unit,
         "s/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/u1/e","max_turns":10},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/u1/e","max_turns":10},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         &unit,
         "e/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/capture","max_turns":10},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/capture","max_turns":10},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 
@@ -135,7 +135,7 @@ async fn an_addressed_override_reaches_the_cell_it_names() {
     let s = instance_params(td.path(), "main/u1/s");
     assert_eq!(s["max_turns"], 40, "the addressed cell got the override");
     assert_eq!(
-        s["echo_to"], "/u1/e",
+        s["emitted_target"], "/u1/e",
         "and kept everything the override did not name"
     );
 

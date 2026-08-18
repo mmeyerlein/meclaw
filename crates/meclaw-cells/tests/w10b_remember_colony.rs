@@ -195,21 +195,20 @@ fn memory_hive(root: &std::path::Path) {
 /// plus the TWO edges the inline port needs -- the way in and the reject drain.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./surface", "to": "./talky/session-keeper",
+        {"from": "./surface", "to": "./talky",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
         // Wave 9: the day after every stored turn, into the drain.
-        // Both ends name the drain HIVE, never the cell inside it (overview
-        // § Die Hive-Grenze): the template declares `. -> ./drain` on an in_
-        // lane and `./drain -> .` on `episode`. Reaching past those doors
-        // delivers every episode twice — once to the writer and once to a hive
-        // path this graph has no exit for.
-        {"from": "./talky/collector", "to": "./drain",
+        // Every end names a HIVE, never a cell inside one (overview § Die
+        // Hive-Grenze): both `talky` and `drain` declare their lanes and their
+        // doors, and reaching past those doors delivers twice — once to the
+        // cell and once to a hive path this graph has no exit for.
+        {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        {"from": "./talky/collector", "to": "./drain",
+        {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
@@ -221,8 +220,8 @@ fn main_config() -> Value {
         // WAVE 10b, edge 1 of 2: the async tool call into the inline ingress.
         // In production this edge goes straight from `split`; here it takes the
         // test barrier on the way (module note).
-        {"from": "./talky/dispatcher", "to": "./gate",
-         "condition": "has(hop.tool_name) && hop.tool_name == 'remember'"},
+        {"from": "./talky", "to": "./gate",
+         "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'remember'"},
         {"from": "./gate", "to": "./memory/extract-glue",
          "condition": "has(hop.route) && hop.route == 'remember'",
          "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'"}}},
@@ -231,10 +230,10 @@ fn main_config() -> Value {
         // written (the defect the review found in the running colony).
         {"from": "./memory/extract-glue", "to": "/reject",
          "condition": "has(hop.route) && hop.route == 'reject'"},
-        {"from": "./talky/collector", "to": "/sink",
+        {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "./void"},
-        {"from": "./talky/errors", "to": "./void",
+        {"from": "./talky", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'error'"},
         // The two lanes this track does not measure: the batched extractor and
         // the embedding queue. Terminal, so the DLQ assertion keeps meaning.

@@ -1287,7 +1287,7 @@ pub struct ColonyTaskConfig {
     pub env_source: Option<std::path::PathBuf>,
     /// Deep-Audit F3 — liveness signal emitted from the loop; `None` disables the
     /// watchdog (test spawns).
-    pub heartbeat_tx: Option<mpsc::Sender<()>>,
+    pub heartbeat_tx: Option<mpsc::Sender<crate::watchdog::Beat>>,
     /// stdio-Bridge (Direct-Mode): optional egress sink. When set, a message that
     /// is unroutable at the root hive `/` (HiveNoRoute) goes here instead of the
     /// DLQ. `None` (default) → unchanged DLQ behaviour.
@@ -1343,7 +1343,7 @@ impl ColonyTaskConfig {
 
     /// Opt into the Deep-Audit F3 heartbeat watchdog: the loop emits a liveness
     /// tick on `tx` ~10×/s.
-    pub fn with_heartbeat(mut self, tx: mpsc::Sender<()>) -> Self {
+    pub fn with_heartbeat(mut self, tx: mpsc::Sender<crate::watchdog::Beat>) -> Self {
         self.heartbeat_tx = Some(tx);
         self
     }
@@ -1515,9 +1515,14 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // Deep-Audit F3: emit a liveness tick. `try_send` never blocks the loop; a
         // full channel just means the supervisor hasn't drained yet (it needs only
         // ≥1 tick per period). `None` → watchdog disabled (test spawns).
-        if let Some(hb) = &heartbeat_tx {
-            let _ = hb.try_send(());
-        }
+        //
+        // GH #165: the tick now carries the loop's PHASE, and it is emitted before
+        // every point the loop can block — a blocked loop cannot report, so the
+        // report has to happen while it still can. `Working` here covers the
+        // durable-write flush below: a writer thread mid-`fsync` on a contended
+        // disk blocks that `.await`, and the resulting silence has a name instead
+        // of looking like a wedge.
+        beat(&heartbeat_tx, crate::watchdog::Beat::Working);
         // W6d (A6): flush any DLQ pushes left over from the previous iteration into
         // the durable `dead_letters` table. The post-select flush at the bottom
         // catches the normal paths, but the outputs-arm has `continue` statements
@@ -1526,9 +1531,18 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // the start of the next event unpersisted, so a Read/Drain (always the next
         // event) sees it after its fence. Empty buffer ⇒ no-op (no await).
         persist_dead_letters(&mut dead_letters, &colony_db.writer_tx).await;
+        // GH #165: the work item is done and the loop is about to wait for the
+        // next event. Silence from HERE has no operation to blame — that is the
+        // one phase in which a quiet loop implicates itself.
+        beat(&heartbeat_tx, crate::watchdog::Beat::Parked);
         tokio::select! {
             biased;
             Some(m) = inbox.recv() => {
+                // GH #165: an event was taken; everything until the next `Parked`
+                // is ONE work item. Declared before any of the handling awaits, so
+                // that a handler which does not return can still be told apart
+                // from a loop that never woke up.
+                beat(&heartbeat_tx, crate::watchdog::Beat::Working);
                 match m {
                     ColonyMsg::Shutdown { ack } => {
                         // Phase-5 minimal shutdown (E6):
@@ -5923,6 +5937,18 @@ fn build_ttl_notice(
 /// can DLQ-push for `ColonyEndpointUnimplemented` on unknown `/colony/<x>`.
 pub(crate) fn push_dead_letter(queue: &mut VecDeque<DeadLetter>, dl: DeadLetter) {
     queue.push_back(dl);
+}
+
+/// GH #165: emit one phase-carrying heartbeat, never blocking.
+///
+/// `try_send` exactly like the pre-#165 tick: a full channel means the supervisor
+/// has not drained this period yet, and it needs only one beat per period. A loop
+/// that blocked on saying it was about to block would be the defect it is meant to
+/// report.
+fn beat(tx: &Option<mpsc::Sender<crate::watchdog::Beat>>, phase: crate::watchdog::Beat) {
+    if let Some(t) = tx {
+        let _ = t.try_send(phase);
+    }
 }
 
 /// W6d (A6): drain the transient in-memory DLQ buffer into the durable

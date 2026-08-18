@@ -9,6 +9,173 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.15.0] — 2026-08-18
+
+### Breaking
+
+- **Every hive template that ships is now behind its own boundary**
+  ([#197](https://github.com/mmeyerlein/meclaw/issues/197),
+  [#228](https://github.com/mmeyerlein/meclaw/issues/228)). With `steward` and
+  `memory-hive` the four templates whose ports carried the name of a cell inside
+  are migrated, and with the fourteen that declared no `params.ports` at all the
+  library has no unsealed hive left. The rule they all satisfy is the one ruled
+  on 2026-08-18: an edge is laid at the HIVE, a caller asks for something by
+  content, and the inner edge that receives the request is what knows where it
+  belongs. **A lane is named for what the caller wants, never for where it
+  lands.**
+
+  | Template | Was | Now | The interior addresses that stop resolving |
+  |---|---|---|---|
+  | `steward` | 1.0.1 | **2.0.0** | `meter`, `mutator` |
+  | `memory-hive` | 1.4.0 | **2.0.0** | `writer`, `recall`, `extract-glue` |
+  | `talky` | 2.0.0 | **3.0.0** | `session-keeper`, `collector`, `dispatcher`, `errors` |
+  | `cogny` | 2.0.0 | **3.0.0** | `collector` |
+  | `firewall` | 1.0.0 | **2.0.0** | `screen` |
+  | `receptionist` | 1.1.0 | **2.0.0** | `greet` |
+  | `llm-registry` | 1.0.0 | **2.0.0** | `select`, `hand`, and the hand-wired `store` admin edge |
+  | `llm-unit` | 1.1.0 | **2.0.0** | `prep`, `collector`, `dispatch`, `llm` |
+  | `builder-hive` | 1.1.0 | **2.0.0** | `intake`, `brief`, `capture`, `deploy`, `promote` |
+  | `builder-librarian` | 1.0.2 | **2.0.0** | `retrieve` |
+  | `coder-pipeline` | 1.0.0 | **2.0.0** | its transit door now names a lane |
+  | `bot-basic`, `slack-agent`, `egon`, `research-assistant`, `daily-digest` | 1.0.0 | **2.0.0** | every cell; these carry their own network surface and are addressed by no edge at all |
+
+  **The migration is one edit per address: drop the last segment and name the
+  lane.** Per template, in and out:
+
+  | Template | In | Out |
+  |---|---|---|
+  | `steward` | `in_cycle` | `mutate`, `error` |
+  | `memory-hive` | `in_episode`, `in_query`, `in_remember`, `in_flush` | `bundle`, `reject` |
+  | `talky` | `in_turn`, `in_sweep`, `in_tool`, `in_advice`, `in_bundle`, `in_memory_call`, `in_prune`, `in_round_sweep` | `answer`, `write`, `turn_write`, `recall`, `tool`, `error` |
+  | `cogny` | `in_turn` | `answer` |
+  | `firewall` | `in_turn` | `pass`, `reject` |
+  | `receptionist` | `in_turn` | `turn`, `mutate` |
+  | `llm-registry` | `in_select`, `in_hand` | `answer`, `ack`, `update`, `error` |
+  | `llm-unit` | `in_task`, `in_tool` | `tool`, `answer`, `error` |
+  | `builder-hive` | `in_spec`, `in_request`, `in_report` | `mutate`, `rescan` |
+  | `builder-librarian` | `in_request` | `brief` |
+  | `coder-pipeline` | `in_task` | — |
+
+  So `{"from": "<surface>", "to": "./talky/session-keeper", "modifier":
+  {"set_hop": {"route": "'in_turn'"}}}` becomes `"to": "./talky"` with the
+  identical modifier, and `{"from": "./talky/collector", "to": "<sink>",
+  "condition": "hop.route == 'answer'"}` becomes `"from": "./talky"`. The
+  per-instance tool lane changes shape rather than only its address: it used to
+  read `{"from": "./talky/dispatcher", "condition": "hop.tool_name == 'x'"}` and
+  is now `{"from": "./talky", "condition": "hop.route == 'tool' &&
+  hop.tool_name == 'x'"}` — the dispatcher's `tool` route was always on the
+  wire, it just had nowhere to be declared. The three shipped examples are
+  migrated and are the worked reference.
+
+  **Three things the hives took over from their callers**, because the inner
+  edge is where structure is allowed to be known: the memory hive's own door
+  stamps the `phase: "recall"` that starts a fresh recall chain (#152) and the
+  `store_origin`/`mem_phase` of the inline lane; the firewall's exits drop the
+  four context keys its screen parks a turn in, which every caller previously
+  had to remember. A caller can no longer get any of them wrong.
+
+  **`receptionist` draws its per-channel wiring from the hive now.** Its greet
+  cell writes that mutation itself and is self-locating; under its own seal an
+  edge out of `./reception/greet` is a breach the validation refuses, so it
+  locates the HIVE instead. Its three address knobs (`RECEPTIONIST_INGRESS`,
+  `RECEPTIONIST_REPLY_FROM`, `RECEPTIONIST_ERROR_FROM`) default to **empty** —
+  the instance path — instead of `session-keeper`, `collector` and `errors`. A
+  `.env` that still names those three wires a composite at addresses `talky@3`
+  no longer has.
+
+  **`memory-hive` lost `params.required_drains`, and that is a real loss rather
+  than a cleanup.** The pairing rule (#147) hangs on a PORT and fires when
+  something outside the hive wires that port; a sealed hive has none, so the two
+  entries could never fire again. A rule that cannot fire reads like one that
+  can, so they were removed rather than left as decoration — the README says in
+  their place that the `reject` lane must be drained and why. The substrate gap
+  (`required_drains` has no way to name a LANE) is
+  [#237](https://github.com/mmeyerlein/meclaw/issues/237), and is recorded where
+  the sweep that measured them lives.
+
+  **A running colony is not affected.** Instantiation copies the subtree, so an
+  instance built before this release keeps its own bytes and its own interior
+  addresses; the boundary is checked on `add_edges`, never at boot. What changes
+  is what the NEXT instantiation gets, and that a wiring recipe written against
+  the old shape is refused rather than silently mis-wired.
+
+- **`canvy` and `access` are behind their boundary, and their interior
+  addresses are retired**
+  ([#197](https://github.com/mmeyerlein/meclaw/issues/197)). Ruled 2026-08-18:
+  an edge is laid at the HIVE, access from outside is abstract and functional,
+  and the inner edge that receives the request is what knows what to do with it.
+  A port that carries the name of a cell inside satisfies the letter of that and
+  misses the point, so both templates were rebuilt on lanes rather than renamed.
+
+  | Template | Was | Now | Why |
+  |---|---|---|---|
+  | `canvy` | 0.2.0 | **0.3.0** | `render` and `refresh` were two cells, declared as ports |
+  | `access` | 1.0.1 | **2.0.0** | `policy` and `invoke` were cells; `store` was the bypass its own README calls its honest limit |
+
+  **The migration is the same edit in both: drop the last segment and name the
+  lane.** `./canvy/refresh` becomes `./canvy` with
+  `modifier.set_hop.route: "'in_refresh'"`; the drawn page leaves on `surface`.
+  `./access/policy` becomes `./access` with `"'in_request'"` and
+  `./access/invoke` becomes `./access` with `"'in_invoke'"`; the answers come
+  back out of the hive path on `grant`, `ack`, `connect` and `error`. Every lane
+  and the sentence saying what it is for are in each template's
+  `params.contract`.
+
+  `access`'s two invariants are unchanged and one of them got stronger:
+  **R-AC-1 still says the requester comes from the edge**, and that edge now
+  addresses the hive — so promoting the caller to `context.requester` is part of
+  wiring the broker rather than part of reaching into it. And the third retired
+  port is the interesting one: `store` as a declared port was an invitation to
+  write a policy row without asking anybody, and since `access@2` a mutation
+  that tries is refused with `hive_port_boundary`.
+
+  **A running colony is not affected.** Instantiation copies the subtree, so an
+  instance built before this release keeps its own bytes and its own interior
+  addresses. What changes is what the NEXT instantiation gets, and that a
+  wiring recipe written against the old shape is refused rather than silently
+  mis-wired.
+
+  `steward` and `memory-hive` are the other two templates #197 names. Both are
+  still on cell-named ports: each needs an edit outside the template files to go
+  with the migration, and that is a separate, sanctioned change rather than a
+  side effect of this one.
+
+### Added
+
+- **The library table names every template that ships**
+  ([#235](https://github.com/mmeyerlein/meclaw/issues/235)). `canvy` was
+  exported with the public tree and had no row in `templates/README.md`, which
+  came to light only because three numbers were compared by hand. Two gates now
+  read the table instead: every row names a template that exists at the version
+  it exists at — a version in that column is an exact reference, so a stale one
+  does not resolve — and every publicly exported template has a row.
+
+- **The failure lane of a hive is measured rather than reasoned about**
+  ([#176](https://github.com/mmeyerlein/meclaw/issues/176)). `hop.finish_reason`
+  is a provider's word for why a completion stopped, and a hive that carries it
+  across its own boundary makes it part of an interface whose whole purpose is
+  that a caller does not know what is behind it. Six tests: the leak shown
+  through the real contract check, the fix (`set_hop` on the out-door, the
+  caller conditioning on the route) shown on a live colony to deliver **exactly
+  one** message to the error sink with nothing looping back into the model cell,
+  the negative control that shows the loop is a real shape, and two sweeps over
+  the shipped library.
+
+  **And the substrate learned the case it was missing.** The contract check
+  probed an exit with the lane on the hop and never applied the door's own
+  modifier — so a door that recognises `hop.finish_reason` and PRODUCES the lane
+  was invisible to it, and a hive could not declare a lane it demonstrably
+  emits. `exit_exists` now also reads the out-door's `set_hop.route`: naming the
+  declared lane as a constant on an edge that crosses the hive path is an exit
+  for that lane, whatever its condition reads. The refusals the check exists for
+  are unchanged and pinned next to the fix — a door that names a **different**
+  lane is no exit, a door that names the lane on an edge staying **inside** is
+  no exit, and a computed lane name is still not judged at all. The boot warning
+  carries the modifier along now for the same reason, so it stops warning about
+  hives that got their failure lane right. This is what the six templates in
+  [#228](https://github.com/mmeyerlein/meclaw/issues/228) with a
+  model-conditioned exit were waiting on.
+
 ## [0.14.0] — 2026-08-18
 
 ### Breaking
@@ -94,6 +261,44 @@ Rust crates are internals and move without notice.
   it was written against and rewritten, so a hand-made arrangement comes back
   exactly as it was left — the bump says the stored shape changed, not that a
   caller has anything to do.
+
+- **A cell that is an ingress has to say so
+  ([#185](https://github.com/mmeyerlein/meclaw/issues/185)).** The `config.json`
+  schema is one of the four public-contract surfaces (README § Stability), and
+  it gains one optional block that is not optional for an ingress:
+
+  ```json
+  "contract": { "ingress": { "context": ["chat_id"] } }
+  ```
+
+  Read as: *messages are born at this cell, carrying these `context` keys.* The
+  keys must come from the standard header convention — `turn_id`, `session_id`,
+  `user_id`, `chat_id`, `locale`; a claim outside that set is refused by name.
+
+  **What it replaces.** The build-time reachability check used to decide who the
+  graph entry was by counting incoming edges: a node with none was treated as
+  the entry and handed the whole standard header set. In-degree is not a
+  property of a cell. The ordinary connector — a proxy that accepts inbound
+  traffic and gets the answers routed back to it — has an incoming edge and lost
+  the branch, so a correctly wired ingress could be refused for being wired the
+  way ingress cells are wired; and an unconnected island gained it for free.
+  Worse, the answer changed when an unrelated edge was added somewhere else.
+
+  **The migration.** Add the block to the cell where messages enter — in the
+  shipped templates that is the `proxy` cell of a chat topology, and in a
+  hand-built colony it is whichever cell the HTTP ingress or the stdio bridge
+  posts to. Nothing else changes: an edge `modifier.set_context` promotes keys
+  exactly as before, and a topology whose keys all come from promotions needs no
+  edit at all. Two ways to find out whether yours does:
+
+  - a **first boot** refuses, naming the node, the key and the field to add
+    (`… requires consumes.context 'chat_id' but context presence not reachable
+    from any setter — no edge promotes it and no cell on the way declares
+    contract.ingress.context 'chat_id'`);
+  - a **running colony reboots and reports** — the finding is a `warn!` per
+    offending node and the colony comes up (#178). `meclaw --validate
+    --validate-strict` turns the same finding into a non-zero exit, which is
+    where to look before the restart rather than after it.
 
 ### Added
 
@@ -387,6 +592,42 @@ Rust crates are internals and move without notice.
   trace it never wrote.
 
 ### Fixed
+
+- **The heartbeat watchdog could not tell a wedged colony from a busy host, and
+  the trip was fatal**
+  ([#165](https://github.com/mmeyerlein/meclaw/issues/165)). A compile on the
+  same box killed a healthy colony three times in one day: `on_trip=exit` is the
+  default, so each 500 ms of silence ended the process, and each restart came
+  back clean. The trip record even said `supervisor_lag=0ms`, which reads as
+  "the process was getting CPU, so this is the colony's fault" — and is not,
+  because the supervisor is a `sleep`-driven task with no work to do, and a
+  starved runtime wakes a timer roughly on schedule while the loop that is
+  actually working does not get through its work item.
+
+  Two signals now stand where that inference stood, and neither is a bigger
+  window (a bigger window only moves the point at which the same fallacy is
+  committed). First, the **heartbeat carries a phase**: the colony loop declares
+  `Working` or `Parked` *before* it can block, because a blocked loop reports
+  nothing and the report therefore has to happen on the way in. Everything
+  between a `Working` and the next `Parked` is one work item, so the supervisor
+  asks how long the loop has been on ONE item instead of only how long it has
+  been quiet — and a declared item gets its own, larger budget
+  (`WORK_ITEM_BUDGET_FACTOR = 10` × the window, 5 s by default) while the idle
+  bar for a parked loop stays exactly 500 ms. Second, a **witness task** runs
+  next to the supervisor and must finish a unit of real work each period; it is
+  judged by the identical rule the colony is judged by, so "was the runtime able
+  to get anything done" stops being a guess. A work item that outlives even its
+  budget is fatal again: the budget bounds the suppression, it does not remove
+  it.
+
+  `watchdog_on_trip: exit` stays the default, and it stays the right default —
+  what changed is that `exit` now fires only on a finding that implicates the
+  colony (`starved=colony_loop` or `stuck_work_item`) or proves the task is gone
+  (`colony_task_gone`). `host_runtime`, `slow_work_item` and `process_scheduling`
+  are reported loudly and the colony keeps running. Turning the default into
+  `log-only` would have switched off the response instead of repairing the
+  inference. The trip line gains `in_flight_work`, `work_item_budget`, `witness`
+  and `witness_missed`; its issue-#6 prefix is unchanged.
 
 - **`hive_scopes` has no delete path, and nothing said whether that was
   deliberate** ([#192](https://github.com/mmeyerlein/meclaw/issues/192)). Ruled

@@ -95,19 +95,19 @@ fn write_templates(root: &std::path::Path) {
     write(
         &unit,
         "s/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/u1/e"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/u1/e"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     write(
         &unit,
         "e/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     let solo = root.join("templates").join("solo");
     write(&solo, "template.json", r#"{"name":"solo"}"#);
     write(
         &solo,
         "config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 

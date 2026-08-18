@@ -232,8 +232,11 @@ fn an_unknown_channel_instantiates_a_talky_and_wires_it_in_one_mutation() {
 
     let edges = m["diff"]["add_edges"].as_array().expect("add_edges");
     assert_eq!(edges.len(), 4, "ingress, reply, write, error: {edges:?}");
-    assert_eq!(edges[0]["from"], json!("./reception/greet"));
-    assert_eq!(edges[0]["to"], json!("./talky-c-42/session-keeper"));
+    assert_eq!(edges[0]["from"], json!("./reception"));
+    // The composite's own path, never a cell inside it: `talky@3` is sealed
+    // (GH #228), so the lane the edge sets is what selects the cell behind the
+    // door and `RECEPTIONIST_INGRESS` defaults to empty.
+    assert_eq!(edges[0]["to"], json!("./talky-c-42"));
     let cond = edges[0]["condition"].as_str().unwrap();
     assert!(
         cond.contains("has(hop.chan)") && cond.contains("hop.chan == 'c-42'"),
@@ -246,7 +249,7 @@ fn an_unknown_channel_instantiates_a_talky_and_wires_it_in_one_mutation() {
     );
     assert_eq!(edges[1]["to"], json!("./sink"));
     assert_eq!(edges[2]["to"], json!("./archive"));
-    assert_eq!(edges[3]["from"], json!("./talky-c-42/errors"));
+    assert_eq!(edges[3]["from"], json!("./talky-c-42"));
     assert_eq!(edges[3]["to"], json!("./park"));
 }
 
@@ -467,12 +470,12 @@ fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
 /// (`scope_out_of_bounds`), so it is written here, at bootstrap, on purpose.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": "./surface", "to": "./reception/greet",
+        {"from": "./surface", "to": "./reception",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
                       "set_context": {"channel": "hop.chat_id"}}},
-        {"from": "./reception/greet", "to": "/colony/mutations",
-         "condition": "has(hop.msg_type) && hop.msg_type == 'mutation'"},
+        {"from": "./reception", "to": "/colony/mutations",
+         "condition": "has(hop.route) && hop.route == 'mutate'"},
         {"from": "./archive", "to": "/park"}
     ]}}})
 }

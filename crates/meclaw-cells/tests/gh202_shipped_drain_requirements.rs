@@ -223,8 +223,25 @@ fn every_declared_drain_requirement_refuses_the_mutation_it_was_written_to_refus
             checked += 1;
         }
     }
-    assert!(
-        checked >= 2,
-        "the sweep checked almost nothing: {checked} drain requirements"
+    // No floor, and that is a finding rather than a loosening. GH #197 sealed
+    // the last hive that declared a pairing (`memory-hive`, `extract-glue` and
+    // `recall`), and `required_drains[].port` names a PORT: the requirement
+    // fires when something OUTSIDE the hive wires that port, which a sealed
+    // hive has no way of letting happen. The declaration was removed with the
+    // seal rather than left as decoration — a rule that cannot fire reads like
+    // one that can, which is the exact defect #202 was written about.
+    //
+    // So the sweep is dormant today, and the assertion that keeps it honest is
+    // the one below: dormant because the library declares nothing, never
+    // because the reader silently dropped what it declares. The day
+    // `required_drains` learns to name a LANE, this file measures it again with
+    // no edit.
+    let declared: usize = shipped_hives_with_drains()
+        .iter()
+        .map(|t| t.declared.len())
+        .sum();
+    assert_eq!(
+        checked, declared,
+        "the sweep checked {checked} of the {declared} drain requirements this tree declares"
     );
 }

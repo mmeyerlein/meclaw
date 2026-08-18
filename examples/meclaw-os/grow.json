@@ -29,7 +29,7 @@
     "add_edges": [
       {
         "from": "./surface",
-        "to": "./firewall/screen",
+        "to": "./firewall",
         "condition": "has(hop.route) && hop.route == 'turn'",
         "modifier": {
           "set_hop": {
@@ -41,8 +41,8 @@
         }
       },
       {
-        "from": "./firewall/screen",
-        "to": "./talky/session-keeper",
+        "from": "./firewall",
+        "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'pass'",
         "modifier": {
           "set_hop": {
@@ -57,7 +57,7 @@
         }
       },
       {
-        "from": "./firewall/screen",
+        "from": "./firewall",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'reject'",
         "modifier": {
@@ -70,12 +70,12 @@
         }
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'answer'"
       },
       {
-        "from": "./talky/collector",
+        "from": "./talky",
         "to": "./drain",
         "condition": "has(hop.route) && hop.route == 'write'",
         "modifier": {
@@ -88,7 +88,7 @@
         }
       },
       {
-        "from": "./talky/errors",
+        "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'error'"
       },

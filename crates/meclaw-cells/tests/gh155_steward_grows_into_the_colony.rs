@@ -263,9 +263,9 @@ async fn the_steward_cannot_wire_its_own_mutation_lane() {
             "scope": "/",
             "ctx": {},
             "diff": {"add_edges": [{
-                "from": "./steward/mutator",
+                "from": "./steward",
                 "to": "/colony/mutations",
-                "condition": "has(hop.msg_type) && hop.msg_type == 'mutation'"
+                "condition": "has(hop.route) && hop.route == 'mutate'"
             }]}
         }),
     )
@@ -274,6 +274,19 @@ async fn the_steward_cannot_wire_its_own_mutation_lane() {
         !committed(&outcome),
         "a mutation must not be able to mint the lane that carries mutations: {outcome:?}"
     );
+    // The endpoint is the HIVE, not a cell inside it (GH #197: `steward@2` is
+    // sealed, `params.ports: []`). That matters for what this test proves: with
+    // a deep endpoint the refusal could be the port boundary talking, which
+    // would say nothing at all about `/colony/mutations`. Asked at the address
+    // the boundary admits, the only thing left to refuse it is the virtual
+    // endpoint itself.
+    match &outcome {
+        meclaw_colony::mutation::MutationOutcome::Rejected { error_code, .. } => assert_ne!(
+            error_code, "hive_port_boundary",
+            "the refusal has to be about /colony/mutations, not about the seal: {outcome:?}"
+        ),
+        other => panic!("expected a rejection: {other:?}"),
+    }
 
     h.shutdown().await;
 }

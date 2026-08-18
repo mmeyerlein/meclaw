@@ -31,12 +31,16 @@ pub fn setup_timer_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// INSERT one schedule row. The caller ensures `schedule_id` is new (add-dup is
 /// handled at the handler level). A PK violation yields a rusqlite error.
 pub fn insert_schedule(conn: &Connection, row: &ScheduleRow) -> rusqlite::Result<()> {
+    // GH #231: `at` is stored with millisecond precision. Second-truncation
+    // silently moved a schedule up to a second EARLIER than the caller asked
+    // for, which is enough to land an accepted one-shot in the past before it
+    // was ever planned — the same disappearance from the other end.
     let (kind, cron_expr, at_utc) = match &row.kind {
         ScheduleKind::Cron(s) => ("cron", Some(s.as_str()), None),
         ScheduleKind::At(t) => (
             "at",
             None,
-            Some(t.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            Some(t.to_rfc3339_opts(SecondsFormat::Millis, true)),
         ),
     };
     let body = serde_json::to_string(&row.emit_body).expect("emit_body serializable");
@@ -93,7 +97,8 @@ pub fn modify_schedule_fields(
     emit_to_new: Option<&str>,
     at_utc_new: Option<DateTime<Utc>>,
 ) -> rusqlite::Result<usize> {
-    let at_s = at_utc_new.map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true));
+    // GH #231: millisecond precision, same reason as `insert_schedule`.
+    let at_s = at_utc_new.map(|t| t.to_rfc3339_opts(SecondsFormat::Millis, true));
     conn.execute(
         "UPDATE schedules SET
             schedule_name = COALESCE(?2, schedule_name),
@@ -131,10 +136,18 @@ pub fn bump_iteration(conn: &Connection, id: Uuid) -> rusqlite::Result<usize> {
 }
 
 /// SELECT all `status='active'` rows; converts them into the I/O working copy.
-/// **Filters past one-shots out** (cell-types.md l.431-436): `at < now` is not
-/// taken into the I/O set (it stays in the DB with status='active' — read-only
-/// relief here; a later `modify`/`remove` op still addresses it by id). Only cron
-/// and future-at entries land in the Vec.
+/// **Filters past one-shots out** (cell-types.md § `timer`, "Past firings are
+/// discarded"): `at <= now` is not taken into the I/O set (it
+/// stays in the DB with status='active' — read-only relief here; a later
+/// `modify`/`remove` op still addresses it by id). Only cron and future-at
+/// entries land in the Vec.
+///
+/// GH #231: a dropped one-shot is logged. The spec says such a schedule is "not
+/// scheduled and only logged", and the log was the missing half — the drop
+/// happened without a word anywhere. This is the restart path, where dropping is
+/// right; an `at` that ran out of lead time in flight is refused at the op
+/// instead (`at_in_past`, see `timer::cell`), so nothing reaches here that a
+/// caller is still waiting on.
 pub fn load_active_filter_past(
     conn: &Connection,
     now: DateTime<Utc>,
@@ -156,6 +169,12 @@ pub fn load_active_filter_past(
             "at" => {
                 let t: DateTime<Utc> = at_utc.unwrap().parse().expect("at_utc parse");
                 if t <= now {
+                    tracing::info!(
+                        schedule_id = %id,
+                        at = %t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        now = %now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        "timer: one-shot in the past is not planned (row stays active in cell.db)"
+                    );
                     continue;
                 }
                 ScheduleKind::At(t)

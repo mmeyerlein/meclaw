@@ -11,7 +11,7 @@
 //! Topology:
 //!   td.path()/main/config.json            (hive, root)
 //!   td.path()/main/persist/config.json    (persist_mock, panic_after=3,
-//!                                          echo_to=/sink)
+//!                                          emitted_target=/sink)
 //!   /sink                                 (CaptureCell, NOT in the FS tree —
 //!                                          it has no factory; registered
 //!                                          directly via h.spawn BEFORE
@@ -40,7 +40,7 @@ fn write(dir: &std::path::Path, rel: &str, body: &str) {
 async fn demo_production_bootstrap_spawn_with_restart() {
     let td = tempfile::TempDir::new().unwrap();
 
-    // FS tree: root hive + a persist_mock cell with panic_after=3 + echo_to=/sink.
+    // FS tree: root hive + a persist_mock cell with panic_after=3 + emitted_target=/sink.
     write(
         td.path(),
         "main/config.json",
@@ -49,7 +49,7 @@ async fn demo_production_bootstrap_spawn_with_restart() {
     write(
         td.path(),
         "main/persist/config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"echo_to":"/sink","panic_after":3},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/sink","panic_after":3},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 
     // Factory + registry: Arc-shared — one copy in the ColonyHandle (for the
@@ -65,7 +65,7 @@ async fn demo_production_bootstrap_spawn_with_restart() {
         vec![("persist_mock".to_string(), persist_factory.clone())],
     );
 
-    // Register /sink BEFORE bootstrap (anti-cascade: /persist's echo_to must
+    // Register /sink BEFORE bootstrap (anti-cascade: /persist's emitted_target must
     // resolve at the first emission).
     let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(16);
     h.spawn(Path::new("/sink"), move || {
@@ -226,7 +226,7 @@ async fn demo_production_mutation_spawn_with_state() {
         vec![("persist_mock".to_string(), persist_factory.clone())],
     );
 
-    // Register /sink BEFORE the mutation (anti-cascade: /main/persist's echo_to
+    // Register /sink BEFORE the mutation (anti-cascade: /main/persist's emitted_target
     // must resolve at the first emission).
     let (sink_tx, mut sink_rx) = mpsc::channel::<Message>(16);
     h.spawn(Path::new("/sink"), move || {
@@ -282,7 +282,7 @@ async fn demo_production_mutation_spawn_with_state() {
     }
 
     // Mutation: add_nodes [{name: "persist", template: "persist_mock",
-    // override_params: {echo_to: "/sink"}}] under scope `/` (spec overview
+    // override_params: {emitted_target: "/sink"}}] under scope `/` (spec overview
     // Z.331: the root-cell-dir `main` IS logical `/`, its name stripped). →
     // logical path resolve_scoped_path(/, persist) = /persist; on-disk
     // final_path = {root}/main/persist (path_truth anchors logical `/` under
@@ -295,7 +295,7 @@ async fn demo_production_mutation_spawn_with_state() {
                 "diff": {"add_nodes": [{
                     "name": "persist",
                     "template": "persist_mock",
-                    "override_params": {"echo_to": "/sink"}
+                    "override_params": {"emitted_target": "/sink"}
                 }]}
             }),
             reply_to: None,

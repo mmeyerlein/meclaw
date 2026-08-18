@@ -510,6 +510,7 @@ mod tests {
             emits_hop: emits_hop.iter().map(|s| s.to_string()).collect(),
             required_context: req_ctx.iter().map(|s| s.to_string()).collect(),
             required_hop: req_hop.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 

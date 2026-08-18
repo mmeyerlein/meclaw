@@ -217,10 +217,15 @@ fn grow_json_only_names_templates_that_ship() {
     // round parks until the idle exit. Both are the PARENT's job -- `talky`
     // ships neither, on purpose.
     let edges = grow["diff"]["add_edges"].as_array().expect("add_edges");
+    // Since GH #228 sealed `talky`, both ends of that loopback are the hive
+    // path: the tool call leaves on the `tool` lane and comes back in on
+    // `in_memory_call`. Which cell made the call and which one takes it is no
+    // longer anything this example knows.
     assert!(
-        edges.iter().any(|e| e["to"] == json!("./talky/collector")
+        edges.iter().any(|e| e["from"] == json!("./talky")
+            && e["to"] == json!("./talky")
             && e["modifier"]["set_hop"]["route"] == json!("'in_memory_call'")),
-        "the dispatcher's memory lane is not wired"
+        "the memory tool loopback is not wired"
     );
     let recall = edges
         .iter()

@@ -138,10 +138,13 @@ async fn sleep_until_optional(t: Option<DateTime<Utc>>) {
     }
 }
 
-/// Returns `(index_in_active, next_time)` of the earliest future occurrence
-/// across all schedules; `None` when nothing lies in the future (active empty or
-/// all past one-shots — the latter should never happen because
-/// `load_active_filter_past` drops past one-shots; checked defensively).
+/// Returns `(index_in_active, next_time)` of the earliest due-or-future
+/// occurrence across all schedules; `None` when the set holds nothing that will
+/// ever come round (empty, or only cron expressions with no next occurrence).
+///
+/// A cron expression is planned strictly after `now` — missed repeats are not
+/// caught up (spec § `timer`). A one-shot in the set is taken as it stands: see
+/// the `At` arm below (GH #231).
 fn compute_next_occurrence(
     active: &[ActiveSchedule],
     parser: &CronParser,
@@ -154,13 +157,14 @@ fn compute_next_occurrence(
                 .parse(expr)
                 .ok()
                 .and_then(|c| c.find_next_occurrence(&now, false).ok()),
-            ScheduleKind::At(t) => {
-                if *t > now {
-                    Some(*t)
-                } else {
-                    None
-                }
-            }
+            // GH #231: a one-shot in the working set is DUE, not gone. The set
+            // only ever receives one-shots that were still ahead when it was
+            // built (`load_active_filter_past` filters, the handler refuses a
+            // past `at` outright), so one whose moment arrived while this loop
+            // was computing has to fire — dropping it here was the last place
+            // an accepted schedule could vanish without a word. A past instant
+            // makes `sleep_until_optional` resolve to a zero wait.
+            ScheduleKind::At(t) => Some(*t),
         };
         if let Some(t) = next
             && best.map(|(_, bt)| t < bt).unwrap_or(true)
