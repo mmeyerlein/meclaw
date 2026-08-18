@@ -360,7 +360,7 @@ pub(crate) fn run_writer(
                 shutdown_ack = Some(ack);
             }
             op => {
-                apply_op(&tx, op, &mut acks, &mut mpsc_acks);
+                apply_or_die(&tx, op, &mut acks, &mut mpsc_acks);
                 count += 1;
             }
         }
@@ -374,7 +374,7 @@ pub(crate) fn run_writer(
                     shutdown_ack = Some(ack);
                 }
                 Ok(op) => {
-                    apply_op(&tx, op, &mut acks, &mut mpsc_acks);
+                    apply_or_die(&tx, op, &mut acks, &mut mpsc_acks);
                     count += 1;
                 }
                 Err(_) => break,
@@ -405,12 +405,34 @@ pub(crate) fn run_writer(
     }
 }
 
-fn apply_op(
+/// One policy point for "a write to `colony.db` failed".
+///
+/// The decision itself is not new -- a failed write to the colony's own database
+/// leaves the persisted topology disagreeing with the running one, and there is
+/// nothing sensible to continue with, which is why `tx.commit()` below aborts the
+/// process too. What is new is that the failure is LOGGED before the abort. Until
+/// v0.14.0 every arm of `apply_op` carried its own `.expect("insert edge")`, and
+/// those panic without a tracing event: the operator saw the process die and had
+/// no record of which op killed it. Routing every op through here also means a new
+/// write op no longer costs an entry in the unwrap/expect budget (GH #233).
+fn apply_or_die(
     tx: &rusqlite::Transaction<'_>,
     op: ColonyWriteOp,
     acks: &mut Vec<tokio::sync::oneshot::Sender<()>>,
     mpsc_acks: &mut Vec<std::sync::mpsc::Sender<()>>,
 ) {
+    if let Err(e) = apply_op(tx, op, acks, mpsc_acks) {
+        tracing::error!(error = %e, "colony.db writer op failed");
+        panic!("colony.db writer op failed: {e}");
+    }
+}
+
+fn apply_op(
+    tx: &rusqlite::Transaction<'_>,
+    op: ColonyWriteOp,
+    acks: &mut Vec<tokio::sync::oneshot::Sender<()>>,
+    mpsc_acks: &mut Vec<std::sync::mpsc::Sender<()>>,
+) -> rusqlite::Result<()> {
     let now = now_unix_secs();
     match op {
         ColonyWriteOp::InitialApply { edges, hive_scopes } => {
@@ -418,8 +440,7 @@ fn apply_op(
                 tx.execute(
                     "INSERT OR IGNORE INTO hive_scopes (path, created_at) VALUES (?, ?)",
                     rusqlite::params![s.as_str(), now],
-                )
-                .expect("insert hive_scope");
+                )?;
             }
             for e in edges {
                 let condition = e.condition.as_ref().map(|c| c.source.clone());
@@ -431,14 +452,12 @@ fn apply_op(
                     "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier) \
                      VALUES (?, ?, ?, ?, ?, ?)",
                     rusqlite::params![e.id.to_string(), e.from.as_str(), e.to.as_str(), now, condition, modifier],
-                )
-                .expect("insert edge");
+                )?;
             }
             // Bootstrap-Recovery: clear the in-flight marker in the SAME
             // transaction as the bundle — the apply is complete exactly when
             // edges+hive_scopes are visible, never before, never after.
-            tx.execute("DELETE FROM meta WHERE key='bootstrap_in_flight'", [])
-                .expect("clear bootstrap_in_flight marker");
+            tx.execute("DELETE FROM meta WHERE key='bootstrap_in_flight'", [])?;
         }
         ColonyWriteOp::UpsertRegistry {
             path,
@@ -453,8 +472,7 @@ fn apply_op(
                  ON CONFLICT(path) DO UPDATE SET
                      updated_at = excluded.updated_at",
                 rusqlite::params![path.as_str(), cell_id, cell_type, created_at, updated_at],
-            )
-            .expect("upsert registry");
+            )?;
         }
         ColonyWriteOp::SetRegistryStatus {
             path,
@@ -464,8 +482,7 @@ fn apply_op(
             tx.execute(
                 "UPDATE registry SET status=?, updated_at=? WHERE path=?",
                 rusqlite::params![status, updated_at, path.as_str()],
-            )
-            .expect("set registry status");
+            )?;
         }
         ColonyWriteOp::MoveRegistryPath {
             from,
@@ -475,8 +492,7 @@ fn apply_op(
             tx.execute(
                 "UPDATE registry SET path=?, updated_at=? WHERE path=?",
                 rusqlite::params![to.as_str(), updated_at, from.as_str()],
-            )
-            .expect("move registry path");
+            )?;
         }
         ColonyWriteOp::SetRegistryProvenance { path, provenance } => {
             tx.execute(
@@ -488,8 +504,7 @@ fn apply_op(
                     provenance.instantiated_at,
                     path.as_str()
                 ],
-            )
-            .expect("set registry provenance");
+            )?;
         }
         ColonyWriteOp::InsertMessageLog(row) => {
             tx.execute(
@@ -511,8 +526,7 @@ fn apply_op(
                     row.body_payload,
                     row.created_at,
                 ],
-            )
-            .expect("insert message_log");
+            )?;
         }
         ColonyWriteOp::MutationLogInsert {
             id,
@@ -525,8 +539,7 @@ fn apply_op(
                 "INSERT INTO mutation_log (id, scope, payload_json, status, created_at)
                  VALUES (?, ?, ?, 'in_flight', ?)",
                 rusqlite::params![id, scope, payload_json, created_at],
-            )
-            .expect("insert mutation_log");
+            )?;
             if let Some(a) = ack {
                 acks.push(a);
             }
@@ -562,8 +575,7 @@ fn apply_op(
                     trace_id,
                     created_at
                 ],
-            )
-            .expect("insert mutation_log reject row");
+            )?;
             if let Some(a) = ack {
                 acks.push(a);
             }
@@ -580,19 +592,16 @@ fn apply_op(
                 "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier) \
                  VALUES (?, ?, ?, ?, ?, ?)",
                 rusqlite::params![id, from, to, created_at, condition, modifier],
-            )
-            .expect("insert edge");
+            )?;
         }
         ColonyWriteOp::RemoveEdge { id } => {
-            tx.execute("DELETE FROM edges WHERE id=?", rusqlite::params![id])
-                .expect("delete edge");
+            tx.execute("DELETE FROM edges WHERE id=?", rusqlite::params![id])?;
         }
         ColonyWriteOp::InsertHiveScope { path, created_at } => {
             tx.execute(
                 "INSERT OR IGNORE INTO hive_scopes (path, created_at) VALUES (?1, ?2)",
                 rusqlite::params![path.as_str(), created_at],
-            )
-            .expect("insert hive_scope");
+            )?;
         }
         ColonyWriteOp::MutationLogUpdate {
             id,
@@ -604,8 +613,7 @@ fn apply_op(
             tx.execute(
                 "UPDATE mutation_log SET status=?, committed_at=?, failure_reason=? WHERE id=?",
                 rusqlite::params![status, committed_at, failure_reason, id],
-            )
-            .expect("update mutation_log");
+            )?;
             if let Some(a) = ack {
                 acks.push(a);
             }
@@ -642,8 +650,7 @@ fn apply_op(
                     author,
                     scanned_at
                 ],
-            )
-            .expect("upsert template");
+            )?;
             if let Some(a) = ack {
                 mpsc_acks.push(a);
             }
@@ -652,8 +659,7 @@ fn apply_op(
             tx.execute(
                 "DELETE FROM templates WHERE template_id = ?1",
                 rusqlite::params![template_id],
-            )
-            .expect("delete template");
+            )?;
             if let Some(a) = ack {
                 mpsc_acks.push(a);
             }
@@ -680,12 +686,10 @@ fn apply_op(
                     created_at,
                     message_json
                 ],
-            )
-            .expect("insert dead_letter");
+            )?;
         }
         ColonyWriteOp::DeleteAllDeadLetters { ack } => {
-            tx.execute("DELETE FROM dead_letters", [])
-                .expect("delete all dead_letters");
+            tx.execute("DELETE FROM dead_letters", [])?;
             if let Some(a) = ack {
                 acks.push(a);
             }
@@ -699,8 +703,7 @@ fn apply_op(
             tx.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('bootstrap_in_flight', ?)",
                 rusqlite::params![created_at.to_string()],
-            )
-            .expect("set bootstrap_in_flight marker");
+            )?;
             if let Some(a) = ack {
                 acks.push(a);
             }
@@ -712,6 +715,8 @@ fn apply_op(
             );
         }
     }
+
+    Ok(())
 }
 
 fn now_unix_secs() -> i64 {
@@ -841,7 +846,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         #[allow(clippy::type_complexity)]
@@ -1058,7 +1064,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
         let (c, m): (Option<String>, Option<String>) = conn
             .query_row(
@@ -1094,7 +1101,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         // Flip to 'inactive' via SetRegistryStatus (UPDATE-only).
@@ -1108,7 +1116,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         // Fresh-read probe: status flipped, cell_id untouched, updated_at bumped.
@@ -1148,7 +1157,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let tx = conn.unchecked_transaction().unwrap();
@@ -1164,7 +1174,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let (tpl, ver, at, cell_id, status): (String, String, i64, String, String) = conn
@@ -1200,7 +1211,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         apply_op(
             &tx,
             ColonyWriteOp::SetRegistryProvenance {
@@ -1213,7 +1225,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
         let ver: Option<String> = conn
             .query_row(
@@ -1257,7 +1270,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let (c, m): (Option<String>, Option<String>) = conn
@@ -1294,7 +1308,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let (path, created_at): (String, i64) = conn
@@ -1324,7 +1339,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let value: String = conn
@@ -1355,7 +1371,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         // InitialApply bundle: hive scope + marker clear, one transaction.
@@ -1368,7 +1385,8 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
-        );
+        )
+        .expect("apply_op in test");
         tx.commit().unwrap();
 
         let marker_count: i64 = conn
