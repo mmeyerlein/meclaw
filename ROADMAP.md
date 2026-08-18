@@ -2,223 +2,192 @@
 
 The [issue tracker](https://github.com/mmeyerlein/meclaw/issues) is the single
 source of truth for everything actionable. This file only orders it: what comes
-next, what comes after, and why. Content lives in the issues, never here twice.
-Milestones mirror these streams. Shipped history lives at the bottom, one line
-per release; the details are in [CHANGELOG.md](CHANGELOG.md) and the GitHub
-releases.
+next, what comes after, and why.
+
+Three rules keep it from silting up, because it has:
+
+- **A stream names open issues only.** Work that shipped leaves the stream and
+  appears once, as one line, under [§ Shipped](#shipped).
+- **No content lives here twice.** The issue carries the detail; this file
+  carries the ordering and the reason.
+- **A claim about an issue's state is checked, not remembered.** The last pass
+  found the file asserting an issue was closed while it was open for another two
+  weeks.
+
+Milestones mirror these streams. Release detail is in
+[CHANGELOG.md](CHANGELOG.md) and the
+[GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 ## Now: meclaw-os, the organism
 
-A colony grown from a seed into a personal operating system. This is the stream
-now, because the gate for a public showcase is a provably better agent, not more
-memory machinery. The epic
+A colony grown from a seed into a personal operating system. This is the stream,
+because the gate for a public showcase is a provably better agent rather than
+more memory machinery. The epic
 [#26](https://github.com/mmeyerlein/meclaw/issues/26) leads and carries the
-settled principles and open forks; its sub-issues in intended order, collector
-hives first:
-[#27](https://github.com/mmeyerlein/meclaw/issues/27) collector hives as context orchestrators,
-[#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle,
-[#31](https://github.com/mmeyerlein/meclaw/issues/31) per-talky memory,
-[#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives.
+settled principles and the open forks.
 
-0.5.0 delivered the first half of this stream as templates: the collector hive
-and its fan-out half (#27), the session lifecycle and its handover, the llm
-cell's seed path (#99), and the collector's own follow-ups #77, #91, #76 and
-#103. 0.6.0 put the front door on it: the firewall hive (#36), one talky per
-channel (#29), and window-mode memory requests as a real tool round (#78). 0.7.0
-split the thinking off the talking (#28): a tool that answers on its own lane
-while the channel is served at once, the `in_advice` return round, the consult
-ETA as an observe-only measurement (#123), and the drain adapter that finally
-carries a closed day into memory (#101). What is left of the epic is per-talky
-memory and one-file hives — plus
-[#124](https://github.com/mmeyerlein/meclaw/issues/124), the first thing the
-advisor measured about itself: a consult round trip is far too slow for a
-question memory could have answered.
-
-0.8.0 and 0.9.0 carried the stream past the point where the agent was the only
-thing being built. 0.8.0 hardened the substrate the organism runs on; 0.9.0 made
-its memory a public building block, moved an episode from the session close to
-the turn it happened in, and gave a hive the means to own its domain — ports a
-parent may not wire around (#133) and a store write surface that is internal to
-its hive (#132). The example that proves the claim end to end lives in
+Its first half shipped as templates across 0.5.0–0.7.0 (collector hives, the
+session lifecycle, one talky per channel, the firewall, the advisor split, the
+memory drain), and 0.9.0 made the memory a public building block. The example
+that proves the claim end to end is
 [`examples/meclaw-os`](examples/meclaw-os/): an empty seed, one declaration,
 seventeen cells.
 
-Still open in this stream:
-[#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
-app store, [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive
-built with the builder.
+What is left of the epic:
+
+- [#31](https://github.com/mmeyerlein/meclaw/issues/31) each talky owns an
+  internal memory hive
+- [#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives, a hive
+  per document
+- [#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle, a fresh
+  instance per closed day — with
+  [#102](https://github.com/mmeyerlein/meclaw/issues/102) as its experiment
+- [#122](https://github.com/mmeyerlein/meclaw/issues/122) information ownership:
+  who holds what, and how an asker finds the holder
+- [#124](https://github.com/mmeyerlein/meclaw/issues/124) the first thing the
+  advisor measured about itself — a consult round trip is far too slow for a
+  question memory could have answered
+- [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
+  app store, and [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding
+  hive built with the builder
+
+## Next: the channel round
+
+One talky per channel, the connectors moved out of `access` into channel hives of
+their own, `access` left holding a vault. It was blocked on three rulings; all
+three are in as of 2026-08-18, and what is left is work rather than decisions.
+
+The round is now four items, and they are ordered because the first one settles
+how the other three are built:
+
+- [#197](https://github.com/mmeyerlein/meclaw/issues/197) **the four
+  cell-named-port hives get migrated, not aliased.** Ruled: route (a). `canvy`,
+  `memory-hive`, `access` and `steward` expose inner cell names as ports
+  (`render`, `writer`, `policy`, `meter`); each becomes `ports: []` plus doors
+  plus a `params.contract` in lanes named for what a caller wants. A port alias
+  would have kept the deep-endpoint address shape, which is the one thing the
+  boundary exists to remove.
+- [#228](https://github.com/mmeyerlein/meclaw/issues/228) **fourteen shipped
+  templates declare no `params.ports` at all**, `talky` among them — which is
+  why the canonical instantiation example still has to name an inner hive. Same
+  work as #197 and follows it, `talky` first.
+- [#185](https://github.com/mmeyerlein/meclaw/issues/185) **a cell declares that
+  it is an ingress.** Ruled: option (a). Today it is deduced from having no
+  incoming edge, which stops being true the moment the check can see the running
+  graph — and a proxy in a channel hive is exactly the shape that breaks. This
+  is a **breaking** change to the cell contract and wants to land with the rest
+  of the round rather than alone.
+- [#176](https://github.com/mmeyerlein/meclaw/issues/176) **a failure lane leaks
+  `hop.finish_reason` across its own boundary.** A provider's word for why a
+  completion stopped, in a hive's outward contract. Since the boundary rule is
+  now normative this is a violation rather than a wart, but the fix changes what
+  an error sink receives, and error paths are where a wrong turn burns a
+  provider call per round until TTL. Deliberate, with a test in front of it.
+
+The rule all four serve is written down in
+[`docs/meclaw-overview.md`](docs/meclaw-overview.md) § The hive boundary, and
+what it asks of a template author is in
+[`templates/README.md`](templates/README.md) § The hive boundary. The two parts
+that bite when migrating a live hive — a topology lives in four places, not two,
+and innermost first — are in the migration guide, which does not ship yet
+([#236](https://github.com/mmeyerlein/meclaw/issues/236)).
 
 ## Next: substrate flanks
 
-The pre-MVP stream closed with 0.4.1; what its waves left behind are named
-flanks, and new substrate findings from production land here first. 0.5.0 took
-#94, #95, #83, #89, #97 and #98 off this list. What remains:
-[#46](https://github.com/mmeyerlein/meclaw/issues/46) the harness permission
-surface and error-code semantics,
-[#45](https://github.com/mmeyerlein/meclaw/issues/45) the code cell's
-per-invocation interpreter start,
-[#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
-subscription plan actually carries until reset.
+Named flanks left by the pre-MVP waves, plus new findings from running the thing.
 
-The tool cells got their own pass in 0.6.0: the contract batteries of #104
-turned into seven follow-ups, and #105–#110 shipped with this release — the
-match-count guard, binary and windowed reads, a fence that is no existence
-oracle, a line-closing insert, the store error taxonomy and URL parsing at the
-`web_fetch` gate. What is left of that set is
-[#111](https://github.com/mmeyerlein/meclaw/issues/111), guarding interpreter
-bytecode caches in the coding templates' edit-test loops.
+- [#46](https://github.com/mmeyerlein/meclaw/issues/46) the harness permission
+  surface and error-code semantics
+- [#45](https://github.com/mmeyerlein/meclaw/issues/45) the code cell's 16 ms
+  interpreter start, which dominates serial hot paths
+- [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
+  drain: in-flight work is lost on EOF and child termination
+- [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
+  subscription plan actually carries until reset
+- [#111](https://github.com/mmeyerlein/meclaw/issues/111) guarding interpreter
+  bytecode caches in the coding templates' edit-test loops
+- [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
+  selection and closed-loop automation, beyond the v1 catalogue
+- [#165](https://github.com/mmeyerlein/meclaw/issues/165) the heartbeat watchdog
+  cannot tell a wedged colony from a starved host, and the trip is fatal — a
+  compile on the same box killed a healthy colony three times in one day
+- [#231](https://github.com/mmeyerlein/meclaw/issues/231) a one-shot timer whose
+  `at` passes between the request and the snapshot is dropped silently
+- [#226](https://github.com/mmeyerlein/meclaw/issues/226) `persist_mock` and
+  `hang` carry the same misleading `echo_to`, with a fallback that makes it worse
+- [#232](https://github.com/mmeyerlein/meclaw/issues/232) a workshop fixture
+  still wires at an interior address, producing 11 `hive_no_route` dead letters
+  per run
 
-An architecture comparison with prime-agent (2026-08) added a hardening batch to
-this stream, and 0.8.0 shipped all of it: the sharpest gates now run in CI
-(#115), a hard daemon crash cannot leak children (#116), `web_fetch` refuses the
-private network by default (#117), a second daemon cannot boot on the same root
-(#121), writes into the llm cell's persistent system tree are gated (#118), a
-TTL death inside a fan-in can be answered (#119), and the store-backed tool loop
-got a context-compaction lane as a reference topology (#120). Its leftover
-advisory findings (#127) closed in 0.9.0.
+Two of these are watches rather than fixes, and stay open on purpose:
 
-0.9.0 added a flank of its own, from the release audit rather than from
-production: [#138](https://github.com/mmeyerlein/meclaw/issues/138), the
-remaining environment knobs that have not moved to the params surface yet —
-`collector@1.2.0` is the worked migration —,
-[#140](https://github.com/mmeyerlein/meclaw/issues/140) — closed in 0.10.4:
-`override_params` on a subtree template is addressed by cell path now, which
-keeps R10's protection (an unaddressable key is still refused) and opens the
-knob surface it had closed —, and
-[#141](https://github.com/mmeyerlein/meclaw/issues/141), message headers as a
-standing watch: unbounded by design, measured every few weeks rather than
-capped.
-
-0.14.0 is a flank of its own, and it came out of a migration rather than a
-plan. Putting every hive behind its boundary turned the mutation validator's
-oldest assumption — that a diff name means what it is spelled — into a family of
-defects that had been invisible because the everyday case is a single-segment
-name. Twelve of them, each found by fixing the one before it, three of them
-destructive: an instantiation could re-mint a live cell's identity
-([#179](https://github.com/mmeyerlein/meclaw/issues/179)), an edge could commit
-onto a node the same diff disconnected
-([#194](https://github.com/mmeyerlein/meclaw/issues/194)), and two entries of one
-ordinary diff could take the colony down mid-apply
-([#195](https://github.com/mmeyerlein/meclaw/issues/195)). One function decides
-what a diff name means now, and every call site in the validator and in
-`colony.rs` goes through it.
-
-The same release closes the two boot questions the migration exposed
-([#168](https://github.com/mmeyerlein/meclaw/issues/168),
-[#178](https://github.com/mmeyerlein/meclaw/issues/178)) with one rule — on a
-reboot the persisted tables are the topology, on a first boot the files are —,
-adds `move_nodes` ([#169](https://github.com/mmeyerlein/meclaw/issues/169)) so a
-relocation stops being an add-and-forget that loses the cell's `cell.db`, and
-lets both ingresses seed a `hop`
-([#175](https://github.com/mmeyerlein/meclaw/issues/175),
-[#180](https://github.com/mmeyerlein/meclaw/issues/180)) so a sealed hive's own
-door can be knocked on without driving a paid turn through its inside.
-
-## Before the channel round: three rulings
-
-The next stream — one talky per channel, the connectors moved out of `access`
-into channel hives of their own, `access` left holding a vault — is blocked on
-three questions that are decisions rather than implementations, and all three
-were surfaced by building 0.14.0 rather than by planning it:
-
-[#197](https://github.com/mmeyerlein/meclaw/issues/197) — a hive now declares its
-interface in lanes ([#173](https://github.com/mmeyerlein/meclaw/issues/173)), but
-four hives still expose inner cell names as ports (`canvy`, `memory-hive`,
-`access`, `steward`). Migrating them behind their boundary costs design work per
-template and touches the live colony; a port alias costs an indirection in
-addressing — the one thing the boundary migration spent itself removing. Same
-decision the channel round needs.
-
-[#200](https://github.com/mmeyerlein/meclaw/issues/200) — `templates/access`
-declares `store` a port, which its own README describes as the bypass port
-discipline is supposed to prevent, and omits `sweep`, which the same README calls
-a MUST. Invisible until [#196](https://github.com/mmeyerlein/meclaw/issues/196)
-made the declaration take effect. `access` is the vault template, so what it
-seals is a security statement rather than a typo.
-
-[#185](https://github.com/mmeyerlein/meclaw/issues/185) — "this cell is an
-ingress" is inferred from having no incoming edge. That held while the header
-check was half-blind; now that it sees the running graph, a genuine ingress that
-also receives replies loses the branch. #178 landed as report-don't-refuse on a
-reboot precisely so this cannot brick a colony while it is open, but a first boot
-still refuses, and a proxy in a channel hive is exactly the shape at issue.
+- [#141](https://github.com/mmeyerlein/meclaw/issues/141) message headers are
+  unbounded by design — measured every few weeks rather than capped
+- [#138](https://github.com/mmeyerlein/meclaw/issues/138) the environment knobs
+  are a declared **experimental** surface; roughly 79 remain across the shipped
+  templates and migrate to params one template at a time, defaults bit-identical.
+  Order: `memory-hive`, `talky`, `cogny`, then the small ones
 
 ## Later: memory, after the measurement
 
-**The stall is over: the memory hive shipped publicly in 0.9.0**, test suite
-included, and what used to wait here has largely landed — the extraction lane's
-double claim (#72) and its cost-first gate defaults (#51) in 0.9.0, the recall
-query hygiene guard (#88) proven in production, the three hive bugs (#52, #53,
-#73) back in 0.4.0.
+The memory hive shipped publicly in 0.9.0, test suite included. What replaces the
+old list here is one measurement: a 50-question LongMemEval run against the 0.9.0
+tree returned **96 % R@5 and 58 % end accuracy** — in 19 of 21 wrong answers the
+retrieval had delivered the gold session and the synthesis failed to answer from
+it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 
-What replaces the list is one measurement. A 50-question LongMemEval run against
-the 0.9.0 tree returned **96 % R@5 and 58 % end accuracy**: in 19 of 21 wrong
-answers the retrieval had delivered the gold session and the synthesis failed to
-answer from it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
-[#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
-stream now points — the bottleneck is not the remembering.
-
-0.10.3 takes the first of that issue's three measures: tier 2 now receives the
-candidates **grouped by session** alongside the flat ranking, and the prompt says
-how to aggregate over them. It is a shape fix, and its gate is a benchmark run
-rather than a test — the two remaining measures (the top-20 cap, a second pass
-for counting questions) are untouched, because both change what is retrieved or
-how often the model runs.
-
-Still open around it:
-[#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer derives a
-recall window, so time-range questions run as point recalls,
-[#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
-drain,
-[#147](https://github.com/mmeyerlein/meclaw/issues/147) is closed in 0.10.2, and
-not as the per-hive feature it was held for: a hive declares which of its ports
-come in pairs (`params.required_drains`), and the mutation that wires the
-ingress without the drain is refused. The architecture pass that makes inline
-extraction a system-wide property is unaffected — it inherits a rule instead of
-having to invent one.
-
-## The wave before the launch
-
-Three packages that all answer the same question — what does a colony need
-before it can be handed to somebody else — and they are built rather than
-planned:
-[#151](https://github.com/mmeyerlein/meclaw/issues/151) the `vault` cell type,
-whose route surface has no read on it and whose unlock attests its own edge
-neighbourhood before it takes the key;
-[#154](https://github.com/mmeyerlein/meclaw/issues/154) audience **sets** in
-`affinity`, so a fact is usable only in a round that is a subset of the one it
-surfaced in;
-[#155](https://github.com/mmeyerlein/meclaw/issues/155) the `steward`, the
-control loop that measures its own colony, simulates on the ledger, mutates
-through the ordinary gated lane, verifies, and keeps or reverts against a
-pre-authored plan.
-
-What is left of the wave is deliberately not built yet: the vault is a template
-rather than a lane inside `access@1` (rewiring a proven security cell is its own
-step), and the steward is tested but not instantiated in the reference colony —
-its first real cycle belongs in the test days, not in the night before them.
+- [#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
+  stream points: the bottleneck is not the remembering. 0.10.3 took the first of
+  its three measures — tier 2 receives the candidates grouped by session
+  alongside the flat ranking, and the prompt says how to aggregate. The two
+  remaining measures are untouched, because both change what is retrieved or how
+  often the model runs, and the gate for either is a benchmark run rather than a
+  test.
+- [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer ever derives
+  a recall window, so time-range questions run as point recalls
 
 ## Alongside: surfaces and docs
 
-New ways in and out, [#38](https://github.com/mmeyerlein/meclaw/issues/38)
-voice ingress first (dictation-style now, realtime speech when the APIs land),
-then [#39](https://github.com/mmeyerlein/meclaw/issues/39) the realtime HTML
-window. The docs travelled in two steps, and the first one (#92, README and
-website on the current release) is done. What is left is
-[#93](https://github.com/mmeyerlein/meclaw/issues/93), the full rewrite once
-meclaw-os lands, and the remainder of
-[#43](https://github.com/mmeyerlein/meclaw/issues/43): the keyless quickstart and
-the annotated message trace shipped with 0.9.0, the *moving* demo did not.
+New ways in and out. [#38](https://github.com/mmeyerlein/meclaw/issues/38) voice
+ingress first — dictation-style now, realtime speech when the APIs land — then
+[#39](https://github.com/mmeyerlein/meclaw/issues/39) the realtime HTML window.
+[#43](https://github.com/mmeyerlein/meclaw/issues/43) is down to its last piece:
+the keyless quickstart and the annotated message trace shipped with 0.9.0, the
+*moving* demo did not.
+
+The canvas landed across 0.11.0–0.14.0 and its remaining two are both about a
+picture disagreeing with the truth:
+
+- [#167](https://github.com/mmeyerlein/meclaw/issues/167) a newly instantiated
+  cell is placed by the layout engine and can land on top of a hand-placed one —
+  the two sets of positions are never reconciled
+- [#172](https://github.com/mmeyerlein/meclaw/issues/172) after a colony restart
+  the page keeps showing the old picture until the operator touches something,
+  because a transport join is not a render
+
+Two doc gates are open, and both are the same lesson twice:
+
+- [#229](https://github.com/mmeyerlein/meclaw/issues/229) the port-address gate
+  does not scan `docs/`, which is how the specification kept an address the
+  boundary refuses — in the section defining the rule it broke. Extending it
+  needs a marker for deliberate counter-examples, because the section now
+  contains some on purpose
+- [#230](https://github.com/mmeyerlein/meclaw/issues/230) whether a receipt's
+  comments may be corrected after the fact
 
 ## Ongoing: community templates
 
-The good first issues from the first public wave — #3 and #4 — shipped with
-0.5.0 as `retry@1.0.0` and `archive-bridge@1.0.0`. The template surface is open: a
-template is a directory, a README and a `template.json`, and the fourteen listed
-in [`templates/README.md`](templates/README.md) are the worked examples — eleven
+The template surface is open: a template is a directory, a README and a
+`template.json`. Sixteen are listed in
+[`templates/README.md`](templates/README.md) as worked examples — thirteen
 single-purpose ones plus three composites: `talky@2.0.0`, which carries four of
 them as sub-units, `cogny@2.0.0`, which carries two, and `memory-hive@1.4.0`, the
-agent memory as a hive of ten cells. New ones are welcome.
+agent memory as a hive of ten cells. `canvy@0.2.0` ships as well and is not in
+that table yet ([#235](https://github.com/mmeyerlein/meclaw/issues/235)).
+
+New ones are welcome. What a hive template has to satisfy is
+[`templates/README.md`](templates/README.md) § The hive boundary — it is a
+requirement, not a convention.
 
 ## Shipped
 
@@ -231,6 +200,32 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
   diff name means now. Plus `move_nodes`, a machine-readable hive contract, a
   seedable `hop` at both ingresses, one rule for what the boot topology is, and a
   canvas arrangement that survives a cell being added.
+- **v0.13.0 — the canvas keeps its stylesheet's word.** It was correct and
+  unreadable: the CSS had promised arrowheads, selection and hive labels since
+  the first version and the markup never emitted them. Half the release is not
+  new work, it is the picture finally saying what the tree looks like.
+- **v0.12.3 — hive in hive.** A frame was derived from a cell's direct parent
+  only, so nested hives were drawn as unrelated rectangles side by side and a
+  hive of nothing but sub-hives got no frame at all. The layout is recursive now.
+- **v0.12.2 — a hive can be dragged, and it costs one row.** The empty space
+  inside a frame is the handle; frame, label and every cell move together, and
+  the release writes one store row for the group whatever its size.
+- **v0.12.1 — three defects found by opening the page.** The canvas offered the
+  client nothing to attach to (a LiveView hook needs `phx-hook` *and* an `id`),
+  so no edges and no drag — and the fourth item is that finding itself: a client
+  path cannot be proven over the websocket.
+- **v0.12.0 — a surface installs into a colony that is already running.** One
+  mutation, no restart. Two rules moved for it: the egress door is no longer a
+  place, and `/colony/graph` is drawable by a mutation. Database isolation lost
+  its last exception in the same release.
+- **v0.11.1 — a hive's height is its own flow depth.** The flow layer was
+  computed across the whole colony and applied inside one hive, so two cells in
+  the same hive could sit 395 empty rows apart. Measured on a live colony:
+  174828 px of vertical extent became 3384 px.
+- **v0.11.0 — a colony serves surfaces over HTTP.** A cell may declare
+  `cell.surface` and is then served under its own cell path — page, transport
+  and assets under one URL prefix, so a single nginx location block authorises
+  all three.
 - **v0.10.7 — a liveness check that perturbs what it measures is not one.**
   The 0.10.6 repair of a flaky test was worse than the flake; the Monday cron
   caught it within hours. The assertion is removed, not replaced.
@@ -245,7 +240,10 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
   `override_params` on a subtree template is addressed by the cells' paths
   inside it. R10's protection stays: a key that addresses nothing is refused,
   and the refusal lists what the template does contain.
-- **v0.10.3 — tier 2 sees sessions.** The multi-session synthesis gap (100 % retrieval, 30.8 % accuracy) gets the first of its three measures: the candidates arrive grouped by conversation, oldest first, and the prompt says how to aggregate over them. A shape fix; the gate is a benchmark run.
+- **v0.10.3 — tier 2 sees sessions.** The multi-session synthesis gap (100 %
+  retrieval, 30.8 % accuracy) gets the first of its three measures: the
+  candidates arrive grouped by conversation, oldest first, and the prompt says
+  how to aggregate over them. A shape fix; the gate is a benchmark run.
 - **v0.10.2 — a wired port must have its drain.** A hive can declare which of
   its ports come in pairs, and a mutation that wires the ingress without the
   egress is refused rather than quietly opening a lane that loses messages. The
