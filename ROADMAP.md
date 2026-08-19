@@ -51,47 +51,6 @@ What is left of the epic:
   app store, and [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding
   hive built with the builder
 
-## Next: the channel round
-
-One talky per channel, the connectors moved out of `access` into channel hives of
-their own, `access` left holding a vault. It was blocked on three rulings; all
-three are in as of 2026-08-18, and what is left is work rather than decisions.
-
-The round is now four items, and they are ordered because the first one settles
-how the other three are built:
-
-- ~~[#197](https://github.com/mmeyerlein/meclaw/issues/197) the four
-  cell-named-port hives get migrated, not aliased~~ — **done 2026-08-18.**
-  `canvy`, `access`, `steward` and `memory-hive` are `ports: []` plus doors plus
-  a `params.contract` in lanes named for what a caller wants. A port alias would
-  have kept the deep-endpoint address shape, which is the one thing the boundary
-  exists to remove.
-- ~~[#228](https://github.com/mmeyerlein/meclaw/issues/228) fourteen shipped
-  templates declare no `params.ports` at all~~ — **done 2026-08-18.** With
-  those fourteen the library has no unsealed hive template left, and the
-  canonical instantiation example points at a hive path with a lane rather than
-  at an inner hive.
-- [#185](https://github.com/mmeyerlein/meclaw/issues/185) **a cell declares that
-  it is an ingress.** Ruled: option (a). Today it is deduced from having no
-  incoming edge, which stops being true the moment the check can see the running
-  graph — and a proxy in a channel hive is exactly the shape that breaks. This
-  is a **breaking** change to the cell contract and wants to land with the rest
-  of the round rather than alone.
-- [#176](https://github.com/mmeyerlein/meclaw/issues/176) **a failure lane leaks
-  `hop.finish_reason` across its own boundary.** A provider's word for why a
-  completion stopped, in a hive's outward contract. Since the boundary rule is
-  now normative this is a violation rather than a wart, but the fix changes what
-  an error sink receives, and error paths are where a wrong turn burns a
-  provider call per round until TTL. Deliberate, with a test in front of it.
-
-The rule all four serve is written down in
-[`docs/meclaw-overview.md`](docs/meclaw-overview.md) § The hive boundary, and
-what it asks of a template author is in
-[`templates/README.md`](templates/README.md) § The hive boundary. The procedure for doing one
-without knocking a colony over is [`docs/rewiring.md`](docs/rewiring.md) §
-Putting an existing hive behind its boundary, including the two parts that bite —
-a topology lives in four places, not two, and innermost first.
-
 ## Next: substrate flanks
 
 Named flanks left by the pre-MVP waves, plus new findings from running the thing.
@@ -108,12 +67,6 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
   selection and closed-loop automation, beyond the v1 catalogue
-- [#165](https://github.com/mmeyerlein/meclaw/issues/165) the heartbeat watchdog
-  cannot tell a wedged colony from a starved host, and the trip is fatal — a
-  compile on the same box killed a healthy colony three times in one day
-- [#232](https://github.com/mmeyerlein/meclaw/issues/232) a workshop fixture
-  still wires at an interior address, producing 11 `hive_no_route` dead letters
-  per run
 
 Two of these are watches rather than fixes, and stay open on purpose:
 
@@ -151,34 +104,14 @@ ingress first — dictation-style now, realtime speech when the APIs land — th
 the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 *moving* demo did not.
 
-The canvas landed across 0.11.0–0.14.0 and its remaining two are both about a
-picture disagreeing with the truth:
-
-- [#167](https://github.com/mmeyerlein/meclaw/issues/167) a newly instantiated
-  cell is placed by the layout engine and can land on top of a hand-placed one —
-  the two sets of positions are never reconciled
-- [#172](https://github.com/mmeyerlein/meclaw/issues/172) after a colony restart
-  the page keeps showing the old picture until the operator touches something,
-  because a transport join is not a render
-
-Two doc gates are open, and both are the same lesson twice:
-
-- [#229](https://github.com/mmeyerlein/meclaw/issues/229) the port-address gate
-  does not scan `docs/`, which is how the specification kept an address the
-  boundary refuses — in the section defining the rule it broke. Extending it
-  needs a marker for deliberate counter-examples, because the section now
-  contains some on purpose
-- [#230](https://github.com/mmeyerlein/meclaw/issues/230) whether a receipt's
-  comments may be corrected after the fact
-
 ## Ongoing: community templates
 
 The template surface is open: a template is a directory, a README and a
-`template.json`. Sixteen are listed in
-[`templates/README.md`](templates/README.md) as worked examples — thirteen
+`template.json`. Seventeen are listed in
+[`templates/README.md`](templates/README.md) as worked examples — fourteen
 single-purpose ones plus three composites: `talky@3.0.0`, which carries four of
-them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.0.0`, the
-agent memory as a hive of ten cells. `canvy@0.3.0` ships as well.
+them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.0.1`, the
+agent memory as a hive of ten cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
@@ -189,6 +122,17 @@ requirement, not a convention.
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.15.1 — a sealed hive insists on its drain again.**
+  `params.required_drains` can name a lane and not only a port, so the one
+  guarantee `memory-hive` lost by sealing itself exists again in the vocabulary
+  the boundary leaves standing (`memory-hive@2.0.1`). Plus an address scan that
+  matches a template's name whole or not at all.
+- **v0.15.0 — every shipped hive is behind its boundary.** The four templates
+  whose ports carried the name of a cell inside, and the fourteen that declared
+  no ports at all: a lane is named for what the caller wants, never for where it
+  lands. The failure lane stops carrying `hop.finish_reason` across the boundary,
+  and the contract check learned the case it was blind to — a door that produces
+  a lane is an exit for it.
 - **v0.14.0 — a name means one thing.** A migration that put every hive behind
   its boundary walked into the mutation validator's oldest assumption and left
   twelve defects behind, three of them destructive. One function decides what a
