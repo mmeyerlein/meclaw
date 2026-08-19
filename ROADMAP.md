@@ -94,6 +94,11 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
   test.
 - [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer ever derives
   a recall window, so time-range questions run as point recalls
+- [#243](https://github.com/mmeyerlein/meclaw/issues/243) remembered content
+  cannot leave a hive and enter another one. Rebuilding a colony from the current
+  library today means seeding the new store at birth or losing what it knew,
+  which is not a migration path — and the seeder cannot carry the canonical
+  tables at all
 
 ## Alongside: surfaces and docs
 
@@ -116,6 +121,18 @@ agent memory as a hive of ten cells.
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
 requirement, not a convention.
+
+Three shipped templates do not yet satisfy what they promise, all three found by
+building a colony from the library rather than by reading it:
+
+- [#240](https://github.com/mmeyerlein/meclaw/issues/240) `cogny` seals to one
+  lane in and one out, so no caller can hand the core a tool, a memory or an
+  error drain — `talky` shows the same seal carrying all three
+- [#241](https://github.com/mmeyerlein/meclaw/issues/241) `affinity`'s brief
+  loses the tool-call id on every echo, so the caller's fan-in never closes
+- [#242](https://github.com/mmeyerlein/meclaw/issues/242) the same brief's
+  payload travels only as `system.*`, which never reaches the model behind a
+  sealed agent hive
 
 ## Shipped
 
