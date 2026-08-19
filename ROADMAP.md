@@ -67,15 +67,20 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
   selection and closed-loop automation, beyond the v1 catalogue
+- [#247](https://github.com/mmeyerlein/meclaw/issues/247) the HTTP API
+  authenticates nothing, and the structural write path — the mutation endpoint —
+  is on it. Every deployment today has to solve this outside the substrate
 
 Two of these are watches rather than fixes, and stay open on purpose:
 
 - [#141](https://github.com/mmeyerlein/meclaw/issues/141) message headers are
   unbounded by design — measured every few weeks rather than capped
 - [#138](https://github.com/mmeyerlein/meclaw/issues/138) the environment knobs
-  are a declared **experimental** surface; roughly 79 remain across the shipped
-  templates and migrate to params one template at a time, defaults bit-identical.
-  Order: `memory-hive`, `talky`, `cogny`, then the small ones
+  are a declared **experimental** surface; 100 behavioural knobs remain across the
+  shipped templates — 104 of the 128 occurrences sit in `script_inline` — and they
+  migrate to params one template at a time, defaults bit-identical. Order:
+  `memory-hive` (48, of which `recall` alone holds 22), then the small ones;
+  `talky` and `cogny` own none of their own, theirs are byte copies of sub-units
 
 ## Later: memory, after the measurement
 
@@ -92,8 +97,13 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
   remaining measures are untouched, because both change what is retrieved or how
   often the model runs, and the gate for either is a benchmark run rather than a
   test.
-- [#55](https://github.com/mmeyerlein/meclaw/issues/55) no consumer ever derives
-  a recall window, so time-range questions run as point recalls
+- [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
+  producer since #78, but no shipped composite carries the tool that drives it,
+  so time-range questions still run as point recalls
+- [#244](https://github.com/mmeyerlein/meclaw/issues/244) a fact carries no
+  audience, so the participant set it was learned in is lost at write time — and
+  a fact written today cannot honestly be tagged tomorrow. `affinity` got the
+  participant sets in #154; the memory half of that ruling was never built
 - [#243](https://github.com/mmeyerlein/meclaw/issues/243) remembered content
   cannot leave a hive and enter another one. Rebuilding a colony from the current
   library today means seeding the new store at birth or losing what it knew,
@@ -133,6 +143,19 @@ building a colony from the library rather than by reading it:
 - [#242](https://github.com/mmeyerlein/meclaw/issues/242) the same brief's
   payload travels only as `system.*`, which never reaches the model behind a
   sealed agent hive
+- [#245](https://github.com/mmeyerlein/meclaw/issues/245) `thread_recall` is on
+  by default and no contract declares its lane, so every stub the curator leaves
+  points at a tool nobody can reach — and `collector`'s contract and its script
+  disagree about a second lane in the other direction
+- [#246](https://github.com/mmeyerlein/meclaw/issues/246) five hive templates are
+  sealed with no contract at all, and every channel connector the library has
+  sits inside one of them. There is no connector to hang on an agent of your own
+- [#248](https://github.com/mmeyerlein/meclaw/issues/248) `cogny`'s README puts
+  the memory leg at its own collector, which its seal makes impossible — `talky`
+  is the only shipped composite that can carry one
+- [#249](https://github.com/mmeyerlein/meclaw/issues/249) `talky`'s README gives
+  the memory wiring twice, and the table version names addresses the boundary
+  refuses
 
 ## Shipped
 
