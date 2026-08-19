@@ -190,11 +190,22 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
+        // The edge that carries a turn INTO the hive, and therefore the edge
+        // that owes it its provenance (#244): `audience_set` says who was in
+        // the round, `speaker`/`agent_id` who said it. `channel` is not set
+        // here -- it travels from the connector seam above (`hop.chat_id` ->
+        // `context.channel`), exactly as it does in a real colony.
+        // This colony is one person talking to one agent in one room, so the
+        // round is those two and nothing wider. A `["*"]` here would make the
+        // suite blind to the very leak the gate exists to stop.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
+                                      "happened_at": "hop.happened_at",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "/park"},

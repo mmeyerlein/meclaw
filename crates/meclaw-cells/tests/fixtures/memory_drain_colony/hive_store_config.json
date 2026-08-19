@@ -9,6 +9,9 @@
         "session_id": "text",
         "turn_id": "text",
         "sender": "text",
+        "speaker": "text",
+        "channel": "text",
+        "audience_set": "text",
         "content": "text",
         "happened_at": "text",
         "recorded_at": "text"

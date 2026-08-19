@@ -98,15 +98,31 @@ fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
     })
 }
 
+/// The room the `remember` calls of this file are written in.
+const CHANNEL: &str = "c-w10b";
+
+/// The round a `remember` call is written in: the person whose turn is being
+/// answered and the agent writing the answer that carries the call. An inline
+/// block is emitted INSIDE the answering turn, so the audience of that turn is
+/// its audience -- and it is the round the facts here speak about
+/// (`subject: "user"`, and in one case a third party `ada` who is TALKED ABOUT
+/// rather than present, which is exactly why she is not in the set).
+/// Deliberately not `["*"]`: a universal set would let every case below pass
+/// against a write path with no gate at all.
+const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
+
 /// The `remember` call as the dispatcher hands it over and the port edge stamps
 /// it: a `tool_call` turn whose text is the raw arguments string, the session of
-/// the conversation still in the context (the seam edge promoted it), and the
-/// two keys the `inline-extraction` port prescribes.
+/// the conversation still in the context (the seam edge promoted it), the two
+/// keys the `inline-extraction` port prescribes -- and the provenance the gate
+/// requires since #244, which the same edge promotes: who was present
+/// (`audience_set`) and where (`channel`).
 fn remember(session: &str, arguments: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
             "context": {"store_origin": "inline", "mem_phase": "inline",
-                        "session_id": session},
+                        "session_id": session,
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
             "hop": {"route": "tool", "tool_name": "remember", "async": "1"}
         },
         "messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1",

@@ -1,6 +1,6 @@
-# `memory-hive@2.0.1`
+# `memory-hive@2.1.0`
 
-Agent memory as a hive of existing cell types — no new cell type, no Rust. Eleven cells:
+A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Eleven cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
 `dreamer`, `judge`, `cron`, `embed`, `dialectic`.
 
@@ -8,6 +8,9 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
 
 - **Write path**: every turn becomes an append-only `episodes` row. LLM-free, immediate, the
   agent never waits.
+- **Audience gate**: every durable row says WHO was present when it was learned, and the read
+  path answers only with rows the current round could have heard. Fail-closed on both sides —
+  see [The audience gate](#the-audience-gate--who-may-be-told-what-244) below.
 - **Recall tier 0**: a deterministic, token-budgeted bundle (active beliefs → open foresight
   facts → recent episodes). No LLM, no embedding, fixed latency.
 - **Recall tier 1**: four retrieval legs — keyword (`search`), semantic (`similar`), graph
@@ -308,12 +311,12 @@ edited past its own lanes.
 
 | Lane | Direction | The edge must carry |
 |---|---|---|
-| `in_episode` | in → `./memory` | one turn (or a closed session batch) to remember. `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest |
-| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller |
-| `in_remember` | in → `./memory` | nothing beyond the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
+| `in_episode` | in → `./memory` | one turn (or a closed session batch) to remember. `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
+| `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_flush` | in → `./memory` | nothing; the door stamps `mem_phase: "flush"`. Add `flush_reclaim: "'1'"` on the hop to also recover batches whose chain died — that sweep is **lease-gated** (GH #72) and never takes back a claim younger than `MEMORY_BATCH_CLAIM_LEASE_MIN` |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** Two things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -377,6 +380,173 @@ every question as a point recall, including the explicit time-range ones the win
 for. Moving the derivation to the hive side is tracked in
 [#55](https://github.com/mmeyerlein/meclaw/issues/55); the keys, the reject rule and the tier-0
 notice are unaffected either way.
+
+## The audience gate — who may be told what (#244)
+
+Every durable row of this hive says **who was present when it was learned**, and the read path
+answers only with rows the current round could have heard. The rule and its vocabulary are the
+ones `affinity` already uses (`member:<name>`, `agent:<name>`, `*` for universal); the two halves
+of one rule speak one language on purpose. The reasoning behind each decision is recorded on
+[GH #244](https://github.com/mmeyerlein/meclaw/issues/244) and, for the topology half — one talky
+per channel, generations that end when the participant set changes, and the memory hive belonging
+to a member rather than to an agent — on [GH #122](https://github.com/mmeyerlein/meclaw/issues/122).
+
+### The columns
+
+```
+episodes      speaker       who spoke, as an identity (`member:alex`), NOT the role
+              channel       the room it was said in
+              audience_set  JSON list of who was present
+
+facts         channel, audience_set        inherited from their episode
+entity_edges  channel, audience_set        inherited from their episode
+beliefs       audience_set                 INTERSECTION of their source facts'
+skills        audience_set                 INTERSECTION of their source episodes'
+entities      — nothing, deliberately
+```
+
+`sender` (`user`/`assistant`) stays what it was: a **role**. `speaker` is the **identity**, and
+the two answer different questions. Translating a connector's own user id into the participant
+vocabulary happens on the edge of the talky, never in here — this hive looks nothing up.
+
+`channel` is stored **explicitly** and never parsed out of the `session_id` prefix. That prefix
+is a convention of the `session-keeper`, not a promise to this hive.
+
+`entities` carries no audience because an entity is only ever reached through an edge or a fact,
+and both of those are filtered. A row you cannot reach visibly, you do not see.
+
+### The context keys
+
+| Lane | Key | Required | Meaning |
+|---|---|---|---|
+| `in_episode`, `in_remember` | `audience_set` | **yes** | JSON list of who was present. Missing, empty or not a list → `reject` |
+| `in_episode`, `in_remember` | `channel` | **yes** | the room. Missing → `reject` |
+| `in_episode` | `speaker` | no | who spoke, on a `user` turn |
+| `in_episode` | `agent_id` | no | which agent answered, on an `assistant` turn |
+| `in_query` | `audience_now` | **yes** | JSON list of who is present right now |
+| `in_query` | `channel` | **yes** | where the question is being asked |
+| `in_query` | `channel_open_history` | no, default closed | true for `1`/`true`/`yes`/`on`; anything else, absence included, is closed |
+
+Sets travel as a **JSON string** (the store column is text); a native list in the context is
+accepted too. The stored form is always the string.
+
+`speaker` and `agent_id` are deliberately optional: the audience is the security-bearing field
+and the speaker is provenance detail. Refusing a turn because a participant id has not been
+mapped to a person yet would make ingress brittle exactly where mapping is hardest — at the
+newcomer nobody has named. Better the episode with the right audience and an empty speaker than
+no episode.
+
+### Fail-closed, on both sides
+
+A write lane that does not get an audience or a channel **writes nothing at all** and emits one
+message on `reject` with `hop.reject_reason` set to `missing_audience` or `missing_channel`. It
+does not guess and it does not write silently. The reason is that an untagged row cannot be
+tagged later honestly: the audience of a fact is the participant set of the conversation it was
+learned in, and once the turn is gone nobody can reconstruct it. Both readings of an untagged
+row are wrong — fail-closed makes it a fact nothing may ever use, lenient makes it a fact
+anything may use — so the row is refused instead of created.
+
+A read lane without `audience_now` or `channel` is **refused, not filtered**: a recall without an
+audience is not a recall with an empty one.
+
+The `reject` lane already exists and `params.required_drains` already makes callers of
+`in_remember` and `in_query` subscribe to it. **Drain it on `in_episode` too**, or a refused turn
+is an unrouted dead end and nobody learns the memory was not written.
+
+### The rule, in the order it is evaluated
+
+```python
+def visible(row_audience_set, row_channel, now_set, now_channel, open_history):
+    aud = set(json.loads(row_audience_set or "[]"))
+    if not aud:
+        return False              # untagged is invisible — FIRST, before everything else
+    if "*" in aud:
+        return True               # universal
+    if now_set <= aud:            # the subset rule, same as affinity/brief
+        return True
+    if open_history and row_channel and row_channel == now_channel:
+        return True               # this room has shown it anyway
+    return False
+```
+
+The order matters and is normative. If the open-history clause ran first, the one row that got
+through would be the row whose provenance we do not have — an open channel says "the room showed
+it anyway", but for a row without an audience we do not know **whether** the room showed it. The
+clause is a loosening for rows whose provenance we hold, never a rescue for rows whose
+provenance is missing.
+
+Two properties worth stating separately:
+
+1. **The open-history clause never crosses a channel boundary.** `row_channel == now_channel` is
+   a condition, not a nicety. The dangerous direction — a private two-person channel leaking into
+   a group channel — stays closed in every case.
+2. **A row without an `audience_set` is invisible**, not visible. The empty set is the empty set:
+   no non-empty round is a subset of it.
+
+What that produces:
+
+| Case | said before | present now | result |
+|---|---|---|---|
+| someone joins | `{A,B}` | `{A,B,C}` | **silence** (`{A,B,C} ⊄ {A,B}`) |
+| someone leaves | `{A,B,C}` | `{A,B}` | allowed (`{A,B} ⊆ {A,B,C}`) |
+| same circle | `{A,B}` | `{A,B}` | allowed |
+| other channel, open history | `{A,B}` in K1 | `{A,B,C}` in K2 | **silence** |
+| same channel, open history | `{A,B}` in K1 | `{A,B,C}` in K1 | allowed |
+| universal | `{*}` | anyone | allowed |
+| untagged | `[]` | anyone | **silence** |
+
+### Derived rows get the INTERSECTION, never the union
+
+This is the part that is easy to get wrong. A belief rests on several facts. It may only be told
+to whoever could have heard **every one** of them — the intersection of their audiences. Anything
+wider is a laundry: two private facts go in and one shareable claim comes out.
+
+- An **empty intersection is a legitimate result**. The belief is then visible to nobody. It is
+  not widened to `["*"]` and not resolved into a union.
+- `"*"` in one source is **neutral** — universal cuts nothing away.
+- A source that is **missing, or carries no `audience_set`, contributes the empty set**, not
+  "don't care". Nothing derived from an invisible fact may be more visible than the fact.
+
+Mechanically: the nightly run reads the audiences of the source facts through the phase pair
+`belief-audience` / `belief-audience-park` and parks them as a `scratch` row of kind
+`fact_audience`, which meets the verdicts in the apply hop. A cell reads no foreign row — it asks.
+
+A belief carries **no channel**, which means the open-history clause can never rescue one. That
+is intentional: a belief is not something a room showed anybody.
+
+`skills.audience_set` exists as a column but nothing populates or reads it yet (skills are spec
+phase 5). It is there so a later consumer does not find a table full of untagged rows.
+
+### Provenance is never rewritten
+
+`audience_set` says **who was present**. No code path changes that afterwards — no dream run, no
+consolidation, no channel that later opens its history. The policy lives in the rule; the data is
+evidence. (The one apparent exception is not one: a belief's audience is recomputed when its
+source list changes, because it is a *function of* those sources rather than a record of a turn.)
+
+### When the gate costs certainty, it says so (`supersession_unknown`)
+
+The temporal leg filters **before** it builds a version chain, and that order is deliberate. The
+other way round — chain first, filter after — would let the *existence* of an invisible version
+show through a validity span: ask often enough and you map out **when** something was said in a
+room you were never in. A side channel that compounds with every question.
+
+Filtering first closes that, but it has a price. A claim whose successor is invisible falls back
+to the older version and would otherwise be presented as current — and answering wrongly is worse
+than answering narrowly. So the surviving candidate carries `supersession_unknown: true`, and
+neither the tier-0 bundle nor tier 2 asserts currency for it. The rendered line says
+`(currency unknown: cannot vouch that this still holds)`, and the tier-2 prompt is told never to
+let such a candidate decide a present-tense question on its own, and to name the uncertainty in
+the gap statement it already owes.
+
+**It is a boolean and nothing more.** Not a count, not an instant, not a channel of what was
+removed — any of those would put the side channel back, only finer. What the asker learns is not
+something about the other room; it is something about this memory's own certainty, and that is
+what a memory owes the person asking.
+
+The flag is absent unless true, so a bundle no invisible version touched is byte-identical to
+what it was before the gate, and an unaffected candidate costs no token budget.
+
 
 ## Variables
 

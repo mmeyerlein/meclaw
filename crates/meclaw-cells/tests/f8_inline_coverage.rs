@@ -89,12 +89,28 @@ fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
     })
 }
 
+/// The room these blocks are written in. One room for the whole file: nothing
+/// here is about a second channel.
+const CHANNEL: &str = "c-f8";
+
+/// Who was present when the front model wrote the block: the person whose turn
+/// it answers and the agent that answered. That is the whole cast of an inline
+/// extraction -- the block is emitted IN the answering turn, so the round of
+/// that turn is its audience, and it is exactly the round the facts here are
+/// about (`subject: "user"`). Not `["*"]`: a universal set would make every
+/// case below pass against a write path with no gate at all.
+const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
+
 /// One inline block as the port edge delivers it: `store_origin`/`mem_phase` in
-/// the context, the payload as the first message's text.
+/// the context, the provenance the gate requires next to them (#244 --
+/// `audience_set` and `channel` are promoted by the edge that carries a turn
+/// into the hive, the same way a real colony's port edge promotes them), the
+/// payload as the first message's text.
 fn inline(payload: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
-            "context": {"store_origin": "inline", "mem_phase": "inline"},
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "audience_set": AUDIENCE, "channel": CHANNEL},
             "hop": {}
         },
         "messages": [{"origin": "user", "type": "text", "text": payload}]

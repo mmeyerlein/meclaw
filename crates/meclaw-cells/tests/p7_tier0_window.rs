@@ -82,10 +82,17 @@ fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
 const FROM: &str = "2026-08-01T00:00:00Z";
 const TO: &str = "2026-08-09T00:00:00Z";
 
+/// The request context. `audience_now`/`channel` are the asking round the read
+/// path is fail-closed on since #244 -- one person asking one agent in one
+/// room, which is the whole cast of this file. Not `["*"]`: the reject this
+/// file pins sits at request entry, next to the audience check, and a
+/// universal round would hide a read path that stopped gating.
 fn context(from: &str, to: &str, phase: &str) -> serde_json::Value {
     serde_json::json!({"mem_phase": phase, "recall_id": "r1", "memory_tier": "0",
                        "recall_query": "what do you know about the editor?",
                        "recall_as_of": "",
+                       "audience_now": r#"["member:user","agent:assistant"]"#,
+                       "channel": "c-p7",
                        "recall_window_from": from, "recall_window_to": to})
 }
 

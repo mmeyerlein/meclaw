@@ -42,7 +42,7 @@ dormant (the island-activation rule).
 | episode | out | `./drain` → the memory hive's `turn-write` port | `condition: has(hop.route) && hop.route == 'episode'`, `modifier: {set_context: {session_id: "hop.session_id", turn_id: "hop.turn_id", happened_at: "hop.happened_at"}}` |
 
 ```json
-{"scope": "/agent", "ctx": {}, "diff": {
+{"scope": "/main", "ctx": {}, "diff": {
   "add_nodes": [{"name": "drain", "template": "memory-drain"}],
   "add_edges": [
     {"from": "./talky", "to": "./drain",

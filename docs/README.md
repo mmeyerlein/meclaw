@@ -8,7 +8,7 @@ matches what you are trying to do.
 | If you want to… | Read | Why that one |
 |---|---|---|
 | get a colony running in five minutes | [`../README.md`](../README.md) and [`../examples/`](../examples/) | The repo README has the quickstart and the vocabulary in five bullets; the examples are working colonies you can boot. |
-| understand what the words mean | [`glossary.md`](glossary.md) | Fifteen terms, two sentences each, every one pointing at the place that defines it properly. |
+| understand what the words mean | [`glossary.md`](glossary.md) | Sixteen terms, two sentences each, every one pointing at the place that defines it properly. |
 | understand how the whole thing works | [`meclaw-overview.md`](meclaw-overview.md) | The system description and the **single source of truth**: cell model, edge model, headers, routing, mutations, lifecycle. On conflict with any other file, this one wins. |
 | write or configure a cell | [`config.md`](config.md) | The `config.json` format, block by block — `cell`, `params`, `contract`, `description` — plus variable substitution and what a cell is and is not allowed to know. |
 | pick the right cell type | [`cell-types.md`](cell-types.md) | Every built-in type in detail: `llm`, `store`, `code`, `web_fetch`, `proxy`, `timer`, `mcp`, `hive` and the rest, with their params, their contracts and their failure modes. |

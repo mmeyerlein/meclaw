@@ -243,8 +243,14 @@ fn the_contaminated_query_matches_exactly_what_the_bare_question_matches() {
 /// the semantic leg see the CLEAN query, and none of them ever sees the head.
 #[test]
 fn both_tier1_legs_are_fanned_out_on_the_clean_query() {
+    // The asking round travels with the request (#244): this is one person
+    // asking one agent in one room, and the read path refuses a question
+    // without it. Not `["*"]` -- a universal round would let the fan-out
+    // assertion below pass against a read path with no gate at all.
     let body = serde_json::json!({
-        "header": {"context": {"recall_query": CONTAMINATED, "memory_tier": "1"}},
+        "header": {"context": {"recall_query": CONTAMINATED, "memory_tier": "1",
+                               "audience_now": r#"["member:user","agent:assistant"]"#,
+                               "channel": "c-q2"}},
         "messages": []
     });
     let out = run_hop(&body);

@@ -8,15 +8,15 @@
       "accepts": [
         {
           "route": "in_episode",
-          "because": "one conversational turn, or a closed session batch, to be remembered verbatim; `session_id` and `turn_id` travel as ingress context, `happened_at` on the hop for historical ingest"
+          "because": "one conversational turn, or a closed session batch, to be remembered verbatim; `session_id` and `turn_id` travel as ingress context, `happened_at` on the hop for historical ingest. The provenance of the turn travels the same way and is NOT optional: `audience_set` (a JSON list of participants in affinity vocabulary, `*` alone meaning universal) and `channel` are required, and `speaker` for a user turn or `agent_id` for an assistant turn names who spoke. Without an audience or a channel the turn is refused on `reject` -- who was present is the gate on every later read, it cannot be inferred afterwards, and a guessed audience is worse than a missing turn"
         },
         {
           "route": "in_query",
-          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset"
+          "because": "a question against this memory. The five recall keys (recall_query, memory_tier, recall_as_of, recall_window_from, recall_window_to) come as context, always all five, empty string = unset. The asking round comes with them and is required: `audience_now` (a JSON list of who is present right now) and `channel` (where the question is being asked); `channel_open_history` is optional and defaults to '0', '1' saying this room shows joiners its history. Without `audience_now` or `channel` the question is refused on `reject` rather than answered unfiltered -- a recall without an audience is not a recall with an empty one"
         },
         {
           "route": "in_remember",
-          "because": "a block the front model decided to remember NOW, in the inline contract form; it is bound to the newest user turn of the caller session, so the session must be in the context"
+          "because": "a block the front model decided to remember NOW, in the inline contract form; it is bound to the newest user turn of the caller session, so the session must be in the context. So must the provenance, on the same terms as `in_episode`: `audience_set` and `channel` are required and the block is refused on `reject` without them. The inline ingress writes facts directly, so it is the one lane where a missing audience would mint an untagged row without an episode ever refusing it first"
         },
         {
           "route": "in_flush",
@@ -30,11 +30,16 @@
         },
         {
           "route": "reject",
-          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
         }
       ]
     },
     "required_drains": [
+      {
+        "accepts": "in_episode",
+        "emits": "reject",
+        "because": "since 2.1.0 a turn without a participant set or without a channel is REFUSED rather than written (#244) -- undrained, the refusal is silent and the caller believes a memory was kept that never existed, which is the one failure this gate exists to prevent"
+      },
       {
         "accepts": "in_remember",
         "emits": "reject",
@@ -339,13 +344,18 @@
           "from": "./extract-glue",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one agent's memory behind ITS OWN PATH. `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
-    "use_when": "Instantiate per agent tree; wire the lanes at the hive path in the same mutation.",
+    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
+    "use_when": "Instantiate once per member; wire the lanes at the hive path in the same mutation. Every write lane needs the provenance of the turn on its ingress context (audience_set, channel, and speaker/agent_id), every read lane the asking round (audience_now, channel).",
     "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
     "contract_in": "Four lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_flush -- drain the extraction queue now. Which cell serves a lane is this hive's business.",
     "contract_out": "Two lanes, out of the hive path. bundle -- the answer to a question. reject -- something this hive would not take; the body says which and why."

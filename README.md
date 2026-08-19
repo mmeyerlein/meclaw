@@ -249,7 +249,7 @@ your colony; from that moment the instance is yours and has no link back to the 
 | the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window |
 | the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
 | the front door | `door`, `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
-| memory | `memory-hive` — ten cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
+| memory | `memory-hive` — eleven cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
 | whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
 | the small ones | `retry`, `terminal` |
 
@@ -267,7 +267,7 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 ## Where it's at
 
-meclaw is **v0.10.1**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.16.0**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
 
 Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **3800+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 

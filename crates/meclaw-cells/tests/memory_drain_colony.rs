@@ -172,11 +172,24 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
+        // The edge that carries a turn INTO the hive owes it its provenance
+        // (#244). This tree has no connector above it, so BOTH keys are stamped
+        // here: `channel` is the one room these sessions were held in -- the
+        // room is recorded explicitly and is never parsed out of the
+        // `session_id` prefix, which is a session-keeper convention and no
+        // promise to the memory -- and `audience_set`
+        // is the round that held them, one person and one agent, which is
+        // exactly the cast of `DAY`. Not `["*"]`: a universal set would make
+        // the count and idempotence gates pass against a writer with no gate.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
+                                      "happened_at": "hop.happened_at",
+                                      "channel": "'c-drain'",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
         {"from": "./probe", "to": "/sink"},
         // The ledger receipt is the exception this test needs and the boundary
         // rule tolerates: it is not the hive's contract but a probe INTO it, the

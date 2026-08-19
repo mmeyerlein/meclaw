@@ -647,13 +647,20 @@ print(derive_supersessions(rows))
 
 const RECALL: &str = "q1";
 
+/// The room this request is asked in, and the round asking it: one person and
+/// the agent answering them. It travels with every hop of the chain, the way
+/// the port edge promotes it and the context carries it (#244).
+const CHANNEL: &str = "c-w5";
+const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
+
 /// One store reply on the recall lane, as the edge delivers it.
 fn recall_reply(phase: &str, operation: &str, rows: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "header": {
             "context": {"store_origin": "recall", "mem_phase": phase, "recall_id": RECALL,
                         "recall_query": "collects", "memory_tier": "1",
-                        "recall_as_of": "2026-08-01T00:00:00Z"},
+                        "recall_as_of": "2026-08-01T00:00:00Z",
+                        "audience_now": AUDIENCE, "channel": CHANNEL},
             "hop": {"operation": operation, "rows_affected": 1}
         },
         "messages": [{"origin": "tool", "type": "tool_result", "id": "r", "text": rows.to_string()}]
@@ -674,9 +681,15 @@ fn the_hydration_asks_for_the_judged_verdicts() {
     let msgs = recall_emit(recall_reply(
         "t1-hyd-fact",
         "select",
+        // The row carries the round it was learned in. The hydration's residual
+        // guard filters a second time on purpose (contract ruling R8), so a
+        // fixture from before the gate reaches nothing -- the fixture is
+        // brought forward, the guard stays. Same round as the question above,
+        // which is what makes the row visible by the subset rule.
         serde_json::json!([{"id": "a", "subject": "user", "canonical_subject": "user",
                             "predicate": "collects", "canonical_predicate": "collects",
-                            "claim": "collects vinyl"}]),
+                            "claim": "collects vinyl",
+                            "channel": CHANNEL, "audience_set": AUDIENCE}]),
     ));
     let card = msgs
         .iter()

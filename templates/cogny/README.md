@@ -9,12 +9,16 @@ template's own name -- plus **two** `llm` brains, `brain` on a thinking model an
 agent two brains: a fast [`talky@2`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
-the channel voices send it, and its memory is the central hive rather than a window over
-one chat.
+the channel voices send it, and the memory it reads is the member's central hive rather
+than a window over one chat.
 
 **One core, N channel voices.** Cogny is a *sibling* hive of the talkies at agent level
-(`<agent>/{talky…, cogny, memory, archive}`), never a cell inside one and never one per
-talky (R-CG-2). Two talkies consulting the same core is the normal shape.
+(`<agent>/{talky…, cogny}`), never a cell inside one and never one per talky (R-CG-2). Two
+talkies consulting the same core is the normal shape. The memory and its archive are not in
+that set: a `memory-hive` is the source of truth of a **member**, not of an agent, so it
+sits beside the agent rather than inside it
+(`<member>/{assistants/<agent>/{talky…, cogny}, memory, archive}`). Every agent the member
+runs is a lens on the same hive, and a second one inherits what the member already knows.
 
 ## What it delivers
 
@@ -407,8 +411,8 @@ knowledge ends.
 - **Not a session.** Nothing here mints a `session_id` or closes a generation. The
   `session_id` that rides in on the port edge is the *channel's*, and it is what keeps one
   consultation inside the conversation that asked for it.
-- **Not a memory.** The recall leg is optional and the hive it asks belongs to the agent,
-  not to this template.
+- **Not a memory.** The recall leg is optional and the hive it asks belongs to the member
+  the agent works for, not to this template and not to the agent.
 - **Not a persona.** Identity, core instructions and tool schemas live in the brains'
   `cell.db`, one writer per `system` path -- and there are two of them now, so a system
   update that reaches only one lane is the drift to watch for. The shipped `brevity` slot

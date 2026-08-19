@@ -113,6 +113,19 @@ graph is the colony author's sovereign design and is never rejected by it.
 (not an actor)*, the `ports` bullet. *(Unrelated homonym: the `session-keeper`
 template also speaks of sealing a session generation.)*
 
+### memory hive
+
+The long-term memory as a hive of ordinary cells — and it belongs to a **member**,
+not to an agent. It is that member's source of truth; the agents are lenses on it,
+so a second agent wired for the same member inherits what the member already
+knows. That is why the hive sits beside the agents (`<member>/…/memory`) rather
+than inside one of them, and why a `memory-hive` per agent is a misreading of the
+shape rather than a stricter one.
+
+→ [`../templates/memory-hive/README.md`](../templates/memory-hive/README.md);
+the placement in [`../templates/cogny/README.md`](../templates/cogny/README.md)
+§ *One core, N channel voices*.
+
 ### drain
 
 The adapter between a closed session and a central memory: a collector hands its

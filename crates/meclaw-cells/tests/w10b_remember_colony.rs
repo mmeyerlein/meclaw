@@ -212,19 +212,32 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
+        // The edge that carries a turn INTO the hive owes it its provenance
+        // (#244): `audience_set` is the round, `speaker`/`agent_id` who spoke.
+        // `channel` is not set here -- it travels from the connector seam above
+        // (`hop.chat_id` -> `context.channel`), as it does in a real colony.
+        // One person, one agent, one room: that is this colony's whole cast,
+        // and a `["*"]` here would blind the suite to the leak the gate stops.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
+                                      "happened_at": "hop.happened_at",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
         // WAVE 10b, edge 1 of 2: the async tool call into the inline ingress.
         // In production this edge goes straight from `split`; here it takes the
         // test barrier on the way (module note).
         {"from": "./talky", "to": "./gate",
          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'remember'"},
+        // The inline ingress mints facts directly, so the same round travels
+        // with it (#244). Same audience as the write lane above: the block is
+        // written INSIDE the turn those two exchanged.
         {"from": "./gate", "to": "./memory/extract-glue",
          "condition": "has(hop.route) && hop.route == 'remember'",
-         "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'"}}},
+         "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'"}}},
         // WAVE 10b, edge 2 of 2: the reject drain. Without it a discarded block
         // is an unrouted dead end, and nobody ever learns the memory was not
         // written (the defect the review found in the running colony).

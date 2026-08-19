@@ -9,6 +9,61 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.16.0] — 2026-08-19
+
+### Breaking
+
+- **`memory-hive@2.1.0` refuses a turn that does not say who was in the room**
+  ([#244](https://github.com/mmeyerlein/meclaw/issues/244)). The write lanes
+  `in_episode` and `in_remember` now require two context keys — `audience_set`,
+  the participant set the turn was said in front of, and `channel`, the room —
+  and a caller that omits either is refused on the `reject` lane with
+  `hop.reject_reason` set to `missing_audience` or `missing_channel`. Nothing is
+  written. `in_episode` gained a `required_drains` entry for that lane, so a
+  colony can no longer wire the lane and let the refusal fall on the floor.
+
+  **Migration.** An edge that carries a turn into the hive promotes the two keys
+  into context, the way it already promotes `session_id`. The participant set is
+  a constant of the caller's lifetime rather than something looked up per turn —
+  see the design ruling in the issue. A store that already holds untagged rows
+  can be backfilled only while it has provably seen a single participant set;
+  after that, an untagged row can be guessed at but not filled honestly.
+
+- **The read lane `in_query` requires `audience_now` and `channel`**, and refuses
+  rather than answering with an empty bundle. A refusal and an empty answer are
+  different sentences and the caller has to be able to tell them apart.
+
+### Added
+
+- **A fact remembers who was there, and the recall will not tell it to anyone
+  else** ([#244](https://github.com/mmeyerlein/meclaw/issues/244)). `episodes`
+  carry `speaker`, `channel` and `audience_set`; `facts` and `entity_edges`
+  inherit the room and the set from their episode; `beliefs` and `skills` — which
+  are derived rather than said — carry the **intersection** of their sources'
+  sets, so two private facts cannot be laundered into one shareable claim. The
+  filter runs in the tier-0 bundle and in all four tier-1 legs, before RRF
+  fusion, so a hidden row cannot influence ranking either.
+
+  The rule, in the order it is evaluated: an untagged row is invisible; a
+  universal set is visible; a round that is a subset of the recorded set is
+  visible; and a row from the *same* channel is visible when that channel shows
+  its history to people who join. The last clause never crosses a channel
+  boundary — material from a private conversation stays out of a group one no
+  matter what the group's history policy says. It is `affinity`'s subset rule
+  from [#154](https://github.com/mmeyerlein/meclaw/issues/154), now applied on
+  both halves of the ruling instead of one.
+
+- **Recall says when it cannot vouch for currency.** The temporal leg filters
+  before it builds a version chain, because the other order would let the
+  existence of an invisible version show through a validity span — ask often
+  enough and you map out when something was said in a room you are not in. The
+  cost of filtering first is that a claim superseded by an invisible version
+  would otherwise look current, so such a candidate now carries
+  `supersession_unknown`, and neither tier 0 nor tier 2 asserts currency for it.
+  It is a boolean and nothing more: no count, no instant, no channel of what was
+  removed. What the asker learns is not something about the other room, but
+  something about the agent's own certainty.
+
 ## [0.15.1] — 2026-08-19
 
 ### Fixed

@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "script_inline": "\nimport sys, json, uuid, datetime\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\n\nturn = None\nfor m in d.get(\"messages\", []):\n    if m.get(\"type\") == \"text\" and m.get(\"origin\") in (\"user\", \"assistant\"):\n        turn = m\n        break\nif turn is None:\n    # Echo guard: store replies and non-conversational input end here.\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%dT%H:%M:%S.%fZ\")\ncontent = turn.get(\"text\", \"\")\nepisode_id = str(uuid.uuid4())\nsession_id = str(ctx.get(\"session_id\", \"default\"))\nturn_id = str(ctx.get(\"turn_id\", episode_id))\n\n# Event time may come from the caller (context.happened_at, promoted from hop by\n# the port edge); system time is always ours. That split IS the bi-temporal model.\nhappened_at = str(ctx.get(\"happened_at\") or \"\") or now\nepisode = {\"operation\": \"insert\", \"table\": \"episodes\",\n           \"row\": {\"id\": episode_id, \"session_id\": session_id, \"turn_id\": turn_id,\n                   \"sender\": turn.get(\"origin\", \"user\"), \"content\": content,\n                   \"happened_at\": happened_at, \"recorded_at\": now}}\nqueue_item = {\"episode_id\": episode_id, \"session_id\": session_id,\n              \"sender\": turn.get(\"origin\", \"user\"), \"content\": content,\n              \"token_est\": max(1, len(content) // 4)}\nout = [{\"header\": {\"route\": \"wstore\", \"episode_id\": episode_id},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"w-ep\",\n                      \"text\": json.dumps(episode)}]},\n       {\"header\": {\"route\": \"enqueue\", \"episode_id\": episode_id},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                      \"text\": json.dumps(queue_item)}]}]\nsys.stdout.write(json.dumps(out))\n",
+    "script_inline": "\nimport sys, json, uuid, datetime\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nh = envelope.get(\"header\", {})\nctx = h.get(\"context\", {})\n\nturn = None\nfor m in d.get(\"messages\", []):\n    if m.get(\"type\") == \"text\" and m.get(\"origin\") in (\"user\", \"assistant\"):\n        turn = m\n        break\nif turn is None:\n    # Echo guard: store replies and non-conversational input end here.\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n\ndef refuse(reason, text):\n    \"\"\"The write path's fail-closed exit (#244, ADR-0002 E2).\n\n    A turn whose provenance is incomplete is neither written with a guess nor\n    dropped in silence: NOTHING reaches the store, the hive's `reject` lane\n    carries `hop.reject_reason`, and the caller learns the memory was not\n    written. An untagged row cannot be tagged later honestly -- the audience of\n    an episode is the participant set of the conversation it happened in, and\n    nobody downstream can reconstruct that -- so the only honest answers are\n    \"written with its audience\" and \"refused\".\n\n    The header carries the same key set as the two success lanes plus the\n    reason, so a parent edge can promote it on either lane without a missing\n    key making its CEL modifier fail (a failed modifier skips the whole edge).\n    \"\"\"\n    sys.stdout.write(json.dumps(\n        [{\"header\": {\"route\": \"reject\", \"episode_id\": \"\", \"reject_reason\": reason},\n          \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"w-reject\",\n                        \"text\": text}]}]))\n    sys.exit(0)\n\n\ndef audience_of(raw):\n    \"\"\"`context.audience_set` as the participant SET it claims to be, or None.\n\n    Normalised exactly the way affinity's gate normalises its own\n    (deduplicated, blanks dropped, sorted): memory and affinity run the same\n    subset rule over the same vocabulary, and an ordering difference between\n    the two halves of one rule is a difference nobody can see. A JSON list\n    arrives as text because context values are strings; a real list is accepted\n    too, so a caller that promotes a structured value is not punished for it.\n    \"\"\"\n    if isinstance(raw, list):\n        items = raw\n    else:\n        try:\n            items = json.loads(str(raw or \"\"))\n        except Exception:\n            return None\n    if not isinstance(items, list):\n        return None\n    return sorted({str(x) for x in items if str(x)})\n\n\n# Kantenwahrheit, not a body claim: both keys are promoted to context by the\n# edge that carries the turn in, which is why a turn cannot assert its own\n# audience (the reason affinity/brief reads its asker from context as well).\naudience = audience_of(ctx.get(\"audience_set\"))\nif not audience:\n    refuse(\"missing_audience\",\n           \"episode refused: context.audience_set is missing, empty, or not a \"\n           \"non-empty JSON list of participants. Who was present is the gate on \"\n           \"every later read of this turn, it cannot be inferred from the turn \"\n           \"itself, and an untagged row stands permanently outside the rule\")\nchannel = str(ctx.get(\"channel\", \"\") or \"\")\nif not channel:\n    refuse(\"missing_channel\",\n           \"episode refused: context.channel is missing. The room is stored \"\n           \"explicitly and never parsed out of the session_id prefix -- that \"\n           \"prefix is a convention of the session-keeper, not a promise to this \"\n           \"hive -- and without it the channel-local clause of the read rule \"\n           \"has no left-hand side\")\n\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%dT%H:%M:%S.%fZ\")\ncontent = turn.get(\"text\", \"\")\nepisode_id = str(uuid.uuid4())\nsession_id = str(ctx.get(\"session_id\", \"default\"))\nturn_id = str(ctx.get(\"turn_id\", episode_id))\norigin = turn.get(\"origin\", \"user\")\n# WHO spoke, in affinity vocabulary (`member:<name>` / `agent:<name>`). `sender`\n# keeps the ROLE and `speaker` carries the IDENTITY; the two answer different\n# questions and neither replaces the other. Translating a connector's own user\n# id into that vocabulary happens on the edge of the talky (ADR-0002 E8) -- this\n# hive never looks anything up. Absent, it stays empty: a role written into an\n# identity column is exactly the defect this column exists to end.\n#\n# OPTIONAL, unlike the audience (contract ruling R1). The audience is the\n# security-bearing field; the speaker is provenance detail. Refusing a turn\n# because a participant id has not been mapped to a person yet would make the\n# ingress brittle exactly where the mapping is hardest -- at the newcomer nobody\n# has named. Better the episode with the right audience and an empty speaker\n# than no episode at all.\nspeaker = str((ctx.get(\"speaker\") if origin == \"user\" else ctx.get(\"agent_id\")) or \"\")\naudience_set = json.dumps(audience)\n\n# Event time may come from the caller (context.happened_at, promoted from hop by\n# the port edge); system time is always ours. That split IS the bi-temporal model.\nhappened_at = str(ctx.get(\"happened_at\") or \"\") or now\nepisode = {\"operation\": \"insert\", \"table\": \"episodes\",\n           \"row\": {\"id\": episode_id, \"session_id\": session_id, \"turn_id\": turn_id,\n                   \"sender\": origin, \"speaker\": speaker, \"channel\": channel,\n                   \"audience_set\": audience_set, \"content\": content,\n                   \"happened_at\": happened_at, \"recorded_at\": now}}\n# The audience travels WITH the queue item, so the extraction lane inherits the\n# participant set of the turn it is extracting instead of re-deriving it.\nqueue_item = {\"episode_id\": episode_id, \"session_id\": session_id,\n              \"channel\": channel, \"audience_set\": audience_set,\n              \"sender\": origin, \"content\": content,\n              \"token_est\": max(1, len(content) // 4)}\nout = [{\"header\": {\"route\": \"wstore\", \"episode_id\": episode_id},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"w-ep\",\n                      \"text\": json.dumps(episode)}]},\n       {\"header\": {\"route\": \"enqueue\", \"episode_id\": episode_id},\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                      \"text\": json.dumps(queue_item)}]}]\nsys.stdout.write(json.dumps(out))\n",
     "external_timeout_ms": 10000
   },
   "contract": {
@@ -23,13 +23,22 @@
           "type": "string",
           "values": [
             "wstore",
-            "enqueue"
+            "enqueue",
+            "reject"
           ],
           "required": true
         },
         "episode_id": {
           "type": "string",
           "required": true
+        },
+        "reject_reason": {
+          "type": "string",
+          "values": [
+            "missing_audience",
+            "missing_channel"
+          ],
+          "required": false
         }
       }
     },
@@ -52,6 +61,22 @@
         "happened_at": {
           "type": "string",
           "required": false
+        },
+        "audience_set": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "speaker": {
+          "type": "string",
+          "required": false
+        },
+        "agent_id": {
+          "type": "string",
+          "required": false
         }
       }
     },
@@ -62,11 +87,12 @@
   "description": {
     "purpose": "The whole synchronous write path: normalises one conversational turn into an append-only episodes row. LLM-free and immediate — the agent never waits on memory.",
     "use_when": "Ingress port of the hive; route every turn here (fire and forget). Extraction happens later and batched.",
-    "not_in_scope": "No extraction, no summarising, no dedup, no LLM call. It never reads the store and never waits for its reply.",
-    "emits_meaning": "route wstore: the episodes insert for the store (store_origin='episode' is set by the edge). route enqueue: the extraction queue entry for extract-glue. hop.episode_id ties both to the same episode without a store round trip.",
-    "consumes_meaning": "messages[]: the first user/assistant text turn starts a write; anything else (store echoes) is swallowed via empty multi-send. context.session_id/turn_id are the correlation anchors and fall back to 'default'/the fresh episode id when the caller has none. context.happened_at (optional, promoted from hop by the port edge) sets the EVENT time — for backfilling historical conversations; recorded_at is always this cell's clock, which is exactly the bi-temporal split.",
+    "not_in_scope": "No extraction, no summarising, no dedup, no LLM call. It never reads the store and never waits for its reply. It also never LOOKS UP an identity: `context.speaker` arrives already in affinity vocabulary (`member:<name>`), because translating a connector's own user id is the talky edge's job (ADR-0002 E8).",
+    "emits_meaning": "route wstore: the episodes insert for the store (store_origin='episode' is set by the edge). route enqueue: the extraction queue entry for extract-glue, carrying the channel and the audience set so the extraction lane inherits them. hop.episode_id ties both to the same episode without a store round trip. route reject: the turn was NOT written, because its provenance was incomplete; hop.reject_reason is 'missing_audience' or 'missing_channel' and the body says which and why. A reject emits nothing to the store — there is no half-written episode.",
+    "consumes_meaning": "messages[]: the first user/assistant text turn starts a write; anything else (store echoes) is swallowed via empty multi-send. context.session_id/turn_id are the correlation anchors and fall back to 'default'/the fresh episode id when the caller has none. context.happened_at (optional, promoted from hop by the port edge) sets the EVENT time — for backfilling historical conversations; recorded_at is always this cell's clock, which is exactly the bi-temporal split. context.audience_set (a JSON list of participants) and context.channel are REQUIRED and the cell fails closed on either: they are declared optional here on purpose, because the substrate's own `required` check refuses delivery with `consumes_violation` and the caller must get the hive's reject lane instead — a reason it can read, on a lane #237 already makes it drain. context.speaker (for a user turn) and context.agent_id (for an assistant turn) name WHO spoke; absent, `speaker` stays empty rather than falling back to the role, which is the very confusion the column ends.",
     "examples": [
-      "user turn 'Alex prefers tea' -> insert episodes {id, session_id, turn_id, sender: 'user', content, happened_at, recorded_at}"
+      "user turn 'Alex prefers tea', context {audience_set: '[\"member:alex\",\"agent:scribe\"]', channel: 'tg:4711', speaker: 'member:alex'} -> insert episodes {id, session_id, turn_id, sender: 'user', speaker: 'member:alex', channel: 'tg:4711', audience_set: '[\"agent:scribe\",\"member:alex\"]', content, happened_at, recorded_at}",
+      "same turn without context.audience_set -> zero store ops, route reject, hop.reject_reason 'missing_audience' — an untagged episode could only ever be tagged by a guess, and a guessed audience is the one error the gate cannot survive"
     ]
   }
 }

@@ -33,15 +33,17 @@ that proves the claim end to end is
 [`examples/meclaw-os`](examples/meclaw-os/): an empty seed, one declaration,
 seventeen cells.
 
+Two of its sub-issues closed in August without being built, because a design
+round answered them: a talky generation ends when the **participant set** changes
+rather than at midnight, and what keeps one room's talk out of another is the
+audience an entry carries, not a memory store per channel. The memory half of
+that rule is [#244](https://github.com/mmeyerlein/meclaw/issues/244), under
+§ Later.
+
 What is left of the epic:
 
-- [#31](https://github.com/mmeyerlein/meclaw/issues/31) each talky owns an
-  internal memory hive
 - [#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives, a hive
   per document
-- [#30](https://github.com/mmeyerlein/meclaw/issues/30) talky lifecycle, a fresh
-  instance per closed day — with
-  [#102](https://github.com/mmeyerlein/meclaw/issues/102) as its experiment
 - [#122](https://github.com/mmeyerlein/meclaw/issues/122) information ownership:
   who holds what, and how an asker finds the holder
 - [#124](https://github.com/mmeyerlein/meclaw/issues/124) the first thing the
@@ -122,8 +124,8 @@ The template surface is open: a template is a directory, a README and a
 `template.json`. Seventeen are listed in
 [`templates/README.md`](templates/README.md) as worked examples — fourteen
 single-purpose ones plus three composites: `talky@3.0.0`, which carries four of
-them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.0.1`, the
-agent memory as a hive of ten cells.
+them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.1.0`, a
+member's long-term memory as a hive of eleven cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
@@ -159,10 +161,19 @@ building a colony from the library rather than by reading it:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.16.0 — a fact remembers who was there.** `memory-hive@2.1.0` records the
+  participant set a turn was said in front of, and the recall answers only with
+  rows the current round could have heard — the subset rule `affinity` has used
+  since #154, now on both halves of one rule. Derived rows get the intersection
+  of their sources, so two private facts cannot be laundered into one shareable
+  claim. Fail-closed on both sides: a lane without an audience refuses rather
+  than writing or answering. And where the gate costs certainty it says so —
+  a claim whose successor is invisible is marked rather than presented as
+  current.
 - **v0.15.1 — a sealed hive insists on its drain again.**
   `params.required_drains` can name a lane and not only a port, so the one
   guarantee `memory-hive` lost by sealing itself exists again in the vocabulary
-  the boundary leaves standing (`memory-hive@2.0.1`). Plus an address scan that
+  the boundary leaves standing (`memory-hive@2.1.0`). Plus an address scan that
   matches a template's name whole or not at all.
 - **v0.15.0 — every shipped hive is behind its boundary.** The four templates
   whose ports carried the name of a cell inside, and the fourteen that declared

@@ -85,12 +85,18 @@ fn emit(script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// A tier-1 request exactly as the port edge delivers it: the query and the
-/// tier in both compartments, `phase: "recall"` on the hop.
+/// tier in both compartments, `phase: "recall"` on the hop, and the asking
+/// round the read path is fail-closed on since #244 (`audience_now`,
+/// `channel`). The round is the one this file's scenario has -- one person
+/// asking, one agent answering, in the room they are in. Not `["*"]`: this
+/// file's control test would otherwise pass against a read path with no gate.
 fn request(context_extra: serde_json::Value) -> serde_json::Value {
     let mut context = serde_json::json!({
         "recall_query": "radiator valve",
         "memory_tier": "1",
-        "session_id": "s1"
+        "session_id": "s1",
+        "audience_now": r#"["member:user","agent:assistant"]"#,
+        "channel": "c-152"
     });
     for (k, v) in context_extra.as_object().expect("object") {
         context[k] = v.clone();

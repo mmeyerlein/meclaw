@@ -553,9 +553,13 @@ Two things to have ready before the mutation:
 - **Not a drain.** `./errors` normalises and forwards; it does not swallow. An unwired
   error port dead-letters, loudly.
 - **Not one instance per day.** v1 runs the logical generation: same cells, new id.
-- **Not the agent core.** The talky is the channel voice; the thinking, the agent-level
-  memory and the heavy tool work belong to a `cogny` hive next to it (R-CG-1). The
-  composite carries the two lanes to reach it and nothing of what happens there.
+- **Not the agent core.** The talky is the channel voice; the thinking and the heavy tool
+  work belong to a `cogny` hive next to it (R-CG-1). The composite carries the two lanes to
+  reach it and nothing of what happens there.
+- **Not a memory, and neither is the core.** The long-term memory is not agent-level at
+  all: a `memory-hive` is the source of truth of the **member**, and talky and cogny are
+  two lenses on the same hive. Wiring a second agent for the same member does not mint a
+  second memory.
 
 ## Pins
 
