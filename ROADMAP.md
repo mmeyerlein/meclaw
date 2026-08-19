@@ -37,8 +37,7 @@ Two of its sub-issues closed in August without being built, because a design
 round answered them: a talky generation ends when the **participant set** changes
 rather than at midnight, and what keeps one room's talk out of another is the
 audience an entry carries, not a memory store per channel. The memory half of
-that rule is [#244](https://github.com/mmeyerlein/meclaw/issues/244), under
-§ Later.
+that rule shipped in 0.16.0; the topology half stays with #122 below.
 
 What is left of the epic:
 
@@ -65,6 +64,9 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   drain: in-flight work is lost on EOF and child termination
 - [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
   subscription plan actually carries until reset
+- [#250](https://github.com/mmeyerlein/meclaw/issues/250) a proxy e2e test's
+  30-second failure marker fires under CI load, so a green run and a busy runner
+  look the same
 - [#111](https://github.com/mmeyerlein/meclaw/issues/111) guarding interpreter
   bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
@@ -99,10 +101,6 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 - [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
   producer since #78, but no shipped composite carries the tool that drives it,
   so time-range questions still run as point recalls
-- [#244](https://github.com/mmeyerlein/meclaw/issues/244) a fact carries no
-  audience, so the participant set it was learned in is lost at write time — and
-  a fact written today cannot honestly be tagged tomorrow. `affinity` got the
-  participant sets in #154; the memory half of that ruling was never built
 - [#243](https://github.com/mmeyerlein/meclaw/issues/243) remembered content
   cannot leave a hive and enter another one. Rebuilding a colony from the current
   library today means seeding the new store at birth or losing what it knew,
