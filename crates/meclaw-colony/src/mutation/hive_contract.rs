@@ -287,7 +287,7 @@ fn stated_route(edge: &JsonValue) -> Option<String> {
 /// yields `None` — unknown, not wrong. Shared by both halves of the file:
 /// outward it decides whether an `add_edges` entry may be judged at all,
 /// inward ([`door_states_lane`]) whether an out-door names the lane it claims.
-fn constant_route(src: &str) -> Option<String> {
+pub(crate) fn constant_route(src: &str) -> Option<String> {
     let mut spec = crate::config::ModifierSpec::default();
     spec.set_hop.insert("route".to_string(), src.to_string());
     let compiled = crate::cel_eval::parse_modifier(&spec).ok()?;

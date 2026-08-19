@@ -672,19 +672,15 @@ async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime:
         .map(|n| meclaw_core::Path::new(&n.path))
         .collect();
     let reqs = crate::mutation::required_drains::collect_required_drains(root, hive_paths.iter());
-    let edges: Vec<(String, String, Option<String>)> = graph
-        .edges
-        .iter()
-        .map(|e| (e.from.clone(), e.to.clone(), e.condition.clone()))
-        .collect();
-    crate::mutation::required_drains::warn_on_missing_drains(&reqs, &edges);
     // GH #173: the same graph answers the second question — does every lane a
     // hive promises still have a door? One ReadGraph, two declarations checked.
     //
-    // GH #176: the contract half needs one thing the drain half does not — the
-    // edge's `modifier`. A hive's failure exit recognises something interior
-    // and STAMPS the lane, and a check that only sees conditions cannot tell
-    // that door from a missing one.
+    // GH #176: the contract half needs the edge's `modifier`. A hive's failure
+    // exit recognises something interior and STAMPS the lane, and a check that
+    // only sees conditions cannot tell that door from a missing one. GH #237
+    // gave the drain half the same need — the lane form's trigger IS a
+    // caller's `set_hop.route` — so both halves read one and the same edge
+    // view.
     let contracts = crate::mutation::hive_contract::collect_hive_contracts(root, hive_paths.iter());
     let contract_edges: Vec<crate::mutation::hive_contract::BootEdge> = graph
         .edges
@@ -698,6 +694,7 @@ async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime:
             )
         })
         .collect();
+    crate::mutation::required_drains::warn_on_missing_drains(&reqs, &contract_edges);
     crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &contract_edges);
 }
 

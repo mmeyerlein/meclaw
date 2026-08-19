@@ -21,7 +21,9 @@
 
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::edge_table::{Edge, EdgeTable};
-use meclaw_colony::mutation::required_drains::{DrainRequirement, check_required_drains};
+use meclaw_colony::mutation::required_drains::{
+    DrainKind, DrainRequirement, check_required_drains,
+};
 use meclaw_core::serde_json::Value;
 
 /// Where the synthetic hive lives while it is being checked, and a caller and a
@@ -59,6 +61,20 @@ fn edge(from: &str, to: &str, condition: Option<&str>) -> Edge {
     }
 }
 
+/// An edge that STAMPS a route on what it takes — how a caller says which lane
+/// of a sealed hive it is sending into (GH #237).
+fn stamping_edge(from: &str, to: &str, route: &str) -> Edge {
+    let mut spec = meclaw_colony::config::ModifierSpec::default();
+    spec.set_hop
+        .insert("route".to_string(), format!("'{route}'"));
+    Edge {
+        modifier: Some(
+            meclaw_colony::cel_eval::parse_modifier(&spec).expect("test modifier parses"),
+        ),
+        ..edge(from, to, None)
+    }
+}
+
 fn table(edges: Vec<Edge>) -> EdgeTable {
     let mut t = EdgeTable::new();
     for e in edges {
@@ -70,12 +86,20 @@ fn table(edges: Vec<Edge>) -> EdgeTable {
 /// A condition that carries exactly the declared hop, written the way a parent
 /// would write it. The drain half of the pairing, so the passing case proves
 /// the requirement is about this port and this route and not about nothing.
-fn drain_condition(req: &DrainRequirement) -> String {
-    req.hop
-        .iter()
+fn drain_condition(hop: &std::collections::BTreeMap<String, String>) -> String {
+    hop.iter()
         .map(|(k, v)| format!("has(hop.{k}) && hop.{k} == '{v}'"))
         .collect::<Vec<_>>()
         .join(" && ")
+}
+
+/// How a declaration reads in a failure message: the port it names, or the
+/// lane pairing it states.
+fn label(kind: &DrainKind) -> String {
+    match kind {
+        DrainKind::Port { port_path, .. } => port_path.clone(),
+        DrainKind::Lane { accepts, emits } => format!("{accepts} -> {emits}"),
+    }
 }
 
 struct Shipped {
@@ -132,7 +156,12 @@ fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Shipped>) {
             .required_drains
             .unwrap_or_default()
             .into_iter()
-            .map(|d| d.port)
+            .map(|d| match d {
+                meclaw_colony::config::DrainSpec::Port(d) => d.port,
+                meclaw_colony::config::DrainSpec::Lane(d) => {
+                    format!("{} -> {}", d.accepts, d.emits)
+                }
+            })
             .collect();
         if declared.is_empty() {
             continue;
@@ -175,67 +204,85 @@ fn every_declared_drain_requirement_refuses_the_mutation_it_was_written_to_refus
              hive that looks like it insists and does not",
             t.name,
             t.declared,
-            reqs.iter().map(|r| &r.port_path).collect::<Vec<_>>()
+            reqs.iter().map(|r| label(&r.kind)).collect::<Vec<_>>()
         );
         for req in &reqs {
-            // The port path has to be one a resolved endpoint can equal, or the
-            // requirement can never fire however the colony is wired. Asking
-            // which child it names is the same question as `./recall` failing
-            // to be `recall`.
-            let child = req
-                .port_path
-                .strip_prefix(&format!("{HIVE}/"))
-                .unwrap_or_default();
-            assert!(
-                t.children.iter().any(|c| c == child),
-                "{}: the requirement points at '{}', which is none of the children {:?} this \
-                 template ships — no endpoint can ever resolve to it",
-                t.name,
-                req.port_path,
-                t.children
-            );
+            // The two mutations every declaration has to tell apart: the one it
+            // exists to stop, and the one it exists to permit. Which pair of
+            // edges those are depends on the shape — a port is addressed
+            // directly, a sealed hive only through its own path and a lane.
+            let (undrained, drained) = match &req.kind {
+                DrainKind::Port { port_path, hop } => {
+                    // The port path has to be one a resolved endpoint can
+                    // equal, or the requirement can never fire however the
+                    // colony is wired. Asking which child it names is the same
+                    // question as `./recall` failing to be `recall`.
+                    let child = port_path
+                        .strip_prefix(&format!("{HIVE}/"))
+                        .unwrap_or_default();
+                    assert!(
+                        t.children.iter().any(|c| c == child),
+                        "{}: the requirement points at '{}', which is none of the children {:?} \
+                         this template ships — no endpoint can ever resolve to it",
+                        t.name,
+                        port_path,
+                        t.children
+                    );
+                    (
+                        table(vec![edge(CALLER, port_path, None)]),
+                        table(vec![
+                            edge(CALLER, port_path, None),
+                            edge(port_path, SINK, Some(&drain_condition(hop))),
+                        ]),
+                    )
+                }
+                DrainKind::Lane { accepts, emits } => (
+                    table(vec![stamping_edge(CALLER, HIVE, accepts)]),
+                    table(vec![
+                        stamping_edge(CALLER, HIVE, accepts),
+                        edge(
+                            HIVE,
+                            SINK,
+                            Some(&format!("has(hop.route) && hop.route == '{emits}'")),
+                        ),
+                    ]),
+                ),
+            };
 
             // Wired from outside, nothing draining the declared route: this is
             // exactly the mutation the declaration exists to stop.
-            let undrained = table(vec![edge(CALLER, &req.port_path, None)]);
             let err = check_required_drains(std::slice::from_ref(req), &undrained).unwrap_err();
             assert_eq!(
                 err.error_code(),
                 "required_drain_missing",
                 "{}: wiring '{}' without its drain must be refused",
                 t.name,
-                req.port_path
+                label(&req.kind)
             );
 
             // And the same wiring WITH the drain commits — otherwise the check
             // is refusing something other than what the hive declared.
-            let drained = table(vec![
-                edge(CALLER, &req.port_path, None),
-                edge(&req.port_path, SINK, Some(&drain_condition(req))),
-            ]);
             assert!(
                 check_required_drains(std::slice::from_ref(req), &drained).is_ok(),
-                "{}: '{}' with a drain for hop {:?} must commit",
+                "{}: '{}' with its drain wired must commit",
                 t.name,
-                req.port_path,
-                req.hop
+                label(&req.kind)
             );
             checked += 1;
         }
     }
-    // No floor, and that is a finding rather than a loosening. GH #197 sealed
-    // the last hive that declared a pairing (`memory-hive`, `extract-glue` and
-    // `recall`), and `required_drains[].port` names a PORT: the requirement
-    // fires when something OUTSIDE the hive wires that port, which a sealed
-    // hive has no way of letting happen. The declaration was removed with the
-    // seal rather than left as decoration — a rule that cannot fire reads like
-    // one that can, which is the exact defect #202 was written about.
+    // The sweep measures again, and the history is worth keeping: GH #197
+    // sealed the last hive that declared a pairing (`memory-hive`), and
+    // `required_drains[].port` names a PORT — the requirement fires when
+    // something OUTSIDE wires that port, which a sealed hive has no way of
+    // letting happen. The entries were removed with the seal rather than left
+    // as decoration, and for one release this file measured zero. GH #237 gave
+    // the rule a lane form, `memory-hive` states the same two obligations in
+    // it, and this file picked them up with no change to what it asserts.
     //
-    // So the sweep is dormant today, and the assertion that keeps it honest is
-    // the one below: dormant because the library declares nothing, never
-    // because the reader silently dropped what it declares. The day
-    // `required_drains` learns to name a LANE, this file measures it again with
-    // no edit.
+    // The floor stays absent on purpose: the assertion that keeps this honest
+    // is the one below — every requirement the library declares was actually
+    // put through the check, never silently dropped by the reader.
     let declared: usize = shipped_hives_with_drains()
         .iter()
         .map(|t| t.declared.len())

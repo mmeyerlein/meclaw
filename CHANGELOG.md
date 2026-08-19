@@ -9,6 +9,53 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [0.15.1] — 2026-08-19
+
+### Fixed
+
+- **`params.required_drains` can name a LANE, and a sealed hive can insist
+  again** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)). The port
+  form pairs a port with a route and fires when something outside wires that
+  port — which a sealed hive has no way of letting happen, so since the seals
+  (0.15.0) the declaration could never fire and `memory-hive` shipped one
+  release without the one guarantee it had. The same obligation now exists in
+  the vocabulary the boundary leaves standing:
+
+  ```json
+  "required_drains": [
+    {"accepts": "in_remember", "emits": "reject",
+     "because": "a refused block leaves the hive on this lane"}
+  ]
+  ```
+
+  Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* A
+  mutation that wires the ingress without the drain is refused with
+  `required_drain_missing`, pre-destructively, carrying the hive's own sentence;
+  boot only warns, as it does for every hive declaration. Both names must be
+  lanes of the hive's own `params.contract`, or the reader drops the entry —
+  a rule that cannot fire reads exactly like one that can.
+
+  `memory-hive` **2.0.1** declares two pairings (`in_remember` and `in_query`,
+  both draining `reject`). A colony that already runs the template is not
+  affected: an instance carries the config it was born with. The old port form
+  keeps working for hives that never sealed themselves.
+
+  One documented limit: the drain is found with a route-only probe. An
+  unconditional out-edge counts, and a condition that fails to evaluate against
+  the probe counts as unknown and therefore as drained — only an out-edge that
+  evaluates cleanly to `false` is read as "no drain". A subscription that guards
+  a second hop key with `has()` falls into that gap; give the lane an edge of
+  its own.
+
+- **A path segment matches a template's name whole or not at all**
+  ([#238](https://github.com/mmeyerlein/meclaw/issues/238)). The documented-port
+  scan resolved a segment to a template whose directory name merely *ended* with
+  it, so `./agent/session-keeper/stamp` in `templates/README.md` — where `agent`
+  stands for whatever the reader named their own hive — was blamed on
+  `slack-agent`. Right about the address, wrong about the file. The shortened
+  instance name (`memory-drain` → `<drain>`) survives where it is one: inside
+  the template's own documents, and a finding that reads it says so.
+
 ## [0.15.0] — 2026-08-18
 
 ### Breaking

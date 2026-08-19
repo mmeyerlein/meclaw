@@ -92,6 +92,7 @@ fn core_root() -> std::path::PathBuf {
 
 /// One shipped hive template that declared `params.ports`, in the form the
 /// scan needs: where its declaration lives, and where it lives on disk.
+#[derive(Clone)]
 struct Sealed {
     /// Path relative to the repo root, for the failure message.
     rel: String,
@@ -99,18 +100,74 @@ struct Sealed {
     config: std::path::PathBuf,
 }
 
+/// How a document came to name a template.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Naming {
+    /// The segment IS the template's directory name.
+    Own,
+    /// The segment is the shortened instance name the template's own recipes
+    /// write for themselves -- the tail after the last dash. GH #238.
+    Convention,
+}
+
+/// The sealed templates a document's path segments can resolve to.
+struct Library {
+    /// Directory basename -> the template, where unambiguous across the set.
+    by_name: HashMap<String, Sealed>,
+    /// Tail after the last dash -> the templates that answer to it, shallowest
+    /// first. Read ONLY for documents that live inside the template's own
+    /// directory.
+    by_tail: HashMap<String, Vec<Sealed>>,
+}
+
+impl Library {
+    /// The sealed template a path segment names, or `None` when it names
+    /// nothing this tree ships.
+    ///
+    /// **Equality first, and for a foreign document equality is all there is.**
+    /// The convention below only reads inside the template it belongs to.
+    fn resolve(&self, seg: &str, file: &str) -> Option<(&Sealed, Naming)> {
+        if let Some(s) = self.by_name.get(seg) {
+            return Some((s, Naming::Own));
+        }
+        self.by_tail
+            .get(seg)?
+            .iter()
+            .find(|s| file.starts_with(&format!("{}/", dir_of(&s.rel))))
+            .map(|s| (s, Naming::Convention))
+    }
+
+    /// How many distinct names resolve at all, for the "did it read anything"
+    /// floor.
+    fn len(&self) -> usize {
+        self.by_name.len()
+    }
+}
+
+/// The directory a template's `config.json` sits in, relative to the repo root.
+fn dir_of(rel: &str) -> &str {
+    rel.rsplit_once('/').map(|(d, _)| d).unwrap_or(rel)
+}
+
 /// Every `config.json` under `templates/` whose cell type is `hive` AND which
 /// declares `params.ports`, indexed by the NAMES a document could call it.
 ///
-/// Two names per template, and only where they are unambiguous across the
-/// sealed set:
+/// **A segment resolves by EQUALITY with the directory basename**
+/// (`session-keeper`, `collector`, `memory-drain`) -- the name an instance
+/// carries by the rule that an instance is named after its template.
 ///
-/// - its directory basename (`session-keeper`, `collector`, `memory-drain`),
-///   which is what an instance is named by the rule that an instance carries
-///   its template's name; and
-/// - the tail after the last dash (`memory-drain` -> `drain`), because a
-///   shipped recipe writes the instance as `<drain>` and the whole point of
-///   `memory-drain@2` is that `<drain>/drain` stopped resolving.
+/// One convention sits beside it, and only inside the template's OWN
+/// documents: the tail after the last dash (`memory-drain` -> `drain`),
+/// because a shipped recipe writes its own instance shortened, and the whole
+/// point of `memory-drain@2` is that `<drain>/drain` stopped resolving.
+///
+/// **That alias is deliberately not global (GH #238.)** `templates/README.md`
+/// writes `./agent/session-keeper/stamp`, where `agent` stands for whatever
+/// the reader named their own agent hive; a global tail match resolved it to
+/// `slack-agent` and blamed a template the example has nothing to do with.
+/// The verdict was right about the address and wrong about the file, which is
+/// the failure mode that survives longest -- and it made this file's own
+/// self-test count depend on whether a private template ships.
 ///
 /// A name is ambiguous only when two templates that answer to it are sealed
 /// DIFFERENTLY -- an accusation could then name the wrong one. The three
@@ -120,7 +177,7 @@ struct Sealed {
 /// so the substrate reads one and the same seal from each, and the shallowest
 /// path is the one worth naming in a failure message. That equality is decided
 /// by the substrate's reader as well, never by comparing the files here.
-fn sealed_by_name() -> HashMap<String, Sealed> {
+fn sealed_library() -> Library {
     let root = core_root();
     let templates = root.join("templates");
     let mut found: Vec<Sealed> = Vec::new();
@@ -129,27 +186,18 @@ fn sealed_by_name() -> HashMap<String, Sealed> {
     // rather than on a copy that lives inside a composite.
     found.sort_by_key(|s| (s.rel.matches('/').count(), s.rel.clone()));
     let mut by_name: HashMap<String, Vec<Sealed>> = HashMap::new();
+    let mut by_tail: HashMap<String, Vec<Sealed>> = HashMap::new();
     for s in found {
-        let base = s
-            .config
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let mut names = vec![base.clone()];
+        let base = dir_of(&s.rel)
+            .rsplit_once('/')
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_else(|| dir_of(&s.rel).to_string());
+        by_name.entry(base.clone()).or_default().push(s.clone());
         if let Some((_, tail)) = base.rsplit_once('-') {
-            names.push(tail.to_string());
-        }
-        for n in names {
-            by_name.entry(n).or_default().push(Sealed {
-                rel: s.rel.clone(),
-                config: s.config.clone(),
-            });
+            by_tail.entry(tail.to_string()).or_default().push(s);
         }
     }
-    by_name
+    let by_name = by_name
         .into_iter()
         .filter_map(|(name, mut v)| {
             let head = seal_the_substrate_reads(&v[0].config);
@@ -158,7 +206,8 @@ fn sealed_by_name() -> HashMap<String, Sealed> {
                 .all(|s| seal_the_substrate_reads(&s.config).ports == head.ports);
             one_seal.then(|| (name, v.remove(0)))
         })
-        .collect()
+        .collect();
+    Library { by_name, by_tail }
 }
 
 fn walk_sealed(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Sealed>) {
@@ -429,7 +478,7 @@ fn counter_examples_in(text: &str) -> Vec<CounterExample> {
 /// sentence each. `scanned` counts the endpoints looked at, so a caller can
 /// tell "nothing wrong" from "nothing read".
 fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
-    let sealed = sealed_by_name();
+    let sealed = sealed_library();
     assert!(
         sealed.len() >= 8,
         "the sweep found almost no sealed hive templates: {}",
@@ -459,9 +508,11 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
             // why `./talky-<key>/session-keeper/stamp` is caught on its second.
             for pair in segs.windows(2) {
                 let (name, child) = (pair[0], pair[1]);
-                let Some(t) = sealed.get(name) else { continue };
+                let Some((t, naming)) = sealed.resolve(name, file) else {
+                    continue;
+                };
                 let seal = seals
-                    .entry(name.to_string())
+                    .entry(t.rel.clone())
                     .or_insert_with(|| seal_the_substrate_reads(&t.config));
                 if boundary_admits(seal, child) {
                     continue;
@@ -479,8 +530,17 @@ fn findings(docs: &[(String, String)], scanned: &mut usize) -> Vec<String> {
                 } else {
                     seal.ports.join(", ")
                 };
+                // A convention match says so, because it is a reading of the
+                // name rather than the name itself (GH #238).
+                let via = match naming {
+                    Naming::Own => String::new(),
+                    Naming::Convention => format!(
+                        " ('{name}' is the shortened instance name this template's own recipes \
+                         write for themselves)"
+                    ),
+                };
                 out.push(format!(
-                    "{}:{}: '{}' reaches '{name}/{child}', and the boundary of the sealed \
+                    "{}:{}: '{}' reaches '{name}/{child}'{via}, and the boundary of the sealed \
                      template '{}' refuses it. Declared ports: {ports}. Write the hive path \
                      and put the meaning of the dropped segment on the edge's lane.",
                     ep.file, ep.line, ep.raw, t.rel
@@ -686,20 +746,16 @@ fn the_scan_reports_the_addresses_this_issue_was_filed_about() {
     // own. The per-address assertions below are what this test is really made
     // of; the count only keeps it from going quiet.
     //
-    // And the count has to be DERIVED, because one of the findings exists only
-    // in the private tree: the first line's `./agent/...` matches the template
-    // named `slack-agent` on its last segment, and `slack-agent` is not exported.
-    // A literal count passed here and failed in the public clone — which is the
-    // whole reason the export runs the suite instead of only `cargo check`. The
-    // suffix match itself is GH #238; when it becomes an equality this goes back
-    // to a literal.
-    let private_only = core_root()
-        .join("templates/slack-agent/config.json")
-        .is_file();
-    let expected = if private_only { 8 } else { 7 };
+    // The count is a LITERAL again, and that is the point of GH #238. It briefly
+    // had to be derived, because `./agent/...` in the first line resolved to the
+    // template named `slack-agent` on its last segment — a finding that existed
+    // in the private tree and not in the public one, so a literal passed here and
+    // failed in the public clone. Since the tail is read only inside a template's
+    // own documents, `templates/README.md` no longer names `slack-agent` at all
+    // and both trees count the same.
     assert_eq!(
         found.len(),
-        expected,
+        7,
         "the scan missed a known-bad address (or invented one): {found:#?}"
     );
     for (needle, whose) in [
@@ -718,4 +774,65 @@ fn the_scan_reports_the_addresses_this_issue_was_filed_about() {
             "no finding blamed '{whose}' for '{needle}': {found:#?}"
         );
     }
+}
+
+/// GH #238 — the shortened instance name is read inside its own template and
+/// nowhere else.
+///
+/// Three synthetic documents around one address. They pin the decision, not the
+/// outcome: a rule that simply dropped the tail alias would pass the second and
+/// third of these and fail the first, and a rule that kept it globally would
+/// pass the first and fail the other two.
+#[test]
+fn the_instance_name_convention_only_reads_inside_its_own_template() {
+    let own = r#"wired as {to: <drain>/drain, condition:"#.to_string();
+    let mut scanned = 0usize;
+
+    // 1. The template's own recipe, where `<drain>` IS `memory-drain`.
+    let found = findings(
+        &[(
+            "templates/memory-drain/template.json".to_string(),
+            own.clone(),
+        )],
+        &mut scanned,
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the template's own recipe went unread: {found:#?}"
+    );
+    assert!(
+        found[0].contains("templates/memory-drain/config.json")
+            && found[0].contains("shortened instance name"),
+        "the finding neither blamed memory-drain nor said it read a convention: {found:#?}"
+    );
+
+    // 2. The same line in a foreign document, where `drain` is whatever that
+    //    document's reader named their own hive.
+    let found = findings(&[("docs/config.md".to_string(), own)], &mut scanned);
+    assert!(
+        found.is_empty(),
+        "a foreign document was blamed through another template's shortened name: {found:#?}"
+    );
+
+    // 3. The line this issue was filed from: `agent` is a placeholder, and the
+    //    only template it ever resolved to (`slack-agent`) is private, so this
+    //    assertion is the one that used to hold in one tree and not the other.
+    let found = findings(
+        &[(
+            "templates/README.md".to_string(),
+            r#"  "add_edges":[{"from":"./ingress","to":"./agent/session-keeper/stamp"}]"#
+                .to_string(),
+        )],
+        &mut scanned,
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the placeholder `agent` was resolved to a template again: {found:#?}"
+    );
+    assert!(
+        found[0].contains("session-keeper/stamp"),
+        "the one finding is the real one — the crossing into session-keeper: {found:#?}"
+    );
 }

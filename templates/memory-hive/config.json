@@ -34,6 +34,18 @@
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_remember",
+        "emits": "reject",
+        "because": "a block this hive refuses leaves on the reject lane -- undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+      },
+      {
+        "accepts": "in_query",
+        "emits": "reject",
+        "because": "a question this hive will not answer -- a half window it will not guess at -- leaves on the reject lane; undrained, the asker waits for a bundle that will never arrive"
+      }
+    ],
     "graph": {
       "edges": [
         {

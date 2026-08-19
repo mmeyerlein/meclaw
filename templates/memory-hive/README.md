@@ -1,4 +1,4 @@
-# `memory-hive@2.0.0`
+# `memory-hive@2.0.1`
 
 Agent memory as a hive of existing cell types — no new cell type, no Rust. Eleven cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
@@ -315,13 +315,25 @@ edited past its own lanes.
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
 | `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** Two things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
 
-**The drain used to be enforced and is not any more, and that is a real loss.**
-`params.required_drains` (GH #147) pairs a PORT with the route it must drain, and it fires when
-something outside the hive wires that port. A sealed hive has no ports, so the declaration could
-never fire again; a rule that cannot fire is worse than no rule, because it reads like one. The
-two entries were removed with the seal rather than left as decoration. Tracked as a substrate
-gap: `required_drains` has no way to say "this LANE must be drained"
-([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
+**The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
+`params.required_drains` used to pair a PORT with the route it must drain, and it fired when
+something outside wired that port — which a sealed hive has no way of letting happen, so the
+declaration could never fire again and was removed with the seal rather than left as decoration.
+It is back in the vocabulary the seal left standing, and this hive declares two entries:
+
+```json
+{"accepts": "in_remember", "emits": "reject", "because": "…"}
+{"accepts": "in_query",    "emits": "reject", "because": "…"}
+```
+
+Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* A mutation that wires
+either ingress without the drain comes back `required_drain_missing` and changes nothing; the
+hive's own sentence travels into the refusal. The boot path only WARNS — a birth topology is
+authorship, and a colony that cannot boot is worse than one that says so in its log.
+
+One limit, stated so nobody meets it as a surprise: the check probes your subscription with the
+lane alone. An edge that tells lanes apart by a second `has()`-guarded hop key evaluates to a
+clean `false` under that probe and is read as no drain. Give the reject lane an edge of its own.
 
 `recall_query`, `memory_tier`, `recall_as_of`, `recall_window_from`, `recall_window_to`,
 `happened_at`, `store_origin` are **not** ingress context keys (that list is closed: `turn_id`,

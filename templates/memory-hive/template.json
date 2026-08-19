@@ -1,6 +1,6 @@
 {
   "name": "memory-hive",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": {
     "purpose": "Agent memory as a hive: durable episodes (LLM-free write path), a deterministic token-budgeted tier-0 bundle, a four-leg tier-1 retrieval fan (keyword/semantic/graph/temporal) fused by RRF without an LLM, a tier-2 dialectic answer with a mandatory gap statement, batched plus inline fact extraction with bi-temporal validity, and a nightly delta-scoped consolidation run that supersedes instead of deleting, and an identity round in that same nightly run that judges which relation keys and which entity spellings are the same thing and records the merges as revertible aliases.",
     "use_when": "One hive per agent tree that must remember across turns and sessions. Wire the lanes AT THE HIVE PATH (`params.ports` is empty) in the SAME mutation that instantiates it -- an island without a crossing edge stays inactive and the cron never spawns. In: in_episode, in_query, in_remember, in_flush. Out: bundle, reject.",

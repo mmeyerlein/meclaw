@@ -242,16 +242,59 @@ pub struct LaneSpec {
     pub because: String,
 }
 
-/// One `params.required_drains` entry of a hive.
+/// One `params.required_drains` entry of a hive: a pairing it insists on.
+///
+/// Two shapes, because the boundary moved under this rule (GH #237). The PORT
+/// form pairs a direct child with a route that must leave the hive once that
+/// child is wired from outside; a SEALED hive has no ports, so nothing outside
+/// can address one and the form can never fire. The LANE form states the same
+/// obligation in the vocabulary the seal left standing — *a caller that sends
+/// me lane A must subscribe to lane B* — and is the one a sealed hive can use.
+///
+/// The port form is kept, and not only for old declarations: `params.ports`
+/// is opt-in, and a hive that never sealed itself still has ports to pair.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum DrainSpec {
+    /// GH #147 — pair a PORT of this hive with a route that must be drained
+    /// out of it once something outside wires that port.
+    Port(PortDrainSpec),
+    /// GH #237 — pair two LANES of this hive's contract: a caller that sends
+    /// the first must take the second.
+    Lane(LaneDrainSpec),
+}
+
+/// The port form of a `required_drains` entry (GH #147).
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct DrainSpec {
+pub struct PortDrainSpec {
     /// Short name of the direct child that is the port (same shape as
     /// `params.ports`).
     pub port: String,
     /// The hop compartment a message on the drain route carries. Matched by
     /// RUNNING it through the edge conditions, not by comparing their text.
     pub hop: BTreeMap<String, String>,
+    /// Why this pairing exists, in the hive's own words. Travels verbatim into
+    /// the rejection — a refusal that cannot say what it protects is a refusal
+    /// people route around.
+    pub because: String,
+}
+
+/// The lane form of a `required_drains` entry (GH #237).
+///
+/// Both names are `hop.route` values of this hive's own `params.contract`:
+/// `accepts` one it declares it accepts, `emits` one it declares it emits. A
+/// name that is in neither is a declaration about a lane the hive does not
+/// have, and the reader drops it rather than enforce a pairing nobody can
+/// satisfy.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LaneDrainSpec {
+    /// The inbound lane that TRIGGERS the obligation. Wiring it is what makes
+    /// the drain necessary; a hive whose lane nobody sends to needs nothing.
+    pub accepts: String,
+    /// The outbound lane that must then be taken by somebody outside.
+    pub emits: String,
     /// Why this pairing exists, in the hive's own words. Travels verbatim into
     /// the rejection — a refusal that cannot say what it protects is a refusal
     /// people route around.

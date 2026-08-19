@@ -61,7 +61,7 @@ to know the internal structure.
 
   **Why the seal does not cover the bootstrap** (ruling 2026-08-15): the birth topology is the **sovereign design of the colony author**. Whoever writes the `params.graph` of a parent scope is describing the colony they intend, with the whole tree in front of them — that is authorship, not a breach. The seal guards against what happens **afterwards**: a runtime mutation, possibly written by a model, that reaches into a hive it did not build. So a `params.graph` may legitimately wire a deep endpoint into a sealed hive at boot, and several shipped topologies do exactly that. Boot-time enforcement is not ruled out forever, but it would arrive as its **own opt-in switch** — never by silently widening this one, because that would retroactively invalidate birth topologies that are correct today.
 
-- `required_drains` (optional, GH #147): array of `{port, hop, because}` — **port pairs that belong together**. Read as: *if anything outside this hive is wired to `port`, then `port` must have an edge that carries a message with hop `hop` out of the hive.* The classic case is an ingress whose refusals leave on a reject egress: with no consumer, the refusal is a dead end and nobody ever learns the work was not done. **Opt-in like `ports`** — without the key, everything stays as it was.
+- `required_drains` (optional, GH #147/#237): array of `{port, hop, because}` **or** `{accepts, emits, because}` — pairs that belong together. The port form: Read as: *if anything outside this hive is wired to `port`, then `port` must have an edge that carries a message with hop `hop` out of the hive.* The classic case is an ingress whose refusals leave on a reject egress: with no consumer, the refusal is a dead end and nobody ever learns the work was not done. **Opt-in like `ports`** — without the key, everything stays as it was.
 
   A mutation that breaks the pairing is rejected pre-destructively with `error_code: "required_drain_missing"`, and the rejection carries the hive's own `because` sentence verbatim, because a refusal that cannot say what it protects is one people route around. Wiring **both edges in the SAME mutation** is explicitly the intended answer — the check runs against the post-state precisely so that it is.
 
@@ -74,6 +74,18 @@ to know the internal structure.
               "required_drains": [ { "port": "gate", "hop": { "route": "reject" },
                                      "because": "a refused input leaves the hive here" } ] }
   ```
+
+  **The lane form (GH #237).** The form above names a **port**, and a sealed hive (`"ports": []`) has none: from outside, `<hive>/<cell>` is not an address any more, so `port` can never be wired again and the declaration can never fire. A rule that cannot fire reads exactly like one that can — so the same obligation exists in the vocabulary the boundary leaves standing:
+
+  ```json
+  "params": { "ports": [], "contract": { … },
+              "required_drains": [ { "accepts": "in_remember", "emits": "reject",
+                                     "because": "a refused block leaves the hive on this lane" } ] }
+  ```
+
+  Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* Both names are lanes of the hive's **own** `params.contract` — an entry naming a lane the hive does not have is dropped by the reader with a warning, for the same reason a deep port name is dropped. The obligation is triggered by the caller's own edge: an edge from outside onto the hive path whose `set_hop.route` constantly names the `accepts` lane. An edge whose lane is only knowable at runtime (`'in_' + hop.kind`) names none here and triggers nothing — the same conservatism the contract check is built on.
+
+  **What the lane form cannot see.** Whether the drain exists is a statement about the **caller's subscription**, which GH #173 deliberately leaves unchecked: shipped topologies tell lanes apart by a second hop key that a route-only probe does not carry. So the probe decides only what it can — the router carries the lane out (drained), the condition **fails to evaluate** because it reads a key the probe does not have (unknown, counts as drained), an edge without a condition takes everything (drained) — and **only** when every out-edge evaluates cleanly to `false` is the mutation refused. The residue is a subscription that guards its extra keys with `has()`: that yields a clean `false` and would be refused. It is a limit, not a verdict — give the lane an edge of its own.
 
 - `contract` (optional, GH #173): `{accepts, emits}` — the **hive's contract**, as a list of lanes (`hop.route` values) instead of prose. Full description and enforcement table in `config.en.md` § `params.contract`; in short: a mutation edge onto the hive path whose `set_hop.route` is constant must name an `accepts` lane, every `accepts` lane must have a door inward, and every `emits` lane must lead back out through the hive path — otherwise `error_code: "hive_contract"`, pre-destructive. **Opt-in like `ports`**, checked with the same `apply_edges` as `required_drains`, and the boot only warns.
 

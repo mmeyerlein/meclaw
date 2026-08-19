@@ -21,10 +21,10 @@ console-subscriber = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7"] }
-meclaw-api = { path = "../meclaw-api", version = "0.15.0" }
-meclaw-cells = { path = "../meclaw-cells", version = "0.15.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.15.0" }
-meclaw-core = { path = "../meclaw-core", version = "0.15.0" }
+meclaw-api = { path = "../meclaw-api", version = "0.15.1" }
+meclaw-cells = { path = "../meclaw-cells", version = "0.15.1" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.15.1" }
+meclaw-core = { path = "../meclaw-core", version = "0.15.1" }
 
 [dev-dependencies]
 tempfile = "3"
