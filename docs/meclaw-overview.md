@@ -590,7 +590,7 @@ In the current phase no concurrent builders per scope are expected, no `expected
 
 ### Permissions
 
-Until hardening: **no permission layer**. Whoever can deliver a mutation message to `/colony/mutations` routing-wise can mutate. Permission is a topology question, not an identity check. The `mutate-graph` capability in the cell contract is a **discovery hint** (for the builder composer and audit tools), not a runtime check. HTTP API in phase 12 without auth, protection via the `--api <bind>` flag (default: no port; opt-in via e.g. `--api 127.0.0.1:7777` for local-only).
+**No permission layer, and that is a boundary rather than a backlog item** (ruling 2026-08-19). Whoever can deliver a mutation message to `/colony/mutations` routing-wise can mutate. Permission is a topology question, not an identity check. The `mutate-graph` capability in the cell contract is a **discovery hint** (for the builder composer and audit tools), not a runtime check. **Authentication does not belong in this substrate, it belongs to the layer in front of it** — a reverse proxy (nginx and friends) that terminates access from outside. meclaw knows no identities, it knows paths; a substrate that mixes the two holds two truths about who may do what. What meclaw itself contributes is the `--api <bind>` flag: no port by default, opt-in via e.g. `--api 127.0.0.1:7777` for local-only. Binding `0.0.0.0` opens the door, and what stands in front of it is yours.
 
 ---
 

@@ -67,9 +67,6 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
   selection and closed-loop automation, beyond the v1 catalogue
-- [#247](https://github.com/mmeyerlein/meclaw/issues/247) the HTTP API
-  authenticates nothing, and the structural write path — the mutation endpoint —
-  is on it. Every deployment today has to solve this outside the substrate
 
 Two of these are watches rather than fixes, and stay open on purpose:
 
