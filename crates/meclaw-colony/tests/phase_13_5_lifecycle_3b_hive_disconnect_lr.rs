@@ -171,7 +171,9 @@ impl CellFactory for PollerFactory {
                     None,
                     None,
                     None,
-                 None,)
+                 None,
+                 Default::default(),
+                 )
                 .await;
             });
             (tx, join, peace_rx, backstop_rx)
@@ -200,6 +202,7 @@ impl CellFactory for PollerFactory {
                 Some(death_ack_tx),
                 None,
                 None,
+                Default::default(),
             )
             .await;
         });

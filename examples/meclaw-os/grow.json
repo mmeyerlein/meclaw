@@ -36,7 +36,8 @@
             "route": "'in_turn'"
           },
           "set_context": {
-            "channel": "hop.chat_id"
+            "channel": "hop.chat_id",
+            "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"
           }
         }
       },
@@ -103,6 +104,11 @@
             "happened_at": "hop.happened_at"
           }
         }
+      },
+      {
+        "from": "./drain",
+        "to": "./sink",
+        "condition": "has(hop.route) && hop.route == 'reject'"
       }
     ]
   }

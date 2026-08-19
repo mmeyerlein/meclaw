@@ -8,7 +8,8 @@ pub struct WebSearchCell {
     pub client: reqwest::Client,
     /// Search-endpoint URL (e.g. `https://api.search.example/search`).
     pub endpoint: String,
-    /// Optional Bearer-token for the search API.
+    /// Optional Bearer-token for the search API. `None` = no `Authorization`
+    /// header at all; an empty configured value is `None` (GH #270).
     pub api_key: Option<String>,
     /// External-timeout pro Roundtrip (send + bytes).
     pub external_timeout: Duration,
@@ -222,7 +223,8 @@ use std::sync::Arc;
 /// Factory for `WebSearchCell`. Unit struct — stateless, all config lives in params.
 ///
 /// Required param: `endpoint` (non-empty string).
-/// Optional params: `api_key` (string), `max_concurrency` (≥1, default 8),
+/// Optional params: `api_key` (string; empty = no `Authorization` header,
+/// GH #270), `max_concurrency` (≥1, default 8),
 /// `external_timeout_ms` (≥1, default 15 000).
 pub struct WebSearchCellFactory;
 
@@ -256,9 +258,20 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedWebSearchPara
     if endpoint.is_empty() {
         return Err("params.endpoint is empty".into());
     }
+    // An empty api_key is no api_key (GH #270), the same repair `mcp`'s
+    // `parse_http` carries since GH #268. `api_key` is written as
+    // `${SEARCH_API_KEY:-}` wherever the operator may leave the variable
+    // unset — the shipped `.env.example` even ships it set to empty — and the
+    // substitution turns that into `""`. `Some("")` is not `None`, so without
+    // this filter every search went out carrying `Authorization: Bearer ` with
+    // nothing after it. Against an endpoint that would have answered
+    // anonymously that header can be a flat rejection, which then reads as a
+    // search backend being down rather than as a credential nobody set. Every
+    // declaration in the tree describes the empty value as an absent token.
     let api_key = raw
         .get("api_key")
         .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     let mc = match raw.get("max_concurrency") {
         None => DEFAULT_WEB_SEARCH_MAX_CONCURRENCY,

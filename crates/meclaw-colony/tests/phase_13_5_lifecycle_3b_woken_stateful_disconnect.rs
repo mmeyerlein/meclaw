@@ -128,6 +128,7 @@ impl CellFactory for GateStatefulFactory {
                     db,
                     None,
                     None,
+                    Default::default(),
                 );
             spawn_watcher(
                 &wake_watcher_inbox,

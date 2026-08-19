@@ -2,8 +2,11 @@
 //!
 //! - `flatten_to_leaves` walks a UBF system-subtree into flat (slot_path, leaf)
 //!   pairs for KV-upsert into `cell.db.system`.
-//! - `upsert_system_leaf` + `read_system_tree` — SQL ops against the
-//!   Phase-6.5 `system`-Tabelle.
+//! - `parse_system_write` is the same walk on the INCOMING side, and it also
+//!   reads the GH #264 `$replace` marker: the roots whose subtree a message
+//!   revokes before its own leaves land.
+//! - `upsert_system_leaf` + `delete_system_subtree` + `read_system_tree` — SQL
+//!   ops against the Phase-6.5 `system`-Tabelle.
 //! - `replace_last_input` — SQL op against the Phase-6.5 `last_input`
 //!   single-row table (forensic-only, never read back — cell-types.md Z.74).
 //! - `EXPECTED_SCHEMA_VERSION` + `check_schema_version` — cell.db
@@ -49,6 +52,131 @@ fn walk(node: &Value, path: &str, out: &mut Vec<(String, Value)>) {
         };
         walk(v, &next_path, out);
     }
+}
+
+/// The reserved marker key inside an INCOMING `system` subtree (GH #264).
+///
+/// `"$replace": true` in a node means: below this node, exactly what this
+/// message carries holds. See [`parse_system_write`].
+pub(crate) const REPLACE_MARKER: &str = "$replace";
+
+/// What one message wants to do to the persistent `system` tree.
+///
+/// `leaves` are the flat `(slot_path, leaf)` pairs to UPSERT — the same shape
+/// [`flatten_to_leaves`] produces, with every reserved `$`-key stripped out of
+/// the leaf. `replace_roots` are the dotted paths whose subtree is to be
+/// dropped FIRST, so that what stands below them afterwards is exactly what
+/// `leaves` puts there. An empty string is a legal root and names the whole
+/// tree.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SystemWrite {
+    /// Slot paths to upsert, with their leaf objects.
+    pub(crate) leaves: Vec<(String, Value)>,
+    /// Dotted roots whose subtree is revoked before the upserts run.
+    pub(crate) replace_roots: Vec<String>,
+}
+
+/// Read one message's `system` subtree into the write it describes (GH #264).
+///
+/// Same walk as [`flatten_to_leaves`], plus the replace marker. Three rules,
+/// all of them loud rather than lenient — a marker that is silently ignored
+/// hands the writer a revocation that never happened:
+///
+/// * `"$replace": true` in a node makes that node's dotted path a replace root.
+///   `false` is an explicit no-op (so a writer may compute the flag), any other
+///   value is a shape error.
+/// * Every OTHER key starting with `$` is a shape error. The prefix is reserved
+///   so a misspelled marker cannot pass as an ordinary slot name.
+/// * The marker never becomes part of a leaf: it is stripped before the leaf is
+///   stored, or the row would carry it back out of `cell.db` on every read.
+///
+/// The root call passes an empty prefix, so a marker at the top of `system`
+/// yields the empty root — "the whole tree is exactly this".
+pub(crate) fn parse_system_write(tree: &Value) -> Result<SystemWrite, String> {
+    let mut w = SystemWrite::default();
+    walk_write(tree, "", &mut w)?;
+    Ok(w)
+}
+
+fn walk_write(node: &Value, path: &str, out: &mut SystemWrite) -> Result<(), String> {
+    let Some(obj) = node.as_object() else {
+        return Ok(());
+    };
+    for key in obj.keys().filter(|k| k.starts_with('$')) {
+        if key != REPLACE_MARKER {
+            return Err(format!(
+                "system slot '{}': reserved key '{key}' (GH #264). Keys starting with '$' \
+                 inside a system subtree are reserved by the substrate; the only one defined \
+                 is '{REPLACE_MARKER}'. Nothing was written",
+                display_root(path)
+            ));
+        }
+    }
+    if let Some(marker) = obj.get(REPLACE_MARKER) {
+        match marker.as_bool() {
+            Some(true) => out.replace_roots.push(path.to_string()),
+            Some(false) => {}
+            None => {
+                return Err(format!(
+                    "system slot '{}': '{REPLACE_MARKER}' must be a boolean (GH #264). It \
+                     says whether the paths below this node that are absent from this message \
+                     are to be dropped; a non-boolean has no such reading. Nothing was written",
+                    display_root(path)
+                ));
+            }
+        }
+    }
+    if obj.contains_key("text") || obj.contains_key("text_id") {
+        let mut leaf = obj.clone();
+        leaf.retain(|k, _| !k.starts_with('$'));
+        out.leaves.push((path.to_string(), Value::Object(leaf)));
+        return Ok(());
+    }
+    for (k, v) in obj.iter().filter(|(k, _)| !k.starts_with('$')) {
+        let next_path = if path.is_empty() {
+            k.clone()
+        } else {
+            format!("{path}.{k}")
+        };
+        walk_write(v, &next_path, out)?;
+    }
+    Ok(())
+}
+
+/// How an empty root reads in a message: the `system` tree itself.
+pub(crate) fn display_root(root: &str) -> &str {
+    if root.is_empty() { "<system>" } else { root }
+}
+
+/// DELETE every row at `root` and below it (GH #264).
+///
+/// An empty `root` clears the whole table. Otherwise the row AT the root goes
+/// too — a node that used to be a leaf and is now a container is the same
+/// subtree, and "below this root, exactly this holds" covers it.
+///
+/// The descendant test compares a fixed-length prefix against `root` plus its
+/// separator rather than using `LIKE`: the slot path is caller data, and `%`
+/// or `_` inside it would silently widen a `LIKE` pattern. The length is
+/// counted in CHARACTERS, because that is what SQLite's `substr` counts. It also keeps the
+/// match on a SEGMENT boundary, the same rule `system_writable` follows —
+/// a replace at `memory.recall` never reaches `memory.recallx`.
+pub(crate) fn delete_system_subtree(
+    conn: &rusqlite::Connection,
+    root: &str,
+) -> rusqlite::Result<usize> {
+    if root.is_empty() {
+        return conn.execute("DELETE FROM system", []);
+    }
+    let under = format!("{root}.");
+    conn.execute(
+        "DELETE FROM system WHERE slot_path = ?1 OR substr(slot_path, 1, ?2) = ?3",
+        rusqlite::params![root, under.chars().count() as i64, under],
+    )
+}
+
+/// Does `slot` lie at or below `root`? Segment-boundary rule, empty root = all.
+fn is_under(slot: &str, root: &str) -> bool {
+    root.is_empty() || slot == root || slot.starts_with(&format!("{root}."))
 }
 
 /// GH #95 guard — reject a system tree read back from `cell.db` while it
@@ -188,9 +316,11 @@ impl From<rusqlite::Error> for PersistError {
 
 /// Atomic persist of system-leaves + optional messages[] in ONE transaction.
 ///
-/// Q2 system-first order: all leaves UPSERTed first, then (if Some) messages
-/// replaced. Single tx → no partial state if cancelled mid-write (Backstop B
-/// from § 9 handle()-Reihenfolge).
+/// Q2 system-first order: every `replace_roots` subtree DELETEd, then all
+/// leaves UPSERTed, then (if Some) messages replaced. Single tx → no partial
+/// state if cancelled mid-write (Backstop B from § 9 handle()-Reihenfolge),
+/// and no window in which a revoked subtree is gone but its replacement is not
+/// yet there (GH #264).
 ///
 /// Empty `system_leaves` is allowed (e.g. message-only input). `None`
 /// `messages_array` skips the last_input write entirely (system-only input).
@@ -207,20 +337,31 @@ pub(crate) fn system_first_persist(
     conn: &mut rusqlite::Connection,
     gate: &SystemGate,
     system_leaves: &[(String, Value)],
+    replace_roots: &[String],
     messages_array: Option<&Value>,
     now: i64,
 ) -> Result<(), PersistError> {
     let tx = conn.transaction()?;
-    if !system_leaves.is_empty() {
-        let existing = existing_slot_paths(&tx)?;
+    if !system_leaves.is_empty() || !replace_roots.is_empty() {
+        // GH #264: the budget is a statement about the tree the write LEAVES
+        // behind, so the rows a replace root is about to drop are already gone
+        // when the novel slots are counted. Without that, a bundle that trades
+        // ten keys for ten others could be refused at a limit it never crosses.
+        let surviving = existing_slot_paths(&tx)?
+            .into_iter()
+            .filter(|p| !replace_roots.iter().any(|r| is_under(p, r)))
+            .collect::<std::collections::HashSet<_>>();
         let novel = system_leaves
             .iter()
             .map(|(p, _)| p.as_str())
-            .filter(|p| !existing.contains(*p))
+            .filter(|p| !surviving.contains(*p))
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        gate.check_slot_budget(existing.len(), novel)
+        gate.check_slot_budget(surviving.len(), novel)
             .map_err(PersistError::Gate)?;
+    }
+    for root in replace_roots {
+        delete_system_subtree(&tx, root)?;
     }
     for (slot_path, leaf) in system_leaves {
         upsert_system_leaf(&tx, slot_path, leaf, now)?;
@@ -269,8 +410,9 @@ pub(crate) fn check_schema_version(conn: &rusqlite::Connection) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::{
-        PersistError, check_schema_version, check_text_id_residue, flatten_to_leaves,
-        read_system_tree, replace_last_input, system_first_persist, upsert_system_leaf,
+        PersistError, check_schema_version, check_text_id_residue, delete_system_subtree,
+        flatten_to_leaves, parse_system_write, read_system_tree, replace_last_input,
+        system_first_persist, upsert_system_leaf,
     };
     use crate::llm::system_gate::SystemGate;
     use meclaw_colony::persist::open_or_create_cell_db;
@@ -502,7 +644,15 @@ mod tests {
         let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let leaves = vec![("identity.soul".to_string(), json!({"text":"S"}))];
         let msgs = json!([{"origin":"user","type":"text","text":"Hi"}]);
-        system_first_persist(&mut conn, &SystemGate::default(), &leaves, Some(&msgs), 100).unwrap();
+        system_first_persist(
+            &mut conn,
+            &SystemGate::default(),
+            &leaves,
+            &[],
+            Some(&msgs),
+            100,
+        )
+        .unwrap();
         let sys_value: String = conn
             .query_row(
                 "SELECT value FROM system WHERE slot_path='identity.soul'",
@@ -533,7 +683,7 @@ mod tests {
         )
         .unwrap();
         let leaves = vec![("x".to_string(), json!({"text":"new-system-leaf"}))];
-        system_first_persist(&mut conn, &SystemGate::default(), &leaves, None, 200).unwrap();
+        system_first_persist(&mut conn, &SystemGate::default(), &leaves, &[], None, 200).unwrap();
         let sys: String = conn
             .query_row("SELECT value FROM system WHERE slot_path='x'", [], |r| {
                 r.get(0)
@@ -555,7 +705,15 @@ mod tests {
         let td = TempDir::new().unwrap();
         let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
         let msgs = json!([{"origin":"user","type":"text","text":"M"}]);
-        system_first_persist(&mut conn, &SystemGate::default(), &[], Some(&msgs), 100).unwrap();
+        system_first_persist(
+            &mut conn,
+            &SystemGate::default(),
+            &[],
+            &[],
+            Some(&msgs),
+            100,
+        )
+        .unwrap();
         let li: String = conn
             .query_row("SELECT message_json FROM last_input WHERE id=1", [], |r| {
                 r.get(0)
@@ -587,6 +745,7 @@ mod tests {
                 ("a".to_string(), json!({"text":"1"})),
                 ("b".to_string(), json!({"text":"2"})),
             ],
+            &[],
             None,
             1,
         )
@@ -596,6 +755,7 @@ mod tests {
             &mut conn,
             &gate,
             &[("c".to_string(), json!({"text":"3"}))],
+            &[],
             Some(&json!([{"origin":"user","type":"text","text":"Hi"}])),
             2,
         )
@@ -628,9 +788,9 @@ mod tests {
             ("a".to_string(), json!({"text":"1"})),
             ("b".to_string(), json!({"text":"2"})),
         ];
-        system_first_persist(&mut conn, &gate, &leaves, None, 1).unwrap();
+        system_first_persist(&mut conn, &gate, &leaves, &[], None, 1).unwrap();
         let refreshed = vec![("a".to_string(), json!({"text":"1b"}))];
-        system_first_persist(&mut conn, &gate, &refreshed, None, 2).unwrap();
+        system_first_persist(&mut conn, &gate, &refreshed, &[], None, 2).unwrap();
         let v: String = conn
             .query_row("SELECT value FROM system WHERE slot_path='a'", [], |r| {
                 r.get(0)
@@ -650,12 +810,13 @@ mod tests {
             &mut conn,
             &gate,
             &[("a".to_string(), json!({"text":"1"}))],
+            &[],
             None,
             1,
         )
         .unwrap();
         let msgs = json!([{"origin":"user","type":"text","text":"Hi"}]);
-        system_first_persist(&mut conn, &gate, &[], Some(&msgs), 2).unwrap();
+        system_first_persist(&mut conn, &gate, &[], &[], Some(&msgs), 2).unwrap();
     }
 
     #[test]
@@ -671,6 +832,216 @@ mod tests {
         assert!(
             err.contains("expected 1, found 2"),
             "error must mention both versions: {err}"
+        );
+    }
+
+    // ───── GH #264: the replace marker, and what it deletes ─────
+
+    /// The marker names its own node as the root, and never travels into the
+    /// leaf it sits next to.
+    #[test]
+    fn the_marker_names_its_own_node_and_leaves_the_leaves_clean() {
+        let w = parse_system_write(&json!({
+            "memory": {"recall": {"$replace": true, "a": {"text": "A"}}}
+        }))
+        .unwrap();
+        assert_eq!(w.replace_roots, vec!["memory.recall".to_string()]);
+        assert_eq!(
+            w.leaves,
+            vec![("memory.recall.a".into(), json!({"text":"A"}))]
+        );
+    }
+
+    /// A marker at the top of `system` has the empty root: the whole tree.
+    #[test]
+    fn a_marker_at_the_top_has_the_empty_root() {
+        let w = parse_system_write(&json!({"$replace": true, "a": {"text": "A"}})).unwrap();
+        assert_eq!(w.replace_roots, vec![String::new()]);
+        assert_eq!(w.leaves, vec![("a".to_string(), json!({"text":"A"}))]);
+    }
+
+    /// `false` is an explicit no-op, so a writer may compute the flag instead
+    /// of branching on whether to include the key at all.
+    #[test]
+    fn a_false_marker_revokes_nothing() {
+        let w = parse_system_write(&json!({"memory": {"$replace": false, "a": {"text": "A"}}}))
+            .unwrap();
+        assert!(w.replace_roots.is_empty());
+        assert_eq!(w.leaves.len(), 1);
+    }
+
+    /// Nested markers are the union of their roots, not a contradiction: the
+    /// outer one already covers the inner, so the inner is redundant, not wrong.
+    #[test]
+    fn nested_markers_are_the_union_of_their_roots() {
+        let w = parse_system_write(&json!({
+            "memory": {"$replace": true, "recall": {"$replace": true, "a": {"text": "A"}}}
+        }))
+        .unwrap();
+        let mut roots = w.replace_roots.clone();
+        roots.sort();
+        assert_eq!(
+            roots,
+            vec!["memory".to_string(), "memory.recall".to_string()]
+        );
+    }
+
+    /// A leaf may carry the marker too — that is how a slot that used to be a
+    /// container becomes a plain leaf again without leaving orphans below it.
+    #[test]
+    fn a_marker_on_a_leaf_is_a_root_and_the_leaf_is_stored_without_it() {
+        let w = parse_system_write(&json!({"handover": {"$replace": true, "text": "H"}})).unwrap();
+        assert_eq!(w.replace_roots, vec!["handover".to_string()]);
+        assert_eq!(
+            w.leaves,
+            vec![("handover".to_string(), json!({"text":"H"}))]
+        );
+    }
+
+    /// The `$` namespace is reserved so a misspelled marker cannot pass as an
+    /// ordinary slot name and be silently ignored.
+    #[test]
+    fn any_other_dollar_key_is_a_shape_error_naming_its_node() {
+        let err = parse_system_write(&json!({"memory": {"$replace_all": true}})).unwrap_err();
+        assert!(err.contains("'memory'"), "must name the node: {err}");
+        assert!(err.contains("$replace_all"), "must name the key: {err}");
+    }
+
+    #[test]
+    fn a_non_boolean_marker_is_a_shape_error() {
+        let err = parse_system_write(&json!({"memory": {"$replace": "yes"}})).unwrap_err();
+        assert!(err.contains("boolean"), "must name the rule: {err}");
+    }
+
+    /// The delete is scoped to the root and stops at a segment boundary: a
+    /// sibling that merely shares a character prefix is untouched.
+    #[test]
+    fn delete_takes_the_root_and_its_descendants_and_stops_at_the_segment() {
+        let td = TempDir::new().unwrap();
+        let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        for path in [
+            "memory",
+            "memory.recall",
+            "memory.recall.a",
+            "memory.recallx",
+            "identity",
+        ] {
+            upsert_system_leaf(&conn, path, &json!({"text": path}), 1).unwrap();
+        }
+        let removed = delete_system_subtree(&conn, "memory.recall").unwrap();
+        assert_eq!(removed, 2, "the root row and its one descendant");
+        let mut left: Vec<String> = conn
+            .prepare("SELECT slot_path FROM system")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        left.sort();
+        assert_eq!(left, vec!["identity", "memory", "memory.recallx"]);
+    }
+
+    #[test]
+    fn an_empty_root_deletes_the_whole_tree() {
+        let td = TempDir::new().unwrap();
+        let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        upsert_system_leaf(&conn, "identity", &json!({"text":"I"}), 1).unwrap();
+        upsert_system_leaf(&conn, "memory.a", &json!({"text":"A"}), 1).unwrap();
+        assert_eq!(delete_system_subtree(&conn, "").unwrap(), 2);
+        assert_eq!(read_system_tree(&conn).unwrap(), json!({}));
+    }
+
+    /// A slot path holding a `%` must not widen the match — the reason the
+    /// descendant test is a `substr` comparison and not a `LIKE`.
+    #[test]
+    fn a_wildcard_in_a_slot_path_does_not_widen_the_delete() {
+        let td = TempDir::new().unwrap();
+        let conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        upsert_system_leaf(&conn, "identity", &json!({"text":"I"}), 1).unwrap();
+        assert_eq!(delete_system_subtree(&conn, "%").unwrap(), 0);
+        assert_eq!(delete_system_subtree(&conn, "_dentity").unwrap(), 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM system", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    /// The budget is a statement about the tree the write leaves behind: a
+    /// bundle at the limit that trades all its keys for new ones commits,
+    /// because the ones it revokes are gone before the new ones are counted.
+    #[test]
+    fn a_replace_that_trades_every_key_at_the_budget_still_commits() {
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let gate = SystemGate::for_test(2, 65_536, &[]);
+        system_first_persist(
+            &mut conn,
+            &gate,
+            &[
+                ("m.a".to_string(), json!({"text":"1"})),
+                ("m.b".to_string(), json!({"text":"2"})),
+            ],
+            &[],
+            None,
+            1,
+        )
+        .unwrap();
+        system_first_persist(
+            &mut conn,
+            &gate,
+            &[
+                ("m.c".to_string(), json!({"text":"3"})),
+                ("m.d".to_string(), json!({"text":"4"})),
+            ],
+            &["m".to_string()],
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            read_system_tree(&conn).unwrap(),
+            json!({"m": {"c": {"text":"3"}, "d": {"text":"4"}}})
+        );
+    }
+
+    /// The delete runs INSIDE the transaction, so a refused write leaves the
+    /// revoked subtree standing — never a hole where the replacement should be.
+    #[test]
+    fn a_refused_replace_does_not_delete_anything() {
+        let td = TempDir::new().unwrap();
+        let mut conn = open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let gate = SystemGate::for_test(2, 65_536, &[]);
+        system_first_persist(
+            &mut conn,
+            &gate,
+            &[
+                ("m.a".to_string(), json!({"text":"1"})),
+                ("keep".to_string(), json!({"text":"K"})),
+            ],
+            &[],
+            None,
+            1,
+        )
+        .unwrap();
+        let err = system_first_persist(
+            &mut conn,
+            &gate,
+            &[
+                ("m.b".to_string(), json!({"text":"2"})),
+                ("m.c".to_string(), json!({"text":"3"})),
+                ("m.d".to_string(), json!({"text":"4"})),
+            ],
+            &["m".to_string()],
+            None,
+            2,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PersistError::Gate(_)), "{err:?}");
+        assert_eq!(
+            read_system_tree(&conn).unwrap(),
+            json!({"m": {"a": {"text":"1"}}, "keep": {"text":"K"}}),
+            "a refused replace rolls back its own delete"
         );
     }
 }

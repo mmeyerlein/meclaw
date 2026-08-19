@@ -316,6 +316,7 @@ impl CellFactory for HangCellFactory {
                 Some(death_ack_tx),
                 None,
                 None,
+                Default::default(),
             )
             .await;
         });

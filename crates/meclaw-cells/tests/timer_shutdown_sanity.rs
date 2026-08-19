@@ -47,6 +47,7 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_sleep_until() {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
 
     // Sanity: nothing fires within 200 ms (sleep_until is set to 2099).

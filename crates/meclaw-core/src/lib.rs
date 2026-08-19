@@ -21,7 +21,7 @@ pub use body::Body;
 pub use cell::Cell;
 pub use contract::{
     CompiledConsumes, CompiledEmits, ConsumeSpec, ConsumesBlock, EmitsBlock, IngressBlock,
-    SettingSpec, validate_consumes, validate_emits,
+    SettingSpec, WriteSurface, validate_consumes, validate_emits,
 };
 pub use handle::ActorHandle;
 pub use headers::Headers;

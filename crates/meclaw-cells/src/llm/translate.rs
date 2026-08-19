@@ -29,6 +29,11 @@ pub(crate) enum TranslateError {
 /// order. The `tools` sub-slot is skipped entirely (extracted separately by T6
 /// `build_openai_request`).
 ///
+/// A leaf whose `text` is empty contributes NO part (GH #259): a slot cleared
+/// by re-sending it empty — the only way to revoke durable `system.*` state,
+/// which is upserted per slot path — must not leave a blank gap in the prompt
+/// on every turn that follows.
+///
 /// Infallible since GH #86. It used to reject a `{text_id}` leaf with
 /// `BlobUnsupported`, because nothing resolved that pointer class; the substrate
 /// now expands it at the delivery boundary, so every leaf that arrives here is
@@ -64,12 +69,21 @@ pub(crate) fn concat_system_prompt(tree: &Value, system_order: &[String]) -> Str
     parts.join("\n\n")
 }
 
+/// Collect the `text` of every leaf below `node`, in alphabetical DFS order.
+///
+/// An EMPTY `text` contributes nothing (GH #259). A slot is revoked by sending
+/// it with an empty rendering — the leaf has to exist, because that is what the
+/// KV-upsert in `cell.db` overwrites — but it must not then leave a hanging
+/// `"\n\n"` separator in the prompt for the rest of the cell's life. Same house
+/// rule as `build_attribution_headers` (an unset value produces no header, not
+/// an empty one) and as `build_openai_request` (an empty system string produces
+/// no system message).
 fn walk_collect(node: &Value, out: &mut Vec<String>) {
     let Some(obj) = node.as_object() else {
         return;
     };
     if obj.contains_key("text") {
-        if let Some(t) = obj["text"].as_str() {
+        if let Some(t) = obj["text"].as_str().filter(|t| !t.is_empty()) {
             out.push(t.to_string());
         }
         return;
@@ -531,6 +545,34 @@ mod tests {
         assert_eq!(
             out, "the long persona\n\ninline",
             "both leaves join the prompt; alphabetical DFS puts body before soul"
+        );
+    }
+
+    /// GH #259: a slot is revoked by re-sending it with an empty rendering,
+    /// because `system.*` is upserted per slot path and an omitted path is an
+    /// untouched one. The leaf therefore has to travel — and it must not cost
+    /// a blank gap in the prompt for every turn after the revocation.
+    #[test]
+    fn an_emptied_leaf_contributes_no_part_and_no_separator() {
+        let tree = json!({
+            "consult":  {"open": [], "text": ""},
+            "identity": {"soul": {"text": "S"}},
+            "memory":   {"recall": {"text": "M"}},
+        });
+        let out = concat_system_prompt(&tree, &[]);
+        assert_eq!(
+            out, "S\n\nM",
+            "an empty rendering revokes the slot without leaving a hanging separator"
+        );
+    }
+
+    #[test]
+    fn a_tree_of_nothing_but_emptied_leaves_yields_no_prompt_at_all() {
+        let tree = json!({"consult": {"text": ""}, "handover": {"text": ""}});
+        assert_eq!(
+            concat_system_prompt(&tree, &[]),
+            "",
+            "not \"\\n\\n\" — a whitespace-only system message is still a system message"
         );
     }
 

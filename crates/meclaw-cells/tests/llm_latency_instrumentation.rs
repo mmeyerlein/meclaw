@@ -35,7 +35,7 @@ async fn wire_call_reports_ttfb_and_total_for_a_slow_provider() {
     let (result, timings) = call_openai_timed(
         &client,
         &url,
-        "sk-test",
+        Some("sk-test"),
         &[],
         &json!({"model": "gpt-4o", "messages": []}),
         Duration::from_secs(10),
@@ -70,7 +70,7 @@ async fn wire_call_reports_no_ttfb_when_no_response_head_arrived() {
     let (result, timings) = call_openai_timed(
         &client,
         "http://127.0.0.1:1/chat/completions",
-        "sk-test",
+        Some("sk-test"),
         &[],
         &json!({"model": "gpt-4o", "messages": []}),
         Duration::from_millis(500),
@@ -98,7 +98,7 @@ async fn responses_wire_call_reports_ttfb_and_total_too() {
     let (result, timings) = meclaw_cells::llm::wire::call_responses_timed(
         &client,
         &url,
-        "sk-test",
+        Some("sk-test"),
         &[],
         &json!({"model": "gpt-4o", "input": []}),
         Duration::from_secs(10),

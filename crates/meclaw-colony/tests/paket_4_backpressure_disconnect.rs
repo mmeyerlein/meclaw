@@ -362,6 +362,7 @@ impl CellFactory for FloodLrFactory {
                 Some(death_ack_tx),
                 None,
                 None,
+                Default::default(),
             )
             .await;
         });
@@ -474,6 +475,7 @@ impl CellFactory for FloodStatefulFactory {
                     db,
                     None,
                     None,
+                    Default::default(),
                 );
             spawn_watcher(
                 &wake_watcher_inbox,

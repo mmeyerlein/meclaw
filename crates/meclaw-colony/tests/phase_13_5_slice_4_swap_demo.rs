@@ -140,6 +140,7 @@ impl CellFactory for GatedEchoFactory {
                 db,
                 None,
                 None,
+                Default::default(),
             )
         };
         let wake_build = build.clone();

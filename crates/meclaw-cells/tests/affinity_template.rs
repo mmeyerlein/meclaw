@@ -936,3 +936,48 @@ async fn push_fires_on_a_changed_pack_and_stays_silent_without_one() {
 
     h.shutdown().await;
 }
+
+/// GH #260 — the sovereignty sentence has two halves, and a store that seals
+/// one is still writable through the other.
+///
+/// `params.write_surface: "internal"` (ruling F3 / GH #132) bounds the ops the
+/// store's own `handle()` runs. The `transfer` body slot is answered by the
+/// SUBSTRATE, in `cell_task`, before `handle()` is ever reached — so an
+/// `import` from outside walks past that declaration without ever meeting it.
+/// The type-neutral `contract.write_surface` is the half that closes it.
+///
+/// `clock` carries the contract half as well, and for a reason that is not
+/// symmetry: a timer keeps its schedules in its own `cell.db`
+/// (`timer::db::load_active_filter_past`), so an imported row is a firing with
+/// an `emit_to` of the writer's choosing. The three `code` cells deliberately
+/// declare nothing — this hive keeps a lane's state on the wire, so their
+/// `cell.db` holds nothing a boundary would protect.
+#[test]
+fn the_two_cells_with_state_seal_both_write_surfaces() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let store = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        store["params"]["write_surface"], "internal",
+        "only affinity/gate writes into affinity/store"
+    );
+    assert_eq!(
+        store["contract"]["write_surface"], "internal",
+        "GH #260: without the substrate half an import writes rows past the one \
+         sentence this hive is built on"
+    );
+    assert_eq!(
+        read_json(&root.join("clock/config.json"))["contract"]["write_surface"],
+        "internal",
+        "GH #260: a timer's cell.db IS its schedule list -- an imported row fires"
+    );
+    for rel in ["brief/config.json", "gate/config.json", "push/config.json"] {
+        let cfg = read_json(&root.join(rel));
+        assert!(
+            cfg["contract"].get("write_surface").is_none(),
+            "{rel} is a code cell whose cell.db this template never uses; a \
+             boundary around it would be decoration, not a promise"
+        );
+    }
+}

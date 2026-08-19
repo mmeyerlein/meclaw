@@ -59,6 +59,11 @@ pub struct ContractView {
     /// declares no required consume keys (check is vacuous). Behind `Arc` for
     /// the same RespawnFn-clone reason as `emits`.
     pub consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    /// GH #260 — `contract.write_surface`: whether the writes the substrate
+    /// answers before `handle()` (the `transfer` slot's `import`) are bounded to
+    /// this cell's own parent scope. `Open` by default, so a cell that says
+    /// nothing keeps the behaviour it had.
+    pub write_surface: meclaw_core::WriteSurface,
 }
 
 /// What a `CellFactory` returns for `spawn_cell`.

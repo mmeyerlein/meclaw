@@ -16,6 +16,7 @@ pub mod colony_dispatch;
 pub mod config;
 pub mod connectivity;
 pub mod db_conn;
+pub mod db_transfer;
 pub mod dead_letter;
 pub mod edge_table;
 pub mod env_file;

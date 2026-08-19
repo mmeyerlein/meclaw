@@ -107,6 +107,12 @@ fn emit(doc: Value) -> Vec<Value> {
 }
 
 /// The close batch as the collector emits it (C3 receipt): `messages[]` is the
+/// The round the batches of this file were spoken in, and the room they were
+/// spoken in. Two named participants, never `["*"]`: a universal set would let
+/// every pin below pass over an adapter that had lost the real one.
+const AUDIENCE: &str = r#"["member:alex","agent:scribe"]"#;
+const ROOM: &str = "tg:4711";
+
 /// whole day, `rounds` travels next to it, `hop` carries session and counts.
 fn batch(session: &str, turns: &[(&str, &str)]) -> Value {
     let msgs: Vec<Value> = turns
@@ -117,7 +123,12 @@ fn batch(session: &str, turns: &[(&str, &str)]) -> Value {
         "header": {
             "hop": {"route": "in_batch", "session_id": session,
                     "turn_count": turns.len().to_string(), "round_count": "0"},
-            "context": {"session_id": session}
+            // The provenance of the round the batch was spoken in (#244/#269).
+            // The drain never reads it for its value -- it rides on in
+            // `context` -- but it refuses a batch that arrives without it,
+            // because a turn it could not deliver must not be consumed.
+            "context": {"session_id": session,
+                        "audience_set": AUDIENCE, "channel": ROOM}
         },
         "messages": msgs,
         "rounds": []
@@ -489,6 +500,91 @@ fn an_unreadable_parked_day_drains_nothing() {
     assert!(out.is_empty(), "no day, no episodes -- {out:?}");
 }
 
+// ══════════════════════════════════════════════ the provenance gate (GH #269)
+
+/// One batch, one refusal, and NOTHING else: no store op at all, so nothing is
+/// parked and nothing is marked. The batch stays deliverable.
+///
+/// The reason strings are the memory hive's own (`missing_audience` /
+/// `missing_channel`, contract ruling R3): the two halves of one gate have to
+/// speak one vocabulary, or an operator reading a refusal has to know which
+/// cell wrote it before they can read it.
+#[test]
+fn a_batch_without_its_round_is_refused_and_nothing_is_parked() {
+    for (missing, ctx, reason) in [
+        (
+            "audience_set",
+            json!({"session_id": "s1", "channel": ROOM}),
+            "missing_audience",
+        ),
+        (
+            "channel",
+            json!({"session_id": "s1", "audience_set": AUDIENCE}),
+            "missing_channel",
+        ),
+    ] {
+        let out = emit(json!({
+            "header": {"hop": {"route": "in_batch", "session_id": "s1"}, "context": ctx},
+            "messages": [{"origin": "user", "type": "text", "text": "a"}]
+        }));
+        assert_eq!(out.len(), 1, "without {missing}: one message, no more");
+        assert_eq!(hop(&out[0], "route"), "reject");
+        assert_eq!(hop(&out[0], "reject_reason"), reason);
+        assert!(
+            !out.iter().any(|m| hop(m, "route") == "lstore"),
+            "without {missing} the ledger is not touched: an unparked batch is \
+             a batch that can still be delivered -- {out:?}"
+        );
+    }
+}
+
+/// An empty participant set is a MISSING one, on every spelling of empty. The
+/// subset rule makes the empty set a subset of everything, so a blank that got
+/// through would not be a narrow audience but the widest one there is.
+#[test]
+fn an_empty_participant_set_counts_as_no_participant_set() {
+    for empty in ["", "[]", "[\"\"]", "not json", "{}"] {
+        let out = emit(json!({
+            "header": {"hop": {"route": "in_batch", "session_id": "s1"},
+                       "context": {"session_id": "s1", "audience_set": empty,
+                                   "channel": ROOM}},
+            "messages": [{"origin": "user", "type": "text", "text": "a"}]
+        }));
+        assert_eq!(
+            hop(&out[0], "reject_reason"),
+            "missing_audience",
+            "{empty:?}"
+        );
+    }
+}
+
+/// The one value the adapter must never reach for. A refusal names the missing
+/// key; it does not repair it, and least of all with the universal set -- `*`
+/// means readable by everyone in every later round, and no later run can take
+/// that back off a row.
+#[test]
+fn a_missing_participant_set_is_never_universalised() {
+    let out = emit(json!({
+        "header": {"hop": {"route": "in_batch", "session_id": "s1"},
+                   "context": {"session_id": "s1", "channel": ROOM}},
+        "messages": [{"origin": "user", "type": "text", "text": "a"}]
+    }));
+    let rendered = meclaw_core::serde_json::to_string(&out).expect("emission json");
+    assert!(
+        !rendered.contains("\"*\""),
+        "no emission of a refused batch carries a universal audience: {rendered}"
+    );
+    assert!(
+        !out.iter().any(|m| hop(m, "route") == "episode"),
+        "and no episode leaves either -- {out:?}"
+    );
+    assert_eq!(
+        out.iter().map(|m| hop(m, "route")).collect::<Vec<_>>(),
+        vec!["reject".to_string()],
+        "the ONE thing that leaves is the refusal -- {out:?}"
+    );
+}
+
 /// The event time is the caller's, never invented: a batch that carries one
 /// per turn hands it on, so a historical replay keeps the bi-temporal split
 /// (the writer stamps `recorded_at` from its own clock either way).
@@ -496,7 +592,8 @@ fn an_unreadable_parked_day_drains_nothing() {
 fn a_batch_that_knows_its_event_times_hands_them_on() {
     let doc = json!({
         "header": {"hop": {"route": "in_batch", "session_id": "s1"},
-                   "context": {"session_id": "s1"}},
+                   "context": {"session_id": "s1",
+                               "audience_set": AUDIENCE, "channel": ROOM}},
         "messages": [{"origin": "user", "type": "text", "text": "a",
                       "happened_at": "2020-01-01T00:00:00.000000Z"}]
     });

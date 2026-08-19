@@ -83,6 +83,7 @@ impl CellFactory for MultiUpdateMockCellFactory {
         // Slice 2: the cell's OWN pre-compiled consumes views, captured for
         // every build (initial wake + respawn converge by construction).
         let consumes_for_build = contract.consumes.clone();
+        let write_surface_for_build = contract.write_surface;
         type BuildFromRecv = Arc<
             dyn Fn(
                     mpsc::Receiver<Message>,
@@ -118,6 +119,7 @@ impl CellFactory for MultiUpdateMockCellFactory {
                 db,
                 blob_store_for_build.clone(),
                 consumes_for_build.clone(),
+                write_surface_for_build,
             )
         });
 

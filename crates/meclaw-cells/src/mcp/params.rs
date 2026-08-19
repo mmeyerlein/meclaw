@@ -138,25 +138,40 @@ impl McpParams {
 
 /// The pre-P7 shape: endpoint plus optional bearer.
 fn parse_http(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport, String> {
+    // An EMPTY endpoint is not an endpoint (GH #270). `${MCP_ENDPOINT}` without
+    // a default already fails loudly when the variable is unset; `MCP_ENDPOINT=`
+    // in an .env slipped through and left a cell that looked healthy and failed
+    // at URL build on every single call. Same message as the absent case — for
+    // an operator it is the same mistake with the same fix.
     let endpoint = obj
         .get("endpoint")
         .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
         .ok_or("endpoint: required (HTTP+JSON-RPC URL)")?
         .to_string();
+    // An empty token is no token (GH #268). `auth.bearer` is written as
+    // `${MCP_BEARER:-}` wherever the operator may leave the variable unset, and
+    // the substitution turns that into `""`. Sending `Authorization: Bearer `
+    // to a provider that would have answered anonymously is a worse failure
+    // than sending nothing, and every declaration in the tree describes the
+    // empty value as "no Authorization header".
     let bearer = obj
         .get("auth")
         .and_then(|a| a.as_object())
         .and_then(|a| a.get("bearer"))
         .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     Ok(McpTransport::Http { endpoint, bearer })
 }
 
 /// The P7 shape: a child process spec. `command` is the only required key.
 fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport, String> {
+    // An EMPTY command is not a command (GH #270) — see `parse_http` above.
     let program = obj
         .get("command")
         .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
         .ok_or("command: required (stdio transport)")?
         .to_string();
     let args = match obj.get("args") {

@@ -1,4 +1,4 @@
-# `memory-drain@2.0.0`
+# `memory-drain@2.0.2`
 
 The adapter between a closed session and the central memory (GitHub #101).
 
@@ -10,13 +10,13 @@ distribution). Nothing spoke both forms,
 so a closed day never reached memory at all.
 
 This hive is that translation, and it lives **outside** the memory hive on purpose
-(ruling R-MD-1): it speaks only the documented `turn-write` port, so **not one line of the
-memory hive changes**, the P15 invariance gate stays untouched, and nothing invents a
+(ruling R-MD-1): it speaks only the memory hive's documented `in_episode` lane, at the hive
+path, so **not one line of the memory hive changes**, the P15 invariance gate stays untouched, and nothing invents a
 second write path.
 
 ```
-<talky>/collector --route write--> ./drain --route episode--> <memory>/writer
-                                     |  ^
+<talky>/collector --route write--> ./drain --route episode--> <memory> (lane in_episode)
+                                     |  ^          \--route reject--> <wherever refusals are read>
                        route lstore  |  |  context.drain_origin == 'drain'
                                      v  |
                                  ./ledger
@@ -37,9 +37,10 @@ dormant (the island-activation rule).
 
 | Port | Direction | Endpoint | The edge must carry |
 |---|---|---|---|
-| in_batch | in | `./drain` | `condition: has(hop.route) && hop.route == 'write'`, `modifier: {set_hop: {route: "'in_batch'"}, set_context: {session_id: "hop.session_id"}}` |
+| in_batch | in | `./drain` | `condition: has(hop.route) && hop.route == 'write'`, `modifier: {set_hop: {route: "'in_batch'"}, set_context: {session_id: "hop.session_id"}}` — plus `audience_set` and `channel` in `context`, see "The provenance the batch has to carry" |
 | in_batch (per turn) | in | `./drain` | the same entry, a second edge, for a collector with `turn_write` set: `condition: … hop.route == 'turn_write'`, same modifier. See "Two cadences, one ledger". |
-| episode | out | `./drain` → the memory hive's `turn-write` port | `condition: has(hop.route) && hop.route == 'episode'`, `modifier: {set_context: {session_id: "hop.session_id", turn_id: "hop.turn_id", happened_at: "hop.happened_at"}}` |
+| episode | out | `./drain` → the memory hive's path, lane `in_episode` | `condition: has(hop.route) && hop.route == 'episode'`, `modifier: {set_hop: {route: "'in_episode'"}, set_context: {session_id: "hop.session_id", turn_id: "hop.turn_id", happened_at: "hop.happened_at"}}` |
+| reject | out | `./drain` → wherever refusals are read | `condition: has(hop.route) && hop.route == 'reject'`. **Required**: the template declares the pairing, so a mutation that wires `in_batch` without this edge is refused. |
 
 ```json
 {"scope": "/main", "ctx": {}, "diff": {
@@ -49,11 +50,14 @@ dormant (the island-activation rule).
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"},
                   "set_context": {"session_id": "hop.session_id"}}},
-    {"from": "./drain", "to": "./memory/writer",
+    {"from": "./drain", "to": "./memory",
      "condition": "has(hop.route) && hop.route == 'episode'",
-     "modifier": {"set_context": {"session_id": "hop.session_id",
+     "modifier": {"set_hop": {"route": "'in_episode'"},
+                  "set_context": {"session_id": "hop.session_id",
                                   "turn_id": "hop.turn_id",
-                                  "happened_at": "hop.happened_at"}}}
+                                  "happened_at": "hop.happened_at"}}},
+    {"from": "./drain", "to": "./sink",
+     "condition": "has(hop.route) && hop.route == 'reject'"}
   ]}}
 ```
 
@@ -75,6 +79,49 @@ whose CEL expression reads an *absent* hop key fails to evaluate, and a failed m
 makes the colony skip the **whole** edge — the same trap the memory hive documents for its
 recall window. `happened_at` in particular is usually empty (see below) and must still be
 promoted.
+
+## The provenance the batch has to carry
+
+Since the audience gate (`memory-hive@2.1.0`, GH #244, ADR-0002 E2) a turn is written with
+**who was present** or it is not written at all. Two keys carry that, and they are keys of
+the `context`, not of the body — a turn cannot assert its own audience:
+
+| Key | Meaning |
+|---|---|
+| `context.audience_set` | a JSON list of participants in affinity vocabulary (`member:alex`, `agent:scribe`); `["*"]` alone means universal |
+| `context.channel` | the room the batch was spoken in |
+
+**This adapter neither mints them nor reads them for their value.** Both ride in `context`
+from wherever they were declared, through the ledger round trip, out on every `episode` and
+into the hive's writer untouched — context is carried hop by hop, so nothing here has to
+copy them and nothing here may rewrite them (E12). What the adapter does is check that they
+are **there** before it consumes a batch it could not deliver:
+
+```
+in_batch with an audience  -> parked, probed, drained
+in_batch without one       -> route reject, hop.reject_reason 'missing_audience'
+                              ZERO ledger rows, zero episodes
+```
+
+**Why the refusal is here and not only in the hive.** The hive refuses correctly and
+loudly — one `reject` per turn, with a reason. But it refuses one hop too late: by then
+this adapter has already written the `mark` that says the day is through, and the ledger
+has no way back. The turns would then be refused **and** recorded as drained, and no later
+delivery — not the close batch, not a replay, not a fixed edge — would ever offer them
+again. Refusing at the door keeps the batch **undrained**: correct the wiring, deliver the
+same day again, and all of it lands.
+
+**`["*"]` is not a default and never will be.** It means readable by everyone in every
+later round, which is the one value that cannot be taken back once a row carries it — so
+an unknown audience is an error, not an occasion to guess. Same for the room: if it is not
+known, it is not known.
+
+**Where they usually come from.** In a colony built from `channel@1` both are already in
+`context` before the turn ever reaches the talky: the ingress door of the generation
+declares `audience_set` (the participant set is a constant of a generation's lifetime,
+ADR-0002 E8) and the connector promotes the room to `context.channel`. Such a tree wires
+this adapter exactly as it always did and adds nothing. A tree without a channel hive
+declares both on the `in_batch` edge itself.
 
 ## The chain
 
@@ -148,6 +195,18 @@ called twice.
   a replay had to speak to the episode port with the time in the header instead. The
   script's `recorded_at` fallback is a leftover of that period: `TurnObject` does not carry
   that key, so nothing can reach it.
+- **A close that nobody was present for is refused, not written.** The participant set is
+  a key of the round, and a batch that arrives without one is refused — visibly, on the
+  reject lane, with nothing consumed. It stays deliverable: wire the set onto the edge and
+  send the same day again.
+
+  This used to catch every session a timer swept closed, because a sweep carries the
+  *sweep's* context and not the conversation's. Since `session-keeper@2.0.1` it does not:
+  the keeper records the round on the generation row when the conversation OPENS it and
+  reads it back off that row at the seal, so `talky@3.0.5`'s close edge has a room and a
+  round to promote (GH #273). What remains refused is a generation whose ingress door
+  never declared one — including every generation that was already open when that edge was
+  wired, because provenance is written once and never rewritten (ADR-0002 E12).
 - **The parked day is a copy.** Each drain run parks the day it was handed; a second close
   of the same session parks a second copy. The ledger is a transport buffer, not a record —
   the durable record is the `episodes` table of the memory hive and the window store of the

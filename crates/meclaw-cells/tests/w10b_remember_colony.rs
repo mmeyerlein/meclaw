@@ -204,28 +204,40 @@ fn main_config() -> Value {
         // Hive-Grenze): both `talky` and `drain` declare their lanes and their
         // doors, and reaching past those doors delivers twice — once to the
         // cell and once to a hive path this graph has no exit for.
+        // The edges that carry a batch INTO the drain owe it its provenance
+        // (#244/#269): `audience_set` is the round, `speaker`/`agent_id` who
+        // spoke. `channel` is not set here -- it travels from the connector
+        // seam above (`hop.chat_id` -> `context.channel`), as it does in a real
+        // colony. One person, one agent, one room: that is this colony's whole
+        // cast, and a `["*"]` here would blind the suite to the leak the gate
+        // stops. They are declared at THIS door, not on the port edge one hop
+        // later, because the drain refuses a batch whose round it does not know
+        // rather than consuming turns it could not deliver (#269).
         {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id"}}},
+                      "set_context": {"session_id": "hop.session_id",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
         {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id"}}},
-        // The edge that carries a turn INTO the hive owes it its provenance
-        // (#244): `audience_set` is the round, `speaker`/`agent_id` who spoke.
-        // `channel` is not set here -- it travels from the connector seam above
-        // (`hop.chat_id` -> `context.channel`), as it does in a real colony.
-        // One person, one agent, one room: that is this colony's whole cast,
-        // and a `["*"]` here would blind the suite to the leak the gate stops.
+                      "set_context": {"session_id": "hop.session_id",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
+        // The port edge carries the keys the drain documents; the provenance
+        // rides along in `context` from the door above.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
+                                      "happened_at": "hop.happened_at"}}},
+        // The drain's own refusal lane, drained so a mis-wired batch is read
+        // rather than dead-lettered.
+        {"from": "./drain", "to": "/reject",
+         "condition": "has(hop.route) && hop.route == 'reject'"},
         // WAVE 10b, edge 1 of 2: the async tool call into the inline ingress.
         // In production this edge goes straight from `split`; here it takes the
         // test barrier on the way (module note).

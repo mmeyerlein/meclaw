@@ -352,7 +352,12 @@ fn drain_run(session: &str, batch: &Value, marks: &[u64]) -> Vec<Value> {
         "header": {
             "hop": {"route": "in_batch", "session_id": session,
                     "turn_count": hop(batch, "turn_count"), "round_count": "0"},
-            "context": {"session_id": session}
+            // The round the day was spoken in (#244/#269): the drain refuses a
+            // batch that does not carry one rather than consuming turns it
+            // could not deliver. Named participants, never `["*"]`.
+            "context": {"session_id": session,
+                        "audience_set": r#"["member:alex","agent:scribe"]"#,
+                        "channel": "tg:4711"}
         },
         "messages": batch["messages"].clone()
     });

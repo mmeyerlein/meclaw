@@ -143,9 +143,14 @@ fn the_event_time_reaches_the_drains_episode_over_a_valid_body() {
     ]);
     validate_ubf_body(&body(turns.clone())).expect("the import body is UBF-valid");
 
+    // The provenance of the round travels with the batch (#244/#269): a replay
+    // out of an archive knows who was present just as a live close does, and
+    // the drain refuses a batch that does not say.
     let doc = json!({
         "header": {"hop": {"route": "in_batch", "session_id": "s1"},
-                   "context": {"session_id": "s1"}},
+                   "context": {"session_id": "s1",
+                               "audience_set": "[\"member:alex\",\"agent:scribe\"]",
+                               "channel": "tg:4711"}},
         "messages": turns
     });
     let parked: Value = meclaw_core::serde_json::from_str(

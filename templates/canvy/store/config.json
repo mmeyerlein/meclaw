@@ -29,6 +29,7 @@
   },
   "contract": {
     "version": "0.1.0",
+    "write_surface": "internal",
     "settings": {},
     "emits": {
       "body": {

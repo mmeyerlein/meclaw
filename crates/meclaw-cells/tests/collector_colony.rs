@@ -258,6 +258,28 @@ sys.stdout.write(json.dumps({"header": {"route": "res"},
                                            "text": "result-" + str(c.get("text", ""))}]}))
 "#;
 
+/// A dispatcher that hands the WHOLE call bundle to one tool cell in one
+/// message, instead of splitting it into one message per call. Nothing in the
+/// substrate forbids that shape -- a batch tool is a tool.
+const BATCH_DISPATCH: &str = r#"
+import sys, json
+d = json.load(sys.stdin)["body"]
+calls = [m for m in d.get("messages", []) if m.get("type") == "tool_call"]
+sys.stdout.write(json.dumps([{"header": {"route": "asst"}, "messages": calls},
+                             {"header": {"route": "tool"}, "messages": calls}]))
+"#;
+
+/// The tool at the other end of that bundle: every call answered, in ONE
+/// message, each turn under the id of the call it answers (GH #252).
+const BATCH_TOOL: &str = r#"
+import sys, json
+d = json.load(sys.stdin)["body"]
+res = [{"origin": "tool", "type": "tool_result", "id": c.get("id", ""),
+        "text": "result-" + str(c.get("text", ""))}
+       for c in d.get("messages", []) if c.get("type") == "tool_call"]
+sys.stdout.write(json.dumps({"header": {"route": "res"}, "messages": res}))
+"#;
+
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
     let p = root.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -349,6 +371,28 @@ fn build_tool_tree(td: &tempfile::TempDir, knobs: &[(&str, &str)], brain: &str, 
         root,
         "main/tool/config.json",
         &code_cell(tool, &["res"], json!({})),
+    );
+}
+
+/// The same tree again, but with a dispatcher that batches and a tool that
+/// answers the whole batch in one message -- the shape GH #252 is about.
+fn build_batch_tree(td: &tempfile::TempDir, knobs: &[(&str, &str)]) {
+    build_base(td, knobs, true);
+    let root = td.path();
+    write(
+        root,
+        "main/brain/config.json",
+        &code_cell(TOOL_BRAIN, &[], finish_hop()),
+    );
+    write(
+        root,
+        "main/dispatch/config.json",
+        &code_cell(BATCH_DISPATCH, &["asst", "tool"], json!({})),
+    );
+    write(
+        root,
+        "main/tool/config.json",
+        &code_cell(BATCH_TOOL, &["res"], json!({})),
     );
 }
 
@@ -776,6 +820,35 @@ async fn a_tool_round_re_enters_the_brain_through_the_same_seam() {
     assert!(
         !a2.contains("result-alpha,result-beta,result-alpha"),
         "{a2}"
+    );
+
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_message_answering_two_calls_completes_the_round() {
+    // GH #252, at the port. The tool answers BOTH calls in one message, which
+    // the `in_tool` lane used to reduce to `messages[0]`: the second call
+    // stayed open, the round parked, and the turn was only ever closed by the
+    // idle exit with a synthetic stand-in for a result that had arrived. The
+    // observable form of the defect is that no answer comes back at all inside
+    // the failure marker, which is exactly what this case would hit.
+    let td = tempfile::TempDir::new().unwrap();
+    build_batch_tree(&td, &[]);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    let a1 = say(&h, &mut sink_rx, "look it up").await;
+    assert!(
+        a1.contains("|tools=2|"),
+        "one message answered both calls: {a1}"
+    );
+    assert!(
+        a1.contains("result-alpha,result-beta"),
+        "both results reached the brain, each under its own call id: {a1}"
+    );
+    assert!(
+        a1.starts_with("seen=5|"),
+        "window turn + the assistant turn that asked (2 calls) + 2 results: {a1}"
     );
 
     h.shutdown().await;

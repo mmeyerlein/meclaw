@@ -1,4 +1,4 @@
-# `receptionist@2.0.0`
+# `receptionist@2.0.2`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -43,8 +43,8 @@ the turn that triggered it follows the ingress edge that mutation just drew.
 | `ledger` | `store` | `channels(channel, talky_path, created_at)` |
 
 Two internal edges: `greet -> ledger` on `hop.route == 'rstore'` (promoting the
-step, the channel and the parked turn to context), and `ledger -> greet` back on
-`context.rec_origin == 'greet'`.
+step, the channel, the round and the parked turn to context), and
+`ledger -> greet` back on `context.rec_origin == 'greet'`.
 
 ## Lanes
 
@@ -53,7 +53,7 @@ Two edges, and **the parent draws both**.
 
 | lane | direction | note |
 |---|---|---|
-| `in_turn` | in | the first turn of a channel. The edge promotes `context.channel` (mandatory) |
+| `in_turn` | in | the first turn of a channel. The edge promotes `context.channel` and `context.audience_set`, both mandatory |
 | `mutate` | out | the tree this reception decided to grow, on to `/colony/mutations` -- **bootstrap only**, see below |
 | `turn` | out | the turn itself, on the lane its own agent answers to |
 
@@ -61,7 +61,8 @@ Two edges, and **the parent draws both**.
 {"from": "<surface>", "to": "./reception",
  "condition": "has(hop.route) && hop.route == 'turn'",
  "modifier": {"set_hop": {"route": "'in_turn'"},
-              "set_context": {"channel": "hop.chat_id"}}},
+              "set_context": {"channel": "hop.chat_id",
+                              "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"}}},
 {"from": "./reception", "to": "/colony/mutations",
  "condition": "has(hop.route) && hop.route == 'mutate'"}
 ```
@@ -85,6 +86,25 @@ talky for everybody, exactly the thing this template exists to prevent. Whatever
 the surface calls "the same conversation partner" goes in there: a
 Telegram/Slack `chat_id`, a room, a phone number.
 
+**The round is the caller's too, and for a reason this template cannot get
+around.** The reception knows a channel, and a channel is a room -- `tg:42`, a
+phone number, a Slack conversation. A participant is a different thing
+(`member:alex`, `agent:scribe`), and turning the first into the second would be
+inventing a person nobody named. So the round travels the same way the channel
+does: the caller's ingress edge declares `context.audience_set` as a JSON list in
+affinity vocabulary, and the reception hands it to the edge it draws into the
+composite. It derives nothing, defaults nothing, and never writes `["*"]`.
+
+Leave it out and every generation this reception builds closes **untagged**: the
+keeper writes an empty round onto the generation row at the open (ADR-0002 E8 --
+the round is a constant of the generation, and E12 -- provenance is never
+rewritten), the night sweep carries that empty round out on the `write` port, and
+a [`memory-drain`](../memory-drain/) on that port refuses the day with
+`missing_audience` rather than storing a row that claims everyone was present.
+Nothing is lost and nothing is guessed; the day simply does not land. Wiring the
+key afterwards takes effect on the NEXT generation of a channel, never on one
+that is already open.
+
 **Numbers on the hop need `int()`.** A proxy delivers JSON integers, CEL
 deserialises them as `uint`, and a bare `hop.chat_id == 12345` is silently
 **false** -- no error, no log line. Any numeric condition on YOUR ingress edge
@@ -102,7 +122,8 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
     {"from": "./reception", "to": "./talky-<key>",
      "condition": "has(hop.route) && hop.route == 'turn' && has(hop.chan) && hop.chan == '<key>'",
      "modifier": {"set_hop": {"route": "'in_turn'"},
-                  "set_context": {"channel": "hop.chan_raw"}}},
+                  "set_context": {"channel": "hop.chan_raw",
+                                  "audience_set": "hop.aud"}}},
     {"from": "./talky-<key>", "to": "<RECEPTIONIST_REPLY_TO>",
      "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
     {"from": "./talky-<key>", "to": "<RECEPTIONIST_WRITE_TO>",
@@ -115,6 +136,16 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
 Those are talky's four essential lanes, at talky's own path -- since `talky@3` there is no cell inside it a mutation could name. A target left empty in `.env`
 means the edge is **left out** rather than invented -- and an unwired answer
 lane dead-letters, loudly.
+
+**Three keys travel, and the third is the round.** `hop.aud` is the round the
+caller declared, carried through the ledger round trip as `context.rec_aud` and
+put back on the hop -- so the ingress edge the reception draws **declares** it
+rather than hoping the context survives the hops. That distinction is the whole
+of GH #274: a value that arrives because nothing deleted it is not a promise, and
+the next version of any cell on the path may stop carrying it. `hop.aud` is
+always present and empty when the door declared nothing, because a missing hop
+key makes a CEL modifier fail and a failed modifier skips the edge -- a turn that
+cannot name its round would vanish instead of being refused downstream.
 
 **Two keys per channel, on purpose.** `hop.chan` is the sanitised key: it names
 the node and it is what the edge condition compares, so no channel identity ever
@@ -205,3 +236,10 @@ template while the second turn of the first channel builds nothing (proved
 positively through the mutation audit, not through the registry, because a
 second `add_nodes` would be REJECTED and leave the registry looking identical),
 and a burst on a cold channel never forks it.
+
+`crates/meclaw-cells/tests/gh274_a_receptionist_built_talky_closes_tagged.rs` --
+the whole path in one run: the reception builds a talky, the keeper's own night
+timer (wound down to a second) sweeps the day shut, and the episode rows land in
+a memory hive carrying the round the conversation was spoken in. The edge the
+mutation drew is read back out of the live colony in the same test, so the pin
+covers the promise as well as the landing.

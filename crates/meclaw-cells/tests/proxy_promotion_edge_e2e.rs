@@ -47,7 +47,6 @@ use meclaw_testing::mock_slack::{
 };
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -75,6 +74,13 @@ const SLACK_TS: &str = "1700000000.000100";
 const EMPTY_UPDATES: &[u8] = br#"{"ok":true,"result":[]}"#;
 
 /// Failure-marker deadline (30 s convention, robust under cargo-parallel load).
+///
+/// It is a marker and nothing else: no semantic timing hangs off it, and every
+/// wait it bounds is preceded by a receipt saying the external half already
+/// happened (see [`await_update_taken`]). A semantic discriminator would be
+/// tight and would carry its reason here; this one is generous on purpose,
+/// because the only thing it decides is when to stop waiting for a cascade that
+/// is not coming.
 const MARKER: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
@@ -701,13 +707,38 @@ async fn recv(rx: &mut mpsc::Receiver<Message>, what: &str) -> Message {
 /// The mock's capture vector type.
 type Captured = Arc<tokio::sync::Mutex<Vec<CapturedRequest>>>;
 
+/// The `offset` a `getUpdates` query carries, i.e. the cursor the proxy is
+/// confirming. `None` when the path is not a poll or carries no cursor.
+fn poll_offset(path: &str) -> Option<i64> {
+    path.split('?')
+        .nth(1)?
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("offset="))?
+        .parse()
+        .ok()
+}
+
 /// One mock server for both Telegram calls the cell makes.
 ///
-/// The long poll answers the single canned update once and stays empty
-/// afterwards (the cell advances its cursor, so a repeat would be a second
-/// emission); `sendMessage` always succeeds. Everything is served from the
-/// validator hook, which is path-aware — the canned sequence is a formality and
-/// is never consumed.
+/// The long poll answers the canned update **until the proxy confirms it**, and
+/// stays empty from then on; `sendMessage` always succeeds. Everything is served
+/// from the validator hook, which is path-aware — the canned sequence is a
+/// formality and is never consumed.
+///
+/// **Confirmation is the cursor, not a counter, and that is a load fix.** The
+/// mock used to hand the update to the FIRST poll and empty every poll after
+/// it. But the capture (and with it the counter) happens when the request is
+/// READ, while the response is written afterwards — so a runner busy enough to
+/// push the write past the client's `long_poll_timeout_ms` left the proxy
+/// retrying a cursor whose only copy of the update had already been spent. The
+/// update was then gone for good, and no failure-marker constant could have
+/// saved the run: the test was waiting for something that would never arrive.
+///
+/// Telegram's own contract is at-least-once and the acknowledgement is
+/// `offset = update_id + 1` on the next poll, so serving by cursor is both more
+/// faithful and idempotent under load. A response the proxy never received is
+/// simply asked for again, and the emission still happens exactly once, because
+/// the cell advances its own cursor in memory the moment it parses the update.
 async fn start_mock_telegram() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, Captured) {
     let update = json!({
         "ok": true,
@@ -723,14 +754,14 @@ async fn start_mock_telegram() -> (std::net::SocketAddr, tokio::task::JoinHandle
     })
     .to_string()
     .into_bytes();
-    let polls = Arc::new(AtomicUsize::new(0));
     let validator: RequestValidator = Arc::new(move |req: &CapturedRequest| {
         if req.path.contains("/getUpdates") {
-            if polls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Some(MockResponse::ok_json(&update))
-            } else {
-                // Keeps the idle lane from spinning against the mock.
+            if poll_offset(&req.path).is_some_and(|o| o > TELEGRAM_UPDATE_ID) {
+                // Confirmed — the cursor moved past the update. Keeps the idle
+                // lane from spinning against the mock.
                 Some(MockResponse::ok_json(EMPTY_UPDATES).with_delay(Duration::from_millis(100)))
+            } else {
+                Some(MockResponse::ok_json(&update))
             }
         } else if req.path.contains("/sendMessage") {
             Some(MockResponse::ok_json(br#"{"ok":true,"result":{}}"#))
@@ -759,8 +790,37 @@ async fn telegram_sends(captured: &Captured) -> Vec<Value> {
         .collect()
 }
 
-/// Waits until the mock has SERVED the poll that carries the canned update
-/// (GH #153).
+/// The external trace of the cascade: how many requests the mock saw and the
+/// tail of them, which is the only thing a failure inside the colony can still
+/// show.
+///
+/// The tail is capped. An idle lane polls twice a second, so a marker that runs
+/// its full length has hundreds of identical lines behind it — printing them all
+/// buries the one line that carries the finding (the confirming `offset`, or a
+/// `sendMessage` that did go out) under its own noise.
+async fn mock_trace(captured: &Captured) -> String {
+    const TAIL: usize = 8;
+    let paths: Vec<String> = captured
+        .lock()
+        .await
+        .iter()
+        .map(|r| format!("{} {}", r.method, r.path))
+        .collect();
+    let skipped = paths.len().saturating_sub(TAIL);
+    format!(
+        "{} request(s){}: {:?}",
+        paths.len(),
+        if skipped > 0 {
+            format!(", last {TAIL} of them")
+        } else {
+            String::new()
+        },
+        &paths[skipped..]
+    )
+}
+
+/// Waits until the proxy has TAKEN the canned update — its own acknowledgement,
+/// not a stopwatch (GH #153, GH #250).
 ///
 /// The proxy polls; the test cannot see a poll cycle, only its effect. So a
 /// wait for the relay's first message was really a wait for "a cycle landed",
@@ -770,35 +830,64 @@ async fn telegram_sends(captured: &Captured) -> Vec<Value> {
 /// and green on an immediate rerun, having spent the full 30-second marker on
 /// a path that takes a third of a second locally.
 ///
-/// The mock knows exactly when it answered, and the capture vector is the
-/// observable event. Waiting for THAT first splits the failure in two: either
-/// the proxy never asked (the poll half), or it asked and the colony delivered
-/// nothing (the routing half). Both are worth different work, and a single
-/// 30-second marker across both said neither.
-async fn await_first_poll(captured: &Captured) {
+/// **What is waited for is a receipt the substrate already emits.** Telegram's
+/// cursor IS the acknowledgement: the I/O task raises `running_offset` to
+/// `update_id + 1` only after a poll came back parsed, and hands the event to
+/// the handler in the same arm — so the first `getUpdates?offset=<update_id+1>`
+/// on the wire says, in the proxy's own words, "I have the update and my
+/// handler has it too". Everything after that point is in-process routing with
+/// no external dependency left, which is what makes the marker below a marker
+/// again rather than a bet on how busy the box is.
+///
+/// Splitting there also splits the failure in two: either the proxy never
+/// took the update (the POLL half — it never asked, or never got an answer it
+/// could parse), or it took it and the colony delivered nothing (the ROUTING
+/// half). Both are worth different work, and a single 30-second marker across
+/// both said neither.
+async fn await_update_taken(captured: &Captured) {
     let deadline = tokio::time::Instant::now() + MARKER;
     loop {
-        let polls = captured
+        let acked = captured
             .lock()
             .await
             .iter()
             .filter(|r| r.path.contains("/getUpdates"))
-            .count();
-        if polls > 0 {
+            .any(|r| poll_offset(&r.path).is_some_and(|o| o > TELEGRAM_UPDATE_ID));
+        if acked {
             return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the proxy never polled the mock within 30s — the POLL half, not the \
-             routing half; paths seen: {:?}",
-            captured
-                .lock()
-                .await
-                .iter()
-                .map(|r| r.path.clone())
-                .collect::<Vec<_>>()
+            "the proxy never confirmed the update within 30s — the POLL half, not \
+             the routing half: no getUpdates carried offset > {TELEGRAM_UPDATE_ID}. \
+             The mock saw {}",
+            mock_trace(captured).await
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// [`recv`] for the routing half: same 30 s failure marker, but a timeout says
+/// what DID arrive at the mock.
+///
+/// A marker that fires prints one fact ("nothing came") and leaves the two
+/// candidates — a loaded runner, or a routing leg that is genuinely broken —
+/// indistinguishable until somebody reruns the test. The mock's request trace
+/// separates them on sight: an acknowledged cursor with many idle polls behind
+/// it is a colony that had the update and did not route it, while a trace that
+/// stops moving is a box (or a lane) that stopped.
+async fn recv_routed(rx: &mut mpsc::Receiver<Message>, captured: &Captured, what: &str) -> Message {
+    match tokio::time::timeout(MARKER, rx.recv()).await {
+        Ok(Some(msg)) => msg,
+        Ok(None) => panic!("{what} — the capture channel closed"),
+        Err(_) => {
+            let trace = mock_trace(captured).await;
+            panic!(
+                "{what} — nothing arrived within 30s (failure marker, not a \
+                 semantic bound). The update was acknowledged, so the mock trace \
+                 tells a busy runner from a broken route; the mock saw {trace}"
+            )
+        }
     }
 }
 
@@ -841,17 +930,19 @@ async fn telegram_promotion_edge_carries_the_reply_back_to_the_right_chat() {
         run.boot.as_ref().err()
     );
 
-    // GH #153: wait for the observable event first. Until the mock has served a
-    // `getUpdates`, there is nothing for the colony to route, and a timeout
-    // here would blame the routing for a poll that had not happened.
-    await_first_poll(&captured).await;
+    // GH #153/#250: wait for the proxy's own acknowledgement first. Until its
+    // cursor moved past the update there is nothing for the colony to route,
+    // and a timeout here would blame the routing for a poll that had not
+    // happened — or, worse, for one whose answer never got back in time.
+    await_update_taken(&captured).await;
 
     // Mid-loop receipt: the edge modifier put chat_id into the PERSISTENT
     // compartment. The cell emitted it as a hop key, and only an edge can move
     // it here — a hop would already have decayed at the relay's own emission.
-    let user_turn = recv(
+    let user_turn = recv_routed(
         &mut run.relay_rx,
-        "the poll was served, so this is the ROUTING half: the relay must receive the user turn",
+        &captured,
+        "the update was acknowledged, so this is the ROUTING half: the relay must receive the user turn",
     )
     .await;
     assert_eq!(
@@ -923,14 +1014,15 @@ async fn telegram_reply_leg_dies_as_missing_chat_id_without_the_promotion() {
         run.boot.as_ref().err()
     );
 
-    // GH #153, same split as the positive arm.
-    await_first_poll(&captured).await;
+    // GH #153/#250, same split as the positive arm.
+    await_update_taken(&captured).await;
 
     // Sanity on the same message the positive arm asserts against: without the
     // modifier the address never leaves the hop, and the hop is gone by now.
-    let user_turn = recv(
+    let user_turn = recv_routed(
         &mut run.relay_rx,
-        "the poll was served, so this is the ROUTING half: the relay must receive the user turn",
+        &captured,
+        "the update was acknowledged, so this is the ROUTING half: the relay must receive the user turn",
     )
     .await;
     assert!(

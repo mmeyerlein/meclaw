@@ -1,0 +1,1174 @@
+//! GH #253 — content transfer for a cell that has a `cell.db`: the inverse of
+//! the JSONL seed loader, plus the half the loader cannot reach.
+//!
+//! ## Why this is not a cell-type feature
+//!
+//! The seed loader already works for every cell type and always has.
+//! `mutation::stage::seed_cell_db_if_present` takes a **path**, knows no cell
+//! type, walks every `seed/*.jsonl`, derives the table name from the file stem
+//! and hands each file to `apply_seed_jsonl` — *"Generic JSONL-Seed-Loader"*, in
+//! its own words. So the way **in** was never per-type; only the way **out**
+//! was missing, and it was missing for all ten types that carry a `cell.db`
+//! (`code`, `harness`, `llm`, `mcp`, `proxy`, `stdio_child`, `store`,
+//! `subcolony`, `timer`, `vault`).
+//!
+//! [`export_document`] is therefore written as the **inverse of
+//! `apply_seed_jsonl`**: same table-per-file unit, same `{"schema": {…}}`
+//! header, same `text`/`int`/`json` vocabulary, same one-row-per-line body.
+//! Write a document's `schema` object as line 1 and one row per line after it
+//! and the result **is** a `seed/<table>.jsonl` that the existing loader parses
+//! without knowing this module exists.
+//!
+//! ## The half the loader cannot reach
+//!
+//! `seed_cell_db_if_present` runs during **staging**, into a `cell.db` that was
+//! just created. An existing database opens as `Resumed` and the seed is inert —
+//! not merged, not appended, not diffed; it is not read (`docs/config.md`: *"in
+//! that moment and never again"*). There is no message, no operation and no
+//! flag that makes a **running** cell load one. [`import_document`] is that
+//! missing half, and it answers the three questions a seeder never had to:
+//!
+//! * **Collision on an existing key: the target wins, always.** An import never
+//!   updates and never overwrites. A row the target already decided — including
+//!   the participant set it was decided in front of — is not something a
+//!   document from elsewhere may replace. The operation is a **merge**.
+//! * **Additive, never replacing.** No delete, no update, no truncate-and-load.
+//!   A replacing import is a different operation and would need the no-delete
+//!   policy's blessing before it could exist.
+//! * **A partial import is a STATE, not a failure.** Everything checkable is
+//!   checked before the first write and the writes run in ONE transaction, so a
+//!   part applies whole or is refused whole. A whole cell is many parts, and
+//!   stopping between them leaves a prefix — which is safe precisely because
+//!   re-applying is idempotent. The repair is "send it again"; there is no
+//!   compensating action to get wrong.
+//!
+//! ## Why both halves run on the CELL's own connection
+//!
+//! An `import` writes through ordinary `INSERT` statements on the connection the
+//! cell itself opened, which is what keeps a maintained index maintained: the
+//! `store`'s FTS5 indexes are declared with the `meclaw_stem_v1` tokenizer,
+//! which is registered per connection, and their triggers are
+//! `AFTER INSERT/UPDATE/DELETE ON <table>`. A write from any other connection
+//! fires a trigger that cannot resolve its tokenizer and fails — which is why
+//! the substrate hands this module the live `DbConn` instead of opening the file
+//! (`cell_task`), and why the database-isolation rule is never bent to make a
+//! transfer work.
+//!
+//! ## Provenance
+//!
+//! Since 0.16.0 rows carry the participant set they were learned in front of
+//! (`audience_set`, `channel`, `speaker`). A transfer that drops one launders
+//! the row: an imported row whose audience did not survive may be told to
+//! anyone. That is prevented **structurally, not by a list of names**: an export
+//! projects every column of a table, and an import refuses any part whose
+//! declared schema disagrees with the target by a single column, in either
+//! direction. A column that cannot be dropped covers every table of every cell
+//! type, where a name list would only cover the ones somebody wrote down.
+
+use meclaw_core::serde_json::{Map, Value};
+use std::collections::BTreeSet;
+
+/// The document format [`export_document`] answers with and [`import_document`]
+/// accepts.
+///
+/// A version, because a document outlives the code that wrote it: a reader that
+/// does not know this string refuses instead of guessing.
+pub const TRANSFER_FORMAT: &str = "meclaw-cell-export/1";
+
+/// The `cell.db` tables the **substrate** owns, not the cell
+/// (`persist::schema::CELL_DB_DDL`). They are excluded from a transfer and this
+/// is a decision, not an omission:
+///
+/// * `last_input` is the last inbound message — restoring it into another cell
+///   would hand it a message it never received;
+/// * `meta` is the schema version, written by `setup_cell_db` on every open;
+/// * `params` is the β runtime overlay, whose baseline is the `config.json` of
+///   the receiving instance, not of the source.
+///
+/// `system` is deliberately **not** on this list. The `llm` cell's accumulated
+/// `system.*` tree is content — `seed/system.jsonl` is a documented seed input
+/// (GH #99), so it has to be a documented output too.
+pub const SUBSTRATE_TABLES: &[&str] = &["last_input", "meta", "params"];
+
+/// What one transfer call ended as.
+///
+/// Three cases rather than an error type: the substrate turns each into a
+/// reply, and the classification of a SQLite failure belongs to whoever
+/// documents an error-code vocabulary.
+#[derive(Debug)]
+pub enum TransferOutcome {
+    /// The call ran. `payload` is the document (export) or the receipt (import).
+    Done {
+        /// Rows read (export) or rows written (import).
+        rows_affected: i64,
+        /// The JSON payload the caller emits.
+        payload: Value,
+    },
+    /// Refused before anything changed, with a short machine-readable code and
+    /// a reason a human can act on.
+    Refused {
+        /// `unknown_table`, `unknown_column` or `import_schema_drift`.
+        code: &'static str,
+        /// Why — naming the table and the columns involved.
+        detail: String,
+    },
+    /// SQLite itself failed.
+    Sql(rusqlite::Error),
+}
+
+/// The content tables of a `cell.db`, in name order.
+///
+/// Everything SQLite reports as a table, minus its own `sqlite_%` bookkeeping,
+/// minus [`SUBSTRATE_TABLES`], minus every virtual table together with its
+/// shadow tables. An FTS5 index is `<t>_fts` plus `<t>_fts_data`, `<t>_fts_idx`,
+/// … — derived data a transfer must never carry, because the triggers rebuild it
+/// from the base table on the way in, and because a connection without the
+/// index's tokenizer cannot even open it.
+///
+/// The default is **every remaining table**, which is exactly what the seed
+/// loader does in reverse: it writes whatever `seed/*.jsonl` names. A cell type
+/// that wants a table left out of a transfer is a judgement this module does not
+/// make for it — and making the wrong one silently is worse than carrying a work
+/// queue somebody can ignore.
+pub fn content_tables(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<String>> {
+    let mut st =
+        conn.prepare("SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table'")?;
+    let all: Vec<(String, String)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let virtuals: Vec<&str> = all
+        .iter()
+        .filter(|(_, sql)| {
+            sql.trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE VIRTUAL TABLE")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let mut out: Vec<String> = all
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| {
+            !name.starts_with("sqlite_")
+                && !SUBSTRATE_TABLES.contains(&name.as_str())
+                && !virtuals
+                    .iter()
+                    .any(|v| name == v || name.starts_with(&format!("{v}_")))
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// One column as the SQLite catalog spells it.
+struct Column {
+    name: String,
+    decl_type: String,
+    pk: i64,
+}
+
+/// The columns of `table`, in storage order, straight from SQLite.
+///
+/// Every identifier that later reaches a statement comes from here — caller text
+/// only ever arrives as a bound parameter or as a name matched against this
+/// list. That is the same injection barrier the `store`'s query layer draws.
+fn columns_of(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<Vec<Column>> {
+    let mut st = conn.prepare("SELECT name, type, pk FROM pragma_table_info(?1) ORDER BY cid")?;
+    st.query_map([table], |r| {
+        Ok(Column {
+            name: r.get(0)?,
+            decl_type: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            pk: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+
+/// The table's own primary key, in key order.
+///
+/// Empty for every table a `store` declares in `params.schema` — that
+/// declaration cannot express a key — and for every table the seed loader built,
+/// because `apply_seed_jsonl`'s `CREATE TABLE` has no key either. Both
+/// operations therefore also accept a `key` argument.
+fn primary_key(cols: &[Column]) -> Vec<String> {
+    let mut keyed: Vec<&Column> = cols.iter().filter(|c| c.pk > 0).collect();
+    keyed.sort_by_key(|c| c.pk);
+    keyed.into_iter().map(|c| c.name.clone()).collect()
+}
+
+/// The seed vocabulary a column's declaration maps onto.
+///
+/// `apply_seed_jsonl` maps the other way (`int` → `INTEGER`, `json`/`text`/
+/// anything → `TEXT`), so `json` and `text` are indistinguishable once a table
+/// exists. A round trip through this pair is therefore type-stable even though
+/// it is not type-preserving, and the loader's own fallback (`_ => TEXT`) is what
+/// makes that harmless.
+fn seed_type(decl_type: &str) -> &'static str {
+    match decl_type.to_ascii_uppercase().as_str() {
+        "INTEGER" | "INT" => "int",
+        _ => "text",
+    }
+}
+
+/// Resolve a caller-supplied table name against the cell's content tables.
+///
+/// A table that exists but is substrate machinery is refused with the same code
+/// as one that does not exist — a caller cannot address either — but the detail
+/// says which of the two it is, because "that table is the substrate's" and
+/// "that table is a typo" want different fixes.
+fn resolve_table(conn: &rusqlite::Connection, table: &str) -> Result<String, TransferOutcome> {
+    let tables = match content_tables(conn) {
+        Ok(t) => t,
+        Err(e) => return Err(TransferOutcome::Sql(e)),
+    };
+    if let Some(t) = tables.iter().find(|t| t.as_str() == table) {
+        return Ok(t.clone());
+    }
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok();
+    Err(TransferOutcome::Refused {
+        code: "unknown_table",
+        detail: if exists {
+            format!(
+                "{table:?} is not content — it belongs to the substrate or is a derived index, \
+                 and is deliberately not transferable (transferable: {})",
+                tables.join(", ")
+            )
+        } else {
+            format!("no such table: {table}")
+        },
+    })
+}
+
+/// A caller-supplied `key`: the columns that make a row THE SAME row across two
+/// cells. Every entry is matched against the catalog, so an unknown column is a
+/// named refusal rather than a quoted identifier.
+fn parse_key(
+    args: &Map<String, Value>,
+    cols: &[Column],
+    op: &str,
+) -> Result<Result<Vec<String>, TransferOutcome>, String> {
+    let Some(v) = args.get("key") else {
+        return Ok(Ok(Vec::new()));
+    };
+    let arr = v
+        .as_array()
+        .ok_or_else(|| format!("{op}: key must be an array of column names"))?;
+    let mut out = Vec::new();
+    for entry in arr {
+        let name = entry
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("{op}: key entry must be a non-empty column name"))?;
+        match cols.iter().find(|c| c.name == name) {
+            Some(c) => out.push(c.name.clone()),
+            None => {
+                return Ok(Err(TransferOutcome::Refused {
+                    code: "unknown_column",
+                    detail: format!("no such column: {name}"),
+                }));
+            }
+        }
+    }
+    Ok(Ok(out))
+}
+
+/// `export` — one content table as a document, or, without `table`, the
+/// inventory of what this cell has to offer.
+///
+/// The document is `{format, table, key, schema, rows}` and its `schema` object
+/// is a seed header: `{"schema": …}` on line 1, one row per line after it, and
+/// the file is a `seed/<table>.jsonl` the existing loader reads. That is the
+/// whole point of the shape — the birth path and the transfer path speak one
+/// format, so "export the old cell, birth a new one from it" is a mechanical
+/// operation instead of a script that has to understand the content.
+///
+/// Unbounded on purpose: a truncated part lies about being a table, and a limit
+/// no reader can see is worse than a large message. Ordered by the key when
+/// there is one, otherwise by every column, so the same content yields the same
+/// document — a backup nobody can diff against yesterday's hides what changed.
+///
+/// An export is a **read**. It discloses exactly what a read of the same table
+/// already discloses, so it is not bounded by a cell's write surface.
+pub fn export_document(
+    conn: &rusqlite::Connection,
+    args: &Map<String, Value>,
+) -> Result<TransferOutcome, String> {
+    let Some(table_arg) = args.get("table") else {
+        let tables = match content_tables(conn) {
+            Ok(t) => t,
+            Err(e) => return Ok(TransferOutcome::Sql(e)),
+        };
+        let mut payload = Map::new();
+        payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
+        payload.insert(
+            "tables".into(),
+            Value::Array(tables.into_iter().map(Value::from).collect()),
+        );
+        return Ok(TransferOutcome::Done {
+            rows_affected: 0,
+            payload: Value::Object(payload),
+        });
+    };
+    let table = table_arg.as_str().ok_or("export: table must be a string")?;
+    let table = match resolve_table(conn, table) {
+        Ok(t) => t,
+        Err(refusal) => return Ok(refusal),
+    };
+    let cols = match columns_of(conn, &table) {
+        Ok(c) => c,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    if cols.is_empty() {
+        return Err(format!("export: table {table:?} declares no columns"));
+    }
+    let key = match parse_key(args, &cols, "export")? {
+        Ok(k) if !k.is_empty() => k,
+        Ok(_) => primary_key(&cols),
+        Err(refusal) => return Ok(refusal),
+    };
+
+    let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+    let order_cols = if key.is_empty() { &names } else { &key };
+    let stmt = format!(
+        "SELECT {} FROM \"{table}\" ORDER BY {}",
+        names
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+        order_cols
+            .iter()
+            .map(|c| format!("\"{c}\" ASC"))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    let mut prepared = match conn.prepare(&stmt) {
+        Ok(p) => p,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    let mut rows = match prepared.query([]) {
+        Ok(r) => r,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    let mut out = Vec::new();
+    loop {
+        match rows.next() {
+            Ok(Some(row)) => {
+                let mut obj = Map::new();
+                for (i, name) in names.iter().enumerate() {
+                    obj.insert(name.clone(), sql_to_json(row, i));
+                }
+                out.push(Value::Object(obj));
+            }
+            Ok(None) => break,
+            Err(e) => return Ok(TransferOutcome::Sql(e)),
+        }
+    }
+
+    let mut schema = Map::new();
+    for c in &cols {
+        schema.insert(c.name.clone(), Value::from(seed_type(&c.decl_type)));
+    }
+    let mut payload = Map::new();
+    payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
+    payload.insert("table".into(), Value::from(table));
+    payload.insert(
+        "key".into(),
+        Value::Array(key.into_iter().map(Value::from).collect()),
+    );
+    payload.insert("schema".into(), Value::Object(schema));
+    let count = out.len() as i64;
+    payload.insert("rows".into(), Value::Array(out));
+    Ok(TransferOutcome::Done {
+        rows_affected: count,
+        payload: Value::Object(payload),
+    })
+}
+
+/// The value tuple one row is identified by, rendered so two rows can be
+/// compared without asking the database twice.
+fn key_signature(row: &Map<String, Value>, key: &[String]) -> String {
+    key.iter()
+        .map(|c| match row.get(c) {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join("\u{1e}")
+}
+
+/// `import` — merge one exported document into a **running** cell.
+///
+/// See the module docs for the three decisions this encodes. The gate that runs
+/// before anything is written is column-set equality between the part's declared
+/// schema and the target table, in **both** directions: a part that lost a
+/// column dropped it in transit, and a part that carries one the target does not
+/// have comes from a newer source, where growing a schema is a template change
+/// rather than something an import may do silently. That one rule is what makes
+/// `audience_set`, `channel` and `speaker` non-optional payload.
+///
+/// Values are written as they came. Re-deriving an identity is not this
+/// operation's business — the `store`'s `canonicalize` is the documented repair
+/// and re-derives every canonical column from the alias tables, which travel in
+/// their own parts. The seed loader has always behaved exactly this way, and a
+/// transfer that quietly decided differently would be a second mechanism.
+pub fn import_document(
+    conn: &rusqlite::Connection,
+    args: &Map<String, Value>,
+) -> Result<TransferOutcome, String> {
+    let table = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or("import: missing table")?;
+    let part_schema = args
+        .get("schema")
+        .and_then(|v| v.as_object())
+        .ok_or("import: missing schema object — a row list without a header is a guess")?;
+    let rows = args
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .ok_or("import: missing rows array")?;
+
+    let table = match resolve_table(conn, table) {
+        Ok(t) => t,
+        Err(refusal) => return Ok(refusal),
+    };
+    let cols = match columns_of(conn, &table) {
+        Ok(c) => c,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+
+    // THE gate (#244, `plans/0.16.0-audience-gate/contract.md`). An audience that
+    // is present but EMPTY travels as it stands — empty means invisible, which is
+    // the honest fate of a row from before the gate, and inventing one would be
+    // the laundering itself.
+    let target_cols: BTreeSet<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    let declared_cols: BTreeSet<&str> = part_schema.keys().map(String::as_str).collect();
+    if target_cols != declared_cols {
+        let missing: Vec<&str> = target_cols.difference(&declared_cols).copied().collect();
+        let extra: Vec<&str> = declared_cols.difference(&target_cols).copied().collect();
+        let mut parts = Vec::new();
+        if !missing.is_empty() {
+            parts.push(format!(
+                "the part does not carry {} — a column that does not travel is a column that \
+                 was dropped in transit, and provenance is never reconstructed",
+                missing.join(", ")
+            ));
+        }
+        if !extra.is_empty() {
+            parts.push(format!(
+                "the part declares {} which this cell does not have — the source is newer, and \
+                 growing a schema is a template change, not something an import may do silently",
+                extra.join(", ")
+            ));
+        }
+        return Ok(TransferOutcome::Refused {
+            code: "import_schema_drift",
+            detail: format!("import refused for table {table:?}: {}", parts.join("; ")),
+        });
+    }
+
+    let key = match parse_key(args, &cols, "import")? {
+        Ok(k) if !k.is_empty() => k,
+        Ok(_) => primary_key(&cols),
+        Err(refusal) => return Ok(refusal),
+    };
+    if key.is_empty() {
+        return Err(format!(
+            "import: table {table:?} has no primary key, so the part must name the \"key\" \
+             columns that identify a row — without one an import can only duplicate, and \
+             re-applying the same document would stop being idempotent"
+        ));
+    }
+
+    // Row shape, checked before the transaction opens: a row that cannot be
+    // identified cannot be merged, and finding that out halfway would be a
+    // refusal after a write.
+    let mut objects: Vec<&Map<String, Value>> = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        let obj = row
+            .as_object()
+            .ok_or_else(|| format!("import: row {} is not a JSON object", idx + 1))?;
+        for k in &key {
+            if obj.get(k).is_none_or(|v| v.is_null()) {
+                return Err(format!(
+                    "import: row {} carries no value for key column {k:?}",
+                    idx + 1
+                ));
+            }
+        }
+        objects.push(obj);
+    }
+
+    let probe = format!(
+        "SELECT 1 FROM \"{table}\" WHERE {} LIMIT 1",
+        key.iter()
+            .enumerate()
+            .map(|(i, c)| format!("\"{c}\" = ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    );
+    let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+    let insert = format!(
+        "INSERT INTO \"{table}\" ({}) VALUES ({})",
+        names
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+        names.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+    );
+
+    let tx = match conn.unchecked_transaction() {
+        Ok(t) => t,
+        Err(e) => return Ok(TransferOutcome::Sql(e)),
+    };
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut written = 0i64;
+    for row in &objects {
+        if !seen.insert(key_signature(row, &key)) {
+            continue;
+        }
+        let key_vals: Vec<rusqlite::types::Value> =
+            key.iter().map(|c| json_to_sql(row.get(c))).collect();
+        let bind: Vec<&dyn rusqlite::ToSql> =
+            key_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        match conn.query_row(&probe, bind.as_slice(), |_| Ok(())) {
+            // The target wins. Always, and without looking at what the document
+            // would have said instead.
+            Ok(()) => continue,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => return Ok(TransferOutcome::Sql(e)),
+        }
+        let vals: Vec<rusqlite::types::Value> = names
+            .iter()
+            .map(|c| json_to_sql(row.get(c.as_str())))
+            .collect();
+        let bind: Vec<&dyn rusqlite::ToSql> =
+            vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        match conn.execute(&insert, bind.as_slice()) {
+            Ok(n) => written += n as i64,
+            // Dropping `tx` on the way out rolls the whole part back: whole, or
+            // nothing.
+            Err(e) => return Ok(TransferOutcome::Sql(e)),
+        }
+    }
+    if let Err(e) = tx.commit() {
+        return Ok(TransferOutcome::Sql(e));
+    }
+
+    let mut payload = Map::new();
+    payload.insert("format".into(), Value::from(TRANSFER_FORMAT));
+    payload.insert("table".into(), Value::from(table));
+    payload.insert("rows_in_part".into(), Value::from(rows.len() as i64));
+    payload.insert("rows_written".into(), Value::from(written));
+    payload.insert(
+        "rows_skipped".into(),
+        Value::from(rows.len() as i64 - written),
+    );
+    Ok(TransferOutcome::Done {
+        rows_affected: written,
+        payload: Value::Object(payload),
+    })
+}
+
+/// Dispatch one `transfer` body slot (`{"operation": "export"|"import", …}`).
+///
+/// `Err` is an args-level fault the caller reports as `invalid_input`; an
+/// [`TransferOutcome::Refused`] is a refusal the caller reports with the code it
+/// carries.
+pub fn dispatch(
+    conn: &rusqlite::Connection,
+    args: &Map<String, Value>,
+) -> Result<TransferOutcome, String> {
+    match args.get("operation").and_then(|v| v.as_str()) {
+        Some("export") => export_document(conn, args),
+        Some("import") => import_document(conn, args),
+        Some(other) => Err(format!(
+            "transfer: unknown operation {other:?} (known: export, import)"
+        )),
+        None => Err("transfer: missing operation (export or import)".into()),
+    }
+}
+
+/// One SQLite value as JSON.
+fn sql_to_json(row: &rusqlite::Row, idx: usize) -> Value {
+    use rusqlite::types::ValueRef;
+    match row.get_ref_unwrap(idx) {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::from(i),
+        ValueRef::Real(f) => Value::from(f),
+        ValueRef::Text(b) => Value::from(String::from_utf8_lossy(b).to_string()),
+        ValueRef::Blob(b) => Value::from(b.to_vec()),
+    }
+}
+
+/// One JSON value as a bound SQLite value. Missing key or JSON null → SQL NULL;
+/// objects and arrays as JSON text — the same mapping `apply_seed_jsonl` uses,
+/// so a row survives a round trip through a seed file unchanged.
+fn json_to_sql(v: Option<&Value>) -> rusqlite::types::Value {
+    use rusqlite::types::Value as V;
+    match v {
+        None | Some(Value::Null) => V::Null,
+        Some(Value::Bool(b)) => V::Integer(if *b { 1 } else { 0 }),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                V::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                V::Real(f)
+            } else {
+                V::Text(n.to_string())
+            }
+        }
+        Some(Value::String(s)) => V::Text(s.clone()),
+        Some(other) => V::Text(meclaw_core::serde_json::to_string(other).unwrap_or_default()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The substrate seam: one body slot, every cell type with a `cell.db`.
+// ---------------------------------------------------------------------------
+
+/// The body slot that carries a transfer. Top-level, like the β `params` slot.
+pub const TRANSFER_SLOT: &str = "transfer";
+
+/// GH #260 — the transfer operations that CHANGE the cell's database.
+///
+/// `import` is the only one. `export` is a read: it gives up exactly what a read
+/// of the same table gives up anyway, and no write surface has ever bounded a
+/// read — the same sentence `store`'s own `WRITE_OPS` list says one layer down.
+/// An unknown operation is not on this list either, and does not need to be: it
+/// is refused as `invalid_input` before it can touch anything.
+const TRANSFER_WRITE_OPS: &[&str] = &["import"];
+
+/// The scope that owns a cell: its own parent path.
+///
+/// `/main/memory/store` is owned by `/main/memory` — the hive it sits in. A cell
+/// directly under the colony root gets `/`, which contains every cell, so the
+/// declaration is inert there. Documented rather than special-cased, because at
+/// the root there is no enclosing hive a boundary could follow. Deliberately the
+/// same rule as `store`'s cell-level `owner_scope`, so a cell that declares both
+/// halves gets ONE boundary, not two that disagree.
+fn owner_scope(own_path: &meclaw_core::Path) -> String {
+    let s = own_path.as_str();
+    match s.rfind('/') {
+        Some(0) | None => "/".to_string(),
+        Some(i) => s[..i].to_string(),
+    }
+}
+
+/// True iff `sender` lies inside `scope` (equal to it or below it).
+fn within_scope(scope: &str, sender: &meclaw_core::Path) -> bool {
+    let s = sender.as_str();
+    if scope == "/" {
+        return true;
+    }
+    s == scope || s.starts_with(&format!("{scope}/"))
+}
+
+/// GH #260 — refuse a substrate-answered WRITE from outside the owning scope.
+///
+/// A **provenance** rule, not a content rule: the only two things it looks at
+/// are where this cell sits and who sent the message. It says nothing about what
+/// the document contains, and it is the whole reason the rule can live above
+/// every cell type — the substrate needs no `params`, no schema and no type
+/// knowledge to answer it.
+///
+/// Fail-closed on an unknown sender, exactly as the cell-level rule is: a
+/// message without `reply_to` is a source message (an HTTP ingress, an event)
+/// that no edge inside the scope produced, so it is outside by definition.
+///
+/// Returns `Some(detail)` when the transfer must be refused.
+fn write_surface_violation(
+    write_surface: meclaw_core::WriteSurface,
+    own_path: &meclaw_core::Path,
+    sender: Option<&meclaw_core::Path>,
+    operation: &str,
+) -> Option<String> {
+    if write_surface != meclaw_core::WriteSurface::Internal {
+        return None;
+    }
+    if !TRANSFER_WRITE_OPS.contains(&operation) {
+        return None;
+    }
+    let scope = owner_scope(own_path);
+    match sender {
+        Some(p) if within_scope(&scope, p) => None,
+        Some(p) => Some(format!(
+            "transfer '{operation}' refused: this cell declares \
+             contract.write_surface \"internal\", so only senders inside '{scope}' may write — \
+             '{p}' is outside it. An export is a read and is unaffected.",
+            p = p.as_str()
+        )),
+        None => Some(format!(
+            "transfer '{operation}' refused: this cell declares \
+             contract.write_surface \"internal\", so only senders inside '{scope}' may write — \
+             this message carries no sender. An export is a read and is unaffected."
+        )),
+    }
+}
+
+/// Handle a `transfer` body slot before the cell's own `handle()` runs, and
+/// report whether it did.
+///
+/// This is the seam that makes the operation type-agnostic in the same sense
+/// the seed loader already is: it lives in `cell_task`, above every cell type,
+/// and it runs against the cell's **own** `DbConn` — the connection the cell
+/// opened, with whatever extensions that cell registered on it. That is not a
+/// convenience: an FTS5 index declared with `meclaw_stem_v1` can only be written
+/// through a connection that has the tokenizer, so a transfer executed anywhere
+/// else would fail on exactly the stores that need it most.
+///
+/// A message carrying this slot never reaches `handle()`. That is deliberate:
+/// no cell type has to know the operation exists, and none can accidentally
+/// shadow it with a slot of its own.
+///
+/// `write_surface` is the cell's own `contract.write_surface` (GH #260). It
+/// bounds the WRITE half of this seam — see [`write_surface_violation`] — and is
+/// the reason the position above `handle()` no longer costs a boundary.
+pub(crate) async fn handle_transfer_slot(
+    msg: &meclaw_core::Message,
+    sink: &meclaw_core::OutputSink,
+    db: &mut crate::DbConn,
+    write_surface: meclaw_core::WriteSurface,
+) -> bool {
+    let meclaw_core::Body::Inline(body) = &msg.body else {
+        return false;
+    };
+    let Some(slot) = body.get(TRANSFER_SLOT) else {
+        return false;
+    };
+    let started = std::time::Instant::now();
+    let reply_to = msg.reply_to.clone();
+    let target = reply_to.clone().unwrap_or_else(|| msg.target.clone());
+
+    let Some(args) = slot.as_object().cloned() else {
+        emit_transfer_reply(
+            sink,
+            &target,
+            reply_to.is_some(),
+            "transfer",
+            0,
+            Value::Null,
+            Some("invalid_input"),
+            Some("transfer slot must be a JSON object".to_string()),
+            started,
+        )
+        .await;
+        return true;
+    };
+    let operation: String = args
+        .get("operation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("transfer")
+        .to_string();
+    // GH #260: the substrate half of `write_surface`, checked between the args
+    // and the dispatch — after the operation name is real, and BEFORE the DB
+    // task starts, so a refused import touches nothing. `store`'s cell-level
+    // check cannot reach here: a transfer never gets to `handle()`.
+    if let Some(detail) = write_surface_violation(
+        write_surface,
+        sink.sender_path(),
+        reply_to.as_ref(),
+        &operation,
+    ) {
+        emit_transfer_reply(
+            sink,
+            &target,
+            reply_to.is_some(),
+            &operation,
+            0,
+            Value::Null,
+            Some("write_denied"),
+            Some(detail),
+            started,
+        )
+        .await;
+        return true;
+    }
+    let outcome = db.call(move |c| dispatch(c, &args)).await;
+
+    let (rows, payload, code, text) = match outcome {
+        Ok(TransferOutcome::Done {
+            rows_affected,
+            payload,
+        }) => (rows_affected, payload, None, None),
+        Ok(TransferOutcome::Refused { code, detail }) => (0, Value::Null, Some(code), Some(detail)),
+        Ok(TransferOutcome::Sql(e)) => (0, Value::Null, Some("sql_error"), Some(e.to_string())),
+        Err(detail) => (0, Value::Null, Some("invalid_input"), Some(detail)),
+    };
+    emit_transfer_reply(
+        sink,
+        &target,
+        reply_to.is_some(),
+        &operation,
+        rows,
+        payload,
+        code,
+        text,
+        started,
+    )
+    .await;
+    true
+}
+
+/// The single reply a transfer produces, in the universal body format.
+///
+/// The header is the same three fields a `store` op answers with (`operation`,
+/// `rows_affected`, `duration_ms`, plus `error_code` when something was
+/// refused), so a topology reads a transfer receipt the way it reads any other
+/// receipt.
+#[allow(clippy::too_many_arguments)]
+async fn emit_transfer_reply(
+    sink: &meclaw_core::OutputSink,
+    target: &meclaw_core::Path,
+    direct: bool,
+    operation: &str,
+    rows_affected: i64,
+    payload: Value,
+    error_code: Option<&str>,
+    error_text: Option<String>,
+    started: std::time::Instant,
+) {
+    let mut header = Map::new();
+    header.insert("operation".into(), Value::from(operation));
+    header.insert("rows_affected".into(), Value::from(rows_affected));
+    header.insert(
+        "duration_ms".into(),
+        Value::from(started.elapsed().as_millis() as i64),
+    );
+    if let Some(code) = error_code {
+        header.insert("error_code".into(), Value::from(code));
+    }
+    let text = match &error_text {
+        Some(t) => t.clone(),
+        None => meclaw_core::serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
+    };
+    let content = meclaw_core::serde_json::json!({
+        "header": header,
+        "messages": [{"origin": "tool", "type": "tool_result", "text": text, "id": ""}]
+    });
+    let out = meclaw_core::CellOutput {
+        target: target.clone(),
+        content,
+    };
+    let _ = if direct {
+        sink.push_direct_reply(out).await
+    } else {
+        sink.push(out).await
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meclaw_core::serde_json::json;
+
+    /// THE symmetry claim, and the reason this module is written as an inverse
+    /// rather than as a new mechanism: an exported document, written out with
+    /// its `schema` object as line 1 and one row per line after it, is a
+    /// `seed/<table>.jsonl` that the EXISTING loader
+    /// (`mutation::stage::seed_cell_db_if_present` → `apply_seed_jsonl`) reads
+    /// without knowing this module exists.
+    #[test]
+    fn exported_document_is_a_seed_file_the_existing_loader_reads() {
+        let source = tempfile::TempDir::new().unwrap();
+        let conn = crate::persist::open_or_create_cell_db(&source.path().join("cell.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, n INTEGER);
+             INSERT INTO notes VALUES ('a', 'first', 1), ('b', 'second', 2);",
+        )
+        .unwrap();
+        let args = json!({"operation": "export", "table": "notes"});
+        let TransferOutcome::Done { payload: doc, .. } =
+            dispatch(&conn, args.as_object().unwrap()).unwrap()
+        else {
+            panic!("export must succeed");
+        };
+
+        let mut jsonl =
+            meclaw_core::serde_json::to_string(&json!({"schema": doc["schema"]})).unwrap();
+        for row in doc["rows"].as_array().unwrap() {
+            jsonl.push('\n');
+            jsonl.push_str(&meclaw_core::serde_json::to_string(row).unwrap());
+        }
+        let born = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(born.path().join("seed")).unwrap();
+        std::fs::write(born.path().join("seed/notes.jsonl"), jsonl).unwrap();
+        crate::mutation::stage::seed_cell_db_if_present(born.path())
+            .expect("the existing seed loader must read an exported document");
+
+        let reborn = rusqlite::Connection::open(born.path().join("cell.db")).unwrap();
+        let args = json!({"operation": "export", "table": "notes", "key": ["id"]});
+        let TransferOutcome::Done { payload: there, .. } =
+            dispatch(&reborn, args.as_object().unwrap()).unwrap()
+        else {
+            panic!("export must succeed");
+        };
+        assert_eq!(
+            there["rows"], doc["rows"],
+            "what left the source is what the seeded cell holds"
+        );
+    }
+
+    /// The other half of the symmetry: an FTS5 index and its shadow tables are
+    /// derived data. They must never appear as content — a transfer carrying
+    /// them would move an index a receiving cell rebuilds from its own rows.
+    #[test]
+    fn a_virtual_table_and_its_shadows_are_never_content() {
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = crate::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT PRIMARY KEY, claim TEXT);
+             CREATE VIRTUAL TABLE facts_fts USING fts5(claim, content='facts');",
+        )
+        .unwrap();
+        let tables = content_tables(&conn).unwrap();
+        assert_eq!(tables, vec!["facts".to_string(), "system".to_string()]);
+    }
+
+    /// The substrate seam itself: a `transfer` body slot reaching a **running**
+    /// cell is answered against that cell's own `DbConn`, and the answer is one
+    /// ordinary reply with the same header fields every other receipt carries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_transfer_slot_is_answered_by_the_substrate_against_the_live_db() {
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = crate::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
+             INSERT INTO notes VALUES ('a', 'first');",
+        )
+        .unwrap();
+        let mut db = crate::DbConn::wrap(conn, None);
+
+        let (otx, mut orx) = tokio::sync::mpsc::channel(8);
+        let sink = meclaw_core::OutputSink::new(
+            otx,
+            meclaw_core::Path::new("/cell"),
+            meclaw_core::Uuid::now_v7(),
+            meclaw_core::Uuid::now_v7(),
+            64,
+            meclaw_core::Headers::new(),
+            Some(meclaw_core::Path::new("/caller")),
+        );
+        let msg = meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/cell"))
+            .body(meclaw_core::Body::Inline(
+                json!({"transfer": {"operation": "import", "table": "notes",
+                                    "schema": {"id": "text", "body": "text"},
+                                    "rows": [{"id": "a", "body": "the document disagrees"},
+                                             {"id": "b", "body": "new here"}]}}),
+            ))
+            .reply_to(meclaw_core::Path::new("/caller"))
+            .build();
+
+        assert!(
+            handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::WriteSurface::Open).await,
+            "a message carrying the slot is answered here and never reaches handle()"
+        );
+        drop(sink);
+
+        let em = orx.recv().await.expect("the substrate must reply");
+        assert_eq!(em.content["header"]["operation"], "import");
+        assert_eq!(em.content["header"]["rows_affected"], 1);
+        assert!(em.content["header"].get("error_code").is_none());
+
+        let body: String = db
+            .call(|c| {
+                c.query_row("SELECT body FROM notes WHERE id = 'a'", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        assert_eq!(body, "first", "the target wins, on the live path too");
+    }
+
+    // ------------------------------------------------- GH #260, the write half
+
+    /// One live cell at `path`, one `notes` table, one transfer slot from
+    /// `sender`. Returns the substrate's reply and how many rows the table
+    /// holds afterwards — a refusal has to be provable by BOTH.
+    async fn transfer_from(
+        path: &str,
+        sender: Option<&str>,
+        surface: meclaw_core::WriteSurface,
+        slot: Value,
+    ) -> (Value, i64) {
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = crate::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        conn.execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let mut db = crate::DbConn::wrap(conn, None);
+
+        let (otx, mut orx) = tokio::sync::mpsc::channel(8);
+        let sink = meclaw_core::OutputSink::new(
+            otx,
+            meclaw_core::Path::new(path),
+            meclaw_core::Uuid::now_v7(),
+            meclaw_core::Uuid::now_v7(),
+            64,
+            meclaw_core::Headers::new(),
+            sender.map(meclaw_core::Path::new),
+        );
+        let mut b = meclaw_core::MessageBuilder::new(meclaw_core::Path::new(path))
+            .body(meclaw_core::Body::Inline(json!({ "transfer": slot })));
+        if let Some(s) = sender {
+            b = b.reply_to(meclaw_core::Path::new(s));
+        }
+        let msg = b.build();
+
+        assert!(
+            handle_transfer_slot(&msg, &sink, &mut db, surface).await,
+            "a message carrying the slot is always consumed here, refused or not"
+        );
+        drop(sink);
+        let reply = orx.recv().await.expect("the substrate must reply").content;
+        let rows: i64 = db
+            .call(|c| {
+                c.query_row("SELECT count(*) FROM notes", [], |r| r.get(0))
+                    .unwrap()
+            })
+            .await;
+        (reply, rows)
+    }
+
+    fn one_note() -> Value {
+        json!({"operation": "import", "table": "notes",
+               "schema": {"id": "text", "body": "text"},
+               "rows": [{"id": "a", "body": "smuggled"}]})
+    }
+
+    /// GH #260 — the gap this closes. `write_surface: "internal"` is a promise
+    /// about who may write; the transfer slot is answered above every cell type
+    /// and used to walk straight past it. A refusal has to be provable on the
+    /// database, not just in the reply, so the row count is asserted too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_import_from_outside_the_owning_scope_is_refused_and_writes_nothing() {
+        let (reply, rows) = transfer_from(
+            "/main/memory/store",
+            Some("/main/intruder"),
+            meclaw_core::WriteSurface::Internal,
+            one_note(),
+        )
+        .await;
+        assert_eq!(reply["header"]["error_code"], "write_denied");
+        assert_eq!(reply["header"]["rows_affected"], 0);
+        assert_eq!(rows, 0, "a refused import must leave the table untouched");
+        let text = reply["messages"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("/main/memory") && text.contains("/main/intruder"),
+            "the refusal must name the scope and the sender: {text}"
+        );
+    }
+
+    /// The more important half: a boundary that refuses too much is as broken as
+    /// one that refuses too little. A sender inside the owning scope — the hive
+    /// the cell sits in — writes exactly as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_import_from_inside_the_owning_scope_still_lands() {
+        let (reply, rows) = transfer_from(
+            "/main/memory/store",
+            Some("/main/memory/curator"),
+            meclaw_core::WriteSurface::Internal,
+            one_note(),
+        )
+        .await;
+        assert!(
+            reply["header"].get("error_code").is_none(),
+            "an inside sender is not what this bounds: {reply}"
+        );
+        assert_eq!(reply["header"]["rows_affected"], 1);
+        assert_eq!(rows, 1);
+    }
+
+    /// An export is a read and no write surface bounds it — the same sentence
+    /// `store`'s own `WRITE_OPS` list says, kept true one layer up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_export_is_a_read_and_the_write_surface_does_not_bound_it() {
+        let (reply, _) = transfer_from(
+            "/main/memory/store",
+            Some("/main/intruder"),
+            meclaw_core::WriteSurface::Internal,
+            json!({"operation": "export", "table": "notes"}),
+        )
+        .await;
+        assert!(
+            reply["header"].get("error_code").is_none(),
+            "a read must pass a write boundary untouched: {reply}"
+        );
+        assert_eq!(reply["header"]["operation"], "export");
+    }
+
+    /// Fail-closed, exactly as the cell-level rule is: a message with no sender
+    /// is a source message no edge inside the scope produced, so it is outside.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_import_without_a_sender_is_outside_by_definition() {
+        let (reply, rows) = transfer_from(
+            "/main/memory/store",
+            None,
+            meclaw_core::WriteSurface::Internal,
+            one_note(),
+        )
+        .await;
+        assert_eq!(reply["header"]["error_code"], "write_denied");
+        assert_eq!(rows, 0);
+    }
+
+    /// The default is `Open`, and `Open` bounds nothing: a cell that declares
+    /// nothing keeps the behaviour it had before this rule existed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_open_write_surface_bounds_no_import_at_all() {
+        let (reply, rows) = transfer_from(
+            "/main/memory/store",
+            Some("/main/intruder"),
+            meclaw_core::WriteSurface::default(),
+            one_note(),
+        )
+        .await;
+        assert!(reply["header"].get("error_code").is_none(), "{reply}");
+        assert_eq!(rows, 1);
+    }
+
+    /// A store directly under the colony root owns `/`, which contains every
+    /// cell — the declaration is inert there, and says so rather than being
+    /// special-cased. Same sentence as `store`'s `owner_scope`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn at_the_colony_root_the_owning_scope_is_everything() {
+        let (reply, rows) = transfer_from(
+            "/store",
+            Some("/anywhere"),
+            meclaw_core::WriteSurface::Internal,
+            one_note(),
+        )
+        .await;
+        assert!(reply["header"].get("error_code").is_none(), "{reply}");
+        assert_eq!(rows, 1);
+    }
+
+    /// A message without the slot is not this module's business.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ordinary_message_passes_straight_through() {
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = crate::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = crate::DbConn::wrap(conn, None);
+        let (otx, _orx) = tokio::sync::mpsc::channel(8);
+        let sink = meclaw_core::OutputSink::new(
+            otx,
+            meclaw_core::Path::new("/cell"),
+            meclaw_core::Uuid::now_v7(),
+            meclaw_core::Uuid::now_v7(),
+            64,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        let msg = meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/cell"))
+            .body(meclaw_core::Body::Inline(json!({"messages": []})))
+            .build();
+        assert!(!handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::WriteSurface::Open).await);
+    }
+}

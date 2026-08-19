@@ -9,6 +9,738 @@ documented `error_code` strings (README § Stability). Anything that breaks one 
 them is listed under **Breaking** in its release, with the migration named. The
 Rust crates are internals and move without notice.
 
+## [Unreleased]
+
+## [0.17.0] — 2026-08-19
+
+The longest wave so far, and the second digit is earned by exactly two of its
+entries. Everything else in it is a repair, and a repair takes the third digit
+however much work it was: a template that shipped sealed with no door was
+**broken**, not feature-poor, and giving it a contract restores what it already
+promised.
+
+What moves the second digit is the pair that hands a caller something never
+promised — a cell's database can now be handed out and taken in
+([#253](https://github.com/mmeyerlein/meclaw/issues/253)), and a `system.*`
+subtree can be revoked rather than only overwritten
+([#264](https://github.com/mmeyerlein/meclaw/issues/264)). Both add public
+surface: a body slot, a contract declaration, an error code.
+
+Four of the repairs were found by the fixes for the others, which is the shape
+of the wave: #258 and #259 came out of the review of #252, #260 out of building
+#253, #264 out of what #259 could not reach, and #265 out of fixing #256.
+
+### Added
+
+- **Content can leave a `cell.db` and enter a running one**
+  ([#253](https://github.com/mmeyerlein/meclaw/issues/253)). The spec promised a
+  cell that "receives an `EXPORT` message and writes its database out as JSONL".
+  It never existed — the `store` knew twelve operations and none of them was an
+  export, and the seed loader could only fill a database at birth. Rebuilding a
+  colony from the library therefore meant seeding a new store at creation or
+  losing what it knew.
+
+  A substrate body slot, `transfer`, answered before `handle()` and serving **all
+  ten cell types with a `cell.db`** — `code`, `harness`, `llm`, `mcp`, `proxy`,
+  `stdio_child`, `store`, `subcolony`, `timer`, `vault` — with no per-type code
+  and no trait. `{"operation":"export"}` returns an inventory,
+  `{"operation":"export","table":…,"key":[…]}` a document, and
+  `{"operation":"import",…}` a receipt, into a **running** cell.
+
+  It is the inverse of the seed loader on format and mechanism, proven rather
+  than asserted: a test writes an export document out as `seed/<table>.jsonl` and
+  hands it to the existing loader, and the reborn cell holds byte-identical rows.
+  One asymmetry is deliberate and now in the spec — the export does not write the
+  file itself. The loader reads only `seed/<table>.jsonl`, so the filenames the
+  spec proposed would never have been read back; a cell writing into its own tree
+  is a second output channel no edge carries and the message log does not know;
+  and a file inside the cell's own tree crosses no colony boundary, which is the
+  actual need. Writing one stays a deliberate act by the owner of the tree.
+
+  Import rules are the memory porter's, one level down: the target wins every key
+  collision, additive never replacing, and a part applies whole or is refused
+  whole — validation before the first write, writes in one transaction,
+  re-applying idempotent. Audience leakage is prevented **structurally** rather
+  than by a name list: a part whose declared schema differs from the target by one
+  column in either direction is refused, in both directions, with the new
+  `error_code: "import_schema_drift"`. It runs on the cell's own connection, so a
+  row is searchable in the FTS index the moment it lands.
+
+
+- **A `system.*` subtree can be revoked, not merely overwritten**
+  ([#264](https://github.com/mmeyerlein/meclaw/issues/264)). `system.*` is durable
+  state of the `llm` cell: one upsert per slot path, and no DELETE anywhere. A path
+  that is not sent is a path that is not touched. For a writer with **fixed** paths
+  that is enough — send the slot with an empty rendering and the upsert overwrites
+  it (#259 did exactly that). For a writer whose sub-keys are **data** it is not:
+  the `json` form of the recall bundle (`memory_form: json|both`) is keyed per
+  bundle by the memory hive, so the writer does not know the previous turn's paths
+  and cannot name them empty. A key written last turn stayed in the prompt
+  indefinitely.
+
+  A node of the incoming `system` subtree may now carry `"$replace": true`: below
+  this node, exactly what this message brings holds. The root is **the node
+  itself**, never a path named elsewhere; everything at and below it is deleted in
+  the **same** transaction, before this message's leaves land — no window in which
+  the subtree is gone and its replacement is not there yet, which a separate delete
+  operation would have opened. A marker with no leaves under it is the pure
+  revocation, in one message.
+
+  **A plain write still replaces nothing.** The marker is opt-in, always: `system.*`
+  is deliberately accumulated by several independent writers under different paths —
+  an identity pack, a recall bundle, a consult list — and a silent default replace
+  would turn each of them into the last one standing. Two writers over one root:
+  the last one wins, and that is forced rather than chosen — a cell knows no
+  topology and the write gate deliberately does not gate on the sender, so there is
+  no identity with which to arbitrate. The protections are the scoping (the root is
+  the writer's own node) and `system_writable`, which now checks the replace **root**
+  too, not only the leaves: a marker reaches paths the message never names. A marker
+  directly under `system` has the empty root, which is under no declared prefix, so
+  a cell with an allowlist can no longer be cleared wholesale by one message.
+
+  `$` is reserved inside a `system` subtree. `"$replace"` takes only `true`/`false`;
+  any other `$` key and any non-boolean is a loud reject (`error_code:
+  "invalid_input"`, nothing written, nothing deleted) — a misspelled marker must not
+  pass as a silent no-op, or the writer would hold a revocation that never happened.
+  The `WARN` line on `meclaw::llm::system_gate` gains two `reason` values,
+  `root_not_writable` and `malformed_replace_marker`.
+
+  Documented in `meclaw-overview.md` § Replace semantics and in `cell-types.md`
+  (`llm` state, system write gate). The reference templates are unchanged: the
+  `json` form of the collector's bundle gets its own pass.
+
+
+- **`cogny@3.0.1` can be given a tool, a memory and an error drain**
+  ([#240](https://github.com/mmeyerlein/meclaw/issues/240)). The agent core sealed
+  to one lane in and one out, so the tool round it is built around had no way to
+  call anything, the memory leg R-CG-1 moved onto its collector had nowhere to
+  ask, and a failed inference on either brain dead-lettered as `no_route`. All
+  three are declared at the hive path now, with the doors to match, the way
+  `talky@3` already carries them: `in_tool` and `in_bundle` in, `tool`, `recall`
+  and `error` out. `escalate_to_deep` stays the composite's own lane and never
+  leaves. The two brains are normalised onto the single `error` lane by the exit
+  edges' own `set_hop.route` — there is no `errors` cell here (R-CG-2 names three
+  units), and `llm-unit` has done it this way since it shipped.
+
+  **What a caller has to wire.** Nothing, to keep working as before: the lanes
+  are additive and the two existing ports are untouched. To use one, an edge pair
+  per tool (`tool` out on `hop.tool_name`, `in_tool` back), a pair to the memory
+  hive (`recall` out, `in_bundle` back), and one edge draining `error` — undrained
+  it dead-letters, loudly. The recipes are in
+  `templates/cogny/README.md` § Per-instance lanes.
+
+- **The five demo bots have an address**
+  ([#246](https://github.com/mmeyerlein/meclaw/issues/246)). `bot-basic@2.0.1`,
+  `slack-agent@2.0.1`, `egon@2.0.1`, `daily-digest@2.0.1` and
+  `research-assistant@2.0.1` shipped sealed (`ports: []`) with no
+  `params.contract` at all — the closed state: no edge could name a cell inside
+  them and no lane was declared at the hive path either, so nothing in a colony
+  could be wired to them or from them. Each now declares the lanes it already
+  serves. The four chat-shaped ones take a turn on `in_turn` and hand the answer
+  back on `answer`; `daily-digest` takes `in_digest` (a run demanded outside the
+  timer, with `context.chat_id` brought by the caller) and hands the formatted
+  digest back on `digest`.
+
+  **Behaviour is unchanged for a colony that wires nothing.** A turn the channel
+  brings in is still answered into the chat and a scheduled digest still goes to
+  the notifier; the two paths are told apart by `context.turn_origin` /
+  `context.digest_origin`, which the ingress edges stamp and the two
+  complementary reply edges read, so exactly one of them fires per turn.
+
+- **`telegram-connector@1.0.0` — a chat channel as a building block**
+  ([#246](https://github.com/mmeyerlein/meclaw/issues/246)). Every proxy cell the
+  library shipped sat inside a complete demo bot, so a colony that had assembled
+  its own agent had no way to put a chat surface in front of it and started with
+  a hand-written proxy. The connector is now a template of its own: one sealed
+  hive around the credential-bearing `proxy` cell, taken verbatim from
+  `bot-basic@2.0.0` but for `params.emit_to`. A turn out of the chat on `turn`, a
+  finished answer back in on `in_reply`, the connector's own failures on `error` —
+  and `required_drains` pairs the two, because an answer that never arrived is
+  invisible at exactly the end where somebody is waiting for it.
+
+- **`channel@1.0.0` — a channel is a hive, its agent is a generation**
+  ([#246](https://github.com/mmeyerlein/meclaw/issues/246), ADR-0002 E6/E7/E8).
+  One hive per chat or room: the connector that owns the credential, plus the
+  slot the current `talky` occupies. The hive IS the channel — the identity that
+  stays — and the talkies inside it are its generations, one active and the older
+  ones disconnected and preserved. A generation arrives, and is replaced, by one
+  mutation: `add_nodes` the new talky and `swap_nodes` the slot's occupant for
+  it, which swings every lane atomically. The slot ships occupied by
+  `terminal@1.0.0`, so every lane of the contract has a door from the moment of
+  instantiation rather than after somebody finishes the wiring.
+
+  **`context.channel_open_history` has a home** (ADR-0002 O1). Whether a room
+  shows joiners its history cannot be detected — the Telegram Bot API does not
+  expose the setting — so it is declared, on the one edge every turn crosses on
+  its way in, and read by the audience gate on the recall path. The default is
+  `'0'`, closed: it is the value a missing declaration already means, and of the
+  two possible mistakes only one hands somebody a conversation that happened
+  before they arrived.
+
+### Fixed
+
+- **A talky the reception builds now closes with the round it was spoken in**
+  ([#274](https://github.com/mmeyerlein/meclaw/issues/274), follow-up to #273).
+  `receptionist` is the template for "one agent per channel, built on demand" —
+  the shape that produces most of the generations a colony will ever have — and
+  it draws the ingress edge into every talky it instantiates. Its contract asked
+  the caller for one thing, `context.channel`, so since #273 every one of those
+  generations was recorded with an empty participant set and its swept-closed
+  days were refused at the drain with `missing_audience`.
+
+  The reception genuinely cannot derive the round, and that is settled at the
+  code rather than argued: `greet` reads exactly one identity, and it is a
+  **channel** — a chat id, a room, a phone number. A participant is a different
+  thing (`member:alex`, `agent:scribe`), and translating a connector's own user
+  id into that vocabulary is the talky edge's business, never a hive's
+  (`memory-hive`: "this hive looks nothing up"). Building a member out of a room
+  would invent somebody nobody named. So the round is asked of the caller, on the
+  same edge that already names the channel, and the reception hands it on.
+
+  That is ADR-0002 E8 rather than a shortcut: the participant set is a constant
+  of a generation's lifetime — a change *ends* it — which is precisely why it
+  belongs at the door the opening turn arrives by and why nothing further in can
+  still know it. E12 is untouched: the keeper writes it once, at the open, so
+  wiring the key afterwards takes effect on the next generation of a channel and
+  never on one already running.
+
+  The round did in fact reach those talkys already, as plain `context` that
+  nothing on the path happened to delete — the same accident #273 refused to
+  build on. **A value that arrives because nobody threw it away is not a
+  promise.** It is one now. The set travels as a JSON string; a native list in
+  the context is re-serialised rather than stringified, and it never enters a CEL
+  string literal, so no caller-supplied text is ever escaped into an expression.
+
+  Nothing is guessed. A caller that declares nothing leaves the key **present and
+  empty** — a missing hop key makes the CEL modifier fail and a failed modifier
+  skips the edge, so a turn that cannot name its round would vanish instead of
+  being refused downstream. Never `["*"]`, never a participant built out of a
+  channel id, never a set read off the ledger. `receptionist` 2.0.1 → 2.0.2.
+
+- **A session closed by the nightly sweep now carries the round it belonged to**
+  ([#273](https://github.com/mmeyerlein/meclaw/issues/273), follow-up to #269). The
+  sweep is a timer firing and carries no `context`, so nothing on the close path
+  could name the room or the participant set from the message it was handling — the
+  `./session-keeper -> ./collector` edge promoted only `session_id`, and since #269
+  such a day was *visibly* refused at the drain instead of silently lost, but it
+  still did not land.
+
+  The room, as it turned out, already arrived — through a keeper-**internal** edge
+  setting `context.channel`, which travels hop by hop. By accident rather than by
+  promise; it is a promise of talky's close edge now. The participant set existed
+  nowhere on that path at all: `sessions` had no column for it and the collector's
+  window has none either, so there was nothing to promote.
+
+  The participant set is a constant of a generation's lifetime (ADR-0002 E8: a
+  change *ends* it), so it is now recorded where it is known exactly once — at the
+  ingress door of the opening turn. `sessions` gains an `audience_set` column, the
+  `stamp` writes it on the row when it opens a generation, the sweep reads it back
+  at the seal, and the close request carries it beside `session_id` and `channel`
+  on the hop, where `talky`'s close edge promotes all three into `context`. No
+  database read, no topology knowledge.
+
+  Nothing is guessed: a door that declares nothing leaves the column empty, an
+  empty round is refused (`missing_audience`, zero ledger rows, the batch stays
+  deliverable), `["*"]` is never a default, and no room is parsed out of the
+  `session_id` prefix. The empty value travels as **present and empty** rather than
+  missing — a missing hop key makes the CEL modifier fail and skips the edge, so
+  the close would vanish instead of being refused.
+
+  Provenance is never rewritten (E12) — a turn into a *running* generation does not
+  touch it, with its own regression pin — so wiring the key afterwards takes effect
+  on the next generation of a channel, not on the open one. `session-keeper` 2.0.0 →
+  2.0.1, `talky` 3.0.4 → 3.0.5.
+
+- **`memory-drain` frisst keinen Tag mehr, den es nicht ausliefern kann**
+  ([#269](https://github.com/mmeyerlein/meclaw/issues/269)). Die `in_episode`-Lane
+  der `memory-hive` verlangt seit dem Publikums-Gate (0.16.0) `audience_set` und
+  `channel` und weist ohne beides ab; `templates/memory-drain/config.json` nannte
+  keines von beiden. Der Eingang des Drains **trägt** den Teilnehmerkreis
+  allerdings sehr wohl: `context` wird Hop für Hop weitergereicht, und weder die
+  Kanten des Drain-Hives noch das Skript noch die Runde über den Ledger fassen
+  ihn an. Das Rezept war nicht unvollständig.
+
+  Der Defekt lag eine Ebene tiefer und war zerstörend. Kam ein Batch **ohne**
+  Publikum, zerlegte der Drain ihn trotzdem, die Hive wies jeden Turn korrekt mit
+  `missing_audience` ab — und der Drain schrieb im **selben Multi-Send** die
+  `mark`, die den Tag als gedraint verbucht. Danach liefert keine spätere
+  Zustellung diese Turns je wieder aus: abgewiesen **und** als erledigt vermerkt,
+  von keiner Wiederholung, keinem Replay und keiner korrigierten Kante erreichbar.
+  Der laute Fehler der Hive und ein stiller, endgültiger Verlust im Ledger, im
+  selben Vorgang.
+
+  Der Drain weist jetzt an der **eigenen** Tür ab, bevor irgendetwas geparkt wird:
+  Route `reject`, `hop.reject_reason` `missing_audience` oder `missing_channel`
+  (die Vokabel der Hive, damit ein Betreiber eine Ablehnung lesen kann, ohne zu
+  wissen, welche Zelle sie geschrieben hat), null Ledger-Zeilen, null Episoden.
+  Der Batch bleibt damit lieferbar — Verdrahtung korrigieren, denselben Tag noch
+  einmal schicken, alles landet. Geraten wird nichts: `["*"]` ist kein Default und
+  kann keiner sein, weil es „von jedem in jeder späteren Runde lesbar" heißt und
+  der eine Wert ist, den keine Zeile je wieder loswird.
+
+  Beide ausgelieferten Beispiele deklarieren ihren Teilnehmerkreis jetzt an der
+  Eingangstür — `never-forgets` hatte seit 0.16.0 gar keinen und schrieb über
+  diesen Weg nichts mehr, was niemandem auffiel, weil das Ausbleiben einer
+  Erinnerung wie Stille aussieht.
+
+- **An empty `api_key` is no `api_key`, and `llm` now says so on both wires**
+  ([#271](https://github.com/mmeyerlein/meclaw/issues/271)). `LlmParams::parse`
+  refuses a *missing* `api_key` but accepted `""` — `Some("")` is not `None` —
+  and both lanes handed that straight to the wire, so a keyless configuration
+  sent `Authorization: Bearer ` with nothing after it. The recorded header was
+  `Bearer`, on chat-completions and on responses alike. Against an endpoint that
+  would have answered anonymously that can be a flat rejection, and the failure
+  then reads as "the provider is down" rather than as "a key nobody set".
+
+  **Not refused, omitted.** #270 made an empty *required* credential a
+  parse-time error, and that is right for a chat bot token: a `proxy` without
+  one can do nothing at all. An `llm` against a local OpenAI-compatible server
+  can do everything — the server ignores the header — so refusing would break a
+  keyless setup the library itself ships. The key must still be **declared**
+  (missing is a configuration error at spawn); its **value** may be empty, and
+  that is the explicit statement "this endpoint needs no credential". The rule
+  across the tree is therefore one rule with one criterion: an empty credential
+  is an absent credential, and whether an absence is legal is decided by what
+  the absence *means*, not by an optional flag.
+
+  The OAuth subscription lane is untouched: the broker's access token never
+  crosses a params boundary, and the wire layer presents verbatim whatever
+  bearer it is handed. That split is pinned, so moving the filter into the wire
+  layer — which would silently change the broker lane too — turns a test red.
+
+  Where the rule is written down, once each: `docs/config.md` § "The empty
+  value", `docs/cell-types.md` § `llm` (the `api_key` param), and
+  `.env.example`, whose header explained only the *missing* value although
+  `VAR=` in a half-filled copy is exactly the form that kept #270 invisible.
+
+- **Der Bearer der `mcp`-Referenzvorlage stand an einer Stelle, die niemand liest**
+  ([#268](https://github.com/mmeyerlein/meclaw/issues/268)).
+  `templates/_cell-types/mcp-min/config.json` deklarierte den Token als
+  `params.bearer`; die `mcp`-Zelle liest ihn aus `params.auth.bearer`.
+  `MCP_BEARER` wurde aufgeloest, gespeichert und nie benutzt — es ging kein
+  `Authorization`-Header raus, und nichts meldete etwas, weil ein ungelesener
+  `params`-Schluessel kein Fehler ist. Diese Datei ist die Vorlage, aus der ein
+  Autor die Vertragsform kopiert, also pflanzte sich die falsche Form in jede
+  Kolonie fort, die von ihr ausging.
+
+  Sieben von acht angrenzenden Prosa-Behauptungen bestaetigt und korrigiert, eine
+  widerlegt. Die schwerste war `access/README.md`: es verschwieg die
+  `vault`-Zelle, die das Template mitliefert, und behauptete darueber, eine
+  verschluesselte Tabelle in dieser Hive gaebe es nicht und solle es nicht geben —
+  wer liest, um zu entscheiden, ob er dem Template ein Geheimnis anvertraut,
+  bekam ein falsches Bild davon, wo das Geheimnis liegt. Dazu: `llm-unit` und
+  `builder-hive` fuehrten sich als „not sealed", obwohl beide `ports: []`
+  deklarieren; `firewall`, `llm-registry` und `receptionist` nannten Innenzellen
+  als Endpunkte, die eine Mutation heute mit `hive_port_boundary` abweist;
+  `memory-drain` nannte einen `turn-write`-Port der `memory-hive`, deren Lane
+  `in_episode` heisst; `door` beschrieb einen HTTP-Ingress ohne `hop`, den es seit
+  #175 so nicht mehr gibt.
+
+  Neu gepinnt: jedes `"template": "name@version"` in einem ausgelieferten Dokument
+  muss durch `TemplatesRegistry::resolve` gehen — `channel`s zwei
+  Generationswechsel-Mutationen nannten `talky@3.1.0` und `cogny`s Beispiel
+  `cogny@2.0.0`, beides `TemplateMissing` fuer ein Template, das auf der Platte
+  liegt.
+
+- **Ein leerer Bearer ist kein Bearer**
+  ([#270](https://github.com/mmeyerlein/meclaw/issues/270)). `web_search` nahm
+  `params.api_key` ohne Leer-Filter — `Some("")` ist nicht `None`, also trug
+  **jede** Suche `Authorization: Bearer ` mit nichts dahinter. Der Schluessel ist
+  in allen drei ausgelieferten Konfigurationen als `${SEARCH_API_KEY:-}`
+  deklariert, und `.env.example` liefert die Variable **leer gesetzt** aus, mit
+  dem Satz darueber, sie duerfe „left empty for an unauthenticated local SearXNG
+  instance" bleiben. Das war also nicht der Sonderfall, sondern der
+  dokumentierte. Gegen einen Endpunkt, der anonym geantwortet haette, kann dieser
+  Header eine harte Ablehnung sein — und die sieht nach „Suchdienst kaputt" aus
+  statt nach „nie konfiguriert". Dieselbe Reparatur, die #268 eine Zelle weiter in
+  `mcp` gemacht hat; eine dritte optionale Fundstelle hat der Durchgang ueber alle
+  sechs Credential-→-Header-Stellen nicht gefunden.
+
+  Die gespiegelte Frage — wo wird ein leerer **Pflicht**-Wert akzeptiert — hat
+  fuenf gefunden, im selben Zug repariert: `mcp`s `endpoint` und `command`, das
+  `bot_token` der Telegram-Variante sowie `app_token` und `bot_token` der
+  Slack-Variante. Alle fuenf sind als `${VAR}` ohne Default deklariert, die
+  *nicht gesetzte* Variable scheiterte also laengst laut und mit Namen; das Loch
+  war `VAR=` in einer `.env` — die Form, die eine halb ausgefuellte Kopie von
+  `.env.example` hat. Ein leerer Wert wird jetzt beim Parsen abgelehnt, mit
+  derselben Meldung und demselben Variablennamen wie der fehlende, statt eine
+  Zelle zu erzeugen, die gesund aussieht und bei jedem Aufruf an einem Dritten
+  scheitert.
+
+  Beide Haelften sind am **aufgezeichneten Request-Header** gepinnt, nicht am
+  gesetzten Param — dass der Param leer ist, war schon vorher gruen, geschickt
+  wurde er trotzdem.
+
+- **The `json` form of the recall bundle can be revoked — `collector@2.0.4`**
+  ([#266](https://github.com/mmeyerlein/meclaw/issues/266)). #259 built the
+  revocation a writer with **fixed** paths can manage: send the slot with an empty
+  rendering and the `llm` cell's per-slot upsert overwrites it. The `json` form
+  (`memory_form: json|both`) could never do that — its sub-keys are named by the
+  memory hive **per bundle**, so the collector does not know the previous turn's
+  paths and cannot name them empty. A key written last turn stood in the prompt
+  until something happened to write that exact path again; for a key derived from
+  what was recalled, possibly never. #264 built the substrate half and deliberately
+  left the template alone.
+
+  The marker now sits on `system.memory` — **not** `system.memory.recall`. That is
+  the node the collector fills wholesale every turn and the only one that carries
+  both legs. One segment up (`system` itself) the root is **empty** and would fell
+  every foreign slot in the brain with it — instructions, handover, the affinity
+  push lane. One segment down there is no node to sit on: the readable form owns
+  the fixed leaf `memory.recall`, the hive's keys are its **siblings** rather than
+  its children, and a node carrying `text` is a leaf that nothing hangs below
+  anyway. The segment boundary does the rest: `memory` never reaches `memoryx`, and
+  `system.consult` is untouched.
+
+  The marker travels unconditionally rather than under `memory_form`: the knob is
+  per-instance and retunable, and an instance switched from `json` back to
+  `readable` would otherwise carry its last json keys for the rest of its life. It
+  is stamped **last**, which is not cosmetic — `$` is the substrate's namespace
+  inside a system subtree, the revocation is the collector's own statement about a
+  node it owns, and a bundle key of the same name must not overwrite it with data.
+
+  **The empty leaf from #259 stays**, beside the marker rather than replaced by it.
+  The two are not substitutes: the marker revokes the keys the collector cannot
+  name, the leaf is its claim on the one path it **can**. In the prompt both forms
+  read alike (`walk_collect` drops an empty text), but dropping the leaf would make
+  that claim depend on what the hive returned — and under `both` a bundle carrying
+  a key of its own called `recall` would then reach the prompt on exactly the turns
+  the readable leg came back empty, and be shadowed on all others. A fixed path
+  does not change owner per turn. The bare node `{"$replace": true}` remains the
+  honest form where there is no fixed leaf: in the `json` form a leg that found
+  nothing has nothing to write and everything to withdraw, and before this that
+  turn sent no `system.memory` at all.
+
+  **Rollout.** No shipped template declares a `system_writable` allowlist. An
+  instance that does must carry `memory` as a prefix — `memory.recall` alone no
+  longer suffices, because #264 checks the replace **root** as well. Stated in the
+  `brain` lane of `templates/collector/README.md`.
+
+  `talky@3.0.4` and `cogny@3.0.4` carry the repaired collector as their
+  byte-identical sub-unit copy; nothing else about them changed.
+
+- **A push updates a slot; it no longer buys an inference — `affinity@2.0.3`**
+  ([#263](https://github.com/mmeyerlein/meclaw/issues/263)). `brief` answers on two
+  lanes through one `answer()`, and that one set `body["messages"]` on both. An `llm`
+  cell stays silent only for a body with **no** `messages[]` at all — it persists the
+  system slots and returns — and that silence is the whole reason the push lane was
+  described as costing nothing. With a turn beside them the same cell does the
+  opposite: it calls the provider, on a `tool_result` whose `call_id` it never opened.
+  Against a real provider that is an orphaned tool result and therefore a 400; the mock
+  accepted it, which is why no test noticed.
+
+  The push lane — the one where `req["subscriber"]` is set, and only `./push`'s edge
+  sets it — now carries `system` and nothing else. `readable()` still runs **once**
+  above the fork, so the two lanes can never carry two wordings of the same disclosure
+  decision (#258). With nothing to disclose the lane sends nothing at all: an *empty*
+  body is not silence to an `llm` cell, it is a parse error. `emits.body.messages` is
+  no longer `required` in consequence.
+
+  The pin measures the **absence**: it drives a real tick through `./clock → ./push →
+  ./brief` of the shipped hive and hands the answer to a real `llm` cell in front of a
+  counting mock provider — zero requests on the push lane, the four documented slots
+  still in the subscriber's `cell.db` (a "fix" that simply drops the message fails
+  here), and exactly one request on the tool lane.
+
+- **`affinity`'s scope note describes the template that ships — `affinity@2.0.3`**
+  ([#262](https://github.com/mmeyerlein/meclaw/issues/262)). `template.json` promised a
+  human gate on the proposal lane: a proposal lands with status `open` and *waits for a
+  human `decide_proposal`*. R-AF-1 decided the opposite, with its reasoning written
+  out, and `gate` implements R-AF-1 — a proposal is accepted as it arrives unless the
+  caller deliberately passes `auto_accept: false`. Not the behaviour drifted, the
+  description did, and it did so in the one field a reader consults precisely to learn
+  where a template's authority *stops*. The same sentence stood in three places at
+  once: the manifest, the `gate` cell's own `not_in_scope`, and the README's "No
+  curator". All three now name the status a `propose` really writes and the exception
+  as an exception.
+
+  Two further claims in the same field no longer held either: sovereignty is not
+  unenforced but enforced *in half* — a write from outside the hive is refused with
+  `write_denied` (#132) and a mutation naming a path inside it with
+  `hive_port_boundary` (#133), while a parent's boot graph and every read stay free.
+
+  The pin reads the two status literals out of the real `gate` script by running it,
+  and holds every piece of shipped prose against them: the default status is named, and
+  the other never in a sentence that does not also name the knob that produces it. A
+  narrow rule, and the file says so — free prose cannot be pinned in general, this
+  drift class can.
+
+  The same sweep over the rest of the library found eleven more sentences of the same
+  kind, all verified at the code: `memory-hive/recall` denied shipping tiers 1 and 2
+  that its own script runs, `memory-hive/store` called `traverse` and `similar`
+  unbuilt, `llm-unit` and its scribe named an interior cell a documented port under
+  `ports: []`, `access/store` described a hive without the `vault` it ships,
+  `coder-pipeline` carried its v1 loop description, both `summarizer/prep` copies
+  claimed one `system` path where the script writes two, `_cell-types/mcp-min` listed
+  the shipped `stdio` transport among the roadmap defers, `memory-drain` pointed at a
+  `writer` port the memory hive lost with #228, and `canvy` called `/colony/graph`
+  undrawable by a mutation, which #163 changed.
+
+- **A swapped-out generation was unreachable but still awake**
+  ([#265](https://github.com/mmeyerlein/meclaw/issues/265)). Connectivity is
+  derived from the edge table, and for a hive the spec counts only **external**
+  edges — its own inside says nothing about whether anything still reaches it.
+  The predicate read the hive path as lying *outside* its own unit, and the hive
+  boundary **mandates** the one wiring that breaks that assumption:
+  `{"from": ".", "to": "./cell"}`, an edge whose `from` is the hive path itself.
+  So a unit with nothing left but its own inside counted as connected.
+
+  What that costs is not an abstraction leak, it is a second agent. After a
+  generation swap the old unit keeps its `timer` — `talky` ships one
+  (`session-keeper/night`) — and it keeps firing on schedule, summarising and
+  writing into stores nothing reads any more, answering nobody. Nothing
+  dead-letters, nothing is refused; a channel simply runs two generations, one
+  of them invisible.
+
+  A hive is now connected by exactly one predicate: **at least one edge has
+  exactly one endpoint in the unit and the other outside it**, where the unit is
+  the hive path **together with its subtree**. Both external forms the spec named
+  fall out of it — a parent-level edge naming the hive path, and a depth-port
+  edge naming a descendant — and the mandated inward wiring falls out as what it
+  is, the unit's own inside.
+
+  The question the fix had to answer first was the other one: *what connects a
+  hive that nothing points at?* Nothing does, and that is now written down. The
+  other ways to **reach** a unit — `POST /messages` naming a hive path, a `proxy`
+  or `timer` inside it minting messages with no incoming edge — are entries into
+  a unit, not connections of it. A unit with no external edge has no way out for
+  an answer either: a message running back to the hive path finds no outbound
+  edge and dead-letters as `hive_no_route`. A self-contained unit is therefore
+  wired like any other, with a single edge to the outside — which the library
+  already requires (`templates/daily-digest/README.md` § Activation asks for
+  exactly "ONE crossing port edge … (it may be connectivity-only)").
+
+  **Who could notice.** A hive whose only reason to be awake was its own inward
+  wiring now sleeps, subtree and all, until one edge connects it. Measured over
+  every colony checked in here and every shipped `grow` file — the examples grown
+  with their mutations, the workshop corpus, the test fixtures — no hive changes
+  status. If a hand-built topology relied on it, the repair is one `add_edges`.
+
+  And the clock really does stop: the disconnect peace-stops the long-running
+  cell and aborts its I/O sub-task. The pin measures that directly on a frozen
+  tick counter rather than inferring it from a quiet dead-letter queue.
+
+- **A generation swap swings the outside edges, not the inside**
+  ([#256](https://github.com/mmeyerlein/meclaw/issues/256)). `swap_nodes` promises
+  to re-dedicate **all external edges** of one implementation onto another. What it
+  tested was one endpoint only: every edge naming `match` exactly. On a leaf those
+  are the same set. On a **subtree** they are not — the wiring with which the unit's
+  root serves its own cells (`<unit> -> <unit>/<cell>` and back, the form the hive
+  boundary mandates) names the root exactly too, and was carried over. Afterwards the
+  new generation addressed the old one's cells and the old one's cells answered the
+  new one: one turn ran through **both** generations — two model calls, two episodes,
+  and the generation that is supposed to be silent writing along. Nothing dead-lettered
+  and nothing was refused; the answer arrived, twice.
+
+  It was invisible on the FIRST generation change, because a channel ships its
+  generation slot occupied by a `terminal` and a leaf has no inside to drag. That is
+  the worst ordering a defect can have: it passes the demo and misbehaves in
+  production, on a colony that has run long enough to have had a roster change.
+
+  **The inside stays where it belongs.** An edge is external when its *other* endpoint
+  lies outside the subtree rooted at `match` — segment-aware, so the sibling `talky-2`
+  is not read as a child of `talky`. The spec calls that wiring internal itself
+  (overview § Connectivity and activity, hive sharpening), and leaving it is the only
+  variant under which the disconnected unit stays **whole**: the documented swing-back
+  restores a working generation rather than a hollow one. Re-pointing it at the new
+  subtree's corresponding children — which is what a caller seems to want — would
+  instead **double** it, because a subtree arriving via `add_nodes` already carries its
+  internal edges from its template's `params.graph`. Refusing the swap was the other
+  substrate-shaped answer and was not needed: there is a semantics that performs the
+  mutation whole instead of by halves.
+
+  `move_nodes` shares the helper and is unaffected: a move of a node with anything
+  beneath it is refused in validation, so a moved node has no descendants to name.
+
+- **A diff that replaces an edge no longer loses it to its own check**
+  ([#257](https://github.com/mmeyerlein/meclaw/issues/257)). The header mirror — the
+  projection the header-contract-locality check takes its post-state from — read edge
+  operations as `add_edges` before `remove_edges`. The apply arm has done the opposite
+  since [#158](https://github.com/mmeyerlein/meclaw/issues/158), and the spec says so
+  too. A `remove_edges` pattern matches every edge between a `{from, to}` pair, so the
+  mirror took back the fresh edge the same diff had just laid, and the mutation was
+  refused — naming a context key on an edge that was fine. Anyone believing the message
+  went and changed the edge that was not broken.
+
+  It hits the everyday case: growing a wiring by adding a promotion to an existing edge
+  belongs in ONE mutation, so the lane is never missing in between. The workaround —
+  writing the old modifier into the match pattern — required the caller to know that
+  the checker and the executor disagree about order.
+
+  **Why sequence and not target state.** `remove_edges` is a pattern, not a set
+  subtraction: what it takes out depends on what the table holds at the moment it runs.
+  A "post state" without naming that moment is undefined, and the only authority on it
+  is the apply arm — which does let `remove_edges` see the swap-swing and subtree edges,
+  just not the `add_edges` of the same diff. The mirror therefore stays a sequence
+  mirror, aligned step for step with the arm; a second, independent model would be
+  exactly the double definition that drifted apart here. The only other place that
+  rebuilds a post-state from the diff (`connectivity::post_state_edges`, the eager-spawn
+  gate) already computed remove-before-add.
+
+- **The right place is not yet the right shape: `affinity@2.0.2` renders what it
+  pushes** ([#258](https://github.com/mmeyerlein/meclaw/issues/258)). `brief`
+  attached the disclosed pack to the push lane as `body["system"]` — the pack
+  object itself. `system.*` is the right place for that lane: it addresses an
+  `llm` cell, which keeps the four slots per path in its own `cell.db`. But an
+  `llm` cell flattens `system.*` into leaves, stopping at the first object that
+  carries a `text` key, and concatenates exactly those `text` values into the
+  prompt. The pack had none anywhere, so it produced **no leaf at all** — not
+  persisted, not rendered, not even counted against the 256-slot budget. The push
+  delivered, the `audit` table said `ok`, and the subscriber's model answered from
+  everything except the brief.
+
+  Every slot now ships its rendering beside its structure: `path: value` lines
+  under a heading that names the subject, because a leaf reaches the prompt on its
+  own and has to say what it is about without the receipt line next to it. The
+  `text` sits at the top of the slot, so the leaf walk stops there and the four
+  documented slot paths (`system.identity`, `system.peer`, `system.relationship`,
+  `system.channel`) stay exactly four leaves — a subscriber that pins
+  `system_writable` to them keeps accepting the write, and each slot goes on being
+  upserted on its own. One rendering for both lanes: `answer()` renders once and
+  the tool lane serialises that same object, so there is no second wording of the
+  same pack that could drift away from the first.
+
+  Same class as the tool-lane defect of #242, one lane over — which is why the pin
+  drives the shipped template through a real colony and hands the answer to a real
+  `llm` cell in front of a mock provider: what is asserted is the recipient's
+  composed system prompt, not that the slot arrived.
+
+- **A `system` slot is revoked, not merely abandoned — `collector@2.0.3`**
+  ([#259](https://github.com/mmeyerlein/meclaw/issues/259)). `system.*` is durable
+  state in the receiving `llm` cell: one upsert per slot path, so a path that is
+  not sent is a path that is not touched. The collector built `system.consult`
+  only under `if consults:` — once the advice turns fell out of the window the
+  branch was skipped, and the prompt kept naming a consultation that had closed
+  long ago. The comment directly above it promised the opposite ("they expire
+  exactly when the window forgets the event they belong to").
+
+  **The same class on the memory leg, and the heavier half.**
+  `system.memory.recall` was set only when the recall leg had found something. A
+  leg that came back empty therefore left the PREVIOUS turn's bundle standing as
+  "this turn's memory". The reasoning `collector@2.0.2` shipped with — that the
+  bundle tolerates `system.*` because it is "re-sent under a fixed path on every
+  turn and can never go stale" — did not hold for the empty case. It does now.
+
+  Both slots the collector owns travel unconditionally, with an empty rendering
+  when there is nothing to say. The `text` leaf stays in the empty form and is
+  not cosmetic: `flatten_to_leaves` stops at `text`, so a slot offered without
+  one produces no leaf and no write, and the stale row would stand exactly as
+  before. An empty `text` no longer contributes a part to the system prompt
+  either — before, an emptied slot left a hanging `"\n\n"` separator in every
+  prompt that followed, and a tree of nothing but emptied leaves produced a
+  system message made of whitespace.
+
+  **What this cannot reach, said out loud:** the `json` form of the memory bundle
+  (`memory_form: json` or `both`). Its sub-keys are named by the memory hive per
+  bundle, so the collector does not know which paths a previous turn wrote and
+  cannot name them empty. A key written last turn and absent this turn stays in
+  the prompt until something writes that exact path again. Documented in the
+  knob table of `templates/collector/README.md`.
+
+  `talky@3.0.3` and `cogny@3.0.3` carry the repaired collector as their
+  byte-identical sub-unit copy; nothing else about them changed.
+
+- **A store's `write_surface` now bounds a transfer import too**
+  ([#260](https://github.com/mmeyerlein/meclaw/issues/260)). The `transfer` body
+  slot is answered by the substrate before `handle()` — deliberately, because
+  `consumes` describes what `handle()` needs and a transfer never reaches it. The
+  consequence was a real gap: `store`'s `params.write_surface: "internal"` is a
+  cell-level check, so an import walked straight past a store that was sealed
+  against foreign writers. A declaration a new surface can bypass is not a
+  promise any more, it is a trap.
+
+  **New public contract surface, and that is the load-bearing part of the fix:
+  `contract.write_surface`** (`"open"` | `"internal"`, absent means `"open"`). It
+  had to be new because the substrate is type-agnostic and must not read a cell
+  type's `params` — so a boundary the substrate enforces has to be declared where
+  every cell type declares in the same grammar: the `contract` block, beside
+  `consumes`/`emits`/`ingress`, in the same spirit as `consumes.topology` (#160)
+  and `contract.ingress` (#185). All ten cell types with a `cell.db` can set it,
+  not just the `store`.
+
+  `"internal"` refuses an `import` whose sender lies outside the cell's own parent
+  scope, with `error_code: "write_denied"`, decided after the arguments are parsed
+  and before the first row is written. Same scope arithmetic and the same
+  fail-closed rule for a message with no sender as #132, so a cell declaring both
+  halves gets one boundary rather than two that disagree — and the two are
+  deliberately not derived from one another, because one bounds what `handle()`
+  runs and the other what the substrate runs before `handle()` is ever reached.
+
+  It is a **provenance** rule and nothing else — own path plus sender, no look
+  inside the document. What it does not refuse: an `export` (a read; no write
+  surface has ever bounded a read), an import into a cell that declares nothing,
+  an import from inside the cell's own scope — the shipped
+  `memory-hive` `in_import` lane runs `porter -> store` and is untouched — and an
+  import into a cell directly under the colony root, whose parent scope is `/` and
+  contains every cell.
+
+  The shipped sealed stores declare both halves now: `memory-hive`, `canvy`, and
+  the `steward`'s `charter` and `receipts`. Documented in both language versions:
+  `docs/config.md` § contract (the declaration and its relation to #132) and
+  `docs/cell-types.md` § Content transfer, whose paragraph described the gap as a
+  property and now says both boundaries hold.
+
+
+- **A tool result is its `messages[]`, and `collector@2.0.2` keeps all of it**
+  ([#252](https://github.com/mmeyerlein/meclaw/issues/252)). The `in_tool` lane kept
+  `messages[0]` and discarded the rest, so a tool that answered two calls in ONE
+  message closed one of them: the other stayed in the round's expectation set,
+  the fan-in parked, and the turn was only ever finished by the idle exit
+  (`round_idle_ms`) with a synthetic stand-in for a result that had already
+  arrived. Every turn of a result now enters the round under the call id it
+  answers, and the fan-in reads all of them. A tool behind a sealed agent hive
+  has no other way back — `params.ports: []` means no edge from outside may name
+  a cell inside — so this was the whole return path for the shape.
+
+  **What a result may NOT carry, decided rather than inherited.** A `system` slot
+  or a top-level body slot on that lane is still dropped, and the `in_bundle`
+  lane that keeps `system` is not the precedent it looks like: what leaves the
+  collector's seam in `system.*` is upserted into the brain `llm` cell's own
+  `cell.db` and stands in the prompt until something overwrites that exact slot
+  path. That is durable state of the agent, not evidence of one round. The recall
+  bundle survives it because it is re-sent under a fixed path on every turn and
+  can never go stale; a single tool result gets no second chance to correct
+  itself, and `system.*` is out of the curator's reach and out of the round's
+  byte budget by design, so nothing downstream could cut it back. A tool with
+  structure to hand back serialises it into the text of its result — the pattern
+  `affinity@2.0.1` already uses, now the documented answer instead of a local
+  workaround. Written down where a tool author stands:
+  `templates/README.md` § Writing a cell a tool round will call,
+  `templates/collector/README.md` § What a tool result may carry, and
+  `docs/store-backed-tool-loop.en.md` § 3.
+
+  `talky@3.0.2` and `cogny@3.0.2` carry the repaired collector as their
+  byte-identical sub-unit copy; nothing else about them changed.
+
+
+- **The lane a curator stub names is a lane the hive admits**
+  ([#245](https://github.com/mmeyerlein/meclaw/issues/245)). `collector@2.0.1`
+  declares `in_thread_call` in its hive contract, and `talky@3.0.1` declares it
+  at its own path and forwards it through its door edge. The collector has
+  served `thread_recall` on that lane since wave 11 — it is what every stub the
+  curator leaves points at, by name, in the text the model reads — but no
+  `params.contract` in the library listed it, so the one edge that makes the
+  tool reachable was refused at mutation time with `hive_contract`. The defect
+  was invisible until somebody set `context_window`: the knob that produces
+  stubs is on by default, the knob that triggers them is off, and the first
+  person to tune for context would have seen a curator that eats tool results
+  and a round that stalls once per elided item until `round_idle_ms` closes it.
+
+  **What a caller has to wire.** One edge, the same shape the memory tool has
+  had since #78 and next to it in every recipe:
+  `{"from": "./<agent>", "to": "./<agent>", "condition": "hop.route == 'tool' &&
+  hop.tool_name == 'thread_recall'", "modifier": {"set_hop": {"route":
+  "'in_thread_call'"}}}` — plus the tool's schema in the brain's
+  `system.tools`, which is per instance as it always was. Wire it whenever you
+  set `context_window`.
+
+- **`collector`'s contract no longer offers a lane nothing behind its door
+  reads.** `in_batch` was declared and never dispatched on: an edge wiring it
+  passed validation and every message on it was swallowed in silence. It is out
+  in 2.0.1, so such an edge is refused rather than parked. Nothing in the
+  library, the examples or the workshop ever sent `in_batch` to a collector —
+  the lane belongs to `summarizer` and to the drains, and both keep it.
+
 ## [0.16.0] — 2026-08-19
 
 ### Breaking

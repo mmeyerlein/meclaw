@@ -151,6 +151,8 @@ impl CellFactory for LlmCellFactory {
         let respawn_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let respawn_write_surface = contract.write_surface;
         let respawn_attachments = attachment_reader.clone();
         let respawn: RespawnFn = Box::new(
             move || -> (
@@ -180,6 +182,7 @@ impl CellFactory for LlmCellFactory {
                     db,
                     respawn_blob.clone(),
                     respawn_consumes.clone(),
+                    respawn_write_surface,
                 );
                 // Phase-13.5 Slice 4 T6: re-notify the colony of the fresh stop
                 // pair (the frozen RespawnFn 3-tuple cannot return it). try_send,
@@ -208,6 +211,8 @@ impl CellFactory for LlmCellFactory {
         let wake_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let wake_write_surface = contract.write_surface;
         let wake_attachments = attachment_reader.clone();
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             let conn = open_or_create_cell_db(&wake_cell_dir.join("cell.db"))
@@ -231,6 +236,7 @@ impl CellFactory for LlmCellFactory {
                     db,
                     wake_blob.clone(),
                     wake_consumes.clone(),
+                    wake_write_surface,
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

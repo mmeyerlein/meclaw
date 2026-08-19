@@ -48,7 +48,7 @@ ship -- generic, ten lines each, and needed by every tree.
   POST /messages
         |
         v
-    /surface ──turn──> /firewall/screen ──pass──> /talky/session-keeper
+    /surface ──turn──> /firewall ──pass──> /talky/session-keeper
                             │                       ⋮
                             │                 (the composite's own
                             │                  twelve internal edges:
@@ -121,7 +121,8 @@ The hop chain, with the firewall's three store round trips and the collector's w
 bookkeeping folded away:
 
 ```
-@external -> /surface -> /firewall/screen -> (three round trips to /firewall/rules) ->
+@external -> /surface -> /firewall -> /firewall/screen -> (three round trips to
+/firewall/rules) -> /firewall ->
 /talky/session-keeper -> /talky/session-keeper/stamp -> (two round trips to
 /talky/session-keeper/sessions) -> /talky/session-keeper -> /talky/collector ->
 /talky/collector/assemble -> /talky/collector -> /talky/brain -> /talky/dispatcher ->
@@ -132,10 +133,10 @@ bookkeeping folded away:
 and `/talky/session-keeper` are hives: no mailbox, no cell task, nothing runs in them. The
 colony still logs the message that *arrives* at a hive, and logs the forwarded follow-up
 with the hive as its sender -- so a message crossing a hive reads `-> /talky/collector ->
-/talky/collector/assemble -> /talky/collector ->`, hive, cell, hive. `/firewall` is a hive
-too and never shows up, because every edge addresses `/firewall/screen` directly and
-nothing is ever routed to `/firewall` itself. A hive is in the trace when it is
-**addressed**, not because it exists.
+/talky/collector/assemble -> /talky/collector ->`, hive, cell, hive. `/firewall` reads the
+same way, because `grow.json` addresses the hive and the `in_turn` lane picks the cell
+behind it; since the seal (GH #228) there is no other way to enter it. A hive is in the
+trace when it is **addressed**, not because it exists.
 
 `headers` on an HTTP post land in the message's **context** compartment, which is why the
 channel identity survives every later hop -- and why the firewall rate-limits per channel and

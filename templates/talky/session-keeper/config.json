@@ -9,9 +9,10 @@
         {
           "route": "in_turn",
           "context": [
-            "channel"
+            "channel",
+            "audience_set"
           ],
-          "because": "an inbound turn from the surface; without the promoted channel every chat lands on the channel 'default'"
+          "because": "an inbound turn from the surface; without the promoted channel every chat lands on the channel 'default', and without the promoted audience_set the generation this turn opens records no round -- which every consumer that needs one will refuse"
         },
         {
           "route": "in_sweep",
@@ -25,7 +26,7 @@
         },
         {
           "route": "close",
-          "because": "a finished session carrying hop.session_id and hop.channel"
+          "because": "a finished session carrying hop.session_id, hop.channel and hop.audience_set -- the id, the room and the round it was spoken to"
         }
       ]
     },
@@ -69,7 +70,8 @@
               "store_origin": "'keeper-close'",
               "ses_phase": "hop.phase",
               "channel": "hop.channel",
-              "keeper_session": "hop.session_id"
+              "keeper_session": "hop.session_id",
+              "keeper_audience": "hop.audience_set"
             }
           }
         },
@@ -99,8 +101,8 @@
   "description": {
     "purpose": "Scope marker of the session keeper: bundles the channel-generation state and the two passes that move it — the stamp in the ingress path and the nightly close. THE HIVE IS THE ADDRESS: a caller sends to the keeper and names a lane, never a cell inside it. A session is a phone call on a channel: it begins with a turn, it ends deterministically, and everything downstream only reads the id.",
     "use_when": "One per agent surface, in front of the context assembly. Wire the parent's edges TO THE HIVE PATH — see meclaw-overview § Die Hive-Grenze. `params.ports` is empty and therefore sealed: a mutation reaching inside is rejected with hive_port_boundary. The keeper is an island until an edge crosses into it.",
-    "not_in_scope": "No conversation content and no context assembly -- the turns live in the collector's window. No judgement about whether a conversation is over: the close is a timer plus an idle threshold, never a model call. Nothing is deleted; a closed generation stays as a row.",
-    "contract_in": "in_turn — an inbound turn from the surface; the caller MUST promote the channel identity to context.channel, or every chat lands on the channel 'default'. in_sweep — an operator-forced sweep outside the night. Any other route is refused by the hive rather than delivered to a cell that would not know it.",
-    "contract_out": "turn — a stamped turn, carrying hop.session_id, for the context assembly (promote the id to context on that edge; that IS the stamp). close — a finished session, carrying hop.session_id and hop.channel, for whoever consumes one (the collector's in_close lane)."
+    "not_in_scope": "No conversation content and no context assembly -- the turns live in the collector's window. No judgement about whether a conversation is over: the close is a timer plus an idle threshold, never a model call. Nothing is deleted; a closed generation stays as a row. And no roster: the round of a generation is recorded once, when the generation opens, and never rewritten (ADR-0002 E12).",
+    "contract_in": "in_turn — an inbound turn from the surface; the caller MUST promote the channel identity to context.channel, or every chat lands on the channel 'default', and SHOULD promote the round to context.audience_set, or the generation this turn opens records none. in_sweep — an operator-forced sweep outside the night. Any other route is refused by the hive rather than delivered to a cell that would not know it.",
+    "contract_out": "turn — a stamped turn, carrying hop.session_id, for the context assembly (promote the id to context on that edge; that IS the stamp). close — a finished session, carrying hop.session_id, hop.channel and hop.audience_set, for whoever consumes one (the collector's in_close lane). The close is fired by a TIMER, which has no context of its own: everything it says about the round comes off the generation row, so the consuming edge has all three keys to promote and none of them is guessed."
   }
 }

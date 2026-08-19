@@ -172,24 +172,26 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
                       "set_context": {"session_id": "hop.session_id"}}},
-        // The edge that carries a turn INTO the hive owes it its provenance
-        // (#244). This tree has no connector above it, so BOTH keys are stamped
-        // here: `channel` is the one room these sessions were held in -- the
-        // room is recorded explicitly and is never parsed out of the
-        // `session_id` prefix, which is a session-keeper convention and no
-        // promise to the memory -- and `audience_set`
-        // is the round that held them, one person and one agent, which is
-        // exactly the cast of `DAY`. Not `["*"]`: a universal set would make
-        // the count and idempotence gates pass against a writer with no gate.
+        // The port edge promotes exactly the four hop keys the template
+        // documents, and NOT the provenance (#269). The participant set and
+        // the room are keys of the round, declared at the door a turn enters
+        // by -- here, the ingress context of the message itself, standing in
+        // for the ingress door of a channel generation (ADR-0002 E8). They
+        // ride in `context` from there through the drain, through its ledger
+        // round trip and into the writer without anything on this path
+        // copying, defaulting or widening them. A literal stamped HERE would
+        // hide exactly the defect #269 is about: it would make the gates pass
+        // over a drain that had thrown the real audience away.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at",
-                                      "channel": "'c-drain'",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
+                                      "happened_at": "hop.happened_at"}}},
+        // The drain's own refusal lane (#269). Drained here so a batch this
+        // adapter would not take is READ rather than dead-lettered -- which is
+        // also what makes the DLQ assertions of the gates below mean something.
+        {"from": "./drain", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'reject'"},
         {"from": "./probe", "to": "/sink"},
         // The ledger receipt is the exception this test needs and the boundary
         // rule tolerates: it is not the hive's contract but a probe INTO it, the
@@ -223,9 +225,40 @@ fn build_tree(td: &tempfile::TempDir) {
     memory_write_path(root);
 }
 
+/// The round these sessions were held in: one person and one agent, which is
+/// exactly the cast of `DAY`. Never `["*"]` -- a universal set would make every
+/// gate below pass against an adapter that had lost the real one.
+const AUDIENCE: &str = r#"["member:alex","agent:scribe"]"#;
+/// The one room they were held in, recorded explicitly. It is never parsed out
+/// of the `session_id` prefix: that prefix is a session-keeper convention and
+/// no promise to the memory.
+const ROOM: &str = "c-drain";
+
+/// A closed session, arriving with the provenance of the round it happened in.
+///
+/// The keys sit in the ingress `context` because that is where a real colony
+/// puts them -- the door of a channel generation declares the participant set
+/// once and the connector promotes the room (ADR-0002 E8, `channel@1`) -- and
+/// from there they are simply carried, hop by hop, all the way in.
 fn day(session: &str, turns: &[(&str, &str)]) -> Message {
+    day_with_provenance(
+        session,
+        turns,
+        &[("audience_set", AUDIENCE), ("channel", ROOM)],
+    )
+}
+
+/// The same day, with the provenance spelled out (or left out) key by key.
+fn day_with_provenance(
+    session: &str,
+    turns: &[(&str, &str)],
+    provenance: &[(&str, &str)],
+) -> Message {
     let mut ctx = meclaw_core::serde_json::Map::new();
     ctx.insert("session_id".into(), json!(session));
+    for (k, v) in provenance {
+        ctx.insert((*k).into(), json!(v));
+    }
     let msgs: Vec<Value> = turns
         .iter()
         .map(|(origin, text)| json!({"origin": origin, "type": "text", "text": text}))
@@ -327,6 +360,21 @@ async fn chain_ops(rx: &mut mpsc::Receiver<Message>, n: usize) -> Vec<String> {
     ops
 }
 
+/// The adapter's own ledger, row by row: `(kind, drained_upto)`. Empty means
+/// the adapter consumed nothing at all -- neither a parked day nor a mark.
+fn ledger_rows(db: &std::path::Path) -> Vec<(String, i64)> {
+    let Ok(conn) = rusqlite::Connection::open(db) else {
+        return vec![];
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT kind, drained_upto FROM drain_log") else {
+        return vec![];
+    };
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query drain_log")
+        .map(|r| r.expect("row"))
+        .collect()
+}
+
 fn dlq_count(root: &std::path::Path) -> i64 {
     let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
     conn.query_row("SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0))
@@ -341,6 +389,199 @@ const DAY: [(&str, &str); 6] = [
     ("user", "what did i say first?"),
     ("assistant", "that your editor is helix"),
 ];
+
+/// The provenance of a session's episodes, as the hive's writer left it:
+/// `(turn_id, audience_set, channel)`, ordered by the index in the turn id.
+fn provenance(db: &std::path::Path, session: &str) -> Vec<(String, String, String)> {
+    let Ok(conn) = rusqlite::Connection::open(db) else {
+        return vec![];
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT turn_id, COALESCE(audience_set, ''), COALESCE(channel, '') \
+         FROM episodes WHERE session_id = ?1",
+    ) else {
+        return vec![];
+    };
+    let mut out: Vec<(String, String, String)> = stmt
+        .query_map([session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query provenance")
+        .map(|r| r.expect("row"))
+        .collect();
+    out.sort_by_key(|(turn_id, _, _)| index_of(turn_id));
+    out
+}
+
+/// The next message on `/sink` whose `hop.route` is `route`, skipping the
+/// batch copies the observation lane also carries. 30 s failure marker.
+async fn next_on_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let m = tokio::time::timeout(left, rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no message on route {route:?} within 30s"))
+            .expect("the sink is still open");
+        if hop_of(&m, "route") == route {
+            return m;
+        }
+    }
+}
+
+// ============================================================== AUDIENCE GATE
+
+/// GH #269, the positive half: an episode goes through the SHIPPED adapter into
+/// the SHIPPED hive writer and the row lands **with** the participant set and
+/// the room it was declared under -- byte for byte the set the door named, not
+/// a wider one and not an empty one.
+///
+/// Nothing on the path between the door and the row promotes them: the port
+/// edge carries only `session_id`, `turn_id` and `happened_at`. So this pins
+/// the property the adapter really owes -- that it does not drop, rewrite or
+/// widen a provenance it was handed, across a ledger round trip that leaves and
+/// re-enters the cell twice (ADR-0002 E12).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_episode_lands_with_the_participant_set_it_was_spoken_to() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td);
+    let (h, _sink_rx, _park_rx) = boot(&td).await;
+    let db = td.path().join("main/memory/store/cell.db");
+
+    h.send(day("s1", &DAY)).await;
+    await_episodes(&db, "s1", DAY.len());
+
+    // The writer normalises a participant set the way affinity does
+    // (deduplicated, blanks dropped, sorted) and re-serialises it, so the
+    // stored form is the sorted one -- the SAME two participants, in the
+    // canonical order the rule compares them in.
+    let stored = r#"["agent:scribe", "member:alex"]"#;
+    let rows = provenance(&db, "s1");
+    assert_eq!(rows.len(), DAY.len());
+    for (i, (turn_id, audience_set, channel)) in rows.iter().enumerate() {
+        assert_eq!(turn_id, &format!("s1#{i}"));
+        assert_eq!(
+            audience_set, stored,
+            "episode {i} carries the round it was spoken to, not a wider one"
+        );
+        assert_eq!(channel, ROOM, "episode {i} carries the room it was said in");
+    }
+    assert_eq!(dlq_count(td.path()), 0, "nothing dead-letters on the way");
+}
+
+/// GH #269, the half that matters: a batch whose participant set is not
+/// knowable is REFUSED at the adapter's own door -- and refused means nothing
+/// was consumed. No episode leaves, no ledger row is written, and the reason
+/// names the missing key.
+///
+/// This test can never go green through a default. A default would put a row in
+/// `episodes` (the first assertion) and a mark in the ledger (the third), and a
+/// `["*"]` default would additionally fail the explicit check below that no row
+/// anywhere claims a universal audience.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_without_a_participant_set_is_refused_and_not_consumed() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+    let db = td.path().join("main/memory/store/cell.db");
+    let ledger = td.path().join("main/drain/ledger/cell.db");
+
+    h.send(day_with_provenance("s1", &DAY, &[("channel", ROOM)]))
+        .await;
+
+    let reject = next_on_route(&mut sink_rx, "reject").await;
+    assert_eq!(
+        hop_of(&reject, "reject_reason"),
+        "missing_audience",
+        "the refusal names the key that is missing, in the hive's own vocabulary"
+    );
+    assert_eq!(
+        hop_of(&reject, "session_id"),
+        "s1",
+        "and it names the session, so the wiring that is wrong can be found"
+    );
+
+    assert!(
+        episodes(&db, "s1").is_empty(),
+        "an untagged episode is not written -- not with a guess, not with a blank"
+    );
+    assert!(
+        !provenance(&db, "s1")
+            .iter()
+            .any(|(_, audience, _)| audience.contains('*')),
+        "and above all not with a universal one: `*` is the value nothing can take back"
+    );
+    assert!(
+        ledger_rows(&ledger).is_empty(),
+        "the batch was not consumed either: no parked day, no mark. \
+         A refusal that ate the batch would lose the day for good"
+    );
+}
+
+/// The same door, the other key (contract ruling R3: a missing room is
+/// `missing_channel` on every path, never `missing_audience`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_without_a_room_is_refused_and_not_consumed() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+    let db = td.path().join("main/memory/store/cell.db");
+    let ledger = td.path().join("main/drain/ledger/cell.db");
+
+    h.send(day_with_provenance(
+        "s1",
+        &DAY,
+        &[("audience_set", AUDIENCE)],
+    ))
+    .await;
+
+    let reject = next_on_route(&mut sink_rx, "reject").await;
+    assert_eq!(hop_of(&reject, "reject_reason"), "missing_channel");
+    assert!(episodes(&db, "s1").is_empty());
+    assert!(ledger_rows(&ledger).is_empty());
+}
+
+/// The reason the refusal belongs at THIS door and not one hop later: a batch
+/// the adapter refused is still deliverable. Fix the wiring, hand the same day
+/// over again, and all of it lands.
+///
+/// Refused downstream instead, the day would be gone: the adapter marks a
+/// session drained in the same multi-send that emits its episodes, so a hive
+/// that refuses them leaves a mark behind that no later delivery can get past.
+/// That is the silent half of #269, and this is the test that holds it shut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_day_still_lands_whole_once_the_wiring_carries_its_audience() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+    let db = td.path().join("main/memory/store/cell.db");
+
+    // First delivery: the door named no participant set.
+    h.send(day_with_provenance("s1", &DAY, &[("channel", ROOM)]))
+        .await;
+    let refused = next_on_route(&mut sink_rx, "reject").await;
+    assert_eq!(hop_of(&refused, "reject_reason"), "missing_audience");
+    assert!(episodes(&db, "s1").is_empty());
+
+    // Second delivery: the same day, over an edge that carries the round.
+    h.send(day("s1", &DAY)).await;
+    let rows = await_episodes(&db, "s1", DAY.len());
+
+    assert_eq!(
+        rows.len(),
+        DAY.len(),
+        "every turn of the refused day is still there to be drained"
+    );
+    for (i, (origin, text)) in DAY.iter().enumerate() {
+        assert_eq!(rows[i].turn_id, format!("s1#{i}"));
+        assert_eq!(rows[i].sender, *origin);
+        assert_eq!(rows[i].content, *text);
+    }
+    assert!(
+        provenance(&db, "s1")
+            .iter()
+            .all(|(_, audience, channel)| audience.contains("member:alex") && channel == ROOM),
+        "and it lands under the round that was finally declared"
+    );
+}
 
 // ================================================================ COUNT GATE
 

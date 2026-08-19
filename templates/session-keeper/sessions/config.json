@@ -10,7 +10,8 @@
         "opened_at": "text",
         "last_seen": "text",
         "closed": "int",
-        "closed_at": "text"
+        "closed_at": "text",
+        "audience_set": "text"
       }
     },
     "query_timeout_ms": 5000
@@ -53,9 +54,9 @@
     ]
   },
   "description": {
-    "purpose": "The generation ledger of the keeper: one row per session, that is, per channel generation. It answers exactly two questions -- which generation is a channel currently in, and when did that channel last speak -- and holds nothing else.",
+    "purpose": "The generation ledger of the keeper: one row per session, that is, per channel generation. It answers exactly three questions -- which generation is a channel currently in, when did that channel last speak, and which round was it opened in -- and holds nothing else.",
     "use_when": "One per session-keeper hive. Both code cells of the hive write here and nowhere else; code cells own no state, so all of it lives in this store.",
-    "not_in_scope": "No conversation turns, no tool rounds, no memory: what was said belongs to the collector's window and to the memory hive. No deletes -- a closed generation keeps its row, which is what makes the close idempotent and the history readable.",
+    "not_in_scope": "No conversation turns, no tool rounds, no memory: what was said belongs to the collector's window and to the memory hive. No deletes -- a closed generation keeps its row, which is what makes the close idempotent and the history readable. And no roster: `audience_set` is written ONCE, when the generation is opened, and never rewritten (ADR-0002 E12) -- a generation whose round changed would have ended.",
     "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the two passes, hop.rows_affected carries the guard signal of the close: a guarded update that affected 0 rows means this generation was already sealed and the emission is terminal.",
     "consumes_meaning": "messages[]: tool_call turns with store-native args. Which pass a reply belongs to is carried by context.store_origin ('keeper-stamp' / 'keeper-close'), the step by context.ses_phase, both promoted by the edge that sent the op.",
     "examples": [

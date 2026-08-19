@@ -159,7 +159,9 @@ impl CellFactory for TimerRecorderFactory {
                         None,
                         None,
                         None,
-                     None,)
+                     None,
+                     Default::default(),
+                     )
                     .await;
                 });
                 (tx, join, peace_rx, backstop_rx)
@@ -337,6 +339,7 @@ impl CellFactory for ReconnectEagerFactory {
                     death_ack,
                     None,
                     None,
+                    Default::default(),
                 )
                 .await;
             });
@@ -621,6 +624,7 @@ impl CellFactory for GuardProbeFactory {
                     death_ack,
                     None,
                     None,
+                    Default::default(),
                 )
                 .await;
                 mirror.abort();
@@ -1146,6 +1150,7 @@ impl CellFactory for RenotifyProbeFactory {
                     Some(death_ack_tx),
                     None,
                     None,
+                    Default::default(),
                 )
                 .await;
             });

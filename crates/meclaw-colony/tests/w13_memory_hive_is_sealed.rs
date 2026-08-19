@@ -182,6 +182,14 @@ fn the_shipped_memory_store_declares_an_internal_write_surface() {
         cfg["params"]["write_surface"], "internal",
         "ruling F3: the memory store is writable only from inside its own hive"
     );
+    // GH #260: the cell-level half above bounds only what `handle()` runs. The
+    // `transfer` slot is answered by the substrate BEFORE `handle()`, so a store
+    // that seals one half and not the other is still writable from outside —
+    // through a door the declaration above cannot see.
+    assert_eq!(
+        cfg["contract"]["write_surface"], "internal",
+        "GH #260: the substrate half has to be declared too, or an import walks past ruling F3"
+    );
 }
 
 /// The canonical mutation from `templates/memory-hive/README.md` (the block a

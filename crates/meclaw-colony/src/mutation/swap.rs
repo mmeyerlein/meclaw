@@ -3,9 +3,27 @@
 //! Given a source node `t2` and a target node `t3`, [`plan_edge_swing`]
 //! computes how to "swing" all **external** edges of `t2` onto `t3`.
 //!
-//! *External* = edges where `e.from == t2` OR `e.to == t2` (exact path
-//! match). Subtree-internal edges (`t2/child → x`) are **not** touched
-//! because their paths do not equal `t2` exactly.
+//! *External* = edges where `e.from == t2` OR `e.to == t2` (exact path match)
+//! **and** whose other endpoint lies OUTSIDE the subtree rooted at `t2`.
+//!
+//! A subtree has three classes of edge, not two: from outside in, from inside
+//! out, and **inside**. The inside class is not only `t2/a → t2/b` (whose paths
+//! never equal `t2`); it also holds the two forms in which the subtree root
+//! wires its own children — `t2 → t2/child`, the mandated hive-boundary form
+//! (`docs/cell-types.en.md` § The hive boundary: "inside, the hive distributes
+//! on its own, with edges whose `from` is itself"), and `t2/child → t2` on the
+//! way back out. Both name `t2` exactly, so an exact-path-only test carried
+//! them onto `t3` and left the two units cross-wired (GH #256).
+//!
+//! They stay where they are. The swap's promise is about the **external**
+//! edges of an implementation (`docs/meclaw-overview.md` § Mutation-Operationen)
+//! and the spec calls this wiring internal itself (§ Connectivity and activity,
+//! hive sharpening). Leaving it is also the only variant under which the old
+//! unit stays *whole* while it is disconnected — which is what makes the
+//! documented swing-back ("swappable back at any time") restore a working unit
+//! rather than a hollow one. Re-pointing it at `t3`'s corresponding children
+//! would additionally DOUBLE it: a subtree arriving via `add_nodes` already
+//! carries its own internal edges from its template's `params.graph`.
 //!
 //! The function is **pure**: no I/O, no Uuid generation, no mutation of the
 //! table. It returns a [`SwingPlan`] that the apply step (T4) feeds into the
@@ -62,6 +80,24 @@ pub(crate) struct SwingPlan {
     pub(crate) remove_ids: Vec<Uuid>,
 }
 
+// ── Subtree membership ───────────────────────────────────────────────────────
+
+/// Returns true when `endpoint` lies **strictly inside** the subtree rooted at
+/// `root` — i.e. `root/…` at any depth. `root` itself is not strictly inside.
+///
+/// Segment-aware, and that is the load-bearing part here: generations are named
+/// by the suffix rule (`talky`, `talky-2`), so a plain `starts_with` would read
+/// the SIBLING `/talky-2` as a child of `/talky` and refuse to swing the very
+/// edge the swap exists for.
+///
+/// `root == "/"` yields `false` for everything, which is harmless: the colony
+/// root is not a swappable node.
+pub(crate) fn is_inside_subtree(endpoint: &str, root: &str) -> bool {
+    endpoint.len() > root.len()
+        && endpoint.starts_with(root)
+        && endpoint.as_bytes().get(root.len()) == Some(&b'/')
+}
+
 // ── Core function ─────────────────────────────────────────────────────────────
 
 /// Compute the swing plan for re-dedicating all external edges of `t2` onto
@@ -72,12 +108,20 @@ pub(crate) struct SwingPlan {
 /// For every edge `e` in `edges` where `e.from == t2` OR `e.to == t2`
 /// (exact path match — subtree paths like `t2/child` are excluded):
 ///
+/// 0. If the OTHER endpoint lies strictly inside the subtree rooted at `t2`
+///    ([`is_inside_subtree`]), the edge is subtree-internal — **skip it
+///    entirely**: it is neither swung nor removed, and stays with the unit it
+///    wires (GH #256, see the module doc).
 /// 1. Replace the `t2` endpoint(s) with `t3`.
 /// 2. Clone `condition` and `modifier` verbatim.
 /// 3. If the resulting edge would have `from == to` (both endpoints became
 ///    `t3`) — i.e. the original edge directly connected `t2 ↔ t3` or was a
 ///    self-loop on `t2` — **drop** the insert but **still** remove the old
 ///    edge.
+///
+/// Step 0 is inert for the `move_nodes` call-site: a move of a node with
+/// anything beneath it is refused in validation, so a moved node has no
+/// descendants for an edge to name.
 ///
 /// No deduplication against existing `t3` edges is performed (YAGNI).
 pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingPlan {
@@ -105,6 +149,16 @@ pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingP
     }
 
     for e in all {
+        // GH #256 — subtree-internal edges are not this node's external edges.
+        // The other endpoint decides: `t2 → t2/child` and `t2/child → t2` wire
+        // the unit's own inside and belong to the unit, not to the swap. A
+        // self-loop on t2 has t2 as its "other" endpoint, which is not strictly
+        // inside, so it still falls through to the self-loop drop below.
+        let other = if &e.from == t2 { &e.to } else { &e.from };
+        if is_inside_subtree(other.as_str(), t2.as_str()) {
+            continue;
+        }
+
         // Swing: replace t2 endpoint(s) with t3.
         let new_from = if &e.from == t2 {
             t3.clone()
@@ -354,6 +408,95 @@ mod tests {
 
         assert!(plan.remove_ids.is_empty());
         assert!(plan.inserts.is_empty());
+    }
+
+    // ── GH #256: a subtree's own boundary wiring is INTERNAL ──────────────
+    //
+    // The three edge classes of a subtree rooted at `t2` are: from outside in,
+    // from inside out, and INSIDE. The inside class is not only
+    // `t2/a → t2/b` — it also holds the two forms in which the subtree root
+    // itself wires its own children, and those are exactly the ones the exact-
+    // path test used to catch: `t2 → t2/child` (the hive's inward
+    // distribution, the mandated form of the hive boundary) and
+    // `t2/child → t2` (the way back out of the unit). Swinging them onto `t3`
+    // makes the NEW generation address the OLD one's cells and the old one's
+    // cells answer the new one.
+
+    #[test]
+    fn a_hive_transit_edge_into_its_own_subtree_is_not_swung() {
+        let t2 = Path::new("/t2");
+        let t3 = Path::new("/t3");
+
+        // `{"from": ".", "to": "./child"}` — the hive distributing inward.
+        let e = make_edge("/t2", "/t2/child");
+        let tbl = table_with(vec![e]);
+
+        let plan = plan_edge_swing(&t2, &t3, &tbl);
+
+        assert!(
+            plan.remove_ids.is_empty(),
+            "the subtree's own inward wiring must stay with the subtree"
+        );
+        assert!(
+            plan.inserts.is_empty(),
+            "no edge from t3 into t2's subtree may be created"
+        );
+    }
+
+    #[test]
+    fn an_edge_from_inside_the_subtree_back_to_its_root_is_not_swung() {
+        let t2 = Path::new("/t2");
+        let t3 = Path::new("/t3");
+
+        // `{"from": "./child", "to": "."}` — the way out of the unit.
+        let e = make_edge("/t2/child", "/t2");
+        let tbl = table_with(vec![e]);
+
+        let plan = plan_edge_swing(&t2, &t3, &tbl);
+
+        assert!(
+            plan.remove_ids.is_empty(),
+            "the subtree's own outward wiring must stay with the subtree"
+        );
+        assert!(
+            plan.inserts.is_empty(),
+            "no edge from t2's subtree into t3 may be created"
+        );
+    }
+
+    #[test]
+    fn a_deep_edge_inside_the_subtree_is_not_swung() {
+        let t2 = Path::new("/t2");
+        let t3 = Path::new("/t3");
+
+        // Depth is not a special case: `t2 → t2/a/b` is inside just the same.
+        let e = make_edge("/t2", "/t2/a/b");
+        let tbl = table_with(vec![e]);
+
+        let plan = plan_edge_swing(&t2, &t3, &tbl);
+
+        assert!(plan.remove_ids.is_empty());
+        assert!(plan.inserts.is_empty());
+    }
+
+    #[test]
+    fn a_sibling_whose_name_starts_with_the_subtree_name_is_still_external() {
+        let t2 = Path::new("/t2");
+        let t3 = Path::new("/t3");
+
+        // The generation-suffix rule (`talky`, `talky-2`) makes this the
+        // likeliest way to get the descendant test wrong: `/t2-2` shares the
+        // prefix but is a SIBLING, so its edge is external and must swing.
+        let e = make_edge("/t2", "/t2-2");
+        let old_id = e.id;
+        let tbl = table_with(vec![e]);
+
+        let plan = plan_edge_swing(&t2, &t3, &tbl);
+
+        assert_eq!(plan.remove_ids, vec![old_id]);
+        assert_eq!(plan.inserts.len(), 1, "a sibling edge is external");
+        assert_eq!(plan.inserts[0].from, t3);
+        assert_eq!(plan.inserts[0].to, Path::new("/t2-2"));
     }
 
     // ── T8: no edges at all → empty plan ──────────────────────────────────

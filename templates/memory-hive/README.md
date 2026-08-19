@@ -1,8 +1,8 @@
-# `memory-hive@2.1.0`
+# `memory-hive@2.2.1`
 
-A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Eleven cells:
+A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Twelve cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
-`dreamer`, `judge`, `cron`, `embed`, `dialectic`.
+`dreamer`, `judge`, `cron`, `embed`, `dialectic`, `porter`.
 
 What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = temporal truth):
 
@@ -11,6 +11,8 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
 - **Audience gate**: every durable row says WHO was present when it was learned, and the read
   path answers only with rows the current round could have heard. Fail-closed on both sides —
   see [The audience gate](#the-audience-gate--who-may-be-told-what-244) below.
+- **Transfer**: the remembered content can leave this hive as a declared, versioned document and
+  enter another RUNNING one, idempotently — see [Taking a memory out, putting it into another](#taking-a-memory-out-putting-it-into-another-243) below.
 - **Recall tier 0**: a deterministic, token-budgeted bundle (active beliefs → open foresight
   facts → recent episodes). No LLM, no embedding, fixed latency.
 - **Recall tier 1**: four retrieval legs — keyword (`search`), semantic (`similar`), graph
@@ -309,24 +311,39 @@ writers (`writer`, `recall`, `extract-glue`, `dream-glue`, `embed`) all live in 
 nothing about the shipped topology changes; what changes is that the memory can no longer be
 edited past its own lanes.
 
+The same `config.json` also declares `"write_surface": "internal"` in its **`contract`** block
+(GH #260). That is the other half, and it is a separate key on purpose: the one above bounds what
+the store's own `handle()` runs, while the `transfer` body slot is answered by the substrate
+**before** `handle()` — so without the contract key an `import` would write rows straight past
+ruling F3. Both halves use the same owning scope, so the store still has exactly one boundary; an
+`export` is a read and neither half bounds it.
+
 | Lane | Direction | The edge must carry |
 |---|---|---|
 | `in_episode` | in → `./memory` | one turn (or a closed session batch) to remember. `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
 | `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
 | `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_flush` | in → `./memory` | nothing; the door stamps `mem_phase: "flush"`. Add `flush_reclaim: "'1'"` on the hop to also recover batches whose chain died — that sweep is **lease-gated** (GH #72) and never takes back a claim younger than `MEMORY_BATCH_CLAIM_LEASE_MIN` |
+| `in_export` | in → `./memory` | nothing. The lane names the whole memory; the hive walks its own tables and answers with one part per table on `dump` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `dump` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
+| `in_import` | in → `./memory` | ONE part of such a document, as the body of the message; nothing on the hop and nothing in the context. Applying the same part twice leaves the same state. A part whose declared schema lost `audience_set` or `channel` is refused on `reject` with nothing written |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
+| `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests `hop.dump_kind` evaluates to `false` under the `required_drains` probe and reads as no drain. `hop.dump_kind` tells the two payloads apart — `export_part` (one part of the document, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) and `import_receipt` (`hop.rows_written` for one applied part) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
 something outside wired that port — which a sealed hive has no way of letting happen, so the
 declaration could never fire again and was removed with the seal rather than left as decoration.
-It is back in the vocabulary the seal left standing, and this hive declares two entries:
+It is back in the vocabulary the seal left standing, and this hive declares seven entries:
 
 ```json
+{"accepts": "in_episode",  "emits": "reject", "because": "…"}
 {"accepts": "in_remember", "emits": "reject", "because": "…"}
 {"accepts": "in_query",    "emits": "reject", "because": "…"}
+{"accepts": "in_export",   "emits": "dump",   "because": "…"}
+{"accepts": "in_export",   "emits": "reject", "because": "…"}
+{"accepts": "in_import",   "emits": "dump",   "because": "…"}
+{"accepts": "in_import",   "emits": "reject", "because": "…"}
 ```
 
 Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* A mutation that wires
@@ -547,6 +564,253 @@ what a memory owes the person asking.
 The flag is absent unless true, so a bundle no invisible version touched is byte-identical to
 what it was before the gate, and an unaffected candidate costs no token budget.
 
+
+## Taking a memory out, putting it into another (#243)
+
+Until 2.2.0 there was no way to get the content a hive had accumulated *out* of it, and no way
+to put such content *into* another one. The only substrate-native content path was the JSONL
+seeder, and that is **birth-only**: `seed_cell_db_if_present` runs during staging, and a
+`cell.db` that already exists means an inert seed. So a memory could be born with content and
+never receive any afterwards — every migration, every backup, every "run the benchmark against
+the same remembered state" was a hand-built `sqlite3` pipeline reaching around the very
+boundary [#132](https://github.com/mmeyerlein/meclaw/issues/132) and
+[#160](https://github.com/mmeyerlein/meclaw/issues/160) exist to keep closed.
+
+Two lanes close it. `in_export` writes the content out, `in_import` takes it back into a
+**running** hive.
+
+### This is the TEMPLATE-level answer, not the substrate one
+
+Read this section as *what `memory-hive` does*, not as *what MeClaw does*. Every store in the
+library has the same need — `affinity`'s curated record, `canvy`'s layout, the firewall's rules
+and arrivals, a collector's window — and the `store` **cell type** still answers twelve
+operations, none of which is an export or an import. That gap is
+[#253](https://github.com/mmeyerlein/meclaw/issues/253), and it is where this belongs long
+term. What lives here is a lane pair built out of the operations the store already has; if
+#253 lands, this template should shrink onto it rather than keep a second mechanism alive.
+
+Four substrate properties this path had to work **around** rather than through. They are stated
+here because they are the evidence #253's design needs:
+
+1. **The FTS index cannot be maintained from outside the cell.** `episodes` and `facts` carry
+   FTS5 indexes built with `meclaw_stem_v1`, a tokenizer that lives in the Rust store cell, and
+   their triggers are `AFTER INSERT/UPDATE/DELETE ON <table>` — not column-scoped. Any write
+   from a plain `sqlite3` client fires a trigger that cannot resolve its tokenizer and fails;
+   `plans/0.16.0-audience-gate/backfill_audience.py` had to detach and reattach those triggers
+   inside one transaction to get a backfill through. **This lane simply does not have the
+   problem**: it writes through the store's own `insert`, so the triggers fire inside the cell
+   that owns the tokenizer and an imported row is searchable the moment it lands.
+2. **`seed/<table>.jsonl` carries a schema header the boot validates.** Add a column to
+   `params.schema` and every seed file that predates it fails the check — the colony does not
+   start until the seeds are lifted, which is what `lift_seed.py` exists for in the migration
+   this issue came out of. An export document carries the same header, but it lives outside the
+   tree: applying it cannot break a boot, and a part whose header disagrees with the target is
+   refused as `import_schema_drift` at the lane instead of at start-up.
+3. **`params.schema` cannot express a key**, so idempotency has to be bought with a probe (see
+   below), and the birth seeder's own table for a KEYED table is a table without its key.
+4. **A store op is one op per message.** `parse_tool_call` reads `messages[0]` and the cell
+   emits exactly one `tool_result` per message, so a lane cannot ask two questions at once.
+   That is why an import costs four round trips and why both answers have to meet in `scratch`.
+
+### The seeder is an import — what this does that it cannot
+
+Fair question, and the short answer ("birth-only") is not the useful one. The mechanism:
+
+`seed_cell_db_if_present` runs during **staging**, and only when the `cell.db` was freshly
+created. An existing database opens as `Resumed` and the seed is **inert** — not merged, not
+appended, not diffed; it is not read. There is no message, no operation and no flag that makes a
+running cell load one, and there is no second staging for a cell that already exists. So:
+
+| | JSONL seeder | `in_import` |
+|---|---|---|
+| target | a hive that does not exist yet | a **running** hive |
+| a table that already has rows | seed is not read at all | inserts what is missing, skips what is there |
+| repeat application | there is no second application | same state, every time |
+| keys | table built from the header line: `CREATE TABLE IF NOT EXISTS "<t>" (<col> <type>)` — **no key**, and it runs before `apply_canonical_ddl`, whose `IF NOT EXISTS` then finds the keyless table and leaves it | keyed families go through `set_alias` / `reject_pair`, the store's own upserts on the key the store created |
+| FTS | rebuilt after the load (`INSERT INTO <idx>(<idx>) VALUES ('rebuild')`) | maintained by the triggers, per row |
+| failure mode | a stale header stops the **boot** | a wrong part stops the **part**, on the reject lane |
+
+The two are complements, not competitors: the seeder births, the lane transfers. This document
+format is deliberately readable by both.
+
+### Three decisions #253 will have to make too
+
+They are the design of the operation, not details of this one. Here is what this lane answers,
+so the substrate version has a first data point rather than a blank page.
+
+- **Collision on an existing key: the target wins, always.** An import never updates and never
+  overwrites. Provenance is never rewritten (ADR-0002 E12) — a row the target already decided,
+  including its participant set, is not something a document from elsewhere may replace. The
+  operation is therefore a **merge**, and "which of the two is right" stays a question for the
+  nightly identity round, which is where every other identity question in this hive lives.
+- **Additive, never replacing.** No delete, no update, no truncate-and-load. A replacing import
+  is a different operation and would need the no-delete policy's blessing before it could exist.
+- **A partial import is a STATE, not a failure.** Validation happens before the first write, so
+  a part applies whole or is refused whole; but a document is many parts, and stopping halfway
+  leaves the target with a prefix. That is safe precisely because re-applying the whole document
+  is idempotent — the repair for any failure is "send it again", and there is no
+  compensating action to get wrong. Transactionality across parts is not offered and is not
+  needed for that reason.
+
+
+### The document
+
+A document is a **sequence of parts**, one per content table, each a whole JSON object on the
+`dump` lane. There is no monolithic file, and that is deliberate: the store cannot return two
+result sets at once, so a part *is* what one read of one table answers.
+
+```json
+{"format": "meclaw-memory-export/1", "hive_template": "memory-hive",
+ "export_id": "…", "exported_at": "…",
+ "table": "episodes", "part": 9, "of": 15, "final": false, "absent": false,
+ "key": ["id"],
+ "schema": {"id": "text", "session_id": "text", …, "audience_set": "text"},
+ "rows": [ {…}, {…} ]}
+```
+
+Three properties are load-bearing.
+
+**`schema` is the store's own declaration for that table.** Write `{"schema": …}` as line 1 and
+one row per line after it and you have a `seed/<table>.jsonl` — the birth path and the transfer
+path speak one format. That is what makes "export the old hive, birth a new one from its parts"
+a mechanical operation instead of a script that has to understand the memory.
+
+**`final` is the completeness marker.** A document without the part carrying `final: true` (and
+`hop.export_final == "1"`) is incomplete — the walk aborted, and the reject lane says why. A
+partial document is not a backup, and nothing else in it says so.
+
+**`absent` is not `rows: []`.** An empty table says *this hive remembered nothing here*; an
+absent one says *this hive is older than the declaration and never had the table*.
+
+### What travels, and what deliberately does not
+
+Fifteen parts, in this order — and the order is load-bearing on the way in:
+
+```
+predicate_aliases  subject_aliases  claim_aliases
+predicate_rejected_pairs  subject_rejected_pairs  claim_rejected_pairs
+predicate_cardinality
+entities  episodes  facts  entity_edges  beliefs  skills  embeddings
+consolidation_log
+```
+
+The six store-owned identity tables come first so that by the time a `facts` row is inserted,
+the alias tables its canonical columns derive from are already there.
+
+Three exclusions, each a decision:
+
+- **`pending_extraction`, `recall_scratch`, `scratch`** are lane state, not memory. Carrying
+  them over would restart another hive's half-finished extraction runs in a colony that never
+  had them.
+- **`emb_models`** is the *receiving* hive's configuration — which generation is live, behind
+  which endpoint. Two rows with `active = 1` is a recall that picks its embedding generation at
+  random, and rotating the model is an operator job this template deliberately does not do.
+- **`facts.canonical_subject` / `_predicate` / `_claim`** travel in the document (a backup you
+  cannot diff against the store it came from is not a backup) but are **stripped before
+  insert**. The store owns them and re-derives them from the alias tables, which travelled too.
+  That is not a second opinion: it is a deterministic function of transferred data. The
+  distinction the whole lane rests on is *transfer what was decided, do not decide it again* —
+  `in_episode` re-derives (same episodes, a different extractor, different results, and a model
+  bill per episode), and that is precisely what this lane is not.
+
+### The audience on the way through
+
+This is the part that had to be got right, because a transfer is exactly where a participant set
+can quietly fall off a row (#244, ADR-0002 E12).
+
+- **On the way out**, the export projects `audience_set`, `channel` and `speaker` explicitly.
+  A column nobody selects is a column that never leaves the store — the same lesson the read
+  path learned when a filter fired over a column the query had not asked for.
+- **On the way in**, a part for an audience-bearing table (`episodes`, `facts`, `entity_edges`,
+  `beliefs`, `skills`) whose declared `schema` does **not** carry those columns is **refused
+  whole**, with nothing written, `hop.reject_reason = "missing_audience"` or
+  `"missing_channel"`. An imported row whose participant set did not survive is a row that may
+  be told to anyone, and no downstream can reconstruct one honestly.
+- **An audience that is present but empty stays empty.** Empty means invisible (contract ruling
+  R2, evaluated first), which is the honest fate of a row from before the gate. Inventing one
+  would *be* the laundering.
+- **Nothing is recomputed.** A belief's `audience_set` is the intersection its dream run
+  decided; the import copies it byte for byte and never intersects again. `speaker` is copied
+  as it stands and never falls back to the role.
+
+The fail-closed direction is *loss in transit*, not *absence at the source*. A hive full of
+pre-gate untagged rows can still be moved; those rows arrive untagged and stay invisible.
+
+### Idempotency, and why it needs a probe
+
+`params.schema` declares column names and types and **no keys** — `apply_schema_ddl` renders
+`CREATE TABLE IF NOT EXISTS "<t>" (<col> <type>, …)`, nothing more. So a repeated `insert` of the
+same `episodes` row would simply duplicate it. The importer therefore asks first: it reads the
+key column of the target table, parks the answer next to the parked part under one `scratch`
+key, reads both back in a single `select`, and inserts only the rows whose key is not already
+there. **The same document applied twice leaves the same state** — which is what makes it a
+backup and a merge rather than only a birth seed.
+
+`key` per table is `id`, except `predicate_cardinality` (`canonical_predicate`) and
+`consolidation_log` (`run_id`).
+
+The two **store-keyed** families never go through that path at all. `predicate_aliases` and
+friends arrive as `set_alias`, the refusal tables as `reject_pair` — the store's own upserts on
+a real `PRIMARY KEY`. This is also the answer to the half of #243 the JSONL seeder cannot reach:
+the seeder builds its table from the header line alone, so a `seed/claim_aliases.jsonl` wins
+with a table that has **no** primary key and silently costs `set_alias` its upsert property. A
+hive that receives its aliases through this lane never has that problem, because the table was
+created by `apply_canonical_ddl` with its key and only ever written through the op that owns it.
+
+After the **final** part the importer emits one `canonicalize` per identity dimension, so a
+document applied out of order still lands on the same identities as the source. `rows_affected`
+counts the identities that moved — zero on a target that already agreed.
+
+### What a migration looks like end to end
+
+```bash
+# 1. wire the lanes on the SOURCE hive (one mutation), drain `dump` into a collector
+#    { "from": "./memory", "to": "./transfer-drain", "condition": "hop.route == 'dump'" }
+# 2. send one message to the hive path with hop.route == 'in_export'
+# 3. 15 parts arrive on `dump`; the last carries hop.export_final == "1"
+#
+# 4a. INTO A RUNNING HIVE: feed each part, in order, to the target hive's `in_import`.
+#     Hive to hive, that is a single edge:
+#     { "from": "./memory-old", "to": "./memory-new",
+#       "condition": "hop.route == 'dump'",
+#       "modifier": { "set_hop": { "route": "'in_import'" } } }
+#
+# 4b. INTO A FRESH HIVE AT BIRTH: write each part as a seed file --
+#     line 1 = {"schema": <part.schema>}, then one line per row --
+#     under <template>/store/seed/<part.table>.jsonl, and instantiate.
+#     The two alias families are the exception: they have to go through 4a,
+#     because a seeded keyed table is a table without its key.
+#
+# 5. the acceptance test: put the same question to both hives with the same
+#    audience_now and channel. Same bundle, or the transfer was wrong.
+```
+
+Nothing in that sequence touches a `cell.db`. There is no `sqlite3`, no trigger surgery, no
+schema header to lift by hand: the FTS indexes of `episodes` and `facts` are maintained by
+`AFTER INSERT` triggers whose tokenizer lives in the store cell, so a row that arrives through
+this lane is searchable the moment it lands — which is the exact obstacle
+`plans/0.16.0-audience-gate/backfill_audience.py` had to detach and reattach triggers around.
+
+### Limits, stated so nobody meets them as a surprise
+
+- **A part is a whole table.** There is no paging: `select` carries no offset, and a truncated
+  part would lie about being a table. A hive whose largest table outgrows one message needs a
+  keyset-paged form of the part, which does not exist yet
+  ([#243](https://github.com/mmeyerlein/meclaw/issues/243) follow-up).
+- **Embeddings transfer, but only usefully within one generation.** `embeddings` rows carry
+  their `model_id`; if the receiving hive's active generation is a different one, the imported
+  vectors are inert and the imported facts are **not** re-queued for embedding. The semantic leg
+  then runs on three legs for that material until an operator re-embeds. Same-generation
+  transfer — the common case, same template and same `MEMORY_EMBED_MODEL` — is exact and saves
+  the model bill entirely.
+- **An import is confirmed by asking the hive.** The receipt on `dump` says how many inserts one
+  part dispatched; a write that failed afterwards arrives on `reject` as `import_write_failed`.
+  Neither is a transaction: re-applying the whole document is the repair, and it is safe by
+  construction.
+- **Two hives merged this way keep both sets of rows.** Nothing dedupes across identities — two
+  hives that learned the same thing from different turns hold two facts about it afterwards, and
+  it is the nightly identity round that decides whether they are one. That is the same division
+  of labour as everywhere else here: the store never merges on similarity, the judge decides.
 
 ## Variables
 

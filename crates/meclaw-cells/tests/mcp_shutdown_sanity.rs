@@ -100,6 +100,7 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_initialize() {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
 
     // Let initialize hang for 200 ms against the blackhole, then close the mailbox.

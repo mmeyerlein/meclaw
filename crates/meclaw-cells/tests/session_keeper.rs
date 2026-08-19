@@ -526,6 +526,175 @@ fn only_the_pass_that_won_the_guard_asks_for_the_close() {
     );
 }
 
+// ══════════════════════════ THE ROUND A GENERATION WAS OPENED IN (GH #273)
+
+/// The participant set of a round is declared at the door a turn enters by --
+/// the door of the talky that holds the generation (ADR-0002 E8), where it is a
+/// CONSTANT of that generation's lifetime: a change of the set ends the
+/// generation. The keeper records it on the row at the moment the generation is
+/// opened, because the night that ends it is a timer and knows nothing about
+/// who was there.
+///
+/// It is recorded, never derived: the `session_id` prefix is a convention of
+/// this template and no promise to anyone downstream, and a set that a door did
+/// not declare stays empty rather than becoming `["*"]`.
+#[test]
+fn a_new_generation_records_the_round_it_was_opened_in() {
+    let sessions = config_of("sessions/config.json");
+    assert_eq!(
+        sessions["params"]["schema"]["sessions"]["audience_set"], "text",
+        "the row carries the participant set of its generation"
+    );
+
+    let mut doc = look_reply(serde_json::json!([]), turn_body("hello"));
+    doc["header"]["context"]["audience_set"] =
+        serde_json::json!(r#"["member:alex","agent:scribe"]"#);
+    let out = stamp(doc);
+    let op = op_of(&route(&out, "kstore"));
+    assert_eq!(op["operation"], "insert");
+    assert_eq!(
+        op["row"]["audience_set"], r#"["member:alex","agent:scribe"]"#,
+        "the round the door declared is what the row keeps: {op}"
+    );
+}
+
+/// A door that declares no round leaves the column EMPTY. Nothing here invents
+/// a participant set, and least of all the universal one -- a consumer that
+/// needs the set refuses the batch visibly instead of writing a row that claims
+/// everyone was present.
+#[test]
+fn a_generation_opened_without_a_round_records_an_empty_one() {
+    let out = stamp(look_reply(serde_json::json!([]), turn_body("hello")));
+    let op = op_of(&route(&out, "kstore"));
+    assert_eq!(op["operation"], "insert");
+    assert_eq!(op["row"]["audience_set"], "", "empty, not invented: {op}");
+    assert!(
+        !serde_json::to_string(&out)
+            .unwrap_or_default()
+            .contains("\"*\""),
+        "no emission of the stamp carries a universal audience: {out:?}"
+    );
+}
+
+/// Provenance is never rewritten (ADR-0002 E12). A turn arriving into a RUNNING
+/// generation restarts the idle clock and touches nothing else -- the round is
+/// a property of the generation, and a generation whose round changed would
+/// have ended.
+#[test]
+fn a_running_generation_never_has_its_round_rewritten() {
+    let mut doc = look_reply(
+        serde_json::json!([session_row("tg:42-0001", "0001", "0002")]),
+        turn_body("still here"),
+    );
+    doc["header"]["context"]["audience_set"] = serde_json::json!(r#"["member:mallory"]"#);
+    let out = stamp(doc);
+    let op = op_of(&route(&out, "kstore"));
+    assert_eq!(op["operation"], "update");
+    assert_eq!(
+        op["set"].as_object().map(|o| o.len()),
+        Some(1),
+        "the touch writes the idle clock and nothing else: {op}"
+    );
+    assert!(op["set"]["last_seen"].is_string(), "{op}");
+}
+
+/// The sweep reads the round of every generation it seals, and carries it down
+/// that generation's own chain -- the same way it already carries the channel.
+/// Without it the seal reply, which is all the close request has, could not say
+/// who was there.
+#[test]
+fn every_seal_carries_the_round_of_its_own_generation() {
+    let mut a = session_row("tg:42-0001", "0001", "0002");
+    a["audience_set"] = serde_json::json!(r#"["member:alex","agent:scribe"]"#);
+    let mut b = serde_json::json!({"channel": "tg:7", "session_id": "tg:7-0003",
+                                   "opened_at": "0003", "last_seen": "0004",
+                                   "closed": 0, "closed_at": ""});
+    b["audience_set"] = serde_json::json!(r#"["member:robin"]"#);
+
+    // The sweep has to ASK for the column, or the rows come back without it.
+    let asked = close(firing());
+    let cols = op_of(&asked[0])["columns"].clone();
+    assert!(
+        cols.as_array()
+            .is_some_and(|c| c.contains(&serde_json::json!("audience_set"))),
+        "the sweep selects the round of its candidates: {cols}"
+    );
+
+    let out = close(reply_doc(
+        "keeper-close",
+        "sweep",
+        "select",
+        2,
+        serde_json::json!([a, b]),
+    ));
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0]["header"]["audience_set"],
+        r#"["member:alex","agent:scribe"]"#
+    );
+    assert_eq!(out[1]["header"]["audience_set"], r#"["member:robin"]"#);
+}
+
+/// The close request names the room AND the round of the generation it ends.
+/// Both come off the row, promoted back into context by the hive edge that sent
+/// the seal, and both leave on the hop -- so the edge that consumes the close
+/// has something to promote and does not have to guess.
+#[test]
+fn the_close_request_names_the_room_and_the_round_of_its_generation() {
+    let mut won = reply_doc("keeper-close", "seal", "update", 1, serde_json::json!("ok"));
+    won["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0001");
+    won["header"]["context"]["keeper_audience"] =
+        serde_json::json!(r#"["member:alex","agent:scribe"]"#);
+    let out = close(won);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["header"]["route"], "close");
+    assert_eq!(out[0]["header"]["channel"], "tg:42");
+    assert_eq!(
+        out[0]["header"]["audience_set"],
+        r#"["member:alex","agent:scribe"]"#
+    );
+}
+
+/// A generation whose row carries no round produces a close request with an
+/// EMPTY one -- present as a key, empty as a value. Present, because a missing
+/// hop key makes a CEL modifier fail and a failed modifier SKIPS the edge, so
+/// the close would vanish instead of being refused. Empty, because nothing here
+/// knows who was there.
+#[test]
+fn a_close_of_a_generation_without_a_round_says_so_rather_than_inventing_one() {
+    let mut won = reply_doc("keeper-close", "seal", "update", 1, serde_json::json!("ok"));
+    won["header"]["context"]["keeper_session"] = serde_json::json!("tg:42-0001");
+    let out = close(won);
+    assert_eq!(out.len(), 1);
+    assert!(
+        out[0]["header"].as_object().is_some_and(|h| h
+            .get("audience_set")
+            .is_some_and(|v| v == &serde_json::json!(""))),
+        "the key is there and it is empty: {}",
+        out[0]["header"]
+    );
+}
+
+/// The hive promotes the round of a seal back into context, under a
+/// keeper-local name -- the same shape as `keeper_session`. The name is local on
+/// purpose: `context.audience_set` is the contract key of the CONSUMER, and it
+/// is set by the edge that leaves this hive, not by an edge inside it.
+#[test]
+fn the_hive_carries_the_round_of_a_seal_down_its_own_chain() {
+    let hive = config_of("config.json");
+    let edge = hive["params"]["graph"]["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .find(|e| e["from"] == "./close" && e["to"] == "./sessions")
+        .expect("close -> sessions")
+        .clone();
+    assert_eq!(
+        edge["modifier"]["set_context"]["keeper_audience"], "hop.audience_set",
+        "the seal's round travels with its own chain: {edge}"
+    );
+}
+
 // ==================================================================== THE NIGHT
 
 #[test]

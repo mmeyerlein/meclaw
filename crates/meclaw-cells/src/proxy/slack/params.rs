@@ -102,14 +102,22 @@ impl SlackParams {
     /// tests in `tests/slack_params_parse.rs`.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("params: must be object")?;
+        // An EMPTY token is not a token (GH #270). Both are declared as
+        // `${SLACK_…}` without a default, so an unset variable already fails
+        // loudly at boot; `SLACK_BOT_TOKEN=` in an .env slipped through and
+        // sent `Authorization: Bearer ` to slack.com, which answers
+        // `invalid_auth` on every call while the cell looks healthy. Same
+        // message as the absent case: same mistake, same fix.
         let app_token = obj
             .get("app_token")
             .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
             .ok_or("app_token: required (use ${SLACK_APP_TOKEN}, an xapp- token)")?
             .to_string();
         let bot_token = obj
             .get("bot_token")
             .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
             .ok_or("bot_token: required (use ${SLACK_BOT_TOKEN}, an xoxb- token)")?
             .to_string();
         let emit_to_s = obj

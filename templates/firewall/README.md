@@ -1,4 +1,4 @@
-# `firewall@2.0.0`
+# `firewall@2.0.1`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -136,13 +136,14 @@ every later hop. Until GH #228 remembering that was the caller's job; the `pass`
 The hive's two internal edges (`./screen ⇄ ./rules`) ship inside `config.json` and need
 no wiring.
 
-**`./screen` is the port contract.** It is a stable **address**, not implementation
-detail that happens to be reachable: the working colonies under
-[`../../examples/`](../../examples/) wire `./firewall/screen` literally, and so does
-anything built from this template. The rules cell behind it may be renamed, split or
-replaced in a version bump; `./screen` may not — moving it is a breaking change to every
-parent that wired it, and it gets a CHANGELOG Breaking entry and a new major version, not
-a patch.
+**The hive path is the port contract, and `./screen` is not an address at all.** Since the
+seal (GH #228) `params.ports` is empty, so an `add_edges` naming `./firewall/screen` is
+refused with `hive_port_boundary`; the working colonies under
+[`../../examples/`](../../examples/) wire `./firewall` and let the `in_turn` lane pick the
+cell. What is behind the door — one screen cell, two, a different name — may be replaced
+in a version bump. The lane names may not: dropping or renaming `in_turn`, `pass` or
+`reject` is a breaking change to every parent that wired it, and it gets a CHANGELOG
+Breaking entry and a new major version, not a patch.
 
 ## The clock is a seam
 

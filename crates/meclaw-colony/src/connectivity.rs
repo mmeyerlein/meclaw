@@ -9,12 +9,19 @@
 //!
 //! Rules (spec § Connectivity and activity, `docs/cell-types.md` § Connectivity
 //! of the hive):
-//! - **connected**: a node participates in ≥1 edge (as `from` **or** `to`) at
-//!   its scope level. A hive's *internal* wiring does not count for its own
-//!   connectivity — only edges of the parent level that reference the hive path.
-//!   Since edges that reference a hive use the hive's absolute path as `from`/`to`
-//!   endpoint, [`is_connected`] applied to the hive path captures exactly those
-//!   parent-level edges.
+//! - **connected (cell)**: a node participates in ≥1 edge (as `from` **or**
+//!   `to`) — [`is_connected`]. A cell has no descendants, so naming it is the
+//!   whole of it.
+//! - **connected (hive)**: at least one edge is EXTERNAL to the **unit** —
+//!   [`has_external_edge`]. The unit is the hive path **together with its whole
+//!   subtree**, and that is the load-bearing part (GH #265): the hive boundary
+//!   MANDATES that a hive serves its own children with edges whose `from` is the
+//!   hive itself (`{"from": ".", "to": "./cell"}`), so the hive path is an
+//!   endpoint of its own inside. Reading such an edge as a connection let a unit
+//!   with nothing left but its own inside count as connected — a swapped-out
+//!   generation stayed awake, timer and all. Both external forms fall out of the
+//!   one predicate: a parent-level edge naming the hive path, and a depth-port
+//!   edge naming a descendant.
 //! - **active** (recursive): a node is active iff it is connected **and** its
 //!   parent-hive is active. The root (`/`) is always active. A disconnected hive
 //!   therefore deactivates its entire subtree regardless of internal wiring.
@@ -27,43 +34,53 @@ use std::collections::HashSet;
 /// Returns true if `path` participates in at least one edge — as `from`
 /// **or** as `to`.
 ///
-/// This is the spec's connectivity predicate (`docs/meclaw-overview.md`
-/// § Connectivity and activity): a single in- or out-edge suffices. For a hive
-/// path this captures exactly the parent-level edges that reference the hive
-/// (internal wiring uses descendant paths as endpoints, not the hive path).
+/// This is the spec's connectivity predicate for a **cell**
+/// (`docs/meclaw-overview.md` § Connectivity and activity): a single in- or
+/// out-edge suffices, and a cell has no descendants, so naming it is the whole
+/// of it.
+///
+/// **Not the predicate for a hive** (GH #265). A hive's connectivity is
+/// [`has_external_edge`]. This function used to serve both, on the assumption
+/// — written down right here, which is why the defect was invisible to a reader
+/// — that internal wiring only ever uses descendant paths as endpoints. It does
+/// not: the hive boundary mandates `<hive> → <hive>/<cell>`, whose `from` IS the
+/// hive path. A unit with nothing but its own inside left therefore read as
+/// connected.
 pub fn is_connected(path: &Path, edges: &EdgeTable) -> bool {
     !edges.edges_from(path).is_empty() || !edges.edges_to(path).is_empty()
 }
 
-/// R12 — returns true if any edge CROSSES the scope boundary of `path`:
-/// exactly one endpoint lies strictly inside the subtree under `path`
-/// (`<path>/...`), the other outside it. A depth-port edge
-/// (`/anchor → /h/dispatch`) wires the unit to the world without naming the
-/// hive path itself, so it must connect the hive (spec § Connectivity:
-/// edge paths are scope-relative without depth restriction — the companion
-/// rule to the R12 `add_edges` depth resolution). Purely INTERNAL wiring
-/// (both endpoints inside) still does not count.
+/// **The connectivity predicate of a hive**: returns true if at least one edge
+/// is EXTERNAL to the unit rooted at `path` — exactly one endpoint lies in the
+/// unit (the path itself **or** anything under it), the other outside it.
+///
+/// The unit is `path` **and** its subtree, not the subtree alone (GH #265).
+/// That single detail decides the whole question, because the hive boundary
+/// *mandates* the wiring in which a hive serves its own children — `{"from":
+/// ".", "to": "./cell"}`, i.e. `<hive> → <hive>/<cell>` (`docs/cell-types.md`
+/// § Die Hive-Grenze) — and the way back out, `<hive>/<cell> → <hive>`. Both
+/// name the hive path. Counting the hive path as *outside* its own unit made
+/// them look like boundary crossings, and a unit whose external edges had all
+/// been swung away stayed connected by its own inside.
+///
+/// One predicate, both external forms (spec § Connectivity and activity,
+/// hive sharpening):
+/// - a parent-level edge naming the hive path (`/top → /h`), and
+/// - a depth-port edge naming a descendant (`/anchor → /h/dispatch`, R12) —
+///   which wires the unit to the world without naming the hive path at all.
+///
+/// Purely internal wiring (both endpoints in the unit) never counts.
 ///
 /// Callers gate this on registered hive paths ([`compute_active`]); for the
-/// root (`/`) every endpoint is "inside", so no edge ever crosses it — the
-/// root stays governed by its always-active rule.
-pub fn has_boundary_crossing_edge(path: &Path, edges: &EdgeTable) -> bool {
-    let p = path.as_str();
-    if p == "/" {
+/// root (`/`) every path is in the unit, so no edge is ever external to it —
+/// the root stays governed by its always-active rule.
+pub fn has_external_edge(path: &Path, edges: &EdgeTable) -> bool {
+    if path.as_str() == "/" {
         return false;
     }
-    edges.iter().any(|e| {
-        let from_inside = is_strict_descendant(e.from.as_str(), p);
-        let to_inside = is_strict_descendant(e.to.as_str(), p);
-        from_inside != to_inside
-    })
-}
-
-/// Segment-aware strict-descendant test (`/h/c1` under `/h`; `/house` not).
-fn is_strict_descendant(candidate: &str, ancestor: &str) -> bool {
-    candidate.len() > ancestor.len()
-        && candidate.starts_with(ancestor)
-        && candidate.as_bytes().get(ancestor.len()) == Some(&b'/')
+    edges
+        .iter()
+        .any(|e| is_self_or_descendant(&e.from, path) != is_self_or_descendant(&e.to, path))
 }
 
 /// Recursively computes whether the node at `path` is **active**.
@@ -74,21 +91,24 @@ fn is_strict_descendant(candidate: &str, ancestor: &str) -> bool {
 /// upward — no root-to-leaf traversal — so the cost is O(edges) local plus
 /// O(depth) for the chain.
 ///
-/// Activity is fully edge-derived, so neither the registry nor `hive_scopes`
-/// table is consulted in the recursion: hives carry no registry entry (their
-/// activity is computed, never stored), and a hive's connectivity is captured by
-/// [`is_connected`] on its own path — edges that reference an ancestor hive use
-/// the hive's absolute path as their endpoint, while a hive's *internal* wiring
-/// uses descendant paths and therefore correctly does not count. `hive_scopes`
-/// is consulted to identify which ancestor paths are hives: only a parent that is
-/// a registered hive scope gates its subtree. A non-hive ancestor (or the root)
-/// is treated as the always-active top-level scope.
+/// Activity is fully edge-derived, so the registry is not consulted in the
+/// recursion: hives carry no registry entry (their activity is computed, never
+/// stored). `hive_scopes` IS consulted, and for two reasons — to know which
+/// ancestor paths gate a subtree, and to know **which predicate applies to
+/// `path` itself**: a registered hive is connected by an edge external to its
+/// unit ([`has_external_edge`]), a cell by any edge naming it
+/// ([`is_connected`]). A non-hive ancestor (or the root) is treated as the
+/// always-active top-level scope.
 pub fn compute_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTable) -> bool {
-    // R12: a REGISTERED hive also counts as connected when an edge crosses its
-    // scope boundary (depth-port wiring) — see `has_boundary_crossing_edge`.
-    // Cells keep the pure reference predicate (they have no descendants).
-    let connected = is_connected(path, edges)
-        || (hive_scopes.get(path).is_some() && has_boundary_crossing_edge(path, edges));
+    // GH #265 — the two predicates are alternatives, not a disjunction. A hive
+    // is connected ONLY by an edge external to its unit; `is_connected` would
+    // additionally count the mandated `<hive> → <hive>/<cell>` inward wiring,
+    // which is the unit's own inside and connects it to nothing.
+    let connected = if hive_scopes.get(path).is_some() {
+        has_external_edge(path, edges)
+    } else {
+        is_connected(path, edges)
+    };
     connected && parent_hive_active(path, edges, hive_scopes)
 }
 
@@ -96,10 +116,10 @@ pub fn compute_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTab
 ///
 /// The root (`/`) is the implicit top-level scope and is always active, so any
 /// node whose parent is the root is gated only by its own connectivity. A parent
-/// that is a registered hive scope gates its subtree: it is active iff it is
-/// [`is_connected`] (via parent-level edges referencing its path) **and** its own
-/// parent-hive is active — applied recursively up to the root. A parent that is
-/// not a registered hive scope is treated as a top-level (always-active) boundary.
+/// that is a registered hive scope gates its subtree: it is active iff it has an
+/// [`has_external_edge`] **and** its own parent-hive is active — applied
+/// recursively up to the root. A parent that is not a registered hive scope is
+/// treated as a top-level (always-active) boundary.
 fn parent_hive_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTable) -> bool {
     let parent = path.parent();
     if parent.as_str() == "/" || parent.as_str() == path.as_str() {
@@ -133,7 +153,7 @@ fn parent_hive_active(path: &Path, edges: &EdgeTable, hive_scopes: &HiveScopeTab
 ///
 /// R12: `hive_paths` are the registered hive-scope paths. A depth-port edge
 /// can flip the activity of a HIVE ANCESTOR of an involved endpoint (the
-/// crossing connects the hive, see [`has_boundary_crossing_edge`]), and a hive
+/// crossing connects the hive, see [`has_external_edge`]), and a hive
 /// flip gates its whole subtree — so a parent-chain member that is a
 /// registered hive AND whose boundary the mutation actually CROSSES (≥1
 /// involved path strictly inside, ≥1 outside) contributes its subtree too.
@@ -618,6 +638,91 @@ mod tests {
             "sibling under the crossed hive ancestor must be recomputed"
         );
         assert!(!scope.contains(&Path::new("/unrelated")));
+    }
+
+    // ── GH #265: the unit is the hive path TOGETHER WITH its subtree ──────
+    //
+    // The hive boundary MANDATES that a hive serves its own children with
+    // edges whose `from` is the hive itself (`{"from": ".", "to": "./cell"}`,
+    // `cell-types.md` § Die Hive-Grenze). That wiring names the hive path, and
+    // it also has exactly one endpoint strictly BELOW the hive path — so both
+    // predicates used to read it as a connection. A unit with nothing left but
+    // its own inside therefore counted as connected and stayed awake.
+
+    /// GH #265: the two forms in which a hive wires its own children —
+    /// `<hive> → <hive>/<cell>` and `<hive>/<cell> → <hive>` — are INTERNAL.
+    /// A unit that has nothing but its own inside left is disconnected, and
+    /// its whole subtree sleeps with it.
+    #[test]
+    fn a_hives_own_inward_wiring_does_not_connect_it() {
+        let hs = hive_scopes(&["/gen2"]);
+        let mut edges = EdgeTable::new();
+        // The mandated hive-boundary form, both directions.
+        edges.insert(edge("/gen2", "/gen2/worker"));
+        edges.insert(edge("/gen2/worker", "/gen2"));
+        // Plus ordinary sibling wiring inside.
+        edges.insert(edge("/gen2/worker", "/gen2/sink"));
+        assert!(
+            !compute_active(&Path::new("/gen2"), &edges, &hs),
+            "a unit whose only edges are its own inside must be disconnected"
+        );
+        assert!(
+            !compute_active(&Path::new("/gen2/worker"), &edges, &hs),
+            "the subtree of a disconnected unit sleeps with it"
+        );
+    }
+
+    /// GH #265 counter-pin — the important half: an activity rule that sleeps
+    /// too much takes a running installation off the net. A unit reached ONLY
+    /// through a depth port (nothing names its own path) stays awake, even
+    /// though it carries the full mandated inward wiring.
+    #[test]
+    fn a_unit_reached_only_through_a_depth_port_stays_awake() {
+        let hs = hive_scopes(&["/unit"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/anchor", "/unit/dispatch")); // the only external edge
+        edges.insert(edge("/unit", "/unit/dispatch"));
+        edges.insert(edge("/unit/dispatch", "/unit"));
+        assert!(
+            compute_active(&Path::new("/unit"), &edges, &hs),
+            "a crossing depth edge connects the unit — nothing names its path"
+        );
+        assert!(compute_active(&Path::new("/unit/dispatch"), &edges, &hs));
+    }
+
+    /// GH #265 counter-pin: a self-contained unit that only DRAINS outward —
+    /// one edge from inside to the world, nothing pointing in — stays awake.
+    /// This is the shape the shipped `grow` files use for a unit that runs on
+    /// its own clock (`examples/meclaw-os/grow-steward.json`: one edge).
+    #[test]
+    fn a_unit_that_only_drains_outward_stays_awake() {
+        let hs = hive_scopes(&["/unit"]);
+        let mut edges = EdgeTable::new();
+        edges.insert(edge("/unit", "/unit/tick"));
+        edges.insert(edge("/unit/tick", "/unit"));
+        edges.insert(edge("/unit", "/sink")); // the one external edge
+        assert!(compute_active(&Path::new("/unit"), &edges, &hs));
+        assert!(compute_active(&Path::new("/unit/tick"), &edges, &hs));
+    }
+
+    /// GH #265: a parent-level edge naming the hive path still connects it,
+    /// mandated inward wiring present or not — and removing that ONE edge is
+    /// what puts the unit to sleep.
+    #[test]
+    fn a_parent_level_edge_connects_a_unit_that_also_wires_itself() {
+        let hs = hive_scopes(&["/unit"]);
+        let mut wired = EdgeTable::new();
+        wired.insert(edge("/top", "/unit"));
+        wired.insert(edge("/unit", "/unit/worker"));
+        assert!(compute_active(&Path::new("/unit"), &wired, &hs));
+        assert!(compute_active(&Path::new("/unit/worker"), &wired, &hs));
+
+        let mut unwired = EdgeTable::new();
+        unwired.insert(edge("/unit", "/unit/worker"));
+        assert!(
+            !compute_active(&Path::new("/unit"), &unwired, &hs),
+            "dropping the last external edge puts the unit to sleep"
+        );
     }
 
     /// R12 locality guards: (a) an all-INTERNAL mutation (both endpoints

@@ -32,7 +32,7 @@ async fn wire_request_carries_attribution_headers() {
     call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &extra,
         &body,
         Duration::from_secs(5),
@@ -64,7 +64,7 @@ async fn wire_request_no_attribution_headers_when_empty() {
     call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -97,7 +97,7 @@ async fn wire_authorization_cannot_be_overridden_by_extra_header() {
     call_openai(
         &client,
         &url,
-        "real-key",
+        Some("real-key"),
         &extra,
         &body,
         Duration::from_secs(5),

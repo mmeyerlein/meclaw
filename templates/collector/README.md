@@ -1,4 +1,4 @@
-# `collector@2.0.0`
+# `collector@2.0.4`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -73,7 +73,7 @@ Entry lanes go **into `./assemble`**. The parent edge names the lane with
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn -- **or**, when the request carried a `memory_call_id`, the tool result of a `memory_recall` call |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
-| `in_tool` | a tool cell | one tool result |
+| `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
 | `in_memory_call` | the tool dispatcher, on `hop.tool_name == 'memory_recall'` | the memory tool: the collector serves the call itself (GH #78) |
 | `in_thread_call` | the tool dispatcher, on `hop.tool_name == 'thread_recall'` | the thread tool: brings an elided payload of THIS turn back, uncapped, out of the collector's own slate (wave 11) |
 | `in_answer` | the brain, on `finish_reason == 'stop'` | writes the answer into the window and lets it out |
@@ -85,7 +85,7 @@ Exits leave **from `./assemble`** on `hop.route`:
 
 | route | to | notes |
 |---|---|---|
-| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
+| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. The same rule holds for `system.memory.recall`: a recall leg that came back with nothing sends an empty text and overwrites the previous turn's bundle. An empty `text` leaf contributes nothing to the system prompt. Since `collector@2.0.4` the whole `system.memory` node carries `"$replace": true` (GH #264): the collector fills that node wholesale every turn, and the marker is what lets it revoke the `json` form's keys, which are named by the memory hive and which no fixed path could name empty. **Consequence for an `llm` cell with a `system_writable` allowlist**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone no longer suffices. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
@@ -107,6 +107,48 @@ Breaking entry and a new major version, never a patch.
 Wire the ports in the **same mutation** that instantiates the hive: an island without a
 crossing edge derives inactive and never spawns.
 
+### What a tool result may carry (GH #252)
+
+A tool result is its **`messages[]`** -- every turn of it, in the order the tool wrote
+them, each turn correlated to the call it answers by `id`. That is the whole interface,
+and there is no second one.
+
+```json
+{"header": {"route": "res"},
+ "messages": [{"origin": "tool", "type": "tool_result", "id": "c1", "text": "..."},
+              {"origin": "tool", "type": "tool_result", "id": "c2", "text": "..."}]}
+```
+
+Two consequences, both deliberate:
+
+- **A result may answer more than one call.** A batch tool that gets the whole bundle in
+  one message answers all of it in one message, and the fan-in closes every call in it.
+  Until `collector@2.0.2` the lane kept `messages[0]`, so the other calls stayed open and
+  the round waited for results that had already arrived until `round_idle_ms` expired.
+- **A `system` slot on this lane is dropped, and so is a top-level body slot.** The
+  `in_bundle` lane keeps `system` and it is *not* the precedent it looks like. What leaves
+  the seam in `system.*` is UPSERTed into the brain cell's own `cell.db` and stands in the
+  prompt until something overwrites that exact slot path -- it is durable state of the
+  agent, not evidence of one round. The recall bundle survives that treatment because it
+  is re-sent under a fixed path on **every** turn and can never go stale; a single tool
+  result gets no second chance to correct itself, and a brief about one subject would
+  still be in the prompt three subjects later. `system.*` is also out of the curator's
+  reach and out of the round's byte budget on purpose -- it is where hard *constraints*
+  belong -- so a tool writing there would grow the prompt with nothing left able to cut
+  it, against a slot budget the `llm` cell caps at 256 (GH #118).
+
+**So a tool with structure to hand back puts it in the text of its result**, serialised
+however its caller can read it. That is not a workaround for a missing channel; it is the
+channel. A provider sees a tool result as one string on one `tool_call_id`, and anything
+richer would have to be flattened for the wire anyway -- the only question is who does it,
+and the tool that produced the structure knows its own shape best. `affinity@2.0.1` does
+exactly this: the receipt line, then the disclosed pack as JSON behind it.
+
+**If you want a durable constraint rather than an answer**, that is a different lane and a
+different cell: address the `llm` cell's `system` tree directly (the push lane of
+`affinity` is the worked example), where the write is meant to outlive the round and the
+`system_writable` allowlist decides who may make it.
+
 ## Knobs
 
 Every knob below is a **param of `./assemble`**: it ships with its default in that cell's
@@ -125,7 +167,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn. |
-| `memory_form` | `"readable"` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. Applies to the ambient leg and to a `memory_recall` result alike. |
+| `memory_form` | `"readable"` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. Applies to the ambient leg and to a `memory_recall` result alike. The `readable` form travels on the FIXED path `system.memory.recall`: a leg that found nothing sends an empty text and the previous turn's bundle is overwritten. The `json` form has no fixed path -- its sub-keys are named by the memory hive per bundle -- and is revoked instead by the marker on the node above it (see the `brain` lane, `collector@2.0.4`). Both forms therefore expire with the turn they belong to; under `both` the ONE marker covers both legs. |
 | `memory_call_tier` | `"1"` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
@@ -265,6 +307,13 @@ because the collector owns the slate the stub points at.
  "condition": "hop.route == 'tool' && hop.tool_name == 'thread_recall'",
  "modifier": {"set_hop": {"route": "'in_thread_call'"}}}
 ```
+
+`in_thread_call` is a declared lane of the hive contract since `collector@2.0.1`
+([#245](https://github.com/mmeyerlein/meclaw/issues/245)) -- before that the edge above was
+refused with `hive_contract` at mutation time, so every stub the curator left pointed at a tool
+no caller could wire. A composite that carries this collector as a sub-unit has to declare the
+lane **at its own hive path** as well and forward it through its door edge; `talky@3.0.1` does,
+`cogny` does not (its seal admits one lane in total, [#240](https://github.com/mmeyerlein/meclaw/issues/240)).
 
 The tool schema is a **seed**, not a contract of this template -- what the brain may ask for
 is decided where the brain's `system.tools` is written:
@@ -664,7 +713,9 @@ in_calls  -> insert round(assistant)     phase round-w
              (the assistant row is written fired=1 when NOTHING else was asked)
 in_advice -> insert turns(advice)        phase turn-w       <- the return lane, into
              (+ recall request)                                the turn chain above
-in_tool   -> insert round(tool)          phase round-w
+in_tool   -> insert round(tool)          phase round-w      <- the WHOLE messages[]:
+                                                               one result may answer
+                                                               several calls (#252)
 in_memory_call -> ROUTE recall           (memory_call_id = the tool_call_id,  <- GH #78
                                           recall_window_from/_to = the args)
 in_bundle (with a memory_call_id)
@@ -761,6 +812,9 @@ still tell an event from a user's word.
   happen behind it without re-cutting the collector.
 - **Not a dispatcher.** Routing a `tool_call` to the right tool is a fan-OUT; the collector
   only fans results back in.
+- **Not a second body format for tool results.** A result is the `tool_result` turns of its
+  `messages[]`; `system.*` and top-level body slots on that lane are not part of a result
+  and do not travel (see "What a tool result may carry").
 - **Not a session keeper.** It consumes a `session_id` and it answers a close request; it
   does not decide when a session begins or ends.
 - **Not memory.** The collector reads the recall bundle and hands the closed session on
@@ -779,17 +833,32 @@ still tell an event from a user's word.
   real stdin documents: assembly, the eviction policy, the caps, the gate, the seam and
   its bound, the close lane, the delivery ledger, the prune chain, the round idle exit,
   the mid-round deferral and the memory tool (the request, its window arguments, the
-  answer as a tool result, the switched-off tier).
+  answer as a tool result, the switched-off tier). Since 2.0.2 also what a tool result may
+  carry: a result answering two calls in one message closes both, and a `system` slot on
+  that lane stays at the door. Since 2.0.3 also the REVOCATION of the two `system` slots
+  the collector owns -- each pinned over two rounds, because a pin on the first round is
+  green with and without the repair. Since 2.0.4 the same question for the `json` form,
+  which has no path to send empty and is revoked by the marker on `system.memory`
+  instead: the key of a bundle the next turn does not name is gone, one marker covers
+  both legs under `both`, and -- the counter-pin that matters more -- the marker sits on
+  that node and on no other, so `system.consult` and every slot the collector never wrote
+  stay untouched.
 - `crates/meclaw-cells/tests/w9a_per_turn_episodes.rs` -- the per-turn lane at script
   level: the two occasions, the lane switched off by default, the day it hands out, and
   the proof that the `turn_write` document and the `write` document are the same
   conversation.
+- `crates/meclaw-colony/tests/gh245_a_stub_names_a_lane_the_hive_admits.rs` -- the lane
+  a curator stub names against the SHIPPED hive files: an edge stamping `in_thread_call`
+  into the collector commits, an edge stamping `in_batch` is refused now that nothing
+  behind the door reads it, and a real call on the lane crosses `talky`'s door and the
+  collector's door and lands on the assembler.
 - `crates/meclaw-cells/tests/collector_colony.rs` -- a running colony with no memory hive
   in it at all, so a turn that references an earlier turn can only have been answered from
   the window; plus a 100 KB tool result that arrives capped, a runaway round that the seam
   ends, a session that leaves as one batch, a batched session that is pruned while
   the living session keeps every byte, a lost tool result whose round a sweep closes, and
-  a mid-round turn that defers and rides with the next assembly. Two more trees run the
+  a mid-round turn that defers and rides with the next assembly, and a batching
+  dispatcher whose tool answers the whole bundle in one message. Two more trees run the
   memory tool against the **shipped `dispatcher@1`** -- one with the recall port wired
   (both results fan in, the model's time range reaches the request) and one without it
   (the call is unroutable and the round ends in the idle exit).

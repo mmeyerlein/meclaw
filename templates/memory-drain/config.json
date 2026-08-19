@@ -9,18 +9,31 @@
         {
           "route": "in_batch",
           "context": [
-            "session_id"
+            "session_id",
+            "audience_set",
+            "channel"
           ],
-          "because": "one closed session as a single write batch; the ledger is keyed on the promoted session_id and a batch without one cannot be told apart from its own repeat"
+          "because": "one closed session as a single write batch; the ledger is keyed on the promoted session_id and a batch without one cannot be told apart from its own repeat. The provenance of the turns travels the same way and is NOT optional (#269): `audience_set` (a JSON list of participants in affinity vocabulary, `*` alone meaning universal) and `channel` are required on a batch that carries turns, because the memory hive's own in_episode lane requires them and this adapter is the thing that speaks that lane. Without either, the batch is refused on `reject` and NOTHING is written to the ledger -- a guessed audience is worse than a missing turn, and a batch consumed into the ledger but refused downstream would be lost for good"
         }
       ],
       "emits": [
         {
           "route": "episode",
-          "because": "one message per turn of the batch, for the memory hive's turn-write ingress"
+          "because": "one message per turn of the batch, for the memory hive's in_episode lane"
+        },
+        {
+          "route": "reject",
+          "because": "a batch this adapter would not take: the participant set or the room is not on it (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). The body says which and why. NOTHING was parked and NOTHING was marked, so the same batch delivered again over an edge that carries its provenance still drains whole. Drain it: undrained, nobody ever learns that the day never became a memory"
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_batch",
+        "emits": "reject",
+        "because": "since 2.0.2 a batch without a participant set or without a room is REFUSED at this adapter's own door rather than decomposed into episodes the hive will refuse one by one (#269) -- undrained, the refusal is silent and the caller believes a day was remembered that never existed, which is the one failure this adapter exists to prevent"
+      }
+    ],
     "graph": {
       "edges": [
         {
@@ -54,10 +67,10 @@
     }
   },
   "description": {
-    "purpose": "Scope marker of the drain hive: the adapter that turns one closed session - handed out by a collector as ONE write batch - into N single-turn episodes on the memory hive's turn-write ingress, plus the ledger that makes a second delivery a skip. It sits BEFORE the hive's writer port and outside the hive (GH #101, R-MD-1): the memory hive is not changed by a single line.",
-    "use_when": "One per talky whose closed sessions should reach the central memory. Wire the two ports in the SAME mutation that instantiates it: the talky's 'write' route into ./drain as lane in_batch, and ./drain's 'episode' route into the memory hive on its in_episode lane.",
-    "contract_in": "Every message whose `hop.route` starts with `in_`. One lane is in use: in_batch — one closed session as a single write batch. The caller must promote `session_id` into `context` on its own edge; the ledger is keyed on it and a batch without one cannot be told apart from its own repeat.",
-    "contract_out": "`episode` — one message per turn of the batch, for the memory hive's turn-write ingress, leaving through the hive path. The ledger write (`lstore`) stays inside: that a second delivery is a skip is this hive's promise, not something a caller arranges.",
-    "not_in_scope": "No extraction, no summarising, no recall, no LLM call - the write path is synchronous and model-free by spec. No second write path into memory: everything goes through the existing writer, which is the point of the adapter. No session lifecycle of its own; the keeper closes the session and the collector produces the batch."
+    "purpose": "Scope marker of the drain hive: the adapter that turns one closed session - handed out by a collector as ONE write batch - into N single-turn episodes on the memory hive's in_episode lane, plus the ledger that makes a second delivery a skip. It sits BEFORE the hive's `in_episode` lane and outside the hive (GH #101, R-MD-1): the memory hive is not changed by a single line.",
+    "use_when": "One per talky whose closed sessions should reach the central memory. Wire the ports in the SAME mutation that instantiates it: the talky's 'write' route into ./drain as lane in_batch, ./drain's 'episode' route into the memory hive on its in_episode lane, and ./drain's 'reject' route wherever refusals are read. The edge that carries the batch IN owes it its provenance: context.audience_set and context.channel. In a colony wired from `channel@1` both are already in context from the ingress door of the generation (ADR-0002 E8) and nothing extra is needed; a tree without one declares them on the in_batch edge itself.",
+    "contract_in": "Every message whose `hop.route` starts with `in_`. One lane is in use: in_batch -- one closed session as a single write batch. The caller must promote `session_id` into `context` on its own edge; the ledger is keyed on it and a batch without one cannot be told apart from its own repeat. `context.audience_set` and `context.channel` must be in context too -- promoted upstream or on that same edge -- or the batch is refused; they are the memory hive's own requirement and this adapter only carries them through, it never invents them.",
+    "contract_out": "`episode` -- one message per turn of the batch, for the memory hive's in_episode lane, leaving through the hive path. `reject` -- a batch that was not taken, with hop.reject_reason; it too leaves through the hive path and must be drained. The ledger write (`lstore`) stays inside: that a second delivery is a skip is this hive's promise, not something a caller arranges.",
+    "not_in_scope": "No extraction, no summarising, no recall, no LLM call - the write path is synchronous and model-free by spec. No second write path into memory: everything goes through the existing writer, which is the point of the adapter. No session lifecycle of its own; the keeper closes the session and the collector produces the batch. No provenance of its own: the participant set and the room are declared by the wiring and carried through untouched, never minted, never defaulted to `[\"*\"]`."
   }
 }

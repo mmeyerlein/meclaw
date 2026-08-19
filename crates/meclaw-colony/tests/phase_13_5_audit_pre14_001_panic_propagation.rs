@@ -44,6 +44,7 @@ async fn outer_join_lost_panic() -> bool {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
     in_tx
         .send(MessageBuilder::new(Path::new("/lr")).build())
@@ -124,6 +125,7 @@ async fn watcher_misclassified_panic() -> bool {
         None,
         None,
         None,
+        Default::default(),
     ));
     let (inbox_tx, mut inbox_rx) = mpsc::channel::<ColonyMsg>(8);
     spawn_watcher(&inbox_tx, Path::new("/lr"), join, peace_rx, backstop_rx);

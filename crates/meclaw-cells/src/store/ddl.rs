@@ -91,6 +91,127 @@ fn table_columns(
     st.query_map([table], |r| r.get::<_, String>(0))?.collect()
 }
 
+/// The column names and declared types of an existing table, in table order.
+fn table_columns_typed(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut st = conn.prepare("SELECT name, type FROM pragma_table_info(?1) ORDER BY cid")?;
+    st.query_map([table], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?
+    .collect()
+}
+
+/// The primary-key columns of an existing table, in key order. Empty for a
+/// table that has no key at all.
+fn primary_key_columns(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    let mut st = conn.prepare("SELECT name FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")?;
+    st.query_map([table], |r| r.get::<_, String>(0))?.collect()
+}
+
+/// Make sure a **store-owned** table stands with the key its ops upsert on
+/// (GH #255) — creating it when it is missing, and REBUILDING it when it is
+/// standing without that key.
+///
+/// `CREATE TABLE IF NOT EXISTS` alone is not enough here, because the store is
+/// not always the first to create these tables. A template may ship a
+/// `seed/<table>.jsonl` for one of them, and the mutation staging seeder
+/// (`meclaw-colony`) then builds the table from the seed header line alone —
+/// no key — at INSTANTIATION time, which is necessarily before the cell has
+/// ever been awake. Reordering the two is not available: the seeder lives in
+/// `meclaw-colony` and this DDL in `meclaw-cells`, and the dependency runs one
+/// way only. So the key is asserted here instead of assumed, which also covers
+/// every other way a keyless twin can arrive — a hand-written `cell.db`, an
+/// imported one, a store that predates the declaration.
+///
+/// What it costs when the key is missing is the whole upsert: SQLite refuses an
+/// `ON CONFLICT(<col>)` target that matches no PRIMARY KEY or UNIQUE
+/// constraint, so `set_alias` and `reject_pair` do not write a second row —
+/// they FAIL, every time, and the judgement they carried is never recorded.
+///
+/// The rebuild is strictly non-destructive:
+/// - every row is carried over, keyed, so duplicates that accumulated collapse
+///   into one — the most recently `recorded_at` row wins, and the copy order is
+///   deterministic rather than whatever the scan happened to produce;
+/// - a column the old table carries and the declared shape does not is carried
+///   over too, the same additive rule [`apply_schema_ddl`] follows — a repair
+///   must not be a truncation.
+///
+/// A table whose key columns it does not carry at all cannot be rebuilt into
+/// this shape; that is a loud error rather than a silent drop.
+fn ensure_keyed_table(
+    conn: &rusqlite::Connection,
+    table: &str,
+    body: &str,
+    key: &[&str],
+) -> Result<(), String> {
+    let fail = |what: &str, e: rusqlite::Error| format!("{what} on {table}: {e}");
+    conn.execute(
+        &format!("CREATE TABLE IF NOT EXISTS \"{table}\" ({body})"),
+        [],
+    )
+    .map_err(|e| fail("create", e))?;
+    let present = primary_key_columns(conn, table).map_err(|e| fail("read key", e))?;
+    if present.iter().map(String::as_str).eq(key.iter().copied()) {
+        return Ok(());
+    }
+    // A leftover from a rebuild that was interrupted is dropped, not resumed:
+    // the table it was copied from is still the authority at this point.
+    let tmp = format!("{table}__meclaw_rekey");
+    conn.execute(&format!("DROP TABLE IF EXISTS \"{tmp}\""), [])
+        .map_err(|e| fail("drop scratch", e))?;
+    conn.execute(&format!("CREATE TABLE \"{tmp}\" ({body})"), [])
+        .map_err(|e| fail("create scratch", e))?;
+    let declared = table_columns(conn, &tmp).map_err(|e| fail("read scratch", e))?;
+    let old = table_columns_typed(conn, table).map_err(|e| fail("read columns", e))?;
+    for k in key {
+        if !old.iter().any(|(c, _)| c == k) {
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{tmp}\""), []);
+            return Err(format!(
+                "{table} stands without its key and without a {k:?} column to rebuild it from"
+            ));
+        }
+    }
+    let mut carried: Vec<String> = Vec::new();
+    for (c, t) in &old {
+        if !declared.contains(c) {
+            let ty = if t.is_empty() { "TEXT" } else { t.as_str() };
+            conn.execute(
+                &format!("ALTER TABLE \"{tmp}\" ADD COLUMN \"{c}\" {ty}"),
+                [],
+            )
+            .map_err(|e| fail("carry column", e))?;
+        }
+        carried.push(format!("\"{c}\""));
+    }
+    let cols = carried.join(", ");
+    // Deterministic collapse: a row that names when it was recorded outranks
+    // one that does not, a later one outranks an earlier one, and `INSERT OR
+    // REPLACE` lets the last row of that order win the key.
+    let order = if old.iter().any(|(c, _)| c == "recorded_at") {
+        "ORDER BY (\"recorded_at\" IS NULL) DESC, \"recorded_at\" ASC, rowid ASC"
+    } else {
+        "ORDER BY rowid ASC"
+    };
+    conn.execute_batch(&format!(
+        "SAVEPOINT meclaw_rekey;\n\
+         INSERT OR REPLACE INTO \"{tmp}\" ({cols}) SELECT {cols} FROM \"{table}\" {order};\n\
+         DROP TABLE \"{table}\";\n\
+         ALTER TABLE \"{tmp}\" RENAME TO \"{table}\";\n\
+         RELEASE meclaw_rekey;"
+    ))
+    .map_err(|e| fail("rekey", e))?;
+    tracing::warn!(
+        table = table,
+        key = ?key,
+        "store: the table stood without its primary key and was rebuilt with it — every \
+         `set_alias`/`reject_pair` against it had been failing with an ON CONFLICT error \
+         (GH #255); the rows were carried over and duplicates collapsed onto the key"
+    );
+    Ok(())
+}
+
 /// The SQL expression that derives one canonical value: the alias table wins,
 /// the original is the fallback (0.2.0 P2, ruling Q3).
 ///
@@ -125,14 +246,21 @@ pub(crate) fn canonical_derive_expr(table: &str, spec: &crate::store::CanonicalS
 /// Apply the canonical-column DDL for the declared bindings (0.2.0 P2, ruling Q3).
 ///
 /// Three effects, all idempotent:
-/// 1. the store-owned alias table exists (`alias` is its PRIMARY KEY, which is
-///    what makes `set_alias` an upsert and therefore re-runnable by the nightly
-///    GC);
-/// 2. the store-owned rejected-pair table exists when the binding declares one
-///    (0.2.0 P5) — the memory of a NEGATIVE judgement, so the GC stops
-///    re-proposing a pair it has already turned down;
+/// 1. the store-owned alias table exists **and carries its key** (`alias` is its
+///    PRIMARY KEY, which is what makes `set_alias` an upsert and therefore
+///    re-runnable by the nightly GC);
+/// 2. the store-owned rejected-pair table exists, likewise keyed, when the
+///    binding declares one (0.2.0 P5) — the memory of a NEGATIVE judgement, so
+///    the GC stops re-proposing a pair it has already turned down;
 /// 3. every row whose target column is still empty is derived ONCE from its
 ///    original plus the alias table.
+///
+/// The key in (1) and (2) is asserted, not assumed (GH #255): a table of either
+/// kind that is already standing WITHOUT it — the mutation staging seeder
+/// builds one from a `seed/<table>.jsonl` header at instantiation time, long
+/// before this runs — is rebuilt with the key and its rows carried over. See
+/// [`ensure_keyed_table`] for why a plain `CREATE TABLE IF NOT EXISTS` is not
+/// enough and what such a table costs while it stands.
 ///
 /// The backfill is the catch-up property the FTS index already has: a `cell.db`
 /// that has been running without the column gets it filled on the next spawn,
@@ -150,12 +278,11 @@ pub fn apply_canonical_ddl(
     for (table, specs) in canonical {
         for spec in specs {
             let aliases = &spec.aliases;
-            conn.execute(
-                &format!(
-                    "CREATE TABLE IF NOT EXISTS \"{aliases}\" (\"alias\" TEXT PRIMARY KEY, \
-                     \"canonical\" TEXT NOT NULL, \"recorded_at\" TEXT)"
-                ),
-                [],
+            ensure_keyed_table(
+                conn,
+                aliases,
+                "\"alias\" TEXT PRIMARY KEY, \"canonical\" TEXT NOT NULL, \"recorded_at\" TEXT",
+                &["alias"],
             )
             .map_err(|e| format!("alias table {aliases}: {e}"))?;
             // 0.2.0 P5: the refusal log, when the binding declares one. The pair is
@@ -163,13 +290,12 @@ pub fn apply_canonical_ddl(
             // are stored in a fixed order by the op — an unordered pair with an
             // ordered key, so ("a","b") and ("b","a") are one row.
             if let Some(rejected) = &spec.rejected {
-                conn.execute(
-                    &format!(
-                        "CREATE TABLE IF NOT EXISTS \"{rejected}\" (\"left_value\" TEXT NOT NULL, \
-                         \"right_value\" TEXT NOT NULL, \"recorded_at\" TEXT, \
-                         PRIMARY KEY (\"left_value\", \"right_value\"))"
-                    ),
-                    [],
+                ensure_keyed_table(
+                    conn,
+                    rejected,
+                    "\"left_value\" TEXT NOT NULL, \"right_value\" TEXT NOT NULL, \
+                     \"recorded_at\" TEXT, PRIMARY KEY (\"left_value\", \"right_value\")",
+                    &["left_value", "right_value"],
                 )
                 .map_err(|e| format!("rejected-pair table {rejected}: {e}"))?;
             }
@@ -1103,6 +1229,130 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// GH #255: an alias table that is already standing without its key — what
+    /// the mutation staging seeder leaves behind when a template ships a
+    /// `seed/<alias table>.jsonl` — is rebuilt with the key rather than left as
+    /// it was found. Nothing is lost doing it: the rows come along, a duplicate
+    /// key collapses onto its most recently recorded row, and a column the
+    /// declared shape does not know is carried over.
+    #[test]
+    fn canonical_ddl_rebuilds_a_keyless_alias_table_without_losing_a_row() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT, predicate TEXT, canonical_predicate TEXT);
+             CREATE TABLE predicate_aliases (alias TEXT, canonical TEXT,
+                                             recorded_at TEXT, note TEXT);
+             INSERT INTO predicate_aliases VALUES ('a','first','2026-01-01','n1');
+             INSERT INTO predicate_aliases VALUES ('a','second','2026-03-01','n2');
+             INSERT INTO predicate_aliases VALUES ('a','undated',NULL,'n0');
+             INSERT INTO predicate_aliases VALUES ('b','kept','2026-02-01','n3');",
+        )
+        .unwrap();
+
+        apply_canonical_ddl(&conn, &canon_decl()).unwrap();
+
+        assert_eq!(
+            primary_key_columns(&conn, "predicate_aliases").unwrap(),
+            vec!["alias".to_string()],
+            "the table must come out of the rebuild with the key set_alias upserts on"
+        );
+        let rows: Vec<(String, String, String)> = conn
+            .prepare("SELECT alias, canonical, note FROM predicate_aliases ORDER BY alias")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("a".into(), "second".into(), "n2".into()),
+                ("b".into(), "kept".into(), "n3".into()),
+            ],
+            "the newest judgement wins the key, the other alias survives, and the \
+             undeclared `note` column comes along"
+        );
+        // and now the op the whole thing exists for works
+        conn.execute(
+            "INSERT INTO predicate_aliases (alias, canonical, recorded_at) VALUES ('a','third',NULL)
+             ON CONFLICT(alias) DO UPDATE SET canonical = excluded.canonical",
+            [],
+        )
+        .expect("set_alias must upsert after the repair");
+        // a second wake finds the key in place and leaves the table alone
+        apply_canonical_ddl(&conn, &canon_decl()).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM predicate_aliases", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    /// The same repair on the composite key of the refusal log, and the proof
+    /// that the scratch table never outlives the rebuild.
+    #[test]
+    fn canonical_ddl_rebuilds_a_keyless_rejected_pair_table() {
+        let conn = conn_with_extensions();
+        let mut decl = canon_decl();
+        decl.get_mut("facts").unwrap()[0].rejected = Some("predicate_rejected_pairs".to_string());
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT, predicate TEXT, canonical_predicate TEXT);
+             CREATE TABLE predicate_rejected_pairs (left_value TEXT, right_value TEXT,
+                                                    recorded_at TEXT);
+             INSERT INTO predicate_rejected_pairs VALUES ('a','b','2026-01-01');
+             INSERT INTO predicate_rejected_pairs VALUES ('a','b','2026-04-01');
+             INSERT INTO predicate_rejected_pairs VALUES ('a','c','2026-01-01');",
+        )
+        .unwrap();
+
+        apply_canonical_ddl(&conn, &decl).unwrap();
+
+        assert_eq!(
+            primary_key_columns(&conn, "predicate_rejected_pairs").unwrap(),
+            vec!["left_value".to_string(), "right_value".to_string()]
+        );
+        let rows: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT left_value, right_value, recorded_at FROM predicate_rejected_pairs \
+                 ORDER BY right_value",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("a".into(), "b".into(), "2026-04-01".into()),
+                ("a".into(), "c".into(), "2026-01-01".into()),
+            ]
+        );
+        assert!(
+            !table_exists(&conn, "predicate_rejected_pairs__meclaw_rekey"),
+            "the scratch table of the rebuild must not survive it"
+        );
+    }
+
+    /// A table that cannot become the declared shape is a loud error, not a
+    /// silent drop of whatever was in it.
+    #[test]
+    fn canonical_ddl_refuses_to_rebuild_a_table_without_its_key_column() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE facts (id TEXT, predicate TEXT, canonical_predicate TEXT);
+             CREATE TABLE predicate_aliases (something_else TEXT, canonical TEXT);
+             INSERT INTO predicate_aliases VALUES ('x','y');",
+        )
+        .unwrap();
+
+        let err = apply_canonical_ddl(&conn, &canon_decl()).expect_err("must not be silent");
+        assert!(err.contains("alias"), "{err}");
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM predicate_aliases", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "the refusal must leave the table exactly as it was");
     }
 
     fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {

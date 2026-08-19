@@ -240,7 +240,7 @@ A tool-loop is `llm → dispatcher → tools → collector → llm`, with the lo
 ## The template library
 
 Both halves of that tool loop already exist as templates, and so does most of an agent.
-**14 of them ship in this repository**, every one pure DSL — directories, `config.json` files
+**19 of them ship in this repository**, every one pure DSL — directories, `config.json` files
 and edges, not a line of Rust and no plugin API. Instantiating one *copies* the subtree into
 your colony; from that moment the instance is yours and has no link back to the library.
 
@@ -248,7 +248,7 @@ your colony; from that moment the instance is yours and has no link back to the 
 |---|---|
 | the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window |
 | the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
-| the front door | `door`, `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
+| the front door | `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `channel` (one room as one hive, its agent a swappable generation), `receptionist` (one agent per channel, built on demand) |
 | memory | `memory-hive` — eleven cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
 | whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
 | the small ones | `retry`, `terminal` |
@@ -267,7 +267,7 @@ That part shipped. The **builder-hive** is an `llm` plus `code` topology that tu
 
 ## Where it's at
 
-meclaw is **v0.16.0**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.17.0**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
 
 Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **4400+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 

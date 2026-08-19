@@ -128,6 +128,17 @@ complete = expected is non-empty and expected is a subset of received
 The comparison uses IDs rather than row counts. Arrival order cannot change the result, and a
 duplicate ID cannot make a missing result appear complete.
 
+**What a result may carry.** A tool result is its `messages[]` -- every `tool_result` turn of
+it, each under the `id` of the call it answers -- and nothing else. One result may therefore
+answer several calls at once, which is what a batching tool does when it receives the whole
+call bundle in one message; every id in it enters `received`. A `system` slot or a top-level
+body slot on that lane is dropped on the way in, and that is a decision rather than an
+omission: what leaves the collector's seam in `system.*` is upserted into the brain cell's own
+`cell.db` and stands in the prompt until something overwrites the same slot path, so it is
+durable state of the agent, not evidence of one round. Only something re-sent under a fixed
+path on every turn -- the memory bundle -- belongs there. A tool with structure to hand back
+serialises it into the text of its result.
+
 ### 4. Claim the completed round once
 
 Several insert/select chains can observe a complete round at nearly the same time. A plain

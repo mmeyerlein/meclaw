@@ -125,6 +125,7 @@ async fn on_start_finishes_before_the_first_mailbox_message() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     let emission = tokio::time::timeout(Duration::from_secs(30), out_rx.recv())

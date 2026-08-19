@@ -26,7 +26,7 @@ async fn call_openai_happy_returns_response_json() {
     let resp = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -51,7 +51,7 @@ async fn call_openai_rate_limit_429() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -72,7 +72,7 @@ async fn call_openai_unauthorized_401() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -93,7 +93,7 @@ async fn call_openai_model_not_found_404() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -114,7 +114,7 @@ async fn call_openai_http_status_500() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -137,7 +137,7 @@ async fn call_openai_body_parse_fail_on_non_json() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -157,7 +157,7 @@ async fn call_openai_network_error_on_closed_port() {
     let result = call_openai(
         &client,
         "http://127.0.0.1:1/foo",
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_secs(5),
@@ -191,7 +191,7 @@ async fn call_openai_timeout_fires_a_timeout() {
     let result = call_openai(
         &client,
         &url,
-        "test-key",
+        Some("test-key"),
         &[],
         &body,
         Duration::from_millis(200),
@@ -215,7 +215,7 @@ async fn call_openai_sends_authorization_bearer_header() {
     let _ = call_openai(
         &client,
         &url,
-        "test-key-XYZ",
+        Some("test-key-XYZ"),
         &[],
         &serde_json::json!({}),
         Duration::from_secs(5),

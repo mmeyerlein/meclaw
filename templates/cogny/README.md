@@ -1,4 +1,4 @@
-# `cogny@3.0.0`
+# `cogny@3.0.5`
 
 The agent core as one template. Three units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
@@ -75,7 +75,9 @@ production.
 ## Ports
 
 **Two external ports, and the parent wires both in the SAME mutation that instantiates
-the composite** -- an island without a crossing edge derives inactive.
+the composite** -- an island without a crossing edge derives inactive. Both meet at the
+hive path; five further lanes (`in_tool`, `in_bundle`, `tool`, `recall`, `error`) meet
+there too and are wired per instance, see [Lanes](#lanes).
 
 | port | endpoint | direction | what travels |
 |---|---|---|---|
@@ -127,15 +129,15 @@ Five things in those edges are load-bearing, and four of them are not decoration
 - **The errand arrives as a `tool_call` turn.** Its text is the raw arguments the model
   wrote. The core's collector files that as the turn.
 
-**`./collector` is the port address, and the address is the contract.** Both
-external ports meet at that one endpoint, and the working colonies under
-[`../../examples/`](../../examples/) wire it literally as `./cogny/collector` --
-a stable **address**, not implementation detail that happens to be reachable. Which cells
-sit behind it may be rearranged in a version bump; the address may not, and moving it is a
-breaking change to every parent that wired it: a CHANGELOG Breaking entry and a new major
-version, never a patch. The per-instance lanes below reach further in, to `./dispatcher` and to
-both brains, and carry the same promise for the same reason -- the examples wire those
-literally too.
+**The hive path is the address, and the lanes are the contract.** Since the seal
+(GH #228) `params.ports` is empty: no edge from outside may name `./cogny/collector` or
+any other cell in here, and every port above and every lane below meets at `./cogny`
+itself. Which cells sit behind that path may be rearranged in a version bump without a
+caller noticing -- that is what the seal bought. What may NOT change silently is the set
+of lanes: dropping one or renaming one is a breaking change to every parent that wired it,
+a CHANGELOG Breaking entry and a new major version, never a patch. Adding a lane nothing
+ever promised is additive and takes the minor digit; giving a hive that shipped sealed the
+contract it already implied is a repair and takes the third, which is what 3.0.1 was.
 
 ### Per-instance lanes (not ports of this template)
 
@@ -153,17 +155,44 @@ tool cells and no map of them. Wiring a tool is one edge pair:
 the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
 comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-**What this composite does NOT declare yet**, and it is a limit rather than an omission:
-`cogny@3` seals to one lane in (`in_turn`) and one out (`answer`). Three things a parent
-may want are consequently not addressable from outside any more, and each needs a lane of
-its own before it is:
+`escalate_to_deep` never leaves. The exit edge carries
+`(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` so the reserved name stays
+the composite's own lane between the two brains, exactly as it was before the tool lane
+existed.
+
+**The memory leg is the second pair**, and it is the one R-CG-1 moved onto this collector:
+
+```json
+{"from": "./cogny", "to": "<member>/memory",
+ "condition": "has(hop.route) && hop.route == 'recall'",
+ "modifier": {"set_hop": {"route": "'in_query'"}}},
+{"from": "<member>/memory", "to": "./cogny",
+ "condition": "has(hop.route) && hop.route == 'bundle'",
+ "modifier": {"set_hop": {"route": "'in_bundle'"}}}
+```
+
+`params.memory_tier` on `./collector/assemble` is what decides how deep this core asks --
+it lives here rather than on the talkies, and until 3.0.1 it had nowhere to ask.
+
+**The error drain is one edge**, because the two brains are normalised onto the lane by
+the exit edges themselves rather than by a cell:
+
+```json
+{"from": "./cogny", "to": "<parent>/drain",
+ "condition": "has(hop.route) && hop.route == 'error'"}
+```
+
+**Wire it.** `talky` says the same thing about its own error lane and for the same reason:
+undrained, a failed inference dead-letters as `no_route` and nothing upstream ever learns
+the consultation died.
+
+**What this composite still does NOT declare**, and it is a limit rather than an omission:
 
 | wanted | state |
 |---|---|
-| **memory** (route `recall` out, `in_bundle` in) | R-CG-1 puts the memory leg at this collector, but neither lane is declared at the hive path yet |
-| memory tool (`memory_recall` back into the collector) | same; inside the composite it would be a loop at the hive path, as `talky` does it |
-| error drain (a failed inference on either brain) | this composite carries **no** `errors` cell (R-CG-2 names three units and nothing else), so there is nothing to normalise the two brains into one lane; an unwired brain error dead-letters, as it did before |
+| memory tool (`in_memory_call` back into the collector) | not declared; inside the composite it would be a loop at the hive path, as `talky` does it |
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
+| a normalising `errors` cell | R-CG-2 names three units and nothing else, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
 
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
@@ -225,10 +254,10 @@ abolishes, and infinitely cheaper than a wrong answer.
 
 ## The internal wiring, edge by edge
 
-Ten edges in this hive's `params.graph`, plus the four the sealed collector brings with
-it -- those four are its own door and store edges and are neither drawn nor wireable from
-here. Every edge below names `collector` by its HIVE path; the lane in the third column is
-what the door behind it reads:
+Seventeen edges in this hive's `params.graph`, plus the four the sealed collector brings
+with it -- those four are its own door and store edges and are neither drawn nor wireable
+from here. Every edge below names `collector` by its HIVE path; the lane in the third
+column is what the door behind it reads:
 
 ```
 collector ==(brain, iter < 12, NOT lookup, restore_ttl)==> brain       <- THE SEAM,
@@ -238,10 +267,18 @@ brain_fast --(stop | tool_calls)--> dispatcher
 brain      --(length)-------------> collector  in_answer
 brain_fast --(length)-------------> collector  in_answer
 
-dispatcher --(calls)---> collector  in_calls      dispatcher --(tool)--> [your tools]
+dispatcher --(calls)---> collector  in_calls
 dispatcher --(result)--> collector  in_tool
 dispatcher --(answer)--> collector  in_answer     -> and out of the advice port
 dispatcher --(tool_name == escalate_to_deep)--> collector  in_turn, class := consult
+
+.          --(in_turn)-----------> collector         THE DOORS
+.          --(in_tool|in_bundle)-> collector
+collector  --(answer)-----------> .                  THE EXITS
+collector  --(recall)-----------> .
+dispatcher --(tool, not escalate_to_deep)--> .
+brain      --(error|content_filter)--> .  route := 'error'
+brain_fast --(error|content_filter)--> .  route := 'error'
 ```
 
 **The two seam conditions are complementary, and that is a correctness property, not
@@ -312,7 +349,7 @@ cover.
 Now the knob is set where it belongs, and the byte pin still holds:
 
 ```json
-{"op": "instantiate", "template": "cogny@2.0.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@3.0.5", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -449,7 +486,15 @@ rides on `hop.route`.
 | lane | direction | what travels |
 |---|---|---|
 | `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier |
+| `in_tool` | in | one tool result, coming back from a tool cell the parent wired |
+| `in_bundle` | in | a memory bundle, coming back from whatever keeps this agent's memory |
 | `answer` | out | the core's answer, for whoever asked |
+| `tool` | out | a tool call for a cell the parent wired; `hop.tool_name` says which one |
+| `recall` | out | a memory read this turn needs |
+| `error` | out | a failed inference on either brain. **Wire it** -- unwired it dead-letters, loudly |
 
-Which cell takes the question and which one produces the answer is this template's
-business and may change without a caller noticing.
+Which cell takes the question, which one calls the tools and which one produces the
+answer is this template's business and may change without a caller noticing. The two
+brains are joined onto the single `error` lane by the exit edges' own `set_hop.route`,
+because this composite carries no `errors` cell of its own -- see
+[Per-instance lanes](#per-instance-lanes-not-ports-of-this-template).

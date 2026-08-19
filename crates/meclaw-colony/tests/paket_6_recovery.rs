@@ -280,7 +280,9 @@ impl CellFactory for FlipCellFactory {
                         cell,
                         db,
                         respawn_blob.clone(),
-                     None,);
+                     None,
+                     Default::default(),
+                     );
                 meclaw_colony::renotify_stop_wiring(
                     &respawn_inbox,
                     respawn_path.clone(),
@@ -315,6 +317,7 @@ impl CellFactory for FlipCellFactory {
                     db,
                     wake_blob.clone(),
                     None,
+                    Default::default(),
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

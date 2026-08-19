@@ -168,6 +168,7 @@ async fn phase_10b_demo_substrate_shutdown_with_once_in_2099() {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
 
     // Sanity: wait 200 ms — `run_io` really sits in `sleep_until` (target:

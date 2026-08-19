@@ -213,6 +213,7 @@ impl CellFactory for GateLrFactory {
                 Some(death_ack_tx),
                 None,
                 None,
+                Default::default(),
             )
             .await;
         });

@@ -1,0 +1,17 @@
+{
+  "name": "telegram-connector",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "A Telegram surface behind its own boundary: one sealed hive holding the credential-bearing proxy cell. From outside you name the hive and a lane -- never the proxy. This is the building block underneath the demo bots: the same proxy cell they carry, on its own, so a channel can be put in front of an agent somebody else assembled.",
+    "use_when": "Wherever a topology needs a Telegram channel that feeds something ELSE. Instantiate with add_nodes and wire both lanes at the HIVE path in the same mutation. The outbound edge MUST promote hop.chat_id (and hop.user_id where the screening needs it) to context, or the reply has no chat to go to.",
+    "not_in_scope": "No screening, no allowlist, no persona, no answer of its own -- that is what firewall@2.0.0 and the agent behind it are for. No session, no memory, no history. bot-basic@2.0.0 is the OTHER shape of the same cell: a complete bot (proxy -> persona -> worker -> proxy) that answers by itself and therefore has no lane leaving the hive.",
+    "examples": [
+      "LANES - in_reply: an edge onto the HIVE carrying the finished assistant turn; context.chat_id selects the chat. turn: out of the hive, one user-origin turn per inbound message, hop carries chat_id/user_id/message_id/platform. error: out of the hive, the proxy's own failures (missing_chat_id/missing_assistant_turn/send_failed/invalid_body), and required_drains insists that it is wired.",
+      "Credential: the proxy's params.bot_token is ${TELEGRAM_BOT_TOKEN}, immutable per cell -- rotation means .env plus restart. A second instance in the same colony takes its own variable via override_params on the proxy.",
+      "ONE getUpdates consumer per token: a second poller on the same token gets 409 Conflict and the two steal each other's updates. One instance per token, and never inside something that gets instantiated more than once."
+    ]
+  },
+  "tags": ["telegram", "proxy", "connector", "channel", "surface"],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

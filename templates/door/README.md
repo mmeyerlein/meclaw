@@ -1,9 +1,12 @@
-# `door@1.0.0`
+# `door@1.0.1`
 
 The first cell of a colony, as one `code` cell. It exists because of a small, hard
 fact about the substrate: the HTTP ingress puts the request headers into the message's
-**`context`** compartment and leaves the **`hop` empty** -- and `set_hop` is an *edge's*
-job. Above the first cell there is no edge, so the first lane has to be named by a cell.
+**`context`** compartment, and the **`hop` arrives empty** unless the poster explicitly
+seeded one ([#175](https://github.com/mmeyerlein/meclaw/issues/175) made `hop` an opt-in
+compartment of `POST /messages`). Otherwise `set_hop` is an *edge's* job, and above the
+first cell there is no edge -- so for every poster that does not name a lane itself, the
+first lane has to be named by a cell.
 
 That is the whole template. Ten lines of Python, one emission, no state.
 

@@ -26,6 +26,10 @@ pub struct ContractBlock {
     /// GH #185 — the cell's own statement that it is an ingress, and which
     /// standard header keys it mints at birth. Absent ⇒ not an ingress.
     pub ingress: meclaw_core::IngressBlock,
+    /// GH #260 — the cell's own statement that the writes the SUBSTRATE answers
+    /// on its behalf (today: the `transfer` slot's `import`) are bounded to its
+    /// own parent scope. Absent ⇒ `Open` ⇒ nothing changes.
+    pub write_surface: meclaw_core::WriteSurface,
 }
 
 /// Hard presence check for the builder-mandatory contract keys
@@ -63,6 +67,7 @@ impl From<ContractBlock> for ContractView {
             emits: None,
             validate_emits: false,
             consumes: None,
+            write_surface: c.write_surface,
         }
     }
 }

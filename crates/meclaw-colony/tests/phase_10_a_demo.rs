@@ -34,6 +34,7 @@ async fn phase_10_a_demo_mailbox_message_reaches_handle() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     in_tx
@@ -98,6 +99,7 @@ async fn phase_10_a_demo_io_event_reaches_handle_event() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     inject_tx.send(MockEvent("tick".into())).await.unwrap();
@@ -219,6 +221,7 @@ async fn phase_10_a_demo_outputs_backpressure_blocks_handler_emit() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     let first = tokio::time::timeout(Duration::from_secs(30), out_rx.recv())

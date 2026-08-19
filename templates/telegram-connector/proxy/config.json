@@ -1,0 +1,67 @@
+{
+  "cell": { "type": "proxy", "timeout": -1 },
+  "params": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "emit_to": "..",
+    "long_poll_timeout_ms": 35000,
+    "long_poll_request_secs": 30,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "base_url": "https://api.telegram.org"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${TELEGRAM_BOT_TOKEN}",
+        "description": "Telegram bot token (BotFather)"
+      },
+      "long_poll_request_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "Telegram-side getUpdates long-poll wait in seconds"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around sendMessage"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      },
+      "hop": {
+        "platform": { "type": "string", "values": ["telegram"], "required": false },
+        "chat_id": { "type": "number", "required": false },
+        "user_id": { "type": "number", "required": false },
+        "message_id": { "type": "number", "required": false },
+        "error_code": { "type": "string", "required": false },
+        "msg_type": { "type": "string", "required": false }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      },
+      "context": {
+        "chat_id": { "type": "number", "required": true }
+      }
+    },
+    "capabilities": ["network:proxy", "db:own"]
+  },
+  "description": {
+    "purpose": "Bridges Telegram chats to the topology. Inbound chat messages emerge as one user-origin turn each; messages from the topology are written back to the chat. Cell taken verbatim from bot-basic@2.0.0 -- only params.emit_to differs, and it points at the enclosing hive, because every emission is routed by the hive's own edges (the substrate applies apply_edges to a source emission too; emit_to is only the no-route address).",
+    "use_when": "Interior cell of the telegram-connector hive. One instance per bot token.",
+    "not_in_scope": "Does not understand bot commands, does not keep chat history, does not transform messages beyond extracting text and identifiers.",
+    "emits_meaning": "Two emission shapes, hence no required hop fields: (a) source emission -- one user-origin text turn per inbound Telegram message, hop carries chat_id/user_id/message_id/platform (promote chat_id to context on the out-edge, or it dies with the next cell emission); (b) inbound-error emission (missing_chat_id/missing_assistant_turn/send_failed/invalid_body) -- empty messages[], hop carries error_code + msg_type 'proxy_inbound_error', targeted at reply_to. Declaring chat_id/platform as required breaks shape (b) against the substrate emits validation.",
+    "consumes_meaning": "messages[]: the last assistant turn is sent to the chat. context.chat_id selects the target Telegram chat (promoted by the hive's own out-edge).",
+    "examples": [
+      "Inbound Telegram 'Hi' -> emit body { messages: [{ origin: 'user', type: 'text', text: 'Hi' }] }, hop { platform: 'telegram', chat_id: 12345, user_id: 67890 }"
+    ]
+  }
+}

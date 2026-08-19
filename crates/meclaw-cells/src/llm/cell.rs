@@ -84,7 +84,15 @@ async fn run_responses_lane(
 
     let body_text = match cell.params.auth {
         AuthMode::ApiKey => {
-            let bearer = cell.params.api_key.as_deref().unwrap_or_default();
+            // An empty api_key is no api_key (GH #271) — `None` here means the
+            // call goes out with no `Authorization` header at all. Same repair
+            // as `mcp` (#268) and `web_search` (#270): `parse` rejects a
+            // MISSING key, but `${LOCAL_LLM_API_KEY}` resolving to `""` is a
+            // deliberate keyless setup (an OpenAI-compatible server on
+            // localhost ignores the header), and against such an endpoint a
+            // bearer with nothing after it can be a flat rejection that reads
+            // as a broken provider.
+            let bearer = cell.params.api_key.as_deref().filter(|s| !s.is_empty());
             let mut headers = translate_responses::build_responses_headers(&cell.params, None);
             headers.extend(attribution);
             let (result, timings) = wire::call_responses_timed(
@@ -169,8 +177,18 @@ async fn call_with_oauth(
             translate_responses::build_responses_headers(&cell.params, account.as_deref());
         headers.extend(attribution.to_vec());
         async move {
-            wire::call_responses_timed(&cell.http, url, &bearer, &headers, request_json, timeout)
-                .await
+            // The broker's token goes through verbatim: it never crossed a
+            // params boundary, so the GH #271 emptiness rule (which lives at
+            // the `params.api_key` call sites) does not apply to it.
+            wire::call_responses_timed(
+                &cell.http,
+                url,
+                Some(&bearer),
+                &headers,
+                request_json,
+                timeout,
+            )
+            .await
         }
     };
 
@@ -404,17 +422,44 @@ async fn reject_system_write(
     input_messages: Vec<Value>,
     started_at_unix_ms: i64,
 ) {
+    reject_invalid_system(
+        sink,
+        reply_target,
+        reject.reason(),
+        reject.slot(),
+        &reject.detail(),
+        input_messages,
+        started_at_unix_ms,
+    )
+    .await;
+}
+
+/// Refuse a system write, log it value-free, and answer `invalid_input`.
+///
+/// Shared by the GH #118 gate rejects and the GH #264 marker shape errors:
+/// both refuse the WHOLE body (the `messages[]` half included) before anything
+/// is written, and both answer the same way — the sender asked for something
+/// it may not have, or for something with no reading.
+async fn reject_invalid_system(
+    sink: &OutputSink,
+    reply_target: meclaw_core::Path,
+    reason: &str,
+    slot: Option<&str>,
+    detail: &str,
+    input_messages: Vec<Value>,
+    started_at_unix_ms: i64,
+) {
     tracing::warn!(
         target: "meclaw::llm::system_gate",
-        reason = reject.reason(),
-        slot = reject.slot().unwrap_or("-"),
-        "refused a write into the persistent system tree (GH #118)"
+        reason,
+        slot = slot.unwrap_or("-"),
+        "refused a write into the persistent system tree (GH #118/#264)"
     );
     output::emit_error(
         sink,
         reply_target,
         "invalid_input",
-        &reject.detail(),
+        detail,
         "parse",
         input_messages,
         started_at_unix_ms,
@@ -653,17 +698,44 @@ impl StatefulCell for LlmCell {
             // Steps 2+3: flatten system.* into leaves and persist BOTH
             // system + optional messages atomically in one transaction via
             // `system_first_persist`. Q2 system-first order.
-            let system_leaves: Vec<(String, meclaw_core::serde_json::Value)> = match system {
-                Some(sys) => state::flatten_to_leaves(sys, ""),
-                None => Vec::new(),
+            // GH #264: the same walk also reads the `$replace` marker, which
+            // names the roots this message revokes. A malformed marker is a
+            // shape error of the body and refuses the whole write — a marker
+            // that were silently ignored would hand the writer a revocation
+            // that never happened.
+            let system_write = match system {
+                Some(sys) => match state::parse_system_write(sys) {
+                    Ok(w) => w,
+                    Err(detail) => {
+                        reject_invalid_system(
+                            sink,
+                            reply_target,
+                            "malformed_replace_marker",
+                            None,
+                            &detail,
+                            messages_array.unwrap_or_default(),
+                            started_at_unix_ms,
+                        )
+                        .await;
+                        return;
+                    }
+                },
+                None => state::SystemWrite::default(),
             };
+            let system_leaves = system_write.leaves;
+            let replace_roots = system_write.replace_roots;
 
             // GH #118: the write gate in front of the persistent system tree.
             // The slot-path and per-leaf-size halves are pure and run HERE, so a
             // refused write never opens a transaction at all. The slot budget
             // needs the current tree and runs inside `system_first_persist`.
+            // GH #264 adds the replace roots to the pure half: a root reaches
+            // paths this message does not name, so it is gated in its own right.
             let gate = system_gate::SystemGate::from_params(&self.params);
-            if let Err(reject) = gate.check_leaves(&system_leaves) {
+            let pure_verdict = gate
+                .check_leaves(&system_leaves)
+                .and_then(|()| gate.check_replace_roots(&replace_roots));
+            if let Err(reject) = pure_verdict {
                 reject_system_write(
                     sink,
                     reply_target,
@@ -681,6 +753,7 @@ impl StatefulCell for LlmCell {
                 .map(|m| meclaw_core::serde_json::Value::Array(m.clone()));
             let persist_result = {
                 let sys_leaves = system_leaves.clone();
+                let roots = replace_roots.clone();
                 let msgs_val = messages_value.clone();
                 let gate = gate.clone();
                 db.call(move |conn| {
@@ -688,6 +761,7 @@ impl StatefulCell for LlmCell {
                         conn,
                         &gate,
                         &sys_leaves,
+                        &roots,
                         msgs_val.as_ref(),
                         now_secs,
                     )
@@ -996,9 +1070,11 @@ impl StatefulCell for LlmCell {
             let (wire_result, wire_timings) = wire::call_openai_timed(
                 &self.http,
                 &url,
-                // `parse` guarantees `api_key` is present whenever this cell
-                // runs the api_key/chat-completions lane.
-                self.params.api_key.as_deref().unwrap_or_default(),
+                // `parse` guarantees `api_key` is PRESENT whenever this cell
+                // runs the api_key/chat-completions lane — but present may
+                // mean empty, and an empty credential is an absent one
+                // (GH #271, see `run_responses_lane` for the reasoning).
+                self.params.api_key.as_deref().filter(|s| !s.is_empty()),
                 &attribution_headers,
                 &request_json,
                 timeout,

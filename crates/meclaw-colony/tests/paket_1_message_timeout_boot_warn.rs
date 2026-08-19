@@ -134,7 +134,9 @@ impl CellFactory for SpawnRecorderFactory {
                     None,
                     None,
                     None,
-                 None,)
+                 None,
+                 Default::default(),
+                 )
                 .await;
             });
             (tx, join, peace_rx, backstop_rx)

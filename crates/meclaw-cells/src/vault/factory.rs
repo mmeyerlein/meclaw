@@ -71,6 +71,8 @@ impl CellFactory for VaultCellFactory {
         let respawn_inbox_tx = colony_inbox_tx.clone();
         let respawn_blob = blob_store.clone();
         let respawn_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let respawn_write_surface = contract.write_surface;
         let respawn_neighbourhood = neighbourhood.clone();
         let respawn_capacity = mailbox_capacity;
         let respawn: RespawnFn = Box::new(
@@ -103,6 +105,7 @@ impl CellFactory for VaultCellFactory {
                         db,
                         respawn_blob.clone(),
                         respawn_consumes.clone(),
+                        respawn_write_surface,
                     ),
                     Err(reason) => meclaw_colony::build_stateless_task(
                         respawn_path.clone(),
@@ -134,6 +137,8 @@ impl CellFactory for VaultCellFactory {
         let wake_watcher_inbox = colony_inbox_tx.clone();
         let wake_blob = blob_store.clone();
         let wake_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let wake_write_surface = contract.write_surface;
         let wake_neighbourhood = neighbourhood.clone();
         let wake: WakeFn = Box::new(move |receiver: mpsc::Receiver<Message>| {
             // Same class as the respawn: synchronous, inside the colony task.
@@ -157,6 +162,7 @@ impl CellFactory for VaultCellFactory {
                     db,
                     wake_blob.clone(),
                     wake_consumes.clone(),
+                    wake_write_surface,
                 ),
                 Err(reason) => meclaw_colony::build_stateless_task(
                     wake_path.clone(),

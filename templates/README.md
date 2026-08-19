@@ -68,25 +68,43 @@ Which lanes a hive accepts and emits is in its `params.contract`. If you find yo
 a segment after the hive name, the answer is not a longer address -- it is a lane whose name
 says what you wanted, and a door inside the hive that knows where that belongs.
 
+### Writing a cell a tool round will call
+
+A tool cell answers on the collector's `in_tool` lane, and what it may hand back is its
+**`messages[]`**: one `tool_result` turn per call it answers, each carrying the `id` of
+that call. All of them travel -- a tool that got a bundle of calls in one message may
+answer the whole bundle in one message.
+
+Nothing else travels. A `system` slot or a top-level body slot on that lane is dropped,
+and deliberately so: `system.*` reaching an `llm` cell is upserted into that cell's own
+`cell.db` and stands in the prompt until something overwrites the same slot path, which
+makes it durable state of the agent rather than evidence of one round. A tool with
+structure to return serialises it into the text of its result; a producer that means to
+install a lasting constraint addresses the `llm` cell's `system` tree on a lane of its own
+instead. The long version, with the reasoning and the worked example, is
+[`collector/README.md` § What a tool result may carry](collector/README.md).
+
 ## The library
 
 | Template | Version | What it is |
 |---|---|---|
 | [`archive-bridge`](archive-bridge/) | 1.0.0 | Turns an llm's last answer into a store-native insert -- and swallows the store's reply echo, so an append-only archive costs one cell instead of a loop. |
-| [`canvy`](canvy/) | 0.3.0 | An interactive canvas the colony serves itself over HTTP: a `code` cell draws the picture server-side, the browser owns only the drag. The first thing it draws is the colony. Ask it for a fresh snapshot on `in_refresh`; the drawn page leaves on `surface`. |
-| [`cogny`](cogny/) | 3.0.0 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. |
-| [`collector`](collector/) | 2.0.0 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
+| [`canvy`](canvy/) | 0.3.1 | An interactive canvas the colony serves itself over HTTP: a `code` cell draws the picture server-side, the browser owns only the drag. The first thing it draws is the colony. Ask it for a fresh snapshot on `in_refresh`; the drawn page leaves on `surface`. |
+| [`channel`](channel/) | 1.0.0 | One channel as one hive: the connector that owns the chat credential, plus the slot its current `talky` generation occupies. The hive IS the channel -- the identity that stays -- and the generations inside it come and go by one `swap_nodes`, the older ones disconnected and preserved. Ships with the slot occupied by a terminal, so every lane is true from instantiation on. |
+| [`cogny`](cogny/) | 3.0.5 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. Asked on `in_turn`; answers on `answer`, calls tools on `tool`, asks a memory on `recall` and drains a failed inference on `error`. |
+| [`collector`](collector/) | 2.0.4 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
 | [`dispatcher`](dispatcher/) | 1.0.0 | The fan-out half of a tool loop: splits a brain's `tool_call` bundle into one routable message per call, announces the round to the fan-in, and passes a final answer through. |
-| [`door`](door/) | 1.0.0 | The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, an empty hop -- and puts the turn on a named lane, carrying the channel identity with it. |
-| [`firewall`](firewall/) | 2.0.0 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
-| [`memory-drain`](memory-drain/) | 2.0.0 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
-| [`memory-hive`](memory-hive/) | 2.1.0 | A member's long-term memory as a hive — one source of truth that every agent of that member reads: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Eleven cells, no Rust. |
-| [`receptionist`](receptionist/) | 2.0.0 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
+| [`door`](door/) | 1.0.1 | The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, an empty hop -- and puts the turn on a named lane, carrying the channel identity with it. |
+| [`firewall`](firewall/) | 2.0.1 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
+| [`memory-drain`](memory-drain/) | 2.0.2 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
+| [`memory-hive`](memory-hive/) | 2.2.1 | A member's long-term memory as a hive — one source of truth that every agent of that member reads: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Twelve cells, no Rust. Since 2.2.0 the remembered content can also leave the hive as a versioned document and enter another running one, idempotently -- the template-level answer to #243, while #253 is the substrate one. |
+| [`receptionist`](receptionist/) | 2.0.2 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
 | [`retry`](retry/) | 1.0.0 | A bounded retry loop around one tool, as a single cell. At the cap the give-up lane hands the last error on with its `error_code` intact. |
-| [`session-keeper`](session-keeper/) | 2.0.0 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
-| [`steward`](steward/) | 2.0.0 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
+| [`session-keeper`](session-keeper/) | 2.0.1 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
+| [`steward`](steward/) | 2.0.1 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a mutation through the normal lane, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
 | [`summarizer`](summarizer/) | 2.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
-| [`talky`](talky/) | 3.0.0 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`talky`](talky/) | 3.0.5 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`telegram-connector`](telegram-connector/) | 1.0.0 | A Telegram chat as one address: one sealed hive around the credential-bearing `proxy` cell, taken verbatim from `bot-basic@2.0.0`. A turn in from the chat on `turn`, a finished answer back on `in_reply`, the connector's own failures on `error`. No persona, no model, no answer of its own. |
 | [`vault`](vault/) | 1.0.0 | A secret store with no operation that returns a secret -- not a policy over a store, but a cell type whose route surface has no read on it. Secrets enter over the user channel only; the broker may ask it to USE one. |
 | [`terminal`](terminal/) | 1.0.0 | The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane without a destination yet still HAS one -- the message arrives, the trace records it, and the dead-letter queue stays empty. |
 

@@ -152,6 +152,8 @@ impl CellFactory for StoreCellFactory {
         let respawn_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let respawn_write_surface = contract.write_surface;
         let respawn: RespawnFn = Box::new(
             move || -> (
                 mpsc::Sender<Message>,
@@ -231,6 +233,7 @@ impl CellFactory for StoreCellFactory {
                     db,
                     respawn_blob.clone(),
                     respawn_consumes.clone(),
+                    respawn_write_surface,
                 );
                 // Phase-13.5 Slice 4 T6: re-notify the colony of the fresh stop
                 // pair (the frozen RespawnFn 3-tuple cannot return it). try_send,
@@ -256,6 +259,8 @@ impl CellFactory for StoreCellFactory {
         let wake_blob = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
+        // GH #260: the substrate half of the write boundary travels with them.
+        let wake_write_surface = contract.write_surface;
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             // Issue #57: NOTHING on this path may panic. The closure runs
             // synchronously inside the colony task, so a panic here does not
@@ -349,6 +354,7 @@ impl CellFactory for StoreCellFactory {
                     db,
                     wake_blob.clone(),
                     wake_consumes.clone(),
+                    wake_write_surface,
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

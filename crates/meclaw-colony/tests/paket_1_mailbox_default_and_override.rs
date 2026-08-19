@@ -94,7 +94,9 @@ impl CellFactory for MailboxRecorderFactory {
                         None,
                         None,
                         None,
-                     None,)
+                        None,
+                        Default::default(),
+                    )
                     .await;
                 });
                 (tx, join, peace_rx, backstop_rx)

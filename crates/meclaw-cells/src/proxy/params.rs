@@ -114,9 +114,15 @@ impl ProxyParams {
     /// W7-tripwire rejected with both field names + comparison values.
     pub fn parse(v: &JsonValue) -> Result<Self, String> {
         let obj = v.as_object().ok_or("params: must be object")?;
+        // An EMPTY token is not a token (GH #270). `${TELEGRAM_BOT_TOKEN}`
+        // without a default already fails loudly when the variable is unset;
+        // `TELEGRAM_BOT_TOKEN=` in an .env slipped through and left the poller
+        // asking `.../bot/getUpdates` — a 404 loop against a bot that has no
+        // name. Same message as the absent case: same mistake, same fix.
         let bot_token = obj
             .get("bot_token")
             .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
             .ok_or("bot_token: required (use ${TELEGRAM_BOT_TOKEN})")?
             .to_string();
         let emit_to_s = obj

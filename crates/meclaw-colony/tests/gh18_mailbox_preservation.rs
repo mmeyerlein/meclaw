@@ -79,6 +79,7 @@ async fn a_panicking_stateful_cell_hands_its_buffered_messages_to_the_colony() {
         None, // death_ack
         None, // blob_store
         None, // consumes
+        Default::default(),
     ));
 
     let outcome = tokio::time::timeout(MARKER, join)
@@ -141,6 +142,7 @@ async fn an_io_end_abort_does_not_take_the_buffered_message_with_it() {
         None, // death_ack
         None, // blob_store
         None, // consumes
+        Default::default(),
     ));
 
     // Wait until the handler is inside `handle()` — only then is the second

@@ -549,6 +549,297 @@ fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
     assert!(out[0]["system"]["memory"]["recall"].is_null());
 }
 
+/// GH #259, the SAME class on the other slot family: a recall that came back
+/// with nothing has to overwrite the previous turn's bundle, because
+/// `system.memory.recall` is a fixed path that the brain cell upserts and
+/// never expires on its own. A bundle from a turn ago, presented as this
+/// turn's memory, is the worse half of the same bug.
+///
+/// Two rounds, and the second one is the test.
+#[test]
+fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
+    let over = [("memory_tier", "0")];
+    let window = leg_window_row(
+        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+        0,
+        0,
+    );
+    let leg = |payload: serde_json::Value| {
+        serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
+                           "turn": payload.to_string(), "fired": 0})
+    };
+
+    let full = leg(serde_json::json!({
+        "system": {},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": "MEMORY (tier 0)\n- belief: the editor is helix"}]
+    }));
+    let first = emit_with(
+        &over,
+        reply_doc(
+            "fire",
+            "select",
+            2,
+            serde_json::json!([window.clone(), full]),
+        ),
+    );
+    assert_eq!(
+        first[0]["system"]["memory"]["recall"]["text"],
+        "MEMORY (tier 0)\n- belief: the editor is helix"
+    );
+
+    // Round two: the leg fired and came back empty.
+    let empty = leg(serde_json::json!({"system": {}, "messages": []}));
+    let second = emit_with(
+        &over,
+        reply_doc("fire", "select", 2, serde_json::json!([window, empty])),
+    );
+    assert_eq!(
+        second[0]["system"]["memory"]["recall"]["text"], "",
+        "the empty bundle must be SENT -- an omitted path leaves the previous \
+         turn's memory standing in the prompt: {}",
+        second[0]
+    );
+}
+
+/// GH #266, the half #259 could not reach: the `json` form of the recall
+/// bundle. Its sub-keys are named by the memory hive per bundle, so the
+/// collector cannot name the previous turn's paths empty — an upsert per slot
+/// path leaves a key nobody sends standing in the prompt. The repair is the GH
+/// #264 marker on the ONE node the collector owns, `system.memory`: below it,
+/// exactly what this message carries holds.
+///
+/// Two rounds, and the second one is the test — a pin on the first round is
+/// green with and without the repair, the same lesson as GH #259.
+#[test]
+fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
+    let over = [("memory_tier", "0"), ("memory_form", "json")];
+    let window = leg_window_row(
+        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+        0,
+        0,
+    );
+    let leg = |payload: serde_json::Value| {
+        serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
+                           "turn": payload.to_string(), "fired": 0})
+    };
+
+    // Round one: the hive names two keys.
+    let two = leg(serde_json::json!({
+        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"},
+                              "answer": {"text": "helix"}}},
+        "messages": []
+    }));
+    let first = emit_with(
+        &over,
+        reply_doc(
+            "fire",
+            "select",
+            2,
+            serde_json::json!([window.clone(), two]),
+        ),
+    );
+    assert_eq!(first[0]["system"]["memory"]["answer"]["text"], "helix");
+
+    // Round two: the same leg, one key. The other is not named and cannot be.
+    let one = leg(serde_json::json!({
+        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[1]}"}}},
+        "messages": []
+    }));
+    let second = emit_with(
+        &over,
+        reply_doc("fire", "select", 2, serde_json::json!([window, one])),
+    );
+    let mem = &second[0]["system"]["memory"];
+    assert_eq!(
+        mem["$replace"],
+        serde_json::json!(true),
+        "without the marker the brain keeps `memory.answer` from the turn \
+         before, and the collector has no path to name it empty: {}",
+        second[0]
+    );
+    assert_eq!(mem["bundle"]["text"], "{\"beliefs\":[1]}");
+    assert!(
+        mem.get("answer").is_none(),
+        "the collector must not invent the key it is revoking: {}",
+        second[0]
+    );
+}
+
+/// GH #266 — the marker covers BOTH legs, because both hang under the same
+/// node. One marker, no second one, and the `text` form keeps the fixed path
+/// GH #259 gave it.
+#[test]
+fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
+    let over = [("memory_tier", "0"), ("memory_form", "both")];
+    let window = leg_window_row(
+        serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+        0,
+        0,
+    );
+    let leg = |payload: serde_json::Value| {
+        serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
+                           "turn": payload.to_string(), "fired": 0})
+    };
+
+    let two = leg(serde_json::json!({
+        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"},
+                              "answer": {"text": "helix"}}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": "MEMORY (tier 0)"}]
+    }));
+    let first = emit_with(
+        &over,
+        reply_doc(
+            "fire",
+            "select",
+            2,
+            serde_json::json!([window.clone(), two]),
+        ),
+    );
+    assert_eq!(first[0]["system"]["memory"]["answer"]["text"], "helix");
+    assert_eq!(
+        first[0]["system"]["memory"]["recall"]["text"],
+        "MEMORY (tier 0)"
+    );
+
+    let one = leg(serde_json::json!({
+        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[1]}"}}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": "MEMORY (tier 0) again"}]
+    }));
+    let second = emit_with(
+        &over,
+        reply_doc("fire", "select", 2, serde_json::json!([window, one])),
+    );
+    let mem = &second[0]["system"]["memory"];
+    assert_eq!(
+        mem["$replace"],
+        serde_json::json!(true),
+        "one marker above both legs, or the json leg keeps its stale key: {}",
+        second[0]
+    );
+    assert!(mem.get("answer").is_none(), "{}", second[0]);
+    assert_eq!(
+        mem["recall"]["text"], "MEMORY (tier 0) again",
+        "the readable leg keeps the FIXED path GH #259 gave it, below the \
+         marked node instead of beside a second marker"
+    );
+    assert!(
+        mem["recall"].get("$replace").is_none(),
+        "the readable leaf carries no marker of its own: {}",
+        second[0]
+    );
+}
+
+/// GH #266 counter-pin, and the one that matters more than the first: a
+/// replace that reaches too far is worse than the defect it cures. The marker
+/// sits on `system.memory` — the node the collector fills wholesale every turn
+/// — and on nothing else. `system.consult` is a fixed path the collector
+/// revokes the GH #259 way and must stay untouched; the `system` node itself
+/// carries the EMPTY root, which would revoke every other writer's slot in the
+/// brain, `system.instructions` and `system.handover` included.
+#[test]
+fn the_marker_sits_on_the_memory_node_and_on_nothing_else() {
+    let over = [("memory_tier", "0"), ("memory_form", "both")];
+    let rows = serde_json::json!([
+        leg_window_row(
+            serde_json::json!([{"role": "user", "text": "and my editor?",
+                                "consult_id": "c1"}]),
+            0,
+            0
+        ),
+        {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
+         "turn": serde_json::json!({
+             "system": {"memory": {"bundle": {"text": "{}"}}},
+             "messages": [{"origin": "tool", "type": "tool_result",
+                           "id": "recall", "text": "MEMORY (tier 0)"}]
+         }).to_string()}
+    ]);
+    let out = emit_with(&over, reply_doc("fire", "select", 2, rows));
+    let sys = &out[0]["system"];
+    assert_eq!(sys["memory"]["$replace"], serde_json::json!(true));
+    assert!(
+        sys.get("$replace").is_none(),
+        "a marker on the `system` node has the EMPTY root and revokes every \
+         slot in the brain, including the ones the collector never wrote: {}",
+        out[0]
+    );
+    assert_eq!(
+        sys["consult"]["open"],
+        serde_json::json!(["c1"]),
+        "the consult slot travels unchanged (GH #259): {}",
+        out[0]
+    );
+    assert!(
+        sys["consult"].get("$replace").is_none(),
+        "a fixed path needs no marker, and one here would revoke a subtree the \
+         collector does not own: {}",
+        out[0]
+    );
+}
+
+/// GH #266 — the bare marker as the honest pure revocation. In the `json` form
+/// there is no fixed path to send empty, so a leg that found nothing has
+/// nothing to write and everything to withdraw. Before the marker this
+/// projection carried no `system.memory` at all, and the previous turn's
+/// bundle stood in the prompt untouched.
+///
+/// The `readable` leg keeps its empty leaf instead (see
+/// `a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before`):
+/// that path is FIXED and collector-owned, and its owner must not change with
+/// what the hive happened to return.
+#[test]
+fn a_json_bundle_that_found_nothing_revokes_with_a_bare_marker() {
+    let over = [("memory_tier", "0"), ("memory_form", "json")];
+    let rows = serde_json::json!([
+        leg_window_row(
+            serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+            0,
+            0
+        ),
+        {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
+         "turn": serde_json::json!({"system": {}, "messages": []}).to_string()}
+    ]);
+    let out = emit_with(&over, reply_doc("fire", "select", 2, rows));
+    assert_eq!(
+        out[0]["system"]["memory"],
+        serde_json::json!({"$replace": true}),
+        "an empty json bundle is a revocation and nothing else: {}",
+        out[0]
+    );
+}
+
+/// GH #266 — the marker is the collector's own statement about a node it owns,
+/// so a bundle key of the same name cannot overwrite it with data. `$` is the
+/// substrate's reserved namespace inside a system subtree; the collector
+/// stamps its marker after the legs, which is the only reason a hive that
+/// emits `$replace` cannot silently switch the revocation off.
+#[test]
+fn a_bundle_key_cannot_overwrite_the_marker() {
+    let over = [("memory_tier", "0"), ("memory_form", "json")];
+    let rows = serde_json::json!([
+        leg_window_row(
+            serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+            0,
+            0
+        ),
+        {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
+         "turn": serde_json::json!({
+             "system": {"memory": {"$replace": false,
+                                   "bundle": {"text": "{}"}}},
+             "messages": []
+         }).to_string()}
+    ]);
+    let out = emit_with(&over, reply_doc("fire", "select", 2, rows));
+    assert_eq!(
+        out[0]["system"]["memory"]["$replace"],
+        serde_json::json!(true),
+        "a bundle that names the marker must not be able to disarm it: {}",
+        out[0]
+    );
+}
+
 #[test]
 fn the_tool_round_fires_once_and_re_enters_through_the_same_seam() {
     let calls = serde_json::json!([
@@ -621,6 +912,91 @@ fn the_tool_round_fires_once_and_re_enters_through_the_same_seam() {
     assert_eq!(
         msg["messages"][3]["id"], "c1",
         "PLAIN order: asked, then answered"
+    );
+}
+
+// ============================================ WHAT A RESULT MAY CARRY (#252)
+
+/// A tool result is its `messages[]` -- all of it.
+///
+/// Two `tool_result` turns in ONE message answer two calls, and the fan-in has
+/// to see both. The lane used to keep `messages[0]` and nothing else, so the
+/// second call stayed open and the round waited for a result that had already
+/// arrived until `round_idle_ms` expired and a synthetic stand-in closed it.
+/// The row the lane writes is fed straight back into the round check here: what
+/// the lane records IS what the fan-in reads, so the two cannot disagree.
+#[test]
+fn a_result_that_answers_two_calls_in_one_message_closes_both() {
+    let calls = serde_json::json!([
+        {"origin": "assistant", "type": "tool_call", "id": "c1", "text": "{}"},
+        {"origin": "assistant", "type": "tool_call", "id": "c2", "text": "{}"}
+    ]);
+    let out = emit(lane_doc(
+        "in_tool",
+        serde_json::json!([
+            {"origin": "tool", "type": "tool_result", "id": "c1", "text": "a"},
+            {"origin": "tool", "type": "tool_result", "id": "c2", "text": "b"}
+        ]),
+    ));
+    assert_eq!(out.len(), 1, "one result, one row: {out:?}");
+    let row = op_of(&out[0])["row"].clone();
+    assert_eq!(row["role"], "tool");
+    let stored: serde_json::Value =
+        serde_json::from_str(row["turn"].as_str().expect("turn")).expect("stored turn");
+    assert_eq!(
+        stored.as_array().map(|a| a.len()),
+        Some(2),
+        "both turns of the result are in the row: {stored}"
+    );
+
+    let asst = serde_json::json!({"turn_id": "t1", "iter": 0, "role": "assistant",
+                                  "turn": calls.to_string(), "fired": 0});
+    let out = emit(reply_doc(
+        "round-check",
+        "select",
+        2,
+        serde_json::json!([asst, row]),
+    ));
+    assert!(
+        !out.is_empty(),
+        "the round parked on a call that was answered in the same breath"
+    );
+    let op = op_of(&out[0]);
+    assert_eq!(op["operation"], "update");
+    assert_eq!(op["where"]["role"], "assistant");
+    assert_eq!(op["set"]["fired"], 1, "the round fired: {op}");
+}
+
+/// And nothing else: a `system` slot on a tool result stays at the door.
+///
+/// `in_bundle` keeps `system` and is not the precedent it looks like. What
+/// leaves the seam in `system.*` is UPSERTed into the brain cell's own `cell.db`
+/// and stands in the prompt until something overwrites that exact slot path, so
+/// it is durable state of the agent rather than evidence of one round. The
+/// recall bundle survives that treatment because it is re-sent under a fixed
+/// path on every turn; a single tool result gets no second chance to correct
+/// itself, and a brief about one subject would still be there three subjects
+/// later. A tool with something to say says it in the text of its result.
+#[test]
+fn a_tool_result_leaves_its_system_slot_at_the_door() {
+    let mut doc = lane_doc(
+        "in_tool",
+        serde_json::json!([{"origin": "tool", "type": "tool_result", "id": "c1",
+                            "text": "the receipt line"}]),
+    );
+    doc["system"] = serde_json::json!({"identity": {"text": "a durable claim"}});
+    let out = emit(doc);
+    assert_eq!(out.len(), 1);
+    let stored: serde_json::Value =
+        serde_json::from_str(op_of(&out[0])["row"]["turn"].as_str().expect("turn"))
+            .expect("stored turn");
+    assert_eq!(
+        stored["text"], "the receipt line",
+        "the result itself is untouched: {stored}"
+    );
+    assert!(
+        !stored.to_string().contains("a durable claim"),
+        "the system slot rode into the round row: {stored}"
     );
 }
 
@@ -2170,14 +2546,70 @@ fn the_open_consults_of_the_window_reach_the_brain_as_data() {
     assert_eq!(msgs[2]["text"], "which city?");
 }
 
+/// GH #259 -- the second half of the same lane: a correlation that was handed
+/// out has to be taken back, and `system.*` is the one slot family where
+/// "stop sending it" does not do that. The receiving `llm` cell UPSERTS per
+/// slot path into its own `cell.db`, so a path that is not sent is a path that
+/// is not touched: an id set once outlives every window that no longer holds
+/// the event it belongs to.
+///
+/// Two rounds, and the SECOND one is the test. Round one only shows that the
+/// slot is written, which was never in doubt.
 #[test]
-fn a_window_without_advice_carries_no_consult_slot() {
+fn a_consult_that_left_the_window_is_revoked_in_the_next_projection() {
+    let with_advice = serde_json::json!([
+        {"role": "user", "text": "what is the weather?"},
+        {"role": "advice", "text": "which city?", "consult_id": "k-7"}
+    ]);
+    let first = emit(reply_doc(
+        "fire",
+        "select",
+        1,
+        serde_json::json!([leg_window_row(with_advice, 0, 0)]),
+    ));
+    assert_eq!(
+        first[0]["system"]["consult"]["open"],
+        serde_json::json!(["k-7"]),
+        "round one: the id travels while its event is in the window"
+    );
+
+    // Round two: the window has rolled on and the advice turn is gone. The
+    // consultation is closed, and the projection has to SAY so.
+    let without_advice = serde_json::json!([
+        {"role": "user", "text": "and tomorrow?"},
+        {"role": "assistant", "text": "sunny"}
+    ]);
+    let second = emit(reply_doc(
+        "fire",
+        "select",
+        1,
+        serde_json::json!([leg_window_row(without_advice, 0, 0)]),
+    ));
+    assert_eq!(
+        second[0]["system"]["consult"]["open"],
+        serde_json::json!([]),
+        "an omitted path is an untouched path -- the empty slot must be SENT: {}",
+        second[0]
+    );
+    // `flatten_to_leaves` stops at `text`: a slot offered WITHOUT one produces
+    // no leaf, hence no upsert, and the stale row would stand exactly as
+    // before. The empty rendering is what makes the overwrite happen.
+    assert_eq!(
+        second[0]["system"]["consult"]["text"], "",
+        "the emptied slot still needs its `text` leaf -- that is what gets overwritten"
+    );
+}
+
+#[test]
+fn a_window_without_advice_carries_the_consult_slot_emptied() {
     let turns = serde_json::json!([{"role": "user", "text": "hi"}]);
     let rows = serde_json::json!([leg_window_row(turns, 0, 0)]);
     let out = emit(reply_doc("fire", "select", 1, rows));
-    assert!(
-        out[0].get("system").is_none(),
-        "no leg, no slot: {}",
+    assert_eq!(
+        out[0]["system"],
+        serde_json::json!({"consult": {"open": [], "text": ""}}),
+        "no memory leg, so `consult` is the whole tree -- and it is the EMPTY \
+         one: a slot that is never sent empty is never revoked: {}",
         out[0]
     );
 }

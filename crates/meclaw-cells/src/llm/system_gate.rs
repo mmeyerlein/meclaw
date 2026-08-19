@@ -77,6 +77,16 @@ pub(crate) enum GateReject {
         /// The configured cap.
         max: usize,
     },
+    /// A GH #264 replace root is not under any declared prefix. Checked
+    /// separately from the leaves because the root reaches paths this message
+    /// does NOT name: a writer pinned to `memory.recall` that could set the
+    /// marker one level up would take `memory.identity` with it.
+    RootNotWritable {
+        /// Dotted replace root of the refused write; empty = the whole tree.
+        root: String,
+        /// The declared prefixes, for the reject detail.
+        declared: Vec<String>,
+    },
     /// The write would push the tree past `system_max_slots` distinct slots.
     TooManySlots {
         /// How many distinct slots the tree would hold after the write.
@@ -108,6 +118,21 @@ impl GateReject {
                  limit of {max} (GH #118). The write is refused whole — a system leaf is never \
                  truncated, because a half prompt is worse than none. Nothing was written"
             ),
+            GateReject::RootNotWritable { root, declared } => {
+                let list = declared
+                    .iter()
+                    .map(|p| format!("'{p}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "system replace root '{}': not writable by message (GH #264/#118). A \
+                     `$replace` marker revokes every path below its node, including paths this \
+                     message does not name, so the ROOT has to be writable too — not only the \
+                     leaves. This cell declares `system_writable` = [{list}]. Nothing was \
+                     written and nothing was deleted",
+                    crate::llm::state::display_root(root)
+                )
+            }
             GateReject::TooManySlots { would_be, max } => format!(
                 "system tree would hold {would_be} slots, over the `system_max_slots` limit of \
                  {max} (GH #118). The persistent system tree is rebuilt into every prompt; an \
@@ -121,6 +146,7 @@ impl GateReject {
         match self {
             GateReject::NotWritable { .. } => "not_writable",
             GateReject::LeafTooLarge { .. } => "leaf_too_large",
+            GateReject::RootNotWritable { .. } => "root_not_writable",
             GateReject::TooManySlots { .. } => "too_many_slots",
         }
     }
@@ -131,6 +157,7 @@ impl GateReject {
             GateReject::NotWritable { slot, .. } | GateReject::LeafTooLarge { slot, .. } => {
                 Some(slot)
             }
+            GateReject::RootNotWritable { root, .. } => (!root.is_empty()).then_some(root.as_str()),
             GateReject::TooManySlots { .. } => None,
         }
     }
@@ -222,6 +249,30 @@ impl SystemGate {
                     slot: slot.clone(),
                     bytes,
                     max: self.max_leaf_bytes,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Check every GH #264 replace root against the allowlist.
+    ///
+    /// Same segment-boundary rule the leaves get, applied to the root itself:
+    /// a root must sit AT or UNDER a declared prefix. The consequence at the
+    /// top is deliberate — a marker on the `system` node itself has the empty
+    /// root, which is under no prefix, so a cell that declares an allowlist can
+    /// never be cleared wholesale by one message. Without a declaration (the
+    /// default) every root passes, exactly as every slot path does.
+    ///
+    /// Pure, all-or-nothing, roots sorted so the verdict is deterministic.
+    pub(crate) fn check_replace_roots(&self, roots: &[String]) -> Result<(), GateReject> {
+        let mut sorted: Vec<&String> = roots.iter().collect();
+        sorted.sort();
+        for root in sorted {
+            if !self.is_writable(root) {
+                return Err(GateReject::RootNotWritable {
+                    root: root.clone(),
+                    declared: self.writable.clone(),
                 });
             }
         }
@@ -391,5 +442,62 @@ mod tests {
             ..SystemGate::default()
         };
         g.check_slot_budget(3, 0).unwrap();
+    }
+
+    // ───── GH #264: the replace root is gated in its own right ─────
+
+    /// Without a declaration every root passes, exactly as every slot path
+    /// does — including the empty one, which is the operator's full reset.
+    #[test]
+    fn the_default_gate_accepts_any_replace_root() {
+        let g = SystemGate::default();
+        g.check_replace_roots(&["memory.recall".to_string(), String::new()])
+            .unwrap();
+    }
+
+    /// A root at or under a declared prefix is the writer's own subtree.
+    #[test]
+    fn a_declared_prefix_covers_itself_and_what_is_below_it() {
+        let g = gate_with(&["memory"]);
+        g.check_replace_roots(&["memory".to_string()]).unwrap();
+        g.check_replace_roots(&["memory.recall".to_string()])
+            .unwrap();
+    }
+
+    /// The rule that makes this check necessary: a writer pinned to
+    /// `memory.recall` must not be able to set the marker one level up and take
+    /// `memory.identity` with it — even though every LEAF it sends is allowed.
+    #[test]
+    fn a_root_above_the_declared_prefix_is_refused() {
+        let err = gate_with(&["memory.recall"])
+            .check_replace_roots(&["memory".to_string()])
+            .unwrap_err();
+        assert!(
+            matches!(&err, GateReject::RootNotWritable { root, .. } if root == "memory"),
+            "{err:?}"
+        );
+        assert!(err.detail().contains("'memory'"), "{}", err.detail());
+    }
+
+    /// A cell that declares an allowlist can never be cleared wholesale by one
+    /// message: the empty root is under no prefix.
+    #[test]
+    fn the_whole_tree_root_is_refused_wherever_an_allowlist_exists() {
+        let err = gate_with(&["memory"])
+            .check_replace_roots(&[String::new()])
+            .unwrap_err();
+        assert_eq!(err.reason(), "root_not_writable");
+        assert_eq!(err.slot(), None, "a tree-wide reject names no slot");
+        assert!(err.detail().contains("<system>"), "{}", err.detail());
+    }
+
+    /// Segment boundary, same rule the leaves get.
+    #[test]
+    fn a_prefix_never_matches_mid_segment_for_a_root_either() {
+        assert!(
+            gate_with(&["memory"])
+                .check_replace_roots(&["memoryx".to_string()])
+                .is_err()
+        );
     }
 }

@@ -1,0 +1,62 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_reply",
+          "context": ["chat_id"],
+          "because": "one finished turn to say in the chat it came from; context.chat_id picks the chat, and without it the connector has no address"
+        }
+      ],
+      "emits": [
+        {
+          "route": "turn",
+          "because": "somebody wrote in the chat -- one user-origin turn, with the chat and the sender identity on the hop, for whatever screens or receives turns"
+        },
+        {
+          "route": "error",
+          "because": "the connector itself failed -- it could not read an inbound message or could not deliver an outbound one. Drain it: undrained, a chat that never got its answer looks like an agent that never answered"
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "in_reply",
+        "emits": "error",
+        "because": "a reply this connector could not deliver leaves on the error lane and nowhere else. Undrained, the one failure a chat surface has -- the answer that never arrived -- is invisible at exactly the end where somebody is waiting for it"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./proxy",
+          "condition": "has(hop.route) && hop.route == 'in_reply'"
+        },
+        {
+          "from": "./proxy",
+          "to": ".",
+          "condition": "!has(hop.error_code)",
+          "modifier": { "set_hop": { "route": "'turn'" } }
+        },
+        {
+          "from": "./proxy",
+          "to": ".",
+          "condition": "has(hop.error_code)",
+          "modifier": { "set_hop": { "route": "'error'" } }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of one chat connector: the credential-bearing proxy cell behind a sealed boundary. THE HIVE IS THE ADDRESS -- params.ports is empty, so no edge reaches the proxy and a caller names the hive plus a lane on hop.route.",
+    "use_when": "One per bot token. Instantiate with add_nodes and wire in_reply in / turn + error out at the HIVE path, in the same mutation.",
+    "not_in_scope": "No sender filter, no bot commands, no history, no persona.",
+    "contract_in": "in_reply -- the finished assistant turn, with the chat in context.chat_id.",
+    "contract_out": "turn -- one inbound chat message as a user turn. error -- the connector's own failure, which the parent MUST drain."
+  }
+}

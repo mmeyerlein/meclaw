@@ -77,6 +77,7 @@ async fn substrate_shutdown_on_mailbox_close_with_endless_long_poll() {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
 
     // Sanity: no immediate hang (the long poll hangs on the blackhole server).
@@ -137,6 +138,7 @@ async fn substrate_shutdown_during_backoff_sleep_terminates_promptly() {
         None, // death_ack
         None, // blob_store
         None,
+        Default::default(),
     ));
 
     // Wait until the I/O task is in the permanent sleep (1st request sent,

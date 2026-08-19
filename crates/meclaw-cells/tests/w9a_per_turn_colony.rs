@@ -181,31 +181,45 @@ fn main_config() -> Value {
         // Hive-Grenze): both `talky` and `drain` declare their lanes and their
         // doors, and reaching past those doors delivers twice — once to the
         // cell and once to a hive path this graph has no exit for.
+        // The batch edges, and the edges that owe the batch its provenance
+        // (#244/#269). `audience_set` says who was in the round and
+        // `speaker`/`agent_id` who said it; `channel` is not set here -- it
+        // travels from the connector seam above (`hop.chat_id` ->
+        // `context.channel`), exactly as it does in a real colony. This colony
+        // is one person talking to one agent in one room, so the round is those
+        // two and nothing wider. A `["*"]` here would make the suite blind to
+        // the very leak the gate exists to stop.
+        //
+        // They are declared HERE, at the door the batch enters by, and not on
+        // the port edge one hop later: the drain refuses a batch whose round it
+        // does not know, because a batch it consumed and could not deliver
+        // would be marked drained and lost (#269).
         {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id"}}},
+                      "set_context": {"session_id": "hop.session_id",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
         // The safety net, unchanged: the close batch into the same entry.
         {"from": "./talky", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id"}}},
-        // The edge that carries a turn INTO the hive, and therefore the edge
-        // that owes it its provenance (#244): `audience_set` says who was in
-        // the round, `speaker`/`agent_id` who said it. `channel` is not set
-        // here -- it travels from the connector seam above (`hop.chat_id` ->
-        // `context.channel`), exactly as it does in a real colony.
-        // This colony is one person talking to one agent in one room, so the
-        // round is those two and nothing wider. A `["*"]` here would make the
-        // suite blind to the very leak the gate exists to stop.
+                      "set_context": {"session_id": "hop.session_id",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
+        // The port edge carries the four keys the drain documents; the
+        // provenance simply rides along in `context` from the door above.
         {"from": "./drain", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
+                                      "happened_at": "hop.happened_at"}}},
+        // The drain's refusal lane, drained so a mis-wired batch is read
+        // rather than dead-lettered.
+        {"from": "./drain", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'reject'"},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
         {"from": "./drain/ledger", "to": "/park"},

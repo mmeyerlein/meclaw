@@ -43,6 +43,10 @@ use tokio::task::JoinHandle;
 /// `consumes`: the cell's own pre-compiled required-`consumes` views
 /// (`contract.consumes`), forwarded verbatim to `cell_task_stateful` for the
 /// delivery-boundary consumes check (Slice 2, consumed in Task 2.4).
+///
+/// `write_surface` (GH #260): the cell's own `contract.write_surface`, forwarded
+/// verbatim so the substrate can bound the writes it answers BEFORE `handle()`
+/// (the `transfer` slot's `import`) to the cell's owning scope.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn build_stateful_task_with_peace<C: StatefulCell + Send + 'static>(
     own_path: Path,
@@ -56,6 +60,7 @@ pub fn build_stateful_task_with_peace<C: StatefulCell + Send + 'static>(
     db: DbConn,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    write_surface: meclaw_core::WriteSurface,
 ) -> (
     JoinHandle<()>,
     oneshot::Receiver<()>,
@@ -86,6 +91,7 @@ pub fn build_stateful_task_with_peace<C: StatefulCell + Send + 'static>(
         Some(death_ack_tx),
         blob_store,
         consumes,
+        write_surface,
     ));
     (cell_join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
 }
@@ -151,6 +157,9 @@ pub fn renotify_stop_wiring(
 /// `consumes`: the cell's own pre-compiled required-`consumes` views
 /// (`contract.consumes`), forwarded verbatim to `cell_task_long_running` for
 /// the delivery-boundary consumes check (Slice 2, consumed in Task 2.4).
+///
+/// `write_surface` (GH #260): the cell's own `contract.write_surface`,
+/// forwarded verbatim for the same reason as in the stateful helper.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 'static>(
     own_path: meclaw_core::Path,
@@ -162,6 +171,7 @@ pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 's
     colony_inbox_tx: Option<mpsc::Sender<crate::ColonyMsg>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    write_surface: meclaw_core::WriteSurface,
 ) -> (
     JoinHandle<()>,
     oneshot::Receiver<()>,
@@ -191,6 +201,7 @@ pub fn build_long_running_task<L: crate::long_running_cell::LongRunningCell + 's
         Some(death_ack_tx),
         blob_store,
         consumes,
+        write_surface,
     ));
     (cell_join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
 }
@@ -365,6 +376,7 @@ mod tests {
                 db,
                 None,
                 None,
+                Default::default(),
             );
 
         // Yield once so the spawned task gets a chance to be scheduled.
@@ -416,6 +428,7 @@ mod tests {
                 db,
                 None,
                 None,
+                Default::default(),
             );
 
         // Trigger the colony-initiated peace-stop.
@@ -550,6 +563,7 @@ mod tests {
                 None, // colony_inbox_tx — not needed for this smoke test
                 None, // blob_store
                 None,
+                Default::default(),
             );
 
         // No early peace. Deterministic without a clock: nothing has been sent

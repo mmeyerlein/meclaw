@@ -1,4 +1,4 @@
-# `session-keeper@2.0.0`
+# `session-keeper@2.0.1`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Four cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -31,7 +31,7 @@ the only place that mints it.
 |---|---|---|
 | `stamp` | `code` | the ingress pass: look up the generation, restart the idle clock, stamp the turn |
 | `close` | `code` | the night pass: which channels fell silent, seal them, ask for the close |
-| `sessions` | `store` | one row per generation: `channel, session_id, opened_at, last_seen, closed, closed_at` |
+| `sessions` | `store` | one row per generation: `channel, session_id, opened_at, last_seen, closed, closed_at, audience_set` |
 | `night` | `timer` | the firing, every thirty minutes through the local night |
 
 ## Ports
@@ -43,6 +43,14 @@ same conversation partner"). Without it every turn of the colony lands on the ch
 `default`, which is the right answer for a single-surface colony and the wrong one for
 a bot with many chats.
 
+The same edge is also where `context.audience_set` belongs -- the round the conversation
+is spoken in, as a JSON list in affinity vocabulary (`["member:alex","agent:scribe"]`).
+It is a **constant of the generation**: a change of the participant set ends the
+generation and a new one takes over (ADR-0002 E8), so the turn that OPENS a generation is
+the only place it can be recorded, and the keeper records it on the row right there. A
+door that declares nothing leaves the column empty; nothing here derives a round from the
+`session_id` prefix, and nothing defaults it to `["*"]`.
+
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | stamps the turn and restarts the idle clock |
@@ -53,11 +61,21 @@ Exits leave on `hop.route`:
 | route | from | to | notes |
 |---|---|---|---|
 | `turn` | `./stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
-| `close` | `./close` | the consumer of a finished session | one request per generation; promote `hop.session_id` (and `hop.channel`). |
+| `close` | `./close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set`. |
 
 **The close lane, as a port convention (Track K/E):** the keeper emits `hop.route == 'close'`
-carrying `hop.session_id` and `hop.channel`, and a body with no turns at all
-(`messages: []`) -- a close request is a question about a session, not a conversation.
+carrying `hop.session_id`, `hop.channel` and `hop.audience_set`, and a body with no turns
+at all (`messages: []`) -- a close request is a question about a session, not a
+conversation.
+
+**All three come off the row, and that is the point.** A close is fired by a TIMER, and a
+firing carries no context of its own: it knows the moment, not the conversation. So the
+room and the round of a swept-closed generation cannot come from the message being
+handled -- they are read out of the `sessions` row the opening turn wrote, carried down
+that generation's own seal chain, and put on the hop. All three keys are always PRESENT,
+empty when unknown: a missing hop key makes a CEL modifier fail, and a failed modifier
+skips the edge, so a close that could not name its round would vanish instead of being
+refused (GH #273).
 The consumer is the collector's `in_close` lane, so the parent edge renames the route the
 way it renames every collector lane:
 
@@ -65,7 +83,9 @@ way it renames every collector lane:
 {"from": "./session-keeper", "to": "./collector",
  "condition": "hop.route == 'close'",
  "modifier": {"set_hop": {"route": "'in_close'"},
-              "set_context": {"session_id": "hop.session_id"}}}
+              "set_context": {"session_id": "hop.session_id",
+                              "channel": "hop.channel",
+                              "audience_set": "hop.audience_set"}}}
 ```
 
 The collector then reads the session out of **its own** store and emits the batch. The
@@ -177,6 +197,12 @@ UTC stamp, so it orders lexicographically, and "older than the cutoff" is a stor
   a keeper serves one local night.
 - **Instance-per-day is not this.** v1 runs the logical generation (same cells, new id).
   A talky that IS one day (R-OS-3's target picture) is the experiment after the wave.
+- **A generation opened before its door declared a round has none, forever.** The column
+  is written once, at the open, and never rewritten -- provenance is not a roster
+  (ADR-0002 E12). Wiring `context.audience_set` onto the ingress edge therefore takes
+  effect on the NEXT generation of a channel, not on the one that is currently running.
+  What is already open closes with an empty round, and a consumer that needs one refuses
+  that batch visibly rather than writing a row that claims everyone was present.
 
 ## Pins
 
@@ -186,3 +212,9 @@ UTC stamp, so it orders lexicographically, and "older than the cutoff" is a stor
 - the same file, colony level -- a running colony with a real store and a real timer: three
   turns with one id, a firing that closes nothing, a firing that closes exactly once, a
   repeated firing that stays silent, and the next turn that opens the next generation.
+- the same file, the round of a generation (GH #273) -- the row records the set the door
+  declared, a running generation never has it rewritten, every seal carries its own, and a
+  generation without one says so instead of inventing one.
+- `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- the whole way:
+  a conversation, a SWEEP that ends it, the shipped drain, and the episode row that lands
+  with the room and the round the conversation was spoken in.

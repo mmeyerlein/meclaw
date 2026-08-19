@@ -1,4 +1,4 @@
-# `talky@3.0.0`
+# `talky@3.0.5`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -77,7 +77,7 @@ spawns.
 
 | lane | direction | what travels |
 |---|---|---|
-| `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel` |
+| `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory |
 | `answer` | out | the finished turn. Two sorts, told apart by `hop.round_capped` |
 | `write` | out | the closed session as one batch |
 | `error` | out | a normalised failure report. **MUST** be wired |
@@ -93,6 +93,7 @@ The rest, each optional and each still at the same address:
 | `in_advice` | in | an advisor's answer coming back |
 | `in_bundle` | in | a memory bundle coming back |
 | `in_memory_call` | in | a memory tool call handed back into the composite |
+| `in_thread_call` | in | a `thread_recall` tool call handed back into the composite (since 3.0.1) |
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_prune`, `in_round_sweep` | in | the two operator lanes of the context window |
 
@@ -110,7 +111,8 @@ Plus, per instance, the two **advisor lanes** to an agent core -- see below.
 {"from": "<surface>", "to": "./talky",
  "condition": "has(hop.user_id) && int(hop.user_id) == 12345",
  "modifier": {"set_hop": {"route": "'in_turn'"},
-              "set_context": {"channel": "hop.chat_id"}}},
+              "set_context": {"channel": "hop.chat_id",
+                              "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"}}},
 {"from": "./talky", "to": "<reply sink>",
  "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
 {"from": "./talky", "to": "<day archive or memory>",
@@ -125,6 +127,14 @@ Plus, per instance, the two **advisor lanes** to an agent core -- see below.
 the channel `default` -- the right answer for a single-surface colony, the wrong one for
 a bot with many chats. Whatever a surface calls "the same conversation partner" goes in
 there: a Telegram/Slack `hop.chat_id`, a room, a phone number.
+
+**The round belongs on the same edge.** One talky serves one round -- a change of the
+participant set ends the generation and a new talky takes over (ADR-0002 E8) -- so the
+ingress door is where `context.audience_set` is declared, as a JSON list in affinity
+vocabulary. The keeper writes it onto the generation row at the open, the close carries it
+back out on the write port, and a `memory-drain` on that port refuses a batch that has
+none. Leave it out and the closed sessions of this talky do not reach a memory; nothing
+anywhere on the path invents one (GH #273).
 
 **Numbers on the hop need `int()`.** A proxy delivers JSON integers, CEL deserialises
 them as `uint`, and a bare `hop.user_id == 12345` is silently **false** -- no error, no
@@ -162,6 +172,13 @@ target is the composite itself, on the `in_memory_call` lane: `{"from": "./talky
 and which cell inside answers it is none of the caller's business. Its schema and the second half of the wiring live in
 [`../collector/README.md`](../collector/README.md) § The memory tool.
 
+**A second one is served the same way since 3.0.1:** `thread_recall`
+([#245](https://github.com/mmeyerlein/meclaw/issues/245)), the way back to a tool payload the
+collector's curator elided out of the running turn. Same loop, one lane further:
+`hop.tool_name == 'thread_recall'` → `./talky` lane `in_thread_call`. Wire it whenever you set
+`context_window`, because from that moment the curator leaves stubs that name the tool by hand,
+and a stub whose tool no edge can reach stalls the round until `round_idle_ms` closes it.
+
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
 neither -- identity, instructions and tools are the agent, not the topology.
@@ -186,17 +203,23 @@ The same sentence is what keeps the boundary honest in the other direction: it n
 window as the model's own knowledge **and** the long-term store as the thing it must ask
 for, so a question about an earlier day still leaves through the lane it should.
 
-Three more optional lanes, all of them the parent's decision:
+Eight more optional lanes, all of them the parent's decision -- and every one of them
+**at the composite's own address**. `talky` declares `params.ports: []`, so `./talky` is
+the only endpoint an edge from outside may name: `./collector`, `./session-keeper` and
+`./talky/dispatcher` are refused with `hive_port_boundary`, and the second of those
+spellings would not even be this template's frame. Which cell inside picks the lane up is
+the door edges' business, exactly as it is for the four essential lanes:
 
 | lane | endpoint | when |
 |---|---|---|
-| memory recall | `./collector` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
-| memory tool | `./talky/dispatcher` on `hop.tool_name == 'memory_recall'` → `./collector` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above |
-| forced sweep | `./session-keeper` lane `in_sweep` | an operator or a second schedule |
-| housekeeping | `./collector` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
-| per-turn write | `./collector` route `turn_write` out | only with `turn_write` set -- see below |
-| memory lookup | `./talky/dispatcher` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
-| inline extraction | `./talky/dispatcher` on `hop.tool_name == 'remember'` -> the hive's `inline-extraction` port, **plus** its `inline-reject` egress back into `./errors` | the write leg of the front model -- see "The memory tool `remember`" |
+| memory recall | `./talky` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
+| memory tool | `./talky` on `hop.route == 'tool' && hop.tool_name == 'memory_recall'` → `./talky` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above |
+| thread tool | `./talky` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` → `./talky` lane `in_thread_call` | GH #245 -- needed as soon as `context_window` is set, because the curator's stubs name this tool as their way back |
+| forced sweep | `./talky` lane `in_sweep` | an operator or a second schedule |
+| housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
+| per-turn write | `./talky` route `turn_write` out | only with `turn_write` set -- see below |
+| memory lookup | `./talky` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
+| inline extraction | `./talky` on `hop.tool_name == 'remember'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the write leg of the front model -- see "The memory tool `remember`" |
 
 ### Per-turn episodes (`turn_write`)
 
@@ -232,14 +255,16 @@ a path that is model-free by design.
 
 ## The internal wiring, edge by edge
 
-Twelve edges in this hive's `params.graph`, plus the eighteen the four sub-units bring
-with them. Every one of the twelve names a sub-unit **by its path**: three of the five
-nodes below are sealed hives, so the address is the hive and the lane in the third column
-is what the door behind it reads. Read it as the round it is:
+Twelve edges of round in this hive's `params.graph` -- plus the nine that ARE the
+boundary (three door edges from `.`, six leaving towards it, and those are the lanes
+above) and the eighteen the three sealed sub-units bring with them. Every one of the
+twelve names a sub-unit **by its path**: three of the five nodes below are sealed hives,
+so the address is the hive and the lane in the third column is what the door behind it
+reads. Read it as the round it is:
 
 ```
 session-keeper --(turn, session_id -> context)-->  collector   in_turn
-session-keeper --(close, session_id -> context)->  collector   in_close
+session-keeper --(close, session_id + channel + audience_set -> context)->  collector   in_close
 
 collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 brain --(stop | tool_calls)------> dispatcher
@@ -257,11 +282,11 @@ summarizer --(summary_error)-> errors
 [sealed]  session-keeper   collector   summarizer      [plain cells]  brain  dispatcher  errors
 ```
 
-**The eighteen are not drawn here, and that is the point.** A sealed sub-unit distributes
-internally on its own `{"from": "."}` door edges -- `session-keeper` alone has nine of
-them, `collector` four, `summarizer` five -- and none of that is visible to, or wireable
-by, the hive above. What the twelve edges above state is the whole of talky's own
-topology.
+**The eighteen are not drawn here, and that is the point.** A sealed sub-unit takes its
+lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
+alone brings nine edges, `collector` four, `summarizer` five -- and none of that is
+visible to, or wireable by, the hive above. What the twelve edges above state is the whole
+of talky's own topology.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter` (default 8), which
@@ -385,16 +410,26 @@ answer a question asked this afternoon.
 ```json
 {"from": "./talky", "to": "/front/memory",
  "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
- "modifier": {"set_context": {"store_origin": "'inline'", "mem_phase": "'inline'"}}},
-{"from": "/front/memory", "to": "./talky",
+ "modifier": {"set_hop": {"route": "'in_remember'"}}},
+{"from": "/front/memory", "to": "<drain or alarm>",
  "condition": "has(hop.route) && hop.route == 'reject'"}
 ```
 
-**Two edges, never one.** The first is the memory hive's `inline-extraction` port; the
-second is its `inline-reject` egress, and a hive egress nobody drains is an unrouted dead
-end -- a block the hive discarded would vanish without a line anywhere, and the memory it
-was meant to write would silently never exist. Draining it into `./errors` is enough: the
-composite already normalises what leaves there.
+**Two edges, never one.** The first carries the call into the memory hive's `in_remember`
+lane -- the hive seals its scope the same way this one does, so the address is the hive
+and the lane is what the door behind it reads; the door stamps `store_origin` and
+`mem_phase` itself, and what the lane does require of the caller (the block's provenance,
+#244) is in [`../memory-hive/README.md`](../memory-hive/README.md) § Lanes. The second is
+the hive's `reject` egress, and a hive egress nobody drains is an unrouted dead end -- a
+block the hive discarded would vanish without a line anywhere, and the memory it was meant
+to write would silently never exist.
+
+**The reject goes to the parent's own drain, not back in here.** `./errors` is inside this
+composite's seal and is not an address a parent may name (`hive_port_boundary`), and
+`./talky` is an address that would take it nowhere: `reject` is not one of the lanes
+`params.contract` accepts, so it matches no door edge and dead-letters as `HiveNoRoute`.
+Send it wherever the `error` port already goes -- the parent drains one place, which was
+the point of that port.
 
 **`remember` is an async tool, and that is what makes it free for the turn.** Named in
 `DISPATCHER_ASYNC_TOOLS`, the collector opens no fan-in expectation for it: the turn ends
@@ -577,6 +612,11 @@ Two things to have ready before the mutation:
   reaches the write port AND becomes the handover that the NEXT generation's prompt
   carries -- with exactly one extra provider call, which is what proves the system
   update is silent. Plus the byte-identity pin over the four sub-unit copies.
+- `crates/meclaw-colony/tests/gh245_a_stub_names_a_lane_the_hive_admits.rs` -- the lane
+  a curator stub names against the SHIPPED hive files: an edge stamping `in_thread_call`
+  into the collector commits, an edge stamping `in_batch` is refused now that nothing
+  behind the door reads it, and a real call on the lane crosses `talky`'s door and the
+  collector's door and lands on the assembler.
 - `crates/meclaw-cells/tests/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
   that carries this composite, the shipped `memory-drain` and the memory hive's real
   write path: one turn, and the turn AND the answer are `episodes` rows before anything
@@ -589,6 +629,12 @@ Two things to have ready before the mutation:
   which is the one that makes inline extraction defensible at all: a block with a broken
   payload leaves through `inline-reject`, writes nothing, covers no turn -- and the
   channel got its sentence anyway.
+- `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- a
+  conversation ended the only way this template ever ends one, by a SWEEP, drained
+  through the shipped `memory-drain` into the memory hive's real write path: the episode
+  rows land with the room and the round of the CONVERSATION, although the sweep that
+  ended it knows neither. The same property at the write port is pinned in
+  `talky_composite.rs`.
 - The sub-units keep their own pins: `session_keeper.rs`, `collector_window.rs`,
   `collector_colony.rs`, `dispatcher_template.rs`, `summarizer_prep.rs`,
   `summarizer_colony.rs`.

@@ -63,6 +63,36 @@ pub struct IngressBlock {
     pub context: BTreeSet<String>,
 }
 
+/// GH #260 — a cell's declaration that the writes the **substrate** answers on
+/// its behalf are bounded to its own owning scope.
+///
+/// The type-neutral twin of `store`'s `params.write_surface`, and it exists
+/// because that one cannot reach far enough. `params` belongs to a cell type;
+/// the substrate is above every cell type and must not read it. So a boundary
+/// the substrate enforces has to be declared where every cell type declares in
+/// the same grammar — the `contract` block — in the same spirit as
+/// `consumes.topology` (GH #160) and `contract.ingress` (GH #185): a statement
+/// about this cell's PLACE, not about a message.
+///
+/// The two are deliberately not derived from one another. `params.write_surface`
+/// bounds the ops a `store`'s `handle()` runs; this one bounds the ops the
+/// substrate runs before `handle()` is ever reached (today: the `transfer`
+/// slot's `import`). A cell that wants both sealed declares both — and a cell
+/// type without params of its own can still seal the substrate half.
+///
+/// `Open` is the default, so absence changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteSurface {
+    /// No bound — any sender may reach a substrate-answered write. Default.
+    #[default]
+    Open,
+    /// Only senders inside this cell's own parent scope may reach a
+    /// substrate-answered write. Fail-closed: a message with no sender at all
+    /// (a source message — HTTP ingress, an event) is outside by definition.
+    Internal,
+}
+
 /// One field's consume spec — type only (no enum/values on the read side).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConsumeSpec {

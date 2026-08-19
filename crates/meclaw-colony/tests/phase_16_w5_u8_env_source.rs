@@ -72,6 +72,7 @@ impl CellFactory for ParamsRecorderFactory {
                 let _keep_inject = inject_tx;
                 cell_task_long_running(
                     p, rx, o, 64, cell, db, Some(peace_tx), Some(cit), None, None, None, None,
+                    Default::default(),
                 )
                 .await;
             });

@@ -9,9 +9,10 @@
         {
           "route": "in_turn",
           "context": [
-            "channel"
+            "channel",
+            "audience_set"
           ],
-          "because": "a turn from the surface. The caller MUST promote the channel identity to context.channel, or every chat of the colony lands on the channel `default`"
+          "because": "a turn from the surface. The caller MUST promote the channel identity to context.channel, or every chat of the colony lands on the channel `default`; and it MUST promote the round to context.audience_set if the closed sessions of this talky are to reach a memory, because the generation this turn opens is where the round is recorded"
         },
         {
           "route": "in_sweep",
@@ -34,6 +35,10 @@
           "because": "a memory tool call the front model made, handed back in"
         },
         {
+          "route": "in_thread_call",
+          "because": "a thread_recall tool call the front model made, handed back in: the collector serves it out of this turn's own round table, and without the lane every stub its curator leaves is a dead end"
+        },
+        {
           "route": "in_prune",
           "because": "a prune verdict for the context window"
         },
@@ -49,7 +54,7 @@
         },
         {
           "route": "write",
-          "because": "a closed session as one write batch, for wherever a day belongs"
+          "because": "a closed session as one write batch, for wherever a day belongs. It carries context.channel and context.audience_set of the conversation -- off the generation row, not off the sweep that ended it"
         },
         {
           "route": "turn_write",
@@ -84,7 +89,7 @@
         {
           "from": ".",
           "to": "./collector",
-          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_memory_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep')"
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_memory_call' || hop.route == 'in_thread_call' || hop.route == 'in_prune' || hop.route == 'in_round_sweep')"
         },
         {
           "from": "./session-keeper",
@@ -108,7 +113,9 @@
               "route": "'in_close'"
             },
             "set_context": {
-              "session_id": "hop.session_id"
+              "session_id": "hop.session_id",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set"
             }
           }
         },

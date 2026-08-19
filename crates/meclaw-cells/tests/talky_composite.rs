@@ -74,6 +74,14 @@ const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-0000000c1120";
 /// Never during a test run: the shipped default is the real night.
 const NEVER: &str = "0 0 0 1 1 *";
 
+/// The round these turns are spoken in: one person and one agent, in the
+/// affinity vocabulary the audience gate speaks (ADR-0002 E8). Never `["*"]` --
+/// a universal set would let the pin below pass over a path that had lost the
+/// real one.
+const AUDIENCE: &str = r#"["member:alex","agent:scribe"]"#;
+/// The same set as a CEL string literal, for the ingress edge that declares it.
+const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
+
 // ────────────────────────────────────────────────────────── the test-only cells
 
 /// A `code` cell config with the contract the substrate validates against.
@@ -136,19 +144,24 @@ sys.stdout.write(json.dumps({
 "#;
 
 /// The write target the instance decides on (a day archive stands in here):
-/// it reports the SIZE of the batch it received.
+/// it reports the SIZE of the batch it received, and the provenance of the
+/// round the batch was spoken in -- which is what a real consumer of this port
+/// (a `memory-drain`) reads off `context` and refuses a batch without.
 const ARCHIVE: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
 d = doc["body"]
 envelope = doc["envelope"]
 hop = ((envelope.get("header") or {}).get("hop") or {})
+ctx = ((envelope.get("header") or {}).get("context") or {})
 msgs = d.get("messages", [])
 sys.stdout.write(json.dumps({"header": {"route": "archived"},
                              "messages": [{"origin": "assistant", "type": "text",
-                                           "text": "batch|session=%s|turns=%d|rounds=%d" % (
+                                           "text": "batch|session=%s|turns=%d|rounds=%d|channel=%s|audience=%s" % (
                                                hop.get("session_id", ""), len(msgs),
-                                               len(d.get("rounds", []) or []))}]}))
+                                               len(d.get("rounds", []) or []),
+                                               ctx.get("channel", ""),
+                                               ctx.get("audience_set", ""))}]}))
 "#;
 
 /// The port wiring a parent draws around the composite: ONE ingress, ONE reply
@@ -159,7 +172,8 @@ fn main_config() -> Value {
         {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
-                      "set_context": {"channel": "hop.chat_id"}}},
+                      "set_context": {"channel": "hop.chat_id",
+                                      "audience_set": AUDIENCE_CEL}}},
         // the operator lane of the keeper (a forced sweep)
         {"from": "./surface", "to": "./talky/session-keeper",
          "condition": "has(hop.route) && hop.route == 'sweep'",
@@ -509,6 +523,55 @@ async fn a_close_fans_the_batch_out_and_hands_the_summary_to_the_brain() {
         sys_text.contains("The user lives in Berlin and said so once."),
         "the handover of the closed generation reached the next one: {sys_text}"
     );
+
+    h.shutdown().await;
+}
+
+/// GH #273 -- the pin. A generation that the SWEEP closed reaches the write
+/// port with the room and the participant set of the conversation it belonged
+/// to: not those of the sweep, and not empty.
+///
+/// The sweep is a timer firing (or the operator lane that stands in for one
+/// here). It carries no `context` at all -- an `emit_to` message is minted, not
+/// routed -- so everything the write batch says about its round has to come off
+/// the generation row the keeper wrote when the CONVERSATION opened it. The
+/// close request carries both keys on its hop, and the composite's close edge
+/// promotes them into `context`, where a `memory-drain` reads them.
+///
+/// This cannot go green through a default: the room is asserted against the
+/// channel the surface actually stamped (`c-42`), and the participant set
+/// against the two named identities the ingress edge declared. A `["*"]` or an
+/// empty set fails both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_swept_close_reaches_the_write_port_with_the_round_it_belonged_to() {
+    let mock = MockOpenAI::start(vec![
+        canned_chat_completion("Noted.", "stop"),
+        canned_chat_completion("The user lives in Berlin.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    h.send(turn("remember: my city is berlin")).await;
+    recv_bounded(&mut sink_rx).await.expect("the answer");
+
+    // KEEPER_IDLE_MS=0 makes the generation that just spoke a candidate, so one
+    // sweep seals it -- and the sweep knows nothing but the row it read.
+    h.send(sweep()).await;
+    let archived = recv_bounded(&mut park_rx).await.expect("the write batch");
+    let text = answer_text(&archived);
+
+    assert!(
+        text.contains("|channel=c-42|"),
+        "the batch names the room the conversation was held in, not the \
+         sweep's: {text}"
+    );
+    assert!(
+        text.contains(&format!("|audience={AUDIENCE}")),
+        "the batch names the round the conversation was spoken to: {text}"
+    );
+    assert!(!text.contains('*'), "and it is never universalised: {text}");
 
     h.shutdown().await;
 }

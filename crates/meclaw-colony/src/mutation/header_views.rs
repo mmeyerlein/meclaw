@@ -10,7 +10,14 @@
 //!
 //! # Verified apply-arm order (the arms are the contract)
 //!
-//! Mirrors `colony::handle_mutation`, verified against `colony.rs` 2026-06-10:
+//! Mirrors `colony::handle_mutation`, verified against `colony.rs` 2026-08-19.
+//!
+//! There is no order-free formulation of this projection. `remove_edges` is a
+//! PATTERN, not a set subtraction: what it takes out depends on what the table
+//! holds when it runs. So "the post-state" is not definable without saying at
+//! which point the pattern is read — and the only authority for that is the
+//! apply arm. Hence a sequence mirror, step for step, and hence the rule that
+//! a change to the arms is a change here.
 //!
 //! 1. **Step 8** — `remove_nodes`: COLLECT resolved paths only (no edge
 //!    mutation yet).
@@ -18,18 +25,28 @@
 //!    registration).
 //! 3. **Step 9b** — `swap_nodes`: edge swing over the table as it is at
 //!    that point (live edges only — subtree/`add_edges` inserts come later);
-//!    resulting self-loops are dropped (`plan_edge_swing` semantics).
+//!    subtree-internal edges are not swung and resulting self-loops are
+//!    dropped (`plan_edge_swing` semantics).
 //! 4. **Step 9c** — subtree registration + internal-edge insert (with
 //!    `contains_equal` dedup).
 //! 5. **Step 10, first block** — `remove_nodes` DISCONNECT: ALL edges
 //!    incident to each removed path are removed. NOTE: this runs BEFORE
 //!    `add_edges`/`remove_edges` ("remove-before-add ordering" — a same-diff
 //!    `add_edges` edge to a removed-and-rewired node survives).
-//! 6. **Step 10** — `add_edges` insert (with dedup).
-//! 7. **Step 10** — `remove_edges`: filter with
+//! 6. **Step 10** — `remove_edges`: filter with
 //!    [`super::validate::remove_edges_pattern_hits`] against the table at that
-//!    point — which ALREADY contains this diff's added edges (swing inserts,
-//!    subtree internal edges, `add_edges`).
+//!    point — live edges plus the swing inserts and the subtree internal
+//!    edges, and NOT this diff's `add_edges`.
+//! 7. **Step 10** — `add_edges` insert (with dedup).
+//!
+//! Steps 6 and 7 are in that order because of GH #158: replacing an edge —
+//! drop the old one, lay a new one with one more key promoted — belongs in ONE
+//! mutation so the lane is never missing in between, and a `{from, to}` pattern
+//! matches every edge between the pair. Read the other way round, the removal
+//! takes away the replacement the same diff just laid. The apply arm was put
+//! right in #158; this mirror kept the old order until #257, where it refused
+//! such a replacement for a key the removed lane used to promote — a false
+//! refusal, naming an edge that was not the problem.
 //!
 //! # Participation rule
 //!
@@ -343,6 +360,17 @@ pub fn build_post_state_header_views(
                 .into_iter()
                 .filter_map(|mut e| {
                     let touches_t2 = e.from == t2 || e.to == t2;
+                    // GH #256: a subtree-internal edge is not swung at all —
+                    // `t2 → t2/child` and `t2/child → t2` wire the replaced
+                    // unit's own inside and stay with it. Same rule as
+                    // `plan_edge_swing`, so the projection keeps mirroring the
+                    // arm.
+                    if touches_t2 {
+                        let other = if e.from == t2 { &e.to } else { &e.from };
+                        if super::swap::is_inside_subtree(other, &t2) {
+                            return Some(e);
+                        }
+                    }
                     if e.from == t2 {
                         e.from = t3.clone();
                     }
@@ -419,41 +447,12 @@ pub fn build_post_state_header_views(
         post_edges.retain(|e| e.from != *p && e.to != *p);
     }
 
-    // ── Step 10 mirror: add_edges (dedup) ───────────────────────────────────
-    if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
-        for e in adds {
-            let (Some(from_name), Some(to_name)) = (
-                e.get("from").and_then(|v| v.as_str()),
-                e.get("to").and_then(|v| v.as_str()),
-            ) else {
-                continue; // schema-validate (upstream) reports the missing field.
-            };
-            let from = super::resolve_scoped_path(scope, from_name)
-                .as_str()
-                .to_string();
-            let to = super::resolve_scoped_path(scope, to_name)
-                .as_str()
-                .to_string();
-            let condition_source = e
-                .get("condition")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let modifier: Option<ModifierSpec> = match e.get("modifier") {
-                None => None,
-                Some(v) => Some(serde_json::from_value(v.clone()).map_err(|err| {
-                    MutationError::Schema(format!("add_edges {from}->{to} modifier: {err}"))
-                })?),
-            };
-            push_dedup(
-                &mut post_edges,
-                PostStateEdge::new(from, to, condition_source, modifier),
-            );
-        }
-    }
-
     // ── Step 10 mirror: remove_edges (exact apply predicate) ────────────────
-    // Filters the CURRENT list — which, like the live EdgeTable at this point
-    // in the apply sequence, already contains this diff's added edges.
+    // GH #158/#257 — remove-BEFORE-add. Filters the CURRENT list, which at this
+    // point holds the live edges plus the swap swing and the subtree internal
+    // edges, and NOT this diff's `add_edges`. A `{from, to}` pattern therefore
+    // takes the edge that was there before the diff and spares the replacement
+    // laid in the same breath — which is what the apply arm does.
     if let Some(rems) = diff_subst.get("remove_edges").and_then(|v| v.as_array()) {
         for r in rems {
             let (Some(from_name), Some(to_name)) = (
@@ -482,6 +481,38 @@ pub fn build_post_state_header_views(
                     pat_modifier,
                 )
             });
+        }
+    }
+
+    // ── Step 10 mirror: add_edges (dedup), AFTER remove_edges ───────────────
+    if let Some(adds) = diff_subst.get("add_edges").and_then(|v| v.as_array()) {
+        for e in adds {
+            let (Some(from_name), Some(to_name)) = (
+                e.get("from").and_then(|v| v.as_str()),
+                e.get("to").and_then(|v| v.as_str()),
+            ) else {
+                continue; // schema-validate (upstream) reports the missing field.
+            };
+            let from = super::resolve_scoped_path(scope, from_name)
+                .as_str()
+                .to_string();
+            let to = super::resolve_scoped_path(scope, to_name)
+                .as_str()
+                .to_string();
+            let condition_source = e
+                .get("condition")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let modifier: Option<ModifierSpec> = match e.get("modifier") {
+                None => None,
+                Some(v) => Some(serde_json::from_value(v.clone()).map_err(|err| {
+                    MutationError::Schema(format!("add_edges {from}->{to} modifier: {err}"))
+                })?),
+            };
+            push_dedup(
+                &mut post_edges,
+                PostStateEdge::new(from, to, condition_source, modifier),
+            );
         }
     }
 
@@ -780,11 +811,13 @@ mod tests {
         assert!(nodes.is_empty(), "edge-less nodes drop out (participation)");
     }
 
+    /// GH #158/#257: the apply arm filters the live EdgeTable BEFORE
+    /// `add_edges` runs, so a condition-less pattern takes the LIVE edge and
+    /// spares the replacement the same diff lays. Mirror that exactly — read
+    /// the other way round, the mirror deletes its own new edge and the
+    /// locality check refuses a replacement that is fine.
     #[test]
-    fn remove_edges_matches_edge_added_by_same_diff() {
-        // The apply arm filters the live EdgeTable AFTER add_edges ran, so a
-        // condition-less pattern hits BOTH the live edge and a same-diff
-        // added edge with a different condition. Mirror that exactly.
+    fn remove_edges_spares_the_edge_the_same_diff_adds() {
         let nc = contracts(&[
             ("/a", node_view(&[], &[], &[])),
             ("/b", node_view(&[], &[], &[])),
@@ -803,11 +836,46 @@ mod tests {
             &no_hives(),
         )
         .unwrap();
-        assert!(
-            edge_views.is_empty(),
-            "pattern must hit the live AND the diff-added edge"
+        assert_eq!(
+            edge_views.len(),
+            1,
+            "the replacement survives, the live edge does not: {edge_views:?}"
         );
-        assert!(nodes.is_empty());
+        assert_eq!(edge_views[0].from, "/a");
+        assert_eq!(edge_views[0].to, "/b");
+        assert_eq!(
+            nodes.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["/a", "/b"],
+            "both endpoints keep taking part through the new edge"
+        );
+    }
+
+    /// The counter-direction of the same order: a diff that removes one lane
+    /// and opens a DIFFERENT one must still do both. Remove-before-add is not
+    /// "remove nothing".
+    #[test]
+    fn remove_edges_still_takes_the_edge_that_was_there_before() {
+        let nc = contracts(&[
+            ("/a", node_view(&[], &[], &[])),
+            ("/b", node_view(&[], &[], &[])),
+        ]);
+        let edges = table(vec![edge("/a", "/b", None, None)]);
+        let diff = json!({
+            "add_edges": [{"from": "b", "to": "a"}],
+            "remove_edges": [{"match": {"from": "a", "to": "b"}}]
+        });
+        let (_nodes, edge_views, _) = build_post_state_header_views(
+            &nc,
+            &edges,
+            &diff,
+            "/",
+            &TemplatesRegistry::default(),
+            &no_hives(),
+        )
+        .unwrap();
+        assert_eq!(edge_views.len(), 1, "one lane out, one lane in");
+        assert_eq!(edge_views[0].from, "/b");
+        assert_eq!(edge_views[0].to, "/a");
     }
 
     // ── remove_nodes ─────────────────────────────────────────────────────────

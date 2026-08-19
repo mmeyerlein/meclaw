@@ -1,6 +1,6 @@
 {
   "name": "steward",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": {
     "purpose": "The colony's control loop, as a hive of seven cells. It reads a charter, measures its own colony out of the substrate's ledger, has a model judge and SIMULATE against those numbers, executes the decision through the ordinary mutation lane with every gate, checks the colony's health immediately, measures the effect over the charter's window, and then keeps the change or reverts it -- writing an append-only receipt of every step. This is what makes a claim of self-improvement checkable instead of impressive.",
     "use_when": "Once per colony, when you want it to pursue a stated goal on its own rather than be tuned by hand. The charter ships with every goal DISABLED: a freshly grown steward measures nothing and changes nothing until an operator turns a row on, which is the only responsible default for a loop that mutates the tree it runs in.",

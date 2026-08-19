@@ -396,6 +396,25 @@ fn ms_since(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Attach the single auth header, or none at all.
+///
+/// A credential the caller does not have is not a header with nothing after it
+/// (GH #271). The judgement of what counts as "not having one" is deliberately
+/// NOT made here: this layer presents verbatim what it is handed, and the two
+/// bearer tracks decide for themselves. The static `params.api_key` track
+/// filters the empty string at its call sites in `cell.rs` (the same repair
+/// `mcp` and `web_search` carry since GH #268/#270), while the OAuth track
+/// hands the broker's access token straight through — that token never passes
+/// a params boundary, so the emptiness rule must not reach it. Moving the
+/// filter in here would silently change the broker lane too; that is what
+/// `tests/gh271_an_empty_llm_key_is_not_a_bearer.rs` pins.
+fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::RequestBuilder {
+    match bearer {
+        Some(value) => req.header("Authorization", format!("Bearer {value}")),
+        None => req,
+    }
+}
+
 /// Execute the OpenAI Chat-Completions POST.
 ///
 /// Single async I/O function for the LlmCell — every Translate result flows
@@ -404,22 +423,25 @@ fn ms_since(start: std::time::Instant) -> u64 {
 /// parsed JSON response body.
 ///
 /// `url` is the full URL (caller joins `base_url` + `OPENAI_CHAT_COMPLETIONS_PATH`).
-/// `api_key` becomes the `Authorization: Bearer <key>` header — never logged.
+/// `bearer` becomes the `Authorization: Bearer <key>` header — never logged.
+/// `None` means the call goes out **without** an `Authorization` header at all
+/// (GH #271); see `apply_bearer` for why that is a caller's decision and not
+/// this layer's.
 /// `extra_headers` are provider-attribution request headers produced by the
 /// Translate boundary (`translate::build_attribution_headers`, A4). They are
 /// applied verbatim with one exception: an `Authorization` entry is refused
 /// (case-insensitive) — `Authorization` is the single auth header, set from
-/// `api_key`, and params can NOT override it (secret hygiene, A4 ruling).
+/// `bearer`, and params can NOT override it (secret hygiene, A4 ruling).
 /// `body` is the request payload as JSON. `timeout` is the A-Timeout budget.
 pub async fn call_openai(
     client: &reqwest::Client,
     url: &str,
-    api_key: &str,
+    bearer: Option<&str>,
     extra_headers: &[(String, String)],
     body: &Value,
     timeout: Duration,
 ) -> Result<Value, WireError> {
-    call_openai_timed(client, url, api_key, extra_headers, body, timeout)
+    call_openai_timed(client, url, bearer, extra_headers, body, timeout)
         .await
         .0
 }
@@ -433,7 +455,7 @@ pub async fn call_openai(
 pub async fn call_openai_timed(
     client: &reqwest::Client,
     url: &str,
-    api_key: &str,
+    bearer: Option<&str>,
     extra_headers: &[(String, String)],
     body: &Value,
     timeout: Duration,
@@ -453,12 +475,7 @@ pub async fn call_openai_timed(
             req = req.header(name.as_str(), value.as_str());
         }
         // Authorization set LAST so it is authoritative regardless of input.
-        let resp = match req
-            .header("Authorization", format!("Bearer {api_key}"))
-            .json(body)
-            .send()
-            .await
-        {
+        let resp = match apply_bearer(req, bearer).json(body).send().await {
             Ok(r) => r,
             Err(e) => return (Err(WireError::Network(e.to_string())), None),
         };
@@ -515,10 +532,11 @@ pub async fn call_openai_timed(
 /// `bearer` is either the static `api_key` or a broker-issued access token; it
 /// becomes `Authorization: Bearer <bearer>` and is set LAST so no entry in
 /// `extra_headers` can displace it (same secret-hygiene guard as `call_openai`).
+/// `None` sends no `Authorization` header at all (GH #271, see `apply_bearer`).
 pub async fn call_responses(
     client: &reqwest::Client,
     url: &str,
-    bearer: &str,
+    bearer: Option<&str>,
     extra_headers: &[(String, String)],
     body: &Value,
     timeout: Duration,
@@ -537,7 +555,7 @@ pub async fn call_responses(
 pub async fn call_responses_timed(
     client: &reqwest::Client,
     url: &str,
-    bearer: &str,
+    bearer: Option<&str>,
     extra_headers: &[(String, String)],
     body: &Value,
     timeout: Duration,
@@ -552,12 +570,7 @@ pub async fn call_responses_timed(
             }
             req = req.header(name.as_str(), value.as_str());
         }
-        let resp = match req
-            .header("Authorization", format!("Bearer {bearer}"))
-            .json(body)
-            .send()
-            .await
-        {
+        let resp = match apply_bearer(req, bearer).json(body).send().await {
             Ok(r) => r,
             Err(e) => return (Err(WireError::Network(e.to_string())), None),
         };

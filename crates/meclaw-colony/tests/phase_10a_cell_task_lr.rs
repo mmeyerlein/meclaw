@@ -33,6 +33,7 @@ async fn cell_task_long_running_dispatches_mailbox_to_handle() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     in_tx
@@ -105,6 +106,7 @@ async fn cell_task_long_running_dispatches_io_event_to_handle_event() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     // 1. Inject event.
@@ -230,6 +232,7 @@ async fn cell_task_long_running_routes_reconfig_from_handle_to_run_io() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     // 1. Send message → handle() sends reconfig hint.
@@ -291,6 +294,7 @@ async fn cell_task_long_running_exits_gracefully_when_both_channels_close() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     drop(in_tx);
@@ -335,6 +339,7 @@ async fn cell_task_long_running_propagates_io_task_panic_to_outer_join() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     // Deterministic rendezvous: outer task terminates via resume_unwind when
@@ -381,6 +386,7 @@ async fn cell_task_long_running_propagates_handler_task_panic_to_outer_join() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     // Send one message → handle() increments counter to 1 → panic_in_handle_after(1)
@@ -492,6 +498,7 @@ async fn cell_task_long_running_aborts_endless_io_on_mailbox_close() {
         None,
         None, // death_ack
         None,
+        Default::default(),
     ));
 
     // Only close the mailbox — inject/I/O are endless.

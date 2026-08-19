@@ -21,6 +21,14 @@
         {
           "route": "in_flush",
           "because": "drain the extraction queue now, whatever the batch gate would say; add `flush_reclaim` on the hop to also recover batches whose chain died"
+        },
+        {
+          "route": "in_export",
+          "because": "write this hive's remembered content OUT as a declared, versioned document (#243). Nothing travels on the hop: the lane names the whole memory. Fifteen parts leave on `dump`, one per content table, and the LAST one carries `hop.export_final = '1'` -- a document without that part is incomplete and is not a backup. Provenance travels with every row: the participant set, the room and the speaker are projected explicitly, because a column nobody selects is a column that never leaves the store"
+        },
+        {
+          "route": "in_import",
+          "because": "take ONE part of such a document into this RUNNING hive, idempotently. The part is the body; nothing else is needed and nothing is inferred. Applying the same part twice leaves the same state -- that is what makes the document a backup and a merge rather than only a birth seed. A part that lost a provenance column in transit is REFUSED on `reject` with nothing written: an imported row whose participant set did not survive is a row that may be told to anyone"
         }
       ],
       "emits": [
@@ -31,6 +39,10 @@
         {
           "route": "reject",
           "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+        },
+        {
+          "route": "dump",
+          "because": "the transfer lane's output: `hop.dump_kind == 'export_part'` is one part of the exported document (`hop.export_part` of `hop.export_of`, `hop.export_final` marking the last), `hop.dump_kind == 'import_receipt'` says what one applied part wrote (`hop.rows_written`). Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that also tests `dump_kind` reads as no drain under the required_drains probe. Undrained, an export runs and reaches nobody"
         }
       ]
     },
@@ -49,6 +61,26 @@
         "accepts": "in_query",
         "emits": "reject",
         "because": "a question this hive will not answer -- a half window it will not guess at -- leaves on the reject lane; undrained, the asker waits for a bundle that will never arrive"
+      },
+      {
+        "accepts": "in_export",
+        "emits": "dump",
+        "because": "the export IS the dump lane -- wired without it, the walk runs, reads the whole store and delivers the document to nobody"
+      },
+      {
+        "accepts": "in_export",
+        "emits": "reject",
+        "because": "an export that aborts mid-walk (the store refused a read) has already emitted parts; undrained, the caller keeps a partial document that looks complete"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "dump",
+        "because": "the receipt of an applied part is the only positive signal an import has -- undrained, nobody ever learns whether a transfer landed"
+      },
+      {
+        "accepts": "in_import",
+        "emits": "reject",
+        "because": "a part this hive will not take -- one whose audience did not survive the transfer above all -- leaves here; undrained, a refused transfer looks exactly like a successful one"
       }
     ],
     "graph": {
@@ -86,6 +118,28 @@
           "modifier": {
             "set_context": {
               "mem_phase": "'flush'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_export'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'porter'",
+              "mem_phase": "'export'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./porter",
+          "condition": "has(hop.route) && hop.route == 'in_import'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'porter'",
+              "mem_phase": "'import'"
             }
           }
         },
@@ -349,15 +403,48 @@
           "from": "./writer",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./porter",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'pstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'porter'",
+              "mem_phase": "hop.phase",
+              "port_run": "hop.port_run",
+              "port_table": "hop.port_table"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./porter",
+          "condition": "context.store_origin == 'porter'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "context.mem_phase"
+            }
+          }
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'dump'"
+        },
+        {
+          "from": "./porter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
+    "purpose": "Scope marker of the memory hive: bundles the durable store and the write/recall/extraction/consolidation lanes of one MEMBER's memory behind ITS OWN PATH (ADR-0002 E1 -- agents are lenses on it, a second agent of the same member inherits what that member knows). `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`. The transfer lane (#243) carries the content OUT as a versioned document and back IN to a running hive, so a memory is an asset with an identity of its own rather than a side effect of one deployment. The consolidation lane carries two model roles: the dreamer writes the change narrative, the judge decides identity for the nightly canonicalisation round.",
     "use_when": "Instantiate once per member; wire the lanes at the hive path in the same mutation. Every write lane needs the provenance of the turn on its ingress context (audience_set, channel, and speaker/agent_id), every read lane the asking round (audience_now, channel).",
     "not_in_scope": "No agent logic, no conversation state, no routing for the parent scope — the hive only carries its internal graph.",
-    "contract_in": "Four lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_flush -- drain the extraction queue now. Which cell serves a lane is this hive's business.",
-    "contract_out": "Two lanes, out of the hive path. bundle -- the answer to a question. reject -- something this hive would not take; the body says which and why."
+    "contract_in": "Six lanes, all at the hive path. in_episode -- remember this turn. in_query -- answer this question. in_remember -- take this block now (inline). in_flush -- drain the extraction queue now. in_export -- write the remembered content out as a document. in_import -- take one part of such a document in, idempotently. Which cell serves a lane is this hive's business.",
+    "contract_out": "Three lanes, out of the hive path. bundle -- the answer to a question. dump -- the transfer document, part by part, and the receipt of an applied part. reject -- something this hive would not take; the body says which and why."
   }
 }

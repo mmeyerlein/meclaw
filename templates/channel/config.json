@@ -1,0 +1,183 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "context": [
+            "channel"
+          ],
+          "because": "a screened turn on its way to the generation that currently serves this channel. This is the lane the shared firewall's 'pass' comes back on"
+        },
+        {
+          "route": "in_reply",
+          "context": [
+            "chat_id"
+          ],
+          "because": "something to say in this channel that the generation did not produce -- a digest, an alarm, an operator's line. It goes straight to the connector"
+        },
+        {
+          "route": "in_tool",
+          "because": "one tool result, coming back for the active generation"
+        },
+        {
+          "route": "in_advice",
+          "because": "an advisor's answer, coming back from an agent core"
+        },
+        {
+          "route": "in_bundle",
+          "because": "a memory bundle, coming back from whatever keeps this member's memory"
+        },
+        {
+          "route": "in_memory_call",
+          "because": "a memory tool call the generation's front model made, handed back in. It travels through the hive path rather than as a self-loop on the generation, because a self-loop does not survive a generation swap"
+        },
+        {
+          "route": "in_sweep",
+          "because": "an operator-forced session sweep for the active generation"
+        },
+        {
+          "route": "in_prune",
+          "because": "a prune verdict for the active generation's context window"
+        },
+        {
+          "route": "in_round_sweep",
+          "because": "a round that ran out of iterations, swept by an operator"
+        }
+      ],
+      "emits": [
+        {
+          "route": "turn",
+          "because": "somebody wrote in this channel -- one unscreened user turn, with context.channel, context.chat_id and context.user_id already promoted, for the SHARED firewall in front of all channels"
+        },
+        {
+          "route": "write",
+          "because": "the closed session of the active generation as one write batch, for wherever a day belongs"
+        },
+        {
+          "route": "turn_write",
+          "because": "the same batch after every stored turn, off unless the generation switches it on"
+        },
+        {
+          "route": "recall",
+          "because": "a memory read the active generation needs; context.channel_open_history rides along and tells the memory whether this room shows joiners its history"
+        },
+        {
+          "route": "tool",
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one"
+        },
+        {
+          "route": "error",
+          "because": "a normalised failure of this channel -- the connector's own, the generation's, and a round that hit its iteration cap. The parent MUST wire it"
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "in_turn",
+        "emits": "error",
+        "because": "a channel that takes turns produces failures: a reply the connector could not deliver, an inference that failed, a round that hit its cap. Undrained, all three look from the outside like an agent that simply went quiet"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./terminal",
+          "condition": "has(hop.route) && hop.route == 'in_turn'",
+          "modifier": {
+            "set_context": {
+              "channel_open_history": "'0'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./telegram-connector",
+          "condition": "has(hop.route) && hop.route == 'in_reply'"
+        },
+        {
+          "from": ".",
+          "to": "./terminal",
+          "condition": "has(hop.route) && (hop.route == 'in_tool' || hop.route == 'in_advice' || hop.route == 'in_bundle' || hop.route == 'in_memory_call')"
+        },
+        {
+          "from": ".",
+          "to": "./terminal",
+          "condition": "has(hop.route) && (hop.route == 'in_sweep' || hop.route == 'in_prune' || hop.route == 'in_round_sweep')"
+        },
+        {
+          "from": "./terminal",
+          "to": "./telegram-connector",
+          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_reply'"
+            }
+          }
+        },
+        {
+          "from": "./telegram-connector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_context": {
+              "channel": "has(hop.chat_id) ? hop.chat_id : ''",
+              "chat_id": "has(hop.chat_id) ? hop.chat_id : ''",
+              "user_id": "has(hop.user_id) ? hop.user_id : ''"
+            }
+          }
+        },
+        {
+          "from": "./telegram-connector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.round_capped)",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            }
+          }
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'write'"
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn_write'"
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'recall'"
+        },
+        {
+          "from": "./terminal",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'tool'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of ONE channel: the connector that owns the chat's credential, and the slot the channel's current talky generation occupies. The hive IS the channel -- the identity that stays while the generations come and go (ADR-0002 E7). Sealed: params.ports is empty, so every lane is addressed at the hive path and named on hop.route.",
+    "use_when": "One per chat, room or phone line whose participant set is a fact worth keeping. Instantiate it with the ingress and the drains in the same mutation; the first generation arrives in the mutation after that, as a swap onto the slot.",
+    "not_in_scope": "No firewall -- screening stays SHARED in front of all channel hives, so one attacker touching three channels is one pattern instead of three thirds, and the rate window does not restart with a generation. No memory of its own: the member's memory-hive is a sibling, and the generation asks it on recall. No persona, no tools, no roster: who is in the room is a constant of the generation's lifetime, not a table anybody maintains."
+  }
+}

@@ -64,9 +64,11 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   drain: in-flight work is lost on EOF and child termination
 - [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
   subscription plan actually carries until reset
-- [#250](https://github.com/mmeyerlein/meclaw/issues/250) a proxy e2e test's
-  30-second failure marker fires under CI load, so a green run and a busy runner
-  look the same
+- [#267](https://github.com/mmeyerlein/meclaw/issues/267) `steward` reads
+  `colony.db` directly, which the spec has forbidden without exception since
+  #160 — the data it needs (cost, errors, dead letters, whether a mutation
+  committed) has no sanctioned route today, so this is a decision about the rule
+  rather than a repair
 - [#111](https://github.com/mmeyerlein/meclaw/issues/111) guarding interpreter
   bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
@@ -101,11 +103,13 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 - [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
   producer since #78, but no shipped composite carries the tool that drives it,
   so time-range questions still run as point recalls
-- [#243](https://github.com/mmeyerlein/meclaw/issues/243) remembered content
-  cannot leave a hive and enter another one. Rebuilding a colony from the current
-  library today means seeding the new store at birth or losing what it knew,
-  which is not a migration path — and the seeder cannot carry the canonical
-  tables at all
+- [#261](https://github.com/mmeyerlein/meclaw/issues/261) the memory porter
+  predates the substrate's `transfer` slot and now duplicates four things it does
+  natively — a hand-maintained schema mirror, an idempotence probe, a provenance
+  name-list and whole-part atomicity. What stays template-level is the walk over
+  the fifteen tables. Not urgent: the porter works, and this is the one component
+  where a member's history is at stake, so it earns a slot of its own rather than
+  a place at the end of a wave
 
 ## Alongside: surfaces and docs
 
@@ -119,40 +123,34 @@ the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 ## Ongoing: community templates
 
 The template surface is open: a template is a directory, a README and a
-`template.json`. Seventeen are listed in
-[`templates/README.md`](templates/README.md) as worked examples — fourteen
-single-purpose ones plus three composites: `talky@3.0.0`, which carries four of
-them as sub-units, `cogny@3.0.0`, which carries two, and `memory-hive@2.1.0`, a
+`template.json`. Nineteen are listed in
+[`templates/README.md`](templates/README.md) as worked examples — sixteen
+single-purpose ones plus three composites: `talky@3.0.4`, which carries four of
+them as sub-units, `cogny@3.0.4`, which carries two, and `memory-hive@2.2.1`, a
 member's long-term memory as a hive of eleven cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
 requirement, not a convention.
 
-Three shipped templates do not yet satisfy what they promise, all three found by
-building a colony from the library rather than by reading it:
+What a shipped template promises and what it does drift apart silently, because
+nothing recomputes the promise. 0.17.0 closed six such findings and swept the
+`not_in_scope` field of all 34 templates against the code, which turned up eleven
+more sentences that were simply false. What is left:
 
-- [#240](https://github.com/mmeyerlein/meclaw/issues/240) `cogny` seals to one
-  lane in and one out, so no caller can hand the core a tool, a memory or an
-  error drain — `talky` shows the same seal carrying all three
-- [#241](https://github.com/mmeyerlein/meclaw/issues/241) `affinity`'s brief
-  loses the tool-call id on every echo, so the caller's fan-in never closes
-- [#242](https://github.com/mmeyerlein/meclaw/issues/242) the same brief's
-  payload travels only as `system.*`, which never reaches the model behind a
-  sealed agent hive
-- [#245](https://github.com/mmeyerlein/meclaw/issues/245) `thread_recall` is on
-  by default and no contract declares its lane, so every stub the curator leaves
-  points at a tool nobody can reach — and `collector`'s contract and its script
-  disagree about a second lane in the other direction
-- [#246](https://github.com/mmeyerlein/meclaw/issues/246) five hive templates are
-  sealed with no contract at all, and every channel connector the library has
-  sits inside one of them. There is no connector to hang on an agent of your own
+- [#272](https://github.com/mmeyerlein/meclaw/issues/272) every user turn of one
+  drained batch is attributed to the same speaker, because `context` is per
+  message and a batch is a day. The audience gate holds and nothing leaks; what
+  breaks is who said what *inside* the room, which is the distinction a
+  multi-person channel exists to make. A wrong identity is worse than an absent
+  one — nothing downstream can tell a filled column from a correct one
 - [#248](https://github.com/mmeyerlein/meclaw/issues/248) `cogny`'s README puts
   the memory leg at its own collector, which its seal makes impossible — `talky`
   is the only shipped composite that can carry one
-- [#249](https://github.com/mmeyerlein/meclaw/issues/249) `talky`'s README gives
-  the memory wiring twice, and the table version names addresses the boundary
-  refuses
+- [#254](https://github.com/mmeyerlein/meclaw/issues/254) the general form of the
+  same problem, one level up: a review checks code against spec, so a spec that
+  is ahead of the code passes every review. The audit sorts every claim about
+  behaviour into built-and-pinned, built-and-unpinned, or described-and-absent
 
 ## Shipped
 

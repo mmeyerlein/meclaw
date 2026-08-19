@@ -9,9 +9,10 @@
         {
           "route": "in_turn",
           "context": [
-            "channel"
+            "channel",
+            "audience_set"
           ],
-          "because": "a first turn from a surface, for somebody this colony has not met yet. The caller MUST promote the identity to context.channel"
+          "because": "a first turn from a surface, for somebody this colony has not met yet. The caller MUST promote the identity to context.channel, and it MUST promote the round the conversation is spoken in to context.audience_set -- a JSON list in affinity vocabulary. The reception hands both to the ingress edge it draws into the composite it builds; it cannot derive the second from the first, because a channel identity is a room and not a participant. A caller that declares no round gets a generation that closes untagged, and a write path that needs one refuses that day visibly"
         }
       ],
       "emits": [
@@ -41,6 +42,7 @@
               "rec_origin": "'greet'",
               "rec_phase": "hop.phase",
               "rec_channel": "hop.channel",
+              "rec_aud": "hop.aud",
               "rec_body": "hop.rec_body"
             }
           }

@@ -42,6 +42,13 @@ use tokio::sync::mpsc;
 
 const TEMPLATE: &str = "../../templates/receptionist";
 
+/// The round a conversation is spoken in, in the affinity vocabulary the
+/// audience gate speaks. The reception never derives it: a channel identity is
+/// a room, and a room is not a participant (ADR-0002 E8).
+const ROUND: &str = r#"["member:alex","agent:scribe"]"#;
+/// The same set as a CEL string literal, for an edge that declares it.
+const ROUND_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
+
 // ════════════════════════════════════════════════════════ the script harness
 
 fn config_of(rel: &str) -> Value {
@@ -129,23 +136,41 @@ fn knobs() -> Vec<(&'static str, &'static str)> {
 }
 
 /// An inbound turn as it reaches `greet`: the parent edge named the lane and
-/// promoted the channel.
+/// promoted the channel and the round.
 fn in_turn(channel: &str, text: &str) -> Value {
+    in_turn_declaring(channel, text, Some(ROUND))
+}
+
+/// The same door, with the round it declared spelled out -- `None` is a door
+/// that declares none at all.
+fn in_turn_declaring(channel: &str, text: &str, round: Option<&str>) -> Value {
+    let mut context = json!({"channel": channel});
+    if let Some(round) = round {
+        context["audience_set"] = json!(round);
+    }
     json!({
         "target": "/reception/greet",
-        "header": {"hop": {"route": "in_turn"}, "context": {"channel": channel}},
+        "header": {"hop": {"route": "in_turn"}, "context": context},
         "messages": [{"origin": "user", "type": "text", "text": text}]
     })
 }
 
 /// The ledger's answer to the lookup: `rows` verbatim as the store returns them.
 fn look_reply(channel: &str, keep: &Value, rows: Value) -> Value {
+    look_reply_declaring(channel, keep, rows, Some(ROUND))
+}
+
+/// The same reply, with the round the hive edge promoted back onto it --
+/// `None` is the round a door that declared none produced, which is the empty
+/// string and never a guess.
+fn look_reply_declaring(channel: &str, keep: &Value, rows: Value, round: Option<&str>) -> Value {
     json!({
         "target": "/reception/greet",
         "header": {
             "hop": {"operation": "select", "rows_affected": rows.as_array().map(|a| a.len()).unwrap_or(0)},
             "context": {"rec_origin": "greet", "rec_phase": "look",
-                        "rec_channel": channel, "rec_body": keep.to_string()}
+                        "rec_channel": channel, "rec_aud": round.unwrap_or_default(),
+                        "rec_body": keep.to_string()}
         },
         "messages": [{"origin": "tool", "type": "tool_result", "id": "r-look",
                       "text": rows.to_string()}]
@@ -377,6 +402,117 @@ fn unconfigured_ports_are_left_unwired() {
     assert_eq!(edges.len(), 2, "ingress + reply only: {edges:?}");
 }
 
+// ══════════════════════════════════════════════════════════════ 4. THE ROUND
+
+/// GH #274. The reception draws the ingress edge of every generation it builds,
+/// so whatever that edge declares is the only thing the keeper behind it will
+/// ever record about the round -- and the keeper records it exactly once, when
+/// the generation opens (ADR-0002 E8/E12).
+///
+/// It has to be a DECLARATION, not a survival. The round does reach the talky
+/// today as plain context that no hop happened to delete, which is the same
+/// accident GH #273 refused to build on: an inherited value is not a promise,
+/// and the next version of any cell on the path may stop carrying it.
+#[test]
+fn the_ingress_edge_the_reception_draws_declares_the_round() {
+    let keep = json!({"messages": [{"origin": "user", "type": "text", "text": "hi"}]});
+    let out = greet(&knobs(), look_reply("c-42", &keep, json!([])));
+    let edges = out[0]["diff"]["add_edges"].as_array().expect("add_edges");
+    assert_eq!(
+        edges[0]["modifier"]["set_context"]["audience_set"],
+        json!("hop.aud"),
+        "the edge into the new generation NAMES the round: {edges:?}"
+    );
+    assert_eq!(
+        edges[0]["modifier"]["set_context"]["channel"],
+        json!("hop.chan_raw"),
+        "and it still names the room"
+    );
+    assert_eq!(
+        out[2]["header"]["aud"],
+        json!(ROUND),
+        "the turn behind the mutation carries the round the door declared"
+    );
+}
+
+/// The round rides the ledger round trip the way the channel does -- on the
+/// hop, promoted back to `context.rec_aud` by the hive's own edge. A key that
+/// is only inherited is a key the next hop may drop.
+#[test]
+fn the_round_rides_the_lookup_on_the_hop() {
+    let out = greet(&knobs(), in_turn("c-42", "hi"));
+    assert_eq!(out.len(), 1, "one lookup, nothing else: {out:?}");
+    assert_eq!(
+        out[0]["header"]["aud"],
+        json!(ROUND),
+        "the lookup carries the round to the other side of the store: {out:?}"
+    );
+}
+
+/// A door that declares nothing gets nothing. Not the channel turned into a
+/// participant, not `["*"]`, not a set derived from the ledger row -- an EMPTY
+/// round, which the write path refuses visibly rather than storing a day that
+/// claims everyone was present (GH #269, GH #273).
+///
+/// The key is still PRESENT and empty: a missing hop key makes the CEL modifier
+/// fail, a failed modifier skips the edge, and a turn that cannot name its
+/// round would then vanish instead of being answered.
+#[test]
+fn a_door_that_declares_no_round_leaves_it_empty() {
+    let out = greet(&knobs(), in_turn_declaring("tg:42", "hi", None));
+    assert_eq!(
+        out[0]["header"]["aud"],
+        json!(""),
+        "present and empty, never absent: {out:?}"
+    );
+
+    let keep = json!({"messages": []});
+    let out = greet(
+        &knobs(),
+        look_reply_declaring("tg:42", &keep, json!([]), None),
+    );
+    let edges = out[0]["diff"]["add_edges"].as_array().expect("add_edges");
+    assert_eq!(
+        edges[0]["modifier"]["set_context"]["audience_set"],
+        json!("hop.aud"),
+        "the edge is drawn the same way either way: {edges:?}"
+    );
+    for m in &out {
+        let aud = m["header"]["aud"].as_str().expect("aud is always present");
+        assert_eq!(aud, "", "nothing is invented: {m:?}");
+    }
+    let whole = meclaw_core::serde_json::to_string(&out).unwrap();
+    assert!(
+        !whole.contains("member:") && !whole.contains(r#"["*"]"#),
+        "no participant is derived from a channel id: {whole}"
+    );
+}
+
+/// The other half of the same fix, and the half a caller actually reads: the
+/// hive's own contract ASKS for the round. A caller that satisfies the contract
+/// must end up with a generation that closes tagged.
+#[test]
+fn the_contract_asks_the_caller_for_the_round() {
+    let cfg = config_of("config.json");
+    let accepts = cfg["params"]["contract"]["accepts"]
+        .as_array()
+        .expect("accepts");
+    let entry = accepts
+        .iter()
+        .find(|a| a["route"] == json!("in_turn"))
+        .expect("the in_turn lane");
+    let keys: Vec<&str> = entry["context"]
+        .as_array()
+        .expect("context keys")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        keys.contains(&"channel") && keys.contains(&"audience_set"),
+        "the lane asks for the room AND the round: {keys:?}"
+    );
+}
+
 // ═════════════════════════════════════════════════════════ the colony group
 
 fn templates_root() -> std::path::PathBuf {
@@ -473,7 +609,8 @@ fn main_config() -> Value {
         {"from": "./surface", "to": "./reception",
          "condition": "has(hop.route) && hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"},
-                      "set_context": {"channel": "hop.chat_id"}}},
+                      "set_context": {"channel": "hop.chat_id",
+                                      "audience_set": ROUND_CEL}}},
         {"from": "./reception", "to": "/colony/mutations",
          "condition": "has(hop.route) && hop.route == 'mutate'"},
         {"from": "./archive", "to": "/park"}

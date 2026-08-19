@@ -310,6 +310,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    write_surface: meclaw_core::WriteSurface,
 ) {
     // Phase-13.5 Lifecycle-3b Task 3 (F2): death-ack guard. Declared FIRST so it
     // drops LAST (reverse-declaration drop order) — i.e. AFTER the re-bound `db`
@@ -393,6 +394,30 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                     msg.reply_to.clone(),
                 );
                 if !resolve_blob_for_delivery(&mut msg, &blob_store, &colony_inbox_tx).await {
+                    continue;
+                }
+                // GH #253: the `transfer` body slot is answered by the SUBSTRATE,
+                // above every cell type, against this cell's OWN `DbConn` — the
+                // only connection that carries the extensions the cell installed
+                // (a `store`'s `meclaw_stem_v1` tokenizer, without which an FTS
+                // trigger cannot even open its index). A message that carries the
+                // slot never reaches `handle()`.
+                //
+                // BEFORE the consumes gate, and deliberately: `consumes` declares
+                // what the cell's `handle()` needs, and a transfer never reaches
+                // it. Enforcing a body contract against a payload the cell will
+                // not see would dead-letter every transfer sent to a cell that
+                // requires `messages` — which is every `store` in the library.
+                // AFTER the blob resolution, because a slot is only readable once
+                // the body it sits in is whole.
+                if crate::db_transfer::handle_transfer_slot(
+                    &msg,
+                    &sink,
+                    &mut db,
+                    write_surface,
+                )
+                .await
+                {
                     continue;
                 }
                 if !enforce_consumes_for_delivery(&msg, &consumes, &sink, &colony_inbox_tx).await {
@@ -512,6 +537,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    write_surface: meclaw_core::WriteSurface,
 ) {
     let (events_tx, events_rx) = mpsc::channel::<L::Event>(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel::<L::Reconfig>(8);
@@ -546,6 +572,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
         death_ack,
         blob_store,
         consumes,
+        write_surface,
     ));
 
     // AUDIT-PRE14-001: a panic on EITHER side must reach the supervisor and must
@@ -635,6 +662,7 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    write_surface: meclaw_core::WriteSurface,
 ) -> bool {
     // Phase-13.5 Lifecycle-3b (F2): death-ack guard. Declared FIRST → drops
     // LAST, i.e. AFTER the re-bound `db` below (reverse-declaration drop order),
@@ -703,7 +731,17 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
                         msg.headers.clone(),
                         msg.reply_to.clone(),
                     );
+                    // GH #253: same substrate seam as the stateful task, in the
+                    // same position — after the blob resolution, before the
+                    // consumes gate, never reaching `handle()`.
                     if resolve_blob_for_delivery(&mut msg, &blob_store, &colony_inbox_tx).await
+                        && !crate::db_transfer::handle_transfer_slot(
+                            &msg,
+                            &sink,
+                            &mut db,
+                            write_surface,
+                        )
+                        .await
                         && enforce_consumes_for_delivery(
                             &msg,
                             &consumes,
@@ -1020,6 +1058,7 @@ mod tests {
             None, // _death_ack
             None, // _blob_store
             None,
+            Default::default(),
         ));
         let msg = meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/x")).build();
         tx.send(msg).await.unwrap();
@@ -1078,6 +1117,7 @@ mod tests {
             None, // death_ack
             None, // blob_store
             None,
+            Default::default(),
         ));
 
         // Message with an explicit reply_to so the backstop error has somewhere
@@ -1165,6 +1205,7 @@ mod tests {
             None,                                       // death_ack
             None,                                       // blob_store
             None,
+            Default::default(),
         ));
 
         mb_tx
@@ -1232,6 +1273,7 @@ mod tests {
             None, // death_ack
             None, // blob_store
             None,
+            Default::default(),
         ));
 
         mb_tx
@@ -1299,6 +1341,7 @@ mod tests {
             None, // death_ack
             None, // blob_store
             None,
+            Default::default(),
         ));
 
         let peace =
@@ -1366,6 +1409,7 @@ mod tests {
             None, // _death_ack
             None, // _blob_store
             None,
+            Default::default(),
         ));
         mb_tx
             .send(MessageBuilder::new(Path::new("/probe")).build())
@@ -1445,6 +1489,7 @@ mod tests {
             None, // death_ack
             None, // blob_store
             None,
+            Default::default(),
         ));
 
         // Queue 2 messages. The first is picked up and blocks in handle().
@@ -1634,6 +1679,7 @@ mod tests {
             Some(death_ack_tx),
             None,
             None,
+            Default::default(),
         ));
 
         // Queue a first message (blocks in handle() on the gate) and a second
