@@ -4,7 +4,7 @@ meclaw is a framework for building agentic harnesses, and swarms of them, as a d
 Issues, discussions, and PRs are all open. This file tells you how to build it, how to test it,
 where the truth lives, and what makes a good first contribution.
 
-First rule: read the honest status before you start. meclaw is **v0.17.0**, a proof of concept
+First rule: read the honest status before you start. meclaw is **v0.17.1**, a proof of concept
 for the DSL and the self-modifying substrate. The mutation substrate is real and tested. The
 builder-hive (plain English to topology) is **not** in this repository — it is built and tested in
 the private tree and is not on the public template allow-list. If a change claims macOS support, or

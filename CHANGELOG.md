@@ -11,6 +11,457 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.17.1] — 2026-08-21
+
+A remediation release, and the third digit is the whole point of it. Every entry
+below restores something that was already promised — by a template's own
+`template.json`, by the spec trias, by a cell type's documented refusal — and
+nothing here hands a caller a capability that was never on offer.
+
+Two entries look like they move the second digit and do not. `contract.transfer:
+"none"` is a **new declaration**, but what it restores is the `vault`'s oldest
+promise: two callers, passphrase or nothing. The substrate's `transfer` slot
+(0.17.0) answers above `handle()`, so it walked straight past that ACL and handed
+out the vault's inventory, its salt and its whole audit trail to anyone with an
+edge. A door that was supposed to be shut and was not is a **repair**, not a
+feature. And the three new gates do not change what the substrate does — they
+change what can quietly stop being true about it.
+
+Twenty-two issues, of which twelve are shipped templates whose documents,
+addresses or numbers had drifted from what the code does. That is the shape of
+this release: the 2026-08-20 consistency audit read the whole tree against
+itself, and this is the night that answered it.
+
+### Fixed
+
+- **A rejected mutation leaves no registered cell**
+  ([#276](https://github.com/mmeyerlein/meclaw/issues/276)). Four rejects could
+  fire *after* `handle_mutation` had already registered the node half of a diff —
+  `required_drain_missing`, `hive_contract`, `stop_wiring_unavailable`,
+  `term_timeout`. None of them took the registry back and none wrote a terminal
+  `mutation_log` row. The caller got a 422 and the colony kept half the mutation:
+  in the first observed case thirteen cells, including a second `proxy` polling
+  the same bot credential as the one already running.
+
+  Registration now runs **behind every check that can judge the diff itself** —
+  the spawn loop and the subtree registration moved after both post-state
+  validations, which cannot be pulled forward because they need the real
+  post-state `EdgeTable`. The two runtime rejects get a real rollback:
+  `UpsertRegistry`/`SetRegistryProvenance` travel in the write buffer instead of
+  fire-and-forget, so `colony.db` never sees the row; the registry entry and
+  `node_contracts` are taken back out; an already-spawned cell is peace-stopped
+  **and waited for** before its directory is swept, on the same `term_timeout`
+  budget as any other colony-initiated stop, because sweeping a live task's
+  directory turns a clean reject into a half-removed tree — worse than the orphan
+  the audit model promises. Freshly renamed-in subtree roots are swept too, not
+  only staged ones. `terminalize_apply_reject` writes the `failed` row.
+
+  The error-model paragraph of the overview described two bands (before / from
+  the rename phase) and therefore lied about exactly this case; it names three
+  now, in both language versions, and `required_drain_missing` joined the
+  `error_code` enum. Pinned by
+  `crates/meclaw-colony/tests/gh276_rejected_mutation_leaves_no_residue.rs`, five
+  tests, one per code, each against the registry (RAM *and* `colony.db`), the
+  `mutation_log`, and — for the subtree case — a teardown counter that proves the
+  rollback waited.
+
+- **A cell can declare that its database does not travel**
+  ([#314](https://github.com/mmeyerlein/meclaw/issues/314)). The `transfer` body
+  slot is answered by the substrate above every cell type, before `handle()` and
+  before the consumes gate — which put it out of reach of every rule a cell type
+  enforces inside its own `handle()`. The `vault`'s two-caller ACL never saw a
+  transfer. An `export` therefore returned the full inventory (`name`, `version`,
+  `status`, `created_at` in `vault_secrets` are cleartext), the salt, and the
+  complete call history in `vault_audit`. None of it needed a passphrase.
+
+  `contract.transfer: "none"` (default `"all"`) takes a cell's `cell.db` off the
+  slot — `export` **and** `import`, because what may not leave may not be
+  overwritten across the same seam either. The refusal carries
+  `error_code: "transfer_exempt"` and is decided **before the arguments are
+  read**: a refusal that sounds different per table name would itself be an
+  inventory. Deliberately **not** a type-name blocklist in the substrate — a list
+  in `db_transfer.rs` is invisible in the affected cell's `config.json`, invisible
+  in a diff, and has to be touched again for the next cell type with the same
+  need. Both shipped vault templates declare it: `vault@1.0.1`, `access@2.0.2`.
+
+  `contract.write_surface` (0.17.0) and `contract.transfer` now travel as one
+  value through the spawn helpers and stay independent: `write_surface` says
+  *who* may write and leaves an `export` alone — which is precisely the gap #314
+  opened, because giving away the vault was a **read**. Documented in both
+  language versions (`cell-types` § Content transfer and § vault, `config` §
+  contract); pinned end-to-end against a real vault on a real `cell.db`,
+  including the negative pin that shows what still travels without the
+  declaration.
+
+- **`code`: `max_concurrency: 0` is refused instead of silencing the dispatcher**
+  ([#322](https://github.com/mmeyerlein/meclaw/issues/322)). Zero passed the
+  integer check, survived the `unwrap_or(4)` default and landed as
+  `Semaphore::new(0)`: no permit, no acquire, no drain. The cell was registered,
+  active and permanently mute — no error, no dead letter. Its five siblings
+  (`bash`, `file`, `edit`, `web_search`, `web_fetch`) have always refused it;
+  `code` was the outlier, and it takes over their wording verbatim so an operator
+  reads one sentence and not six. A parity test holds the six together.
+
+- **An optional `consumes.body` declaration is a declaration**
+  ([#323](https://github.com/mmeyerlein/meclaw/issues/323)). `required` governs
+  the ingress check, not the declaration — but the capability switch read the
+  *required* projection. A cell declaring `consumes.body.attachments` with
+  `required: false` got no `AttachmentReader` at spawn, and because the two
+  `None` branches are deliberately indistinguishable to the cell ("no store
+  wired" vs "not declared"), the withdrawal was silent. Measured rather than
+  guessed: `required: false` appears in 46 `consumes.body` entries across 43
+  shipped configs, so the sentence "there is no optional `consumes.body` field"
+  was simply false and refusing would have broken all 43.
+
+  The trias said that sentence four times and says the true one now, in both
+  language versions: `required: false` drops the **presence obligation and the
+  type check with it** — an optional key never enters the projection
+  `validate_consumes` walks, so its `type` token is documentation and not a gate
+  today. Checking present optional keys against their token would be a behaviour
+  change on 46 shipped usages and belongs in its own issue with its own
+  measurement.
+
+- **The surface locator asks for the root cell instead of assuming it is called
+  `main`** ([#324](https://github.com/mmeyerlein/meclaw/issues/324)). The locator
+  resolved `root.join("main")`, a literal for something boot has never required —
+  `assert_single_root_dir` takes whatever the single top-level directory with a
+  `config.json` is called. A colony whose root directory has any other name
+  booted cleanly, registered its surfaces, and answered **every** surface URL
+  with 404. No warning, no dead letter; the page was simply not there. The
+  locator now asks `find_root_cell_dir`, the same anchor mutation and boot
+  already use, including for the containment check. The two #159 fixtures never
+  wrote a root `main/config.json` at all — a tree no boot would have accepted —
+  and now write and name one.
+
+- **`steward@2.0.3`: the loop can commit, for the first time in its life**
+  ([#304](https://github.com/mmeyerlein/meclaw/issues/304)). The mutator emitted
+  a `swap_nodes` diff with `params` at entry level on **both** paths, decide and
+  revert. The validator has always demanded `match.name` + `with` and reads no
+  `params` there, so the steward has never once committed a change — and
+  `swap_nodes` could not have carried it anyway: it is an edge swing, not an
+  in-place rewrite of a running cell.
+
+  The decided change now leaves the hive as an ordinary params update — body
+  `{system:{}, params:{…}}`, `hop.target` naming the cell — the shape
+  `llm-registry/hand` already drives. No `messages[]` (that would buy an
+  inference on delivery), empty `system` (otherwise it is not a UBF body). The
+  radius gets **narrower**, not wider: an edge cannot be computed from a body, so
+  the parent draws one per reachable cell instead of handing the loop the whole
+  tree through `/colony/mutations`.
+
+  Three review rounds found the same defect class twice more, on the other half
+  each time. The numeric radius had no receiver at all — there is no
+  `OverlayParams` for `CodeParams` and the shipped cap sits on a `code` cell, so
+  a receipt would have said `applied` while nothing happened. The radius is a
+  **key set** now (`STEWARD_NUMERIC_PARAM_KEYS`, the runtime-mutable numeric
+  `llm` params); a key outside it comes back as `key_outside_radius_<key>`,
+  receipt `refused`, nothing emitted. Both directions call one `in_radius`
+  function, because the revert branch called `check()` never and emitted
+  unconditionally. And a revert whose stored plan is gone no longer reads as a
+  completed way back: the meter closes the row in the same breath as it issues
+  the revert command, so the row is reopened as `status=applied,
+  outcome=revert_refused` with a `reason_code` — the true state (the unproven
+  change is still running) and the loudest one.
+
+- **`builder-hive@2.0.2` can deploy again**
+  ([#305](https://github.com/mmeyerlein/meclaw/issues/305),
+  [#327](https://github.com/mmeyerlein/meclaw/issues/327),
+  [#328](https://github.com/mmeyerlein/meclaw/issues/328)). It had been unable to
+  ship anything since 2026-08-18, broken three independent ways by two changes
+  that were each correct on their own.
+
+  *#327 — boot died before a cell spawned.* The comment in the `stager` script
+  that **explains** strict substitution triggered it: substitution reads
+  `script_inline` as text and knows no difference between comment and code, so
+  there stood a variable named `VAR` with no value and no default and
+  `meclaw --validate` aborted with `env_var_missing`. It carries the escape form
+  now.
+
+  *#305 — the deploy plan violated the hive boundary.* The plan drew its
+  report-home edge onto `./<hive>/capture`, a cell **inside**. Hours after the
+  #215 fix the hive was sealed with `ports: []`, and from then on the colony
+  refused the builder's mutation with `hive_port_boundary`: stage, gate, release,
+  promote — and then no deploy. Repaired with the **lane**, not an exception:
+  declaring `capture` a port would reopen exactly the interior address the seal
+  closed. The plan addresses the hive path and stamps `hop.route = 'in_report'`,
+  a lane `params.contract` already accepted.
+
+  *#328 — freshly drafted cells read a retired wire.* Cells the builder drafts
+  read their body with `json.load(sys.stdin)`, correct on the old single-object
+  wire and wrong since the three-object wire landed on 2026-08-15: the first
+  stdin object is no longer the body, so deployed cells parsed the wrong object
+  and emitted degenerate output.
+
+  The shape all three share is that nothing re-ran a drafted cell end to end
+  after a correct substrate change. That is what R12 below is for.
+
+- **`builder-hive`'s own gate knows the types the registry spawns**
+  ([#325](https://github.com/mmeyerlein/meclaw/issues/325)). `g1` checked every
+  `cell.type` in a staged draft against a hand-written `KNOWN_TYPES` set — a copy
+  of the registry that had drifted from it: it carried `hive`, which no factory
+  spawns, and lacked `vault`, which #151 added as a real cell type. Measured
+  consequence: a valid draft containing a vault cell failed the house gate with
+  `unknown_cell_type`, stage `g1_failed`, and was never promoted. The set is
+  exactly `built_in_factories()` (14 types) now, and the hive branch runs
+  **before** the set check — a hive is a scope marker, not an actor, so it does
+  not belong in the spawnable set and is still a legal draft node. Pinned set-equal
+  against the registry, not merely as a subset: a type `g1` knows and nobody can
+  spawn would stay invisible until the mutation.
+
+- **`affinity@2.0.5`: the audience-set rule is fail-closed in every shipped
+  topology** ([#306](https://github.com/mmeyerlein/meclaw/issues/306)).
+  `config.json` promised the caller that the hive promotes audience and
+  participants itself. The door edge carried no modifier, and **no modifier in
+  the whole repository** ever wrote `context.participants` — so the refusing half
+  of the audience-SET rule was dead code everywhere it shipped. Measured: a round
+  `{a,b,c,d}` reading a line released to `{a,b,c}` was served, and the fourth
+  participant was unreportable.
+
+  The door promotes now, `has()`-guarded because a failing `set_context` makes the
+  modifier fail and a failed edge is **skipped** — the caller would get nothing
+  instead of a no. The fallback to "the asker alone" is gone: it called itself
+  fail-closed and was the opposite, since `{asker}` is the *widest* set you can
+  hand a subset test. A round nobody declared is refused.
+
+  Two review rounds sharpened the precedence chain, and the second one mattered:
+  sorting it per **spelling** left `hop.participants` above
+  `context.audience_set` — and `audience_set` is the one round a real colony pins
+  by edge today (talky, receptionist, memory-drain, session-keeper), so the very
+  danger round 1 fought (a cell stamping itself a smaller room via a hop key)
+  survived untouched on the spelling that is actually used. Level now beats
+  spelling: both context spellings stand above every hop spelling. The door also
+  resets `aff_phase`, `aff_carry` and `aff_subscriber`, because `context` travels
+  colony-wide and an inherited `aff_subscriber` would land the answer on someone
+  else's push lane. The two names for one round are tracked as
+  [#330](https://github.com/mmeyerlein/meclaw/issues/330); `affinity` reads both
+  until it is bridged.
+
+- **`talky@3.0.8`: a prune answers, and the answer has a door**
+  ([#312](https://github.com/mmeyerlein/meclaw/issues/312)). `in_prune` has
+  always been in `contract.accepts` and was passed to `./collector`. The
+  collector's report is unconditional — one per cut session, or the single
+  zero-report — and both leave on `hop.route == 'prune'`. Talky's exits from
+  `./collector` were `answer`, `write`, `turn_write` and `recall`. `prune` was
+  neither door nor `emits` entry, so **every** prune request, including the one
+  that found nothing, cost a `no_route` dead letter for its own answer. The
+  deletion happened; what was lost was the account of it, which is the reason to
+  trigger a prune at all. Three lines of contract that belong together: the door,
+  the `emits` entry naming both kinds, and the `required_drains` pairing (lane
+  form, #237) — send `in_prune`, take `prune`.
+
+- **`collector@2.0.6` and `session-keeper@2.0.2`: the address of a sealed hive is
+  the hive** ([#311](https://github.com/mmeyerlein/meclaw/issues/311)). Both carry
+  `params.ports: []`, so the hive path is the only address and a mutation naming
+  a cell inside is refused with `hive_port_boundary`. Both templates recommended
+  exactly that — in the same breath as "wire the ports in the **same** mutation
+  that instantiates the hive", which is precisely the surface the seal guards.
+  `collector/README.md` said it three times and wrote the correct address once in
+  the same paragraph; `session-keeper` offered `./stamp` and `./close` in the
+  from-column of its exit table. Both `template.json` files carried the same
+  addresses in their `PORTS` slot, which `templates/README.md` § Versioning
+  presents as the caller's interface.
+
+  New gate: `gh311_ports_slot_addresses.rs` reads that one slot — not prose in
+  general — and asks the substrate whether each `./<child>` it names would be
+  admitted. `gh203_documented_port_addresses` reads literal `from:`/`to:` keys
+  and said in its own header that a sentence naming an address is not
+  distinguishable from prose about one; this is the form it left out.
+
+- **`builder-librarian@2.0.1`: a hyphen was syntax, and the error wore the face of
+  an answer** ([#308](https://github.com/mmeyerlein/meclaw/issues/308)). Every
+  multi-word template name in the corpus this librarian indexes is hyphenated —
+  `daily-digest`, `builder-hive`, `memory-hive`, `coder-pipeline`. The tokeniser
+  left the hyphen in the token and joined terms unquoted with `OR`; FTS5 reads a
+  bare hyphen as syntax, so `daily-digest OR cell` came back as
+  `no such column: digest`. The query the template exists for was exactly the
+  query that could not run. Each term travels as a quoted phrase now, which is
+  the FTS5 spelling for "these tokens, adjacent" — what a hyphenated name is.
+
+  The second half is worse: the store writes `operation` on every answer and
+  `error_code` on top, so a failed search arrived in the same shape as a
+  successful one. The cell recognised its phase by `operation` alone, parsed the
+  error text as a result set, found no rows and rendered "(no matching
+  patterns)" — indistinguishable from an honest empty answer. It reads
+  `error_code` now.
+
+- **`coder-pipeline@2.0.1`: the verdict survives its spelling**
+  ([#309](https://github.com/mmeyerlein/meclaw/issues/309)). `revout` compared the
+  reviewer's whole first line against `{APPROVE, REFINE, FAIL}` with `fail` as the
+  fallback. Measured over 15 spellings, six fell through: `APPROVE - looks good`,
+  `APPROVE.`, `**APPROVE**`, `REFINE: add the marker`, `**REFINE**` and
+  `1. APPROVE`. `fail` routes to `taskarchive` — the false rejection was archived
+  as the verdict and ended the loop, indistinguishable from an honest one. The
+  verdict is read as the first alphabetic token of the first line now (markdown,
+  numbering, punctuation and case fall away); an unknown leading token stays
+  `fail`. The README, which still described the v1 topology and a `coderloop`
+  cell that is not among the graph's 15 endpoints, was rewritten against the
+  actual edges.
+
+- **`access@2.0.2`: two dead vault edges removed, and the policy store bounds an
+  import** ([#307](https://github.com/mmeyerlein/meclaw/issues/307)).
+  `./invoke -> ./vault` on `hop.route == 'vault'` plus the answer edge back could
+  never fire: `invoke` calls `emit()` with four literal routes, none of them
+  computed, and the hive is sealed — `./vault` was reachable from nowhere and the
+  two edges were decoration shaped like a channel. The new test forbids the class
+  rather than the string `vault`: any edge leaving a **cell** of this hive on a
+  `hop.route ==` comparison must find that route as a literal in that cell's own
+  script. Door edges are exempt; their route is stamped outside. Second half,
+  same hive: the policy store declared neither half of the write surface, and
+  absence means `open` — `contract.write_surface: "internal"` now, without which
+  a `transfer` import from any sender plants policy rows in bulk.
+
+- **`llm-registry@2.0.2`: the writer table names the writers that exist**
+  ([#310](https://github.com/mmeyerlein/meclaw/issues/310)). Three documents, three
+  stories. The README credited `models` and `subscribers` to a "hand (admin
+  lane)" and `incidents` to "hand or a drain" — `hand` takes one operation and
+  writes exactly `tiers` and `resolutions`. Fifty lines above stood "v1 has no
+  admin lane"; `store/config.json` carried the contradiction inside a single
+  sentence; and `template.json` claimed `models`, `subscribers` and `incidents`
+  came from the seed files, while `store/seed/` holds `models.jsonl` and
+  `tiers.jsonl` and the README itself says `subscribers` is deliberately
+  unseeded. Re-measured: `models` does have a writer (the seed). Without one
+  under this hive's lanes are `subscribers` and `incidents` — reachable by a
+  **boot-graph** edge from the parent, which the port seal deliberately does not
+  govern (it checks a mutation's `add_edges`), and which this repo's own test tree
+  wires. The store declares `write_surface: "internal"`, pinned at runtime rather
+  than by comparing a config line to itself.
+
+- **Template documents and descriptions that sent a reader somewhere the code does
+  not** ([#321](https://github.com/mmeyerlein/meclaw/issues/321)). No behaviour
+  change; each one is a shipped JSON or README making a false statement about the
+  tree, and each moves a third digit because a shipped JSON under the template
+  moves with it. `collector@2.0.6` counted "ten entry lanes" and "five exit
+  routes" where the script has eleven and the contract six, and omitted
+  `in_thread_call` entirely — a `description` slot travels over
+  `/colony/templates`, so it is a statement to the caller and not a note.
+  `affinity@2.0.5` claimed all four legs of its precedence chain were guarded and
+  skipped when empty (the two hop legs only test `has()`), and that only
+  `affinity/gate` writes into `affinity/store` (`brief` writes audit rows).
+  `firewall@2.0.2`, `session-keeper@2.0.2`, `vault@1.0.1` and the hive and
+  infrastructure READMEs carry their measured numbers now.
+
+  The rule this batch establishes, and then had to apply to itself: **whoever
+  carries a byte copy carries its version**. A composite embedding another
+  template's `config.json` byte-for-byte moves its own third digit when that copy
+  moves — `talky` 3.0.6 → 3.0.7 → **3.0.8** and `cogny` 3.0.5 → **3.0.6** across
+  this release, with the whole chain of README titles, library rows and
+  `"template": "x@y"` literals swept rather than assumed. `talky`'s and
+  `access`'s README H1 had drifted from their own `template.json`, which is where
+  a reader takes the version from before copying the `add_nodes` block below it.
+
+- **The English cell-types file had the two `mcp`/`subcolony` sandbox rulings
+  swapped** ([#313](https://github.com/mmeyerlein/meclaw/issues/313)), across
+  section boundaries: the subcolony argument stood inside `## mcp`, word for word,
+  closing with a sentence *about* `mcp` in the third person, and the mcp one-liner
+  stood inside `## subcolony`. Swapped back.
+
+- **`docs/roadmap.md` stopped describing shipped work as future**
+  ([#316](https://github.com/mmeyerlein/meclaw/issues/316)). A defer register
+  lives on every row being an open debt; fourteen were not. Ten are fully redeemed
+  and moved to `docs/archive/roadmap-resolved.md` with their evidence — each
+  checked against the code, not against the issue. Four were half true and are
+  narrowed to their true half rather than struck. Plus a dead anchor that stood
+  twice in the same item and pointed about 530 lines into an unrelated chapter,
+  which is what makes absolute line numbers in prose worse than merely
+  impractical: they do not just drift, they eventually assert something false.
+
+- **The public surfaces say what the tree holds**
+  ([#317](https://github.com/mmeyerlein/meclaw/issues/317)). Eight lines claimed
+  more or older than the repo, every replacement measured against the tree today:
+  the test count, the cell-type table (`vault` had no row while two paragraphs
+  down stood "all 14"), the `builder-hive`'s place (real and tested — in the
+  **private** tree; it is not in `PUBLIC_TEMPLATES`, so nothing in the published
+  tree instantiates it), CONTRIBUTING's version, README § Stability's claim that
+  everything under `crates/` is `publish = false`, `memory-hive`'s cell count, and
+  `.env.example`'s template pin next to the quickstart. The retroactive
+  `memory-hive@2.2.1` entry under 0.17.0 comes from the same pass.
+
+- **`PROGRESS.md` stopped claiming status**
+  ([#318](https://github.com/mmeyerlein/meclaw/issues/318)). It declared itself the
+  repo's sole status owner on line 3 while its newest entry was wave 7 of
+  2026-08-14 — 24 releases and eleven minor lines behind — and `AGENTS.md`
+  ordered it as first reading of every session *and* classified it as
+  non-authoritative, two lines apart. The body is archived; `PROGRESS.md` is a
+  signpost to `CHANGELOG.md` (release truth) and `docs/roadmap.md` (defer
+  register). The generated librarian seed carried the old sentence into a shipped
+  artefact and is regenerated.
+
+- **`docs/archive/roadmap-resolved.md` restored, and 170 finished records
+  archived** ([#315](https://github.com/mmeyerlein/meclaw/issues/315),
+  [#320](https://github.com/mmeyerlein/meclaw/issues/320)). 47 rows, 9 bullets and
+  the header of the resolved register were lost to an overwrite on 2026-08-18 and
+  are recovered. The sanitation pass that followed archived 170 finished records
+  with archive headers, fixed the 7 real dead links in live documents plus 34 link
+  occurrences the moves would have broken, and added the indices that close the
+  orphaned-index hole — `README.md` now links `docs/README.md`, from which 38 of
+  430 documents were reachable before.
+
+### Added
+
+- **A spec-claims registry, checked in CI**
+  ([#254](https://github.com/mmeyerlein/meclaw/issues/254)). A review compares code
+  against spec, so a spec that runs ahead of the code passes every review by
+  construction. This runs the other direction: 47 rows classifying every
+  behavioural claim of the spec trias — 15 `pinned` (claim plus a named test), 8
+  `built-unpinned` (built, and still waiting for the test that would catch its
+  regression), 24 `specified-not-built` as 12 twin pairs. `scripts/check_claims.py`
+  checks three things: an anchor must appear verbatim in its document, so a
+  paragraph cannot be rewritten out from under its row; a `pinned` test must exist
+  in the corpus; and a `specified-not-built` paragraph must carry its visible
+  marker in **both** language versions — a marker the reader cannot read is not
+  one.
+
+  The gate knows both tree shapes, recognised by a property rather than a flag: a
+  tree is published when `docs/` carries no `*.en.md` at all, which is exactly
+  what the export's `DOCS_MAP` leaves behind. There the English rows resolve to
+  the plain name and the German originals are skipped, counted and named
+  individually. A tree without `.en.md` that nonetheless carries
+  `plans/spec-claims/claims.tsv` is a hard error — that is a work tree that lost
+  its twins, not a publication.
+
+  First entry under the rule: the overview has promised **instantiation at
+  bootstrap** since 2026-05-21, in both language versions, and the substrate never
+  had it — `GraphHints` accepts `edges` and nothing else under
+  `deny_unknown_fields`, so a hive `config.json` carrying the documented `nodes`
+  block is a hard boot error, not an ignored hint. The paragraphs are not deleted;
+  they are the target picture of
+  [#277](https://github.com/mmeyerlein/meclaw/issues/277) and now carry the marker
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)).
+
+- **Every accepted ADR names what holds it up, checked in CI**
+  ([#319](https://github.com/mmeyerlein/meclaw/issues/319)). The decision record had
+  broken in half — the predecessor holds `decisions/0001-0025`, this repo had
+  `plans/adr/0001` and `0002` and a numbering restarted at 1. Legacy ADR 0011 read
+  `Accepted` for three months after its capability had vanished, while the spec
+  kept promising it, because nothing connected the decision to a line of code that
+  can disappear. Port-or-supersede over all 25: **eight ported as 0003–0010**, each
+  with a provenance line; seventeen superseded-by-rebuild with one line of reason
+  each in `plans/adr/README.md`; 0011 deliberately **not** ported — its row points
+  at #277, because re-promising an unbuilt capability is the exact defect the rule
+  exists to prevent. The two half-holders state today's fact rather than the old
+  promise. 10 ADRs, 28 anchors; `scripts/check_adr_anchors.py` resolves each one.
+
+  Both gates use the same two-tree arrangement, and for the same reason: the
+  corpus lives under `plans/`, which never travels, so a **derived** copy travels
+  as `.github/gates/*.tsv` and the public job resolves it against `crates/`, which
+  does travel and is exactly where the deletion these gates exist to catch would
+  be visible. The private half — the texts, the missing-`Pinned-by` check, the
+  byte-exactness of the derived copies — rides `cargo test`
+  (`a3_spec_claims_gate_drift.rs`, `a4_adr_anchor_gate_drift.rs`), so a divergence
+  between registry and travelling copy can no longer wait for someone to think of
+  it.
+
+- **The builder-scenario suite is an export gate (R12)**
+  ([#305](https://github.com/mmeyerlein/meclaw/issues/305),
+  [#320](https://github.com/mmeyerlein/meclaw/issues/320)). It is the only thing
+  that drives the `builder-hive` end to end, and #305/#327/#328 are three
+  independent breaks it would have caught the day they landed. It runs before an
+  export is built. It also no longer believes an empty suite: the runner exits 0
+  when its filter matches no case (`passed != len(results)` is false for two
+  zeros), which is the silent-skip class this receipt was built against — R12
+  derives its expectation from the case directory and refuses a run that asserted
+  nothing.
+
 ## [0.17.0] — 2026-08-19
 
 The longest wave so far, and the second digit is earned by exactly two of its

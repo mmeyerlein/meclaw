@@ -157,6 +157,22 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.17.1 — the night the audit was answered.** Twenty-two findings of the
+  2026-08-20 consistency audit, twelve of them shipped templates whose documents,
+  addresses or numbers had drifted from what their code does. A rejected mutation
+  leaves no registered cell any more (#276), a cell may declare that its database
+  does not travel (`contract.transfer: "none"`, which is what shut the vault's
+  `transfer` leak, #314), and the `steward` loop can commit for the first time in
+  its life (#304). Plus three gates against the class itself: a spec-claims
+  registry, an anchor per accepted ADR, and the builder-scenario suite as an
+  export gate.
+- **v0.17.0 — content can leave a cell and enter a running one.** The `transfer`
+  body slot serves all ten cell types with a `cell.db` from the substrate, with
+  no per-type code — export an inventory or a document, import into a **running**
+  cell under the memory porter's rules. `memory-hive@2.2.1` is the same answer
+  one level up, with `in_export`/`in_import` lanes and a twelfth interior cell.
+  And a `system.*` subtree can be revoked rather than only overwritten
+  (`"$replace": true`), which a writer with data-keyed sub-paths never could.
 - **v0.16.0 — a fact remembers who was there.** `memory-hive@2.1.0` records the
   participant set a turn was said in front of, and the recall answers only with
   rows the current round could have heard — the subset rule `affinity` has used
