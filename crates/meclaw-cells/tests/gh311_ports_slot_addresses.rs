@@ -51,14 +51,32 @@
 //! surface: inside a PORTS slot, a sentence that names the seal IS prose about
 //! an address, and every other one is a wiring instruction.
 //!
-//! # Declared debt, asserted rather than muted
+//! # History: the declared debt, and why there is no list here any more
 //!
-//! Three further templates carry the same defect and are out of #311's scope
-//! ([#337](https://github.com/mmeyerlein/meclaw/issues/337)). They are listed
-//! below by name, and `the_declared_debt_is_still_debt` requires each one that
-//! ships in this tree to STILL produce a finding — the same rule the #229
-//! counter-example marker follows. A template that gets fixed and stays on the
-//! list fails here, so the list cannot rot into a silence.
+//! Three further templates carried the same defect out of #311's scope and were
+//! carried on a named list that asserted the finding rather than muting it
+//! ([#337](https://github.com/mmeyerlein/meclaw/issues/337)); all three are
+//! fixed, so the list and its assertion are gone with their subject and the
+//! sweep below reads every shipped slot.
+//!
+//! # The second surface: a README's fenced wiring example
+//!
+//! Closing that debt turned up the same defect one surface over
+//! (`templates/dispatcher/README.md` offered `./collect/assemble` three times, in
+//! copy-paste-ready JSON). A fenced block is readable for the same reason the
+//! slot is, and for a sharper one: inside it, `"from"` and `"to"` are the
+//! substrate's own keys, so a `./<parent>/<child>` there IS an `add_edges`
+//! endpoint and cannot be prose about one. Outside a fence it is a sentence, and
+//! that is the ~100-hit ambiguity named above. The rule, the sealed-hive index
+//! (`candidates()`) and the carve-out (`names_the_seal`) are shared; only the
+//! reader differs, and the prose unit the carve-out reads is the text since the
+//! previous fence or heading instead of the sentence.
+//!
+//! Measured over the whole shipped library on 2026-08-21, the README rule yields
+//! six hits: the three dispatcher lines (fixed with this file) and three in
+//! `templates/builder-hive/README.md`, which quote a boot-time scaffold verbatim
+//! under prose that names `hive_port_boundary` and are therefore exempt. Zero
+//! others, zero false positives.
 
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::mutation::port_boundary::validate_hive_port_boundary;
@@ -69,10 +87,6 @@ use meclaw_core::serde_json::{Value, json};
 /// outside it. Any paths do; what matters is that "outside" really is.
 const HIVE: &str = "/h";
 const CALLER: &str = "/caller";
-
-/// Templates known to carry this defect and tracked elsewhere. Each entry is an
-/// assertion, not a mute: see `the_declared_debt_is_still_debt`.
-const DECLARED_DEBT: &[&str] = &["affinity", "llm-unit", "talky"];
 
 /// A sentence naming one of these is prose ABOUT the boundary, not a wiring
 /// instruction. Compared case-insensitively.
@@ -351,9 +365,6 @@ fn every_ports_slot_addresses_the_hive_it_seals() {
     let mut counts = Counts::default();
     let mut found = Vec::new();
     for c in candidates() {
-        if DECLARED_DEBT.contains(&c.name.as_str()) {
-            continue;
-        }
         found.extend(findings_for(&c, &mut counts));
     }
     assert!(
@@ -364,15 +375,17 @@ fn every_ports_slot_addresses_the_hive_it_seals() {
     // "Nothing wrong" and "nothing read" look identical from the outside, and
     // the second is the failure mode of a scan this narrow. The floors are set
     // for the SMALLER of the two trees: the public clone carries an allow-list
-    // subset of the library (7 slots and 18 interior addresses reach this sweep
-    // there, 8 and 21 here), and a subset is not a defect.
+    // subset of the library (8 slots and 24 interior addresses reach this sweep
+    // there, 11 and 38 here — measured 2026-08-21, after the last declared-debt
+    // template was fixed and the whole library became reachable), and a subset
+    // is not a defect.
     assert!(
-        counts.slots >= 6,
+        counts.slots >= 7,
         "the scan read almost no slots: {}",
         counts.slots
     );
     assert!(
-        counts.refused_children >= 15,
+        counts.refused_children >= 20,
         "the scan resolved almost no interior addresses: {}",
         counts.refused_children
     );
@@ -498,30 +511,260 @@ fn a_declared_port_is_an_address_and_is_not_reported() {
     );
 }
 
-/// The declared debt is an assertion about the tree, not a mute button.
+// ──────────────────────────── the second surface: a README wiring example
+
+// The `PORTS` slot is the caller's interface, but it is not the only place the
+// shipped library hands a reader an edge to copy. A README's fenced JSON block
+// is the other one, and it is worse: it is copy-paste ready. The rule is the
+// same rule — an `add_edges` endpoint that names a cell INSIDE a sealed hive is
+// refused by `validate_hive_port_boundary` — read off a different surface, and
+// the surface is what makes it decidable. Inside a fence, `"from"` and `"to"`
+// are the substrate's own keys; a `./<parent>/<child>` there is an address and
+// cannot be prose about one. Outside a fence the same string is a sentence, and
+// that is the ~100-hit ambiguity the module header describes.
+//
+// Both ends are read, because the boundary reads both
+// (`crates/meclaw-colony/src/mutation/port_boundary.rs`): a reply lane wired
+// straight out of an interior cell bypasses the port exactly as an inbound one
+// does.
+
+/// One `"from"` / `"to"` value of the deep form `./<parent>/<child>` that stands
+/// inside a fenced block of a shipped README.
+struct ReadmeEndpoint {
+    /// Directory basename under `templates/`, for attribution.
+    template: String,
+    /// Path below `templates/`, for the failure message.
+    file: String,
+    /// 1-indexed line of the value.
+    line: usize,
+    /// The matched address, exactly as written.
+    address: String,
+    /// Its last segment — the one the boundary would judge.
+    child: String,
+    /// Whether the prose introducing this fence names the seal.
+    exempt: bool,
+}
+
+/// What the README sweep looked at, so "nothing wrong" can be told from
+/// "nothing read".
+#[derive(Default)]
+struct ReadmeCounts {
+    files: usize,
+    endpoints: usize,
+}
+
+/// Every `README.md` below `templates/`, at any depth.
+fn shipped_readmes() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![core_root().join("templates")];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|n| n == "README.md") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The `"from"` / `"to"` values on one line, in order.
 ///
-/// A template that is fixed and stays on the list fails here, which is what
-/// keeps the list from rotting into a silence. A template that does not ship in
-/// this tree is skipped — the public clone carries a subset of the library
-/// (`affinity` and `llm-unit` are private), and a subset is not a defect.
+/// Deliberately literal: these are the substrate's own keys, written the way a
+/// mutation writes them. A line that does not carry the key contributes nothing.
+fn wiring_values(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for (at, _) in line.match_indices('"') {
+        let rest = &line[at..];
+        let rest = match rest
+            .strip_prefix("\"from\"")
+            .or_else(|| rest.strip_prefix("\"to\""))
+        {
+            Some(r) => r,
+            None => continue,
+        };
+        let Some(rest) = rest.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = rest.find('"') else {
+            continue;
+        };
+        out.push(&rest[..end]);
+    }
+    out
+}
+
+/// `./<parent>/<child>` at the head of a value, as the scan's pattern reads it:
+/// two segments of `[A-Za-z0-9_-]`, and the second is what the boundary judges.
+/// A deeper path contributes its first two segments, which is where the seal
+/// already bites.
+fn deep_endpoint(value: &str) -> Option<(String, String)> {
+    let rest = value.strip_prefix("./")?;
+    let ok = |s: &str| !s.is_empty() && s.bytes().all(is_path_segment_byte);
+    let mut segs = rest.split('/');
+    let parent = segs.next()?;
+    let child = segs.next()?;
+    if !ok(parent) || !ok(child) {
+        return None;
+    }
+    Some((format!("./{parent}/{child}"), child.to_string()))
+}
+
+fn is_path_segment_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')
+}
+
+/// Read every shipped README, fence by fence.
+///
+/// The prose that introduces a fence is the text since the previous fence or
+/// heading — the same unit a reader takes the block's justification from, and
+/// the README analogue of the slot's sentence.
+fn readme_endpoints(counts: &mut ReadmeCounts) -> Vec<ReadmeEndpoint> {
+    let root = core_root().join("templates");
+    let mut out = Vec::new();
+    for path in shipped_readmes() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        counts.files += 1;
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let template = rel.split('/').next().unwrap_or(&rel).to_string();
+        let mut in_fence = false;
+        let mut prose = String::new();
+        let mut introducing = String::new();
+        for (idx, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                if !in_fence {
+                    introducing = std::mem::take(&mut prose);
+                }
+                prose.clear();
+                in_fence = !in_fence;
+                continue;
+            }
+            if !in_fence {
+                if line.starts_with('#') {
+                    prose.clear();
+                } else {
+                    prose.push_str(line);
+                    prose.push('\n');
+                }
+                continue;
+            }
+            for value in wiring_values(line) {
+                counts.endpoints += 1;
+                let Some((address, child)) = deep_endpoint(value) else {
+                    continue;
+                };
+                out.push(ReadmeEndpoint {
+                    template: template.clone(),
+                    file: format!("templates/{rel}"),
+                    line: idx + 1,
+                    address,
+                    child,
+                    exempt: names_the_seal(&introducing),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Every interior address of the shipped library: a child of a sealed hive that
+/// the REAL boundary refuses, mapped to the hives that refuse it.
+///
+/// The index comes from `candidates()`, so the two surfaces of this file agree
+/// on what "sealed" means, and the refusal comes from
+/// `validate_hive_port_boundary`, so a hive that declares real ports keeps them.
+fn interior_addresses() -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for c in candidates() {
+        let seal = seal_the_substrate_reads(&c.config);
+        for child in &c.children {
+            if !boundary_admits(&seal, child) {
+                out.entry(child.clone()).or_default().push(c.name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// A fenced wiring example in a shipped README names the hive, not a cell inside
+/// it — the second form of the same defect the `PORTS` sweep above catches.
 #[test]
-fn the_declared_debt_is_still_debt() {
-    let present: Vec<Candidate> = candidates()
-        .into_iter()
-        .filter(|c| DECLARED_DEBT.contains(&c.name.as_str()))
-        .collect();
+fn a_readme_wiring_example_addresses_the_hive_it_seals() {
+    let interior = interior_addresses();
+    let mut counts = ReadmeCounts::default();
+    let mut findings = Vec::new();
+    let mut exempted: std::collections::BTreeMap<String, usize> = Default::default();
+    for ep in readme_endpoints(&mut counts) {
+        let Some(hives) = interior.get(&ep.child) else {
+            continue; // not a cell inside anything sealed
+        };
+        if ep.exempt {
+            *exempted.entry(ep.template).or_default() += 1;
+            continue;
+        }
+        findings.push(format!(
+            "{}:{}: a fenced wiring example offers '{}' as an edge endpoint, and '{}' is an \
+             interior cell of the sealed hive template {} — a mutation naming it is refused with \
+             hive_port_boundary. Write the hive path and put the meaning of the dropped segment on \
+             the edge's lane.",
+            ep.file,
+            ep.line,
+            ep.address,
+            ep.child,
+            hives.join(" / ")
+        ));
+    }
     assert!(
-        !present.is_empty(),
-        "not one declared-debt template ships here — the list has lost its subject"
+        findings.is_empty(),
+        "a shipped README hands the reader an edge its own hive boundary refuses:\n  {}",
+        findings.join("\n  ")
     );
-    for c in &present {
-        let mut counts = Counts::default();
-        let found = findings_for(c, &mut counts);
-        assert!(
-            !found.is_empty(),
-            "'{}' is on the declared-debt list of GH #337 and no longer produces a finding. \
-             Take it off the list in the same commit that fixed it.",
-            c.name
+    // "Nothing wrong" and "nothing read" look identical from the outside. A tree
+    // with every wiring example correct contains, by construction, ZERO deep
+    // endpoints, so the floors have to sit on the reading, not on the findings:
+    // measured 2026-08-21, 33 READMEs and 213 `from`/`to` values here, 19 and
+    // 159 in the public clone's allow-list subset of the library.
+    assert!(
+        counts.files >= 15,
+        "the sweep read almost no READMEs: {}",
+        counts.files
+    );
+    assert!(
+        counts.endpoints >= 100,
+        "the sweep read almost no wiring endpoints: {}",
+        counts.endpoints
+    );
+    // The carve-out, exercised by the shipped tree rather than left as dead
+    // code. `builder-hive`'s README quotes the boot-time scaffolds verbatim
+    // (`./builder/{intake,deploy,promote}`) under prose that names
+    // `hive_port_boundary` and explains why a BIRTH topology is out of the
+    // seal's reach — true, and the exact sentence the exemption exists for.
+    // Asserted where its subject ships: `builder-hive` is not in the export's
+    // template allow-list, and this is a witness for a rule the sweep above
+    // enforces everywhere, not a guard around the sweep itself.
+    if core_root()
+        .join("templates/builder-hive/README.md")
+        .is_file()
+    {
+        assert_eq!(
+            exempted.get("builder-hive").copied(),
+            Some(3),
+            "the boot-scaffold quotes stopped earning the exemption (all exemptions: {exempted:?})"
         );
     }
 }

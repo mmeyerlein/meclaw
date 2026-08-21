@@ -8,9 +8,9 @@
 //! type, walks every `seed/*.jsonl`, derives the table name from the file stem
 //! and hands each file to `apply_seed_jsonl` — *"Generic JSONL-Seed-Loader"*, in
 //! its own words. So the way **in** was never per-type; only the way **out**
-//! was missing, and it was missing for all ten types that carry a `cell.db`
-//! (`code`, `harness`, `llm`, `mcp`, `proxy`, `stdio_child`, `store`,
-//! `subcolony`, `timer`, `vault`).
+//! was missing, and it was missing for all eight types that carry a `cell.db`
+//! (`harness`, `llm`, `mcp`, `proxy`, `store`, `subcolony`, `timer`,
+//! `vault`).
 //!
 //! [`export_document`] is therefore written as the **inverse of
 //! `apply_seed_jsonl`**: same table-per-file unit, same `{"schema": {…}}`

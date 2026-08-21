@@ -1,6 +1,6 @@
 {
   "name": "channel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": {
     "purpose": "One channel as one hive: the connector that owns the chat's credential, plus the slot its current talky generation occupies. The hive IS the channel -- the identity that stays -- and the talkies inside it are its generations, one active and the older ones silent and preserved (ADR-0002 E7/E8). The generation slot ships occupied by terminal@1.0.0, so every lane of the contract has a destination from the moment of instantiation.",
     "use_when": "For a chat, room or line whose participant set is worth keeping as a fact -- which is every room with more than two people in it. One instance per bot token: a Telegram token tolerates exactly ONE getUpdates consumer, so a second channel on the same token would take the first one's updates away.",

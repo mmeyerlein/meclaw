@@ -341,11 +341,12 @@ pub struct CompiledConsumes {
     /// this one answers "does this cell read the slot at all" — the question
     /// [`Self::declares_body`] and the capability gates behind it ask.
     body_declared: Vec<String>,
-    /// Declared topology facts (GH #160). Deliberately NOT part of
-    /// [`Self::is_vacuous`] or of any message check: it gates a spawn-time
-    /// capability, never an ingress. That gap is GH #333 — `body_declared`
-    /// above had the same one until GH #323, and a topology-only declaration
-    /// still loses its `NeighbourhoodView` the same silent way.
+    /// Declared topology facts (GH #160). Not part of any message check — it
+    /// gates a spawn-time capability, never an ingress — but it IS counted by
+    /// [`Self::is_vacuous`] (GH #333): a cell may declare nothing else, and
+    /// dropping the view at spawn would withhold the very `NeighbourhoodView`
+    /// the declaration exists to unlock. `body_declared` above had the same
+    /// gap until GH #323; this is the same repair one field over.
     topology: Vec<String>,
 }
 
@@ -371,15 +372,18 @@ impl CompiledConsumes {
     }
 
     /// True iff this view carries nothing the substrate would consult: no
-    /// required key in any compartment AND no `body` declaration that gates a
-    /// capability. A vacuous view is dropped at spawn (`consumes: None`), so a
-    /// non-vacuity that a gate depends on has to be counted here — an optional
-    /// `consumes.body` declaration otherwise vanished before the gate saw it.
+    /// required key in any compartment AND no declaration that gates a
+    /// capability — neither `body` nor `topology`. A vacuous view is dropped at
+    /// spawn (`consumes: None`), so a non-vacuity that a gate depends on has to
+    /// be counted here — an optional `consumes.body` declaration otherwise
+    /// vanished before the gate saw it (GH #323), and a `consumes.topology`
+    /// declaration standing on its own did the same (GH #333).
     pub fn is_vacuous(&self) -> bool {
         self.body.is_empty()
             && self.context.is_empty()
             && self.hop.is_empty()
             && self.body_declared.is_empty()
+            && self.topology.is_empty()
     }
 
     /// True iff the cell declares `consumes.body.<key>` (GH #87).
@@ -734,6 +738,39 @@ mod tests {
         .unwrap();
         let compiled = CompiledConsumes::compile(&block);
         assert!(!compiled.declares_body("attachments"));
+    }
+
+    /// GH #333: a topology declaration is the ONLY thing some cells consume —
+    /// it gates a spawn-time capability (`NeighbourhoodView`), not an ingress,
+    /// so it leaves every required-key list empty. Counting only the message
+    /// compartments made such a view vacuous, and a vacuous view is dropped at
+    /// spawn (`consumes: None`) — which withheld the very capability the
+    /// declaration exists to unlock, silently. Same shape as GH #323 one field
+    /// over.
+    #[test]
+    fn a_topology_only_declaration_survives_the_vacuity_projection() {
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
+            "topology": {"inbound_edges": {"type": "array"}}
+        }))
+        .unwrap();
+        let compiled = CompiledConsumes::compile(&block);
+        assert!(
+            !compiled.is_vacuous(),
+            "a topology-only declaration is still a declaration and must reach the spawn gate"
+        );
+        assert!(
+            compiled.declares_topology("inbound_edges"),
+            "…and the gate behind it must answer yes"
+        );
+    }
+
+    /// The negative half: nothing declared at all stays vacuous, so the
+    /// projection keeps dropping the views that really carry nothing.
+    #[test]
+    fn an_empty_consumes_block_stays_vacuous() {
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(CompiledConsumes::compile(&block).is_vacuous());
+        assert!(CompiledConsumes::default().is_vacuous());
     }
 
     /// GH #314 — the wire vocabulary of the declaration, and its default.

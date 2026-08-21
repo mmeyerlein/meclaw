@@ -117,9 +117,12 @@ EXTERNAL_ANCHORS: dict[str, tuple[tuple[str, ...], str, str]] = {
             "test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing",
             "test:the_audience_set_spelling_is_a_round_in_both_directions",
         ),
-        "9590ca85a59213a56fbef83c1bb7a744110b6cd5c664d2c967b22ac4567b3826",
-        "the file carries the spec owner's uncommitted in-flight edit (GH #303); "
-        "its anchor is carried by plans/adr/README.md until that edit lands",
+        "cf838e3e506ef5b175b7f7f119ff016cd5acdf56b1544c1f2a9d57216532d862",
+        "the spec owner's edit landed as bc270f4d (Nachtrag 2026-08-20, E7 "
+        "resolved) but the ADR still carries no Pinned-by line of its own; "
+        "its anchor is carried by plans/adr/README.md (GH #303). Exception "
+        "renewed 2026-08-21 after re-checking both anchored tests still "
+        "exist and still describe the audience decision",
     ),
 }
 

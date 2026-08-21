@@ -46,6 +46,12 @@ PIN-sandbox-default	docs/config.md	ein Default-Profil injiziert die Instanziieru
 PIN-mcp-sandbox-optin	docs/config.md	ein `mcp`-Kind ohne eigene Deklaration behält die Rechte des Daemons	pinned	an_mcp_child_without_a_declaration_keeps_the_rights_it_always_had
 PIN-timer-at-in-past	docs/cell-types.md	ein einmaliger Schedule, dessen `at` bereits vergangen ist	pinned	add_of_a_past_one_shot_answers_at_in_past_and_stores_nothing
 PIN-ingress-declaration	docs/config.md	eine Zelle erklärt, dass sie ein Eingang ist (GH #185)	pinned	an_ingress_that_does_not_say_so_is_refused_and_the_message_names_the_declaration
+PIN-store-error-operation-de	docs/cell-types.md	`operation` trägt **jede** Antwort, die Fehler-Fläche eingeschlossen	pinned	a_rejected_select_answers_with_its_own_operation
+PIN-store-error-operation-en	docs/cell-types.en.md	`operation` is present on **every** reply, the error surface included	pinned	a_rejected_select_answers_with_its_own_operation
+PIN-vault-error-codes-de	docs/cell-types.md	`unknown_op` (ein Op, den dieser Cell-Type nicht hat	pinned	there_is_no_operation_that_hands_a_secret_back
+PIN-vault-error-codes-en	docs/cell-types.en.md	`unknown_op` (an op this cell type does not have	pinned	there_is_no_operation_that_hands_a_secret_back
+PIN-always-edge-de	docs/meclaw-overview.md	ist **kein Default, sondern eine Always-Edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
+PIN-always-edge-en	docs/meclaw-overview.en.md	is **not a default: it is an always edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
 #
 # --- built-unpinned -----------------------------------------------------
 # The substrate does it; nothing proves it. Each row is a candidate test --

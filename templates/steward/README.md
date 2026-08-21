@@ -1,4 +1,4 @@
-# `steward@2.0.3`
+# `steward@2.0.6`
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -101,15 +101,18 @@ receiver somewhere. `system_max_slots` has one and is immutable at runtime;
 `max_iter` has none at all. What is true of both is that they are outside the
 declared set.)
 
-**The radius binds the way back as well.** The revert path runs the same guard as
-the decide path, because a way back waved through a bound the change had to pass
-is not a way back — it is a second door. So if the stored plan's key has since
-left the set (an operator narrowed it while the window was open, or the row
-predates it), **the revert is refused: the applied value stays standing, and the
-receipt says so** — `outcome: revert_refused` with the reason code, nothing on
-the `mutate` lane. The cycle is put back to `status: applied`, which is the state
-it is genuinely in and the one the meter scans for, so the loop starts nothing
-new until a human resolves it. A revert nobody took must never read as taken.
+**The check binds the way back as well.** The revert path runs the same
+change-shaped validation as the decide path — absolute target, radius, a value
+that is actually there and actually numeric — because a way back waved through a
+bound the change had to pass is not a way back, it is a second door. So a stored
+plan whose key has since left the set (an operator narrowed it while the window
+was open, or the row predates it), and equally one that is degenerate in its own
+right (no value, a relative target, no target at all), is **refused: the applied
+value stays standing, and the receipt says so** — `outcome: revert_refused` with
+the reason code, nothing on the `mutate` lane. The cycle is put back to
+`status: applied`, which is the state it is genuinely in and the one the meter
+scans for, so the loop starts nothing new until a human resolves it. A revert
+nobody took must never read as taken.
 
 A topology change is not executed -- the judge may raise one, and it is recorded
 as a `proposed` cycle for a human to read. A change outside the radius comes
@@ -140,8 +143,25 @@ and named as one, not a footnote.
 They fail on different timescales. A loop with only the second one leaves a
 broken colony broken while it patiently collects evidence.
 
-The probe fails **closed**: a probe that cannot look reports `unhealthy`, because
-"found nothing" and "found it healthy" must never read the same. And it never
+The probe asks three mechanical questions of the colony's own ledger: **did this
+cycle's params update reach the cell it names**, has the colony produced errors
+since, and did anything land in the dead-letter queue. It also counts how many
+messages the named cell exchanged in the window and writes that count into the
+receipt -- but it does **not** judge it: silence is not a verdict here, and a
+number the reader can see is worth more than a threshold nobody chose. The
+first question is about the params update
+rather than about a committed mutation on purpose -- this hive authors no diff at
+all, so a `mutation_log` answer would be a verdict on a mechanism the loop does
+not use, and it read `unhealthy` for every healthy cycle
+([#338](https://github.com/mmeyerlein/meclaw/issues/338)). Because that ledger
+row can trail the probe by milliseconds -- the update and the probe order leave
+in one batch -- the read is retried a bounded number of times
+(`STEWARD_PROBE_LEDGER_TRIES`, 100 ms apart) before the update counts as missing.
+
+The probe fails **closed**, and that verdict is read before the three: a probe
+that cannot look at the ledger at all reports `unhealthy` with
+`probe_unavailable`, because "found nothing" and "found it healthy" must never
+read the same. And it never
 invents a revert -- it fetches the plan from the receipt, one select.
 
 ## Significance, and the honesty of an empty cycle
@@ -213,6 +233,7 @@ to this hive.
 | `STEWARD_NUMERIC_PARAM_KEYS` | `temperature,max_tokens,external_timeout_ms,attachment_timeout_ms` | the numeric half of the radius, as a key set. The default is the `llm` cell's runtime-mutable numeric params; a key outside it is refused with `key_outside_radius_<key>` rather than receipted as applied |
 | `STEWARD_PROBE_WINDOW_SEC` | 120 | how far back the health check looks |
 | `STEWARD_PROBE_MAX_ERRORS` | 0 | errors tolerated in that window |
+| `STEWARD_PROBE_LEDGER_TRIES` | 3 | how often the health check re-reads the ledger, 100 ms apart, before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
 | `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-4` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `STEWARD_JUDGE_PROVIDER` | `openrouter` | provider adapter of the judge |
 | `STEWARD_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |

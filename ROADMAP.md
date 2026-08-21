@@ -167,7 +167,7 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
   registry, an anchor per accepted ADR, and the builder-scenario suite as an
   export gate.
 - **v0.17.0 — content can leave a cell and enter a running one.** The `transfer`
-  body slot serves all ten cell types with a `cell.db` from the substrate, with
+  body slot serves all eight cell types with a `cell.db` from the substrate, with
   no per-type code — export an inventory or a document, import into a **running**
   cell under the memory porter's rules. `memory-hive@2.2.1` is the same answer
   one level up, with `in_export`/`in_import` lanes and a twelfth interior cell.

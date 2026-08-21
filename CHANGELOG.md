@@ -11,6 +11,270 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `store` error reply carries `hop.operation` like every other reply**
+  ([#331](https://github.com/mmeyerlein/meclaw/issues/331)). The three hand-built
+  error emitters (`emit_invalid_input`, `emit_write_denied`, `emit_query_timeout`)
+  wrote `finish_reason`, `error_code` and `duration_ms` and left `operation` out —
+  while `output::build_tool_result` stamps it on every regular answer and the
+  shipped template contracts declare `hop.operation` as `required: true`. An edge
+  conditioned on `hop.operation` therefore lost exactly the replies that report a
+  failure. The operation is bound once after `parse_tool_call` and feeds the
+  write-surface check and all four post-parse emitters; the params-slot sites carry
+  `params_update`, the parse-failure site the literal `error`, because there
+  nothing parseable ever arrived.
+
+  **Behaviour change for template authors.** A lane that dispatches on
+  `hop.operation` used to see error replies fall through and now receives them —
+  `error_code` is from here on the **only** field that separates a failed answer
+  from a successful one on that lane. Every such lane needs an `error_code` guard,
+  or it will treat a refusal as a result. The lanes in the shipped library that
+  still dispatch this way are tracked as
+  [#343](https://github.com/mmeyerlein/meclaw/issues/343); each one pulls its own
+  template bump behind it. `builder-librarian@2.0.2` is the first: two places in it
+  asserted the absence this fix ended — a comment in `retrieve`'s `script_inline`
+  and a README paragraph — and the conclusions they carried get *stronger*, not
+  weaker, because a return path over the context marker is independent of the
+  header shape by construction. Pinned in
+  `gh331_store_error_paths_stamp_operation.rs`, four cases, all four red before.
+
+- **A topology-only declaration survives the vacuity projection**
+  ([#333](https://github.com/mmeyerlein/meclaw/issues/333)).
+  `consumes.topology.inbound_edges` (#160) is not a message chamber: it unlocks a
+  spawn capability (`NeighbourhoodView`), not an ingress, and so writes nothing
+  into any of the three mandatory-key lists. `CompiledConsumes::is_vacuous`
+  counted exactly those lists plus `body_declared`, so a cell whose entire
+  contract *is* that one declaration was vacuous, its view was dropped at spawn
+  (`consumes: None`), and the gate behind it answered "not declared" and withheld
+  the handle — no error, no dead letter, no diagnosis. The same silent shape
+  `body` had until #323, one field over. `is_vacuous()` counts `topology` now;
+  pinned as a unit case in `contract.rs` (positive and negative — an empty block
+  stays vacuous) and end to end in
+  `gh333_topology_only_declaration_survives.rs`, where a factory logs the handle
+  the substrate hands out at spawn. No existing verdict flips: a cell declaring
+  `topology` beside mandatory keys was never vacuous.
+
+- **`code`: `external_timeout_ms: 0` is refused instead of failing every run at
+  the deadline** ([#334](https://github.com/mmeyerlein/meclaw/issues/334)).
+  `as_u64()` let the zero through, it reached `CodeParams` unchanged and became an
+  A-timeout of zero milliseconds: the deadline had passed before the script could
+  start. The siblings (`bash`, `web_search`, `web_fetch`) have always refused the
+  same input; `code` now does it with their literal
+  ("params.external_timeout_ms must be >= 1"), in the shape of the #322
+  `max_concurrency` guard three lines below. The parity test covers both axes.
+  Deliberately not swept along: the non-integer message here still reads
+  "external_timeout_ms must be integer" without the `params.` prefix — a second
+  parity detail, recorded on the issue rather than changed in silence.
+
+- **`steward@2.0.4`: the way back is checked like the way out**
+  ([#326](https://github.com/mmeyerlein/meclaw/issues/326)). The mutator's revert
+  branch ran only the radius half of the check, so three degenerate stored plans
+  went onto the `mutate` lane unbraked — a `to: ""` that becomes
+  `params {"max_tokens": null}`, a `target` no edge condition matches, and a
+  missing `target` — and under each of them stood a receipt reading
+  `closed/reverted` though nothing had merged. A return path that skips a barrier
+  the outbound path had to pass is not a return, it is a second door. The
+  change-shaped half of `check()` is `check_change(change)` now and the revert
+  branch calls it; the decide side keeps its reason codes character for
+  character. The step limit is made inert **in the code** rather than in the
+  prompt — the revert branch drops `from` before it checks — because the limit
+  measures in percent of the value being left and is not symmetric: the way back
+  from a permitted decrease would have been refused as `step_too_large_67_pct`,
+  leaving standing precisely the unproven value the revert exists to remove.
+
+- **`steward@2.0.5`: the probe asks about the mechanism the loop actually uses**
+  ([#338](https://github.com/mmeyerlein/meclaw/issues/338)). Since #304 the decided
+  change leaves the hive as an ordinary params update on the `mutate` lane — this
+  steward authors no mutation at all. The probe still asked `mutation_log` whether
+  a mutation had committed and got "no" for **every** healthy cycle: verdict
+  `unhealthy`, reason `mutation_not_committed`, and an immediate revert of a change
+  that had worked exactly as intended. `look()`'s first question is now whether
+  this cycle's params update reached the cell it names, answered from the
+  `message_log` rows the function reads anyway. The race is closed by construction
+  rather than by luck: mutator and probe order leave in one batch, so the ledger
+  row can trail the probe by milliseconds and the read is retried
+  (`STEWARD_PROBE_LEDGER_TRIES`, 100 ms apart, bounded against the cell's own
+  `external_timeout_ms`). Why it went unnoticed: the only probe pin ran in the
+  crate directory, where `colony.db` does not exist — `probe_unavailable` was the
+  only reachable branch.
+
+- **`steward@2.0.6`: the README names the three questions the probe judges**. It
+  promised "did this cycle's params update reach the cell it names, has the colony
+  produced errors since, and has that cell gone quiet" — but `verdict_of()` judges
+  `unavailable`, `params_update_seen`, `errors` and `dead_letters`, and
+  `target_messages` is collected and never judged. The published promise named a
+  verdict that does not exist. The page now names the three that carry one, says
+  outright that the message count lands in the receipt without a verdict attached,
+  and puts `probe_unavailable` where it belongs — read before the three, failing
+  closed. Documentation repair only; the probe is untouched.
+
+- **`access@2.0.3`: the broker's clock declares the write surface its twin
+  declares** ([#332](https://github.com/mmeyerlein/meclaw/issues/332)). The clock is
+  a `timer` cell, and a `timer`'s `cell.db` **is** its schedule.
+  `contract.write_surface` was missing, missing means `open`, and `open` bounds
+  nothing: a `transfer` `import` on `/access/clock` is answered by the substrate in
+  `cell_task`, before the consumes gate and before `handle()`, so an imported
+  `schedules` row is a firing with an `emit_to` of the writer's choosing — the
+  clock dials numbers nobody in this hive decided on, on a cadence nobody set.
+  `affinity/clock` has declared exactly this since #260. Two pins, both seen red
+  first; the red run showed the smuggled row sitting in the table.
+
+- **`access@2.0.4`: the policy store does not travel**
+  ([#336](https://github.com/mmeyerlein/meclaw/issues/336)).
+  `contract.write_surface` (#260) bounds only the import half of the transfer slot
+  — an export is a read and was deliberately untouched by it. Through that half the
+  broker's entire state left in one answer: `grants` (every row a live bearer
+  handle), `cred_refs` (which variable name stands behind which connector) and the
+  complete `audit` history. The store declares `contract.transfer: "none"` now, the
+  #314 mechanism `./vault` already carries, so the refusal (`transfer_exempt`) is
+  decided before the arguments are read and reads the same to every question. A
+  grant is a bearer handle and migration means re-granting at the destination —
+  the README's `The honest limit` section says so, and names which tables ride
+  along as a catalogue seed and which stay behind.
+
+- **Five templates stop wiring readers past the boundary they seal**
+  ([#337](https://github.com/mmeyerlein/meclaw/issues/337)). Each of them declares
+  `params.ports: []` and then offered lanes at addresses `validate_hive_port_boundary`
+  refuses with `hive_port_boundary` — copy-paste-ready JSON that cannot work.
+  `affinity@2.0.6` (five lanes at `./brief`, `./gate`, `./push`),
+  `llm-unit@2.0.1` (entries at `./prep` and `./collector`, exits at `./dispatch`
+  and `./llm` — and the exits carried `finish_reason` conditions that are dead at
+  the unit path, because the egress edges translate the reason into a lane inside),
+  `talky@3.0.9` (six interior addresses, plus a closing sentence that stated the
+  defect as a rule), `channel@1.0.1` (its documented generation mutations pinned
+  `talky@3.0.8`, a version that stopped existing with the bump above) and
+  `dispatcher@1.0.1` (three endpoints at `./collect/assemble`, refused at **both**
+  ends because the boundary check reads `from` and `to`). The `DECLARED_DEBT`
+  list in `gh311_ports_slot_addresses.rs` is gone with its last subject — an
+  assertion over an empty list would be red from now on.
+
+- **`coder-pipeline@2.0.2`: the interpreter bytecode cache gets a documented
+  guard** ([#111](https://github.com/mmeyerlein/meclaw/issues/111)). In the workshop
+  scenario from #104 an agent edit swapped one character at equal file size within
+  one second. CPython's `pyc` header is whole-second mtime plus size, so the stale
+  cache counted as fresh and the re-run tested the **old** module — the exact shape
+  an edit-test loop produces continuously. The new cookbook note
+  `workshop/cookbook/interpreter-bytecode-caches.md` carries the measured failure,
+  the guard (`python3 -B`, or `PYTHONDONTWRITEBYTECODE=1` where the loop does not
+  own the command line) and the analogues in other toolchains, with the
+  distinguishing property named: a freshness test over a content hash is safe, one
+  over mtime plus size is not. The substrate half was deliberately **not** built —
+  a `bash` cell has no `env` key, so there is no place in the configuration where
+  the variable could be set, and the honest deliverable is the convention on the
+  command line.
+
+- **The spec trias says what the code does, in three places it did not**
+  ([#254](https://github.com/mmeyerlein/meclaw/issues/254)). The count of cell types
+  with a `cell.db` is **eight**, not ten: the `transfer` slot was described as
+  covering "all ten" in six places and two doc comments, in a list that counted
+  `code` and `stdio_child` — neither of which holds a `DbConn` (`code/factory.rs`
+  says so itself). Three `error_code` surfaces were missing entirely: the `vault`
+  had no failure classification although it writes seven codes onto the wire (the
+  closed list is there now, and it states why `transfer_exempt` is *not* on it —
+  that is the substrate's answer to the body slot, not the vault's emission);
+  `query_timeout` was absent from all four sections that emit it (`subcolony`,
+  `mcp`, `proxy`, and `timer`, where the A-timeout wraps every `cell.db`
+  operation); and the `mcp` cell writes no `finish_reason` at all, so a failover
+  edge on `hop.finish_reason == 'error'` never fires for it and the section now
+  names the trap and the code such an edge must read instead. Third part: the six
+  `--vault` CLI flags reached the flag table (they have been declared since #151),
+  `happened_at` reached the English overview, and `inject_map` the German
+  cell-types — two sections that had been living in one language each.
+
+- **An unconditional out-edge is an always-edge, not a default**
+  ([#283](https://github.com/mmeyerlein/meclaw/issues/283), documentation half). The
+  spec promised "default routing" as a "settable catch-all out-edge" in four
+  places. The substrate has no such thing: `apply_edges` yields one decision per
+  edge whose condition holds, and `condition: None` means *always take* — no
+  ordering, no first-match, no exactly-one. An unconditional edge fires **beside**
+  every matching edge, never in their place, and cannot express "only if nothing
+  else fired" at all. Both language versions say what holds today and name #283 as
+  where the real default construct is tracked; the new pin
+  `an_unconditional_edge_fires_beside_a_matching_one` anchors the sentence to the
+  behaviour, because the existing fan-out test uses two unconditional edges and
+  proves nothing about the mixed case. The construct itself and the rewiring stay
+  open.
+
+- **`harness`: neither `allowed_tools` nor `permission_mode` is an upper bound,
+  and `approval: "channel"` is a fixture promise**
+  ([#46](https://github.com/mmeyerlein/meclaw/issues/46), closed with a receipt).
+  The acceptance smoke never reached the control path — it *granted* `Write` under
+  `acceptEdits` and the model reached for `Bash`, which that mode allows anyway.
+  The rig topology is parameterised now, and a second smoke takes away instead of
+  giving. Measured 2026-08-21 against CLI 2.1.237 with `sonnet`, two otherwise
+  identical runs: with `--allowedTools` omitted entirely, `Bash` ran under
+  `--permission-mode default` **and** under `--permission-mode plan`, both ending
+  `status: ok` with the shell output, neither sending a `control_request`. So the
+  real CLI reads stdin once at startup as a prompt lane and does not hold it open
+  as a control lane, and **neither** knob the cell type offers today yields a
+  measured bound. `--disallowedTools` and `--tools` are **not** measured and are
+  therefore neither documented nor wired — no guessed flag, in documentation or in
+  production code. Both language versions say this, and the two decisions that
+  remain (`--input-format stream-json`; a first-class upper-bound param) live in
+  `docs/roadmap.md` rather than in a successor issue, so there is exactly one
+  place for them. Point 3 of the old defer register — the harness busy check
+  running before the dedup check — was decided and pinned back in 0.9.0 and moved
+  to the resolved history with its ruling.
+
+### Added
+
+- **A template README's H1 version is checked against its `template.json`**
+  ([#335](https://github.com/mmeyerlein/meclaw/issues/335)). The H1 names the
+  version the page below it describes (`templates/README.md` § Versioning) and
+  nothing checked it; on 2026-08-20 the two ran apart twice. The sweep walks every
+  direct child of `templates/` carrying both files and judges any `@<version>` in
+  the H1 against the declared one. Two guards against a sweep that goes green by
+  doing nothing: a floor of 15 judged templates — sized for the **smaller**
+  published subset, because a subset is not a defect and an empty sweep is — and
+  the versionless templates must stay a subset of the seven known ones, so a new
+  template cannot simply drop its version and swim along in the silence. Measured
+  in the tree: 31 templates, 24 judged, 7 exempt, all 24 agreeing.
+
+- **A README wiring example is checked against the seal it wires past**
+  ([#337](https://github.com/mmeyerlein/meclaw/issues/337)).
+  `gh311_ports_slot_addresses.rs` gains a second surface: besides the PORTS slot it
+  now scans every `templates/**/README.md`
+  (`a_readme_wiring_example_addresses_the_hive_it_seals`). Only `"from"`/`"to"`
+  **inside a fence** are read — there they are the substrate's own keys, and a
+  `./<parent>/<child>` is an address and cannot be prose about one. Seal index,
+  boundary query and the prose exemption are the slot's; only the unit of the
+  exemption differs (the text since the previous fence or heading instead of the
+  sentence).
+
+- **The export receipt can audit instead of only stopping**
+  ([#339](https://github.com/mmeyerlein/meclaw/issues/339)). Three findings at the
+  same gate. R2b was line-blind: its expression anchors on the path literal
+  `../../templates` but read `git grep` output, and `cargo fmt` spreads a longer
+  `Path::join` chain over three lines — the same reference, in the other spelling,
+  was invisible. `_normalise_joins()` brings the chain into the path form it
+  describes, and the rule reports the **original** line, so the structural and the
+  literal rule are one rule (measured over the export tree: 4 additional hits, 0
+  lost, each one judged). `--keep-going` turns `red()` into a collector: the build
+  path is byte-for-byte unchanged without the flag, and an audit run never builds a
+  commit, not even green — whether an export comes into being hangs on the caller's
+  intent, not on a measurement's outcome. And `head_tail()` replaces the failure
+  truncations that kept the summary and threw the evidence away: a checker prints
+  its findings first and its summary last, so `[-1500:]` kept exactly the half
+  without evidence.
+
+- **The `builder-librarian` generator follows its tree, and can say so**
+  ([#329](https://github.com/mmeyerlein/meclaw/issues/329)). The generator carried
+  an older state than the committed template and would have written it back
+  silently on the next run. The tree is the truth, so the generator was reconciled
+  to it, never the other way round — seven places across `config.json` and
+  `retrieve/config.json`, including the guarded CEL form
+  (`has(hop.route) && hop.route == 'lsearch'`). New: `--check` (tree diff with
+  `MISSING`/`STRAY`/`CHANGED` per path, a bounded unified diff, and the temp tree
+  kept for re-diffing) and `--out DIR`, both in the shape of its sibling
+  `build_builder_hive.py`. R11 attests three generated artefacts now instead of
+  two.
+
+- **`STEWARD_PROBE_LEDGER_TRIES`**, a documented knob on the steward's probe
+  (default 3, 100 ms apart): how often the health check re-reads the ledger before
+  this cycle's params update counts as missing. It exists because the mutator emits
+  the update and the probe order in one batch — see #338 above.
+
 ## [0.17.1] — 2026-08-21
 
 A remediation release, and the third digit is the whole point of it. Every entry

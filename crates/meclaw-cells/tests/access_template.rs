@@ -1472,3 +1472,327 @@ async fn a_transfer_import_from_outside_plants_no_policy_row() {
 
     h.shutdown().await;
 }
+
+/// GH #332 — the clock declares the write surface its twin in `affinity`
+/// declares, and for the same reason: a timer's `cell.db` **is** its schedule
+/// list.
+///
+/// This is the `access` half of the pin
+/// `the_two_cells_with_state_seal_both_write_surfaces` carries for `affinity`.
+/// `contract.write_surface` (GH #260) bounds the `import` of the `transfer` body
+/// slot, which the SUBSTRATE answers in `cell_task` before the `consumes` gate
+/// and before `handle()`. An absent key means `open`, and `open` bounds nothing
+/// — so an `import` addressed at the clock plants a `schedules` row, and
+/// `timer::db::load_active_filter_past` reads that row on the next spawn. The
+/// row carries `emit_to`: the hazard is not a wrong tick, it is the clock
+/// calling someone else's number, with a body of the importer's choosing,
+/// forever, on a cadence nobody in this hive decided about.
+///
+/// The `params.write_surface` half (GH #132) is a `store` param and has no
+/// meaning for a `timer` — the only write surface the clock has is the
+/// substrate one, which is why this pin has one assertion and the store's has
+/// two.
+#[test]
+fn the_clock_bounds_the_import_because_an_imported_schedule_would_fire() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let clock = read_json(&root.join("clock/config.json"));
+    assert_eq!(
+        clock["contract"]["write_surface"], "internal",
+        "GH #332: without the substrate half an imported schedules row fires \
+         with a foreign emit_to -- the clock calls someone else's number"
+    );
+}
+
+/// Every `schedule_name` the clock's own `cell.db` holds, newest write last.
+///
+/// The `probe` cell cannot reach this table: it reads through `/access/store`,
+/// and a cell reads only its own `cell.db`. So the observation is made from
+/// outside the colony, on the file the timer wrote — an observation of the
+/// result, not a re-implementation of the mechanism.
+fn schedule_names(td: &tempfile::TempDir) -> Vec<String> {
+    let db = td.path().join("main/access/clock/cell.db");
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let conn = rusqlite::Connection::open(&db).expect("open the clock's cell.db");
+    let mut st = conn
+        .prepare("SELECT schedule_name FROM schedules ORDER BY rowid")
+        .expect("the schedules table must exist");
+    st.query_map([], |r| r.get::<_, String>(0))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect()
+}
+
+/// GH #332, the same boundary proved at runtime rather than at the declaration:
+/// a `transfer` `import` addressed straight at the clock plants no schedule.
+///
+/// Structurally the twin of
+/// `a_transfer_import_from_outside_plants_no_policy_row`, one table over. The
+/// message carries no sender at all, which the rule treats as outside
+/// (fail-closed), and the row it plants would fire every minute at
+/// `/main/connector` — an address outside this hive — with a body the importer
+/// wrote. With `contract.write_surface` absent it lands; with `"internal"` the
+/// substrate refuses it with `write_denied` before the first row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_import_from_outside_plants_no_schedule_row() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // The clock is awake once its own schedule is on disk; the probe round trip
+    // below is only a boot barrier, not the observation.
+    let _ = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "policy", "columns": ["rule_id"], "limit": 1}),
+    )
+    .await;
+    let before = schedule_names(&td);
+    assert!(
+        before.iter().any(|n| n == "access-sweep"),
+        "the clock never persisted its own schedule, so this test would prove \
+         nothing: {before:?}"
+    );
+
+    h.send(
+        MessageBuilder::new(Path::new("/access/clock"))
+            .body(Body::Inline(json!({"transfer": {
+                "operation": "import",
+                "table": "schedules",
+                "key": ["schedule_id"],
+                "schema": {
+                    "schedule_id": "text", "schedule_name": "text", "kind": "text",
+                    "cron_expr": "text", "at_utc": "text", "emit_to": "text",
+                    "emit_body_json": "text", "emit_headers_json": "text",
+                    "status": "text", "iteration_n": "int", "created_at": "text"
+                },
+                "rows": [{
+                    "schedule_id": "01916f00-0000-7000-8000-00000000dead",
+                    "schedule_name": "smuggled-tick",
+                    "kind": "cron",
+                    "cron_expr": "0 * * * * *",
+                    "at_utc": null,
+                    "emit_to": "/main/connector",
+                    "emit_body_json": "{\"messages\":[{\"origin\":\"user\",\
+                                        \"type\":\"text\",\"text\":\"smuggled\"}]}",
+                    "emit_headers_json": "{}",
+                    "status": "active",
+                    "iteration_n": 0,
+                    "created_at": "2026-08-21T00:00:00Z"
+                }]
+            }})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    // The import travels ONE hop; the read below happens off the wire. The wait
+    // is the discriminator, not the ordering: without it a green result would
+    // only mean the import had not arrived yet.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let after = schedule_names(&td);
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "an import from outside the scope planted a schedules row: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|n| n == "smuggled-tick"),
+        "the planted schedule is in the clock's table -- it will fire at a \
+         foreign emit_to: {after:?}"
+    );
+
+    h.shutdown().await;
+}
+
+// ══════════════════════════════════════ GH #336: the store does not travel
+
+/// A `transfer` slot addressed straight at `cell`, answered back to `/sink`.
+///
+/// The slot is answered by the SUBSTRATE in `cell_task`, so the reply is a
+/// DIRECT reply to the input's `reply_to` and needs no out-edge — which is why
+/// the refused import above is invisible while this one is readable. Everything
+/// else is the same seam: a source message from outside the hive, carrying no
+/// sender at all.
+async fn transfer_reply(
+    h: &ColonyHandle,
+    rx: &mut mpsc::Receiver<Message>,
+    cell: &str,
+    slot: Value,
+) -> Message {
+    h.send(
+        MessageBuilder::new(Path::new(cell))
+            .body(Body::Inline(json!({ "transfer": slot })))
+            .reply_to(Path::new("/sink"))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    recv_route(rx, "").await
+}
+
+/// The whole reply as one string -- hop headers and body together, because a
+/// leak is a leak wherever it rides.
+fn whole_reply(m: &Message) -> String {
+    format!(
+        "{} {}",
+        meclaw_core::serde_json::to_string(&m.headers.hop).unwrap_or_default(),
+        body_of(m)
+    )
+}
+
+/// A store cell that declares nothing about the transfer slot -- the throwaway
+/// the negative pin below is measured against.
+fn plain_store_cell() -> Value {
+    json!({
+        "cell": {"type": "store"},
+        "params": {"schema": {"notes": {"id": "text", "body": "text"}},
+                   "query_timeout_ms": 5000},
+        "contract": {
+            "version": "1.0.0",
+            "settings": {},
+            "emits": {"body": {"messages": {"type": "array", "required": true}},
+                      "hop": {"operation": {"type": "string", "required": true}}},
+            "consumes": {"body": {"messages": {"type": "array", "required": true}}},
+            "capabilities": ["db:own"]
+        },
+        "description": {
+            "purpose": "A store that declares nothing, as the control case.",
+            "use_when": "Test fixture only.",
+            "not_in_scope": "Not a template."
+        }
+    })
+}
+
+/// GH #336, the declaration: the policy store's database is exempt from the
+/// transfer slot (`contract.transfer: "none"`, the mechanic of GH #314).
+///
+/// `contract.write_surface` (GH #260) already bounds the IMPORT half -- but an
+/// export is a read and is deliberately unaffected by it. What travels through
+/// the read half is the broker's whole state: `grants` (each row a live BEARER
+/// handle, so a copied grant is a copied instrument), `cred_refs` (which secret
+/// lives behind which variable name, for every connector) and the complete
+/// `audit` history (who asked for what, and what was refused). None of that has
+/// a migration story that needs an export: a grant is re-granted at the target,
+/// and `policy`/`cred_refs` ship as a seed.
+#[test]
+fn the_policy_store_declares_the_transfer_exemption() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let cfg = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        cfg["contract"]["transfer"], "none",
+        "GH #336: without the declaration the transfer slot hands out `grants` \
+         (live bearer handles), `cred_refs` and the whole `audit` -- as a read, \
+         which `contract.write_surface` does not bound"
+    );
+    assert_eq!(
+        cfg["contract"]["write_surface"], "internal",
+        "the two declarations are a pair, not a replacement: #260 bounds WHO \
+         may write, #336 whether this database answers the seam at all"
+    );
+}
+
+/// GH #336, the same boundary proved at runtime rather than at the declaration:
+/// an `export` addressed straight at the policy store is refused, and the
+/// refusal names no table.
+///
+/// The naming half is the point of the mechanic's position -- the exemption is
+/// answered BEFORE the arguments are read, so the same sentence comes back to
+/// every question. A refusal that said `unknown_table` for one name and
+/// something else for another would be an inventory of the broker's tables.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_export_of_the_policy_store_is_refused_and_names_no_table() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // Twice: blanket, and addressed at the table a caller would guess. Guessing
+    // right must not help either.
+    for slot in [
+        json!({"operation": "export"}),
+        json!({"operation": "export", "table": "grants"}),
+    ] {
+        let named = slot.get("table").is_some();
+        let m = transfer_reply(&h, &mut rx, "/access/store", slot).await;
+        assert_eq!(
+            hop_of(&m, "error_code"),
+            "transfer_exempt",
+            "an export of the broker's state was answered (named table: \
+             {named}): {}",
+            whole_reply(&m)
+        );
+        assert_eq!(
+            m.headers.hop.get("rows_affected").and_then(|v| v.as_i64()),
+            Some(0),
+            "a refusal that moved rows is not a refusal: {}",
+            whole_reply(&m)
+        );
+        let whole = whole_reply(&m);
+        for leak in [
+            "policy",
+            "grants",
+            "grant_events",
+            "cred_refs",
+            "usage",
+            "audit",
+        ] {
+            assert!(
+                !whole.contains(leak),
+                "a refusal that names `{leak}` is an inventory: {whole}"
+            );
+        }
+    }
+
+    h.shutdown().await;
+}
+
+/// The negative pin that gives the other two meaning: a store that declares
+/// nothing still exports, exactly as every store did before this ruling.
+///
+/// Measured against a THROWAWAY store rather than against `access`, so it
+/// cannot rot into a tautology when the broker changes -- and so it is judged
+/// in every checkout, including the public one where `access` does not ship.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_the_declaration_a_plain_store_still_exports() {
+    let td = tempfile::TempDir::new().unwrap();
+    write(
+        td.path(),
+        "main/config.json",
+        &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": []}}}),
+    );
+    write(
+        td.path(),
+        "main/plain_store/config.json",
+        &plain_store_cell(),
+    );
+    let (h, mut rx) = boot(&td).await;
+
+    let m = transfer_reply(&h, &mut rx, "/plain_store", json!({"operation": "export"})).await;
+    assert_eq!(
+        hop_of(&m, "error_code"),
+        "",
+        "an undeclared store is not bounded by this ruling: {}",
+        whole_reply(&m)
+    );
+    let tables = turn_json(&m)["tables"].clone();
+    assert!(
+        tables
+            .as_array()
+            .is_some_and(|a| a.iter().any(|t| t == "notes")),
+        "this is what travels without a declaration, and it must keep \
+         travelling: {tables}"
+    );
+
+    h.shutdown().await;
+}

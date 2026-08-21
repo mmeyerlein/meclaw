@@ -3,7 +3,7 @@
 //!
 //! The way **in** was never per-type — `mutation::stage::apply_seed_jsonl` calls
 //! itself a *"Generic JSONL-Seed-Loader"* and takes a path. Only the way **out**
-//! was missing, and it was missing for all ten types with a `cell.db`. These
+//! was missing, and it was missing for all eight types with a `cell.db`. These
 //! tests pin the two properties that make the export the loader's inverse rather
 //! than a second mechanism: the document's `schema` object IS a seed header, and
 //! a document written out as a seed file births a cell with the same rows.

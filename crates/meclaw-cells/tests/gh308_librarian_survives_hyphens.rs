@@ -22,11 +22,14 @@
 //!    `(no matching patterns)` with no marker — indistinguishable from an honest
 //!    zero-hit, which is exactly what the template README forbids.
 //! 3. **The other error shape does not dead-letter.** `emit_invalid_input` and
-//!    `emit_query_timeout` write no `operation` at all, so the return edge
-//!    `has(hop.operation) && hop.operation == 'search'` skipped them and the
-//!    reply died as `no_route`. The edge is conditioned on context instead —
-//!    the `canvy` / `coder-pipeline` pattern — and this evaluates the shipped
-//!    condition with the real CEL engine to prove it.
+//!    `emit_query_timeout` wrote no `operation` at all when this was written, so
+//!    the return edge `has(hop.operation) && hop.operation == 'search'` skipped
+//!    them and the reply died as `no_route`. Since GH #331 both emitters stamp
+//!    the field (the refused op, or the literal `error` when nothing parseable
+//!    arrived), but the edge is not wired back onto it: it is conditioned on
+//!    context instead — the `canvy` / `coder-pipeline` pattern — and that is
+//!    what makes it independent of which header shape the store answers with.
+//!    This evaluates the shipped condition with the real CEL engine to prove it.
 //!
 //! **R2b guard.** Every read is guarded by [`shipped_librarian`]: where the
 //! template does not ship, these tests skip rather than fail on a dead
@@ -286,10 +289,13 @@ fn an_empty_result_set_is_not_marked_degraded() {
 
 /// 3 — the `invalid_input` shape routes home instead of dead-lettering.
 ///
-/// `emit_invalid_input` / `emit_query_timeout` write no `operation`, so the old
-/// `has(hop.operation) && hop.operation == 'search'` return edge skipped and the
-/// reply died `no_route`. The shipped condition is evaluated here with the real
-/// CEL engine, against the context the hive's own outbound edge stamps.
+/// `emit_invalid_input` / `emit_query_timeout` wrote no `operation` back then,
+/// so the old `has(hop.operation) && hop.operation == 'search'` return edge
+/// skipped and the reply died `no_route`. Since GH #331 they stamp the field —
+/// the fixtures below carry it — but the edge stays conditioned on **context**,
+/// which is what makes it independent of the header shape. The shipped condition
+/// is evaluated here with the real CEL engine, against the context the hive's own
+/// outbound edge stamps.
 #[test]
 fn the_return_edge_carries_every_reply_the_store_can_send() {
     let Some(root) = shipped_librarian() else {
@@ -351,12 +357,15 @@ fn the_return_edge_carries_every_reply_the_store_can_send() {
             json!({ "operation": "search", "rows_affected": 0, "error_code": "sql_error" }),
         ),
         (
+            // GH #331: the error paths stamp `operation` too — the refused op.
             "invalid_input",
-            json!({ "finish_reason": "error", "error_code": "invalid_input", "duration_ms": 1 }),
+            json!({ "finish_reason": "error", "error_code": "invalid_input",
+                    "operation": "search", "duration_ms": 1 }),
         ),
         (
             "query_timeout",
-            json!({ "finish_reason": "error", "error_code": "query_timeout", "duration_ms": 1 }),
+            json!({ "finish_reason": "error", "error_code": "query_timeout",
+                    "operation": "search", "duration_ms": 1 }),
         ),
     ];
     for (name, hop) in replies {

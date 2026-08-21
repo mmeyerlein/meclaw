@@ -80,9 +80,20 @@ fn script(path: &str) -> String {
 }
 
 fn emit(script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
+    emit_in(std::path::Path::new("."), script, doc)
+}
+
+/// `emit`, but from a chosen working directory.
+///
+/// The probe resolves `${STEWARD_COLONY_DB:-colony.db}` to a **relative** name,
+/// so a test that wants it to find a ledger has to run the script where the
+/// fixture is. Without this the only reachable probe verdict is
+/// `probe_unavailable`, which is why the mechanism below went unpinned.
+fn emit_in(dir: &std::path::Path, script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
     let mut child = Command::new("python3")
         .arg("-c")
         .arg(script)
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -102,6 +113,46 @@ fn emit(script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
     );
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// A `colony.db` carrying the three tables the probe reads.
+///
+/// A row is `(table, key, headers)`: for `mutation_log` the key is the row's
+/// `status`, for `message_log` it is `to_path` and `headers` is the header the
+/// probe parses, for `dead_letters` both are ignored. Every row is stamped
+/// `created_at` = now, so all of them fall inside the probe's window.
+fn colony_db_with(dir: &std::path::Path, rows: &[(&str, &str, serde_json::Value)]) {
+    let conn = rusqlite::Connection::open(dir.join("colony.db")).expect("colony.db");
+    conn.execute_batch(
+        "CREATE TABLE mutation_log (status TEXT NOT NULL, created_at INTEGER NOT NULL);
+         CREATE TABLE message_log (headers TEXT NOT NULL, to_path TEXT NOT NULL,
+                                   from_path TEXT NOT NULL, created_at INTEGER NOT NULL);
+         CREATE TABLE dead_letters (created_at INTEGER NOT NULL);",
+    )
+    .expect("the three tables the probe reads");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    for (table, key, headers) in rows {
+        let done = match *table {
+            "mutation_log" => conn.execute(
+                "INSERT INTO mutation_log (status, created_at) VALUES (?1, ?2)",
+                rusqlite::params![key, now],
+            ),
+            "message_log" => conn.execute(
+                "INSERT INTO message_log (headers, to_path, from_path, created_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![headers.to_string(), key, "/main/steward/mutator", now],
+            ),
+            "dead_letters" => conn.execute(
+                "INSERT INTO dead_letters (created_at) VALUES (?1)",
+                rusqlite::params![now],
+            ),
+            other => panic!("the probe reads no table called {other}"),
+        };
+        done.expect("fixture row");
+    }
 }
 
 /// A judge decision arriving at the mutator.
@@ -772,6 +823,133 @@ fn a_revert_with_no_plan_leaves_a_row_that_does_not_claim_a_revert() {
     );
 }
 
+/// GH #326 — the way back is bound by the whole check, not by half of it.
+///
+/// The radius was only one of the decide path's bounds. A stored plan whose
+/// `to` is empty passed the revert branch untouched and left as a params
+/// update carrying `null`: nothing merges, and the receipt read `reverted`
+/// over a colony still running the value the cycle failed to prove. Same
+/// untruthful-receipt class as #304, one bound further in.
+#[test]
+fn a_revert_whose_plan_carries_no_value_is_refused_rather_than_sent_as_null() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "target": BRAIN, "kind": "numeric_param",
+            "key": "max_tokens", "to": ""
+        })),
+    );
+    assert!(
+        mutation(&out).is_none(),
+        "a params update carrying no value merges nothing: {out:?}"
+    );
+    let set = updated(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        set["outcome"], "revert_refused",
+        "a way back nobody took must not read as taken: {set}"
+    );
+    assert_eq!(set["reason_code"], "no_new_value");
+    assert_eq!(
+        set["status"], "applied",
+        "the change the cycle failed to prove is still running: {set}"
+    );
+}
+
+/// GH #326 — a relative target addresses nothing.
+///
+/// `hop.target` is matched by edge conditions against absolute paths; a plan
+/// stored with `talky/brain` produced a message no edge carries, under a
+/// receipt reading `reverted`. The decide path has refused this shape since
+/// the first version of `check()`.
+#[test]
+fn a_revert_whose_plan_names_a_relative_target_is_refused() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "target": "talky/brain", "kind": "numeric_param",
+            "key": "max_tokens", "to": 4096
+        })),
+    );
+    assert!(
+        mutation(&out).is_none(),
+        "no edge condition matches a relative target: {out:?}"
+    );
+    let set = updated(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        set["outcome"], "revert_refused",
+        "a way back nobody took must not read as taken: {set}"
+    );
+    assert_eq!(set["reason_code"], "target_not_absolute");
+    assert_eq!(
+        set["status"], "applied",
+        "the change the cycle failed to prove is still running: {set}"
+    );
+}
+
+/// GH #326 — the step limit judges the way there, and must not re-judge the
+/// way back.
+///
+/// The limit is a percentage of the value being left, so it is not symmetric:
+/// 100 → 60 is a 40% step and passes, while 60 → 100 is a 67% step and would
+/// not. A revert plan carries no `from` in the shape the judge is asked for,
+/// which is why the limit reads as inert on this path — but "inert" was a fact
+/// about the prompt, not about the code: the tool schema declares
+/// `revert_plan` as a free-form object and this cell replays it verbatim. One
+/// stray `from` and a legitimate revert would be refused as
+/// `step_too_large_67_pct`, leaving exactly the unproven value standing that
+/// the revert exists to remove — the guard turning on the thing it guards.
+///
+/// So the revert branch drops `from` before it validates, and this pin is the
+/// construction.
+#[test]
+fn a_revert_plan_carrying_from_is_not_re_judged_against_the_step_limit() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "target": BRAIN, "kind": "numeric_param",
+            "key": "max_tokens", "from": 60, "to": 100
+        })),
+    );
+    let m = mutation(&out).expect("the way back is not a step to be judged");
+    assert_eq!(m["params"]["max_tokens"], serde_json::json!(100));
+    let set = updated(&out, "cycles").expect("a receipt");
+    assert_eq!(set["status"], "closed");
+    assert_eq!(
+        set["outcome"], "reverted",
+        "a revert refused for reversing a change the limit already allowed \
+         would leave the unproven value running: {set}"
+    );
+}
+
+/// GH #326 — a plan with no target at all is the same refusal.
+///
+/// It is not the missing-plan case: the row carries a plan, it just names
+/// nobody. It used to leave with `hop.target` absent, which is a message the
+/// colony cannot address, under a `reverted` receipt.
+#[test]
+fn a_revert_whose_plan_names_no_target_is_refused() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "kind": "numeric_param", "key": "max_tokens", "to": 4096
+        })),
+    );
+    assert!(
+        mutation(&out).is_none(),
+        "a params update addressed to nobody is not a way back: {out:?}"
+    );
+    let set = updated(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        set["outcome"], "revert_refused",
+        "a way back nobody took must not read as taken: {set}"
+    );
+    assert_eq!(set["reason_code"], "target_not_absolute");
+    assert_eq!(
+        set["status"], "applied",
+        "the change the cycle failed to prove is still running: {set}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The measurement side
 // ---------------------------------------------------------------------------
@@ -897,6 +1075,85 @@ fn no_model_is_reachable_from_the_measuring_path() {
 // ---------------------------------------------------------------------------
 // The probe
 // ---------------------------------------------------------------------------
+
+/// The store call the probe wrote, if it wrote one of that operation.
+fn probe_call(out: &[serde_json::Value], operation: &str) -> Option<serde_json::Value> {
+    out.iter().find_map(|m| {
+        let t = m["messages"][0]["text"].as_str()?;
+        let a: serde_json::Value = serde_json::from_str(t).ok()?;
+        (a["operation"] == operation).then_some(a)
+    })
+}
+
+/// The order that puts the probe to work on one cycle.
+fn probe_order(cycle: &str, target: &str) -> serde_json::Value {
+    serde_json::json!({
+        "messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
+                      "text": serde_json::json!({"op": "probe", "cycle_id": cycle,
+                                                 "target": target}).to_string()}],
+        "header": {"hop": {}, "context": {}}
+    })
+}
+
+#[test]
+fn a_completed_params_update_cycle_reads_healthy() {
+    // GH #338: the evidence a post-#304 cycle actually leaves behind is the
+    // params update the mutator sent — on the `mutate` lane, carrying the
+    // cycle's id, addressed at the cell the cycle names. The `mutation_log`
+    // row here belongs to somebody else's rejected mutation; this hive authors
+    // no diffs at all any more, so no steward row will ever say `committed`.
+    let dir = TempDir::new().expect("tempdir");
+    colony_db_with(
+        dir.path(),
+        &[
+            ("mutation_log", "rejected", serde_json::Value::Null),
+            (
+                "message_log",
+                "/main/talky/brain",
+                serde_json::json!({"hop": {"route": "mutate", "cycle_id": "cycle:1",
+                                           "outcome": "applied"}}),
+            ),
+        ],
+    );
+    let out = emit_in(
+        dir.path(),
+        &script(PROBE),
+        probe_order("cycle:1", "/main/talky/brain"),
+    );
+    let update = probe_call(&out, "update").expect("the verdict is written to the receipt");
+    assert_eq!(update["set"]["verified"]["verdict"], "healthy");
+    assert_eq!(update["set"]["verified"]["reason"], "ok");
+    assert!(
+        probe_call(&out, "select").is_none(),
+        "a healthy probe fetches no revert plan: {out:?}"
+    );
+}
+
+#[test]
+fn a_loop_whose_update_never_arrived_reads_unhealthy() {
+    // Same ledger minus the one row that proves the change landed. The cell
+    // the cycle names was never written to, so the loop does not know whether
+    // it changed anything — and that is exactly when the way back is taken.
+    let dir = TempDir::new().expect("tempdir");
+    colony_db_with(
+        dir.path(),
+        &[("mutation_log", "rejected", serde_json::Value::Null)],
+    );
+    let out = emit_in(
+        dir.path(),
+        &script(PROBE),
+        probe_order("cycle:1", "/main/talky/brain"),
+    );
+    let update = probe_call(&out, "update").expect("the verdict is written to the receipt");
+    assert_eq!(update["set"]["verified"]["verdict"], "unhealthy");
+    assert_eq!(
+        update["set"]["verified"]["reason"],
+        "params_update_not_seen"
+    );
+    let select = probe_call(&out, "select").expect("it fetches the plan authored beforehand");
+    assert_eq!(select["table"], "cycles");
+    assert_eq!(select["columns"][1], "revert_plan");
+}
 
 #[test]
 fn a_probe_that_cannot_look_reports_unhealthy_rather_than_fine() {

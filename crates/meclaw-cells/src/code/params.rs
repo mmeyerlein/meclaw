@@ -70,6 +70,14 @@ impl CodeParams {
             None => None,
             Some(v) => Some(v.as_u64().ok_or("external_timeout_ms must be integer")?),
         };
+        // GH #334: `0` survives `as_u64()` and reaches `CodeParams` — an
+        // A-timeout of zero milliseconds elapses before the script can run, so
+        // every execution fails on the deadline. Refuse it here, in the shape of
+        // the GH #322 `max_concurrency` guard below and with the literal bash,
+        // web_search and web_fetch already return for the same input.
+        if external_timeout_ms == Some(0) {
+            return Err("params.external_timeout_ms must be >= 1".into());
+        }
         let max_concurrency = match obj.get("max_concurrency") {
             None => None,
             Some(v) => Some(v.as_u64().ok_or("max_concurrency must be integer")? as usize),
@@ -172,10 +180,25 @@ mod tests {
         );
     }
 
-    /// Sibling parity: the wording above is not a local invention — it is the
-    /// literal the other five cell types return for the same input.
+    /// GH #334: `external_timeout_ms: 0` used to parse — `as_u64()` accepts `0`
+    /// and it reached `CodeParams` untouched. The siblings (bash, web_search,
+    /// web_fetch) refuse it; `code` must use the same literal.
     #[test]
-    fn max_concurrency_zero_refusal_matches_siblings() {
+    fn rejects_external_timeout_ms_zero() {
+        let r = CodeParams::parse(&json!({
+            "runner":"python3","script_path":"x.py","external_timeout_ms":0
+        }));
+        assert_eq!(
+            r.unwrap_err(),
+            "params.external_timeout_ms must be >= 1",
+            "code must refuse 0 with the sibling wording"
+        );
+    }
+
+    /// Sibling parity: the wordings above are not local inventions — they are
+    /// the literals the other cell types return for the same input.
+    #[test]
+    fn zero_valued_knobs_refuse_with_the_sibling_wording() {
         use meclaw_colony::CellFactory;
         let code = CodeParams::parse(&json!({
             "runner":"python3","script_inline":"print(1)","max_concurrency":0
@@ -189,5 +212,21 @@ mod tests {
             .unwrap_err();
         assert_eq!(code, bash, "refusal wording drifted from bash");
         assert_eq!(code, file, "refusal wording drifted from file");
+
+        let code_ms = CodeParams::parse(&json!({
+            "runner":"python3","script_inline":"print(1)","external_timeout_ms":0
+        }))
+        .unwrap_err();
+        let bash_ms = crate::bash::BashCellFactory
+            .validate_params(&json!({"external_timeout_ms":0}))
+            .unwrap_err();
+        let web_fetch_ms = crate::web_fetch::WebFetchCellFactory
+            .validate_params(&json!({"external_timeout_ms":0}))
+            .unwrap_err();
+        assert_eq!(code_ms, bash_ms, "refusal wording drifted from bash");
+        assert_eq!(
+            code_ms, web_fetch_ms,
+            "refusal wording drifted from web_fetch"
+        );
     }
 }

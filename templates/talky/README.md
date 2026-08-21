@@ -1,4 +1,4 @@
-# `talky@3.0.8`
+# `talky@3.0.9`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),

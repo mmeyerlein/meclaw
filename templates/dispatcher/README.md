@@ -1,4 +1,4 @@
-# `dispatcher@1.0.0`
+# `dispatcher@1.0.1`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -66,10 +66,10 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 The tool lanes guard the key they discriminate on:
 
 ```json
-{ "from": "./dispatcher", "to": "./collect/assemble",
+{ "from": "./dispatcher", "to": "./collect",
   "condition": "has(hop.route) && hop.route == 'calls'",
   "modifier": {"set_hop": {"route": "'in_calls'"}} },
-{ "from": "./dispatcher", "to": "./collect/assemble",
+{ "from": "./dispatcher", "to": "./collect",
   "condition": "has(hop.route) && hop.route == 'result'",
   "modifier": {"set_hop": {"route": "'in_tool'"}} },
 { "from": "./dispatcher", "to": "./search",
@@ -77,6 +77,11 @@ The tool lanes guard the key they discriminate on:
 { "from": "./dispatcher", "to": "./shell",
   "condition": "has(hop.tool_name) && hop.tool_name == 'bash'" }
 ```
+
+The collector endpoint is the **hive**, never a cell inside it: `collector` is sealed
+(`params.ports: []`), so an edge naming `./collect/assemble` in a mutation is refused with
+`hive_port_boundary`. Nothing is lost by dropping the segment -- the `set_hop` already names
+the lane, and the lane is what the hive dispatches on.
 
 The `has()` is not decoration: `hop` is single-hop, so the `calls`, `result` and `answer`
 emissions carry no `tool_name` at all. A bare `hop.tool_name == 'web_search'` does not
@@ -143,7 +148,7 @@ straight to the dead-letter queue, nothing emitted towards the origin. The fix i
 modifier on the **re-entry** edge (collector → brain), never one per tool answer:
 
 ```json
-{ "from": "./collect/assemble", "to": "./brain",
+{ "from": "./collect", "to": "./brain",
   "condition": "has(hop.route) && hop.route == 'brain' && int(context.iter) < 12",
   "modifier": {"set_context": {"iter": "int(context.iter) + 1"}, "restore_ttl": true} }
 ```

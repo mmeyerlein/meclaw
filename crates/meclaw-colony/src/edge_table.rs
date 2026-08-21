@@ -570,6 +570,61 @@ mod hook_tests {
         assert_eq!(r.len(), 2);
     }
 
+    /// GH #283: an unconditional out-edge is an ALWAYS edge, not a default.
+    ///
+    /// `apply_edges` produces one decision per edge whose condition evaluates
+    /// true, and `condition: None` means *always take*. So an unconditional
+    /// edge fires **beside** every matching edge, never only when none of them
+    /// matched -- there is no fallback construct in the substrate today. The
+    /// fan-out test above uses two unconditional edges and therefore proves
+    /// nothing about the mixed case; this one does.
+    #[test]
+    fn an_unconditional_edge_fires_beside_a_matching_one() {
+        fn hop_tool_name(name: &str) -> Headers {
+            let mut hop = meclaw_core::serde_json::Map::new();
+            hop.insert(
+                "tool_name".into(),
+                meclaw_core::serde_json::Value::String(name.into()),
+            );
+            Headers::from_parts(meclaw_core::serde_json::Map::new(), hop)
+        }
+
+        let mut table = EdgeTable::new();
+        table.insert(Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/b"),
+            condition: Some(
+                crate::cel_eval::parse_condition("hop.tool_name == 'alpha'")
+                    .expect("condition should parse"),
+            ),
+            modifier: None,
+        });
+        table.insert(Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/c"),
+            condition: None,
+            modifier: None,
+        });
+
+        let matched = apply_edges(&table, &Path::new("/a"), &hop_tool_name("alpha"));
+        let matched_targets: Vec<&str> = matched.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            matched_targets,
+            vec!["/b", "/c"],
+            "the unconditional edge fires BESIDE the matching one, not instead of it"
+        );
+
+        let unmatched = apply_edges(&table, &Path::new("/a"), &hop_tool_name("gamma"));
+        let unmatched_targets: Vec<&str> = unmatched.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            unmatched_targets,
+            vec!["/c"],
+            "with no other arm matching, only the unconditional edge remains"
+        );
+    }
+
     /// Phase 13.5-A1 T3: condition=false → edge skipped.
     #[test]
     fn evaluate_edge_skips_when_condition_false() {

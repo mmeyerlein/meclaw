@@ -74,10 +74,16 @@ fn parse_tool_call(msg: &Message) -> Result<(Value, Option<String>), String> {
     Ok((args, id))
 }
 
+/// GH #331 — `operation` names the refused op, or the literal `"error"` when
+/// nothing parseable arrived. Every reply the store emits carries the field:
+/// `output::build_tool_result` writes it unconditionally, the contract declares
+/// it `required`, and a return edge that reads `hop.operation` must not lose
+/// exactly the replies that report a failure.
 async fn emit_invalid_input(
     sink: &OutputSink,
     target: &Path,
     msg: String,
+    operation: &str,
     started: std::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -85,6 +91,7 @@ async fn emit_invalid_input(
         "header": {
             "finish_reason": "error",
             "error_code": "invalid_input",
+            "operation": operation,
             "duration_ms": duration_ms,
         },
         "messages": [{"origin":"tool","type":"tool_result","text": msg,"id":""}]
@@ -176,11 +183,14 @@ fn write_surface_violation(
     }
 }
 
+/// GH #331 — carries the refused op in `operation`, like the two other error
+/// emitters and like every regular reply.
 async fn emit_write_denied(
     sink: &OutputSink,
     target: &Path,
     call_id: Option<String>,
     detail: String,
+    operation: &str,
     started: std::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -188,6 +198,7 @@ async fn emit_write_denied(
         "header": {
             "finish_reason": "error",
             "error_code": "write_denied",
+            "operation": operation,
             "duration_ms": duration_ms,
         },
         "messages": [{"origin":"tool","type":"tool_result","text": detail,
@@ -201,10 +212,13 @@ async fn emit_write_denied(
         .await;
 }
 
+/// GH #331 — carries the interrupted op in `operation`; the query reached the
+/// database, so the op name is always known here.
 async fn emit_query_timeout(
     sink: &OutputSink,
     target: &Path,
     call_id: Option<String>,
+    operation: &str,
     started: std::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -212,6 +226,7 @@ async fn emit_query_timeout(
         "header": {
             "finish_reason": "error",
             "error_code": "query_timeout",
+            "operation": operation,
             "duration_ms": duration_ms,
         },
         "messages": [{"origin":"tool","type":"tool_result",
@@ -274,7 +289,8 @@ impl StatefulCell for StoreCell {
                     sender.as_ref(),
                     "params_update",
                 ) {
-                    emit_write_denied(sink, &reply_target, None, detail, started).await;
+                    emit_write_denied(sink, &reply_target, None, detail, "params_update", started)
+                        .await;
                     return;
                 }
                 let update_obj = match params_val.as_object() {
@@ -284,6 +300,7 @@ impl StatefulCell for StoreCell {
                             sink,
                             &reply_target,
                             "invalid params slot: not a JSON object".to_string(),
+                            "params_update",
                             started,
                         )
                         .await;
@@ -303,6 +320,7 @@ impl StatefulCell for StoreCell {
                                 sink,
                                 &reply_target,
                                 format!("cell.db params write failed: {e}"),
+                                "params_update",
                                 started,
                             )
                             .await;
@@ -314,7 +332,14 @@ impl StatefulCell for StoreCell {
                         db.set_query_timeout(self.query_timeout());
                     }
                     Err(e) => {
-                        emit_invalid_input(sink, &reply_target, e.detail(), started).await;
+                        emit_invalid_input(
+                            sink,
+                            &reply_target,
+                            e.detail(),
+                            "params_update",
+                            started,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -330,21 +355,29 @@ impl StatefulCell for StoreCell {
             let (args, call_id) = match parse_tool_call(&msg) {
                 Ok(p) => p,
                 Err(e) => {
-                    emit_invalid_input(sink, &reply_target, e, started).await;
+                    // GH #331: nothing parseable arrived, so there is no op to
+                    // name — the literal `error` is what the field carries then.
+                    emit_invalid_input(sink, &reply_target, e, "error", started).await;
                     return;
                 }
             };
+            // GH #331: the op the caller asked for, bound once — the write
+            // surface below and every error emitter after it name the same
+            // string, and an args object without a parseable `operation` is a
+            // reply that says `error`.
+            let operation = args
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error")
+                .to_string();
             // GH #132: the writer boundary, checked between parse and dispatch —
             // after the args are known (so the op name is real) and before the DB
             // task starts (so a refused write touches nothing). Reads pass
             // straight through; an open write surface never reaches this branch.
-            if let Some(detail) = write_surface_violation(
-                &self.params,
-                &store_path,
-                sender.as_ref(),
-                args.get("operation").and_then(|v| v.as_str()).unwrap_or(""),
-            ) {
-                emit_write_denied(sink, &reply_target, call_id, detail, started).await;
+            if let Some(detail) =
+                write_surface_violation(&self.params, &store_path, sender.as_ref(), &operation)
+            {
+                emit_write_denied(sink, &reply_target, call_id, detail, &operation, started).await;
                 return;
             }
             // The canonical bindings ride along into the DB task: they are what
@@ -357,11 +390,11 @@ impl StatefulCell for StoreCell {
                 {
                     Ok(Ok(o)) => o,
                     Ok(Err(e)) => {
-                        emit_invalid_input(sink, &reply_target, e, started).await;
+                        emit_invalid_input(sink, &reply_target, e, &operation, started).await;
                         return;
                     }
                     Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                        emit_query_timeout(sink, &reply_target, call_id, started).await;
+                        emit_query_timeout(sink, &reply_target, call_id, &operation, started).await;
                         return;
                     }
                 }
@@ -372,7 +405,7 @@ impl StatefulCell for StoreCell {
                 {
                     Ok(o) => o,
                     Err(e) => {
-                        emit_invalid_input(sink, &reply_target, e, started).await;
+                        emit_invalid_input(sink, &reply_target, e, &operation, started).await;
                         return;
                     }
                 }
