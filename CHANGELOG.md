@@ -11,6 +11,8 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.17.2] — 2026-08-21
+
 ### Fixed
 
 - **A `store` error reply carries `hop.operation` like every other reply**
