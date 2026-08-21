@@ -399,6 +399,8 @@ pub(crate) fn compile_contract_view(
         // GH #260: carried verbatim — the substrate's half of the write
         // boundary is a declaration, not something to compile.
         write_surface: block.write_surface,
+        // GH #314: likewise — whether this cell's database travels at all.
+        transfer: block.transfer,
     })
 }
 

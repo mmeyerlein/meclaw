@@ -1,6 +1,6 @@
-# `cogny@3.0.5`
+# `cogny@3.0.6`
 
-The agent core as one template. Three units under one hive:
+The agent core as one template. Four units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
 template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
 `brain_fast` on a fast one. No new cell type, no Rust.
@@ -192,7 +192,8 @@ the consultation died.
 |---|---|
 | memory tool (`in_memory_call` back into the collector) | not declared; inside the composite it would be a loop at the hive path, as `talky` does it |
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
-| a normalising `errors` cell | R-CG-2 names three units and nothing else, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
+| a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else" (the lookup lane made the llm slot two in 1.1.0); an `errors` cell is not among them, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
+| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- and the edge has to come with the same exclusion the tool exit already carries for `escalate_to_deep`, or the call fans out twice |
 
 The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
@@ -327,7 +328,7 @@ once.
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
 | `recoverability` | param | `""` | collector -- what may be elided, declared per tool NAME (`lookup:repeatable,write:env`). Undeclared = `unique` = never elided. **Declare the core's own tools here**, because the core is where the large results are |
-| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool; wire it at `./dispatcher` next to `memory_recall` (`hop.tool_name == 'thread_recall'` -> lane `in_thread_call`) or the stubs the curator leaves have no way back |
+| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **This composite does not wire it** and a parent cannot: the edge is `./dispatcher -> ./collector` on `hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, which lives in this template's own `params.graph` and needs the same `escalate_to_deep`-style exclusion on the tool exit. Until it is drawn, the stubs the curator leaves have no way back -- so switching `context_window` on here means switching curation on without a recall path |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
 | `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. **`escalate_to_deep` belongs here** (1.1.0); the `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries all three |
@@ -349,7 +350,7 @@ cover.
 Now the knob is set where it belongs, and the byte pin still holds:
 
 ```json
-{"op": "instantiate", "template": "cogny@3.0.5", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@3.0.6", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}

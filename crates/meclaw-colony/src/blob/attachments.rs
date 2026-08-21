@@ -86,9 +86,11 @@ impl AttachmentReader {
     ///
     /// `None` on either miss, and the two misses are deliberately
     /// indistinguishable to the cell: a cell without a handle does not consume
-    /// attachments, whatever the reason. Declaring is binding (config.md
-    /// § `consumes`), so declaration is read off the compiled required-key
-    /// projection.
+    /// attachments, whatever the reason. That indistinguishability is why the
+    /// declaration side must be exact — a wrong `None` here is invisible. The
+    /// gate therefore reads the DECLARATION (`declares_body`), not the ingress
+    /// requirement: `required: false` on the slot declares it just as much
+    /// (GH #323).
     pub fn for_contract(
         contract: &ContractView,
         store: Option<Arc<DiskBlobStore>>,
@@ -149,6 +151,24 @@ mod tests {
         let contract =
             contract_with_consumes(serde_json::json!({"body": {"attachments": {"type": "array"}}}));
         assert!(AttachmentReader::for_contract(&contract, Some(store(dir.path()))).is_some());
+    }
+
+    /// GH #323: `required: false` is a real, shipped spelling on `consumes.body`
+    /// (43 configs under `templates/`, `examples/`, `workshop/corpus/` use it).
+    /// It says "I read this key, it need not be present" — it does not say "I do
+    /// not read it". The capability gate keys off the DECLARATION, so an optional
+    /// declaration hands out the handle exactly like a mandatory one; otherwise a
+    /// config that parses withdraws a documented capability with no diagnostic.
+    #[test]
+    fn declared_with_required_false_still_yields_a_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let contract = contract_with_consumes(
+            serde_json::json!({"body": {"attachments": {"type": "array", "required": false}}}),
+        );
+        assert!(
+            AttachmentReader::for_contract(&contract, Some(store(dir.path()))).is_some(),
+            "an optional declaration is still a declaration"
+        );
     }
 
     #[test]

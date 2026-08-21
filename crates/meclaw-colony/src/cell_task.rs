@@ -310,7 +310,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) {
     // Phase-13.5 Lifecycle-3b Task 3 (F2): death-ack guard. Declared FIRST so it
     // drops LAST (reverse-declaration drop order) — i.e. AFTER the re-bound `db`
@@ -410,12 +410,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
                 // requires `messages` — which is every `store` in the library.
                 // AFTER the blob resolution, because a slot is only readable once
                 // the body it sits in is whole.
-                if crate::db_transfer::handle_transfer_slot(
-                    &msg,
-                    &sink,
-                    &mut db,
-                    write_surface,
-                )
+                if crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, bounds)
                 .await
                 {
                     continue;
@@ -537,7 +532,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) {
     let (events_tx, events_rx) = mpsc::channel::<L::Event>(64);
     let (reconfig_tx, reconfig_rx) = mpsc::channel::<L::Reconfig>(8);
@@ -572,7 +567,7 @@ pub async fn cell_task_long_running<L: crate::long_running_cell::LongRunningCell
         death_ack,
         blob_store,
         consumes,
-        write_surface,
+        bounds,
     ));
 
     // AUDIT-PRE14-001: a panic on EITHER side must reach the supervisor and must
@@ -662,7 +657,7 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) -> bool {
     // Phase-13.5 Lifecycle-3b (F2): death-ack guard. Declared FIRST → drops
     // LAST, i.e. AFTER the re-bound `db` below (reverse-declaration drop order),
@@ -735,13 +730,8 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
                     // same position — after the blob resolution, before the
                     // consumes gate, never reaching `handle()`.
                     if resolve_blob_for_delivery(&mut msg, &blob_store, &colony_inbox_tx).await
-                        && !crate::db_transfer::handle_transfer_slot(
-                            &msg,
-                            &sink,
-                            &mut db,
-                            write_surface,
-                        )
-                        .await
+                        && !crate::db_transfer::handle_transfer_slot(&msg, &sink, &mut db, bounds)
+                            .await
                         && enforce_consumes_for_delivery(
                             &msg,
                             &consumes,

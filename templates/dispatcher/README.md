@@ -58,7 +58,7 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 
 | route | to | what travels |
 |---|---|---|
-| `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round |
+| `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round. `hop.call_count` sizes it (the number of `tool_call` turns in the bundle, as a string), `hop.async_calls` names the ids the fan-in must not wait for |
 | `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result |
 | `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind |
 | `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle |
@@ -176,7 +176,7 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 | input | emissions |
 |---|---|
 | `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order |
-| `tool_call` turns present, count > budget | `calls`, then one `result` per call: `call budget exceeded`, no tool message at all |
+| `tool_call` turns present, count > budget | `calls`, then the interim `answer` if a text turn stood next to them (the sentence is appended **before** the budget branch runs, so an over-budget bundle still says it), then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
 | no calls, `finish_reason == 'stop'` | one `answer` |
 | anything else | nothing (empty multi-send, terminal) |

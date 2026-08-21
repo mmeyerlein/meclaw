@@ -1,4 +1,4 @@
-# `collector@2.0.4`
+# `collector@2.0.6`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -64,8 +64,15 @@ the window and what leaves it**, in one place, and hands the result to the brain
 
 ## Ports
 
-Entry lanes go **into `./assemble`**. The parent edge names the lane with
-`set_hop: {"route": "'<lane>'"}`; `session_id` rides in the message context.
+**This hive is sealed.** `config.json` declares `params.ports: []` (GH #228), which is the
+SEALED state: the hive path is the only address, and a mutation naming a cell inside it --
+`./assemble`, `./window`, either of them -- is refused with `hive_port_boundary`. What a
+caller wants rides on `hop.route`, and the lanes it may use are the ones `params.contract`
+declares.
+
+Entry lanes therefore address the **hive path** and name themselves on the hop. The parent
+edge names the lane with `set_hop: {"route": "'<lane>'"}`; `session_id` rides in the
+message context.
 
 | lane | who sends it | what it does |
 |---|---|---|
@@ -81,7 +88,7 @@ Entry lanes go **into `./assemble`**. The parent edge names the lane with
 | `in_prune` | a timer or an operator, on `hop.route == 'prune'` | prunes delivered-and-aged sessions; the template **never fires this itself** |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 
-Exits leave **from `./assemble`** on `hop.route`:
+Exits leave **from the hive path** on `hop.route`:
 
 | route | to | notes |
 |---|---|---|
@@ -92,17 +99,31 @@ Exits leave **from `./assemble`** on `hop.route`:
 | `turn_write` | the SAME batch consumer, per turn | only with `turn_write` set: the day so far, after every stored turn and every stored answer -- the same document as `write`, without `rounds`. See "Per-turn episodes" below. |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
+| `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
 
 The enum itself is `contract.emits.hop.route` in `assemble/config.json` -- that declaration
-is the authority, this table is its prose.
+is the authority, this table is its prose. Six of its eight values are the hive's declared
+exits (`params.contract.emits` in `config.json`, the list a parent may wire): `cstore` stays
+inside, and `condense` is reserved.
 
-**`./assemble` is the port address, and the address is the contract.** Every lane in and
-every route out crosses that one endpoint, and the working colonies under
-[`../../examples/`](../../examples/) address it literally as `<parent>/collector`
--- it is a stable **address**, not implementation detail that happens to be reachable. The
-second cell, `./window`, is internal and may be rearranged in a version bump; `./assemble`
-may not, and moving it is a breaking change to every parent that wired it: a CHANGELOG
-Breaking entry and a new major version, never a patch.
+**The hive path is the address, and the lane is the contract.** Every lane in and every
+route out crosses that one endpoint, and the working colonies under
+[`../../examples/`](../../examples/) address it as `<parent>/collector` -- it is a stable
+**address**, not implementation detail that happens to be reachable. Both cells behind the
+door are **unroutable** from outside -- no edge may name either of them. Their *names* are
+not free, though: `override_params` addresses a knob by the cell path **inside** the
+template (`assemble`, or `collector/assemble` from a composite -- see "The knobs are per
+instance" below), and `examples/never-forgets/grow.json` does exactly that. Renaming or
+splitting `assemble` therefore breaks every parent that tunes a knob. What is genuinely
+free behind the door is the *implementation*, not the layout. What may not move at all is
+the set of LANE NAMES above, and dropping one is a breaking change to every parent that
+wired it: a CHANGELOG Breaking entry and a new major version, never a patch.
+
+Until `collector@2.0.5` this section said the opposite three times over -- entry lanes went
+"into `./assemble`", exits left "from `./assemble`", and that cell was called "the port
+address" -- while the sentence beside it already wrote the correct one. Every one of those
+addresses is refused by the seal, and it is refused in precisely the mutation the next
+paragraph tells you to write ([#311](https://github.com/mmeyerlein/meclaw/issues/311)).
 
 Wire the ports in the **same mutation** that instantiates the hive: an island without a
 crossing edge derives inactive and never spawns.
@@ -141,7 +162,7 @@ Two consequences, both deliberate:
 however its caller can read it. That is not a workaround for a missing channel; it is the
 channel. A provider sees a tool result as one string on one `tool_call_id`, and anything
 richer would have to be flattened for the wire anyway -- the only question is who does it,
-and the tool that produced the structure knows its own shape best. `affinity@2.0.1` does
+and the tool that produced the structure knows its own shape best. `affinity@2.0.5` does
 exactly this: the receipt line, then the disclosed pack as JSON behind it.
 
 **If you want a durable constraint rather than an answer**, that is a different lane and a
@@ -312,7 +333,7 @@ because the collector owns the slate the stub points at.
 ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) -- before that the edge above was
 refused with `hive_contract` at mutation time, so every stub the curator left pointed at a tool
 no caller could wire. A composite that carries this collector as a sub-unit has to declare the
-lane **at its own hive path** as well and forward it through its door edge; `talky@3.0.1` does,
+lane **at its own hive path** as well and forward it through its door edge; `talky` does (since `talky@3.0.1`),
 `cogny` does not (its seal admits one lane in total, [#240](https://github.com/mmeyerlein/meclaw/issues/240)).
 
 The tool schema is a **seed**, not a contract of this template -- what the brain may ask for

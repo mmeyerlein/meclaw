@@ -9,9 +9,10 @@
         {
           "route": "in_turn",
           "context": [
-            "channel"
+            "channel",
+            "user_id"
           ],
-          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one"
+          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one. context.user_id is the SECOND identity dimension: the sender rules address it by name (field 'user_id', two rows in the shipped seed), and a caller that never promotes it leaves that whole rule class matching the empty string -- an allow row on user_id then rejects every turn, and a deny row on it never fires"
         }
       ],
       "emits": [

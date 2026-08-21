@@ -1,6 +1,6 @@
 {
   "name": "firewall",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": {
     "purpose": "Deterministic screening on an ingress channel, as topology: one code cell and one rule store between the surface and the agent. Every inbound turn is measured -- size, sender, forbidden literal, rate -- and leaves on exactly one of two lanes: 'pass' with the body byte-identical, or 'reject' naming the reason AND the rule that fired. Nothing here asks a model, and nothing here can: every verdict is a comparison or a clock. The rule set lives in rows, so a colony shows its screening policy as part of its tree and changes it with an insert.",
     "use_when": "In front of every inbound channel -- Telegram, Slack, HTTP, voice -- wherever a stranger can reach the surface. Instantiate it in the SAME mutation that wires the ingress lane and both exits: the surface into ./screen with hop.route 'in_turn' and the channel identity promoted to context.channel (and context.user_id where the surface has one), ./screen out on hop.route=='pass' into the agent's intake, and ./screen out on hop.route=='reject' into a drain or a log. Both exit edges MUST delete the firewall's context keys (fw_body, fw_now, fw_phase, store_origin), otherwise the parked copy of the turn rides along downstream.",

@@ -4,9 +4,10 @@ meclaw is a framework for building agentic harnesses, and swarms of them, as a d
 Issues, discussions, and PRs are all open. This file tells you how to build it, how to test it,
 where the truth lives, and what makes a good first contribution.
 
-First rule: read the honest status before you start. meclaw is **v0.1.15**, a proof of concept
-for the DSL and the self-modifying substrate. The mutation substrate is real and tested, and the
-builder-hive (plain English to topology) shipped in 0.1.11. If a change claims macOS support, or
+First rule: read the honest status before you start. meclaw is **v0.17.0**, a proof of concept
+for the DSL and the self-modifying substrate. The mutation substrate is real and tested. The
+builder-hive (plain English to topology) is **not** in this repository — it is built and tested in
+the private tree and is not on the public template allow-list. If a change claims macOS support, or
 claims federation / multi-builder / a native Anthropic provider, it does not match reality and
 will not land. Keep us honest.
 
@@ -98,6 +99,11 @@ teeth, durability hardening), open an issue first so we can talk shape before yo
 - One logical change per PR. Keep commits clean.
 - `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` all green.
 - New behavior has a test. New cells and examples run under the daemon.
+- A PR that settles an architectural question says so, and the decision gets an ADR in the
+  maintainers' `plans/adr/` (kept out of this clone) carrying a `Pinned-by:` line naming the
+  test or symbol that embodies it. The anchors themselves do travel, as
+  `.github/gates/adr-anchors.tsv`, and the `gates` job resolves every one of them: deleting the
+  code that pins an accepted decision is a red run until the ADR is superseded.
 - Match the surrounding voice in any prose. Confident, credible, no hype. And no spaced
   em-dashes, they read as machine-written.
 

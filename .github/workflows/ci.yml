@@ -69,6 +69,45 @@ jobs:
       # pins the existing count per package and fails when it grows.
       - name: unwrap/expect budget
         run: python3 .github/gates/unwrap_budget.py
+      # docs/development-rules.md § 2a (GH #254). A review compares code
+      # against spec, so a spec that runs ahead of the code passes every review
+      # by construction. This runs the other direction: every behavioural claim
+      # in the trias is classified, a `pinned` row names a test that must
+      # exist, a `specified-not-built` row's paragraph must still carry its
+      # visible marker in both language versions, and no row's anchor may be
+      # rewritten out from under it.
+      #
+      # The registry's canonical home is plans/spec-claims/claims.tsv, which
+      # does not travel (export rule R2). The copy at .github/gates/claims.tsv
+      # is what this step reads -- same arrangement as the corridor fixtures.
+      #
+      # This run checks the travelling copy against the PUBLISHED documents:
+      # the export ships docs/X.en.md under the plain name docs/X.md, so the
+      # English half of every row is checked here and the German half is
+      # skipped with a counted, named notice (its document does not travel).
+      # The strict both-languages run, including the canonical-vs-copy
+      # divergence, is a private-tree matter and rides `cargo test` via
+      # crates/meclaw-colony/tests/a3_spec_claims_gate_drift.rs.
+      - name: spec-claims registry
+        run: python3 scripts/check_claims.py --check
+      # docs/development-rules.md § 2b (GH #319). An accepted ADR with nothing
+      # in the tree holding it up is a wish: legacy ADR 0011 kept reading
+      # `Akzeptiert` for three months after its capability had vanished, and the
+      # spec kept promising it, because nothing connected the decision to a line
+      # of code that could disappear. Every accepted ADR now names a test or a
+      # symbol, and this step resolves each one.
+      #
+      # Same two-tree arrangement as the spec-claims gate above and for the same
+      # reason: the corpus lives in plans/adr/, which does not travel (export
+      # rule R2), so a DERIVED registry travels as .github/gates/adr-anchors.tsv
+      # -- one row per anchor. This run resolves those rows against crates/,
+      # which does travel, and crates/ is exactly where the deletion this gate
+      # exists to catch would be visible. The private half -- the ADR texts
+      # themselves, the missing-Pinned-by check, and the byte-exactness of the
+      # derived copy -- rides `cargo test` via
+      # crates/meclaw-colony/tests/a4_adr_anchor_gate_drift.rs.
+      - name: ADR anchors
+        run: python3 scripts/check_adr_anchors.py --check
       # GH #234 -- two gates USED to stand here: `build_librarian_seed.py
       # --check` (GH #205) and `build_builder_hive.py --check` (GH #217),
       # guarding the two committed trees that are generated. Do not put them

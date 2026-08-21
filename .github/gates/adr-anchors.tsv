@@ -1,0 +1,33 @@
+# Derived from plans/adr/ by scripts/check_adr_anchors.py --write.
+# plans/ never travels with an export (rule R2), so this copy is what the
+# public `gates` job reads. Do not hand-edit: regenerate it in the same
+# commit as the ADR change. The private tree fails if the two diverge.
+adr	status	anchor_home	target
+0001-header-model-lifetime-and-contract-interface.md	accepted	self	code:pub struct Headers
+0001-header-model-lifetime-and-contract-interface.md	accepted	self	test:modifier_set_context_promotes_hop_value
+0001-header-model-lifetime-and-contract-interface.md	accepted	self	test:consumes_block_parses_context_and_hop
+0001-header-model-lifetime-and-contract-interface.md	accepted	self	test:the_two_inbound_compartments_do_not_cross
+0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing
+0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md	accepted	README	test:the_audience_set_spelling_is_a_round_in_both_directions
+0003-rust-toolchain-floating-stable.md	accepted	self	file:rust-toolchain.toml#channel = "stable"
+0004-bounded-mailboxes-block-by-default.md	accepted	self	test:bounded_mailbox_blocks_send_when_full_then_unblocks_on_drain
+0004-bounded-mailboxes-block-by-default.md	accepted	self	code:mailbox_default_capacity
+0004-bounded-mailboxes-block-by-default.md	accepted	self	code:fn enqueue_hive_transit
+0005-blobs-live-colony-wide.md	accepted	self	code:pub struct DiskBlobStore
+0005-blobs-live-colony-wide.md	accepted	self	code:cli.root.join("blobs")
+0005-blobs-live-colony-wide.md	accepted	self	test:parses_api_daemon_validate_blobs_flags
+0006-one-manager-task-per-cell.md	accepted	self	code:pub async fn cell_task_stateful
+0006-one-manager-task-per-cell.md	accepted	self	test:one_shot_cell_despawns_after_each_handle_to_asleep_counter_increments
+0006-one-manager-task-per-cell.md	accepted	self	test:boot_active_lazy_cell_wakes_on_first_message
+0007-collector-is-a-code-cell-not-a-cell-type.md	accepted	self	code:multi_send_capable
+0007-collector-is-a-code-cell-not-a-cell-type.md	accepted	self	test:contract_violation_multi_send_not_declared
+0008-colony-json-and-strict-validation.md	accepted	self	code:pub(crate) fn resolve_validate_emits
+0008-colony-json-and-strict-validation.md	accepted	self	test:effective_validate_emits_resolves_knob_chain
+0008-colony-json-and-strict-validation.md	accepted	self	code:pub strict_validation
+0009-routing-failures-dead-letter.md	accepted	self	code:pub enum DeadLetterReason
+0009-routing-failures-dead-letter.md	accepted	self	test:dead_letter_survives_colony_restart
+0009-routing-failures-dead-letter.md	accepted	self	test:push_dead_letter_keeps_all_entries_no_drop_oldest
+0010-universal-body-stays-a-json-value.md	accepted	self	code:pub enum Body
+0010-universal-body-stays-a-json-value.md	accepted	self	test:inline_variant_round_trips_value
+0010-universal-body-stays-a-json-value.md	accepted	self	code:pub fn validate_ubf_body
+0010-universal-body-stays-a-json-value.md	accepted	self	test:turn_object_user_text_is_valid

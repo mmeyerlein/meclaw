@@ -18,9 +18,24 @@ use tower::ServiceExt;
 /// A colony tree with one declared surface (with assets), its private store, and
 /// an unrelated store holding "real" data.
 fn tree() -> tempfile::TempDir {
+    tree_rooted("main")
+}
+
+/// The same tree under a root cell directory of the caller's choosing (GH #324).
+/// Boot accepts any single top-level directory that carries a `config.json` — the
+/// name `main` is a convention, not a requirement — so the fixture writes that
+/// root cell config and lets the caller name the directory.
+fn tree_rooted(root_dir: &str) -> tempfile::TempDir {
     let td = tempfile::TempDir::new().unwrap();
-    write_cell(
+    fs::create_dir_all(td.path().join(root_dir)).unwrap();
+    fs::write(
+        td.path().join(root_dir).join("config.json"),
+        r#"{ "cell": { "type": "hive" } }"#,
+    )
+    .unwrap();
+    write_cell_under(
         td.path(),
+        root_dir,
         "org/acme/canvy/render",
         r#"{
           "cell": {
@@ -34,26 +49,32 @@ fn tree() -> tempfile::TempDir {
           "params": { "runner": "python3", "script_inline": "pass" }
         }"#,
     );
-    let client = td.path().join("main/org/acme/canvy/render/client");
+    let client = td
+        .path()
+        .join(root_dir)
+        .join("org/acme/canvy/render/client");
     fs::create_dir_all(&client).unwrap();
     fs::write(client.join("surface.js"), b"window.SurfaceHooks = {};\n").unwrap();
     fs::write(client.join("surface.css"), b":root { --bg: #fff; }\n").unwrap();
     fs::write(client.join("notes.txt"), b"not an asset type\n").unwrap();
 
-    write_cell(
+    write_cell_under(
         td.path(),
+        root_dir,
         "org/acme/canvy/store",
         r#"{ "cell": { "type": "store" },
              "params": { "schema": { "canvas": { "kind": "text" } } } }"#,
     );
-    write_cell(
+    write_cell_under(
         td.path(),
+        root_dir,
         "org/acme/vault",
         r#"{ "cell": { "type": "store" },
              "params": { "schema": { "secrets": { "id": "text" } } } }"#,
     );
-    write_cell(
+    write_cell_under(
         td.path(),
+        root_dir,
         "org/acme/broken/render",
         r#"{ "cell": { "type": "code", "surface": { "assets": "../etc" } },
              "params": { "runner": "python3", "script_inline": "pass" } }"#,
@@ -62,7 +83,11 @@ fn tree() -> tempfile::TempDir {
 }
 
 fn write_cell(root: &Path, rel: &str, config: &str) {
-    let dir = root.join("main").join(rel);
+    write_cell_under(root, "main", rel, config);
+}
+
+fn write_cell_under(root: &Path, root_dir: &str, rel: &str, config: &str) {
+    let dir = root.join(root_dir).join(rel);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("config.json"), config).unwrap();
 }
@@ -126,6 +151,27 @@ async fn the_page_is_served_under_the_cell_path() {
     );
     assert!(body.contains("data-phx-session=\""), "and a session token");
     assert!(body.contains("csrf-token"), "and a csrf meta tag");
+}
+
+/// GH #324: the page and its assets over HTTP, from a colony whose root cell
+/// directory is NOT called `main`. Boot accepts the name, so the URL scheme has
+/// to as well — `/surface/<cell-path>` names the logical path, in which the root
+/// cell directory does not appear at all. Before this, such a colony booted
+/// cleanly, registered its surfaces, and answered 404 for every one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_root_cell_not_named_main_still_serves_its_surface_and_assets() {
+    let td = tree_rooted("acme-prod");
+    let (status, body) = get(td.path(), "/surface/org/acme/canvy/render").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("<title>Acme topology</title>"), "{body}");
+
+    let (status, asset) = get(
+        td.path(),
+        "/surface/org/acme/canvy/render/@asset/surface.css",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{asset}");
+    assert!(asset.contains("--bg"), "{asset}");
 }
 
 /// **The reason the declaration is opt-in.** An undeclared cell holds real data,

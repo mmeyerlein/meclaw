@@ -1,4 +1,4 @@
-# `vault@1.0.0`
+# `vault@1.0.1`
 
 A secret store with **no operation that returns a secret**.
 
@@ -162,7 +162,8 @@ access/
   store/     store
 ```
 
-`access@1` ships with exactly this: the vault is an interior cell of the hive
+`access@2` ships with exactly this (`access@1` did too -- the property has been
+true of every version): the vault is an interior cell of the hive
 and deliberately **not** one of its ports, so the generic boundary refuses any
 edge into it from outside the scope. Its `params.inject_map` is empty on a fresh
 instance — a template that shipped with delivery addresses would deliver to
@@ -172,10 +173,14 @@ somebody else's.
 (`./invoke`, resolved against the vault's own path) — the relative form is what
 lets one template be instantiated anywhere.
 
-Declare the vault as a **non-port interior cell** in the hive's `params.ports`.
-The generic boundary then refuses any edge from outside the scope to it; the
-vault is protected simply by not being a port. No cell name appears in substrate
-code for this — it is the same mechanism every sealed hive uses.
+**Leave the vault OUT of the hive's `params.ports`** — that list is exactly the
+set a non-port interior cell must be absent from, so there is nothing to declare
+and declaring it is what would break the protection. A sealed hive writes
+`"ports": []` and names its lanes in `params.contract` instead; the generic
+boundary then refuses any edge from outside the scope into any interior cell,
+the vault included. The vault is protected simply by not being a port. No cell
+name appears in substrate code for this — it is the same mechanism every sealed
+hive uses (`crates/meclaw-colony/src/mutation/port_boundary.rs`).
 
 ## Honest limits
 
@@ -199,3 +204,12 @@ Three tables in the cell's own `cell.db`:
 | `vault_meta` | the salt (not secret; it exists so two vaults with one passphrase do not share a key) |
 | `vault_secrets` | one row per `(name, version)`: nonce, ciphertext, status, created_at |
 | `vault_audit` | every operation, refusals included: at, op, actor, name, outcome, reason |
+
+And none of the three travels. Since GH #314 this template declares
+`contract.transfer: "none"`, which exempts its `cell.db` from the `transfer` body slot
+(`docs/cell-types.md` § Content transfer) in both directions -- `export` and `import`, refused
+with `error_code: "transfer_exempt"`. The slot is answered by the **substrate**, above every
+cell type and before `handle()`, so the two-caller ACL below never sees one; and the disclosure
+it would have made needs no passphrase, because `name`, `version`, `status` and `created_at` are
+plaintext columns and `vault_audit` is the complete call history. `contract.write_surface` does
+not cover this: an export is a read, and no write surface has ever bounded a read.

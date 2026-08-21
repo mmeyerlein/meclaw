@@ -14,7 +14,7 @@
       "emits": [
         {
           "route": "mutate",
-          "because": "the change this loop decided on, as an ordinary mutation body (scope and diff) for the colony mutation endpoint -- it passes every gate any other mutation passes"
+          "because": "the change this loop decided on, as an ordinary params update -- body `{system:{}, params:{...}}`, hop.target naming the cell it belongs to. The parent draws one edge per cell the loop may reach, so what is in range is a fact about the seed"
         },
         {
           "route": "error",
@@ -183,10 +183,10 @@
     }
   },
   "description": {
-    "purpose": "Scope marker of the steward hive: the colony's control loop. Charter -> measure -> judge (and simulate) -> mutate through the normal lane -> health check -> measure the effect -> keep or revert -> receipt. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
+    "purpose": "Scope marker of the steward hive: the colony's control loop. Charter -> measure -> judge (and simulate) -> params update to the named cell -> health check -> measure the effect -> keep or revert -> receipt. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
     "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown steward measures nothing and changes nothing until somebody turns a row on.",
-    "not_in_scope": "No operator lane -- every change travels the same gated path any agent's mutation does. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
+    "not_in_scope": "No operator lane -- a change leaves as an ordinary message and only reaches a cell a human wired an edge to. No mutation at all, in fact: nothing in here authors a diff, so the loop cannot add, remove or rewire a cell. No topology change either: radius v1 is model choice plus numeric params, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
     "contract_in": "One lane, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. Which cell starts it is this hive's business.",
-    "contract_out": "Two lanes, out of the hive path. mutate -- the decided change as an ordinary mutation body, for whoever is allowed to carry it to /colony/mutations. error -- a step of the cycle could not complete."
+    "contract_out": "Two lanes, out of the hive path. mutate -- the decided change as an ordinary params update, hop.target naming the cell it is for; a parent wires one edge per cell the loop may reach, and a parent that wires none gets a steward that measures and receipts and changes nothing. error -- a step of the cycle could not complete."
   }
 }

@@ -123,7 +123,7 @@ impl CellFactory for LongRunningReceiptFactory {
             let blob_store = blob_store.clone();
             // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
             let consumes = contract.consumes.clone();
-            let write_surface = contract.write_surface;
+            let bounds = contract.transfer_bounds();
             move |stop_rx: Option<tokio::sync::oneshot::Receiver<()>>,
                   death_ack: Option<tokio::sync::oneshot::Sender<()>>|
                   -> (
@@ -173,7 +173,7 @@ impl CellFactory for LongRunningReceiptFactory {
                 let cit = colony_inbox_tx.clone();
                 let bs = blob_store.clone();
                 let cons = consumes.clone();
-                let ws = write_surface;
+                let ws = bounds;
                 let join = tokio::spawn(async move {
                     cell_task_long_running(
                         p,

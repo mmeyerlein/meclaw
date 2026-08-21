@@ -168,9 +168,12 @@ sys.stdout.write(json.dumps({
                   "text": json.dumps(cmd)}]}))
 "#;
 
-/// The admin lane, which is a documented PORT of this template and not a
-/// bypass: v1 has no write port, so `models`, `subscribers` and `incidents` are
-/// maintained over a direct store edge. The test uses the same lane to read.
+/// The maintenance cell at the far end of the BOOT-GRAPH edge into `./store`
+/// (GH #310). It is not a port and not a bypass: `params.ports` is empty, so no
+/// runtime mutation could ever draw this edge (`hive_port_boundary`) -- but the
+/// bootstrap is deliberately outside that check, and the birth topology of the
+/// parent is where `models`, `subscribers` and `incidents` come from, because no
+/// lane of the hive writes them. The test uses the same edge to read.
 const ADMIN: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
@@ -282,7 +285,9 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'error'"},
         {"from": "./llm_registry/hand", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'error'"},
-        // ── in_admin / out_admin: the documented hand-maintenance lane ──
+        // ── the BOOT-GRAPH edge into ./store and its reply: not a port of the
+        //    hive (params.ports is empty) and not drawable by a mutation, but
+        //    the only way models/subscribers/incidents are ever written ──
         {"from": "./admin", "to": "./llm_registry/store",
          "condition": "has(hop.route) && hop.route == 'astore'",
          "modifier": {"set_context": {"registry_origin": "'admin'"}}},
@@ -431,7 +436,7 @@ async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
     recv_matching(rx, route, move |m| hop_of(m, "route") == owned).await
 }
 
-/// One store op over the documented admin lane, returned as its rows.
+/// One store op over the boot-graph edge into `./store`, returned as its rows.
 async fn admin(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, op: Value) -> Value {
     h.send(to(
         "/admin",
@@ -480,8 +485,9 @@ fn now_iso() -> &'static str {
 }
 
 /// The three subscriber rows: two on `mid`, one of them pinned, and one on
-/// `light`. Written over the admin lane, because the subscriber list is
-/// hand-maintained -- which the README says in as many words.
+/// `light`. Written over the boot-graph edge, because NO lane of this hive
+/// writes `subscribers` -- `select` and `hand` only read it, and the seed does
+/// not carry it either (GH #310). This is the one path there is.
 async fn wire_subscribers(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>) {
     for (path, tier, pinned) in [
         ("/sub_a", "mid", 0),
@@ -1036,6 +1042,194 @@ async fn an_incident_row_changes_nothing_and_triggers_nothing() {
 
     // 5. And the subscriber never heard a thing.
     assert_eq!(inference_model(&h, &mut rx, "/sub_a", &mock).await, BIRTH_A);
+
+    h.shutdown().await;
+}
+
+/// GH #310 — the catalog store's write surface has two halves, this template
+/// shipped neither, and exactly ONE of them can be closed here.
+///
+/// `contract.write_surface` (GH #260) bounds the `import` of the `transfer`
+/// body slot, which the SUBSTRATE answers before `handle()` is ever reached. An
+/// absent key means `open`, and `open` bounds nothing — `meclaw_colony`'s
+/// `an_open_write_surface_bounds_no_import_at_all` is the negative pin. Without
+/// it an `import` writes `models` rows in bulk, from any sender, straight past
+/// the comparison that `select` IS: the rank literal, the `status` column and
+/// the refusal. It is declared.
+///
+/// `params.write_surface` (GH #132) bounds the ops the store's own `handle()`
+/// runs, and it is deliberately NOT declared — which is the second half of what
+/// this test pins, because an omission that is not asserted reads as an
+/// oversight. The reason is a property of the template: **no cell in this hive
+/// ever writes `models`, `subscribers` or `incidents`**. `select` and `hand`
+/// only select from those three; what they write is `tiers` and `resolutions`.
+/// The three operator tables are maintained over a parent's BOOT-graph edge
+/// straight into `./store` (the bootstrap is deliberately outside the port
+/// seal's scope, `mutation::port_boundary`), and that sender lies outside the
+/// hive by construction — [`build_tree`]'s own `./admin -> ./llm_registry/store`
+/// edge is exactly it, and it is how `subscribers` and `incidents` get their
+/// rows in the tests below. A cell-level seal would not tighten the boundary; it
+/// would leave a freshly instantiated registry with no way to ever name a
+/// subscriber.
+///
+/// The two sweeps below are what make this revisable rather than a standing
+/// excuse: the day a cell in here writes `models`, `subscribers` or
+/// `incidents`, the first goes red and the seal becomes possible — and the day
+/// nothing in here writes `tiers`/`resolutions` any more, the second goes red
+/// and the hive has stopped being its own writer at all.
+#[test]
+fn the_catalog_store_bounds_the_import_and_says_why_the_cell_surface_stays_open() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let store = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        store["contract"]["write_surface"], "internal",
+        "GH #260: without the substrate half an import writes catalog rows in \
+         bulk past the comparison this hive is built on"
+    );
+    assert!(
+        store["params"].get("write_surface").is_none(),
+        "GH #132 stays open here on purpose: models, subscribers and incidents \
+         have no writer inside the hive, and a sealed handle() would leave a \
+         fresh registry unable to name a single subscriber"
+    );
+
+    // Half one: every touch of an operator table inside the hive is a read.
+    let mut reads = 0usize;
+    // Half two: the hive DOES write its own two tables — which is why the
+    // contract half above is true rather than merely harmless.
+    let mut writes = 0usize;
+    for rel in ["select/config.json", "hand/config.json"] {
+        let cfg = read_json(&root.join(rel));
+        let script = cfg["params"]["script_inline"].as_str().unwrap_or_default();
+        for line in script.lines() {
+            for table in ["models", "subscribers", "incidents"] {
+                if line.contains(&format!("table=\"{table}\"")) {
+                    assert!(
+                        line.contains("\"select\""),
+                        "{rel} touches `{table}` with something other than a \
+                         select -- this hive now HAS an internal writer for an \
+                         operator table, so params.write_surface can and should \
+                         be sealed: {line}"
+                    );
+                    reads += 1;
+                }
+            }
+            for table in ["tiers", "resolutions"] {
+                if line.contains(&format!("table=\"{table}\""))
+                    && (line.contains("\"insert\"") || line.contains("\"update\""))
+                {
+                    writes += 1;
+                }
+            }
+        }
+    }
+    assert!(reads >= 2, "the select-only sweep found nothing to check");
+    assert!(
+        writes >= 2,
+        "no cell in this hive writes tiers or resolutions any more -- the \
+         registry has stopped being its own writer"
+    );
+}
+
+/// GH #310, the same boundary proved at runtime rather than at the declaration:
+/// a `transfer` `import` addressed straight at the catalog store writes no row.
+///
+/// This is the half that makes the omission load-bearing. The slot is answered
+/// by the SUBSTRATE in `cell_task`, before the `consumes` gate and before
+/// `handle()` — so it walks past everything this hive is: past `select`'s rank
+/// literal, past `hand`'s single op, past the actor the edge has to promote. And
+/// it writes in BULK. The message below carries no sender at all, which the rule
+/// treats as outside (fail-closed), and it plants two rows that matter more than
+/// they look: a `subscribers` row decides who a remap reaches, and an
+/// `incidents` row is the field record a human reads before moving a tier.
+/// With `contract.write_surface` absent both land; with `"internal"` they are
+/// refused with `write_denied` before the first row.
+///
+/// The evidence is the store's own content, read back over the boot-graph edge:
+/// a refused import is invisible in every other way, because the reply to a
+/// source message carries no `registry_origin` and therefore matches no out-edge
+/// of the store.
+///
+/// RED receipt, taken by dropping the declaration from the shipped template and
+/// running this test: `an import from outside the scope planted a subscriber --
+/// the row that decides who a remap reaches: [{"cell_path":"/smuggled",
+/// "tier":"strong"}]`. So this pin fails for the reason it names, and not
+/// because a shape assertion happened to read `Null`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_import_from_outside_plants_no_subscriber_and_no_incident() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let mock = MockOpenAI::start(vec![]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, &format!("{}/v1", mock.base_url));
+    let (h, mut rx) = boot(&td).await;
+
+    let count = |v: &Value| v.as_array().map(|a| a.len()).unwrap_or(0);
+    let read_subs = json!({"operation": "select", "table": "subscribers",
+                           "columns": ["cell_path", "tier"], "limit": 50});
+    let read_inc = json!({"operation": "select", "table": "incidents",
+                          "columns": ["id", "model_id"], "limit": 50});
+    let subs_before = admin(&h, &mut rx, read_subs.clone()).await;
+    let inc_before = admin(&h, &mut rx, read_inc.clone()).await;
+
+    for transfer in [
+        json!({
+            "operation": "import", "table": "subscribers", "key": ["cell_path"],
+            "schema": {"cell_path": "text", "tier": "text", "pinned": "int",
+                       "wired_at": "text"},
+            "rows": [{"cell_path": "/smuggled", "tier": "strong", "pinned": 0,
+                      "wired_at": "2026-08-15T00:00:00Z"}]
+        }),
+        json!({
+            "operation": "import", "table": "incidents", "key": ["id"],
+            "schema": {"id": "text", "model_id": "text", "kind": "text",
+                       "at": "text", "detail": "json"},
+            "rows": [{"id": "smuggled", "model_id": "provider-a/model-mid",
+                      "kind": "outage", "at": "2026-08-15T00:00:00Z",
+                      "detail": {"note": "planted"}}]
+        }),
+    ] {
+        h.send(
+            MessageBuilder::new(Path::new("/llm_registry/store"))
+                .body(Body::Inline(json!({ "transfer": transfer })))
+                .ttl(400)
+                .build(),
+        )
+        .await;
+    }
+    // The import travels ONE hop; the read below travels two. The wait is the
+    // discriminator, not the ordering: without it a green result would only mean
+    // the import had not arrived yet.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let subs_after = admin(&h, &mut rx, read_subs).await;
+    let inc_after = admin(&h, &mut rx, read_inc).await;
+    assert_eq!(
+        count(&subs_after),
+        count(&subs_before),
+        "an import from outside the scope planted a subscriber -- the row that \
+         decides who a remap reaches: {subs_after}"
+    );
+    assert!(
+        subs_after
+            .as_array()
+            .is_none_or(|a| a.iter().all(|r| r["cell_path"] != "/smuggled")),
+        "the planted subscriber is in the table: {subs_after}"
+    );
+    assert_eq!(
+        count(&inc_after),
+        count(&inc_before),
+        "an import from outside the scope planted an incident: {inc_after}"
+    );
+    assert!(
+        inc_after
+            .as_array()
+            .is_none_or(|a| a.iter().all(|r| r["id"] != "smuggled")),
+        "the planted incident is in the field log: {inc_after}"
+    );
 
     h.shutdown().await;
 }

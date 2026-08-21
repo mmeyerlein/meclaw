@@ -86,7 +86,7 @@ impl CellFactory for HangCellFactory {
         let respawn_blob_store = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
-        let respawn_write_surface = contract.write_surface;
+        let respawn_bounds = contract.transfer_bounds();
         let respawn_mailbox_capacity = mailbox_capacity;
         let respawn: RespawnFn = Box::new(
             move || -> (
@@ -112,7 +112,7 @@ impl CellFactory for HangCellFactory {
                     db,
                     respawn_blob_store.clone(),
                     respawn_consumes.clone(),
-                    respawn_write_surface,
+                    respawn_bounds,
                 );
                 meclaw_colony::renotify_stop_wiring(
                     &respawn_inbox_tx,
@@ -136,7 +136,7 @@ impl CellFactory for HangCellFactory {
         let wake_blob_store = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
-        let wake_write_surface = contract.write_surface;
+        let wake_bounds = contract.transfer_bounds();
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             let (cell, conn) = wake_factory
                 .build_cell_with_open_db(&wake_cell_dir, &wake_params)
@@ -155,7 +155,7 @@ impl CellFactory for HangCellFactory {
                     db,
                     wake_blob_store.clone(),
                     wake_consumes.clone(),
-                    wake_write_surface,
+                    wake_bounds,
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

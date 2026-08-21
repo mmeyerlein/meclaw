@@ -11,7 +11,7 @@
     "external_timeout_ms": 5000
   },
   "contract": {
-    "version": "1.0.0",
+    "version": "1.0.1",
     "settings": {
       "key_source": {
         "type": "string",
@@ -27,6 +27,7 @@
       }
     },
     "multi_send_capable": true,
+    "transfer": "none",
     "consumes": {
       "body": {
         "messages": {

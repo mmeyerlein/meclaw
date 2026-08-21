@@ -1,4 +1,4 @@
-# `session-keeper@2.0.1`
+# `session-keeper@2.0.2`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Four cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -36,8 +36,15 @@ the only place that mints it.
 
 ## Ports
 
-The entry lane goes **into `./stamp`**. The parent edge names the lane with
-`set_hop: {"route": "'in_turn'"}` and promotes the channel identity to `context.channel`
+**This hive is sealed.** `config.json` declares `params.ports: []` (GH #228), which is the
+SEALED state: the hive path is the only address, and a mutation naming a cell inside it --
+`./stamp`, `./close`, `./sessions`, `./night`, any of them -- is refused with
+`hive_port_boundary`. What a caller wants rides on `hop.route`, and the lanes it may use
+are the two `params.contract` declares.
+
+The entry lane therefore addresses the **hive path** and names itself on the hop. The
+parent edge names the lane with `set_hop: {"route": "'in_turn'"}` and promotes the channel
+identity to `context.channel`
 (a Telegram/Slack `hop.chat_id`, a room, a phone number -- whatever a surface calls "the
 same conversation partner"). Without it every turn of the colony lands on the channel
 `default`, which is the right answer for a single-surface colony and the wrong one for
@@ -56,12 +63,14 @@ door that declares nothing leaves the column empty; nothing here derives a round
 | `in_turn` | the inbound surface (proxy, intake) | stamps the turn and restarts the idle clock |
 | `in_sweep` | an operator, a second schedule | forces a sweep outside the night (optional) |
 
-Exits leave on `hop.route`:
+Exits leave **from the hive path** on `hop.route`. The "written by" column says which cell
+inside produces the emission -- it is a fact about this hive, never an endpoint: an edge
+that names it is refused (see above).
 
-| route | from | to | notes |
+| route | written by | to | notes |
 |---|---|---|---|
-| `turn` | `./stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
-| `close` | `./close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set`. |
+| `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
+| `close` | `close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
 
 **The close lane, as a port convention (Track K/E):** the keeper emits `hop.route == 'close'`
 carrying `hop.session_id`, `hop.channel` and `hop.audience_set`, and a body with no turns
@@ -76,6 +85,14 @@ that generation's own seal chain, and put on the hop. All three keys are always 
 empty when unknown: a missing hop key makes a CEL modifier fail, and a failed modifier
 skips the edge, so a close that could not name its round would vanish instead of being
 refused (GH #273).
+
+**Three keys, and the third was missing from the recipe.** Until `session-keeper@2.0.2` the
+`PORTS` slot of `template.json` named only `hop.session_id` and `hop.channel` on this port,
+against this section and against `contract.emits[close]`. A caller who wired from that slot
+closed generations that `memory-drain` then refused with `missing_audience` -- the drain
+does exactly what the last bullet of "Known limits" promises, and the promotion it needs was
+never in the recipe ([#311](https://github.com/mmeyerlein/meclaw/issues/311)).
+
 The consumer is the collector's `in_close` lane, so the parent edge renames the route the
 way it renames every collector lane:
 

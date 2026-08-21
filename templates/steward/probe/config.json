@@ -75,7 +75,7 @@
     }
   },
   "description": {
-    "purpose": "The health check that runs immediately after a mutation. A measurement window answers 'was that a good idea'; this answers 'is the colony still working', and those fail on different timescales.",
+    "purpose": "The health check that runs immediately after an applied change. A measurement window answers 'was that a good idea'; this answers 'is the colony still working', and those fail on different timescales.",
     "use_when": "One per steward hive, fed by ./mutator after every applied change.",
     "not_in_scope": "No judgement about the goal -- it never looks at the metric. And it never invents a revert: it fetches the plan the judge authored beforehand, because a revert improvised under a failing colony is what the charter rule forbids."
   }

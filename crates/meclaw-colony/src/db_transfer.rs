@@ -126,10 +126,16 @@ pub enum TransferOutcome {
 /// index's tokenizer cannot even open it.
 ///
 /// The default is **every remaining table**, which is exactly what the seed
-/// loader does in reverse: it writes whatever `seed/*.jsonl` names. A cell type
-/// that wants a table left out of a transfer is a judgement this module does not
-/// make for it — and making the wrong one silently is worse than carrying a work
-/// queue somebody can ignore.
+/// loader does in reverse: it writes whatever `seed/*.jsonl` names. This
+/// function makes no per-type judgement and still makes none: it does not know
+/// what cell it is looking at, and a silent per-table exclusion list here would
+/// be invisible in the `config.json` of the cell it applies to.
+///
+/// The opt-out that GH #314 ruled therefore does not live here. It is a
+/// **declaration** — `contract.transfer: "none"` (`meclaw_core::TransferPolicy`)
+/// — and it is answered one layer up, in [`handle_transfer_slot`], for the whole
+/// database rather than for a table: a cell either answers this seam or it does
+/// not. Whichever cells reach this function have already said they travel.
 pub fn content_tables(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<String>> {
     let mut st =
         conn.prepare("SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'table'")?;
@@ -730,14 +736,16 @@ fn write_surface_violation(
 /// no cell type has to know the operation exists, and none can accidentally
 /// shadow it with a slot of its own.
 ///
-/// `write_surface` is the cell's own `contract.write_surface` (GH #260). It
-/// bounds the WRITE half of this seam — see [`write_surface_violation`] — and is
-/// the reason the position above `handle()` no longer costs a boundary.
+/// `bounds` are the cell's own two declarations about this seam
+/// (`contract.write_surface`, GH #260, and `contract.transfer`, GH #314). They
+/// are the reason the position above `handle()` no longer costs a boundary: the
+/// first bounds WHO may write, the second whether this cell's database answers
+/// the seam at all.
 pub(crate) async fn handle_transfer_slot(
     msg: &meclaw_core::Message,
     sink: &meclaw_core::OutputSink,
     db: &mut crate::DbConn,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) -> bool {
     let meclaw_core::Body::Inline(body) = &msg.body else {
         return false;
@@ -748,6 +756,38 @@ pub(crate) async fn handle_transfer_slot(
     let started = std::time::Instant::now();
     let reply_to = msg.reply_to.clone();
     let target = reply_to.clone().unwrap_or_else(|| msg.target.clone());
+
+    // GH #314: the exemption is answered FIRST — before the arguments are even
+    // read, and therefore before anything could name a table. A refusal that
+    // says "unknown_table" for `vault_secrets` and something else for
+    // `vault_audit` is an inventory; this one says the same sentence to every
+    // question. It covers export and import alike: a store that cannot leave
+    // also cannot be overwritten through the same seam.
+    if bounds.is_exempt() {
+        let operation = slot
+            .as_object()
+            .and_then(|a| a.get("operation"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("transfer")
+            .to_string();
+        emit_transfer_reply(
+            sink,
+            &target,
+            reply_to.is_some(),
+            &operation,
+            0,
+            Value::Null,
+            Some("transfer_exempt"),
+            Some(format!(
+                "transfer '{operation}' refused: this cell declares \
+                 contract.transfer \"none\" — its database is exempt from the transfer slot, \
+                 export and import alike. Nothing was read and nothing was written."
+            )),
+            started,
+        )
+        .await;
+        return true;
+    }
 
     let Some(args) = slot.as_object().cloned() else {
         emit_transfer_reply(
@@ -774,7 +814,7 @@ pub(crate) async fn handle_transfer_slot(
     // task starts, so a refused import touches nothing. `store`'s cell-level
     // check cannot reach here: a transfer never gets to `handle()`.
     if let Some(detail) = write_surface_violation(
-        write_surface,
+        bounds.write_surface,
         sink.sender_path(),
         reply_to.as_ref(),
         &operation,
@@ -969,7 +1009,8 @@ mod tests {
             .build();
 
         assert!(
-            handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::WriteSurface::Open).await,
+            handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::TransferBounds::default())
+                .await,
             "a message carrying the slot is answered here and never reaches handle()"
         );
         drop(sink);
@@ -996,7 +1037,7 @@ mod tests {
     async fn transfer_from(
         path: &str,
         sender: Option<&str>,
-        surface: meclaw_core::WriteSurface,
+        bounds: meclaw_core::TransferBounds,
         slot: Value,
     ) -> (Value, i64) {
         let td = tempfile::TempDir::new().unwrap();
@@ -1023,7 +1064,7 @@ mod tests {
         let msg = b.build();
 
         assert!(
-            handle_transfer_slot(&msg, &sink, &mut db, surface).await,
+            handle_transfer_slot(&msg, &sink, &mut db, bounds).await,
             "a message carrying the slot is always consumed here, refused or not"
         );
         drop(sink);
@@ -1035,6 +1076,15 @@ mod tests {
             })
             .await;
         (reply, rows)
+    }
+
+    /// A cell that declares `contract.write_surface: "internal"` and nothing
+    /// else — the GH #260 half.
+    fn sealed() -> meclaw_core::TransferBounds {
+        meclaw_core::TransferBounds {
+            write_surface: meclaw_core::WriteSurface::Internal,
+            policy: meclaw_core::TransferPolicy::All,
+        }
     }
 
     fn one_note() -> Value {
@@ -1052,7 +1102,7 @@ mod tests {
         let (reply, rows) = transfer_from(
             "/main/memory/store",
             Some("/main/intruder"),
-            meclaw_core::WriteSurface::Internal,
+            sealed(),
             one_note(),
         )
         .await;
@@ -1074,7 +1124,7 @@ mod tests {
         let (reply, rows) = transfer_from(
             "/main/memory/store",
             Some("/main/memory/curator"),
-            meclaw_core::WriteSurface::Internal,
+            sealed(),
             one_note(),
         )
         .await;
@@ -1093,7 +1143,7 @@ mod tests {
         let (reply, _) = transfer_from(
             "/main/memory/store",
             Some("/main/intruder"),
-            meclaw_core::WriteSurface::Internal,
+            sealed(),
             json!({"operation": "export", "table": "notes"}),
         )
         .await;
@@ -1108,13 +1158,7 @@ mod tests {
     /// is a source message no edge inside the scope produced, so it is outside.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_import_without_a_sender_is_outside_by_definition() {
-        let (reply, rows) = transfer_from(
-            "/main/memory/store",
-            None,
-            meclaw_core::WriteSurface::Internal,
-            one_note(),
-        )
-        .await;
+        let (reply, rows) = transfer_from("/main/memory/store", None, sealed(), one_note()).await;
         assert_eq!(reply["header"]["error_code"], "write_denied");
         assert_eq!(rows, 0);
     }
@@ -1126,7 +1170,7 @@ mod tests {
         let (reply, rows) = transfer_from(
             "/main/memory/store",
             Some("/main/intruder"),
-            meclaw_core::WriteSurface::default(),
+            meclaw_core::TransferBounds::default(),
             one_note(),
         )
         .await;
@@ -1139,15 +1183,84 @@ mod tests {
     /// special-cased. Same sentence as `store`'s `owner_scope`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn at_the_colony_root_the_owning_scope_is_everything() {
+        let (reply, rows) = transfer_from("/store", Some("/anywhere"), sealed(), one_note()).await;
+        assert!(reply["header"].get("error_code").is_none(), "{reply}");
+        assert_eq!(rows, 1);
+    }
+
+    // ------------------------------------------------ GH #314, the exempt cell
+
+    /// The ruling on #314: a cell whose contract says `transfer: "none"` is
+    /// exempt from this seam. An **export** is refused too — the reason the
+    /// write half was not enough is that the vault's disclosure was a read: the
+    /// plaintext `name`/`version`/`status` columns of `vault_secrets` and the
+    /// whole of `vault_audit` need no passphrase to be useful.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exempt_cell_refuses_an_export_and_gives_up_no_table() {
+        let (reply, _) = transfer_from(
+            "/main/access/vault",
+            Some("/main/access/invoke"),
+            meclaw_core::TransferBounds::exempt(),
+            json!({"operation": "export"}),
+        )
+        .await;
+        assert_eq!(reply["header"]["error_code"], "transfer_exempt");
+        assert_eq!(reply["header"]["operation"], "export");
+        assert_eq!(reply["header"]["rows_affected"], 0);
+        assert!(
+            !reply.to_string().contains("notes"),
+            "a refusal that names a table is an inventory: {reply}"
+        );
+    }
+
+    /// The import half — "a store that cannot leave also cannot be overwritten
+    /// through the same seam" (the ruling). Provable on the database.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exempt_cell_refuses_an_import_and_writes_nothing() {
         let (reply, rows) = transfer_from(
-            "/store",
-            Some("/anywhere"),
-            meclaw_core::WriteSurface::Internal,
+            "/main/access/vault",
+            Some("/main/access/invoke"),
+            meclaw_core::TransferBounds::exempt(),
             one_note(),
         )
         .await;
-        assert!(reply["header"].get("error_code").is_none(), "{reply}");
-        assert_eq!(rows, 1);
+        assert_eq!(reply["header"]["error_code"], "transfer_exempt");
+        assert_eq!(rows, 0, "a refused import must leave the table untouched");
+    }
+
+    /// The exemption is answered before the arguments are read, so a malformed
+    /// slot gets the same sentence as a well-formed one. Nothing about this
+    /// cell's database — not even whether an argument would have parsed — is
+    /// worth reporting to a caller it does not answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exempt_cell_answers_a_nonsense_slot_the_same_way() {
+        let (reply, _) = transfer_from(
+            "/main/access/vault",
+            Some("/main/access/invoke"),
+            meclaw_core::TransferBounds::exempt(),
+            json!("not an object at all"),
+        )
+        .await;
+        assert_eq!(reply["header"]["error_code"], "transfer_exempt");
+    }
+
+    /// The negative pin, and the more important one: the exemption is opt-in.
+    /// A cell that declares nothing exports exactly as it did before #314 — the
+    /// substrate infers nothing from a cell's type or its table names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cell_that_declares_nothing_still_exports() {
+        let (reply, _) = transfer_from(
+            "/main/memory/store",
+            Some("/main/anywhere"),
+            meclaw_core::TransferBounds::default(),
+            json!({"operation": "export", "table": "notes"}),
+        )
+        .await;
+        assert!(
+            reply["header"].get("error_code").is_none(),
+            "absence must keep meaning 'no change': {reply}"
+        );
+        assert_eq!(reply["header"]["operation"], "export");
     }
 
     /// A message without the slot is not this module's business.
@@ -1169,6 +1282,9 @@ mod tests {
         let msg = meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/cell"))
             .body(meclaw_core::Body::Inline(json!({"messages": []})))
             .build();
-        assert!(!handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::WriteSurface::Open).await);
+        assert!(
+            !handle_transfer_slot(&msg, &sink, &mut db, meclaw_core::TransferBounds::default())
+                .await
+        );
     }
 }

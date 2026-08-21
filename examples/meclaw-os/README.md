@@ -228,28 +228,46 @@ and both counts (17, then 21). If the example rots, that test goes red first.
 
 `grow-steward.json` adds the [`steward@2`](../../templates/steward/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
-against those numbers, mutate through the ordinary gated lane, verify, and then keep the
+against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
 
 It arrives inert. Every goal in the charter ships `enabled: 0`, so a grown steward measures
 nothing and changes nothing until somebody turns a row on — the only defensible default for a
-loop that mutates the tree it runs in.
+loop that reaches into the tree it runs in.
 
-And it arrives **unable to act**, which is the more interesting half:
+And it arrives **unable to act**, which is the more interesting half. The decided change
+leaves the hive on the `mutate` lane as an ordinary **params update** — body
+`{"system": {}, "params": {…}}`, with `hop.target` naming the cell it belongs to (GH #304) —
+so acting means having an edge to that cell:
 
 ```json
-{"from": "./steward", "to": "/colony/mutations", "condition": "has(hop.route) && hop.route == 'mutate'"}
+{"from": "./steward", "to": "/some-llm-cell", "condition": "has(hop.route) && hop.route == 'mutate' && hop.target == '/some-llm-cell'"}
 ```
 
-That edge is not in the declaration, and it cannot be: `/colony/*` is a virtual endpoint
-rather than a registry node, so `add_edges` refuses it by name — at any scope, from any cell,
-including from the steward itself. Granting the loop its mutation lane is a **boot-time
-act**: a human puts that edge in the seed. No amount of growing gets around it.
+That edge is not in the declaration, and the steward cannot draw it: an edge is a mutation,
+and **nothing in this hive authors one**. Granting the loop a target is a **boot-time act** —
+a human puts the edge in the seed, one per cell the loop may touch. No amount of growing gets
+around it, and the bound is per-cell rather than all-or-nothing: an edge on to
+`/colony/mutations` would once have handed it the whole tree at a stroke.
 
-Note the shape of the endpoint: it is the **hive**, not a cell inside it. `steward@2` is sealed
-(`params.ports: []`), so `./steward/mutator` is not an address at all any more — a caller asks
-for the `mutate` lane and never learns which cell produces it. The one edge the declaration
-*can* draw is the other lane, `error`, and it is drawn at the hive for the same reason.
+**This colony grows it no target at all**, and not by omission. Both agents here are sealed
+hives (`talky`, `cogny`, `params.ports: []`), so `/talky/brain` is not an address from
+outside — an endpoint reaching past a seal is refused with `hive_port_boundary`. Giving this
+steward something to change means adding a cell it may address, not drawing an edge into one
+that already exists.
+
+Two more bounds sit behind that, and neither depends on the steward behaving. The target
+decides what it merges: an `llm` cell accepts `model`, `temperature`, `max_tokens` and the
+other runtime-mutable keys, and refuses the credential and gate keys outright
+(`IMMUTABLE_PARAM_KEYS`). And the radius stops before the cell types that have no params lane
+at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes back as
+`key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
+
+Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
+`steward@2` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
+any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
+one edge the declaration *can* draw is the other lane, `error`, and it is drawn at the hive
+for the same reason.
 
 So the steward you grow here measures, judges and receipts, and changes nothing. That is a
 legitimate way to run it — a good one for the first weeks, in fact, because the receipts tell

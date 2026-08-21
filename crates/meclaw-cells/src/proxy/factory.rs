@@ -101,7 +101,7 @@ impl CellFactory for ProxyCellFactory {
                 blob_store,
                 mailbox_capacity,
                 contract.consumes.clone(),
-                contract.write_surface,
+                contract.transfer_bounds(),
             )?),
             ProxyPlatform::Slack => Box::new(make_build_slack(
                 params,
@@ -112,7 +112,7 @@ impl CellFactory for ProxyCellFactory {
                 blob_store,
                 mailbox_capacity,
                 contract.consumes.clone(),
-                contract.write_surface,
+                contract.transfer_bounds(),
             )?),
         };
 
@@ -183,7 +183,7 @@ impl CellFactory for ProxyCellFactory {
                     blob_store,
                     mailbox_capacity,
                     contract.consumes.clone(),
-                    contract.write_surface,
+                    contract.transfer_bounds(),
                 )
                 .ok()?,
             ),
@@ -197,7 +197,7 @@ impl CellFactory for ProxyCellFactory {
                     blob_store,
                     mailbox_capacity,
                     contract.consumes.clone(),
-                    contract.write_surface,
+                    contract.transfer_bounds(),
                 )
                 .ok()?,
             ),
@@ -235,7 +235,7 @@ fn make_build(
     blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -269,7 +269,7 @@ fn make_build(
     let consumes_cap = consumes;
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
-    let write_surface_cap = write_surface;
+    let bounds_cap = bounds;
 
     Ok(move || -> (
         mpsc::Sender<Message>,
@@ -328,7 +328,7 @@ fn make_build(
             Some(colony_inbox_cap.clone()),
             blob_cap.clone(),
             consumes_cap.clone(),
-            write_surface_cap,
+            bounds_cap,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })
@@ -349,7 +349,7 @@ fn make_build_slack(
     blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed once, outside the closure: a params error must surface as a spawn
     // failure, not as a panic on the respawn path.
@@ -364,7 +364,7 @@ fn make_build_slack(
     let consumes_cap = consumes;
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
-    let write_surface_cap = write_surface;
+    let bounds_cap = bounds;
 
     Ok(move || -> SpawnTuple {
         // 1. Open cell.db (sync).
@@ -397,7 +397,7 @@ fn make_build_slack(
             Some(colony_inbox_cap.clone()),
             blob_cap.clone(),
             consumes_cap.clone(),
-            write_surface_cap,
+            bounds_cap,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })

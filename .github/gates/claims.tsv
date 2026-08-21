@@ -1,0 +1,91 @@
+# Spec-claims registry -- binding: docs/development-rules.md § 2a (GH #254).
+#
+# One row per behavioural claim in the spec trias (docs/meclaw-overview*,
+# docs/cell-types*, docs/config*). Seeded 2026-08-21 out of the classified
+# table of the 2026-08-20 consistency audit (plans/audit-2026-08-20/findings.md
+# § 2.1) after every documentation strand of the remediation plan had landed --
+# rows quote the text as it stands TODAY, not as the audit found it.
+#
+# Columns (tab-separated, exactly five):
+#   id             stable claim id. For `specified-not-built` it MUST end in
+#                  `-de` / `-en`: the retraction is due in BOTH language
+#                  versions, and the two languages cannot share one anchor
+#                  string, so the pairing is expressed as twin rows.
+#   doc            path from the repository root.
+#   anchor         a fragment that must occur LITERALLY on ONE line of `doc`.
+#                  Never include the marker itself in the anchor -- that would
+#                  make the marker check vacuous.
+#   class          pinned | built-unpinned | specified-not-built
+#   test_or_issue  pinned: the test function name.
+#                  specified-not-built: `GH #N`, the same N the marker names.
+#                  built-unpinned: the issue that would produce the pin.
+#
+# Enforced by `scripts/check_claims.py`, run in CI (job `gates`). A commit that
+# adds a behavioural promise to the trias adds its row in the same commit.
+#
+# Not in this file: statements of design intent ("hives are scope markers, not
+# actors"). The target is what a reader could act on -- a message a cell
+# answers, an operation, a field, an error code, a guarantee.
+id	doc	anchor	class	test_or_issue
+#
+# --- pinned -------------------------------------------------------------
+# A promise the code keeps and a named test proves.
+#
+PIN-mutation-reject-clean-de	docs/meclaw-overview.md	Diese Rejects sind wieder **sauber** (GH #276)	pinned	a_required_drain_reject_registers_nothing
+PIN-mutation-reject-clean-en	docs/meclaw-overview.en.md	These rejects are **clean** again (GH #276)	pinned	a_stop_wiring_reject_registers_nothing
+PIN-transfer-export	docs/meclaw-overview.md	wird vom **Substrat** beantwortet	pinned	an_exported_document_is_a_seed_file_and_births_the_same_rows
+PIN-transfer-import	docs/cell-types.md	Kein Cell-Type-Feature, sondern ein **Substrat**-Slot	pinned	import_inserts_what_is_missing_and_the_target_wins_every_collision
+PIN-transfer-exempt	docs/config.md	nimmt die `cell.db` dieser Zelle vom `transfer`-Body-Slot aus	pinned	a_declared_transfer_exemption_reaches_the_view_the_substrate_spawns_with
+PIN-write-surface	docs/config.md	begrenzt die Writes, die das Substrat vor `handle()` beantwortet	pinned	a_declared_write_surface_reaches_the_view_the_substrate_spawns_with
+PIN-neighbourhood-view	docs/config.md	Die deklarierende Cell bekommt beim Spawn einen read-only Handle	pinned	a_cell_sees_every_inbound_edge_and_only_those
+PIN-hive-port-boundary	docs/meclaw-overview.md	deklarierten Port vorbei ins Innere greift, wird mit `hive_port_boundary`	pinned	a_deep_endpoint_past_a_declared_port_rejects_and_changes_nothing
+PIN-remove-before-add	docs/meclaw-overview.md	**Wird vor `add_edges` angewandt**	pinned	one_mutation_replaces_an_edge_instead_of_deleting_it
+PIN-blob-messages-pointer	docs/meclaw-overview.md	referenziert ein Body-Dokument; dessen `messages[]` wird an der Stelle des Pointers **inline gespliced**	pinned	a_bulk_pointer_is_expanded_before_the_cell_sees_the_body
+PIN-blob-system-leaf	docs/meclaw-overview.md	Das Substrat löst an der Delivery-Grenze die Pointer auf	pinned	a_system_leaf_pointer_is_expanded_before_the_cell_sees_the_body
+PIN-sandbox-default	docs/config.md	ein Default-Profil injiziert die Instanziierung nur bei `bash`, `code` und `harness`	pinned	a_template_sourced_code_cell_without_a_profile_gets_the_restricted_default
+PIN-mcp-sandbox-optin	docs/config.md	ein `mcp`-Kind ohne eigene Deklaration behält die Rechte des Daemons	pinned	an_mcp_child_without_a_declaration_keeps_the_rights_it_always_had
+PIN-timer-at-in-past	docs/cell-types.md	ein einmaliger Schedule, dessen `at` bereits vergangen ist	pinned	add_of_a_past_one_shot_answers_at_in_past_and_stores_nothing
+PIN-ingress-declaration	docs/config.md	eine Zelle erklärt, dass sie ein Eingang ist (GH #185)	pinned	an_ingress_that_does_not_say_so_is_refused_and_the_message_names_the_declaration
+#
+# --- built-unpinned -----------------------------------------------------
+# The substrate does it; nothing proves it. Each row is a candidate test --
+# the regressions waiting to happen (GH #254 bucket 2).
+#
+BU-dlq-error-codes-de	docs/meclaw-overview.md	**Kanonische `error_code`-Strings**	built-unpinned	GH #254
+BU-dlq-error-codes-en	docs/meclaw-overview.en.md	**Canonical `error_code` strings**: every dead-letter reason	built-unpinned	GH #254
+BU-mutation-error-enum-de	docs/meclaw-overview.md	`error_code` ist Enum: `schema` | `match_no_hit`	built-unpinned	GH #254
+BU-mutation-error-enum-en	docs/meclaw-overview.en.md	`error_code` is an enum: `schema` | `match_no_hit`	built-unpinned	GH #254
+BU-timer-cron-utc-de	docs/cell-types.md	Cron-Ausdrücke werden in **UTC** ausgewertet	built-unpinned	GH #254
+BU-timer-cron-utc-en	docs/cell-types.en.md	cron expressions are evaluated in **UTC**	built-unpinned	GH #254
+BU-max-concurrency-cap	docs/meclaw-overview.md	ist `max_concurrency` ein harter Cap auf tatsächlich gleichzeitig laufende `handle()`-Calls	built-unpinned	GH #254
+BU-attachment-reader	docs/meclaw-overview.md	Ohne Deklaration gibt es keinen Handle	built-unpinned	GH #254
+#
+# --- specified-not-built ------------------------------------------------
+# Described, not built. Each anchor line carries the visible marker in both
+# language versions; the marker names the issue that would build it or retire
+# it. Twin rows (-de / -en) are what makes "in BOTH languages" checkable.
+#
+SNB-instantiation-de	docs/meclaw-overview.md	**Instanziierung & cell_id-Stabilität**	specified-not-built	GH #277
+SNB-instantiation-en	docs/meclaw-overview.en.md	**Instantiation and cell_id stability**	specified-not-built	GH #277
+SNB-graph-bootstrap-de	docs/meclaw-overview.md	liefert den initialen Soll-Stand für seinen Subtree bei Erst-Instanziierung	specified-not-built	GH #277
+SNB-graph-bootstrap-en	docs/meclaw-overview.en.md	provides the initial desired state for its subtree on first instantiation	specified-not-built	GH #277
+SNB-graph-nodes-note-de	docs/meclaw-overview.md	ist **nur in der Mutations-Verwendung gebaut**	specified-not-built	GH #277
+SNB-graph-nodes-note-en	docs/meclaw-overview.en.md	is built **only in the mutation usage**	specified-not-built	GH #277
+SNB-graph-nodes-de	docs/meclaw-overview.md	Mapping `name → { template, override_params? }`	specified-not-built	GH #277
+SNB-graph-nodes-en	docs/meclaw-overview.en.md	mapping `name → { template, override_params? }`	specified-not-built	GH #277
+SNB-remove-edges-by-id-de	docs/meclaw-overview.md	**Edge-UUIDs sichtbar**	specified-not-built	GH #254
+SNB-remove-edges-by-id-en	docs/meclaw-overview.en.md	**Edge UUIDs visible**	specified-not-built	GH #254
+SNB-daemon-bridge-de	docs/meclaw-overview.md	Dass die stdin/stdout-Bridge dabei **nicht abgeschaltet** wird	specified-not-built	GH #254
+SNB-daemon-bridge-en	docs/meclaw-overview.en.md	That the stdin/stdout bridge is **not switched off** in the process	specified-not-built	GH #254
+SNB-daemon-flag-table-de	docs/meclaw-overview.md	Lifecycle von stdin entkoppelt — Shutdown nur per Signal/Watchdog	specified-not-built	GH #254
+SNB-daemon-flag-table-en	docs/meclaw-overview.en.md	Lifecycle decoupled from stdin, shutdown only via signal/watchdog	specified-not-built	GH #254
+SNB-daemon-lifecycle-de	docs/meclaw-overview.md	Dass die Bridge dabei als Mechanismus erhalten bleibt	specified-not-built	GH #254
+SNB-daemon-lifecycle-en	docs/meclaw-overview.en.md	That the bridge remains as a mechanism is	specified-not-built	GH #254
+SNB-contract-capabilities-de	docs/config.md	Hint für Builder-Composer/Audit-Tools, **kein Runtime-Check** bis zum Hardening	specified-not-built	GH #254
+SNB-contract-capabilities-en	docs/config.en.md	hint for builder composer/audit tools, **no runtime check** until the hardening	specified-not-built	GH #254
+SNB-capabilities-note-de	docs/config.md	**Hinweis zu Permissions bis zum Hardening**	specified-not-built	GH #254
+SNB-capabilities-note-en	docs/config.en.md	**Note on permissions until the hardening**	specified-not-built	GH #254
+SNB-contract-tools-de	docs/config.md	Deklariert, welche Tools die Cell ihrem LLM (oder externen Konsumenten) anbietet	specified-not-built	GH #254
+SNB-contract-tools-en	docs/config.en.md	Declares which tools the cell offers to its LLM (or external consumers)	specified-not-built	GH #254
+SNB-description-block-de	docs/config.md	Sechs Schlüssel — **builder-erzwungen**, nicht substrat-hart	specified-not-built	GH #254
+SNB-description-block-en	docs/config.en.md	Six keys, **builder-enforced**, not substrate-enforced	specified-not-built	GH #254

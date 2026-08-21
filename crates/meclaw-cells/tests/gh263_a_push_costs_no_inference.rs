@@ -119,7 +119,10 @@ d = json.load(sys.stdin)["body"]
 msgs = d.get("messages", [])
 a = json.loads(str(msgs[-1].get("text", "{}")) if msgs else "{}")
 sys.stdout.write(json.dumps({
-    "header": {"route": "brief", "audience": str(a.get("audience") or "")},
+    "header": {"route": "brief", "audience": str(a.get("audience") or ""),
+               # GH #306: the ROUND is edge truth too, and the door refuses a
+               # request that declares none. This lane is a 1:1, so it says so.
+               "participants": json.dumps([str(a.get("audience") or "")])},
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "call-263",
                   "text": json.dumps({"subject": a.get("subject"),
                                       "channel": a.get("channel") or "*"})}]}))
@@ -209,7 +212,8 @@ async fn boot(
         &code_cell(
             ASKER,
             "brief",
-            json!({"audience": {"type": "string", "required": false}}),
+            json!({"audience": {"type": "string", "required": false},
+                   "participants": {"type": "string", "required": false}}),
         ),
     );
     write(

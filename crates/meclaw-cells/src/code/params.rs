@@ -74,6 +74,13 @@ impl CodeParams {
             None => None,
             Some(v) => Some(v.as_u64().ok_or("max_concurrency must be integer")? as usize),
         };
+        // GH #322: `0` survives the integer check and the `unwrap_or(4)` default,
+        // and `Semaphore::new(0)` hands out no permits — the dispatcher task waits
+        // forever and never drains its mailbox. Refuse it here, with the wording
+        // the five sibling cell types already use.
+        if max_concurrency == Some(0) {
+            return Err("params.max_concurrency must be >= 1".into());
+        }
         let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
         Ok(CodeParams {
             runner: runner.to_string(),
@@ -146,5 +153,41 @@ mod tests {
         .unwrap();
         assert_eq!(r.external_timeout_ms, Some(1234));
         assert_eq!(r.max_concurrency, Some(2));
+    }
+
+    /// GH #322: `max_concurrency: 0` used to parse. `factory.rs` then built a
+    /// `Semaphore::new(0)` — the cell task never acquires a permit and never
+    /// drains its mailbox: registered, active, permanently silent. The refusal
+    /// message is the one the five sibling cell types use verbatim (bash, file,
+    /// edit, web_search, web_fetch), so operators read one sentence, not six.
+    #[test]
+    fn rejects_max_concurrency_zero() {
+        let r = CodeParams::parse(&json!({
+            "runner":"python3","script_path":"x.py","max_concurrency":0
+        }));
+        assert_eq!(
+            r.unwrap_err(),
+            "params.max_concurrency must be >= 1",
+            "code must refuse 0 with the sibling wording"
+        );
+    }
+
+    /// Sibling parity: the wording above is not a local invention — it is the
+    /// literal the other five cell types return for the same input.
+    #[test]
+    fn max_concurrency_zero_refusal_matches_siblings() {
+        use meclaw_colony::CellFactory;
+        let code = CodeParams::parse(&json!({
+            "runner":"python3","script_inline":"print(1)","max_concurrency":0
+        }))
+        .unwrap_err();
+        let bash = crate::bash::BashCellFactory
+            .validate_params(&json!({"max_concurrency":0}))
+            .unwrap_err();
+        let file = crate::file::FileCellFactory
+            .validate_params(&json!({"base_path":"/tmp","max_concurrency":0}))
+            .unwrap_err();
+        assert_eq!(code, bash, "refusal wording drifted from bash");
+        assert_eq!(code, file, "refusal wording drifted from file");
     }
 }

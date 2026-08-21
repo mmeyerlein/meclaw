@@ -68,10 +68,15 @@ Two edges, and **the parent draws both**.
 ```
 
 **The mutation lane is bootstrap-only, and that is the point.** No mutation can
-create an edge to a `/colony` endpoint at any scope -- `validate_scope_containment`
-answers `scope_out_of_bounds` for every one of them, and a template's own
-`params.graph` is containment-checked against its subtree root, so the edge
-cannot travel inside this template either. It exists exactly if an operator
+create an edge to `/colony/mutations` at any scope -- `validate_scope_containment`
+answers `scope_out_of_bounds`, and a template's own `params.graph` is
+containment-checked against its subtree root, so the edge cannot travel inside
+this template either. (`/colony` is not blanket-forbidden any more: since
+[#163](https://github.com/mmeyerlein/meclaw/issues/163) exactly one endpoint,
+the read-only `/colony/graph`, *is* drawable by a mutation --
+`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` in
+`crates/meclaw-colony/src/mutation/mod.rs`, deliberately a single name and not a
+prefix. `/colony/mutations` is authority transfer and stays out.) It exists exactly if an operator
 wrote it into a `config.json` before boot, and no topology can grant itself the
 lane afterwards (the colony-endpoint roundtrip rule 4; the `builder-hive`
 topology has the same shape).

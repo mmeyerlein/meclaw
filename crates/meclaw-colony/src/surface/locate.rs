@@ -5,7 +5,7 @@
 //!
 //! 1. **Is the path well formed?** Segment by segment: no `.`, no `..`, no empty
 //!    segment, nothing starting with `@`, nothing named `live`. The result is then
-//!    checked against `<root>/main` a second time — belt and braces, because a
+//!    checked against the root cell directory a second time — belt and braces, because a
 //!    containment check that trusts its own string handling is one refactor away
 //!    from being no check.
 //! 2. **Is there a cell there?** Read `config.json`.
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 pub struct Located {
     /// What the cell said about being served.
     pub decl: SurfaceDecl,
-    /// `<root>/main/<path>` — the cell's own directory. The asset route joins the
+    /// `<root>/<root-cell>/<path>` — the cell's own directory. The asset route joins the
     /// declared directory onto this and nothing else.
     pub cell_dir: PathBuf,
     /// The colony path, absolute and with a leading slash — the message target.
@@ -59,15 +59,19 @@ const RESERVED_SEGMENT: &str = "live";
 pub fn locate(root: &Path, rest: &str) -> Result<Located, LocateError> {
     let segments = well_formed(rest)?;
 
-    let main = root.join("main");
-    let mut dir = main.clone();
+    // The root cell directory, from the one resolver that knows it (GH #324).
+    // Its name is the operator's choice — boot accepts any single top-level
+    // directory with a `config.json` — so a literal `"main"` here served 404 for
+    // every surface of every colony rooted under another name.
+    let root_cell = crate::path_truth::find_root_cell_dir(root);
+    let mut dir = root_cell.clone();
     for s in &segments {
         dir.push(s);
     }
     // The second opinion. `well_formed` already refused `..`, so this can only
     // fail if the segment handling above is wrong — which is precisely the
     // failure a containment check is for.
-    if !dir.starts_with(&main) {
+    if !dir.starts_with(&root_cell) {
         return Err(LocateError::NotFound);
     }
 

@@ -69,11 +69,22 @@
           "because": "a tool call for a cell the parent wired; hop.tool_name says which one"
         },
         {
+          "route": "prune",
+          "because": "the report of a window prune: one message per cut session (hop.pruned_turns, hop.pruned_rounds, hop.prune_boundary), or a single zero report saying nothing was eligible. Every in_prune produces exactly one -- a caller that sends the lane MUST take it, which is why required_drains pairs the two"
+        },
+        {
           "route": "error",
           "because": "a normalised failure report. The parent MUST wire it -- unwired it dead-letters, loudly"
         }
       ]
     },
+    "required_drains": [
+      {
+        "accepts": "in_prune",
+        "emits": "prune",
+        "because": "a prune answers unconditionally -- with what it cut, or with a zero report saying nothing was eligible. Undrained, every operator prune dead-letters its own answer and the deletions run unwitnessed: the cut happened, nobody can say what fell. Drain it with a PLAIN `hop.route == 'prune'` edge"
+      }
+    ],
     "graph": {
       "edges": [
         {
@@ -221,6 +232,11 @@
           "from": "./collector",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'recall'"
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'prune'"
         },
         {
           "from": "./dispatcher",

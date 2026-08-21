@@ -135,7 +135,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@3.0.5"}],
+   "add_nodes": [{"name": "talky", "template": "talky@3.0.8"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -158,7 +158,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.5"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.8"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -173,6 +173,16 @@ Instance names follow the rule the rest of the library follows: an instance is n
 exactly like its template, and the second one in the same scope takes a suffix --
 `talky`, `talky-2`, `talky-3`. The slot's occupant is always named after whatever
 occupies it, which is why the placeholder is called `terminal`.
+
+**One convention sits beside the rule, and only one.** A template whose name carries a
+dash may write its own instance shortened to the tail after the last dash --
+`memory-drain` -> `drain` -- and the shipped recipe in `memory-drain/README.md` does. It
+is deliberately not global: the alias resolves only inside that template's own documents
+([#238](https://github.com/mmeyerlein/meclaw/issues/238), and
+`crates/meclaw-cells/tests/gh203_documented_port_addresses.rs` encodes exactly this).
+Everywhere else -- another template's README, an example colony, a mutation -- the
+instance is the full template name. Anything that is neither the template name nor its
+dash-tail is drift, not a choice.
 
 ### Two things the swap does not do for you
 

@@ -19,15 +19,18 @@ location /surface/org/acme/member/alice/canvy/ { ... }
 is a complete access rule for that canvas — page, assets and transport — and it
 needs to know nothing about MeClaw.
 
-## The five cells
+## The four cells
+
+`client/` is the fifth row of the table and is **not** a cell: it is an asset
+directory inside `render/`, with no `config.json` and no endpoint.
 
 | | what it is | what it must never do |
 |---|---|---|
 | `render` | the surface: layout + every tag | read a database, compute an edge path |
 | `store` | positions, viewport, topology snapshot | be addressed from outside the hive |
-| `refresh` | a timer, 60 s | know what a topology is |
+| `refresh` | a timer, every minute by default (`CANVY_REFRESH_CRON`) | know what a topology is |
 | `probe` | asks `/colony/graph`, writes the snapshot | sit in a browser's request path |
-| `client/` | this hive's own JS and CSS | live in the binary |
+| `render/client/` | this hive's own JS and CSS — files, not a cell | live in the binary |
 
 ## The boundary
 
@@ -144,19 +147,28 @@ it with an on-disk in-flight pointer, which is only sound because a lease
 guarantees one request at a time; with several browsers it is not.
 
 So the snapshot is taken where **nothing is waiting**. A colony's graph changes on
-mutation, not on mouse movement, which makes 60 seconds an honest interval rather
+mutation, not on mouse movement, which makes a minute an honest interval rather
 than a compromise.
+
+**And it is a knob.** `refresh` carries one schedule whose cron is
+`${CANVY_REFRESH_CRON:-0 * * * * *}` — a 6-field Quartz expression, planned in
+**UTC** like every `timer` in the library. The default is "second 0 of every
+minute"; a colony whose graph barely moves can set it to `0 */5 * * * *` and pay
+a fifth as much, and one that never mutates can stop the tick entirely and drive
+the snapshot from the `in_refresh` lane instead.
 
 ## The store's one table
 
-Three kinds share one `canvas` table, discriminated by `kind`:
+Four kinds are written into one `canvas` table, discriminated by `kind`, and the
+renderer reads a fifth it no longer writes:
 
 | `kind` | carries |
 |---|---|
 | `node` | `id`, `x`, `y` — where one box sits |
-| `hive_shift` | `id`, `x`, `y` — how far a GROUP was pushed by hand |
+| `hive_shift` | `id`, `x`, `y` — how far a GROUP was pushed by hand (GH #170) |
 | `camera` | `x`, `y`, `z` — the viewport, zoom as integer per-mille |
 | `graph` | `doc` — the whole `/colony/graph` answer |
+| `hive` | `id`, `x`, `y` — the **legacy** shape of `hive_shift`: a point in the flow layout's space. Read and converted on the way in, never written again |
 
 One table because a store message carries exactly **one** operation: three tables
 would be three round trips on an interactive path, and a `kind` column costs
@@ -184,10 +196,13 @@ python3 scripts/canvy_sync.py
 
 The default layout is two levels. Inside a hive: rows by flow depth, so a request
 sits above the thing it asks. Between hives: **packed into rows**, left to right,
-wrapping at 2400 px. The first version stacked the hives in one column, which on a
-14-hive colony produced a 3672-pixel-tall strip two boxes wide — deterministic,
-correct, and unusable. An arrangement in one column carries one bit of information
-where a screen offers two dimensions.
+wrapping when the run gets too long for the shape of a screen. There is no fixed
+pixel width: the wrap limit is derived per block from `TARGET_RATIO = 2.0` (about
+twice as wide as tall) and only considered at all past `WRAP_MIN_W = 1100`, so a
+short chain stays one readable stripe. The first version stacked the hives in one
+column, which on a 14-hive colony produced a 3672-pixel-tall strip two boxes wide
+— deterministic, correct, and unusable. An arrangement in one column carries one
+bit of information where a screen offers two dimensions.
 
 The `<svg>` carries a **`viewBox` covering the whole drawing**, so the browser fits
 the entire arrangement into the frame before any JavaScript runs. Zoom and pan ride

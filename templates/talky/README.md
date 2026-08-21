@@ -1,4 +1,4 @@
-# `talky@3.0.5`
+# `talky@3.0.8`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -95,7 +95,33 @@ The rest, each optional and each still at the same address:
 | `in_memory_call` | in | a memory tool call handed back into the composite |
 | `in_thread_call` | in | a `thread_recall` tool call handed back into the composite (since 3.0.1) |
 | `in_sweep` | in | an operator-forced session sweep |
-| `in_prune`, `in_round_sweep` | in | the two operator lanes of the context window |
+| `in_prune` | in | the age cut of the context window. **Paired**: see `prune` |
+| `prune` | out | the report `in_prune` answers with -- one message per cut session (`hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`, `hop.session_id`), or a single zero report ("pruned nothing") when nothing was behind the gate. Since 3.0.6 |
+| `in_round_sweep` | in | the other operator lane of the context window: a round that ran out of iterations |
+
+**`in_prune` and `prune` are one decision, and the substrate insists on it.** The
+prune answers unconditionally -- the zero report is the case an operator most needs,
+because "nothing was eligible" is an answer. `params.required_drains` pairs the two, so
+a mutation that wires the ingress without a subscription to the report is refused with
+`required_drain_missing` instead of dead-lettering one report per request:
+
+```json
+{"from": "<timer or operator>", "to": "./talky",
+ "condition": "has(hop.route) && hop.route == 'cut'",
+ "modifier": {"set_hop": {"route": "'in_prune'"}}},
+{"from": "./talky", "to": "<log or drain>",
+ "condition": "has(hop.route) && hop.route == 'prune'"}
+```
+
+Drain it with a **plain** `hop.route == 'prune'` edge. The pairing's probe carries
+`hop.route` and nothing else, and an edge that also tests `hop.pruned_turns` is judged on
+that empty hop -- with two outcomes, not one. A test that **evaluates** (`has(hop.pruned_turns)`)
+comes back false, the edge reads as no drain, and the mutation is refused. A test that
+**errors** on the absent key is treated as UNKNOWN and counted as a drain
+(`unwrap_or(true)`, `crates/meclaw-colony/src/mutation/required_drains.rs`): deliberate
+conservatism, so the gate never invents a missing drain -- but it also means such an edge
+passes the gate and can still skip the report at runtime. Keep the edge plain and neither
+case arises.
 
 **The lane names are the contract, the cell names are not.** `session-keeper`,
 `collector`, `dispatcher` and `errors` are implementation: they may be renamed, split
@@ -231,11 +257,11 @@ and every stored answer. No model call is involved: this is the collector's own 
 leaving one turn earlier.
 
 ```json
-{"from": "./talky", "to": "./memdrain",
+{"from": "./talky", "to": "./memory-drain",
  "condition": "has(hop.route) && hop.route == 'turn_write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}},
-{"from": "./talky", "to": "./memdrain",
+{"from": "./talky", "to": "./memory-drain",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"},
               "set_context": {"session_id": "hop.session_id"}}}
@@ -498,7 +524,11 @@ is also the whole reason wave 9 came first.
 Two classes since `collector@1.2.0`. The **env** knobs are `${VAR:-default}` literals that
 travel into the instance and bind **late**, at every read, so a `.env` change plus a reboot
 moves them without touching a config -- and they move every unit in the colony at once. The
-**param** knobs ship with their defaults inside `./collector/config.json` and are
+**param** knobs ship with their defaults inside `./collector/assemble/config.json` -- the
+hive marker one level up (`./collector/config.json`) carries `ports`, `contract` and
+`graph` and no knob at all, so a value written *there* is read by nothing and the instance
+comes up unconfigured with no diagnostic anywhere
+([#212](https://github.com/mmeyerlein/meclaw/issues/212)) -- and are
 retuned per instance with `override_params` on `collector/assemble.params.<name>`, so this
 talky can differ from the cogny next to it. That deep key is **not** an edge endpoint and
 the port boundary does not apply to it: `override_params` is addressed by the cell's path

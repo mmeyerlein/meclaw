@@ -727,8 +727,15 @@ pub(crate) fn patch_and_substitute_config(
 /// A closed list rather than "every cell type", because a block nobody reads
 /// is noise in a `store`'s params and meaningless on a `hive` scope marker.
 /// The coupling is deliberate and one-directional: `meclaw-colony` cannot see
-/// `meclaw-cells`, so a fourth cell type that grows a sandbox has to be added
-/// here as well, and `docs/cell-types.md` says so at each of the three.
+/// `meclaw-cells`, so a further cell type that should receive a DEFAULT profile
+/// has to be added here as well, and `docs/cell-types.md` says so at each of
+/// the three.
+///
+/// Reading `params.sandbox` is a different question from getting a default:
+/// `mcp` reads and enforces the very same profile (GH #96,
+/// `crates/meclaw-cells/src/mcp/params.rs`) and is deliberately NOT in this
+/// list, because "no default injection" is exactly what the GH #96 opt-in is.
+/// Adding it here would change shipped behaviour, not fix a gap.
 const SANDBOX_ENFORCING_CELL_TYPES: [&str; 3] = ["bash", "code", "harness"];
 
 /// Whether `cell_type` is one of the cell types that enforce a sandbox.

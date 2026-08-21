@@ -97,7 +97,7 @@ impl CellFactory for PersistCellFactory {
         let respawn_blob_store = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let respawn_consumes = contract.consumes.clone();
-        let respawn_write_surface = contract.write_surface;
+        let respawn_bounds = contract.transfer_bounds();
         let respawn_mailbox_capacity = mailbox_capacity;
         let respawn: RespawnFn = Box::new(
             move || -> (
@@ -123,7 +123,7 @@ impl CellFactory for PersistCellFactory {
                     db,
                     respawn_blob_store.clone(),
                     respawn_consumes.clone(),
-                    respawn_write_surface,
+                    respawn_bounds,
                 );
                 // Phase-13.5 Slice 4 T6: re-notify the colony of the fresh stop
                 // pair (the frozen RespawnFn 3-tuple cannot return it). try_send,
@@ -154,7 +154,7 @@ impl CellFactory for PersistCellFactory {
         let wake_blob_store = blob_store.clone();
         // Slice 2: the cell's OWN pre-compiled consumes views (Arc-clone).
         let wake_consumes = contract.consumes.clone();
-        let wake_write_surface = contract.write_surface;
+        let wake_bounds = contract.transfer_bounds();
         let wake: WakeFn = Box::new(move |recv: mpsc::Receiver<Message>| {
             let (cell, conn) = wake_factory
                 .build_cell_with_open_db(&wake_cell_dir, &wake_params)
@@ -173,7 +173,7 @@ impl CellFactory for PersistCellFactory {
                     db,
                     wake_blob_store.clone(),
                     wake_consumes.clone(),
-                    wake_write_surface,
+                    wake_bounds,
                 );
             meclaw_colony::spawn_watcher(
                 &wake_watcher_inbox,

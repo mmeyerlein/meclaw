@@ -153,6 +153,13 @@ fn collect_configs(
 /// the hive documents, and declares WHO is asking on the hop -- which the port
 /// edge then promotes to `context.asker`. That promotion is the whole point:
 /// `brief` never reads an audience out of a body.
+///
+/// GH #306: the ROUND rides on the hop the same way and for the same reason.
+/// A caller that names no round is a caller whose room nobody knows, so the
+/// default here is the one a 1:1 lane means -- the asker alone, spelled out --
+/// and the literal string `"unset"` is the test-only way to send a request that
+/// declares nothing at all. `"spelling": "audience_set"` sends the round under
+/// the transitional alias instead (GH #330).
 const ASKER: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
@@ -161,8 +168,19 @@ a = json.loads(str(msgs[-1].get("text", "{}")) if msgs else "{}")
 req = {"subject": a.get("subject"), "channel": a.get("channel") or "*"}
 if a.get("slots") is not None:
     req["slots"] = a.get("slots")
+h = {"route": "brief", "audience": str(a.get("audience") or "")}
+round_ = a.get("participants")
+if round_ != "unset":
+    if round_ is None:
+        round_ = [str(a.get("audience") or "")]
+    h[str(a.get("spelling") or "participants")] = json.dumps(round_)
+if a.get("pinned") is not None:
+    # A round the PORT EDGE pins into context, beside whatever the hop says.
+    # `pinned_spelling` picks which context key the edge writes it to.
+    key = "pinned_aud" if a.get("pinned_spelling") == "audience_set" else "pinned"
+    h[key] = json.dumps(a.get("pinned"))
 sys.stdout.write(json.dumps({
-    "header": {"route": "brief", "audience": str(a.get("audience") or "")},
+    "header": h,
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "b1",
                   "text": json.dumps(req)}]}))
 "#;
@@ -238,10 +256,21 @@ fn main_config() -> Value {
         // serves it is not written into this graph, which is what makes the
         // template replaceable.
         // ── in_brief: the asker's identity becomes EDGE truth, and only here ──
+        // GH #306: this edge also PINS a round into context when the request
+        // asked for one. That is the caller-edge spelling of the round, and
+        // the door must prefer it over anything on the hop -- an edge is
+        // written by the colony, a hop key by whatever cell it passed. BOTH
+        // context spellings are pinnable, because the one every shipped
+        // producer actually promotes is `audience_set` (ADR-0002 E8, GH #330)
+        // and a precedence rule that only holds for the dead spelling holds
+        // nowhere. Empty otherwise, so the door falls through to the hop.
         {"from": "./asker", "to": "./affinity",
          "condition": "has(hop.route) && hop.route == 'brief'",
          "modifier": {"set_hop": {"route": "'in_brief'"},
-                      "set_context": {"asker": "hop.audience"}}},
+                      "set_context": {
+                          "asker": "hop.audience",
+                          "participants": "has(hop.pinned) ? hop.pinned : ''",
+                          "audience_set": "has(hop.pinned_aud) ? hop.pinned_aud : ''"}}},
         // ── in_propose: the writer's identity, likewise from the edge ──
         {"from": "./writer", "to": "./affinity",
          "condition": "has(hop.route) && hop.route == 'propose'",
@@ -283,7 +312,11 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &st
         &code_cell(
             ASKER,
             &["brief"],
-            json!({"audience": {"type": "string", "required": false}}),
+            json!({"audience": {"type": "string", "required": false},
+                   "participants": {"type": "string", "required": false},
+                   "audience_set": {"type": "string", "required": false},
+                   "pinned": {"type": "string", "required": false},
+                   "pinned_aud": {"type": "string", "required": false}}),
         ),
     );
     write(
@@ -790,6 +823,427 @@ async fn the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing() {
     assert_eq!(audit.as_array().map(|a| a.len()), Some(1), "audit: {audit}");
     assert_eq!(audit[0]["outcome"].as_str(), Some("denied"));
     assert_eq!(audit[0]["reason_code"].as_str(), Some("not_disclosed"));
+
+    h.shutdown().await;
+}
+
+/// GH #306 -- the audience-SET rule (R-AF-3) on the SHIPPED topology, both
+/// halves of it.
+///
+/// Until this issue the refusal half was dead code in every colony that ever
+/// booted: `brief` reads the round from `context.participants`, and **no edge
+/// anywhere promoted that key**. So `present` was always `{asker}`, the widest
+/// reading a subset test can be given, and a four-person round reading a row
+/// released to three of them was served with the fourth participant
+/// unreportable.
+///
+/// Two things are pinned here, and neither of them is reachable through a
+/// script-level test: the DOOR (`. -> ./brief`) has to carry the promotion, and
+/// a round nobody declared has to be refused rather than narrowed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_wider_than_the_release_is_refused_at_the_shipped_door() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // The seeded rows for `entity:alex` are released to `{agent:aiden}` alone.
+    // Four people are in this room. {aiden,alex,robin,sam} ⊄ {aiden} -- so the
+    // release the agent normally reads does not cover this round.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":["agent:aiden","member:alex","member:robin","member:sam"]}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "a round the release never saw must get NO pack: {:?}",
+        body_of(&denied)
+    );
+    assert_eq!(
+        turn_text(&denied),
+        "nothing is disclosed to this audience",
+        "and the same one sentence every other denial gets"
+    );
+
+    // The audit says WHICH denial it was: released to a smaller round, not
+    // never released at all. That difference is the whole reason the two codes
+    // exist.
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["actor", "outcome", "reason_code"],
+               "where": {"actor": "agent:aiden"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("audience_not_subset"),
+        "the newcomer must close the release: {audit}"
+    );
+
+    // The same question in the room the release WAS given in still works --
+    // otherwise the gate above would be a lock, not a rule.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram"}"#,
+    ))
+    .await;
+    let served = recv_route(&mut rx, "answer").await;
+    assert_eq!(
+        body_of(&served)["system"]["identity"]["names"]["first"].as_str(),
+        Some("Alex"),
+        "the declared 1:1 round is inside the release: {:?}",
+        body_of(&served)
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 -- and a round nobody declared is REFUSED, never narrowed.
+///
+/// "The asker alone" is the widest reading a subset test can be handed: every
+/// release that names the asker passes it, whoever else is actually in the
+/// room. So an undeclared round cannot be a default -- it is the one state in
+/// which the rule cannot be applied at all, and the honest answer to that is a
+/// denial with its own reason code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_nobody_declared_is_refused_rather_than_narrowed_to_the_asker() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // `"unset"` makes the test asker stamp NO round on the hop at all -- the
+    // shipped wiring of every colony before this issue.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":"unset"}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "an undeclared round must not be served the asker's own releases: {:?}",
+        body_of(&denied)
+    );
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["actor", "outcome", "reason_code"],
+               "where": {"actor": "agent:aiden"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(audit[0]["outcome"].as_str(), Some("denied"), "{audit}");
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("no_round"),
+        "a missing round is its own denial -- not `not_disclosed`, which would \
+         claim nobody released anything: {audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 / GH #330 -- the round under its OTHER spelling.
+///
+/// Every round producer that ships today writes `context.audience_set`
+/// (`session-keeper`, `memory-drain`, the receptionist's ingress per ADR-0002
+/// E8); affinity reads `context.participants`. Nothing bridged the two, so
+/// closing this gate on the `participants` spelling alone would deny every real
+/// caller after an uplift. The door therefore accepts `audience_set` as a
+/// TRANSITIONAL alias, last in the same precedence chain and under exactly the
+/// same fail-closed semantics -- both directions of the rule are checked here,
+/// because an alias that only ever passes is an alias that disabled the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_audience_set_spelling_is_a_round_in_both_directions() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // 1. Subset: the seeded rows are released to {agent:aiden}, and that is
+    //    the whole room. Served -- the alias really is read as a round.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "spelling":"audience_set","participants":["agent:aiden"]}"#,
+    ))
+    .await;
+    let served = recv_route(&mut rx, "answer").await;
+    assert_eq!(
+        body_of(&served)["system"]["identity"]["names"]["first"].as_str(),
+        Some("Alex"),
+        "the alias spelling must reach the subset test: {:?}",
+        body_of(&served)
+    );
+
+    // 2. And the fourth participant closes it under the alias too. If this
+    //    served, the alias would be a hole rather than a bridge.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "spelling":"audience_set",
+            "participants":["agent:aiden","member:alex","member:robin","member:sam"]}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "the alias must carry the REFUSAL half too: {:?}",
+        body_of(&denied)
+    );
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["outcome", "reason_code"],
+               "where": {"actor": "agent:aiden", "outcome": "denied"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("audience_not_subset"),
+        "and it is the subset denial, not a missing round: {audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 -- an edge-pinned round outranks a hop key.
+///
+/// A `set_context` value on an edge is written by the colony; a hop key is
+/// written by whatever cell the message passed, up to and including one that
+/// runs a model's output. So where both exist the edge wins and the hop only
+/// fills the gap -- otherwise a cell downstream of the pinning edge could widen
+/// its own room by stamping a hop key, which is the body-writes-its-own-identity
+/// hazard the whole "identity comes from the edge" rule exists to prevent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edge_pinned_round_outranks_the_hop_key() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // The port edge pins a four-person round. The hop claims a cosy 1:1 with
+    // the audience the seed released to. The pinned round must win, so this is
+    // refused rather than served.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":["agent:aiden"],
+            "pinned":["agent:aiden","member:alex","member:robin","member:sam"]}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "a hop key must not be able to shrink the room an edge pinned: {:?}",
+        body_of(&denied)
+    );
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["outcome", "reason_code"],
+               "where": {"actor": "agent:aiden", "outcome": "denied"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("audience_not_subset"),
+        "{audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 / GH #330 -- the same alias, promoted where it actually lives.
+///
+/// The test above sends `audience_set` on the HOP; every shipped producer
+/// promotes it to **context** instead (`session-keeper`, `memory-drain`, the
+/// receptionist ingress per ADR-0002 E8, talky's own port edge). So the leg
+/// that carries every real colony is `context.audience_set`, and it gets its
+/// own round trip through both directions of the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_edge_pinned_audience_set_is_a_round_in_both_directions() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // `"participants":"unset"` keeps every hop spelling off the wire, so the
+    // context alias is the ONLY round in play.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":"unset","pinned_spelling":"audience_set",
+            "pinned":["agent:aiden"]}"#,
+    ))
+    .await;
+    let served = recv_route(&mut rx, "answer").await;
+    assert_eq!(
+        body_of(&served)["system"]["identity"]["names"]["first"].as_str(),
+        Some("Alex"),
+        "an edge-pinned audience_set must BE the round: {:?}",
+        body_of(&served)
+    );
+
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":"unset","pinned_spelling":"audience_set",
+            "pinned":["agent:aiden","member:alex","member:robin","member:sam"]}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "and it must carry the refusal half: {:?}",
+        body_of(&denied)
+    );
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["outcome", "reason_code"],
+               "where": {"actor": "agent:aiden", "outcome": "denied"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("audience_not_subset"),
+        "{audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 / GH #330 -- and the precedence rule holds for the LIVE spelling.
+///
+/// This is the sharp one. Both context spellings rank above **any** hop
+/// spelling: `context.participants` → `context.audience_set` → `hop.participants`
+/// → `hop.audience_set`. Rank them per-spelling instead — participants before
+/// audience_set in both tiers — and a cell stamping `hop.participants` outranks
+/// an edge-pinned `context.audience_set`, which is the only edge-pinned round
+/// any real colony carries today. The hazard would then survive untouched on
+/// the one spelling that is actually in use, behind a fix that reads correct.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edge_pinned_audience_set_outranks_a_hop_participants_key() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // The edge pins a four-person room under the live spelling. The cell
+    // stamps a cosy 1:1 on `hop.participants`. The edge must win.
+    h.send(to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram",
+            "participants":["agent:aiden"],
+            "pinned_spelling":"audience_set",
+            "pinned":["agent:aiden","member:alex","member:robin","member:sam"]}"#,
+    ))
+    .await;
+    let denied = recv_route(&mut rx, "answer").await;
+    assert!(
+        body_of(&denied).get("system").is_none(),
+        "a hop key must not outrank an edge-pinned audience_set -- that is the \
+         only edge-pinned round a real colony has: {:?}",
+        body_of(&denied)
+    );
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["outcome", "reason_code"],
+               "where": {"actor": "agent:aiden", "outcome": "denied"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(
+        audit[0]["reason_code"].as_str(),
+        Some("audience_not_subset"),
+        "{audit}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #306 -- the door resets the lane's own state keys.
+///
+/// `context` travels colony-wide: every cell emission carries the context it
+/// was handed. A caller that once spoke to this hive (or to anything that left
+/// `aff_*` behind) would hand a FRESH `in_brief` an inherited `aff_phase`, and
+/// `brief` would then read it as a mid-lane echo -- entering the disclosure
+/// phase with a stale carry, or answering on the push lane because
+/// `aff_subscriber` still named somebody. The internal `./push -> ./brief` edge
+/// has always reset these; the door had not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_door_resets_an_inherited_lane_state() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    // The probe's edge leaves `context.affinity_origin` behind, and the store
+    // answer that comes back through it carries a full `aff_*` set on the way
+    // to ./brief -- so a colony where a request follows a store round trip is
+    // exactly where an inherited phase comes from. Here the inheritance is
+    // asserted directly: the request travels with `aff_phase` already set.
+    let mut m = to(
+        "/asker",
+        r#"{"audience":"agent:aiden","subject":"entity:alex","channel":"telegram"}"#,
+    );
+    m.headers
+        .context
+        .insert("aff_phase".into(), json!("disclosure"));
+    m.headers
+        .context
+        .insert("aff_carry".into(), json!("{\"trust\":\"intimate\"}"));
+    m.headers
+        .context
+        .insert("aff_subscriber".into(), json!("/main/somebody-else"));
+    h.send(m).await;
+
+    let answer = recv_route(&mut rx, "answer").await;
+    assert_eq!(
+        hop_of(&answer, "subscriber"),
+        "",
+        "an inherited subscriber must not turn a tool answer into somebody \
+         else's push: {:?}",
+        answer.headers.hop
+    );
+    assert_eq!(
+        body_of(&answer)["system"]["identity"]["names"]["first"].as_str(),
+        Some("Alex"),
+        "the request ran as a FRESH lane, not as an echo of an inherited \
+         phase: {:?}",
+        body_of(&answer)
+    );
 
     h.shutdown().await;
 }

@@ -2805,9 +2805,32 @@ async fn route_with_log(
 /// No-Delete-Policy (which governs registered cells) is not engaged. The
 /// already-registered staged cells (earlier loop iterations) stay
 /// registry/FS-consistent. The `.staging/<id>` dir is always swept.
+///
+/// GH #276: `owned` names the paths THIS mutation registered. Registration used
+/// to be the whole discriminator, which made the sweep skip exactly the residue
+/// a post-registry reject leaves — a directory is "not mine" because a *previous*
+/// mutation registered it, not because this one just did. A reject path that
+/// unregisters its own nodes first would pass the `contains_key` test too, but
+/// then the sweep would depend on the order of two statements at every call site.
+///
+/// GH #276 (review round 1): `staged_subtrees` joins the sweep. A merge-staged
+/// subtree renames one directory per MISSING rename-root into the live tree, and
+/// those are the very shape the issue was filed about — a thirteen-cell hive
+/// template. They carry the same safety argument as a `StagedDir` with
+/// `preexisting_target == false` and need no per-path test to establish it: an
+/// EXISTING node is never a rename-root (`stage_subtree_merge` stages only the
+/// missing subset, F1), so a rename-root directory was created by THIS mutation
+/// by construction.
+///
+/// A removal that fails is LOGGED, never swallowed: a half-removed directory in
+/// the live tree is worse than the orphan the audit model describes, and the only
+/// thing that makes it survivable is that somebody can read afterwards what
+/// happened.
 fn sweep_reject_residue(
     staged: &[crate::mutation::stage::StagedDir],
+    staged_subtrees: &[crate::mutation::subtree::StagedSubtreeMerge],
     registry: &HashMap<Path, RegistryEntry>,
+    owned: &[Path],
     root: &std::path::Path,
     id: &str,
 ) {
@@ -2829,12 +2852,105 @@ fn sweep_reject_residue(
         // and a state the next boot walks into and adopts.
         if !sd.preexisting_target
             && sd.relocation.is_none()
-            && !registry.contains_key(&sd.absolute_path)
+            && (owned.contains(&sd.absolute_path) || !registry.contains_key(&sd.absolute_path))
         {
-            let _ = std::fs::remove_dir_all(&sd.final_path);
+            remove_swept_dir(&sd.final_path, id);
         }
     }
-    let _ = std::fs::remove_dir_all(root.join(".staging").join(id));
+    for rr in staged_subtrees.iter().flat_map(|s| s.rename_roots.iter()) {
+        remove_swept_dir(&rr.root_final_path, id);
+    }
+    remove_swept_dir(&root.join(".staging").join(id), id);
+}
+
+/// One directory of a reject sweep. A missing directory is the normal outcome
+/// (a `.staging/<id>` that never got built, a rename-root swept by an earlier
+/// sweep of the same reject); anything else is a live-tree residue somebody has
+/// to know about.
+fn remove_swept_dir(dir: &std::path::Path, id: &str) {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::error!(
+            mutation_id = %id,
+            path = %dir.display(),
+            error = %e,
+            "reject sweep could not remove a staged directory — the live tree keeps a \
+             partially removed residue of a mutation that was refused"
+        ),
+    }
+}
+
+/// GH #276 — undo the registry half of a mutation that is being rejected after
+/// step 9 already registered its nodes.
+///
+/// The durable half needs no undo: since #276 the `UpsertRegistry` write-ops ride
+/// in the mutation's `write_buffer` and a reject returns before the flush, so
+/// `colony.db` never saw them. What is left is the in-RAM registry, the
+/// `node_contracts` mirror, and — for a cell that was spawned Awake — a running
+/// task, which is peace-stopped on the way out.
+///
+/// **The stop is WAITED ON** (review round 1), with the same [`term_timeout`]
+/// budget every other colony-initiated stop uses. The caller sweeps the cell's
+/// directory right after this returns, and a task that still holds `cell.db`
+/// open while `remove_dir_all` walks the directory turns a clean reject into a
+/// half-removed directory in the live tree — worse than the unregistered orphan
+/// the audit model describes. On timeout the sweep proceeds anyway and the
+/// removal error (if any) is logged: a wedged task must not hold the colony
+/// inbox open, which is the same trade [`term_timeout`] itself makes.
+async fn rollback_registered_nodes(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    node_contracts: &mut HashMap<Path, NodeContract>,
+    registered: &[Path],
+) {
+    let mut death_acks: Vec<(Path, oneshot::Receiver<()>)> = Vec::new();
+    for path in registered {
+        if let Some(mut entry) = registry.remove(path)
+            && let Some(stop) = entry.stop_tx.take()
+        {
+            let _ = stop.send(());
+            if let Some(rx) = entry.death_ack_rx.take() {
+                death_acks.push((path.clone(), rx));
+            }
+        }
+        node_contracts.remove(path);
+    }
+    for (path, rx) in death_acks {
+        if tokio::time::timeout(term_timeout(), rx).await.is_err() {
+            tracing::warn!(
+                path = %path.as_str(),
+                "rolled-back cell did not answer the peace-stop within the term-timeout — \
+                 sweeping its directory while its task may still hold cell.db"
+            );
+        }
+    }
+}
+
+/// GH #276 — terminalize the `in_flight` `mutation_log` row of a mutation that
+/// is rejected in the APPLY stage.
+///
+/// Apply-stage terminal status is `failed`, the same one the staging-failure and
+/// spawn-failure arms write: `rejected` belongs to the validate stage, whose row
+/// is INSERTED terminal by [`send_eda_reject`] and never passes through
+/// `in_flight` (`MutationLogRejectInsert`). The write is ack-waited because the
+/// disagreement #276 was filed about is exactly one between a terminal HTTP
+/// answer and a non-terminal audit row.
+async fn terminalize_apply_reject(
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    id: &str,
+    reason: String,
+) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = log_tx
+        .send(crate::persist::writer::ColonyWriteOp::MutationLogUpdate {
+            id: id.to_string(),
+            status: "failed".into(),
+            committed_at: crate::mutation::stage::unix_now(),
+            failure_reason: Some(reason),
+            ack: Some(tx),
+        })
+        .await;
+    let _ = rx.await;
 }
 
 /// Inert RespawnFn for the exceptional subtree fallbacks (no factory /
@@ -4105,12 +4221,10 @@ pub(crate) async fn handle_mutation(
         }
     }
 
-    // Apply sequence step 9: cell spawn + DIRECT registry.insert (NO self-send).
-    // correction 2: the Mutation arm already holds `&mut registry`. A
-    // self-send (`inbox_self_tx.send(ColonyMsg::Register).await`) would deadlock
-    // because the select! loop cannot process its own message while the Mutation
-    // arm is still executing. Direct in-memory insert + fire-and-forget
-    // UpsertRegistry write-op instead.
+    // Timestamp + post-state edge view for step 9. Both are computed HERE, before
+    // the edge ops of steps 9b/9c/10 touch `edges`, and consumed by the spawn loop
+    // further down (GH #276 moved the loop past the post-state validations; the
+    // view it reads must stay the pre-apply one it always read).
     let now_spawn = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -4170,348 +4284,6 @@ pub(crate) async fn handle_mutation(
         &removed_node_paths,
     );
 
-    for sd in &staged {
-        let factory = match factories.get(&sd.template).cloned() {
-            Some(f) => f,
-            None => {
-                // Should be impossible: validate_post_state checked template_missing.
-                tracing::error!(
-                    template = %sd.template,
-                    "factory disappeared between validate and spawn"
-                );
-                // Befund 8: spurless reject — sweep the renamed-but-unregistered
-                // staged dirs + staging before returning.
-                sweep_reject_residue(&staged, registry, root, &id);
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = log_tx
-                    .send(crate::persist::writer::ColonyWriteOp::MutationLogUpdate {
-                        id: id.clone(),
-                        status: "failed".into(),
-                        committed_at: now_spawn,
-                        failure_reason: Some(format!("factory missing for {}", sd.template)),
-                        ack: Some(tx),
-                    })
-                    .await;
-                let _ = rx.await;
-                return MutationOutcome::Rejected {
-                    id: Some(id),
-                    error_code: "spawn".into(),
-                    details: format!("factory missing for {}", sd.template),
-                };
-            }
-        };
-        // Phase-13.5 Lifecycle-3b Task 7 (A2): mutation-spawn timeout mapping,
-        // mirroring `bootstrap_apply.rs` EXACTLY. `cell.timeout == 0` →
-        // idle-default (or per-cell `idle_timeout_ms` override); other values
-        // (`-1` persistent / runs forever, `> 0` one-shot) get NO idle timer.
-        // Inputs come from `StagedDir.cell_timeout` / `StagedDir.idle_timeout_ms`
-        // (substituted `config.json`), replacing the former hardcode (13-L-1).
-        let mut_cell_timeout: i64 = sd.cell_timeout;
-        let mut_idle_timeout = match sd.cell_timeout {
-            0 => Some(std::time::Duration::from_millis(
-                sd.idle_timeout_ms.unwrap_or(idle_default_ms),
-            )),
-            _ => None,
-        };
-
-        // Paket-3 P3-C1 (P8 fix): activity gate before the EAGER spawn.
-        // If this cell would be INACTIVE in the POST-STATE edge view (e.g. its
-        // diff `add_edges` wires it under an inactive parent hive) AND it is an
-        // EAGER kind (the factory offers a real `build_boot_inactive_respawn` —
-        // the SAME discriminator the bootstrap boot-inactive path uses), do NOT
-        // eager-spawn it: registering it inactive + `NotYetSpawned` WITHOUT
-        // building the task avoids the transient real side effect (mcp
-        // subprocess / proxy connection) that step 10b would peace-stop a
-        // sub-second later. We mirror `bootstrap_apply::register_inactive_non_spawned`
-        // EXACTLY: the real respawn carries `eager_on_reconnect == true`, so a
-        // later `add_edges` reconnect's `(entry.respawn)()` (step 10b) spawns
-        // the task immediately. A cell that would be ACTIVE (Grace — pure
-        // edge-less `add_nodes` under an active/root scope), or a lazy/Dormant
-        // kind (`build_boot_inactive_respawn` returns `None`, never eager-spawns
-        // anyway), falls through to the unchanged `spawn_cell` path below.
-        // CRITICAL — Grace preservation (spec Z.1463ff): the gate fires ONLY for
-        // a cell that is CONNECTED in the post-state (a diff edge reaches it) but
-        // derived inactive because an ancestor hive is inactive. An edge-LESS
-        // fresh cell has no post-state edge → `is_connected == false` →
-        // `compute_active == false` too, but that is Grace-active (spawn), NOT a
-        // disconnect. Gating on `is_connected && !compute_active` keeps Grace.
-        let connected = crate::connectivity::is_connected(&sd.absolute_path, &post_state_view);
-        let would_be_inactive = connected
-            && !crate::connectivity::compute_active(
-                &sd.absolute_path,
-                &post_state_view,
-                hive_scopes,
-            );
-        // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
-        // BEFORE either spawn path constructs its RespawnFn / reconnect-hook
-        // closure (both `build_boot_inactive_respawn` and `spawn_cell` clone this
-        // `ContractView`), so crash-restarted AND reconnect-respawned mutation
-        // cells carry the resolved flag.
-        let mut contract_view = sd.contract_view.clone();
-        contract_view.validate_emits =
-            crate::bootstrap_apply::resolve_validate_emits(strict_validation);
-        // Hardening Slice 1 (Task 1.4): per-cell contract data for the colony's
-        // `node_contracts` map — built BEFORE `contract_view` moves into
-        // `spawn_cell`, inserted AFTER the registry insert of each spawn path
-        // (the point where the arm knows registration succeeded).
-        let node_contract = NodeContract {
-            header_view: sd.header_view.clone(),
-            emits: contract_view.emits.clone(),
-            validate_emits: contract_view.validate_emits,
-        };
-        if would_be_inactive
-            && let Some(real_respawn) = factory.clone().build_boot_inactive_respawn(
-                sd.absolute_path.clone(),
-                sd.params.clone(),
-                outputs_tx.clone(),
-                sd.final_path.clone(),
-                contract_view.clone(),
-                inbox_self_tx.clone(),
-                mut_idle_timeout,
-                mut_cell_timeout,
-                crate::resolve_message_timeout(sd.message_timeout, message_timeout_default_ms),
-                blob_store.clone(),
-                sd.mailbox_size.unwrap_or(mailbox_default_capacity),
-            )
-        {
-            // Fresh throwaway mailbox pair: parked in `NotYetSpawned`, never used
-            // while the cell stays inactive (inactive-routing short-circuits).
-            let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-            let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
-            // No wake mechanic: an eager cell is re-spawned (not woken). A stray
-            // delivery dead-letters loudly (F1-KH2 Schicht 2).
-            let wake: Option<crate::WakeFn> = None;
-            // GH #169: a relocation carries the identity it already had. A path is
-            // a cell's identity everywhere else, so this is the one place where a
-            // change of address must NOT read as a new cell — the registry row was
-            // moved, not re-inserted, and a fresh UUID here would leave the row and
-            // the RAM entry disagreeing about who lives at the path.
-            let cell_id = sd
-                .relocation
-                .as_ref()
-                .map(|r| r.cell_id)
-                .unwrap_or_else(Uuid::now_v7);
-            registry.insert(
-                sd.absolute_path.clone(),
-                RegistryEntry {
-                    handle: handle_actor,
-                    respawn: real_respawn,
-                    wake,
-                    restart_count: 0,
-                    restart_limit: DEFAULT_RESTART_LIMIT,
-                    cell_id,
-                    cell_type: sd.template.clone(),
-                    status: CellStatus::NotYetSpawned { receiver },
-                    // Eager kind → eager re-spawn on reconnect (step 10b).
-                    eager_on_reconnect: true,
-                    // POST-STATE derives this cell inactive → register inactive,
-                    // NO task. Step 10b confirms (no flip) until a reconnect.
-                    active: false,
-                    failed: false,
-                    stop_tx: None,
-                    death_ack_rx: None,
-                },
-            );
-            // Hardening Slice 1 (Task 1.4): registration succeeded → register
-            // the per-cell contract data for the 14-B post-state live source.
-            node_contracts.insert(sd.absolute_path.clone(), node_contract);
-            // Writer-Op (fire-and-forget — durable by FIFO before committed-update).
-            let _ = log_tx
-                .send(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
-                    path: sd.absolute_path.clone(),
-                    cell_id: cell_id.to_string(),
-                    cell_type: sd.template.clone(),
-                    created_at: now_spawn,
-                    updated_at: now_spawn,
-                })
-                .await;
-            // GH #62: index the instantiation's provenance (FIFO — the upsert
-            // above created the row).
-            if let Some(prov) = sd.provenance.clone() {
-                let _ = log_tx
-                    .send(
-                        crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
-                            path: sd.absolute_path.clone(),
-                            provenance: prov,
-                        },
-                    )
-                    .await;
-            }
-            continue;
-        }
-
-        let spawned = match factory.spawn_cell(
-            sd.absolute_path.clone(),
-            sd.params.clone(),
-            outputs_tx.clone(),
-            sd.final_path.clone(),
-            contract_view,
-            inbox_self_tx.clone(),
-            mut_idle_timeout,
-            mut_cell_timeout,
-            // P3-B-plumb-2: resolve the active B-backstop from the per-cell
-            // `cell.message_timeout` (substituted config.json) against the colony
-            // `message_timeout_default_ms`. `>0` → backstop, `0`/`-1` → None.
-            crate::resolve_message_timeout(sd.message_timeout, message_timeout_default_ms),
-            blob_store.clone(),
-            sd.mailbox_size.unwrap_or(mailbox_default_capacity),
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, path = %sd.absolute_path.as_str(), "spawn_cell failed");
-                // Befund 8: spurless reject — sweep the renamed-but-unregistered
-                // staged dirs + staging so no stranded directory poisons an
-                // identical follow-up mutation (commit-as-resume).
-                sweep_reject_residue(&staged, registry, root, &id);
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = log_tx
-                    .send(crate::persist::writer::ColonyWriteOp::MutationLogUpdate {
-                        id: id.clone(),
-                        status: "failed".into(),
-                        committed_at: now_spawn,
-                        failure_reason: Some(format!("spawn: {e}")),
-                        ack: Some(tx),
-                    })
-                    .await;
-                let _ = rx.await;
-                return MutationOutcome::Rejected {
-                    id: Some(id),
-                    error_code: "spawn".into(),
-                    details: e,
-                };
-            }
-        };
-
-        // Phase-13-K-2: branch per CellKind. Active → DIRECT insert (stateless,
-        // status Awake). Dormant → DIRECT insert (stateful, status
-        // NotYetSpawned). NO self-send (correction 2) — the mutation arm holds
-        // &mut registry, and ColonyMsg::Register/RegisterDormant would block the
-        // select! loop.
-        // GH #169: a relocation carries the identity it already had. A path is
-        // a cell's identity everywhere else, so this is the one place where a
-        // change of address must NOT read as a new cell — the registry row was
-        // moved, not re-inserted, and a fresh UUID here would leave the row and
-        // the RAM entry disagreeing about who lives at the path.
-        let cell_id = sd
-            .relocation
-            .as_ref()
-            .map(|r| r.cell_id)
-            .unwrap_or_else(Uuid::now_v7);
-        match spawned {
-            crate::SpawnedCellKind::Active {
-                sender,
-                join,
-                peace_rx,
-                // Phase-13.5 Lifecycle-3b Task 4 (F2): stored in the registry so
-                // the recompute-hook can fire a peace-stop on disconnect.
-                stop_tx,
-                death_ack_rx,
-                // Paket-3 P3-B-restart: forwarded to the watcher so a backstop
-                // death of THIS spawned cell classifies as DeathKind::Backstop.
-                backstop_rx,
-                respawn,
-            } => {
-                let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
-                // Stateless/long-running: status stays Awake → no wake mechanic
-                // (F1-KH2 Schicht 2: a stray parked delivery dead-letters loudly).
-                let wake: Option<crate::WakeFn> = None;
-                registry.insert(
-                    sd.absolute_path.clone(),
-                    RegistryEntry {
-                        handle: handle_actor,
-                        respawn,
-                        wake,
-                        restart_count: 0,
-                        restart_limit: DEFAULT_RESTART_LIMIT,
-                        cell_id,
-                        cell_type: sd.template.clone(),
-                        status: CellStatus::Awake,
-                        // Active = eager kind → eager re-spawn on reconnect.
-                        eager_on_reconnect: true,
-                        // Mutation-spawn = fresh spawn → active (spawn = active).
-                        active: true,
-                        failed: false,
-                        stop_tx: Some(stop_tx),
-                        death_ack_rx: Some(death_ack_rx),
-                    },
-                );
-                // Watcher for CellDied events — same wiring as handle_register.
-                spawn_watcher(
-                    inbox_self_tx,
-                    sd.absolute_path.clone(),
-                    join,
-                    peace_rx,
-                    backstop_rx,
-                );
-            }
-            crate::SpawnedCellKind::Dormant {
-                sender,
-                receiver,
-                wake,
-                // Phase-13.5 Lifecycle-3b Task 4: dropped — a dormant cell has no
-                // running task. A wake spawns a fresh task with its own stop pair;
-                // before wake a disconnect just flips `active=false` (Task-4.2).
-                stop_tx: _,
-                death_ack_rx: _,
-                respawn,
-            } => {
-                let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
-                registry.insert(
-                    sd.absolute_path.clone(),
-                    RegistryEntry {
-                        handle: handle_actor,
-                        respawn,
-                        // Lazy kind: the factory's REAL wake (wake-on-message).
-                        wake: Some(wake),
-                        restart_count: 0,
-                        restart_limit: DEFAULT_RESTART_LIMIT,
-                        cell_id,
-                        cell_type: sd.template.clone(),
-                        status: CellStatus::NotYetSpawned { receiver },
-                        // Dormant = lazy kind → reconnect flips active only.
-                        eager_on_reconnect: false,
-                        // Mutation-spawn = fresh spawn → active (spawn = active).
-                        active: true,
-                        failed: false,
-                        stop_tx: None,
-                        death_ack_rx: None,
-                    },
-                );
-                // NO spawn_watcher — cell-task is parked, no join handle yet.
-                // First wake-pre-send (route_with_log, 13-I-1) starts the task
-                // + watcher analogously to the bootstrap path.
-            }
-        }
-
-        // Hardening Slice 1 (Task 1.4): registration succeeded (both Active and
-        // Dormant arms inserted above) → register the per-cell contract data
-        // for the 14-B post-state live source.
-        node_contracts.insert(sd.absolute_path.clone(), node_contract);
-
-        // Writer-Op (fire-and-forget — durable by FIFO before committed-update).
-        let _ = log_tx
-            .send(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
-                path: sd.absolute_path.clone(),
-                cell_id: cell_id.to_string(),
-                cell_type: sd.template.clone(),
-                created_at: now_spawn,
-                updated_at: now_spawn,
-            })
-            .await;
-        // GH #62: index the instantiation's provenance (FIFO — the upsert above
-        // created the row).
-        if let Some(prov) = sd.provenance.clone() {
-            let _ = log_tx
-                .send(
-                    crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
-                        path: sd.absolute_path.clone(),
-                        provenance: prov,
-                    },
-                )
-                .await;
-        }
-    }
-
     // Apply sequence step 10 (A5 atomicity restructure): edge ops are NO LONGER
     // fire-and-forget. Instead we (1) apply edge changes IN-RAM (needed for the
     // recompute below) while tracking rollback info, and (2) collect the matching
@@ -4530,6 +4302,12 @@ pub(crate) async fn handle_mutation(
     // Rollback tracking for the in-RAM edge changes.
     let mut inserted_edge_ids: Vec<Uuid> = Vec::new();
     let mut removed_edges_saved: Vec<crate::edge_table::Edge> = Vec::new();
+    // GH #276: the paths this mutation registers, for the rollback of the two
+    // runtime rejects that come AFTER step 9 (stop-wiring guard, death-ack
+    // term-timeout). A relocated node is deliberately absent — its directory and
+    // its registry row moved in step 7b, which is a live-tree effect outside the
+    // rollback window; unregistering it would lose the cell rather than restore it.
+    let mut registered_by_this_mutation: Vec<Path> = Vec::new();
     // Paths directly involved in this mutation's edge ops (recompute seeds).
     let mut involved: Vec<Path> = Vec::new();
     // Paket 6 Block D: single-cell `add_nodes`-Resume targets are direct
@@ -4540,9 +4318,9 @@ pub(crate) async fn handle_mutation(
 
     // Apply sequence step 9b (Paket-2 T4): swap_nodes graph-swap lowering.
     //
-    // Runs AFTER Step 9's registry.insert loop (t3 already staged + spawned +
-    // registered via the SAME machinery as add_nodes) and feeds the EXISTING
-    // Step-10 edge buffers (`edges` / `write_buffer` / `inserted_edge_ids` /
+    // Runs on the staged t3 (GH #276: its registration follows in step 9, below
+    // the post-state validations — the swing needs the path, not the entry) and
+    // feeds the EXISTING Step-10 edge buffers (`edges` / `write_buffer` / `inserted_edge_ids` /
     // `removed_edges_saved` / `involved`). For each swap entry it resolves
     // t2 = scope+match.name and t3 = scope+with.name, then swings every external
     // edge of t2 onto t3 via the pure T3 helper `plan_edge_swing`:
@@ -4618,10 +4396,10 @@ pub(crate) async fn handle_mutation(
     // carried verbatim" — so it is one function, and the two call-sites are what
     // give it its two meanings.
     //
-    // Runs after step 7b did the rename and step 9 registered the cell at its
-    // new address, and feeds the same step-10 buffers, so the whole relocation
-    // is one commit: there is no instant at which the lane is wired to both
-    // addresses or to neither.
+    // Runs after step 7b did the rename and before step 9 registers the cell at
+    // its new address, and feeds the same step-10 buffers, so the whole
+    // relocation is one commit: there is no instant at which the lane is wired to
+    // both addresses or to neither.
     //
     // Only edges naming the old path EXACTLY are touched, which is
     // `plan_edge_swing`'s existing rule and here also a boundary: a move of a
@@ -4675,8 +4453,9 @@ pub(crate) async fn handle_mutation(
     //     spawned (mirroring `bootstrap_apply::register_inactive_non_spawned`: a
     //     real respawn from `build_boot_inactive_respawn` for eager kinds, else an
     //     inert fallback; `active=false`, `NotYetSpawned`, NO `spawn_watcher`),
-    //     plus a fire-and-forget `UpsertRegistry` write-op like the single-cell
-    //     spawn loop;
+    //     plus a buffered `UpsertRegistry` write-op like the single-cell spawn
+    //     loop — that half lives in step 9c(1), below the post-state validations
+    //     and beside the spawn loop it mirrors (GH #276);
     //   - every MISSING hive marker is registered in `hive_scopes` (in-memory) +
     //     an `InsertHiveScope` write-op into the SAME A5 `write_buffer`;
     //   - every EXISTING node + EXISTING hive is left untouched (cell_id /
@@ -4690,243 +4469,11 @@ pub(crate) async fn handle_mutation(
     // internal edges (F4 resume meaning). Without a connecting incoming edge the
     // subtree root stays inactive (no eager spawn) until a later `add_edges`.
     for subtree in &staged_subtrees {
-        // (1) Inactive-non-spawned registration per MISSING spawnable (non-hive)
-        // cell — flattened across the rename-roots' staged sub-trees.
+        // (1a) GH #276: the MISSING cells are REGISTERED in step 9c(1), after the
+        // two post-state validations (a rejected mutation must register nothing).
+        // The edge ops of this step already have to reach them, so their paths are
+        // seeded into the recompute here, where the rest of the subtree seeds it.
         for cell in subtree.rename_roots.iter().flat_map(|r| r.cells.iter()) {
-            let factory = factories.get(&cell.cell_type).cloned();
-            // Idle-timeout mapping mirrors `register_inactive_non_spawned` and the
-            // single-cell spawn loop: `cell.timeout == 0` → idle-default (or the
-            // per-cell `idle_timeout_ms` override); other values get NO idle timer.
-            let idle_timeout = match cell.cell_timeout {
-                0 => Some(std::time::Duration::from_millis(
-                    cell.idle_timeout_ms.unwrap_or(idle_default_ms),
-                )),
-                _ => None,
-            };
-            // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
-            // BEFORE the subtree reconnect-hook captures this `ContractView`, so a
-            // reconnect-respawned subtree cell carries the resolved flag.
-            let mut contract_view = cell.contract_view.clone();
-            contract_view.validate_emits =
-                crate::bootstrap_apply::resolve_validate_emits(strict_validation);
-            // F1-KH2 kind discriminator: declared on the trait, so the kind is
-            // known WITHOUT building a task (an eager `spawn_cell` would be a
-            // real transient side effect — the same hazard the P3-C1 activity
-            // gate avoids on the single-cell path).
-            let is_lazy = factory.as_ref().map(|f| f.is_lazy()).unwrap_or(false);
-            let real_respawn = factory.as_ref().filter(|_| !is_lazy).and_then(|f| {
-                f.clone().build_boot_inactive_respawn(
-                    cell.absolute_path.clone(),
-                    cell.params.clone(),
-                    outputs_tx.clone(),
-                    cell.final_path.clone(),
-                    contract_view.clone(),
-                    inbox_self_tx.clone(),
-                    idle_timeout,
-                    cell.cell_timeout,
-                    // P3-B-plumb-1: behavior-neutral — message_timeout resolved later.
-                    None,
-                    blob_store.clone(),
-                    cell.mailbox_size.unwrap_or(mailbox_default_capacity),
-                )
-            });
-            // F1-KH2 kind split (pre-R12 fix): the old path installed an INERT
-            // WakeFn for EVERY subtree cell — first delivery to a lazy (Dormant)
-            // cell after the R12 same-mutation activation dropped the parked
-            // receiver (silent loss + false `Awake`). Eager kinds keep the
-            // parked-throwaway shape (reconnect re-spawns via `respawn`); lazy
-            // kinds now get the SAME real Hot/Cold wiring as the single-cell
-            // `spawn_cell` path: real mailbox pair + the factory's WakeFn
-            // (wake-on-message after the recompute reconnects them).
-            let (handle_actor, parked_receiver, wake, respawn, eager_on_reconnect): (
-                ActorHandle,
-                tokio::sync::mpsc::Receiver<meclaw_core::Message>,
-                Option<crate::WakeFn>,
-                crate::RespawnFn,
-                bool,
-            ) = if let Some(real_respawn) = real_respawn {
-                // EAGER kind: parked throwaway pair, never used while inactive
-                // (inactive-routing short-circuits); reconnect calls `respawn`.
-                // No wake mechanic — a stray delivery dead-letters loudly.
-                let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-                (
-                    ActorHandle::new(cell.absolute_path.clone(), sender),
-                    receiver,
-                    None,
-                    real_respawn,
-                    true,
-                )
-            } else if is_lazy {
-                let spawned = factory.map(|f| {
-                    f.spawn_cell(
-                        cell.absolute_path.clone(),
-                        cell.params.clone(),
-                        outputs_tx.clone(),
-                        cell.final_path.clone(),
-                        contract_view.clone(),
-                        inbox_self_tx.clone(),
-                        idle_timeout,
-                        cell.cell_timeout,
-                        crate::resolve_message_timeout(
-                            cell.message_timeout,
-                            message_timeout_default_ms,
-                        ),
-                        blob_store.clone(),
-                        cell.mailbox_size.unwrap_or(mailbox_default_capacity),
-                    )
-                });
-                match spawned {
-                    Some(Ok(crate::SpawnedCellKind::Dormant {
-                        sender,
-                        receiver,
-                        wake,
-                        // Dormant placeholder stop wiring belongs to the PRE-wake
-                        // state — dropped exactly like the single-cell Dormant arm.
-                        stop_tx: _,
-                        death_ack_rx: _,
-                        respawn,
-                    })) => (
-                        ActorHandle::new(cell.absolute_path.clone(), sender),
-                        receiver,
-                        // Lazy kind: the factory's REAL wake (wake-on-message).
-                        Some(wake),
-                        respawn,
-                        false,
-                    ),
-                    Some(Ok(crate::SpawnedCellKind::Active {
-                        sender: _,
-                        join: _,
-                        peace_rx: _,
-                        stop_tx,
-                        death_ack_rx: _,
-                        backstop_rx: _,
-                        respawn,
-                    })) => {
-                        // Unreachable in practice: every eager built-in implements
-                        // `build_boot_inactive_respawn`. Best-effort: peace-stop the
-                        // transient task and register the eager parked shape with
-                        // the REAL respawn so a reconnect still works.
-                        tracing::error!(
-                            path = %cell.absolute_path.as_str(),
-                            "subtree spawn: factory returned Active without a \
-                             boot-inactive hook — stopping the transient task"
-                        );
-                        let _ = stop_tx.send(());
-                        let (sender, receiver) =
-                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-                        (
-                            ActorHandle::new(cell.absolute_path.clone(), sender),
-                            receiver,
-                            None,
-                            respawn,
-                            true,
-                        )
-                    }
-                    Some(Err(e)) => {
-                        // Params were validated at staging (parser invariant) — a
-                        // spawn error here is exceptional. Register the inert
-                        // fallback; deliveries fail LOUDLY (defense layer).
-                        tracing::error!(
-                            error = %e,
-                            path = %cell.absolute_path.as_str(),
-                            "subtree spawn_cell failed — registering inert fallback"
-                        );
-                        let (sender, receiver) =
-                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-                        (
-                            ActorHandle::new(cell.absolute_path.clone(), sender),
-                            receiver,
-                            None,
-                            subtree_inert_respawn(),
-                            false,
-                        )
-                    }
-                    None => {
-                        // `is_lazy == true` implies the factory exists — defensive only.
-                        tracing::error!(
-                            path = %cell.absolute_path.as_str(),
-                            cell_type = %cell.cell_type,
-                            "subtree spawn: no factory — registering inert fallback"
-                        );
-                        let (sender, receiver) =
-                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-                        (
-                            ActorHandle::new(cell.absolute_path.clone(), sender),
-                            receiver,
-                            None,
-                            subtree_inert_respawn(),
-                            false,
-                        )
-                    }
-                }
-            } else {
-                // Eager kind WITHOUT a boot-inactive hook (or factory missing):
-                // no task is built; after a reconnect such a cell stays parked
-                // and deliveries dead-letter loudly (`cell_inactive`, defense
-                // layer) — never silent loss.
-                let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
-                (
-                    ActorHandle::new(cell.absolute_path.clone(), sender),
-                    receiver,
-                    None,
-                    subtree_inert_respawn(),
-                    false,
-                )
-            };
-            let cell_id = Uuid::now_v7();
-            registry.insert(
-                cell.absolute_path.clone(),
-                RegistryEntry {
-                    handle: handle_actor,
-                    respawn,
-                    wake,
-                    restart_count: 0,
-                    restart_limit: DEFAULT_RESTART_LIMIT,
-                    cell_id,
-                    cell_type: cell.cell_type.clone(),
-                    status: CellStatus::NotYetSpawned {
-                        receiver: parked_receiver,
-                    },
-                    eager_on_reconnect,
-                    // Parentless subtree → inactive until a later add_edges connects it.
-                    active: false,
-                    failed: false,
-                    stop_tx: None,
-                    death_ack_rx: None,
-                },
-            );
-            // Hardening Slice 1 (Task 1.4): registration succeeded → register
-            // the per-cell contract data for the 14-B post-state live source.
-            node_contracts.insert(
-                cell.absolute_path.clone(),
-                NodeContract {
-                    header_view: cell.header_view.clone(),
-                    emits: contract_view.emits.clone(),
-                    validate_emits: contract_view.validate_emits,
-                },
-            );
-            // Writer-Op (fire-and-forget — durable by FIFO before committed-update).
-            let _ = log_tx
-                .send(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
-                    path: cell.absolute_path.clone(),
-                    cell_id: cell_id.to_string(),
-                    cell_type: cell.cell_type.clone(),
-                    created_at: now_spawn,
-                    updated_at: now_spawn,
-                })
-                .await;
-            // GH #62: every nested subtree cell indexes the subtree template it
-            // came from (FIFO — the upsert above created the row).
-            if let Some(prov) = cell.provenance.clone() {
-                let _ = log_tx
-                    .send(
-                        crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
-                            path: cell.absolute_path.clone(),
-                            provenance: prov,
-                        },
-                    )
-                    .await;
-            }
             involved.push(cell.absolute_path.clone());
         }
         // (2) MISSING hive-scope markers: in-memory + InsertHiveScope into the A5
@@ -5247,6 +4794,18 @@ pub(crate) async fn handle_mutation(
         for edge in std::mem::take(&mut removed_edges_saved) {
             edges.insert(edge);
         }
+        // GH #276: nothing is registered yet (step 9 runs below), so the only
+        // residue is on disk — the staged directories renamed in by step 7 — and
+        // the `in_flight` log row the caller would otherwise be left with.
+        sweep_reject_residue(
+            &staged,
+            &staged_subtrees,
+            registry,
+            &registered_by_this_mutation,
+            root,
+            &id,
+        );
+        terminalize_apply_reject(log_tx, &id, format!("{err:?}")).await;
         return MutationOutcome::Rejected {
             id: Some(id),
             error_code: err.error_code().into(),
@@ -5274,11 +4833,637 @@ pub(crate) async fn handle_mutation(
         for edge in std::mem::take(&mut removed_edges_saved) {
             edges.insert(edge);
         }
+        // GH #276: same as the drain check above — nothing registered, staged
+        // directories swept, log row terminalized.
+        sweep_reject_residue(
+            &staged,
+            &staged_subtrees,
+            registry,
+            &registered_by_this_mutation,
+            root,
+            &id,
+        );
+        terminalize_apply_reject(log_tx, &id, format!("{err:?}")).await;
         return MutationOutcome::Rejected {
             id: Some(id),
             error_code: err.error_code().into(),
             details: format!("{err:?}"),
         };
+    }
+
+    // Apply sequence step 9: cell spawn + DIRECT registry.insert (NO self-send).
+    // correction 2: the Mutation arm already holds `&mut registry`. A
+    // self-send (`inbox_self_tx.send(ColonyMsg::Register).await`) would deadlock
+    // because the select! loop cannot process its own message while the Mutation
+    // arm is still executing. Direct in-memory insert + buffered UpsertRegistry
+    // write-op instead.
+    //
+    // GH #276: this loop runs HERE — after the two post-state validations above,
+    // which are the last checks that judge the DIFF ITSELF — so neither of them
+    // can leave a registered cell behind. They used to run after this loop, and a
+    // `required_drain_missing` or `hive_contract` reject left the node half of the
+    // diff live, registered and addressable while the caller was told nothing had
+    // happened. Rejects still follow: this loop's own two spawn arms, and the two
+    // RUNTIME conditions of the disconnect below (stop-wiring guard, death-ack
+    // term-timeout). None of those can be hoisted above a spawn — they are about
+    // what happens when the diff is applied, not about what the diff says — so
+    // they roll the registrations back instead.
+    for sd in &staged {
+        let factory = match factories.get(&sd.template).cloned() {
+            Some(f) => f,
+            None => {
+                // Should be impossible: validate_post_state checked template_missing.
+                tracing::error!(
+                    template = %sd.template,
+                    "factory disappeared between validate and spawn"
+                );
+                // Befund 8: spurless reject — sweep the renamed-but-unregistered
+                // staged dirs + staging before returning. GH #276: the edge ops
+                // of steps 9b/9c/10 already stand in RAM at this point and the
+                // earlier iterations of this loop are registered, so both come
+                // out again — the write_buffer is discarded by returning.
+                for eid in &inserted_edge_ids {
+                    edges.remove(eid);
+                }
+                for edge in std::mem::take(&mut removed_edges_saved) {
+                    edges.insert(edge);
+                }
+                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
+                    .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                terminalize_apply_reject(
+                    log_tx,
+                    &id,
+                    format!("factory missing for {}", sd.template),
+                )
+                .await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: "spawn".into(),
+                    details: format!("factory missing for {}", sd.template),
+                };
+            }
+        };
+        // Phase-13.5 Lifecycle-3b Task 7 (A2): mutation-spawn timeout mapping,
+        // mirroring `bootstrap_apply.rs` EXACTLY. `cell.timeout == 0` →
+        // idle-default (or per-cell `idle_timeout_ms` override); other values
+        // (`-1` persistent / runs forever, `> 0` one-shot) get NO idle timer.
+        // Inputs come from `StagedDir.cell_timeout` / `StagedDir.idle_timeout_ms`
+        // (substituted `config.json`), replacing the former hardcode (13-L-1).
+        let mut_cell_timeout: i64 = sd.cell_timeout;
+        let mut_idle_timeout = match sd.cell_timeout {
+            0 => Some(std::time::Duration::from_millis(
+                sd.idle_timeout_ms.unwrap_or(idle_default_ms),
+            )),
+            _ => None,
+        };
+
+        // Paket-3 P3-C1 (P8 fix): activity gate before the EAGER spawn.
+        // If this cell would be INACTIVE in the POST-STATE edge view (e.g. its
+        // diff `add_edges` wires it under an inactive parent hive) AND it is an
+        // EAGER kind (the factory offers a real `build_boot_inactive_respawn` —
+        // the SAME discriminator the bootstrap boot-inactive path uses), do NOT
+        // eager-spawn it: registering it inactive + `NotYetSpawned` WITHOUT
+        // building the task avoids the transient real side effect (mcp
+        // subprocess / proxy connection) that step 10b would peace-stop a
+        // sub-second later. We mirror `bootstrap_apply::register_inactive_non_spawned`
+        // EXACTLY: the real respawn carries `eager_on_reconnect == true`, so a
+        // later `add_edges` reconnect's `(entry.respawn)()` (step 10b) spawns
+        // the task immediately. A cell that would be ACTIVE (Grace — pure
+        // edge-less `add_nodes` under an active/root scope), or a lazy/Dormant
+        // kind (`build_boot_inactive_respawn` returns `None`, never eager-spawns
+        // anyway), falls through to the unchanged `spawn_cell` path below.
+        // CRITICAL — Grace preservation (spec Z.1463ff): the gate fires ONLY for
+        // a cell that is CONNECTED in the post-state (a diff edge reaches it) but
+        // derived inactive because an ancestor hive is inactive. An edge-LESS
+        // fresh cell has no post-state edge → `is_connected == false` →
+        // `compute_active == false` too, but that is Grace-active (spawn), NOT a
+        // disconnect. Gating on `is_connected && !compute_active` keeps Grace.
+        let connected = crate::connectivity::is_connected(&sd.absolute_path, &post_state_view);
+        let would_be_inactive = connected
+            && !crate::connectivity::compute_active(
+                &sd.absolute_path,
+                &post_state_view,
+                hive_scopes,
+            );
+        // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
+        // BEFORE either spawn path constructs its RespawnFn / reconnect-hook
+        // closure (both `build_boot_inactive_respawn` and `spawn_cell` clone this
+        // `ContractView`), so crash-restarted AND reconnect-respawned mutation
+        // cells carry the resolved flag.
+        let mut contract_view = sd.contract_view.clone();
+        contract_view.validate_emits =
+            crate::bootstrap_apply::resolve_validate_emits(strict_validation);
+        // Hardening Slice 1 (Task 1.4): per-cell contract data for the colony's
+        // `node_contracts` map — built BEFORE `contract_view` moves into
+        // `spawn_cell`, inserted AFTER the registry insert of each spawn path
+        // (the point where the arm knows registration succeeded).
+        let node_contract = NodeContract {
+            header_view: sd.header_view.clone(),
+            emits: contract_view.emits.clone(),
+            validate_emits: contract_view.validate_emits,
+        };
+        if would_be_inactive
+            && let Some(real_respawn) = factory.clone().build_boot_inactive_respawn(
+                sd.absolute_path.clone(),
+                sd.params.clone(),
+                outputs_tx.clone(),
+                sd.final_path.clone(),
+                contract_view.clone(),
+                inbox_self_tx.clone(),
+                mut_idle_timeout,
+                mut_cell_timeout,
+                crate::resolve_message_timeout(sd.message_timeout, message_timeout_default_ms),
+                blob_store.clone(),
+                sd.mailbox_size.unwrap_or(mailbox_default_capacity),
+            )
+        {
+            // Fresh throwaway mailbox pair: parked in `NotYetSpawned`, never used
+            // while the cell stays inactive (inactive-routing short-circuits).
+            let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+            let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
+            // No wake mechanic: an eager cell is re-spawned (not woken). A stray
+            // delivery dead-letters loudly (F1-KH2 Schicht 2).
+            let wake: Option<crate::WakeFn> = None;
+            // GH #169: a relocation carries the identity it already had. A path is
+            // a cell's identity everywhere else, so this is the one place where a
+            // change of address must NOT read as a new cell — the registry row was
+            // moved, not re-inserted, and a fresh UUID here would leave the row and
+            // the RAM entry disagreeing about who lives at the path.
+            let cell_id = sd
+                .relocation
+                .as_ref()
+                .map(|r| r.cell_id)
+                .unwrap_or_else(Uuid::now_v7);
+            registry.insert(
+                sd.absolute_path.clone(),
+                RegistryEntry {
+                    handle: handle_actor,
+                    respawn: real_respawn,
+                    wake,
+                    restart_count: 0,
+                    restart_limit: DEFAULT_RESTART_LIMIT,
+                    cell_id,
+                    cell_type: sd.template.clone(),
+                    status: CellStatus::NotYetSpawned { receiver },
+                    // Eager kind → eager re-spawn on reconnect (step 10b).
+                    eager_on_reconnect: true,
+                    // POST-STATE derives this cell inactive → register inactive,
+                    // NO task. Step 10b confirms (no flip) until a reconnect.
+                    active: false,
+                    failed: false,
+                    stop_tx: None,
+                    death_ack_rx: None,
+                },
+            );
+            // Hardening Slice 1 (Task 1.4): registration succeeded → register
+            // the per-cell contract data for the 14-B post-state live source.
+            node_contracts.insert(sd.absolute_path.clone(), node_contract);
+            if sd.relocation.is_none() {
+                registered_by_this_mutation.push(sd.absolute_path.clone());
+            }
+            // GH #276: buffered like every other durable effect of the apply
+            // stage, so a later reject discards the row by simply not flushing.
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
+                path: sd.absolute_path.clone(),
+                cell_id: cell_id.to_string(),
+                cell_type: sd.template.clone(),
+                created_at: now_spawn,
+                updated_at: now_spawn,
+            });
+            // GH #62: index the instantiation's provenance (FIFO — the upsert
+            // above created the row).
+            if let Some(prov) = sd.provenance.clone() {
+                write_buffer.push(
+                    crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                        path: sd.absolute_path.clone(),
+                        provenance: prov,
+                    },
+                );
+            }
+            continue;
+        }
+
+        let spawned = match factory.spawn_cell(
+            sd.absolute_path.clone(),
+            sd.params.clone(),
+            outputs_tx.clone(),
+            sd.final_path.clone(),
+            contract_view,
+            inbox_self_tx.clone(),
+            mut_idle_timeout,
+            mut_cell_timeout,
+            // P3-B-plumb-2: resolve the active B-backstop from the per-cell
+            // `cell.message_timeout` (substituted config.json) against the colony
+            // `message_timeout_default_ms`. `>0` → backstop, `0`/`-1` → None.
+            crate::resolve_message_timeout(sd.message_timeout, message_timeout_default_ms),
+            blob_store.clone(),
+            sd.mailbox_size.unwrap_or(mailbox_default_capacity),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, path = %sd.absolute_path.as_str(), "spawn_cell failed");
+                // Befund 8: spurless reject — sweep the renamed-but-unregistered
+                // staged dirs + staging so no stranded directory poisons an
+                // identical follow-up mutation (commit-as-resume). GH #276: same
+                // in-RAM rollback as the factory-missing arm above.
+                for eid in &inserted_edge_ids {
+                    edges.remove(eid);
+                }
+                for edge in std::mem::take(&mut removed_edges_saved) {
+                    edges.insert(edge);
+                }
+                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
+                    .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                terminalize_apply_reject(log_tx, &id, format!("spawn: {e}")).await;
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: "spawn".into(),
+                    details: e,
+                };
+            }
+        };
+
+        // Phase-13-K-2: branch per CellKind. Active → DIRECT insert (stateless,
+        // status Awake). Dormant → DIRECT insert (stateful, status
+        // NotYetSpawned). NO self-send (correction 2) — the mutation arm holds
+        // &mut registry, and ColonyMsg::Register/RegisterDormant would block the
+        // select! loop.
+        // GH #169: a relocation carries the identity it already had. A path is
+        // a cell's identity everywhere else, so this is the one place where a
+        // change of address must NOT read as a new cell — the registry row was
+        // moved, not re-inserted, and a fresh UUID here would leave the row and
+        // the RAM entry disagreeing about who lives at the path.
+        let cell_id = sd
+            .relocation
+            .as_ref()
+            .map(|r| r.cell_id)
+            .unwrap_or_else(Uuid::now_v7);
+        match spawned {
+            crate::SpawnedCellKind::Active {
+                sender,
+                join,
+                peace_rx,
+                // Phase-13.5 Lifecycle-3b Task 4 (F2): stored in the registry so
+                // the recompute-hook can fire a peace-stop on disconnect.
+                stop_tx,
+                death_ack_rx,
+                // Paket-3 P3-B-restart: forwarded to the watcher so a backstop
+                // death of THIS spawned cell classifies as DeathKind::Backstop.
+                backstop_rx,
+                respawn,
+            } => {
+                let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
+                // Stateless/long-running: status stays Awake → no wake mechanic
+                // (F1-KH2 Schicht 2: a stray parked delivery dead-letters loudly).
+                let wake: Option<crate::WakeFn> = None;
+                registry.insert(
+                    sd.absolute_path.clone(),
+                    RegistryEntry {
+                        handle: handle_actor,
+                        respawn,
+                        wake,
+                        restart_count: 0,
+                        restart_limit: DEFAULT_RESTART_LIMIT,
+                        cell_id,
+                        cell_type: sd.template.clone(),
+                        status: CellStatus::Awake,
+                        // Active = eager kind → eager re-spawn on reconnect.
+                        eager_on_reconnect: true,
+                        // Mutation-spawn = fresh spawn → active (spawn = active).
+                        active: true,
+                        failed: false,
+                        stop_tx: Some(stop_tx),
+                        death_ack_rx: Some(death_ack_rx),
+                    },
+                );
+                // Watcher for CellDied events — same wiring as handle_register.
+                spawn_watcher(
+                    inbox_self_tx,
+                    sd.absolute_path.clone(),
+                    join,
+                    peace_rx,
+                    backstop_rx,
+                );
+            }
+            crate::SpawnedCellKind::Dormant {
+                sender,
+                receiver,
+                wake,
+                // Phase-13.5 Lifecycle-3b Task 4: dropped — a dormant cell has no
+                // running task. A wake spawns a fresh task with its own stop pair;
+                // before wake a disconnect just flips `active=false` (Task-4.2).
+                stop_tx: _,
+                death_ack_rx: _,
+                respawn,
+            } => {
+                let handle_actor = ActorHandle::new(sd.absolute_path.clone(), sender);
+                registry.insert(
+                    sd.absolute_path.clone(),
+                    RegistryEntry {
+                        handle: handle_actor,
+                        respawn,
+                        // Lazy kind: the factory's REAL wake (wake-on-message).
+                        wake: Some(wake),
+                        restart_count: 0,
+                        restart_limit: DEFAULT_RESTART_LIMIT,
+                        cell_id,
+                        cell_type: sd.template.clone(),
+                        status: CellStatus::NotYetSpawned { receiver },
+                        // Dormant = lazy kind → reconnect flips active only.
+                        eager_on_reconnect: false,
+                        // Mutation-spawn = fresh spawn → active (spawn = active).
+                        active: true,
+                        failed: false,
+                        stop_tx: None,
+                        death_ack_rx: None,
+                    },
+                );
+                // NO spawn_watcher — cell-task is parked, no join handle yet.
+                // First wake-pre-send (route_with_log, 13-I-1) starts the task
+                // + watcher analogously to the bootstrap path.
+            }
+        }
+
+        // Hardening Slice 1 (Task 1.4): registration succeeded (both Active and
+        // Dormant arms inserted above) → register the per-cell contract data
+        // for the 14-B post-state live source.
+        node_contracts.insert(sd.absolute_path.clone(), node_contract);
+        if sd.relocation.is_none() {
+            registered_by_this_mutation.push(sd.absolute_path.clone());
+        }
+
+        // GH #276: buffered (see the boot-inactive arm above).
+        write_buffer.push(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
+            path: sd.absolute_path.clone(),
+            cell_id: cell_id.to_string(),
+            cell_type: sd.template.clone(),
+            created_at: now_spawn,
+            updated_at: now_spawn,
+        });
+        // GH #62: index the instantiation's provenance (FIFO — the upsert above
+        // created the row).
+        if let Some(prov) = sd.provenance.clone() {
+            write_buffer.push(
+                crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                    path: sd.absolute_path.clone(),
+                    provenance: prov,
+                },
+            );
+        }
+    }
+
+    // Apply sequence step 9c(1): registration of the merge-staged SUBTREE cells,
+    // for the same reason and at the same point as the single-cell loop above.
+    for subtree in &staged_subtrees {
+        for cell in subtree.rename_roots.iter().flat_map(|r| r.cells.iter()) {
+            let factory = factories.get(&cell.cell_type).cloned();
+            // Idle-timeout mapping mirrors `register_inactive_non_spawned` and the
+            // single-cell spawn loop: `cell.timeout == 0` → idle-default (or the
+            // per-cell `idle_timeout_ms` override); other values get NO idle timer.
+            let idle_timeout = match cell.cell_timeout {
+                0 => Some(std::time::Duration::from_millis(
+                    cell.idle_timeout_ms.unwrap_or(idle_default_ms),
+                )),
+                _ => None,
+            };
+            // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
+            // BEFORE the subtree reconnect-hook captures this `ContractView`, so a
+            // reconnect-respawned subtree cell carries the resolved flag.
+            let mut contract_view = cell.contract_view.clone();
+            contract_view.validate_emits =
+                crate::bootstrap_apply::resolve_validate_emits(strict_validation);
+            // F1-KH2 kind discriminator: declared on the trait, so the kind is
+            // known WITHOUT building a task (an eager `spawn_cell` would be a
+            // real transient side effect — the same hazard the P3-C1 activity
+            // gate avoids on the single-cell path).
+            let is_lazy = factory.as_ref().map(|f| f.is_lazy()).unwrap_or(false);
+            let real_respawn = factory.as_ref().filter(|_| !is_lazy).and_then(|f| {
+                f.clone().build_boot_inactive_respawn(
+                    cell.absolute_path.clone(),
+                    cell.params.clone(),
+                    outputs_tx.clone(),
+                    cell.final_path.clone(),
+                    contract_view.clone(),
+                    inbox_self_tx.clone(),
+                    idle_timeout,
+                    cell.cell_timeout,
+                    // P3-B-plumb-1: behavior-neutral — message_timeout resolved later.
+                    None,
+                    blob_store.clone(),
+                    cell.mailbox_size.unwrap_or(mailbox_default_capacity),
+                )
+            });
+            // F1-KH2 kind split (pre-R12 fix): the old path installed an INERT
+            // WakeFn for EVERY subtree cell — first delivery to a lazy (Dormant)
+            // cell after the R12 same-mutation activation dropped the parked
+            // receiver (silent loss + false `Awake`). Eager kinds keep the
+            // parked-throwaway shape (reconnect re-spawns via `respawn`); lazy
+            // kinds now get the SAME real Hot/Cold wiring as the single-cell
+            // `spawn_cell` path: real mailbox pair + the factory's WakeFn
+            // (wake-on-message after the recompute reconnects them).
+            let (handle_actor, parked_receiver, wake, respawn, eager_on_reconnect): (
+                ActorHandle,
+                tokio::sync::mpsc::Receiver<meclaw_core::Message>,
+                Option<crate::WakeFn>,
+                crate::RespawnFn,
+                bool,
+            ) = if let Some(real_respawn) = real_respawn {
+                // EAGER kind: parked throwaway pair, never used while inactive
+                // (inactive-routing short-circuits); reconnect calls `respawn`.
+                // No wake mechanic — a stray delivery dead-letters loudly.
+                let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                (
+                    ActorHandle::new(cell.absolute_path.clone(), sender),
+                    receiver,
+                    None,
+                    real_respawn,
+                    true,
+                )
+            } else if is_lazy {
+                let spawned = factory.map(|f| {
+                    f.spawn_cell(
+                        cell.absolute_path.clone(),
+                        cell.params.clone(),
+                        outputs_tx.clone(),
+                        cell.final_path.clone(),
+                        contract_view.clone(),
+                        inbox_self_tx.clone(),
+                        idle_timeout,
+                        cell.cell_timeout,
+                        crate::resolve_message_timeout(
+                            cell.message_timeout,
+                            message_timeout_default_ms,
+                        ),
+                        blob_store.clone(),
+                        cell.mailbox_size.unwrap_or(mailbox_default_capacity),
+                    )
+                });
+                match spawned {
+                    Some(Ok(crate::SpawnedCellKind::Dormant {
+                        sender,
+                        receiver,
+                        wake,
+                        // Dormant placeholder stop wiring belongs to the PRE-wake
+                        // state — dropped exactly like the single-cell Dormant arm.
+                        stop_tx: _,
+                        death_ack_rx: _,
+                        respawn,
+                    })) => (
+                        ActorHandle::new(cell.absolute_path.clone(), sender),
+                        receiver,
+                        // Lazy kind: the factory's REAL wake (wake-on-message).
+                        Some(wake),
+                        respawn,
+                        false,
+                    ),
+                    Some(Ok(crate::SpawnedCellKind::Active {
+                        sender: _,
+                        join: _,
+                        peace_rx: _,
+                        stop_tx,
+                        death_ack_rx: _,
+                        backstop_rx: _,
+                        respawn,
+                    })) => {
+                        // Unreachable in practice: every eager built-in implements
+                        // `build_boot_inactive_respawn`. Best-effort: peace-stop the
+                        // transient task and register the eager parked shape with
+                        // the REAL respawn so a reconnect still works.
+                        tracing::error!(
+                            path = %cell.absolute_path.as_str(),
+                            "subtree spawn: factory returned Active without a \
+                             boot-inactive hook — stopping the transient task"
+                        );
+                        let _ = stop_tx.send(());
+                        let (sender, receiver) =
+                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                        (
+                            ActorHandle::new(cell.absolute_path.clone(), sender),
+                            receiver,
+                            None,
+                            respawn,
+                            true,
+                        )
+                    }
+                    Some(Err(e)) => {
+                        // Params were validated at staging (parser invariant) — a
+                        // spawn error here is exceptional. Register the inert
+                        // fallback; deliveries fail LOUDLY (defense layer).
+                        tracing::error!(
+                            error = %e,
+                            path = %cell.absolute_path.as_str(),
+                            "subtree spawn_cell failed — registering inert fallback"
+                        );
+                        let (sender, receiver) =
+                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                        (
+                            ActorHandle::new(cell.absolute_path.clone(), sender),
+                            receiver,
+                            None,
+                            subtree_inert_respawn(),
+                            false,
+                        )
+                    }
+                    None => {
+                        // `is_lazy == true` implies the factory exists — defensive only.
+                        tracing::error!(
+                            path = %cell.absolute_path.as_str(),
+                            cell_type = %cell.cell_type,
+                            "subtree spawn: no factory — registering inert fallback"
+                        );
+                        let (sender, receiver) =
+                            tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                        (
+                            ActorHandle::new(cell.absolute_path.clone(), sender),
+                            receiver,
+                            None,
+                            subtree_inert_respawn(),
+                            false,
+                        )
+                    }
+                }
+            } else {
+                // Eager kind WITHOUT a boot-inactive hook (or factory missing):
+                // no task is built; after a reconnect such a cell stays parked
+                // and deliveries dead-letter loudly (`cell_inactive`, defense
+                // layer) — never silent loss.
+                let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                (
+                    ActorHandle::new(cell.absolute_path.clone(), sender),
+                    receiver,
+                    None,
+                    subtree_inert_respawn(),
+                    false,
+                )
+            };
+            let cell_id = Uuid::now_v7();
+            registry.insert(
+                cell.absolute_path.clone(),
+                RegistryEntry {
+                    handle: handle_actor,
+                    respawn,
+                    wake,
+                    restart_count: 0,
+                    restart_limit: DEFAULT_RESTART_LIMIT,
+                    cell_id,
+                    cell_type: cell.cell_type.clone(),
+                    status: CellStatus::NotYetSpawned {
+                        receiver: parked_receiver,
+                    },
+                    eager_on_reconnect,
+                    // Parentless subtree → inactive until a later add_edges connects it.
+                    active: false,
+                    failed: false,
+                    stop_tx: None,
+                    death_ack_rx: None,
+                },
+            );
+            // Hardening Slice 1 (Task 1.4): registration succeeded → register
+            // the per-cell contract data for the 14-B post-state live source.
+            node_contracts.insert(
+                cell.absolute_path.clone(),
+                NodeContract {
+                    header_view: cell.header_view.clone(),
+                    emits: contract_view.emits.clone(),
+                    validate_emits: contract_view.validate_emits,
+                },
+            );
+            registered_by_this_mutation.push(cell.absolute_path.clone());
+            // GH #276: buffered (see the single-cell spawn loop above).
+            write_buffer.push(crate::persist::writer::ColonyWriteOp::UpsertRegistry {
+                path: cell.absolute_path.clone(),
+                cell_id: cell_id.to_string(),
+                cell_type: cell.cell_type.clone(),
+                created_at: now_spawn,
+                updated_at: now_spawn,
+            });
+            // GH #62: every nested subtree cell indexes the subtree template it
+            // came from (FIFO — the upsert above created the row).
+            if let Some(prov) = cell.provenance.clone() {
+                write_buffer.push(
+                    crate::persist::writer::ColonyWriteOp::SetRegistryProvenance {
+                        path: cell.absolute_path.clone(),
+                        provenance: prov,
+                    },
+                );
+            }
+        }
     }
 
     // Apply sequence step 10b (F1+F2, A3): connectivity recompute + disconnect.
@@ -5360,6 +5545,24 @@ pub(crate) async fn handle_mutation(
             for edge in std::mem::take(&mut removed_edges_saved) {
                 edges.insert(edge);
             }
+            // GH #276: this guard is a RUNTIME condition and cannot be hoisted
+            // above step 9, so the nodes this diff registered come out again
+            // here — otherwise a refused disconnect would leave a live,
+            // addressable cell the caller was told does not exist.
+            rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation).await;
+            sweep_reject_residue(
+                &staged,
+                &staged_subtrees,
+                registry,
+                &registered_by_this_mutation,
+                root,
+                &id,
+            );
+            let reason = format!(
+                "disconnect of Awake cell {} without live stop-wiring (interim guard)",
+                node.as_str()
+            );
+            terminalize_apply_reject(log_tx, &id, reason).await;
             return MutationOutcome::Rejected {
                 id: Some(id),
                 error_code: STOP_WIRING_UNAVAILABLE_ERROR_CODE.into(),
@@ -5515,12 +5718,28 @@ pub(crate) async fn handle_mutation(
                     }
                 }
                 // Discard write_buffer (never sent) → no durable effect at all.
-                // No durable committed update → recovery marks the in_flight row
-                // failed on next boot.
+                // GH #276: including the registry rows this diff would have
+                // written — they ride in the same buffer. Their in-RAM twins and
+                // the staged directories go here, and the log row is
+                // terminalized rather than left for the next boot's recovery:
+                // an operator reading the audit after a 422 must not find
+                // `in_flight`.
+                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
+                    .await;
+                sweep_reject_residue(
+                    &staged,
+                    &staged_subtrees,
+                    registry,
+                    &registered_by_this_mutation,
+                    root,
+                    &id,
+                );
+                let reason = format!("death-ack term-timeout disconnecting {}", node.as_str());
+                terminalize_apply_reject(log_tx, &id, reason.clone()).await;
                 return MutationOutcome::Rejected {
                     id: Some(id),
                     error_code: TERM_TIMEOUT_ERROR_CODE.into(),
-                    details: format!("death-ack term-timeout disconnecting {}", node.as_str()),
+                    details: reason,
                 };
             }
         }

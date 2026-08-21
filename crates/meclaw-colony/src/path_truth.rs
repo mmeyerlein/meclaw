@@ -50,7 +50,12 @@ pub fn resolve_cell_dir(root: &Path, scope: &str, name: &str) -> PathBuf {
 /// - 1 candidate  → that directory
 /// - 0 candidates → `root` itself (flat-layout fallback)
 /// - >1 candidates → `tracing::error!` + `root` fallback (broken topology)
-fn find_root_cell_dir(root: &Path) -> PathBuf {
+///
+/// `pub(crate)` since GH #324: the surface resolver needs the anchor itself, not
+/// a path built under it. It used to spell the anchor `root.join("main")` — a
+/// literal for something boot never required to be called `main`, so a colony
+/// rooted anywhere else served 404 for every surface. One resolver, one answer.
+pub(crate) fn find_root_cell_dir(root: &Path) -> PathBuf {
     let Ok(entries) = std::fs::read_dir(root) else {
         return root.to_path_buf();
     };

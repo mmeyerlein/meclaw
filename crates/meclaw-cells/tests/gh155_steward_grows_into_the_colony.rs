@@ -291,6 +291,50 @@ async fn the_steward_cannot_wire_its_own_mutation_lane() {
     h.shutdown().await;
 }
 
+/// GH #304 — the shape the mutator used to emit, asked of the real lane.
+///
+/// `{"swap_nodes": [{"name": …, "params": …}]}` was the decide path's output for
+/// the whole life of `steward@2.0.x`, and the validator has required
+/// `match.name` + `with` on every entry since long before that: the loop could
+/// not commit once, in either direction. The old shape is pinned here as a
+/// REFUSAL rather than left to history, because the defect class is a body
+/// authored against a validator nobody asked — and the only thing that makes
+/// this pin worth anything is that the question goes to `handle_mutation`
+/// itself.
+///
+/// `params` at the entry level is read by nothing, so the entry is refused for
+/// the missing `match.name` first; the diff would be inert even with one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_old_swap_nodes_shape_is_refused_by_the_mutation_lane() {
+    let Some(_) = shipped_steward() else {
+        return;
+    };
+    let td = tree();
+    let h = boot(&td).await;
+    grow_the_drain(&h).await;
+
+    let outcome = mutate(
+        &h,
+        json!({
+            "scope": "/",
+            "ctx": {},
+            "diff": {"swap_nodes": [{"name": "sink", "params": {"model": "test/model"}}]}
+        }),
+    )
+    .await;
+    match &outcome {
+        meclaw_colony::mutation::MutationOutcome::Rejected { error_code, .. } => {
+            assert_eq!(
+                error_code, "schema",
+                "the entry-level `params` shape is a schema refusal: {outcome:?}"
+            );
+        }
+        other => panic!("the shape the steward used to emit must not commit: {other:?}"),
+    }
+
+    h.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_grown_steward_is_silent_until_a_goal_is_enabled() {
     // The resting state, proven on a live colony rather than on the seed file:

@@ -1,4 +1,4 @@
-# `firewall@2.0.1`
+# `firewall@2.0.2`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -123,7 +123,7 @@ Every endpoint is the firewall HIVE (`params.ports` is empty): `in_turn` in, `pa
 
 | edge | job |
 |---|---|
-| ingress | names the lane (`hop.route == 'in_turn'`) and promotes the identity. **Without `context.channel` every surface shares the bucket `default` and is rate-limited as one.** |
+| ingress | names the lane (`hop.route == 'in_turn'`) and promotes **both** identity dimensions. **Without `context.channel` every surface shares the bucket `default` and is rate-limited as one.** Without `context.user_id` the second dimension is the empty string, so every `field: "user_id"` rule is decided against nothing: an `allow` row on that dimension then rejects every turn (`sender_not_allowed`, `allowlist:user_id`) and a `reject` row never fires. Both keys are declared on the lane in `params.contract` |
 | pass | the only edge into the agent. `delete_context` drops the parked copy of the turn. |
 | reject | the loud lane. `hop.reject_reason` + `hop.rule_id` say what happened; what the parent does with it — drain, log, refuse politely, ban — is the parent's decision. |
 

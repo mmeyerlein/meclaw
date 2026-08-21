@@ -67,6 +67,44 @@ of the wave: #258 and #259 came out of the review of #252, #260 out of building
   row is searchable in the FTS index the moment it lands.
 
 
+- **`memory-hive@2.2.1` can hand its remembered content over to another running
+  hive** ([#243](https://github.com/mmeyerlein/meclaw/issues/243)). *(Retroactive
+  entry, added by the 2026-08-21 audit: this shipped in 0.17.0 and no entry
+  announced it, while a later paragraph already spoke of the `in_import` lane as
+  if a reader knew it.)* The template ports are public contract, and this release
+  moved them: `memory-hive` went 2.1.0 → 2.2.1 and grew two accepted lanes,
+  `in_export` and `in_import`, one emitted lane, `dump`, and a twelfth interior
+  cell, `templates/memory-hive/porter/` — a `code` cell, no new Rust.
+
+  Until 2.1.0 there was no way out of a hive and no way into a running one: the
+  only substrate-native content path was the JSONL seeder, and that one is
+  birth-only. Every migration, every backup and every "benchmark against the same
+  remembered state" was a hand-built sqlite3 pipeline around the very boundary
+  #132 and #160 hold shut. `in_export` walks the fifteen content tables and emits
+  one part per table on `dump`, each carrying its store's schema header — a part
+  written to disk **is** a `seed/<table>.jsonl`, so the birth path and the
+  transfer path speak one format. The last part carries `hop.export_final`; a
+  document without it is incomplete and is not a backup. `in_import` takes one
+  such part into a **running** hive, idempotently: probe the key column, insert
+  only what is missing, so the same document applied twice leaves the same state.
+  The two store-keyed families (alias tables, refusal logs) arrive as
+  `set_alias` / `reject_pair`, the store's own upserts on the key it created —
+  the half of #243 the seeder cannot reach. The audience gate travels with the
+  rows: the export projects `audience_set`, `channel` and `speaker` explicitly,
+  and a part that lost one of them in transit is refused with nothing written.
+  This is the template-level answer to #243; #253 above is the substrate one.
+
+  **What a caller has to wire.** Four new `required_drains` pairings come with
+  the lanes (three pairings before, seven now): `in_export` → `dump`,
+  `in_export` → `reject`, `in_import` → `dump`, `in_import` → `reject`. Drain
+  `dump` with a **plain** `hop.route == 'dump'` edge — an edge that also tests
+  `dump_kind` reads as no drain under the probe. Undrained, an export runs, reads
+  the whole store and reaches nobody. Pinned by
+  `crates/meclaw-colony/tests/gh243_a_memory_can_leave_a_hive_and_arrive_in_another.rs`;
+  the lanes and their phases are documented in
+  `templates/memory-hive/README.md`.
+
+
 - **A `system.*` subtree can be revoked, not merely overwritten**
   ([#264](https://github.com/mmeyerlein/meclaw/issues/264)). `system.*` is durable
   state of the `llm` cell: one upsert per slot path, and no DELETE anywhere. A path

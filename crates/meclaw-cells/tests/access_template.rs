@@ -1247,3 +1247,228 @@ fn a_mutation_reaching_inside_the_broker_is_refused_by_the_real_validator() {
     )
     .expect("the documented wiring names the hive and must stay legal");
 }
+
+/// GH #307 — an interior edge that carries a route no cell in this hive ever
+/// emits is dead wiring, and dead wiring reads as a channel that carries
+/// something.
+///
+/// `access@2.0.0` shipped `./invoke -> ./vault` on `hop.route == 'vault'` plus
+/// the reply edge. `invoke`'s script calls `emit()` with four literal routes
+/// (`astore`, `ack`, `error`, `connect`), none of them computed, so neither edge
+/// could ever fire; the hive is sealed (`params.ports` is empty), so `./vault`
+/// was unaddressable from anywhere else too. The vault does not need them —
+/// `meclaw_cells::vault::attest`'s `a_vault_with_no_inbound_edges_attests` is
+/// the pin that removing them changes no behaviour, and the credential reaches
+/// the connector by the late-bound `.env` path the README documents.
+///
+/// The assertion is the general one rather than a ban on the string `vault`:
+/// for every edge leaving a CELL of this hive on a `hop.route` comparison, the
+/// route has to appear as a literal in that cell's own script. A door edge
+/// (`from: "."`) is exempt — its route is minted outside, by the caller's edge.
+#[test]
+fn every_route_edge_out_of_a_cell_names_a_route_that_cell_emits() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let cfg = read_json(&root.join("config.json"));
+    let edges = cfg["params"]["graph"]["edges"].as_array().unwrap();
+
+    let mut checked = 0usize;
+    for e in edges {
+        let Some(src) = e["from"].as_str().and_then(|f| f.strip_prefix("./")) else {
+            continue; // the hive's own door: the route was minted outside
+        };
+        let cond = e["condition"].as_str().unwrap_or_default();
+        for route in route_literals(cond) {
+            let src_cfg = read_json(&root.join(src).join("config.json"));
+            let script = src_cfg["params"]["script_inline"]
+                .as_str()
+                .unwrap_or_else(|| panic!("./{src} carries a route edge but runs no script"));
+            assert!(
+                script.contains(&format!("\"{route}\"")),
+                "./{src} -> {} fires on hop.route == '{route}', and ./{src} never \
+                 emits that route: an edge nothing can traverse",
+                e["to"]
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 7, "the route-edge sweep found almost nothing");
+}
+
+/// Every `hop.route == '<x>'` comparison in a CEL condition, in order.
+fn route_literals(cond: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = cond;
+    while let Some(at) = rest.find("hop.route == '") {
+        rest = &rest[at + "hop.route == '".len()..];
+        match rest.find('\'') {
+            Some(end) => {
+                out.push(rest[..end].to_string());
+                rest = &rest[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// GH #307 — the policy store's write surface has two halves, this template
+/// shipped neither, and exactly ONE of them can be closed here.
+///
+/// `contract.write_surface` (GH #260) bounds the `import` of the `transfer` body
+/// slot, which the SUBSTRATE answers before `handle()` is ever reached. An
+/// absent key means `open`, and `open` bounds nothing — `meclaw_colony`'s
+/// `an_open_write_surface_bounds_no_import_at_all` is the negative pin. Without
+/// it an `import` writes `policy` rows in bulk, from any sender, straight past
+/// every comparison this hive is built on. It is declared.
+///
+/// `params.write_surface` (GH #132) bounds the ops the store's own `handle()`
+/// runs, and it is deliberately NOT declared — which is the second half of what
+/// this test pins, because an omission that is not asserted reads as an
+/// oversight. The reason is a property of the template: **nothing inside the
+/// hive ever writes `policy` or `cred_refs`**. The three `code` cells only
+/// `select` from those two tables; what they write is `grants`, `grant_events`,
+/// `usage` and `audit`. Enabling a rule is the operator's gesture and comes from
+/// outside the scope by construction (the `PROBE` above plays exactly that), so
+/// a cell-level seal would not tighten the boundary — it would leave a freshly
+/// instantiated broker inert forever, with no path to ever turn a rule on.
+///
+/// The `select`-only assertion below is what makes this revisable rather than a
+/// standing excuse: the day a cell in here writes `policy`, it goes red and the
+/// seal becomes possible.
+///
+/// The three `code` cells declare no contract half on purpose — this hive keeps
+/// a lane's state on the wire (the store round trip IS its memory), so their
+/// `cell.db` holds nothing a boundary would protect.
+#[test]
+fn the_policy_store_bounds_the_import_and_says_why_the_cell_surface_stays_open() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let store = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        store["contract"]["write_surface"], "internal",
+        "GH #260: without the substrate half an import writes policy rows past \
+         every comparison this hive is built on"
+    );
+    assert!(
+        store["params"].get("write_surface").is_none(),
+        "GH #132 stays open here on purpose: the operator who enables a rule is \
+         outside this scope, and a sealed handle() would leave the broker inert"
+    );
+
+    // And that reason, asserted rather than asserted-once-in-prose: every touch
+    // of `policy` or `cred_refs` inside the hive is a read.
+    let mut reads = 0usize;
+    for rel in [
+        "policy/config.json",
+        "invoke/config.json",
+        "sweep/config.json",
+    ] {
+        let cfg = read_json(&root.join(rel));
+        let script = cfg["params"]["script_inline"].as_str().unwrap_or_default();
+        for line in script.lines() {
+            for table in ["policy", "cred_refs"] {
+                if line.contains(&format!("table=\"{table}\"")) {
+                    assert!(
+                        line.contains("\"select\""),
+                        "{rel} touches `{table}` with something other than a \
+                         select -- this hive now HAS an internal writer, so \
+                         params.write_surface can and should be sealed: {line}"
+                    );
+                    reads += 1;
+                }
+            }
+        }
+    }
+    assert!(reads >= 1, "the select-only sweep found nothing to check");
+    for rel in [
+        "policy/config.json",
+        "invoke/config.json",
+        "sweep/config.json",
+    ] {
+        let cfg = read_json(&root.join(rel));
+        assert!(
+            cfg["contract"].get("write_surface").is_none(),
+            "{rel} is a code cell whose cell.db this template never uses; a \
+             boundary around it would be decoration, not a promise"
+        );
+    }
+}
+
+/// GH #307, the same boundary proved at runtime rather than at the declaration:
+/// a `transfer` `import` addressed straight at the policy store writes no row.
+///
+/// This is the half that made the omission load-bearing. The slot is answered by
+/// the SUBSTRATE in `cell_task`, before the `consumes` gate and before
+/// `handle()` — so it walks past everything the hive checks, and it writes in
+/// bulk. The message below carries no sender at all, which the rule treats as
+/// outside (fail-closed), and it plants an ENABLED rule granting `chat.send` to
+/// a requester nobody ever brokered. With `contract.write_surface` absent it
+/// lands; with `"internal"` it is refused with `write_denied` before the first
+/// row.
+///
+/// The evidence is the store's own content, read back through the probe: an
+/// import that was refused is invisible in every other way (its reply matches no
+/// out-edge of the store, because a source message carries no `access_origin`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_import_from_outside_plants_no_policy_row() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    let count = |v: &Value| v.as_array().map(|a| a.len()).unwrap_or(0);
+    let read = json!({"operation": "select", "table": "policy",
+                      "columns": ["rule_id", "enabled"], "limit": 50});
+    let before = probe(&h, &mut rx, read.clone()).await;
+
+    h.send(
+        MessageBuilder::new(Path::new("/access/store"))
+            .body(Body::Inline(json!({"transfer": {
+                "operation": "import",
+                "table": "policy",
+                "key": ["rule_id"],
+                "schema": {
+                    "rule_id": "text", "requester": "text", "capability": "text",
+                    "subject": "text", "scope_match": "json", "verdict": "text",
+                    "max_ttl_ms": "int", "constraints": "json", "cred_ref": "text",
+                    "enabled": "int", "priority": "int", "note": "text"
+                },
+                "rows": [{
+                    "rule_id": "smuggled", "requester": "agent:nobody",
+                    "capability": "chat.send", "subject": "member:example",
+                    "scope_match": {"channel": "example-chat", "chat_id": "*",
+                                    "actions": ["send_message"]},
+                    "verdict": "allow", "max_ttl_ms": 900000,
+                    "constraints": {}, "cred_ref": "cred:example-chat:primary",
+                    "enabled": 1, "priority": 1, "note": "planted"
+                }]
+            }})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    // The import travels ONE hop; the read below travels two. The wait is the
+    // discriminator, not the ordering: without it a green result would only mean
+    // the import had not arrived yet.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let after = probe(&h, &mut rx, read).await;
+    assert_eq!(
+        count(&after),
+        count(&before),
+        "an import from outside the scope planted a policy row: {after}"
+    );
+    assert!(
+        after
+            .as_array()
+            .is_none_or(|a| a.iter().all(|r| r["rule_id"] != "smuggled")),
+        "the planted rule is in the policy table: {after}"
+    );
+
+    h.shutdown().await;
+}

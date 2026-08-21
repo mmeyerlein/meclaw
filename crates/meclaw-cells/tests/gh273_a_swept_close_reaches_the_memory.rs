@@ -396,3 +396,67 @@ async fn a_day_the_sweep_closed_lands_with_the_round_it_was_spoken_in() {
 
     h.shutdown().await;
 }
+
+/// GH #311 — the RECIPE a caller wires from names every key this chain needs.
+///
+/// The test above wires the close edge itself, from `main_config()`, and it has
+/// always promoted all three keys. A caller does not have this file; they have
+/// `templates/session-keeper/template.json`, whose `PORTS` slot named
+/// `hop.session_id` and `hop.channel` and stopped there — one key short of
+/// `contract.emits[close]`, of the template's own README, and of what the drain
+/// enforces. Wiring from that slot closes generations that `memory-drain`
+/// refuses with `missing_audience` (`memory_drain_colony.rs`, the refusal is
+/// pinned there), and the refusal is silent to the person who wrote the edge:
+/// the keeper emitted correctly, the drain rejected correctly, and the recipe
+/// between them was wrong.
+///
+/// So the recipe is held against the contract rather than against a list here:
+/// every `hop.<key>` the close port's own `because` names must appear in the
+/// slot a caller copies from.
+#[test]
+fn the_close_port_recipe_names_every_key_the_contract_emits() {
+    let read = |rel: &str| -> Value {
+        let raw = std::fs::read_to_string(repo(rel)).unwrap();
+        meclaw_core::serde_json::from_str(&raw).unwrap()
+    };
+    let config = read("templates/session-keeper/config.json");
+    let close = config["params"]["contract"]["emits"]
+        .as_array()
+        .expect("the close port is declared")
+        .iter()
+        .find(|e| e["route"] == "close")
+        .expect("contract.emits names the close route")["because"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let template = read("templates/session-keeper/template.json");
+    let slot = template["description"]["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|e| e.trim_start().starts_with("PORTS"))
+        .expect("the template has a PORTS slot");
+
+    // The keys the contract names, read off the contract's own sentence.
+    let mut keys: Vec<&str> = close
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .filter(|t| t.starts_with("hop."))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    assert!(
+        keys.len() >= 3,
+        "the close contract stopped naming its keys: {close}"
+    );
+    for key in keys {
+        assert!(
+            slot.contains(key),
+            "the PORTS slot of session-keeper does not name '{key}', which \
+             contract.emits[close] does. A caller wiring from the slot promotes \
+             one key too few and the drain refuses the batch (GH #311/#273).\n\
+             slot: {slot}"
+        );
+    }
+}

@@ -13,9 +13,36 @@
 //! - the **significance floor**, so noise never triggers action,
 //! - the **probe**, which fails closed when it cannot look,
 //! - and that every one of those outcomes is a receipt rather than a silence.
+//!
+//! # GH #304 — the accepted change is measured at the CELL, not at the script
+//!
+//! For the whole life of `steward@2.0.x` the decide path emitted a diff the
+//! validator has always refused (`{"swap_nodes": [{"name": …, "params": …}]}`
+//! against a validator that requires `match.name` + `with`), and every test in
+//! this file agreed with it, because the assertion was a literal copy of the
+//! script's own output. A self-assertion cannot fail; that is what let a loop
+//! which has never committed once read as covered.
+//!
+//! So the accepted change is now checked the only way that can be wrong: the
+//! emitted body is handed to a REAL `llm` cell in front of a counting mock
+//! provider, and the claim is that the cell's live param moved — persisted in
+//! its own `cell.db`, and visible on the wire of the next inference. Nothing in
+//! this file re-derives the params-update path; the cell is the witness.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+
+use meclaw_cells::llm::LlmCell;
+use meclaw_cells::llm::params::LlmParams;
+use meclaw_colony::DbConn;
+use meclaw_colony::stateful_cell::StatefulCell;
+use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
+use mock_openai::{MockOpenAI, canned_chat_completion};
+use tempfile::TempDir;
+use tokio::sync::mpsc;
+
+#[path = "mock_openai.rs"]
+mod mock_openai;
 
 const MUTATOR: &str = "../../templates/steward/mutator/config.json";
 const METER: &str = "../../templates/steward/meter/config.json";
@@ -97,9 +124,100 @@ fn inserted(out: &[serde_json::Value], table: &str) -> Option<serde_json::Value>
     })
 }
 
-/// The mutation body, if the cell emitted one.
+/// The change the cell decided to make, if it decided to make one — the one
+/// message that leaves on the `mutate` lane.
 fn mutation(out: &[serde_json::Value]) -> Option<&serde_json::Value> {
-    out.iter().find(|m| m["header"]["msg_type"] == "mutation")
+    out.iter().find(|m| m["header"]["route"] == "mutate")
+}
+
+/// The body of an emitted message: everything beside the `header`, which the
+/// substrate splits off into hop keys (`code::wire::split_content_header`).
+fn body_of(m: &serde_json::Value) -> serde_json::Value {
+    let mut v = m.clone();
+    v.as_object_mut()
+        .expect("an emitted message is a JSON object")
+        .remove("header");
+    v
+}
+
+/// The cell the steward is allowed to change in these tests. A brain, because
+/// the radius is model choice first — and because an `llm` cell is the one that
+/// can be asked afterwards what it actually runs on.
+const BRAIN: &str = "/main/talky/brain";
+
+/// A real `llm` cell on `model`, talking to `base_url`, with its own `cell.db`.
+fn brain(td: &TempDir, base_url: &str, model: &str) -> (LlmCell, DbConn) {
+    let params = LlmParams::parse(&serde_json::json!({
+        "provider": "openai",
+        "model": model,
+        "api_key": "sk-test-gh304",
+        "base_url": format!("{base_url}/v1"),
+    }))
+    .expect("params must parse");
+    let conn = meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db"))
+        .expect("cell.db opens");
+    (
+        LlmCell::new(params, reqwest::Client::builder().build().unwrap()),
+        DbConn::wrap(conn, None),
+    )
+}
+
+/// Deliver one body into the cell exactly as the colony would.
+async fn deliver(cell: &mut LlmCell, db: &mut DbConn, body: serde_json::Value) {
+    let (tx, mut rx) = mpsc::channel::<CellEmission>(8);
+    let sink = OutputSink::new(
+        tx,
+        Path::new(BRAIN),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        32,
+        meclaw_core::Headers::new(),
+        None,
+    );
+    let msg = MessageBuilder::new(Path::new(BRAIN))
+        .reply_to(Path::new("/observer"))
+        .body(Body::Inline(body))
+        .build();
+    cell.handle(msg, &sink, db).await;
+    drop(sink);
+    let _ = rx.recv().await;
+}
+
+/// The model overlay the cell persisted in its OWN db, JSON-encoded as stored.
+async fn stored_model(db: &mut DbConn) -> Option<String> {
+    db.call(|conn| {
+        conn.query_row("SELECT value FROM params WHERE key='model'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+    })
+    .await
+}
+
+/// One inference turn, so the wire can be asked which model actually served it.
+fn an_inference() -> serde_json::Value {
+    serde_json::json!({"messages": [{"origin": "user", "type": "text", "text": "hi"}]})
+}
+
+/// Every message of a run, judged by the cell's OWN declared `emits` contract —
+/// compiled and applied by the substrate, never re-derived here.
+///
+/// The `code` cell validates its emissions in-cell, always on, so a body the
+/// declaration does not admit never leaves the cell at all. That makes the
+/// contract part of the change rather than documentation beside it: a `params`
+/// slot nobody declared, or a `messages[]` still marked `required`, would turn
+/// the fix into a different silent failure.
+fn assert_the_declaration_admits(path: &str, out: &[serde_json::Value]) {
+    let cfg = config(path);
+    let block: meclaw_colony::config::ContractBlock =
+        serde_json::from_value(cfg["contract"].clone()).expect("the contract block parses");
+    let compiled =
+        meclaw_core::CompiledEmits::compile(&block.emits).expect("the emits schemas compile");
+    assert!(!out.is_empty(), "nothing was emitted at all");
+    for m in out {
+        meclaw_core::validate_emits(m, &compiled)
+            .unwrap_or_else(|e| panic!("the cell's own contract refuses what it emits: {e} — {m}"));
+    }
 }
 
 fn a_valid_change() -> serde_json::Value {
@@ -221,14 +339,17 @@ fn a_proposal_is_recorded_rather_than_executed() {
 
 #[test]
 fn a_numeric_step_beyond_the_limit_is_refused() {
+    // An in-radius key on a cell that can receive it, so the step limit is what
+    // refuses this and not the key set (the radius is checked first, on
+    // purpose).
     let mut args = a_valid_change();
     args["change"] = serde_json::json!({
-        "target": "/main/talky/collector", "kind": "numeric_param",
-        "key": "max_iter", "from": 4, "to": 40
+        "target": BRAIN, "kind": "numeric_param",
+        "key": "max_tokens", "from": 4096, "to": 40960
     });
     args["revert_plan"] = serde_json::json!({
-        "target": "/main/talky/collector", "kind": "numeric_param",
-        "key": "max_iter", "to": 4
+        "target": BRAIN, "kind": "numeric_param",
+        "key": "max_tokens", "to": 4096
     });
     let out = emit(&script(MUTATOR), decision(args));
     assert!(mutation(&out).is_none());
@@ -246,18 +367,79 @@ fn a_numeric_step_beyond_the_limit_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_accepted_change_travels_the_normal_mutation_lane() {
+fn an_accepted_change_names_the_cell_it_changes() {
     let out = emit(&script(MUTATOR), decision(a_valid_change()));
-    let m = mutation(&out).expect("a mutation leaves the cell");
-    assert_eq!(m["scope"], "/main/talky");
-    assert_eq!(
-        m["diff"]["swap_nodes"][0],
-        serde_json::json!({"name": "brain", "params": {"model": "anthropic/claude-sonnet-4"}})
-    );
+    let m = mutation(&out).expect("a change leaves the cell");
+    // The address is a hop key, the way `llm-registry/hand` names a subscriber:
+    // the parent draws one edge per cell the loop may reach, so which cells are
+    // in range is a fact about the seed rather than about the judge's output.
+    assert_eq!(m["header"]["target"], "/main/talky/brain");
     // The ordinary shape, with no operator flag anywhere near it.
     let dump = serde_json::to_string(m).unwrap();
     assert!(!dump.contains("operator"), "no operator lane: {dump}");
     assert!(!dump.contains("force"), "no override: {dump}");
+    // GH #304: the shape the validator has always refused must not come back.
+    assert!(
+        !dump.contains("swap_nodes"),
+        "the refused diff is gone: {dump}"
+    );
+    // And the whole run passes the cell's own declaration, both paths.
+    assert_the_declaration_admits(MUTATOR, &out);
+}
+
+#[test]
+fn the_revert_run_also_passes_the_cells_own_declaration() {
+    let out = emit(
+        &script(MUTATOR),
+        serde_json::json!({
+            "messages": [{"origin":"assistant","type":"tool_call","id":"c1","text":
+                serde_json::json!({
+                    "op": "revert",
+                    "cycle_id": "cycle:1",
+                    "plan": {"target": "/main/talky/brain", "kind": "model",
+                             "to": "anthropic/claude-opus-4"}
+                }).to_string()}],
+            "header": {"hop": {}, "context": {}}
+        }),
+    );
+    assert_the_declaration_admits(MUTATOR, &out);
+}
+
+/// GH #304 — the decide path, measured at the cell.
+///
+/// The mutator's own output is handed to a real `llm` cell. What is asserted is
+/// not the shape of that output but its EFFECT: the provider is not called, the
+/// overlay lands in the cell's own db, and the next inference goes out on the
+/// new model. Any of the three can fail on a body that looks right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decided_change_moves_the_brains_live_model() {
+    let out = emit(&script(MUTATOR), decision(a_valid_change()));
+    let m = mutation(&out).expect("a change leaves the cell").clone();
+
+    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
+    let td = TempDir::new().unwrap();
+    let (mut cell, mut db) = brain(&td, &mock.base_url, "anthropic/claude-opus-4");
+
+    deliver(&mut cell, &mut db, body_of(&m)).await;
+
+    assert!(
+        mock.recorded_requests().await.is_empty(),
+        "a params update buys a write, not an inference: {m}"
+    );
+    assert_eq!(
+        stored_model(&mut db).await.as_deref(),
+        Some(r#""anthropic/claude-sonnet-4""#),
+        "the decided model has to reach the cell's own params: {m}"
+    );
+
+    deliver(&mut cell, &mut db, an_inference()).await;
+    let requests = mock.recorded_requests().await;
+    assert_eq!(requests.len(), 1, "one call, and it is the next turn's");
+    assert_eq!(
+        requests[0].model(),
+        Some("anthropic/claude-sonnet-4"),
+        "the change is only real if the wire carries it"
+    );
 }
 
 #[test]
@@ -284,8 +466,75 @@ fn an_applied_cycle_stays_open_and_fires_the_probe() {
     assert_eq!(args["target"], "/main/talky/brain");
 }
 
+/// A numeric cap on a cell that can actually receive one, measured at the cell.
+///
+/// The shape half of this used to be the whole test, and a shape assertion on
+/// the numeric half is worth exactly as little as it was on the model half: the
+/// key it used (`max_iter`) lives on a `code` cell, which has no params lane at
+/// all, so the body was well formed and nothing anywhere would ever have merged
+/// it. Asked of a cell that HAS the lane, the claim can fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_numeric_param_within_the_limit_moves_the_cells_live_cap() {
+    let mut args = a_valid_change();
+    args["change"] = serde_json::json!({
+        "target": BRAIN, "kind": "numeric_param",
+        "key": "max_tokens", "from": 4096, "to": 3072
+    });
+    args["revert_plan"] = serde_json::json!({
+        "target": BRAIN, "kind": "numeric_param",
+        "key": "max_tokens", "to": 4096
+    });
+    let out = emit(&script(MUTATOR), decision(args));
+    let m = mutation(&out).expect("a change").clone();
+    assert_eq!(m["header"]["target"], BRAIN);
+    assert_eq!(
+        m["params"]["max_tokens"],
+        serde_json::json!(3072),
+        "an integer stays an integer on the wire"
+    );
+    // A body carries a `system`, a `messages[]` or an `attachments[]` slot or it
+    // is not a UBF body at all (`crates/meclaw-core/schemas/ubf-body.json`), and
+    // a params update has nothing to say in any of them. The empty `system` is
+    // the ticket — the same one `llm-registry/hand` buys for its push — and the
+    // ABSENT `messages[]` is what keeps the delivery free of an inference.
+    assert_eq!(m["system"], serde_json::json!({}));
+    assert!(
+        m.get("messages").is_none(),
+        "a params update carries no turn: {m}"
+    );
+
+    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
+    let td = TempDir::new().unwrap();
+    let (mut cell, mut db) = brain(&td, &mock.base_url, "anthropic/claude-opus-4");
+
+    deliver(&mut cell, &mut db, body_of(&m)).await;
+    assert!(mock.recorded_requests().await.is_empty());
+
+    deliver(&mut cell, &mut db, an_inference()).await;
+    let requests = mock.recorded_requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body["max_tokens"],
+        serde_json::json!(3072),
+        "the cap is only real if the wire carries it"
+    );
+}
+
+/// GH #304, fix round 1 — the honest edge of the numeric radius.
+///
+/// `max_iter` is a real shipped cap (`templates/collector/assemble/config.json`)
+/// and it sits on a `code` cell. There is no `OverlayParams` impl for the code
+/// cell's params and no params lane in `code/cell.rs`: an overlay addressed
+/// there is not merged, not persisted, and not refused either — the cell would
+/// take the body as ordinary input. A cycle that sent one and receipted
+/// `applied` would be the #304 defect a second time, on the half of the radius
+/// nobody was looking at.
+///
+/// So the cell refuses it, and the refusal names the key. What is asserted is
+/// the whole outcome: nothing leaves on the `mutate` lane, and the receipt says
+/// `refused` rather than `applied`.
 #[test]
-fn a_numeric_param_within_the_limit_goes_through_as_a_params_swap() {
+fn a_numeric_cap_with_no_receiver_is_refused_rather_than_receipted_as_applied() {
     let mut args = a_valid_change();
     args["change"] = serde_json::json!({
         "target": "/main/talky/collector", "kind": "numeric_param",
@@ -296,12 +545,40 @@ fn a_numeric_param_within_the_limit_goes_through_as_a_params_swap() {
         "key": "max_iter", "to": 4
     });
     let out = emit(&script(MUTATOR), decision(args));
-    let m = mutation(&out).expect("a mutation");
-    assert_eq!(
-        m["diff"]["swap_nodes"][0]["params"]["max_iter"],
-        serde_json::json!(5),
-        "an integer stays an integer on the wire"
+    assert!(
+        mutation(&out).is_none(),
+        "nothing may go out to a cell that cannot merge it: {out:?}"
     );
+    let row = inserted(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        row["outcome"], "refused",
+        "a receipt saying `applied` over a colony where nothing moved is the \
+         defect, not the fix: {row}"
+    );
+    assert_eq!(row["reason_code"], "key_outside_radius_max_iter");
+    assert_eq!(row["status"], "closed");
+}
+
+/// The set is a declaration, not a constant: an operator who has wired a target
+/// that CAN receive another key widens it, and the same decision then travels.
+#[test]
+fn the_numeric_key_set_is_an_operator_declaration() {
+    let widened = script(MUTATOR).replace(
+        "temperature,max_tokens,external_timeout_ms,attachment_timeout_ms",
+        "max_iter",
+    );
+    let mut args = a_valid_change();
+    args["change"] = serde_json::json!({
+        "target": "/main/talky/collector", "kind": "numeric_param",
+        "key": "max_iter", "from": 4, "to": 5
+    });
+    args["revert_plan"] = serde_json::json!({
+        "target": "/main/talky/collector", "kind": "numeric_param",
+        "key": "max_iter", "to": 4
+    });
+    let out = emit(&widened, decision(args));
+    let m = mutation(&out).expect("the widened set lets it through");
+    assert_eq!(m["params"]["max_iter"], serde_json::json!(5));
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +600,56 @@ fn a_revert_uses_the_plan_that_was_authored_beforehand() {
             "header": {"hop": {}, "context": {}}
         }),
     );
-    let m = mutation(&out).expect("the inverse mutation");
-    assert_eq!(
-        m["diff"]["swap_nodes"][0]["params"]["model"],
-        "anthropic/claude-opus-4"
-    );
+    let m = mutation(&out).expect("the inverse change");
+    assert_eq!(m["header"]["target"], "/main/talky/brain");
+    assert_eq!(m["params"]["model"], "anthropic/claude-opus-4");
     assert_eq!(m["header"]["outcome"], "reverted");
+}
+
+/// GH #304 — the revert path, measured at the cell.
+///
+/// The half that matters most: a way back that does not actually arrive is
+/// worse than no way back, because the receipt says `reverted` either way. So
+/// the same witness is asked in the other direction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revert_moves_the_brains_live_model_back() {
+    let out = emit(
+        &script(MUTATOR),
+        serde_json::json!({
+            "messages": [{"origin":"assistant","type":"tool_call","id":"c1","text":
+                serde_json::json!({
+                    "op": "revert",
+                    "cycle_id": "cycle:1",
+                    "plan": {"target": "/main/talky/brain", "kind": "model",
+                             "to": "anthropic/claude-opus-4"}
+                }).to_string()}],
+            "header": {"hop": {}, "context": {}}
+        }),
+    );
+    let m = mutation(&out).expect("the inverse change").clone();
+
+    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
+    let td = TempDir::new().unwrap();
+    // The colony as the failed cycle left it: on the model that did not prove
+    // itself.
+    let (mut cell, mut db) = brain(&td, &mock.base_url, "anthropic/claude-sonnet-4");
+
+    deliver(&mut cell, &mut db, body_of(&m)).await;
+
+    assert!(
+        mock.recorded_requests().await.is_empty(),
+        "taking a change back must not cost a call either: {m}"
+    );
+    assert_eq!(
+        stored_model(&mut db).await.as_deref(),
+        Some(r#""anthropic/claude-opus-4""#),
+        "the pre-authored plan has to land, not merely be well formed: {m}"
+    );
+
+    deliver(&mut cell, &mut db, an_inference()).await;
+    let requests = mock.recorded_requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model(), Some("anthropic/claude-opus-4"));
 }
 
 #[test]
@@ -346,6 +667,108 @@ fn a_revert_without_a_plan_is_recorded_rather_than_improvised() {
     assert!(
         text.contains("revert_plan_missing_at_revert_time"),
         "{text}"
+    );
+}
+
+/// The row a `store` update would write, if there is one.
+fn updated(out: &[serde_json::Value], table: &str) -> Option<serde_json::Value> {
+    out.iter().find_map(|m| {
+        let text = m["messages"][0]["text"].as_str()?;
+        let args: serde_json::Value = serde_json::from_str(text).ok()?;
+        (args["operation"] == "update" && args["table"] == table).then(|| args["set"].clone())
+    })
+}
+
+/// A revert order for `plan`, as the meter sends one.
+fn revert_order(plan: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "messages": [{"origin":"assistant","type":"tool_call","id":"c1","text":
+            serde_json::json!({"op": "revert", "cycle_id": "cycle:1", "plan": plan}).to_string()}],
+        "header": {"hop": {}, "context": {}}
+    })
+}
+
+/// GH #304, fix round 2 — the guard binds the way back too.
+///
+/// The decide path refuses a key outside the radius; the revert path used to
+/// emit unconditionally. A plan stored while the key was in the set, reverted
+/// after an operator narrowed it (or a row that predates the set), produced a
+/// `mutate` message nobody merges plus a receipt reading `reverted` — the same
+/// untruthful-receipt class, on the other half.
+///
+/// What is asserted is the whole outcome, not just the absence of the message:
+/// the receipt has to say `revert_refused`, and it has to put the cycle back to
+/// `applied`, because that is the state the colony is genuinely in — the change
+/// the loop failed to prove is still running.
+#[test]
+fn a_revert_whose_plan_left_the_radius_is_refused_rather_than_receipted_as_reverted() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "target": "/main/talky/collector", "kind": "numeric_param",
+            "key": "max_iter", "to": 4
+        })),
+    );
+    assert!(
+        mutation(&out).is_none(),
+        "nothing may go out on a plan the radius no longer carries: {out:?}"
+    );
+    let set = updated(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        set["outcome"], "revert_refused",
+        "a way back nobody took must not read as taken: {set}"
+    );
+    assert_eq!(set["reason_code"], "key_outside_radius_max_iter");
+    assert_eq!(
+        set["status"], "applied",
+        "the cycle stays the open one: the change is still standing, and the \
+         meter scans exactly this status: {set}"
+    );
+}
+
+/// The other direction of the same guard: an in-set plan still lands, and the
+/// receipt still closes as `reverted`. A guard that refused everything would
+/// pass the test above and break the loop.
+#[test]
+fn an_in_radius_revert_still_closes_the_cycle_as_reverted() {
+    let out = emit(
+        &script(MUTATOR),
+        revert_order(serde_json::json!({
+            "target": BRAIN, "kind": "numeric_param",
+            "key": "max_tokens", "to": 4096
+        })),
+    );
+    let m = mutation(&out).expect("the inverse change goes out");
+    assert_eq!(m["params"]["max_tokens"], serde_json::json!(4096));
+    let set = updated(&out, "cycles").expect("a receipt");
+    assert_eq!(set["status"], "closed");
+    assert_eq!(set["outcome"], "reverted");
+}
+
+/// GH #304, fix round 3 — the oldest branch of the same defect class.
+///
+/// A revert order that arrives with no plan takes nothing, so the cycle was not
+/// reverted. It used to write only its reason code, which left the meter's
+/// `closed` / `reverted` standing: a receipt claiming a way back that was never
+/// taken, with the reason muttering otherwise underneath it. The meter writes
+/// that verdict in the same emission as the revert order (`meter` script
+/// l.291-307), so there is no moment at which the row is not already closed.
+///
+/// Same mechanic as the radius refusal: the row is put back into the state the
+/// colony is genuinely in, and the outcome names the refusal.
+#[test]
+fn a_revert_with_no_plan_leaves_a_row_that_does_not_claim_a_revert() {
+    let out = emit(&script(MUTATOR), revert_order(serde_json::json!({})));
+    assert!(mutation(&out).is_none(), "nothing is invented here");
+    let set = updated(&out, "cycles").expect("the refusal is a receipt");
+    assert_eq!(
+        set["outcome"], "revert_refused",
+        "no plan means no revert, and the row has to say so: {set}"
+    );
+    assert_eq!(set["reason_code"], "revert_plan_missing_at_revert_time");
+    assert_eq!(
+        set["status"], "applied",
+        "the change the cycle failed to prove is still running: {set}"
     );
 }
 

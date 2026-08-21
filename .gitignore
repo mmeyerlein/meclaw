@@ -83,7 +83,9 @@ Thumbs.db
 # + plans stay version-locked with the code history. They are NOT part of a
 # later GitHub export (v0.1.0): that one is curated + English and exports
 # only a subset. Until then: everything stays in the local repo.
-# PROGRESS.md is already tracked (marker entry effectively a no-op).
+# PROGRESS.md is already tracked (marker entry effectively a no-op) — it was
+# re-added with `git add -f` after the 2026-08-21 demotion to a pointer moved
+# the old body to plans/archive/ and briefly made this entry live (GH #318).
 /PROGRESS.md
 __pycache__/
 

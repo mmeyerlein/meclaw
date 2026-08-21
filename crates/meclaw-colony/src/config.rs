@@ -30,6 +30,10 @@ pub struct ContractBlock {
     /// on its behalf (today: the `transfer` slot's `import`) are bounded to its
     /// own parent scope. Absent ⇒ `Open` ⇒ nothing changes.
     pub write_surface: meclaw_core::WriteSurface,
+    /// GH #314 — the cell's own statement that its database is exempt from the
+    /// `transfer` slot entirely, export and import alike. Absent ⇒ `All` ⇒
+    /// nothing changes.
+    pub transfer: meclaw_core::TransferPolicy,
 }
 
 /// Hard presence check for the builder-mandatory contract keys
@@ -68,6 +72,7 @@ impl From<ContractBlock> for ContractView {
             validate_emits: false,
             consumes: None,
             write_surface: c.write_surface,
+            transfer: c.transfer,
         }
     }
 }

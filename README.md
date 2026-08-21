@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-4400%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-4300%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -234,6 +234,7 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `web_fetch` / `web_search` | pull the web in |
 | `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
 | `subcolony` | a whole child colony, addressed as if it were a single cell |
+| `vault` | a sealed secret store — `put`, `rotate`, `use`, `revoke`, and no `get`: the route surface has no operation that returns a secret |
 
 A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you.
 
@@ -249,7 +250,7 @@ your colony; from that moment the instance is yours and has no link back to the 
 | the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window |
 | the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
 | the front door | `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `channel` (one room as one hive, its agent a swappable generation), `receptionist` (one agent per channel, built on demand) |
-| memory | `memory-hive` — eleven cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
+| memory | `memory-hive` — twelve cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
 | whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
 | the small ones | `retry`, `terminal` |
 
@@ -263,13 +264,13 @@ Reshaping the graph is a first-class runtime move. A cell emits a mutation diff 
 
 The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it.
 
-That part shipped. The **builder-hive** is an `llm` plus `code` topology that turns a plain-English request into a validated, deployed subtree — and it is itself pure DSL, not one line of new Rust. The rails are the interesting part, because they are measured substrate behaviour rather than a promise: a cell cannot even *address* the mutation lane without an edge, and no mutation whatsoever can create an edge onto the control plane — that one is bootstrap-only. Approval is classified by effect, not by name: a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or touching the control plane escalates to a human.
+That part shipped. The **builder-hive** — an `llm` plus `code` topology that turns a plain-English request into a validated, deployed subtree, itself pure DSL and not one line of new Rust — is **not** in this repository yet: it is built and tested in the private tree, and it is not on the public template allow-list, so nothing here instantiates it. What *is* here are the rails it runs on, and they are the interesting part anyway, because they are measured substrate behaviour rather than a promise: a cell cannot even *address* the mutation lane without an edge, and no mutation whatsoever can create an edge onto the control plane — that one is bootstrap-only. Approval is classified by effect, not by name: a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or touching the control plane escalates to a human.
 
 ## Where it's at
 
 meclaw is **v0.17.0**. A proof of concept for the DSL and the self-modifying substrate, with a deliberately frozen on-disk schema — that is the `colony.db` `schema_version`, the persistence layout, not the DSL. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, the builder-hive, agent harnesses as supervised child processes, and child colonies composed as single cells. **4400+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **4300+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
@@ -292,11 +293,14 @@ One carve-out inside that: the `${KNOB}` environment variables the shipped templ
 names are not covered by the promise above ([#138](https://github.com/mmeyerlein/meclaw/issues/138),
 [`templates/README.md`](templates/README.md) § Env knobs).
 
-**The Rust crates are internals.** Everything under `crates/` is `publish = false` and carries no
-SemVer guarantee on any Rust item: types, function signatures, module paths and trait bounds move
-between releases without notice, including on patch bumps. There is no `meclaw` library API. If you
-depend on a crate over a git dependency, pin a commit and expect to do the work yourself on every
-bump — that is a supported thing to do and an unsupported thing to be surprised by.
+**The Rust crates are internals.** No Rust item under `crates/` carries a SemVer guarantee: types,
+function signatures, module paths and trait bounds move between releases without notice, including
+on patch bumps. (The manifests do say `publish = true` — only `meclaw-testing` is `publish = false`
+— but no release of this project has pushed a crate to a registry, and nothing in the release
+process does. That flag is readiness for a decision not yet taken, not a promise about the API.)
+There is no `meclaw` library API. If you depend on a crate over a git dependency, pin a commit and expect to
+do the work yourself on every bump — that is a supported thing to do and an unsupported thing to be
+surprised by.
 
 ## What it costs to run
 
@@ -325,7 +329,7 @@ Also in the queue: cutting the fixed cost of a `code` cell invocation. We measur
 
 ## Contributing
 
-Issues, discussions, PRs, all open. Easy wins: example colonies, new template cells, docs. The spec in `docs/` is the source of truth, so read `docs/meclaw-overview.md` before anything big. What comes next and in which order lives in [ROADMAP.md](ROADMAP.md); the issue tracker carries the substance.
+Issues, discussions, PRs, all open. Easy wins: example colonies, new template cells, docs. The spec in `docs/` is the source of truth, so read `docs/meclaw-overview.md` before anything big. [`docs/README.md`](docs/README.md) is the documentation index — which document answers which question, in which order to read them, and which one wins on conflict. What comes next and in which order lives in [ROADMAP.md](ROADMAP.md); the issue tracker carries the substance.
 
 ## License
 

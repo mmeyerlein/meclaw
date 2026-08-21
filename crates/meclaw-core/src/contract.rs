@@ -93,6 +93,73 @@ pub enum WriteSurface {
     Internal,
 }
 
+/// GH #314 — a cell's declaration that its database does not travel.
+///
+/// The `transfer` body slot is answered by the substrate above every cell type,
+/// before `handle()` and before the `consumes` gate. That position is what makes
+/// the operation type-agnostic, and it is also what puts it out of reach of
+/// every rule a cell type enforces in its own `handle()`: the `vault`'s
+/// two-caller ACL never sees a transfer, so the cell type whose whole promise is
+/// that no operation returns a secret handed out its `vault_secrets` inventory,
+/// its salt and its complete audit trail through a seam it cannot answer.
+///
+/// The fix is a **declaration**, not an exclusion list in the substrate. A list
+/// of type names inside `db_transfer` would be invisible in a `config.json`,
+/// invisible in a diff, and would have to be edited again for the next cell type
+/// with the same need. `transfer: "none"` is answerable by reading the cell's
+/// own contract, and it binds a cell type nobody has written yet.
+///
+/// `All` is the default, so absence changes nothing — every colony older than
+/// this key keeps the behaviour it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferPolicy {
+    /// Every content table of this cell's `cell.db` may be exported and
+    /// imported through the `transfer` slot. Default.
+    #[default]
+    All,
+    /// This cell's database is exempt from the `transfer` slot. Export AND
+    /// import alike: a store that cannot leave also cannot be overwritten
+    /// through the same seam. The substrate refuses with `transfer_exempt`
+    /// before it looks at the arguments, so a refusal names no table.
+    None,
+}
+
+/// The contract facts the **substrate** consults on the `transfer` slot, before
+/// `handle()` runs.
+///
+/// Both are declarations about this cell's PLACE rather than about a message,
+/// and both are answered above every cell type — so they travel together from
+/// the `contract` block through the spawn helpers into the seam, as one value
+/// rather than as a widening list of parameters.
+///
+/// The default is the pre-declaration behaviour in both fields: an open write
+/// surface and a database that travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TransferBounds {
+    /// GH #260 — who may reach the WRITE half of the seam (the `import`).
+    pub write_surface: WriteSurface,
+    /// GH #314 — whether this cell's database answers the seam at all.
+    pub policy: TransferPolicy,
+}
+
+impl TransferBounds {
+    /// The bounds of a cell that declares `contract.transfer: "none"` and
+    /// nothing else — the vault's declaration, and the shape a test states
+    /// without building a whole contract block.
+    pub fn exempt() -> Self {
+        Self {
+            write_surface: WriteSurface::default(),
+            policy: TransferPolicy::None,
+        }
+    }
+
+    /// True iff this cell's database is exempt from the `transfer` slot.
+    pub fn is_exempt(&self) -> bool {
+        self.policy == TransferPolicy::None
+    }
+}
+
 /// One field's consume spec — type only (no enum/values on the read side).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConsumeSpec {
@@ -260,23 +327,31 @@ pub fn validate_emits(content: &Value, compiled: &CompiledEmits) -> Result<(), S
     }
 }
 
-/// Pre-extracted required-key views of a `consumes` block, one entry per
-/// compartment: `(key, type-token)` for every `required: true` ConsumeSpec.
-/// Compile is infallible (pure projection) — unlike `CompiledEmits` there is
-/// no schema to build.
+/// Pre-extracted views of a `consumes` block: the required keys per message
+/// compartment (`(key, type-token)` for every `required: true` ConsumeSpec)
+/// plus the declaration sets the capability gates read. Compile is infallible
+/// (pure projection) — unlike `CompiledEmits` there is no schema to build.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledConsumes {
     body: Vec<(String, String)>,
     context: Vec<(String, String)>,
     hop: Vec<(String, String)>,
+    /// Every declared `consumes.body` key, required or not (GH #323).
+    /// The ingress projection above answers "must this message carry it";
+    /// this one answers "does this cell read the slot at all" — the question
+    /// [`Self::declares_body`] and the capability gates behind it ask.
+    body_declared: Vec<String>,
     /// Declared topology facts (GH #160). Deliberately NOT part of
     /// [`Self::is_vacuous`] or of any message check: it gates a spawn-time
-    /// capability, never an ingress.
+    /// capability, never an ingress. That gap is GH #333 — `body_declared`
+    /// above had the same one until GH #323, and a topology-only declaration
+    /// still loses its `NeighbourhoodView` the same silent way.
     topology: Vec<String>,
 }
 
 impl CompiledConsumes {
-    /// Project the `required: true` entries of all three compartments.
+    /// Project the `required: true` entries of the three message compartments,
+    /// plus the full declaration sets of `body` and `topology`.
     pub fn compile(block: &ConsumesBlock) -> Self {
         let required = |m: &BTreeMap<String, ConsumeSpec>| {
             m.iter()
@@ -288,30 +363,38 @@ impl CompiledConsumes {
             body: required(&block.body),
             context: required(&block.context),
             hop: required(&block.hop),
-            // Every declared key, required or not: this is a capability
-            // declaration, and "optional capability" has no meaning.
+            // Every declared key, required or not: a capability declaration,
+            // and "optional capability" has no meaning.
+            body_declared: block.body.keys().cloned().collect(),
             topology: block.topology.keys().cloned().collect(),
         }
     }
 
-    /// True iff no compartment carries a required key (check is vacuous).
+    /// True iff this view carries nothing the substrate would consult: no
+    /// required key in any compartment AND no `body` declaration that gates a
+    /// capability. A vacuous view is dropped at spawn (`consumes: None`), so a
+    /// non-vacuity that a gate depends on has to be counted here — an optional
+    /// `consumes.body` declaration otherwise vanished before the gate saw it.
     pub fn is_vacuous(&self) -> bool {
-        self.body.is_empty() && self.context.is_empty() && self.hop.is_empty()
+        self.body.is_empty()
+            && self.context.is_empty()
+            && self.hop.is_empty()
+            && self.body_declared.is_empty()
     }
 
     /// True iff the cell declares `consumes.body.<key>` (GH #87).
     ///
-    /// Declaring is binding: every key declared in `consumes.body` is
-    /// mandatory, there is no optional `consumes.body` field (config.md
-    /// § `consumes`: every key declared in `consumes.body` is required).
-    /// Declaration and the required-key projection therefore coincide, and this
-    /// method reads the projection rather than keeping a second list.
+    /// Declaration, not obligation: `required` governs the ingress check
+    /// (config.md § `consumes`), and a key declared `required: false` is still
+    /// a key this cell reads. The two questions are answered from two
+    /// projections — reading the required-key list here withheld the capability
+    /// from every optional declaration, silently (GH #323).
     ///
     /// Used by the substrate to decide whether a cell gets a capability that
     /// only a declared consumer may hold — today the `attachments[]` blob
     /// reader (`meclaw_colony::AttachmentReader`).
     pub fn declares_body(&self, key: &str) -> bool {
-        self.body.iter().any(|(k, _)| k == key)
+        self.body_declared.iter().any(|k| k == key)
     }
 
     /// True iff the cell declares `consumes.topology.<key>` (GH #160).
@@ -606,8 +689,8 @@ mod tests {
     #[test]
     fn declares_body_reports_declared_slot_and_ignores_others() {
         // GH #87: the declaration signal the substrate gates the attachment
-        // reader on. Declaring is binding (config.md § consumes), so a declared
-        // body key is a required key.
+        // reader on. It answers "is the slot declared", independent of whether
+        // the key is also demanded of every inbound message (GH #323).
         let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
             "body": {"messages": {"type": "array"}, "attachments": {"type": "array"}}
         }))
@@ -618,6 +701,31 @@ mod tests {
         assert!(!compiled.declares_body("system"));
     }
 
+    /// GH #323: `required` governs the INGRESS check, not the declaration.
+    /// A key declared `required: false` is still declared — it is read, it is
+    /// just not demanded of every inbound message — so the capability gate that
+    /// reads `declares_body` must see it. Before this, an optional declaration
+    /// parsed, disabled nothing visibly, and silently withheld the
+    /// `AttachmentReader`: no error, no dead letter, no diagnostic.
+    #[test]
+    fn declares_body_sees_an_optional_declaration() {
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
+            "body": {"attachments": {"type": "array", "required": false}}
+        }))
+        .unwrap();
+        let compiled = CompiledConsumes::compile(&block);
+        assert!(
+            compiled.declares_body("attachments"),
+            "an optional declaration is still a declaration"
+        );
+        // …and it stays out of the ingress projection: the key is optional.
+        let headers = crate::Headers::new();
+        assert!(
+            validate_consumes(&serde_json::json!({"messages": []}), &headers, &compiled).is_ok(),
+            "required:false must not make the key mandatory at ingress"
+        );
+    }
+
     #[test]
     fn declares_body_is_false_without_the_slot() {
         let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
@@ -626,6 +734,43 @@ mod tests {
         .unwrap();
         let compiled = CompiledConsumes::compile(&block);
         assert!(!compiled.declares_body("attachments"));
+    }
+
+    /// GH #314 — the wire vocabulary of the declaration, and its default.
+    /// `"none"` and `"all"` are the only two spellings; anything else is a
+    /// parse error rather than a silently permissive fallback, because a
+    /// misspelled exemption that quietly means "travels" is the worst outcome
+    /// this key can have.
+    #[test]
+    fn transfer_policy_parses_none_and_all_and_defaults_to_all() {
+        assert_eq!(
+            serde_json::from_str::<TransferPolicy>("\"none\"").unwrap(),
+            TransferPolicy::None
+        );
+        assert_eq!(
+            serde_json::from_str::<TransferPolicy>("\"all\"").unwrap(),
+            TransferPolicy::All
+        );
+        assert!(serde_json::from_str::<TransferPolicy>("\"nope\"").is_err());
+        assert_eq!(TransferPolicy::default(), TransferPolicy::All);
+    }
+
+    /// The bundle the substrate carries: both halves default to the
+    /// pre-declaration behaviour, and `exempt()` moves exactly one of them.
+    #[test]
+    fn transfer_bounds_default_is_the_behaviour_that_predates_both_keys() {
+        let d = TransferBounds::default();
+        assert_eq!(d.write_surface, WriteSurface::Open);
+        assert_eq!(d.policy, TransferPolicy::All);
+        assert!(!d.is_exempt());
+
+        let e = TransferBounds::exempt();
+        assert!(e.is_exempt());
+        assert_eq!(
+            e.write_surface,
+            WriteSurface::Open,
+            "declaring one boundary must not switch on the other"
+        );
     }
 
     #[test]

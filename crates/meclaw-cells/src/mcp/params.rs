@@ -207,7 +207,7 @@ fn parse_stdio(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport,
         .and_then(|x| x.as_u64())
         .unwrap_or(2_000);
     // GH #96: an MCP server is a third-party binary an operator configured, and
-    // of the three spawn sites in the tree it is the one least likely to have
+    // of the four spawn sites in the tree it is the one least likely to have
     // been written by whoever runs the colony. It reads `params.sandbox` with
     // the SAME schema `bash`, `code` and `harness` use — one profile shape, one
     // parser, one set of mistakes an operator can make.

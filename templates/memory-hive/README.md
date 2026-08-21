@@ -306,8 +306,8 @@ the internal graph wires whatever it likes, at any depth.
 `"write_surface": "internal"`, so a write op (`insert`/`update`/`delete`/`create_table`/
 `set_alias`/`reject_pair`/`canonicalize`) whose sender sits outside this hive is refused with
 `error_code: "write_denied"` before it reaches the database. **Reads stay free from anywhere** —
-which is what keeps a debug probe straight into `./memory/store` a legitimate move. The five
-writers (`writer`, `recall`, `extract-glue`, `dream-glue`, `embed`) all live in the hive, so
+which is what keeps a debug probe straight into `./memory/store` a legitimate move. The six
+writers (`writer`, `recall`, `extract-glue`, `dream-glue`, `embed`, `porter`) all live in the hive, so
 nothing about the shipped topology changes; what changes is that the memory can no longer be
 edited past its own lanes.
 
@@ -586,8 +586,12 @@ library has the same need — `affinity`'s curated record, `canvy`'s layout, the
 and arrivals, a collector's window — and the `store` **cell type** still answers twelve
 operations, none of which is an export or an import. That gap is
 [#253](https://github.com/mmeyerlein/meclaw/issues/253), and it is where this belongs long
-term. What lives here is a lane pair built out of the operations the store already has; if
-#253 lands, this template should shrink onto it rather than keep a second mechanism alive.
+term. **#253 has since shipped and is closed** (2026-08-19): the substrate answers a
+`transfer` body slot — `export` and `import` — for every cell that has a `cell.db`, above
+the cell type and before `handle()` runs, which is exactly the paragraph on `write_surface`
+above. Nothing was removed here in the same move, so what still lives in this section is a
+lane pair built out of the twelve operations the store already had; the shrink onto the
+substrate slot is the work that is now owed, not a condition that may or may not arrive.
 
 Four substrate properties this path had to work **around** rather than through. They are stated
 here because they are the evidence #253's design needs:
@@ -844,7 +848,7 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_TIER0_MAX_BELIEFS` | `20` | item cap of the bundle's belief leg, and the `limit` of the belief select behind it |
 | `MEMORY_TIER0_MAX_FORESIGHT` | `10` | item cap of the bundle's foresight leg (facts that are about a future the memory has been told about) |
 | `MEMORY_TIER0_EPISODE_CHARS` | `400` | episode truncation inside the bundle (truncate, never delete) |
-| `MEMORY_DREAM_CRON` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run |
+| `MEMORY_DREAM_CRON` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
 | `MEMORY_EMBED_ENDPOINT` | `https://openrouter.ai/api/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | `MEMORY_EMBED_MODEL` | `qwen/qwen3-embedding-8b` | must match the `model_id` in `seed/emb_models.jsonl` — the seed is NOT variable-substituted, so the two are coupled by hand |
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
@@ -859,6 +863,8 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_CANON_MAX_PAIRS` | `12` | entity candidate pairs put to the judge per run, best score first |
 | `MEMORY_BATCH_MAX_ITEMS` | `64` | hard item cap of one claimed batch |
 | `MEMORY_BATCH_CLAIM_LEASE_MIN` | `5` | how long a claimed batch is HELD before a recovery sweep may hand its rows back (GH #72). Must exceed one full extraction cycle — the extractor's `message_timeout` is 180 s, so a lease below ~4 minutes reclaims live batches and pays for them twice |
+| `MEMORY_EXTRACT_ERROR_BUDGET` | `3` | consecutive provider errors one batch may cost before the lane **parks** it instead of re-sending (GH #143). Parked is terminal for the automatic lane: the rows keep their turns, carry status `error_parked` and a mark in `scratch`, and a recovery sweep does not take them back |
+| `MEMORY_EXTRACT_BACKOFF_SEC` | `60` | base of the backoff window after a failed extraction attempt (GH #143); it doubles per attempt, so 60 gives 60 s / 120 s / 240 s. Without it the flush cadence IS the retry cadence |
 | `MEMORY_TIER1_LEG_LIMIT` | `20` | per-leg candidate cap of the tier-1 fan |
 | `MEMORY_TIER1_AXIS_LIMIT` | `200` | page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without** `history` rather than with a guessed one |
 | `MEMORY_EXTRACT_WINDOW_AXES` | `8` | axes whose OPEN statements travel in the extraction prompt as the replacement window (statement identity W4). An axis with more open statements than one page is skipped rather than truncated. The PAGE fetches twice this many by recency; which of them the prompt SHOWS is decided by subject matter against the batch's own turns (GH #67), with recency as the stable tie-break |
@@ -1379,7 +1385,7 @@ What is deliberately **not** answerable:
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
 | `set_alias` upserts on the alias, `reject_pair` upserts on the ordered pair, `canonicalize` reports only the rows that MOVED | canonicalisation round — re-judging a pair writes no second row, and a second run over unchanged data reports 0 |
 | every dream write derives its timestamp from `delta_to`, belief ids from `sha256(holder\|statement)` | dream lane, stage 3 — replay is byte-identical |
-| `max_concurrency: 1` on `extract-glue`, `dream-glue`, `recall` | serialises the read-modify-write handlers (a `code` cell is a stateless dispatcher and would otherwise run them in parallel) |
+| `max_concurrency: 1` on `extract-glue`, `dream-glue`, `recall`, `porter` | serialises the read-modify-write handlers (a `code` cell is a stateless dispatcher and would otherwise run them in parallel). `embed` is the one glue cell that is deliberately **not** serialised (`max_concurrency: 4`): it writes one column of one row per message and holds no chain state between them |
 
 Missed timer firings are **never** replayed. They do not need to be: the next run's window
 starts at the last completed `delta_to`, so a skipped night is covered automatically.

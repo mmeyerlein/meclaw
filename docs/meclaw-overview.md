@@ -190,7 +190,7 @@ For topology knowledge the route is `/colony/graph` (§ `/colony` as a virtual e
 
 `consumes.topology` is **not** a message compartment: nothing in it is validated against an incoming message, and a key declared there never makes a message invalid. It is a capability declaration in the same grammar as `body`/`context`/`hop` — "this cell reads X". The only key the substrate knows is `inbound_edges`: the `from` paths of every edge pointing at the cell's **own** path (`meclaw_colony::NeighbourhoodView`, answered from colony's in-memory `EdgeTable`). Not the graph, not a scope, not its own outbound edges, and never another cell's. Without the declaration the handle does not exist. "Cells know no topology" therefore survives in the form that carries the weight: a cell learns the shape of **its own doorway**, from the authority, and only ever in order to **refuse** — an unverifiable neighbourhood (no handle, no answer, a timeout) is treated exactly like a wrong one and the `vault` stays LOCKED.
 
-**Instantiation and cell_id stability**: instantiation happens **exactly when** no cell directory exists at the
+**Instantiation and cell_id stability** *(specified, not built — see GH #277)*: instantiation happens **exactly when** no cell directory exists at the
 target path. When processing a graph, colony checks, per declared node, whether the
 directory exists in the tree, `params.graph` at bootstrap as well as a mutation diff at runtime: if it is missing, colony copies the referenced template to the
 target path and thereby assigns a fresh UUID v7 as `cell_id` (plus `${VAR}` substitution);
@@ -202,6 +202,8 @@ never changed or reassigned afterward.** Templates themselves are id-less; IDs a
 exclusively when copying into the tree. On instantiation, colony records the node with
 its `cell_id` in `colony.db`; entries there are never deleted, only marked inactive
 (see § Connectivity and activity).
+
+**The bootstrap does not instantiate, and that retracts the promise in the paragraph above** ("when processing a graph, colony checks … `params.graph` at bootstrap as well as a mutation diff at runtime"). Only the mutation half is built (`mutation/stage.rs` + `mutation/substitute.rs`). Below `params.graph` the boot parser knows **only** `edges`: `GraphHints` (`crates/meclaw-colony/src/config.rs`) sits under `deny_unknown_fields`, so a hive `config.json` carrying the `nodes` block documented below is not an ignored hint but a **hard boot error**. The filesystem bootstrap can merely **recognise** an uninstantiated node and reports it (ruling A5b, see § Startup algorithm). The paragraph stays because it is the target picture GH #277 builds; until then what § Startup algorithm describes is what runs.
 
 **Flow on graph mutation (EDA, verdict reply to `reply_to`)**:
 
@@ -220,10 +222,12 @@ The graph of a meclaw colony is a directed graph of **nodes** (= cells, register
 
 The same schema describes the graph in two write usages:
 
-1. **Bootstrap**: `params.graph` in the `config.json` of a hive scope marker provides the initial desired state for its subtree on first instantiation. Colony reads this at the filesystem bootstrap (see "Startup algorithm") and registers the declared cells.
+1. **Bootstrap** *(specified, not built — see GH #277)*: `params.graph` in the `config.json` of a hive scope marker provides the initial desired state for its subtree on first instantiation. Colony reads this at the filesystem bootstrap (see "Startup algorithm") and registers the declared cells.
 2. **Runtime diff**: a builder sends a mutation message with a diff to `/colony/mutations` (see "Mutation format"). Colony computes the post_state from it and executes scoped registry edits.
 
 ### Schema
+
+The `nodes` key in the block below is built **only in the mutation usage**; in a hive `config.json` it aborts the boot — see the retraction under **`nodes`** directly after the schema *(specified, not built — see GH #277)*.
 
 ```json
 {
@@ -244,7 +248,9 @@ The same schema describes the graph in two write usages:
 }
 ```
 
-**`nodes`**: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (highest available version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
+**`nodes`** *(specified, not built — see GH #277)*: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (highest available version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
+
+**The key exists in the mutation diff only, and that retracts the promise above** ("the same schema … in two write usages"). On the bootstrap path `GraphHints` knows only `edges` under `deny_unknown_fields` — a hive `config.json` carrying the `nodes` block fails the parser and **aborts the boot** instead of creating the node. Whoever creates a node today sends a mutation diff (`add_nodes`, see "Mutation format"). The schema stays in full because it is GH #277's target picture.
 
 **`edges`**: a list; order irrelevant. Required fields: `from`, `to` (paths relative to the hive scope in which the schema is declared). The paths may lie at **any depth** within the scope (`./name` as well as `./unit/dispatch`); a depth restriction does not exist; this holds symmetrically in the bootstrap `params.graph` path and in the mutation diff (R12 ruling 2026-06-11). Optional: `condition` (CEL boolean, default `true` = always matches), `modifier` (operations object with `set_context`/`delete_context`/`set_hop`/`delete_hop`/`restore_ttl`, default `null` = identity, see "Edge model" for schema and example). Edges operate strictly on the header layer.
 
@@ -552,7 +558,13 @@ Single-stage in colony. Before application, the hypothetical post_state is compu
 - **Template existence**: all `add_nodes`/`swap_nodes` reference templates that exist in colony's templates registry.
 - **`.env` variables**: all `${ENV_VAR}` in the `override_params` have values in `.env`.
 
-On an error **before** the atomic rename phase (schema, match, cycle, edge schema, template, `.env`, staging build): the entire diff is rejected, no partial commit, the live tree untouched. **From** the rename phase onward the audit model applies: an error after the first successful `rename(2)` is no longer a clean reject (earlier renames already stand in the live tree); the substrate strict-fails loudly (panic), and the half-state is made visible at the next boot as non-registered orphan dirs (§ Startup algorithm), never silently adopted. Error message to `reply_to` (if set) with:
+On an error **before** the atomic rename phase (schema, match, cycle, edge schema, template, `.env`, staging build): the entire diff is rejected, no partial commit, the live tree untouched.
+
+**Inside** the rename phase the audit model applies: an error after the first successful `rename(2)` is no longer a clean reject (earlier renames already stand in the live tree); the substrate strict-fails loudly (panic), and the half-state is made visible at the next boot as non-registered orphan dirs (§ Startup algorithm), never silently adopted.
+
+**After** the rename phase but before the commit, a mutation can still be refused: by the two post-state validations (`required_drain_missing`, `hive_contract`), by the two runtime conditions of a disconnect (`stop_wiring_unavailable`, `term_timeout`), and by a failed cell spawn. These rejects are **clean** again (GH #276): the two validations run before the spawn/registry step, so nothing is registered in the first place; the runtime rejects take the diff's registry entries back out. In both cases the in-RAM edge ops roll back and the freshly renamed-in directories are removed — the single cell directories as well as the rename-roots of a subtree template; adopted and relocated ones stay (no-delete), and so does every node that was already there on a merge resume. The `write_buffer` is discarded (`colony.db` never sees a registry row), and the `mutation_log` row is terminalized (`failed`). A 422 answer and an `in_flight` row therefore cannot contradict each other. A cell that had already spawned `Awake` is peace-stopped and its death ack waited for **before** its directory goes, so the substrate never clears a directory out from under an open `cell.db`.
+
+Error message to `reply_to` (if set) with:
 
 ```json
 {
@@ -562,7 +574,7 @@ On an error **before** the atomic rename phase (schema, match, cycle, edge schem
 }
 ```
 
-`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary` | `hive_contract`.
+`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary` | `hive_contract` | `required_drain_missing`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter codes carry (§ "Canonical `error_code` strings"): new reject reasons **extend** the list, existing ones never change their string form. A condition may therefore match on a code, but it must not assume the list is complete — an unknown code is a future code, not a bug. Notes on the substrate codes:
 
@@ -577,6 +589,7 @@ These strings are part of the stable mutation API contract, with the same promis
 - `contract_incomplete`: a `config.json` to be loaded (boot walk or mutation staging, non-hive) does not declare the required keys `contract.version`/`settings`/`consumes`, or declares them type-wrong (`docs/config.md` § contract).
 - `hive_port_boundary` (GH #133): an `add_edges` endpoint reaches into a hive that declared its ports (`params.ports`, opt-in — see `cell-types.md` § `hive`) while the edge's other endpoint lies outside that hive: a deep endpoint past the port, which would bypass whatever the hive puts in front of it. Pre-destructive, emitted by `validate_hive_port_boundary` (`mutation/port_boundary.rs`) before staging. A hive without the declaration is not sealed and never produces this code. **Mutations only** (ruling 2026-08-15): a hive's `params.graph` at boot is the colony author's sovereign birth design and is never rejected by the seal, which guards the runtime instead; boot-time enforcement, if it ever comes, arrives as its own opt-in switch rather than by widening this one.
 - `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in — see `config.en.md` § `params.contract`) and something contradicts it. Two shapes: an `add_edges` edge onto the hive path stamps a constant `hop.route` the hive does not accept; or the hive's own graph no longer carries a lane it promises (an `accepts` lane with no door, an `emits` lane with no exit through the hive path). Pre-destructive, emitted by `mutation/hive_contract.rs`; checked with the real router (`apply_edges`) rather than by comparing text, and an edge whose route is only knowable at runtime is not judged. A hive without the declaration never produces this code. **Mutations only** — boot warns, for the same reason the port seal does.
+- `required_drain_missing` (GH #147/#237): a hive declared a pair (`params.required_drains`, opt-in — see `cell-types.en.md` § `hive`): a port with its drain, or an accepted lane with the answer lane the caller has to take. Something from outside serves one half and the other is missing once the diff stands. It needs the post_state edge table (the mutation this rule wants people to write brings both halves in ONE diff) and therefore runs after staging but before the spawn/registry step — the reject is spurless. Emitted by `mutation/required_drains.rs`, checked with the real router.
 
 `uuid_provider_exhausted` is **not** live code: the enum variant `MutationError::UuidProviderExhausted` was dead code (`Uuid::now_v7()` is infallible, never constructed; additionally mapped as the string `"uuid_provider"` instead of `"uuid_provider_exhausted"`) and **was removed with paket 7** (D-034; verified 2026-06-10: 0 code hits). The note remains as re-discovery protection.
 
@@ -760,7 +773,7 @@ meclaw [options]
 
 The default mode is **direct mode**: a stdin/stdout bridge to the root cell, all on a single `meclaw` invocation. For interactive sessions, simple pipes, tests. The process is **stdin-driven**; closing stdin (EOF, e.g. the end of a pipe) drains the in-flight work and exits with exit code 0 (Unix pipe semantics, `cat input.jsonl | meclaw` terminates like `grep`). A shutdown signal (SIGINT/SIGTERM) acts additionally.
 
-`--daemon` (from phase 12): **decouples the process lifecycle from stdin**; stdin EOF no longer ends the process; the only shutdown triggers are SIGINT/SIGTERM (and the internal watchdog). That is the meaning of "daemon": a long-running process that does not hang on its input pipe. The stdin/stdout bridge is **not switched off** in the process; the mechanism is preserved, but in daemon operation it typically runs empty (systemd `Type=simple` provides stdin as `/dev/null` → immediate EOF without input, stdout into the journal), analogous to nginx, whose stdio exists in daemon mode but remains unused. meclaw does **not** daemonize itself (no `fork`/`setsid`); that is systemd `Type=simple`-conformant; backgrounding is the outside world's business (systemd/nohup). External control runs via the HTTP API + web UI, both opt-in via `--api`.
+`--daemon` (from phase 12): **decouples the process lifecycle from stdin**; stdin EOF no longer ends the process; the only shutdown triggers are SIGINT/SIGTERM (and the internal watchdog). That is the meaning of "daemon": a long-running process that does not hang on its input pipe. That the stdin/stdout bridge is **not switched off** in the process — the mechanism preserved, merely running empty in daemon operation (systemd `Type=simple` provides stdin as `/dev/null` → immediate EOF without input, stdout into the journal), analogous to nginx, whose stdio exists in daemon mode but remains unused — is *(specified, not built — see GH #254)*. Today **one** predicate gates both halves (`is_direct_mode = api.is_none() && !daemon`, `crates/meclaw-cli/src/lib.rs`): under `--daemon` neither a stdin reader nor an egress writer is spawned, there is no `ready` frame, and unrouted root output lands in the dead-letter queue instead of reaching stdout. meclaw does **not** daemonize itself (no `fork`/`setsid`); that is systemd `Type=simple`-conformant; backgrounding is the outside world's business (systemd/nohup). External control runs via the HTTP API + web UI, both opt-in via `--api`.
 
 `--api <bind>` (from phase 12): activates the HTTP API and the operator web UI on the given bind address, e.g. `--api 127.0.0.1:7777` (local-only) or `--api 0.0.0.0:7777` (all interfaces). **Without `--api` no port is opened**; the default is API/UI off. The HTTP API is a thin translation layer over the `/colony/*` endpoints (see "/colony as a virtual endpoint"): each HTTP request becomes a `Message` with `target = "/colony/<endpoint>"` and is sent through the same routing path. The web UI sits on the same bind port under `/ui/*` (see "Web UI" below). `--api` can be set independently of `--daemon`, but it is **not** additive to direct mode: direct mode is exactly "neither `--api` nor `--daemon`", so any `--api` switches the stdin/stdout bridge **off** (`is_direct_mode = api.is_none() && !daemon`).
 
@@ -790,7 +803,7 @@ The default mode is **direct mode**: a stdin/stdout bridge to the root cell, all
 | `--templates <path>` | 11 | `<root>/templates` | Templates directory |
 | `--rescan-templates` | 11 | off | Rebuild the templates registry |
 | `--blobs <path>` | 12 | `<root>/blobs` | Blob storage directory |
-| `--daemon` | 12 | off | Lifecycle decoupled from stdin, shutdown only via signal/watchdog, stdin EOF does not end (the bridge mechanism remains) |
+| `--daemon` | 12 | off | Lifecycle decoupled from stdin, shutdown only via signal/watchdog, stdin EOF does not end (the bridge mechanism remains: *(specified, not built — see GH #254)*, today the bridge is not spawned at all under `--daemon`) |
 | `--api <bind>` | 12 | off (no port) | HTTP API + web UI on bind address; e.g. `127.0.0.1:7777` or `0.0.0.0:7777` |
 | `--validate` | 12 | off | Dry run |
 | `--validate-strict` | 16 | off | Modifier for `--validate` only (without it: no effect): promotes the static findings that are warnings by default -- non-resolvable `params.graph` endpoints, unregistered cell directories at reboot -- to errors (exit ≠ 0). The set of promoted warning classes grows with `--validate` |
@@ -921,7 +934,7 @@ In the default mode a stdin/stdout bridge runs: stdin is converted into messages
 
 **Topological form (ingress/egress like a `proxy` cell)**: the bridge plays the (in the substrate non-existent) parent hive of the root; it shoves messages between the stdio level and the `/` level, exactly like a hive between its levels, only with JSON↔message translation. The root cell **must** therefore be a hive (`type: "hive"`): only the hive carries the graph, and the graph is the assembly point of the colony. **Ingress** (stdin → topology): the bridge is the birth point of the message and establishes the initial `context` directly (a sanctioned entry edge, symmetric to the HTTP ingress, see § Metadata aggregation), with the same context triad as the `proxy`: a fixed well-known `user_id` (the stdio user, identical across all runs), a `chat_id` per process run (start until EOF = one stdio session, analogous to the `proxy` `chat_id`), and a fresh `turn_id` per stdin line; emitted with `sender = @external` to the root cell. **Egress** (topology → stdout): a message that runs back to the root hive `/` and there matches no further out-edge is translated to stdout instead of being dead-lettered as `HiveNoRoute`; that is "one level up = outward", and at the root hive this level is stdio. stdio is thus an **absolute endpoint** (pure sink, like the `proxy` inbound behavior); later coupling of several colonies over pipes is an outlook, not a v0.1.0 scope. In JSON mode (`--stdio-format json`) stdio is additionally the **composition boundary for sub-colonies**: a parent colony operates a whole child colony as **one** cell (`cell-types.md` § `subcolony`). This is explicitly **composition, not federation** — the child tree stays unaddressable from the outside: no path reach-through to child cells, no parent mutation of the child tree.
 
-**Lifecycle**: in direct mode (neither `--daemon` nor `--api`), stdin EOF is a shutdown trigger (drain + exit 0, see § CLI § Modes). `--api` **without** `--daemon` is not direct mode either: the bridge is not spawned at all, so there is no stdin reader and stdin EOF is not a shutdown trigger -- shutdown runs via signal/watchdog, exactly as with `--daemon`. `--daemon` decouples the lifecycle from stdin: the bridge remains as a mechanism, EOF does not end it, shutdown only via signal/watchdog.
+**Lifecycle**: in direct mode (neither `--daemon` nor `--api`), stdin EOF is a shutdown trigger (drain + exit 0, see § CLI § Modes). `--api` **without** `--daemon` is not direct mode either: the bridge is not spawned at all, so there is no stdin reader and stdin EOF is not a shutdown trigger -- shutdown runs via signal/watchdog, exactly as with `--daemon`. `--daemon` decouples the lifecycle from stdin: EOF does not end it, shutdown only via signal/watchdog. That the bridge remains as a mechanism is *(specified, not built — see GH #254)* — under `--daemon` it is spawned exactly as little as under `--api`.
 
 ---
 
@@ -1273,7 +1286,7 @@ deterministically panicking cell (see § Restart strategy).
 
 ## Cell types (overview)
 
-The overview table (type · task · actor kind · emission mode · phase) is canonical in [`cell-types.md` § Overview](cell-types.md#overview). The detail spec per built-in cell type is likewise in `cell-types.md`. Status per cell type / per phase → `PROGRESS.md`.
+The overview table (type · task · actor kind · emission mode · phase) is canonical in [`cell-types.md` § Overview](cell-types.md#overview). The detail spec per built-in cell type is likewise in `cell-types.md`. Since which release a cell type has been live → `CHANGELOG.md`; what is deferred on it → `docs/roadmap.md`.
 
 ---
 
@@ -1511,7 +1524,7 @@ A list of typed file attachments that lie as blobs in the `blobs/` directory (se
 
 **The owner of `attachments[]` resolution is the consuming cell** (ruling GH #19). The substrate resolves, at the delivery boundary, the pointers whose target is a **body document** (`messages_id`/`text_id`, in `messages[]` as in the `system` tree); an attachment is not one, it is a file of arbitrary type and arbitrary size. Inlining it into the JSON body would defeat the very blob store it came from: a 40 MB PDF does not belong in a message. The `blob_id` ref therefore reaches the cell **unchanged**, and the cell reads the blob **on demand**, at `handle()` time, via the storage abstraction. Attachment processing thereby stays a cell capability and is not a substrate detail. **Wiring (GH #87, built):** a cell whose contract declares `consumes.body.attachments` receives a **read-only handle** on the colony's blob store at spawn (`AttachmentReader`). It is not a new `CellFactory` parameter but a function of two things the factory already holds: the contract view and the store that already rides along for the delivery boundary. Without the declaration there is no handle, so the cell **cannot** read an attachment. Every read carries its own operation timeout (concept A, see § Timeouts); a missing blob and a non-consumable MIME type are **cell errors**, not dead letters at the delivery boundary. The first consumer is the `llm` cell (see `cell-types.md` § `llm`).
 
-Cells that consume attachments declare `consumes.body.attachments` in the contract (see `config.md`). Declaring is binding: every key declared in `consumes.body` is mandatory, there is no optional `consumes.body` field (see `config.md` § contract). Cells that do not, ignore the slot. Thereby attachment processing is a **cell capability**, not a substrate detail, an `llm` cell with a vision model declares `consumes.body.attachments` and loads images via the storage abstraction, a text-only LLM cell does not see the slot.
+Cells that consume attachments declare `consumes.body.attachments` in the contract (see `config.md`). The switch is the **declaration**: `required` (default `true`) governs the ingress check — a `required: false` takes the key out of it entirely (neither presence nor type is checked), yet declares the slot just as much and unlocks the handle just the same (see `config.md` § contract, GH #323). Cells that do not, ignore the slot. Thereby attachment processing is a **cell capability**, not a substrate detail, an `llm` cell with a vision model declares `consumes.body.attachments` and loads images via the storage abstraction, a text-only LLM cell does not see the slot.
 
 Attachments are **separate from `messages[]`**: a conversation stays purely textual, attachments hang as a parallel list off the body. Thereby PDF attachments do not collide with the `messages[]` turn semantics (`origin`, `type: tool_call|...`), and LLM provider adapters can build them into their API call in a cell-type-specific way (e.g. with OpenAI as an `image_url` content block).
 
@@ -1958,6 +1971,9 @@ blobs/<uuid-v7>.<ext>.meta.json  # sidecar with authoritative metadata
    (adoption path "2b", see § Mutation format). For no already known path
    is a new `cell_id` assigned. Hive scope markers: read the `params.graph` hint and enter it as
    declarative edges for the scope (insofar as not yet persisted in `colony.db`).
+   **Edges only — the boot instantiates no node**: the `nodes` block described in § Graph schema
+   is marked "specified, not built" there (GH #277) and is an error at the boot parser; this step
+   describes current behaviour, that section the target picture.
    **Derived activity from the first bootstrap onward (the-one-rule):** the first bootstrap applies
    the same activation rule as the mutation recompute (§ Connectivity and activity): the
    computation is seeded from the `params.graph` edges (like a mutation from its
@@ -2438,7 +2454,7 @@ Colony answers in the universal body format with a top-level slot `graph`. Consu
 - **Slot wrapper** (`graph`): groups the related fields under a named top-level slot, consistent with the universal-body discipline "cells may create their own top-level slots".
 - **`graph_version`** is **constant `0`** today; the counter growing monotonically per scope (counts up on every successful mutation for this scope, helps with polling diff) is **planned from phase 14**.
 - **Granularity: shallow only**, one level per read. Sub-scopes are read via separate graph queries with their path as scope.
-- **Edge UUIDs visible**: the builder can use them when it needs them for disambiguation in pathology cases (`remove_edges` with the `id` field).
+- **Edge UUIDs visible**: the query emits them. Using them for disambiguation in `remove_edges` (`remove_edges` with the `id` field) is *(specified, not built — see GH #254)*: `validate_remove_edges` (`crates/meclaw-colony/src/mutation/validate.rs`) requires `match.from` **and** `match.to`, an `id` key is read on neither path — validation nor apply — and an `id`-only match is rejected as `schema`, not as "no such edge". Edge identity today is `from`+`to`+`condition`+`modifier`, as § Mutation format describes it.
 
 **Push vs. pull**: pull (`GET /colony/registry?path_prefix=...` with a `graph_version` comparison for cache invalidation) from phase 12; push (`GET /colony/events`, WebSocket subscribe) from **phase 14**, reason: the event broadcast would have to be fired from the routing loop, `handle_cell_died`, and `handle_mutation`, that touches the await-free `handle_cell_died` corridor (the byte-identical gate) and needs its own design pass (broadcast mechanics, a slow-consumer drop policy, an event schema). Pull is available from phase 12, because the web UI itself does not need it (no JS, no auto-refresh), but external clients (observability tools, a live graph viewer) benefit from it. Cell-to-cell subscriptions as a pattern are possible later, but not a core feature.
 
@@ -2659,7 +2675,7 @@ Concurrency-first: the actor substrate stands in phase 1, everything else builds
 | 15 | **Builder-hive + AI builder**: the builder-hive as a multi-stage hive scope (an llm cell for NL understanding + a `code` cell for diff construction and validation + optional a template-discovery aggregator), takes natural-language requests, emits mutation diffs to `/colony/mutations`, uses template discovery (`/colony/templates`) | the builder-hive builds a sub-topology from a prompt |
 | 16 | **Schema freeze + audit**: a schema final review, a docs audit, a cross-reference check, a license decision | a documentation-stable tag |
 
-**Sub-phases** (emergent substrate intermediate passes like 6.5 / 7.5 or doc consolidations like 9.5) are not a roadmap component. The status per phase and sub-phase, including the current phase and the last Git tag, lives exclusively in `PROGRESS.md`.
+**Sub-phases** (emergent substrate intermediate passes like 6.5 / 7.5 or doc consolidations like 9.5) are not a roadmap component. What of this roadmap has shipped is recorded in `CHANGELOG.md`; what was deferred, in `docs/roadmap.md`. The phase history up to 2026-08-14 is archived in `plans/archive/PROGRESS-2026-08-14.md`.
 
 ---
 

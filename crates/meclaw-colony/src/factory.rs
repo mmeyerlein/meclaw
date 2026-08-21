@@ -64,6 +64,24 @@ pub struct ContractView {
     /// this cell's own parent scope. `Open` by default, so a cell that says
     /// nothing keeps the behaviour it had.
     pub write_surface: meclaw_core::WriteSurface,
+    /// GH #314 — `contract.transfer`: whether this cell's database answers the
+    /// `transfer` slot at all. `All` by default, for the same reason.
+    pub transfer: meclaw_core::TransferPolicy,
+}
+
+impl ContractView {
+    /// The two declarations the substrate consults on the `transfer` slot, as
+    /// the one value the spawn helpers carry (GH #260 + GH #314).
+    ///
+    /// Deliberately not derived from one another: `write_surface` says WHO may
+    /// write, `transfer` says WHETHER the database answers the seam at all. A
+    /// cell that wants both declares both.
+    pub fn transfer_bounds(&self) -> meclaw_core::TransferBounds {
+        meclaw_core::TransferBounds {
+            write_surface: self.write_surface,
+            policy: self.transfer,
+        }
+    }
 }
 
 /// What a `CellFactory` returns for `spawn_cell`.

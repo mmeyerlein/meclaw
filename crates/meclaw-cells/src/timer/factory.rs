@@ -69,7 +69,7 @@ impl CellFactory for TimerCellFactory {
             blob_store,
             mailbox_capacity,
             contract.consumes.clone(),
-            contract.write_surface,
+            contract.transfer_bounds(),
         )?;
 
         // Initial spawn → `build_long_running_task` (inside `build`) creates the
@@ -137,7 +137,7 @@ impl CellFactory for TimerCellFactory {
             blob_store,
             mailbox_capacity,
             contract.consumes.clone(),
-            contract.write_surface,
+            contract.transfer_bounds(),
         )
         .ok()?;
         // No initial `build(...)` call here → boot-gating: the inactive cell's
@@ -174,7 +174,7 @@ fn make_build(
     blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
-    write_surface: meclaw_core::WriteSurface,
+    bounds: meclaw_core::TransferBounds,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -203,7 +203,7 @@ fn make_build(
     let consumes_cap = consumes;
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
-    let write_surface_cap = write_surface;
+    let bounds_cap = bounds;
 
     Ok(move || -> (
         mpsc::Sender<Message>,
@@ -250,7 +250,7 @@ fn make_build(
             Some(colony_inbox_cap.clone()),
             blob_cap.clone(),
             consumes_cap.clone(),
-            write_surface_cap,
+            bounds_cap,
         );
         (tx, join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
     })
