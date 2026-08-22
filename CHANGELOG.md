@@ -11,6 +11,8 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.17.3] — 2026-08-22
+
 ### Changed
 
 - **A tier-1 recall delivers two documents in one message** (`memory-hive@2.3.0`,

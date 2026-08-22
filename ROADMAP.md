@@ -89,11 +89,14 @@ Two of these are watches rather than fixes, and stay open on purpose:
 - [#141](https://github.com/mmeyerlein/meclaw/issues/141) message headers are
   unbounded by design — measured every few weeks rather than capped
 - [#138](https://github.com/mmeyerlein/meclaw/issues/138) the environment knobs
-  are a declared **experimental** surface; 100 behavioural knobs remain across the
-  shipped templates — 104 of the 128 occurrences sit in `script_inline` — and they
+  are a declared **experimental** surface; 103 behavioural knobs remain across the
+  shipped templates — 107 of the 131 occurrences sit in `script_inline` — and they
   migrate to params one template at a time, defaults bit-identical. Order:
-  `memory-hive` (48, of which `recall` alone holds 22), then the small ones;
-  `talky` and `cogny` own none of their own, theirs come from their sub-units
+  `memory-hive` (51, of which `recall` alone holds 25), then the small ones;
+  `talky` and `cogny` own none of their own, theirs come from their sub-units.
+  The count grew by three in 0.17.3 rather than shrinking: the fusion floors of
+  [#297](https://github.com/mmeyerlein/meclaw/issues/297) arrived as env knobs
+  like their neighbours, all three in `recall`
 
 ## Later: memory, after the measurement
 
@@ -104,12 +107,19 @@ retrieval had delivered the gold session and the synthesis failed to answer from
 it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 
 - [#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
-  stream points: the bottleneck is not the remembering. 0.10.3 took the first of
-  its three measures — tier 2 receives the candidates grouped by session
-  alongside the flat ranking, and the prompt says how to aggregate. The two
-  remaining measures are untouched, because both change what is retrieved or how
-  often the model runs, and the gate for either is a benchmark run rather than a
-  test.
+  stream points: the bottleneck is not the remembering. Its first measure — the
+  shape of what tier 2 is handed — has had two instalments: 0.10.3 grouped the
+  candidates by session alongside the flat ranking and said how to aggregate,
+  and 0.17.3 rewrote the document itself (a header that says what it is,
+  separate `FACTS` and `WHAT WAS SAID` sections, the run's bookkeeping moved out
+  into `recall_diagnostic`). Neither instalment has been measured against end
+  accuracy. The other two measures are untouched — whether the tier-1 cap
+  truncates the *set* a multi-session answer needs, and whether `dialectic`
+  earns a second pass on questions that count, compare or span — because both
+  change what is retrieved or how often the model runs, and the gate for either
+  is a benchmark run rather than a test. The 0.17.3 fusion measurement does not
+  close any of this: it was retrieval-only and paired, and it says only that the
+  new relevance floors cost nothing.
 - [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
   producer since #78, but no shipped composite carries the tool that drives it,
   so time-range questions still run as point recalls
@@ -154,9 +164,6 @@ more sentences that were simply false. What is left:
   breaks is who said what *inside* the room, which is the distinction a
   multi-person channel exists to make. A wrong identity is worse than an absent
   one — nothing downstream can tell a filled column from a correct one
-- [#248](https://github.com/mmeyerlein/meclaw/issues/248) `cogny`'s README puts
-  the memory leg at its own collector, which its seal makes impossible — `talky`
-  is the only shipped composite that can carry one
 - [#254](https://github.com/mmeyerlein/meclaw/issues/254) the general form of the
   same problem, one level up: a review checks code against spec, so a spec that
   is ahead of the code passes every review. The audit sorts every claim about
@@ -167,6 +174,30 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.17.3 — a template can put another template inside itself.** `cell.type:
+  "ref"` names a template as a sub-unit, so `talky` and `cogny` reference the
+  four and the two units they used to carry as byte copies, and a cell records
+  which template **it** came from plus the composites that placed it
+  (`registry.template_chain`, `colony.db` schema v6). A template also declares
+  what it needs — `requires.ctx` / `requires.env`, checked before the first byte
+  is staged — an `override_params` key must name a param the target cell really
+  has, and a refused mutation names every violation of the stage that refused it
+  instead of only the first. On the memory side the tier-1 recall becomes two
+  documents in one message: a bundle that says what memory holds, and
+  `recall_diagnostic` beside it for the retrieval's own bookkeeping; the ambient
+  leg arrives as a `memory_recall` tool pair in the round rather than as durable
+  state in `system.memory`. And the defect that had made every live recall
+  invisible: a `code` cell whose `script_inline` crossed 128 KiB never spawned at
+  all.
+- **v0.17.2 — the error paths keep the contract's word.** A `store` error reply
+  stamps `hop.operation` like every other reply, a contract that consists of
+  nothing but `consumes.topology.inbound_edges` stops being counted as vacuous
+  and losing its capability at spawn, and `code` refuses
+  `external_timeout_ms: 0` the way its three siblings always have. A row of
+  shipped templates says what it does again — the `steward`'s revert is checked
+  like its outbound change, and its probe asks about the mechanism the loop
+  actually uses. Nothing in it hands a caller anything that was not already
+  promised, which is why the third digit moved.
 - **v0.17.1 — the night the audit was answered.** Twenty-two findings of the
   2026-08-20 consistency audit, twelve of them shipped templates whose documents,
   addresses or numbers had drifted from what their code does. A rejected mutation
