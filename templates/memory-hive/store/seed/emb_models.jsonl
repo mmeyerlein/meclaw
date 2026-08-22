@@ -1,2 +1,2 @@
 {"schema": {"model_id": "text", "provider": "text", "endpoint_ref": "text", "dim": "int", "active": "int", "created_at": "text"}}
-{"model_id": "qwen/qwen3-embedding-8b", "provider": "openai-compatible", "endpoint_ref": "MEMORY_EMBED_ENDPOINT", "dim": 1024, "active": 1, "created_at": "1970-01-01T00:00:00Z"}
+{"model_id": "google/gemini-embedding-2", "provider": "openai-compatible", "endpoint_ref": "MEMORY_EMBED_ENDPOINT", "dim": 1024, "active": 1, "created_at": "1970-01-01T00:00:00Z"}

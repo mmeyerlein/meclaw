@@ -567,6 +567,75 @@ fn a_materialised_closure_travels_as_the_end_it_is() {
     );
 }
 
+// ------------------------------------------------ fix round 2, finding I2
+// The same contradiction, on the branch the first round did not cover. When the
+// axis page does not carry the hit — a small `MEMORY_TIER1_AXIS_LIMIT`, or a
+// page that simply came back without the older version — window mode falls back
+// to a candidate WITHOUT history rather than losing it, and that fallback built
+// its span out of the RAW `valid_until` column while the candidate's own
+// `valid_until` a few lines further down already read the closure. So the two
+// halves of one candidate disagreed about the same closure again, in exactly the
+// case where nothing else on the axis is around to contradict them.
+
+/// Window mode, materialised closure, and an axis page that came back WITHOUT
+/// the hit. This is the fallback branch: `fact_span` finds no chain containing
+/// `f-old`, so the span is built from the hydration row alone.
+#[test]
+fn a_truncated_axis_page_still_spans_to_the_closure() {
+    let candidates = serde_json::json!([
+        {"kind": "fact", "id": "f-old", "score": 0.09, "legs": ["keyword"]}
+    ]);
+    let doc = with_window(
+        emit_doc(
+            candidates,
+            serde_json::json!([]),
+            serde_json::json!([f_old_materialised()]),
+            // The page the axis select came back with: the successor only. The
+            // hit itself fell off it, which is what a small AXIS_LIMIT does.
+            serde_json::json!([f_new()]),
+        ),
+        "2025-12-01T00:00:00Z",
+        "2026-08-01T00:00:00Z",
+    );
+    let msgs = emit(doc);
+    let records = record(&msgs);
+    let slot = slot_of(&records, "f-old");
+    let cand = &records[slot];
+
+    assert!(
+        cand["history"].as_array().is_none_or(|h| h.is_empty()),
+        "the fallback keeps the candidate WITHOUT history — that is the branch \
+         under test, and a non-empty history means the axis page was not \
+         truncated after all: {cand}"
+    );
+    assert_eq!(
+        cand["valid_until"], "2026-06-01T00:00:00Z",
+        "the closure the store holds, read the same way `span_end` reads it: {cand}"
+    );
+    assert_eq!(
+        cand["span"]["until"], "2026-06-01T00:00:00Z",
+        "and the fallback span ends at the same instant instead of at the empty \
+         raw column: {cand}"
+    );
+    assert_eq!(
+        cand["valid_until"], cand["span"]["until"],
+        "the two ends of one candidate agree on the fallback branch too: {cand}"
+    );
+
+    // The reader's half, at the resolution the payload answers at. `[… -> open]`
+    // beside a closed statement is the wrong answer this finding is about.
+    let b = bundle(&msgs);
+    let payload_cand = &b["candidates"][slot];
+    assert_eq!(
+        payload_cand["until"], "2026-06-01",
+        "the payload names the end as a day: {payload_cand}"
+    );
+    assert_eq!(
+        payload_cand["span"]["until"], "2026-06-01",
+        "the payload span ends there too, rather than rendering `open`: {payload_cand}"
+    );
+}
+
 // ------------------------------------------------ fix round 1, finding 2
 // `leg_sizes` is a SUM taken after the audience gate, and it answered the cap
 // question wrong in both directions. The verdict now comes off the pages

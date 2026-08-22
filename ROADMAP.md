@@ -56,8 +56,6 @@ What is left of the epic:
 
 Named flanks left by the pre-MVP waves, plus new findings from running the thing.
 
-- [#46](https://github.com/mmeyerlein/meclaw/issues/46) the harness permission
-  surface and error-code semantics
 - [#45](https://github.com/mmeyerlein/meclaw/issues/45) the code cell's 16 ms
   interpreter start, which dominates serial hot paths
 - [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
@@ -69,10 +67,22 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   #160 — the data it needs (cost, errors, dead letters, whether a mutation
   committed) has no sanctioned route today, so this is a decision about the rule
   rather than a repair
-- [#111](https://github.com/mmeyerlein/meclaw/issues/111) guarding interpreter
-  bytecode caches in the coding templates' edit-test loops
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
   selection and closed-loop automation, beyond the v1 catalogue
+
+Two flanks closed since this list was written, both by measurement rather than
+argument. [#46](https://github.com/mmeyerlein/meclaw/issues/46): the CLI never
+sends a `can_use_tool` request under the adapter's current invocation, and
+`permission_mode` is no ceiling either — with `--allowedTools` omitted entirely,
+`Bash` still ran. The reliable bounds stay `env_clear` plus a passthrough
+allow-list, the canonicalised cwd clamp, and `params.sandbox`; whether the
+adapter gains `--input-format stream-json` or a first-class tool-ceiling
+parameter are open decisions, and neither will be guessed into production code.
+[#111](https://github.com/mmeyerlein/meclaw/issues/111) shipped the half that
+exists: a cookbook note on interpreter bytecode caches plus `python3 -B` in the
+coder-pipeline examples. The substrate half has nowhere to live — a `bash`
+cell's params know `max_concurrency`, `external_timeout_ms`, `max_bytes` and
+`sandbox`, and no environment key.
 
 Two of these are watches rather than fixes, and stay open on purpose:
 

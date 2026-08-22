@@ -118,6 +118,22 @@ retrieved from `https://openrouter.ai/api/v1/models` on 2026-08-15:
 | `anthropic/claude-opus-5` | 5.00 | 25.00 |
 | `qwen/qwen3-embedding-8b` | 0.01 | — |
 
+**Embedding models are not in that listing.** `https://openrouter.ai/api/v1/models`
+answers with chat models only; the embeddings endpoint is a separate API and
+carries no price list, so an embedding figure is always *measured* — one call,
+its billed amount divided by its tokens — and dated like any other measurement:
+
+| model | input, USD / 1M tokens | measured |
+|---|---|---|
+| `qwen/qwen3-embedding-8b` | 0.01 | 2026-08-08, 5 tokens |
+| `google/gemini-embedding-2` | 0.20 | 2026-08-22, 4 tokens |
+
+`google/gemini-embedding-2` is what `memory-hive` ships as of 2.3.0 — twenty
+times the price of the generation before it, and still the smallest line on
+every bill below, because an embedding call bills the prompt side of a few dozen
+tokens where a synthesis call bills thousands on both sides. The qwen row stays
+because the figures further down were measured against it.
+
 Where euro figures are given, they use the ECB euro reference exchange rate of
 2026-08-14, 1 EUR = 1.1567 USD.
 
@@ -184,6 +200,12 @@ Per model, over the full window:
 | `anthropic/claude-opus-5` | 26 | 50,999 | 5,784 | 0.400 |
 | `openai/gpt-5.6-luna` | 58 | 92,490 | 8,732 | 0.014 |
 | `qwen/qwen3-embedding-8b` | 26 | 1,436 | — | 0.00001 |
+
+The embedding row names `qwen/qwen3-embedding-8b` because this window was
+measured before the shipped generation moved to `google/gemini-embedding-2` on
+2026-08-19. At the price above the same 1,436 tokens would be 0.0003 USD —
+under a thousandth of this table's total, which is why the switch is not worth
+re-measuring the window for.
 
 In euro at the rate above: 0.32 EUR / 24 h for the full window, 0.024 EUR / 24 h
 unattended.

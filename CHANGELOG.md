@@ -55,9 +55,38 @@ Rust crates are internals and move without notice.
   had grown past the 128 KiB that a single `-c` argument may carry on Linux, so
   the cell did not spawn at all. That blocker is **fixed**
   ([#349](https://github.com/mmeyerlein/meclaw/issues/349), commit `1dff52f9` —
-  see § Fixed below), and a live tier-0 recall against the shipped template
-  answers again. The measurement itself is still **pending**: no end-to-end
-  number changes hands with this release.
+  see § Fixed below).
+
+  **The cuts have now been measured, and they cost nothing.** 18 questions from
+  LongMemEval-S, each answered three times — default, `MEMORY_KW_MIN_SCORE_RATIO=0.0`,
+  `MEMORY_RRF_AGREEMENT=0.0` — over the *same* store with the *same* vectors, so
+  nothing but the knob differs. All three arms return the identical
+  `R@1 72.2 % / R@5 88.9 % / R@10 94.4 % / MRR 0.7908`, and across all 54 paired
+  passes exactly one thing moves at all: on one question the keyword leg grows
+  from 17 to 19 candidates when its floor is removed, without changing the rank
+  of anything. The defaults therefore stay where they are. Two honest limits:
+  the sample is half deliberately-hard questions and is **not** a benchmark
+  figure — only the difference *between* arms carries meaning, and that
+  difference is zero — and the run was retrieval-only, so it says nothing about
+  the end-to-end gap of
+  [#148](https://github.com/mmeyerlein/meclaw/issues/148), which stays open.
+  Receipt: `plans/wellen-2026-08-21/receipts/w2-longmemeval.md`.
+
+- **The shipped embedding generation is `google/gemini-embedding-2`**
+  (`memory-hive@2.3.0`). `store/seed/emb_models.jsonl` named
+  `qwen/qwen3-embedding-8b`; the deployment it mirrors moved off that model on
+  2026-08-19 because its tail latency was burning whole query-embedding calls
+  against the read lane's timeout, while the replacement answered comfortably
+  inside it. The seed is copied verbatim into the store while `similar` filters
+  on the `model_id` it finds there. Left behind, the seed and the env would have
+  disagreed and the semantic leg would have gone **silently empty** — a bad
+  retrieval number instead of a config error. Dimension stays 1024. Anyone
+  running their own embedder keeps setting `MEMORY_EMBED_MODEL` and must keep
+  this seed in step with it; the eval's pre-flight refuses to spend anything
+  while the two disagree, and the shipped tree's own three statements of the
+  value — the seed, the `${MEMORY_EMBED_MODEL:-…}` in `embed` and the
+  `contract.settings.model.default` beside it — are now pinned against each
+  other ([#204](https://github.com/mmeyerlein/meclaw/issues/204)).
 
 - **A bundle with no candidates says so instead of showing an empty list**
   ([#297](https://github.com/mmeyerlein/meclaw/issues/297)). The asserting
@@ -240,7 +269,12 @@ Rust crates are internals and move without notice.
   ([#296](https://github.com/mmeyerlein/meclaw/issues/296)). Gone from
   `system.memory.bundle`: `id`, `rank`, `score`, `legs`, `session_id`,
   `episode_id`, the successor row id `superseded_by`, the full `history` chain
-  and the exact instants (days now). Gone from the bundle level:
+  and the exact instants (days now). **The history cut applies to the JSON
+  payload slot only:** `previously` there carries exactly one entry, the claim
+  this one immediately replaced, while the rendered text block travelling in the
+  same prompt still ends a superseded line with the whole chain — both renderers
+  share one annotation helper, and giving it a limit changes a rendering other
+  tests pin byte for byte, so it is its own package. Gone from the bundle level:
   `legs_present`, `leg_sizes`, `semantic_degraded`. **Migration:** every one of
   them is in the SAME message, in the `recall_diagnostic` body slot — which the
   message log stores whole, so `/colony/messages` is the place a past run is
