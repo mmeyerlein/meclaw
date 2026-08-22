@@ -1,0 +1,43 @@
+{
+  "_comment": "Dated price snapshot for scripts/cost_report.py. Prices change; this file is the reason the number in docs/costs.md can be dated and re-checked. A newer list lands BESIDE the old ones, never on top of them -- overwriting a price file would silently rewrite every number ever derived from it. Copy it, edit it, pass your own with --prices.",
+  "source": "https://openrouter.ai/api/v1/models",
+  "retrieved": "2026-08-22",
+  "currency": "USD",
+  "unit": "USD per 1,000,000 tokens",
+  "models": {
+    "openai/gpt-5.6-luna": {
+      "input": 0.20,
+      "output": 1.20,
+      "_note": "openrouter id resolves to openai/gpt-5.6-luna-20260709. Doubled since the 2026-08-15 snapshot (was 0.10 / 0.60). Prompts above 272,000 tokens bill at a higher tier (0.40 / 1.80) that this flat two-number format does not express; a colony whose calls stay below that threshold is priced exactly, one above it is priced low."
+    },
+    "anthropic/claude-opus-5": {
+      "input": 5.00,
+      "output": 25.00,
+      "_note": "openrouter id resolves to anthropic/claude-opus-5-20260723. Unchanged since the 2026-08-15 snapshot."
+    },
+    "google/gemini-embedding-2": {
+      "input": 0.20,
+      "output": 0.0,
+      "_note": "embedding endpoint; no completion tokens are billed. NOT taken from the models listing -- https://openrouter.ai/api/v1/models answers with chat models only, and the embeddings endpoint carries no price list. This figure is MEASURED: one call on 2026-08-22, its billed amount divided by its 4 prompt tokens. The shipped embedding generation since 2026-08-19."
+    },
+    "qwen/qwen3-embedding-8b": {
+      "input": 0.01,
+      "output": 0.0,
+      "_note": "retired on 2026-08-19, superseded by google/gemini-embedding-2. The row stays so that a window spanning the switch prices both generations instead of dropping the older half into the 'unknown' bucket. Measured on 2026-08-08, 5 tokens."
+    }
+  },
+  "fallback_models": [
+    {
+      "from_path_suffix": "/embed",
+      "model": "google/gemini-embedding-2",
+      "_note": "An embed cell is a code cell calling an embedding endpoint. It reports tokens_prompt in its hop header but no model id -- the model lives in its own payload. Attribute it here, or its tokens land in the 'unknown' bucket and are excluded from the total. This rule names the CURRENT generation; a window recorded before 2026-08-19 belongs to the snapshot of its own day, which names the one before it."
+    }
+  ],
+  "fx": {
+    "EUR": {
+      "usd_per_unit": 1.1699,
+      "source": "ECB euro reference exchange rate",
+      "date": "2026-08-21"
+    }
+  }
+}

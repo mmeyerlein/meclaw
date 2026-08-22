@@ -1,4 +1,4 @@
-# `receptionist@2.0.2`
+# `receptionist@2.0.3`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -56,6 +56,7 @@ Two edges, and **the parent draws both**.
 | `in_turn` | in | the first turn of a channel. The edge promotes `context.channel` and `context.audience_set`, both mandatory |
 | `mutate` | out | the tree this reception decided to grow, on to `/colony/mutations` -- **bootstrap only**, see below |
 | `turn` | out | the turn itself, on the lane its own agent answers to |
+| `reject` | out | the channel ledger did not answer a step of this reception (`hop.reject_reason` `store_refused`, the ledger's own code in `hop.store_error`, the refused op in `hop.store_operation` -- [#343](https://github.com/mmeyerlein/meclaw/issues/343)). The body names the **step**: at `look` nothing is built and no row is written -- an unanswered lookup has the same shape as a channel nobody has met, and read as the second it grew a **second** agent for a channel that already had one. At `open` the agent was already built and the turn already left in the same emission, so only the ledger row is missing, and every later turn on that channel repeats the instantiation -- refused each time as a name collision |
 
 ```json
 {"from": "<surface>", "to": "./reception",
@@ -130,7 +131,7 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
                   "set_context": {"channel": "hop.chan_raw",
                                   "audience_set": "hop.aud"}}},
     {"from": "./talky-<key>", "to": "<RECEPTIONIST_REPLY_TO>",
-     "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
+     "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
     {"from": "./talky-<key>", "to": "<RECEPTIONIST_WRITE_TO>",
      "condition": "has(hop.route) && hop.route == 'write'",
      "modifier": {"set_hop": {"route": "'in_batch'"}}},
@@ -141,6 +142,16 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`:
 Those are talky's four essential lanes, at talky's own path -- since `talky@3` there is no cell inside it a mutation could name. A target left empty in `.env`
 means the edge is **left out** rather than invented -- and an unwired answer
 lane dead-letters, loudly.
+
+**The reply guard names two keys, not one.** Three sorts travel talky's `answer`
+lane and only one of them is an answer: a real one, a round that hit `max_iter`
+(`hop.round_capped`), and -- since `collector@2.1.1` -- a turn the store would
+not let be assembled (`hop.degraded`, [#343](https://github.com/mmeyerlein/meclaw/issues/343)).
+The third carries **no** `round_capped`, so a guard against `round_capped` alone
+lets it through and a store refusal is read out to a person as a real reply.
+Neither of the two goes to the reply sink; both dead-letter, which is where this
+reception already leaves the capped sort. A parent that wants to render them
+differently draws its own edge on `has(hop.degraded)`.
 
 **Three keys travel, and the third is the round.** `hop.aud` is the round the
 caller declared, carried through the ledger round trip as `context.rec_aud` and

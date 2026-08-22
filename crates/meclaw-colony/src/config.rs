@@ -91,11 +91,44 @@ pub struct ParsedConfig {
 }
 
 /// The `cell` section of a `config.json`.
+///
+/// GH #353: the key list is **closed and enforced**, exactly as
+/// `docs/config.md` § Block definition (canonical) has always claimed. Before
+/// this, `CellHeader` was the one deserialize struct in this file without
+/// `deny_unknown_fields`, and the boot leaned on a hand-maintained allow-list
+/// in `bootstrap.rs` that the mutation/staging path never consulted — so a typo
+/// in a `cell` key (`idle_timout_ms`) was refused at boot but silently dropped
+/// when the same template was staged through a mutation. Enforcing it here puts
+/// the list in ONE place: every read path deserializes through this struct, so
+/// every read path refuses the same key, and serde names it.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CellHeader {
     /// Cell type identifier (e.g. `"echo"`, `"llm"`).
     #[serde(rename = "type")]
     pub cell_type: String,
+    /// The instance's `cell_id` (UUID v7), written exactly once by the
+    /// instantiation and never again (`docs/config.md` § `cell` → `id`).
+    ///
+    /// Declared so the closed key list covers it — `cell.id` stands in every
+    /// instantiated `config.json`. It is NOT read from here: `colony.db` is the
+    /// authoritative source of the `cell_id`, and the instantiation path reads
+    /// the freshly written value straight out of the raw JSON. Kept as a
+    /// `String` on purpose, so that enforcing the key list does not also start
+    /// rejecting an id whose *shape* no reader has ever checked at boot.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// The template a `cell.type: "ref"` marker places at this position
+    /// (`<name>` or `<name>@<version>`, GH #277).
+    ///
+    /// **Template-time only** — a `ref` is resolved at instantiation and never
+    /// stands in an instantiated `config.json`. Declared for the same reason as
+    /// [`id`](Self::id): the shipped composites (`talky`, `cogny`) carry `ref`
+    /// markers, and a closed key list has to admit the key they use. The
+    /// resolving reader is the subtree parser
+    /// ([`crate::mutation::subtree`]), which reads it from the raw JSON.
+    #[serde(default)]
+    pub template: Option<String>,
     /// Phase 5+: Max-respawn attempts. `None` means "use default (5)";
     /// `Some(0)` means no respawns at all.
     #[serde(default)]

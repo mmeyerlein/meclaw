@@ -50,7 +50,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the finished turn, for the reply sink. Two sorts travel here and hop.round_capped tells them apart: a real answer and a round that hit max_iter"
+          "because": "the finished turn, for the reply sink. Two sorts travel here and hop.round_capped tells them apart: a real answer and a round that hit max_iter. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply"
         },
         {
           "route": "write",
@@ -70,7 +70,7 @@
         },
         {
           "route": "prune",
-          "because": "the report of a window prune: one message per cut session (hop.pruned_turns, hop.pruned_rounds, hop.prune_boundary), or a single zero report saying nothing was eligible. Every in_prune produces exactly one -- a caller that sends the lane MUST take it, which is why required_drains pairs the two"
+          "because": "the report of a window prune: one message per cut session (hop.pruned_turns, hop.pruned_rounds, hop.prune_boundary), or a single zero report saying nothing was eligible. Since collector@2.1.1 a zero report can also mean the store REFUSED one of the prune chain's own reads or deletes: such a report carries hop.degraded together with hop.store_error and hop.store_operation, and a zero that was measured must not be read as a zero that was refused (GH #343). Every in_prune produces exactly one -- a caller that sends the lane MUST take it, which is why required_drains pairs the two"
         },
         {
           "route": "error",
@@ -159,6 +159,10 @@
           }
         },
         {
+          "from": "./session-keeper",
+          "to": "./errors",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        }, {
           "from": "./brain",
           "to": "./errors",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')"

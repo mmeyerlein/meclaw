@@ -60,6 +60,14 @@ PIN-ref-type-de	docs/config.md	Was in der Instanz landet, ist der Inhalt des ref
 PIN-ref-type-en	docs/config.en.md	What lands in the instance is the referenced template's content at the reference's position	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
 PIN-provenance-chain-de	docs/config.md	nennt das **referenzierte** Template, nicht das Composite darüber	pinned	which_cells_are_instances_of_collector_has_an_answer
 PIN-provenance-chain-en	docs/config.en.md	names the **referenced** template, not the composite above it	pinned	which_cells_are_instances_of_collector_has_an_answer
+PIN-cell-key-closed-boot-de	docs/config.md	Ein im `cell`-Block deklarierter Schlüssel, der nicht auf dieser Liste steht, ist eine harte Verweigerung	pinned	boot_refuses_an_unknown_cell_key_and_names_key_and_file
+PIN-cell-key-closed-boot-en	docs/config.en.md	A key declared in the `cell` block that is not on that list is a hard refusal	pinned	boot_refuses_an_unknown_cell_key_and_names_key_and_file
+PIN-cell-key-closed-mutation-de	docs/config.md	auf dem Mutationspfad eine reguläre prä-destruktive Validierungs-Verweigerung	pinned	a_staged_template_with_an_unknown_cell_key_is_refused_at_validation
+PIN-cell-key-closed-mutation-en	docs/config.en.md	on the mutation path a normal pre-destructive validation refusal	pinned	a_staged_template_with_an_unknown_cell_key_is_refused_at_validation
+PIN-cell-key-closed-subtree-de	docs/config.md	schließt **jeden Knoten eines mehrzelligen (Subtree-)Templates** ein	pinned	a_staged_subtree_template_with_an_unknown_inner_cell_key_is_refused
+PIN-cell-key-closed-subtree-en	docs/config.en.md	includes **every node of a multi-cell (subtree) template**	pinned	a_staged_subtree_template_with_an_unknown_inner_cell_key_is_refused
+PIN-cell-ref-boot-refusal-de	docs/config.md	ist eine unaufgelöste Referenz und damit derselbe harte Boot-Fehler wie ein unbekannter Schlüssel	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
+PIN-cell-ref-boot-refusal-en	docs/config.en.md	is an unresolved reference, and so the same hard boot error as an unknown key	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
 PIN-requires-derived-de	docs/meclaw-overview.md	Die Deklaration ist abgeleitet, nicht danebengeschrieben	pinned	every_ctx_key_a_template_uses_is_declared
 PIN-requires-derived-en	docs/meclaw-overview.en.md	The declaration is derived, not written down beside it	pinned	every_declared_ctx_key_is_used
 #
@@ -70,6 +78,16 @@ PIN-code-oversized-inline-de	docs/cell-types.md	in eine Temp-Datei pro Spawn ges
 PIN-code-oversized-inline-en	docs/cell-types.en.md	written to a per-spawn temporary file and the runner is pointed at that path	pinned	a_big_script_still_spawns
 PIN-code-oversized-inline-sandbox-de	docs/cell-types.md	das Substrat gewährt der materialisierten Datei genau ein Lese-Recht	pinned	a_big_script_still_spawns_under_a_restricted_sandbox
 PIN-code-oversized-inline-sandbox-en	docs/cell-types.en.md	the substrate grants the materialised file exactly one read right	pinned	a_big_script_still_spawns_under_a_restricted_sandbox
+#
+PIN-bash-argv-cap-de	docs/cell-types.md	Ein `command` ab dieser Grenze wird deshalb vor dem Spawn abgelehnt	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
+PIN-bash-argv-cap-en	docs/cell-types.en.md	A `command` at or above that line is therefore refused before the spawn	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
+#
+PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen vier Reads wird ein Filter, der ankommt, nie stumm verworfen	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all four reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-read-filter-broken-uuid-de	docs/meclaw-overview.md	`trace_id`/`correlation_id` keine gültige UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
+PIN-read-filter-broken-uuid-en	docs/meclaw-overview.en.md	`trace_id`/`correlation_id` not a valid UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
+PIN-graph-scope-alias-de	docs/meclaw-overview.md	nimmt einen Top-Level-`{ scope }` weiterhin als Alias an	pinned	the_deprecated_top_level_scope_still_filters
+PIN-graph-scope-alias-en	docs/meclaw-overview.en.md	still accepts a top-level `{ scope }` as an alias	pinned	the_deprecated_top_level_scope_still_filters
 # --- built-unpinned -----------------------------------------------------
 # The substrate does it; nothing proves it. Each row is a candidate test --
 # the regressions waiting to happen (GH #254 bucket 2).

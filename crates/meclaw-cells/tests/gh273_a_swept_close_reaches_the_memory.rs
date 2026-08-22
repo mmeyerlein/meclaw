@@ -216,7 +216,8 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         {"from": "./talky/collector", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
+         "condition": "has(hop.route) && hop.route == 'answer' \
+          && !has(hop.round_capped) && !has(hop.degraded)"},
         {"from": "./talky/collector", "to": "./drain",
          "condition": "has(hop.route) && hop.route == 'write'",
          "modifier": {"set_hop": {"route": "'in_batch'"},

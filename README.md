@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-4700%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-4900%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -268,9 +268,9 @@ That part shipped. The **builder-hive** — an `llm` plus `code` topology that t
 
 ## Where it's at
 
-meclaw is **v0.17.3**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **6**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.17.4**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **6**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **4700+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **4900+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
@@ -281,7 +281,9 @@ Not here yet: **composition, not federation.** A child colony is addressable as 
 - the **HTTP API** — the `/colony/*` routes, `POST /messages`, their query parameters and status codes;
 - the **template DSL** — the `template.json` and `config.json` schemas, including the mutation diff format;
 - the **template ports** — the endpoints a template's README declares as its ingress and exit addresses;
-- the **documented `error_code` strings** — the dead-letter codes and the cell-type error enums.
+- the **documented `error_code` strings** — the dead-letter codes, the cell-type error enums, and
+  the codes a `/colony` read reply carries (today just `invalid_query`, documented inline at the
+  reads that raise it, [#363](https://github.com/mmeyerlein/meclaw/issues/363)).
 
 While meclaw is on `0.x`, changes to those four are **additive**: new fields, new codes, new
 endpoints, new params. A change that breaks an existing topology is a **breaking change** and gets

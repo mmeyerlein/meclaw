@@ -27,6 +27,10 @@
         {
           "route": "close",
           "because": "a finished session carrying hop.session_id, hop.channel and hop.audience_set -- the id, the room and the round it was spoken to"
+        },
+        {
+          "route": "reject",
+          "because": "a step of this keeper that the session store did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the store's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. The body names the STEP that was refused, because they do not leave the same thing standing -- at 'touch' and 'open' the stamped turn has ALREADY left in the same emission, and at 'open' the missing row makes the next turn open yet another generation. It matters because every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session (and used to OPEN a second generation for one that had one), and an unanswered nightly sweep looks like a night with no idle channel. Drain it: undrained, a keeper that stopped keeping is indistinguishable from a quiet one"
         }
       ]
     },
@@ -94,6 +98,16 @@
           "from": "./close",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'close'"
+        },
+        {
+          "from": "./stamp",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./close",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
         }
       ]
     }

@@ -25,8 +25,27 @@ pub(crate) struct BashArgs {
 
 use meclaw_core::JsonValue;
 
+/// `MAX_ARG_STRLEN` on the target platform: `32 * PAGE_SIZE` with the usual
+/// 4 KiB page (GH #351). Linux caps a **single** `argv` string at this size,
+/// independent of `ARG_MAX` and not raisable. `bash` hands the command to the
+/// shell as exactly such a string (`/bin/sh -c <command>`), so this is the hard
+/// ceiling on how long a command may be. A platform with larger pages has a
+/// HIGHER real cap, so this value only ever refuses earlier than strictly
+/// necessary — never too late.
+const MAX_ARG_STRLEN: usize = 32 * 4096;
+
 /// Parses tool_call args for BashCell. Returns `Err(human-readable)` with
 /// `ERR_INVALID_INPUT` semantics (the caller builds the error body).
+///
+/// A command at or above [`MAX_ARG_STRLEN`] is refused HERE, before a shell is
+/// started (GH #351). Handed to `spawn()` it would fail with
+/// `Argument list too long (os error 7)` and surface as `io_error` — a message
+/// that reads like an I/O fault of the child while in truth no child ever
+/// existed. Refusing it as invalid input names the real reason and the real
+/// numbers. The `code` remedy from GH #349 (materialise into a temp file) is
+/// deliberately NOT taken here: `sh <file>` is not `sh -c <command>` — `$0`
+/// becomes the script path and `$1…` shift by one, so a command that reads
+/// positional parameters would change meaning above the cap.
 pub(crate) fn parse_bash_args(args: &JsonValue) -> Result<BashArgs, String> {
     let command = args
         .get("command")
@@ -34,6 +53,15 @@ pub(crate) fn parse_bash_args(args: &JsonValue) -> Result<BashArgs, String> {
         .ok_or_else(|| "args.command missing or not a string".to_string())?;
     if command.is_empty() {
         return Err("args.command is empty".into());
+    }
+    if command.len() >= MAX_ARG_STRLEN {
+        return Err(format!(
+            "args.command is {} bytes; the kernel caps a single argv string at \
+             {MAX_ARG_STRLEN} bytes (MAX_ARG_STRLEN = 32 * PAGE_SIZE), and \
+             `/bin/sh -c <command>` passes the command as exactly one such \
+             string — no shell was started",
+            command.len()
+        ));
     }
     Ok(BashArgs {
         command: command.to_string(),
@@ -846,6 +874,40 @@ mod tests {
     #[test]
     fn parse_bash_args_rejects_empty_command() {
         assert!(parse_bash_args(&json!({"command": ""})).is_err());
+    }
+
+    // ───── GH #351: the argv cap ─────
+
+    #[test]
+    fn parse_bash_args_rejects_a_command_at_the_argv_cap() {
+        let cmd = "x".repeat(MAX_ARG_STRLEN);
+        let err = parse_bash_args(&json!({ "command": cmd })).expect_err("must refuse");
+        assert!(err.contains("131072"), "the limit is spelled out: {err}");
+    }
+
+    #[test]
+    fn the_refusal_names_the_actual_size_next_to_the_limit() {
+        // AT the cap both numbers coincide, so a refusal that dropped the
+        // caller's own size would still read correctly. 137 bytes above the cap
+        // forces them apart: 131 209 arrived, 131 072 is the wall.
+        const OVER: usize = MAX_ARG_STRLEN + 137;
+        assert_eq!(OVER, 131_209, "the two numbers must differ to be a pin");
+        let err =
+            parse_bash_args(&json!({ "command": "x".repeat(OVER) })).expect_err("must refuse");
+        assert!(
+            err.contains("131209"),
+            "the refusal names the ACTUAL size, not just the wall: {err}"
+        );
+        assert!(err.contains("131072"), "the limit is spelled out: {err}");
+    }
+
+    #[test]
+    fn parse_bash_args_accepts_the_largest_command_that_still_spawns() {
+        // Measured under GH #349: the kernel counts the terminating NUL, so
+        // 131 071 bytes still spawn and 131 072 do not.
+        let cmd = "x".repeat(MAX_ARG_STRLEN - 1);
+        let args = parse_bash_args(&json!({ "command": cmd })).expect("one byte below the cap");
+        assert_eq!(args.command.len(), MAX_ARG_STRLEN - 1);
     }
 
     // ───── GH #83: the size cap ─────

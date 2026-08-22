@@ -1,4 +1,4 @@
-# `memory-drain@2.0.2`
+# `memory-drain@2.0.3`
 
 The adapter between a closed session and the central memory (GitHub #101).
 
@@ -101,7 +101,22 @@ are **there** before it consumes a batch it could not deliver:
 in_batch with an audience  -> parked, probed, drained
 in_batch without one       -> route reject, hop.reject_reason 'missing_audience'
                               ZERO ledger rows, zero episodes
+park/probe refused         -> route reject, hop.reject_reason 'store_refused'
+                              (+ hop.store_error, hop.store_operation)
+                              nothing left, nothing marked -> redeliver
+mark refused               -> route reject, same keys, but the episodes
+                              ALREADY left: only the high-water mark is
+                              missing, and a redelivery repeats them
 ```
+
+**The last step is the one to read carefully.** The `mark` insert rides in the SAME
+emission as the episodes it covers -- that is what makes "what left" and "what says it
+left" one decision instead of two -- so a refusal of the mark arrives *after* the turns
+are gone. The reject body names the step for exactly this reason: at `park` and `probe`
+nothing has been consumed and a redelivery drains whole, at `mark` the delivery happened
+and only the adapter's own idempotence gate is blind. The turn_ids are deterministic, so
+the hive sees the repeat; this adapter does not, until a mark lands
+([#343](https://github.com/mmeyerlein/meclaw/issues/343)).
 
 **Why the refusal is here and not only in the hive.** The hive refuses correctly and
 loudly — one `reject` per turn, with a reason. But it refuses one hop too late: by then
@@ -203,7 +218,7 @@ called twice.
   This used to catch every session a timer swept closed, because a sweep carries the
   *sweep's* context and not the conversation's. Since `session-keeper@2.0.1` it does not:
   the keeper records the round on the generation row when the conversation OPENS it and
-  reads it back off that row at the seal, so `talky@3.0.12`'s close edge has a room and a
+  reads it back off that row at the seal, so `talky@3.0.13`'s close edge has a room and a
   round to promote (GH #273). What remains refused is a generation whose ingress door
   never declared one — including every generation that was already open when that edge was
   wired, because provenance is written once and never rewritten (ADR-0002 E12).

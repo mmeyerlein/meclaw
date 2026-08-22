@@ -1,4 +1,4 @@
-# `memory-hive@2.3.0`
+# `memory-hive@2.3.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Twelve cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
@@ -331,7 +331,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `in_import` | in → `./memory` | ONE part of such a document, as the body of the message; nothing on the hop and nothing in the context. Applying the same part twice leaves the same state. A part whose declared schema lost `audience_set` or `channel` is refused on `reject` with nothing written |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests `hop.dump_kind` evaluates to `false` under the `required_drains` probe and reads as no drain. `hop.dump_kind` tells the two payloads apart — `export_part` (one part of the document, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) and `import_receipt` (`hop.rows_written` for one applied part) |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -960,6 +960,41 @@ A against set B parks both under one key in `scratch` and reads them back in a s
 axes already in use; dream-glue: verdicts vs. known belief ids and embedding queue vs. fact
 claims). That is the join-less equivalent of the `collector` fan-in, and it is why `scratch`
 exists.
+
+**3. `operation` says which op answered; `error_code` says whether it worked.** Both have to
+be read. See the next section — it is the failure this mechanism produced when only the first
+half of it was.
+
+## When the store says no (GH #343, since 2.3.1)
+
+Every lane in this hive dispatches on `(context.mem_phase, hop.operation)`. The store stamps
+`hop.operation` on its **failing** replies too — it always did for SQL-level failures
+(`unknown_table`, `unknown_column`, `constraint_violation`, `sql_error` travel through the
+ordinary reply builder), and since
+[#331](https://github.com/mmeyerlein/meclaw/issues/331) it does for `invalid_input`,
+`query_timeout` and `write_denied` as well. So a refusal arrives looking **exactly** like an
+answer: same phase in the context, same op in the hop, an error sentence where the rows should
+be — and read as an answer, that sentence is zero rows.
+
+Measured on all three glue lanes before the fix:
+
+| lane | phase | what a refusal did |
+|---|---|---|
+| `recall` | `t1-kw-ep` | recorded the failed keyword leg as a leg with **zero hits**; the fused bundle then read "memory knows nothing about this", which a caller cannot tell apart from the truth. This is [#308](https://github.com/mmeyerlein/meclaw/issues/308) exactly, one hive over |
+| `extract-glue` | `vocab`, `known` | walked on and prompted the extractor with an **empty** known-predicate vocabulary and an **empty** dedup set — the model then mints spellings the hive already had, and the duplicates it writes cannot be taken back |
+| `dream-glue` | `scope` | booked the run `status: "done", facts_in_window: 0`. Every later night derives `delta_from` from the newest *done* row, so the window nothing ever looked at is **skipped forever**. The only one of the three that a later run cannot repair by itself |
+
+Since 2.3.1 every branch reads both fields, and a refusal is terminal: no further store op
+leaves, the phase does not advance, and the lane says so on the `reject` lane with
+`hop.reject_reason == 'store_refused'`, `hop.store_error` (the store's own `error_code`) and
+`hop.store_operation` (the op it refused). `store_error` is a free string rather than part of
+the `reject_reason` enum, because the store's code list is open and a declaration that had to
+grow with it would turn the next new code into a failed emit.
+
+The nightly consolidation got its own door to that lane in the same change
+(`./dream-glue -> .` on `hop.route == 'reject'`). It is the one lane with no caller of its
+own, so drain `reject` and you will hear about a night that could not run — which is the
+alternative to hearing about it never.
 
 ## The read path (tiers 0, 1, 2)
 

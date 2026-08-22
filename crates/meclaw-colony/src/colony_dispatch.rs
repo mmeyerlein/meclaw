@@ -629,109 +629,361 @@ fn emit_reply_or_done(
     }
 }
 
+/// A `/colony` read filter that arrived but could not be read (GH #341, #359).
+///
+/// Never silently dropped: an ignored filter and an empty filter must not look
+/// alike from the outside, so this becomes an error reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadQueryError {
+    /// The key whose value could not be read, e.g. `query` or `query.scope`.
+    pub key: String,
+    /// Human-readable reason, naming the key and the JSON type found.
+    pub details: String,
+}
+
+/// The `limit` every `/colony` read shares: default 100, floored at 1, capped at
+/// 1000 (Spec Z.414). Out of RANGE stays clamped — clamped is not dropped; only
+/// out of TYPE is refused.
+const READ_LIMIT_DEFAULT: usize = 100;
+
+/// Read `body.query` as an optional object.
+///
+/// A missing `query` or a `query` of `null` is the documented default ("if
+/// `query` or a single field is missing, the defaults apply"). A `query` that is
+/// present but not an object is a refused filter, never an unfiltered answer.
+fn read_query_object(
+    body: &meclaw_core::serde_json::Value,
+) -> Result<
+    Option<&meclaw_core::serde_json::Map<String, meclaw_core::serde_json::Value>>,
+    ReadQueryError,
+> {
+    use meclaw_core::serde_json::Value;
+    match body.get("query") {
+        Some(Value::Object(q)) => Ok(Some(q)),
+        Some(other) if !other.is_null() => Err(ReadQueryError {
+            key: "query".into(),
+            details: format!(
+                "`query` must be an object, found {} — the documented read \
+                 envelope is {{\"query\": {{…}}}}",
+                json_type_name(other)
+            ),
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// A present-but-wrong-typed field of the read envelope.
+fn wrong_type(field: &str, want: &str, found: &meclaw_core::serde_json::Value) -> ReadQueryError {
+    ReadQueryError {
+        key: format!("query.{field}"),
+        details: format!(
+            "`query.{field}` must be {want}, found {}",
+            json_type_name(found)
+        ),
+    }
+}
+
+/// Type alias for the borrowed `query` object the field readers work on.
+type QueryObject<'a> =
+    Option<&'a meclaw_core::serde_json::Map<String, meclaw_core::serde_json::Value>>;
+
+/// Read an optional string field. Absent or `null` is the documented default.
+fn read_opt_str<'a>(q: QueryObject<'a>, field: &str) -> Result<Option<&'a str>, ReadQueryError> {
+    use meclaw_core::serde_json::Value;
+    match q.and_then(|q| q.get(field)) {
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(other) if !other.is_null() => Err(wrong_type(field, "a string", other)),
+        _ => Ok(None),
+    }
+}
+
+/// Read an optional bool field.
+fn read_opt_bool(q: QueryObject<'_>, field: &str) -> Result<Option<bool>, ReadQueryError> {
+    use meclaw_core::serde_json::Value;
+    match q.and_then(|q| q.get(field)) {
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(other) if !other.is_null() => Err(wrong_type(field, "a boolean", other)),
+        _ => Ok(None),
+    }
+}
+
+/// Read an optional signed-integer field.
+fn read_opt_i64(q: QueryObject<'_>, field: &str) -> Result<Option<i64>, ReadQueryError> {
+    use meclaw_core::serde_json::Value;
+    match q.and_then(|q| q.get(field)) {
+        Some(Value::Number(n)) => n.as_i64().map(Some).ok_or_else(|| ReadQueryError {
+            key: format!("query.{field}"),
+            details: format!("`query.{field}` must be an integer, found {n}"),
+        }),
+        Some(other) if !other.is_null() => Err(wrong_type(field, "an integer", other)),
+        _ => Ok(None),
+    }
+}
+
+/// Read the shared `limit` field. Out of type is refused, out of range clamped.
+fn read_limit(q: QueryObject<'_>) -> Result<usize, ReadQueryError> {
+    use meclaw_core::serde_json::Value;
+    let raw = match q.and_then(|q| q.get("limit")) {
+        Some(Value::Number(n)) => n.as_u64().ok_or_else(|| ReadQueryError {
+            key: "query.limit".into(),
+            details: format!("`query.limit` must be a non-negative integer, found {n}"),
+        })?,
+        Some(other) if !other.is_null() => {
+            return Err(wrong_type("limit", "a number", other));
+        }
+        _ => READ_LIMIT_DEFAULT as u64,
+    };
+    Ok((raw as usize).clamp(1, 1000))
+}
+
+/// Read an optional UUID field. A string of the wrong SHAPE is refused just like
+/// a value of the wrong TYPE — `Uuid::parse_str(s).ok()` used to turn a broken
+/// UUID into "no filter", so a caller asking for one trace got every trace.
+fn read_opt_uuid(q: QueryObject<'_>, field: &str) -> Result<Option<Uuid>, ReadQueryError> {
+    match read_opt_str(q, field)? {
+        Some(s) => Uuid::parse_str(s).map(Some).map_err(|e| ReadQueryError {
+            key: format!("query.{field}"),
+            details: format!("`query.{field}` must be a valid UUID: {e}"),
+        }),
+        None => Ok(None),
+    }
+}
+
+/// The filters a `/colony/registry` read carries (GH #359).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryReadFilters {
+    /// Exact path match.
+    pub path: Option<meclaw_core::Path>,
+    /// Prefix match on the path string.
+    pub path_prefix: Option<meclaw_core::Path>,
+    /// Cell-type filter.
+    pub cell_type: Option<String>,
+    /// Active filter (F7): `Some(true)` active only, `Some(false)` inactive
+    /// only, `None` keeps all.
+    pub active: Option<bool>,
+    /// Hard cap on returned entries.
+    pub limit: usize,
+}
+
+/// The filters a `/colony/templates` read carries (GH #359).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplatesReadFilters {
+    /// Exact match on the cell type declared in the template's `config.json`.
+    pub cell_type: Option<String>,
+    /// Exact match on `template.json::name`.
+    pub name: Option<String>,
+    /// Hard cap on returned entries.
+    pub limit: usize,
+}
+
+/// The filters a `/colony/trace` read carries (GH #359).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceReadFilters {
+    /// Filter on `trace_id`.
+    pub trace_id: Option<Uuid>,
+    /// Prefix match on `to_path`.
+    pub path_prefix: Option<Path>,
+    /// Filter on `correlation_id`.
+    pub correlation_id: Option<Uuid>,
+    /// Only rows carrying an `error_code`.
+    pub only_error: bool,
+    /// Only rows with `created_at >= since` (Unix seconds).
+    pub since: Option<i64>,
+    /// Hard cap on returned entries.
+    pub limit: usize,
+}
+
 /// Parse `body.query.{path,path_prefix,cell_type,active,limit}` for the
 /// `/colony/registry` endpoint. `active` is an optional JSON bool (F7).
-/// limit defaults to 100, capped at 1000 per Spec Z.414, floored at 1.
-fn parse_read_query_path_filters(
+///
+/// GH #359: a field that is present but wrong-typed is refused, never dropped —
+/// an ignored filter and an empty filter must not look alike from the outside.
+/// Absent stays absent, and `limit` stays clamped to 1…1000.
+pub fn parse_read_query_path_filters(
     body: &meclaw_core::serde_json::Value,
-) -> (
-    Option<meclaw_core::Path>,
-    Option<meclaw_core::Path>,
-    Option<String>,
-    Option<bool>,
-    usize,
-) {
-    let q = body.get("query");
-    let path = q
-        .and_then(|q| q.get("path"))
-        .and_then(|v| v.as_str())
-        .map(meclaw_core::Path::new);
-    let path_prefix = q
-        .and_then(|q| q.get("path_prefix"))
-        .and_then(|v| v.as_str())
-        .map(meclaw_core::Path::new);
-    let cell_type = q
-        .and_then(|q| q.get("cell_type"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let active = q.and_then(|q| q.get("active")).and_then(|v| v.as_bool());
-    let limit = q
-        .and_then(|q| q.get("limit"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(100) as usize;
-    (path, path_prefix, cell_type, active, limit.clamp(1, 1000))
+) -> Result<RegistryReadFilters, ReadQueryError> {
+    let q = read_query_object(body)?;
+    Ok(RegistryReadFilters {
+        path: read_opt_str(q, "path")?.map(meclaw_core::Path::new),
+        path_prefix: read_opt_str(q, "path_prefix")?.map(meclaw_core::Path::new),
+        cell_type: read_opt_str(q, "cell_type")?.map(String::from),
+        active: read_opt_bool(q, "active")?,
+        limit: read_limit(q)?,
+    })
 }
 
 /// Parse `body.query.{cell_type,name,limit}` for `/colony/templates` reads.
-fn parse_read_query_templates_filters(
+///
+/// GH #359: same discipline as [`parse_read_query_path_filters`].
+pub fn parse_read_query_templates_filters(
     body: &meclaw_core::serde_json::Value,
-) -> (Option<String>, Option<String>, usize) {
-    let q = body.get("query");
-    let cell_type = q
-        .and_then(|q| q.get("cell_type"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let name = q
-        .and_then(|q| q.get("name"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let limit = q
-        .and_then(|q| q.get("limit"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(100) as usize;
-    (cell_type, name, limit.clamp(1, 1000))
+) -> Result<TemplatesReadFilters, ReadQueryError> {
+    let q = read_query_object(body)?;
+    Ok(TemplatesReadFilters {
+        cell_type: read_opt_str(q, "cell_type")?.map(String::from),
+        name: read_opt_str(q, "name")?.map(String::from),
+        limit: read_limit(q)?,
+    })
 }
 
 /// Parse `body.query.{trace_id,path_prefix,correlation_id,only_error,since,limit}`
-/// for `/colony/trace` reads. UUIDs via `Uuid::parse_str(s).ok()`.
-fn parse_read_query_trace_filters(
+/// for `/colony/trace` reads.
+///
+/// GH #359: the sharp case lives here — `Uuid::parse_str(s).ok()` turned a
+/// syntactically broken UUID into "no filter", so a caller asking for ONE trace
+/// got the newest 100 entries of EVERY trace. A broken UUID is now refused.
+pub fn parse_read_query_trace_filters(
     body: &meclaw_core::serde_json::Value,
-) -> (
-    Option<Uuid>,
-    Option<Path>,
-    Option<Uuid>,
-    bool,
-    Option<i64>,
-    usize,
-) {
-    let q = body.get("query");
-    let trace_id = q
-        .and_then(|q| q.get("trace_id"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok());
-    let path_prefix = q
-        .and_then(|q| q.get("path_prefix"))
-        .and_then(|v| v.as_str())
-        .map(Path::new);
-    let correlation_id = q
-        .and_then(|q| q.get("correlation_id"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok());
-    let only_error = q
-        .and_then(|q| q.get("only_error"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let since = q.and_then(|q| q.get("since")).and_then(|v| v.as_i64());
-    let limit = q
-        .and_then(|q| q.get("limit"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(100) as usize;
-    (
-        trace_id,
-        path_prefix,
-        correlation_id,
-        only_error,
-        since,
-        limit.clamp(1, 1000),
-    )
+) -> Result<TraceReadFilters, ReadQueryError> {
+    let q = read_query_object(body)?;
+    Ok(TraceReadFilters {
+        trace_id: read_opt_uuid(q, "trace_id")?,
+        path_prefix: read_opt_str(q, "path_prefix")?.map(Path::new),
+        correlation_id: read_opt_uuid(q, "correlation_id")?,
+        only_error: read_opt_bool(q, "only_error")?.unwrap_or(false),
+        since: read_opt_i64(q, "since")?,
+        limit: read_limit(q)?,
+    })
 }
 
-/// Parse `body.scope` for `/colony/graph` reads. Defaults to root "/".
-fn parse_graph_scope(body: &meclaw_core::serde_json::Value) -> Path {
-    body.get("scope")
-        .and_then(|v| v.as_str())
-        .map(Path::new)
-        .unwrap_or_else(|| Path::new("/"))
+/// Name the JSON type of a value for an error message.
+fn json_type_name(v: &meclaw_core::serde_json::Value) -> &'static str {
+    use meclaw_core::serde_json::Value;
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Read the scope filter of a `/colony/graph` read out of the request body.
+///
+/// The documented shape is `body.query.scope` — the request envelope every
+/// `/colony/*` read shares (`docs/meclaw-overview.md` § `/colony` als virtueller
+/// Endpunkt), and the shape the shipped `templates/canvy` probe sends.
+///
+/// **Deprecated alias (GH #341, ruling K-1):** a top-level `body.scope` is still
+/// accepted for exactly one release and then goes. It is only consulted when the
+/// documented shape carries no scope, so the alias can never override it.
+///
+/// A filter that is present but unreadable (wrong JSON type) is an error, never
+/// a silent fall-back to the root scope. Absent means absent: no `query`, no
+/// `scope`, or either of them `null`, is the documented root default.
+pub fn parse_graph_scope(body: &meclaw_core::serde_json::Value) -> Result<Path, ReadQueryError> {
+    use meclaw_core::serde_json::Value;
+    match body.get("query") {
+        Some(Value::Object(q)) => match q.get("scope") {
+            Some(Value::String(s)) => return Ok(Path::new(s)),
+            Some(other) if !other.is_null() => {
+                return Err(ReadQueryError {
+                    key: "query.scope".into(),
+                    details: format!(
+                        "`query.scope` must be a path string, found {}",
+                        json_type_name(other)
+                    ),
+                });
+            }
+            // No `scope` in the query object: the documented per-field default
+            // applies — fall through to the deprecated alias, then to root.
+            _ => {}
+        },
+        Some(other) if !other.is_null() => {
+            return Err(ReadQueryError {
+                key: "query".into(),
+                details: format!(
+                    "`query` must be an object, found {} — the documented read \
+                     envelope is {{\"query\": {{\"scope\": \"<path>\"}}}}",
+                    json_type_name(other)
+                ),
+            });
+        }
+        _ => {}
+    }
+    match body.get("scope") {
+        Some(Value::String(s)) => {
+            tracing::warn!(
+                scope = %s,
+                "/colony/graph: top-level `scope` is deprecated (GH #341) — \
+                 send the documented query envelope instead; the alias goes in \
+                 the next release"
+            );
+            Ok(Path::new(s))
+        }
+        Some(other) if !other.is_null() => Err(ReadQueryError {
+            key: "scope".into(),
+            details: format!(
+                "deprecated top-level `scope` must be a path string, found {}",
+                json_type_name(other)
+            ),
+        }),
+        _ => Ok(Path::new("/")),
+    }
+}
+
+/// Answer a `/colony/graph` read: parse the filter out of the request body, then
+/// project the topology through it. Returns the reply body exactly as the
+/// dispatcher puts it on the wire, so the request shape and the answer can be
+/// pinned together.
+pub fn build_graph_read_reply(
+    registry: &HashMap<Path, RegistryEntry>,
+    edges: &EdgeTable,
+    body: &meclaw_core::serde_json::Value,
+) -> meclaw_core::serde_json::Value {
+    match parse_graph_scope(body) {
+        Ok(scope) => build_graph_reply(&handle_read_graph(registry, edges, scope)),
+        Err(e) => refuse_read("/colony/graph", "graph", &e),
+    }
+}
+
+/// Answer a `/colony/registry` read: parse the filters out of the request body,
+/// then project the registry through them. Returns the reply body exactly as the
+/// dispatcher puts it on the wire, so the request shape and the answer can be
+/// pinned together (GH #359, the pattern of [`build_graph_read_reply`]).
+pub fn build_registry_read_reply(
+    registry: &HashMap<Path, RegistryEntry>,
+    body: &meclaw_core::serde_json::Value,
+) -> meclaw_core::serde_json::Value {
+    match parse_read_query_path_filters(body) {
+        Ok(f) => build_registry_reply(&handle_read_registry(
+            registry,
+            f.path,
+            f.path_prefix,
+            f.cell_type,
+            f.active,
+            f.limit,
+        )),
+        Err(e) => refuse_read("/colony/registry", "registry", &e),
+    }
+}
+
+/// Answer a `/colony/templates` read off the rows the caller already extracted.
+pub fn build_templates_read_reply(
+    rows: Vec<crate::persist::colony_db::TemplateRow>,
+    body: &meclaw_core::serde_json::Value,
+) -> meclaw_core::serde_json::Value {
+    match parse_read_query_templates_filters(body) {
+        Ok(f) => build_templates_reply(&handle_read_templates_from_rows(
+            rows,
+            f.cell_type,
+            f.name,
+            f.limit,
+        )),
+        Err(e) => refuse_read("/colony/templates", "templates", &e),
+    }
+}
+
+/// Log the refused filter once and build the endpoint's error reply (GH #359).
+fn refuse_read(endpoint: &str, slot: &str, err: &ReadQueryError) -> meclaw_core::serde_json::Value {
+    tracing::warn!(
+        endpoint = endpoint,
+        key = %err.key,
+        details = %err.details,
+        "unreadable filter — answering an error, not the unfiltered holdings"
+    );
+    build_read_error_reply(slot, err)
 }
 
 /// Extract the inline JSON body or return `Null` for blob bodies.
@@ -805,6 +1057,23 @@ fn build_graph_reply(reply: &crate::api_dto::ReadGraphReply) -> meclaw_core::ser
             "graph_version": reply.graph_version,
             "nodes": meclaw_core::serde_json::to_value(&reply.nodes).unwrap_or_default(),
             "edges": meclaw_core::serde_json::to_value(&reply.edges).unwrap_or_default(),
+        },
+    })
+}
+
+/// GH #341/#359: a `/colony` read whose filter could not be read answers in the
+/// endpoint's own top-level slot, discriminated by `status` — the shape
+/// `build_rescan_reply` and `build_mutation_reply` already use. It deliberately
+/// carries no result list: a reader must not be able to mistake a refused filter
+/// for an answer, and `reply["<slot>"].as_array()` is `None` on this shape.
+///
+/// `slot` is the endpoint's own name: `graph`, `registry`, `templates`, `trace`.
+pub fn build_read_error_reply(slot: &str, err: &ReadQueryError) -> meclaw_core::serde_json::Value {
+    meclaw_core::serde_json::json!({
+        slot: {
+            "status": "error",
+            "error_code": "invalid_query",
+            "details": err.details,
         },
     })
 }
@@ -924,10 +1193,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/registry" => {
-            let (path, path_prefix, cell_type, active, limit) =
-                parse_read_query_path_filters(&body);
-            let reply = handle_read_registry(registry, path, path_prefix, cell_type, active, limit);
-            let reply_body = build_registry_reply(&reply);
+            let reply_body = build_registry_read_reply(registry, &body);
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/dead_letters" => {
@@ -961,9 +1227,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             crate::colony::RouteAction::Done
         }
         "/colony/templates" => {
-            let (cell_type, name, limit) = parse_read_query_templates_filters(&body);
-            let reply = handle_read_templates_from_rows(templates_rows, cell_type, name, limit);
-            let reply_body = build_templates_reply(&reply);
+            let reply_body = build_templates_read_reply(templates_rows, &body);
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/templates/rescan" => {
@@ -974,25 +1238,29 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/graph" => {
-            let scope = parse_graph_scope(&body);
-            let reply = handle_read_graph(registry, edges, scope);
-            let reply_body = build_graph_reply(&reply);
+            let reply_body = build_graph_read_reply(registry, edges, &body);
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/trace" => {
-            let (trace_id_q, path_prefix, correlation_id, only_error, since, limit) =
-                parse_read_query_trace_filters(&body);
-            let reply = handle_read_trace(
-                db_path,
-                trace_id_q,
-                path_prefix,
-                correlation_id,
-                only_error,
-                since,
-                limit,
-            )
-            .await;
-            let reply_body = build_trace_reply(&reply);
+            // Not a `build_*_read_reply` helper like its three siblings: the
+            // read itself is async and needs the colony DB, so the refusal is
+            // taken here, before the query runs.
+            let reply_body = match parse_read_query_trace_filters(&body) {
+                Ok(f) => {
+                    let reply = handle_read_trace(
+                        db_path,
+                        f.trace_id,
+                        f.path_prefix,
+                        f.correlation_id,
+                        f.only_error,
+                        f.since,
+                        f.limit,
+                    )
+                    .await;
+                    build_trace_reply(&reply)
+                }
+                Err(e) => refuse_read("/colony/trace", "trace", &e),
+            };
             emit_reply_or_done(reply_to, reply_body)
         }
         // `/colony/events` (U4-deferred) + any unknown `/colony/<x>` →
@@ -1831,6 +2099,91 @@ mod tests {
                 );
             }
             _ => panic!("expected Cascade reply from /colony/registry dispatch"),
+        }
+        let _ = outputs_rx.try_recv();
+
+        colony_db.shutdown_async().await;
+    }
+
+    /// GH #359 — the wiring proof for `/colony/trace`. Its three siblings answer
+    /// through a pure `build_*_read_reply` helper that the integration test
+    /// drives directly; the trace read is async and needs the colony DB, so its
+    /// refusal is taken inside the dispatcher and has to be pinned there.
+    ///
+    /// A syntactically broken UUID used to become "no filter": a caller asking
+    /// for ONE trace got the newest 100 entries of EVERY trace back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace() {
+        use crate::CellFactoryRegistry;
+        use crate::edge_table::EdgeTable;
+        use crate::persist::colony_db::ColonyDb;
+        use meclaw_core::{Body, MessageBuilder, Path};
+        use std::collections::{HashMap, VecDeque};
+
+        let td = tempfile::TempDir::new().expect("tempdir");
+        let colony_db = ColonyDb::open(&td.path().join("c.db")).expect("open colony.db");
+        let mut registry = HashMap::new();
+        let mut edges = EdgeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let factories: CellFactoryRegistry = HashMap::new();
+        let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(Vec::new());
+
+        let (inbox_self_tx, _inbox_self_rx) = tokio::sync::mpsc::channel(8);
+        let (outputs_tx, mut outputs_rx) = tokio::sync::mpsc::channel(8);
+
+        let msg = MessageBuilder::new(Path::new("/colony/trace"))
+            .body(Body::Inline(meclaw_core::serde_json::json!({
+                "query": { "trace_id": "not-a-uuid" }
+            })))
+            .reply_to(Path::new("/probe"))
+            .build();
+
+        let templates_rows = colony_db.read_templates().unwrap_or_default();
+        let rescan_future = Box::pin(handle_rescan_templates(&colony_db, td.path()));
+        let db_path = colony_db.db_path().to_path_buf();
+
+        let action = dispatch_colony_endpoint(
+            &mut registry,
+            &mut crate::hive_scope::HiveScopeTable::new(),
+            &mut edges,
+            &mut HashMap::new(),
+            &mut dead_letters,
+            &colony_db.writer_tx,
+            &db_path,
+            templates_snapshot,
+            templates_rows,
+            rescan_future,
+            &factories,
+            td.path(),
+            &inbox_self_tx,
+            &outputs_tx,
+            Path::new("/colony/trace"),
+            msg,
+            Path::new("/probe"),
+            60_000,
+            60_000,
+            1000,
+            false,
+            None,
+            0,
+            None,
+        )
+        .await;
+
+        match action {
+            crate::colony::RouteAction::Cascade { msg, .. } => {
+                let body = match msg.body {
+                    Body::Inline(v) => v,
+                    other => panic!("expected inline reply body, got {other:?}"),
+                };
+                assert!(
+                    body["trace"].as_array().is_none(),
+                    "a refused filter must not answer a trace list: {body}"
+                );
+                assert_eq!(body["trace"]["status"], "error");
+                assert_eq!(body["trace"]["error_code"], "invalid_query");
+            }
+            _ => panic!("expected Cascade reply from /colony/trace dispatch"),
         }
         let _ = outputs_rx.try_recv();
 

@@ -220,7 +220,8 @@ fn main_config() -> Value {
          "condition": "has(hop.route) && hop.route == 'prune'"},
         // reply exit
         {"from": "./talky/collector", "to": "/sink",
-         "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
+         "condition": "has(hop.route) && hop.route == 'answer' \
+          && !has(hop.round_capped) && !has(hop.degraded)"},
         // write exit -- the instance decides the target
         {"from": "./talky/collector", "to": "./archive",
          "condition": "has(hop.route) && hop.route == 'write'"},

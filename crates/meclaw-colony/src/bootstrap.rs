@@ -568,13 +568,42 @@ pub fn plan_bootstrap_with_env(
         let cfg: ParsedConfig = match serde_json::from_value(substituted.clone()) {
             Ok(c) => c,
             Err(e) => {
+                // GH #353: the file is named in the reason, not just in `path`.
+                // For an unknown `cell` key serde names the key, and an operator
+                // needs both halves to act — which key, and which file it stands
+                // in. `path` stays the cell DIRECTORY, as every other variant in
+                // this walk reports it.
                 errors.push(BootstrapError::InvalidJson {
                     path: fs_path.clone(),
-                    reason: e.to_string(),
+                    reason: format!("{}: {e}", fs_path.join("config.json").display()),
                 });
                 continue;
             }
         };
+
+        // GH #353 (fix round 1): a `ref` is TEMPLATE-TIME ONLY. It is resolved
+        // at instantiation (`mutation/subtree.rs` § `expand_ref`) and never
+        // stands in an instantiated tree, so a `cell.template` down here is an
+        // unresolved marker — a half-finished instantiation, or a template
+        // directory copied into `{root}`. It used to be loud for free: the
+        // hand-maintained allow-list this walk carried simply did not list
+        // `template`. Declaring the key on `CellHeader` (so the closed list
+        // admits the shipped `ref` markers) would have traded that loudness for
+        // a silent parse, and the colony would boot a cell of type `"ref"` for
+        // which no factory exists. Named, not merely rejected — same two halves
+        // as every other refusal here: which key, and which file.
+        if cfg.cell.template.is_some() || cfg.cell.cell_type == "ref" {
+            errors.push(BootstrapError::InvalidJson {
+                path: fs_path.clone(),
+                reason: format!(
+                    "{}: cell: the key `template` (and `type: \"ref\"`) is template-time only \
+                     — a template reference is resolved at instantiation and must not stand in \
+                     an instantiated tree",
+                    fs_path.join("config.json").display()
+                ),
+            });
+            continue;
+        }
 
         if cfg.cell.cell_type == "hive" {
             // A5b + GH #163: a hive directory this colony never registered is
@@ -687,51 +716,14 @@ pub fn plan_bootstrap_with_env(
                 plan.unregistered_nodes.push(mc_path.clone());
                 continue;
             }
-            // Strict unknown-field coverage for `cell.*`: anything not on the curated
-            // allow-list is rejected here. The allow-list grows
-            // pro Phase (z.B. `cell.timeout` ab Phase 13-B-0, `cell.id` ab
-            // Phase 13.5 Slice 4 — swap_nodes writes the preserved cell_id into
-            // config.json so that it survives a reboot).
-            const ALLOWED_CELL_FIELDS: &[&str] = &[
-                "type",
-                "restart_limit",
-                "timeout",
-                "idle_timeout_ms",
-                "id",
-                "message_timeout",
-                "mailbox_size",
-                // GH #62: the instantiation stamp (`template`,
-                // `template_version`, `instantiated_at`). Written once by the
-                // instantiation, read here so a restored tree can re-index its
-                // own origin. See `docs/config.md` § `cell` → `provenance`.
-                "provenance",
-                // GH #159: this cell may be served as a surface over HTTP. In the
-                // `cell` block because this block is what the colony reads to
-                // decide how it RUNS a cell, and serving it is the colony's job —
-                // in `params` it would have to be repeated per cell type, which
-                // is the definition of a special case. Parsed by
-                // `crate::surface::parse_decl`, the same function the HTTP route
-                // calls. See `docs/config.md` § `cell` → `surface`.
-                "surface",
-            ];
-            // Befund 4: reuse the already-parsed, env-substituted value (keys
-            // are untouched by substitution; this check only inspects keys).
-            let raw_value = &substituted;
-            if let Some(cell_obj) = raw_value.get("cell").and_then(|v| v.as_object()) {
-                let mut unknown_found = false;
-                for key in cell_obj.keys() {
-                    if !ALLOWED_CELL_FIELDS.contains(&key.as_str()) {
-                        errors.push(BootstrapError::UnknownCellField {
-                            path: fs_path.clone(),
-                            field: format!("cell.{key}"),
-                        });
-                        unknown_found = true;
-                    }
-                }
-                if unknown_found {
-                    continue;
-                }
-            }
+            // GH #353: strict unknown-field coverage for `cell.*` used to live
+            // here, as a hand-maintained allow-list that grew per phase and that
+            // ONLY the boot consulted — the mutation/staging path deserialized
+            // the same block through the same struct and shrugged. It now lives
+            // on `CellHeader` itself (`#[serde(deny_unknown_fields)]`), so the
+            // refusal happens at the parse above, on every read path, out of one
+            // list. An unknown key therefore surfaces as `InvalidJson` naming
+            // key and file, never as a silently-defaulted field.
 
             // T4: mailbox_size:0 has no capacity semantics and must be
             // rejected hard. Negative values are already impossible via
@@ -823,7 +815,7 @@ pub fn plan_bootstrap_with_env(
                 continue;
             }
             // Paket-7 B3: compile `contract.emits` here so a malformed schema is
-            // a LOUD boot error (analog UnknownCellField — config.md Z.37
+            // a LOUD boot error (analog to the unknown-`cell`-key refusal — config.md Z.37
             // Boot-Strict-Kultur), never a silent "validation off".
             let contract_view = match compile_contract_view(&cfg.contract) {
                 Ok(cv) => cv,
@@ -1385,14 +1377,6 @@ pub enum BootstrapError {
     InconsistentColonyDb {
         /// Diagnostic string (the sqlite open error).
         reason: String,
-    },
-    /// config.json contains a `cell.*` field not supported in phase 5
-    /// (e.g. cell.timeout — that only arrives in phase 10/13).
-    UnknownCellField {
-        /// Path to the config.json.
-        path: PathBuf,
-        /// Feld-Name (z.B. "cell.timeout").
-        field: String,
     },
     /// A cell's `contract.emits` schema failed to compile (P13/D-010a).
     /// Boot fails loudly — never a silent "validation off" (config.md Z.37).
@@ -2507,7 +2491,7 @@ mod plan_tests {
             r#"{"cell":{"type":"echo","message_timeout":5000},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let plan = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay())
-            .expect("message_timeout must not trigger UnknownCellField");
+            .expect("message_timeout is a documented cell key and must parse");
         assert_eq!(plan.cells.len(), 1);
     }
 
@@ -2522,7 +2506,7 @@ mod plan_tests {
             r#"{"cell":{"type":"echo","mailbox_size":16},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let plan = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay())
-            .expect("mailbox_size must not trigger UnknownCellField");
+            .expect("mailbox_size is a documented cell key and must parse");
         assert_eq!(plan.cells.len(), 1);
     }
 
@@ -2574,6 +2558,9 @@ mod plan_tests {
         );
     }
 
+    /// GH #353: an unknown `cell` key still refuses the boot — since the key
+    /// list moved onto `CellHeader` itself, it does so as `InvalidJson` from
+    /// the parse, naming the key and the file it stands in.
     #[test]
     fn plan_bootstrap_still_rejects_other_unknown_cell_field() {
         let td = TempDir::new().unwrap();
@@ -2584,14 +2571,21 @@ mod plan_tests {
             r#"{"cell":{"type":"echo","totally_unknown_field":42},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         );
         let err = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay()).unwrap_err();
-        assert!(err.items().iter().any(|e| matches!(e,
-            BootstrapError::UnknownCellField { field, .. } if field == "cell.totally_unknown_field")));
+        assert!(
+            err.items().iter().any(|e| matches!(
+                e,
+                BootstrapError::InvalidJson { reason, .. }
+                    if reason.contains("totally_unknown_field") && reason.contains("config.json")
+            )),
+            "expected an InvalidJson naming key and file, got: {:?}",
+            err.items()
+        );
     }
 
     #[test]
     fn plan_bootstrap_rejects_malformed_emits_schema() {
         // Verifies that the boot loop surfaces InvalidEmitsSchema loudly
-        // (analog UnknownCellField — Boot-Strict-Kultur, config.md Z.37).
+        // (analog to the unknown-`cell`-key refusal — Boot-Strict-Kultur, config.md Z.37).
         let td = TempDir::new().unwrap();
         write(td.path(), "main/config.json", r#"{"cell":{"type":"hive"}}"#);
         write(
@@ -2726,7 +2720,7 @@ mod plan_tests {
     #[test]
     fn malformed_emits_is_a_boot_error_not_silent() {
         // The plan phase must report a broken emits schema as a BootstrapError
-        // (analog UnknownCellField — Boot-Strict-Kultur, config.md Z.37).
+        // (analog to the unknown-`cell`-key refusal — Boot-Strict-Kultur, config.md Z.37).
         let cfg_json = r#"{"cell":{"type":"code"},"params":{"runner":"python3"},
           "contract":{"version":"0.1.0","settings":{},"consumes":{},"emits":{"body":{"x":{"type":"stringg"}},"hop":{}}}}"#;
         let block: crate::config::ContractBlock =
@@ -2929,15 +2923,6 @@ mod error_tests {
             reason: "mixed state: edges empty, registry non-empty".into(),
         };
         assert!(matches!(e, BootstrapError::InconsistentColonyDb { .. }));
-    }
-
-    #[test]
-    fn bootstrap_error_has_unknown_cell_field_variant() {
-        let e = BootstrapError::UnknownCellField {
-            path: std::path::PathBuf::from("/tmp/y/config.json"),
-            field: "cell.timeout".into(),
-        };
-        assert!(matches!(e, BootstrapError::UnknownCellField { .. }));
     }
 }
 

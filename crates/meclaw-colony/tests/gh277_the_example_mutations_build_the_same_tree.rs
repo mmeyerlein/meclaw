@@ -440,7 +440,20 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// inside themselves.
 /// MEASURED, not assumed: read off the first green run. The spec sketch's 39 is
 /// a guess about a fixture that never existed.
-const EDGES: usize = 161;
+///
+/// Moved 161 -> 167 with `session-keeper@2.0.3` (GH #343), in two steps of the
+/// same change. Both counts are per `talky`, and exactly two of the five
+/// declarations instantiate one (`never-forgets`, `meclaw-os`):
+///
+/// - **+4**: each of the keeper's two cells gained a door out to the hive path
+///   for the new `reject` lane. 2 doors x 2 instances.
+/// - **+2**: `talky` itself gained the subscriber for that lane
+///   (`./session-keeper -> ./errors`), so a store that stopped answering is not
+///   a silent room. 1 edge x 2 instances.
+///
+/// No other declaration moved: `firewall` and `memory-drain` report their
+/// refusal on doors they already had, and `cogny` has no keeper.
+const EDGES: usize = 167;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

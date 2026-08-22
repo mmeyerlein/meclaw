@@ -38,7 +38,7 @@
         },
         {
           "route": "reject",
-          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
+          "because": "something this hive was sent and would not take -- a block it cannot bind, a half window it will not guess at, a turn or a question whose audience or channel is missing (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). Since 2.3.1 it also carries what this hive's OWN STORE would not do: a lane whose read or write came back refused stops there and says so, with `hop.reject_reason` = 'store_refused', `hop.store_error` carrying the store's own `error_code` and `hop.store_operation` naming the op that was refused (GH #343) -- including the nightly consolidation, which has no caller of its own and reports on this lane rather than nowhere. The code rides in `store_error` rather than inside `reject_reason` on purpose: the store's code list is OPEN (`invalid_input`, `query_timeout`, `write_denied`, `unknown_table`, `unknown_column`, `constraint_violation`, `sql_error`, ...), and a reason enum that had to grow with it would turn the next new code into a failed emit. The body says which and why. Drain it: undrained, nobody ever learns the memory was not written and the caller waits for a bundle that never comes"
         },
         {
           "route": "dump",
@@ -401,6 +401,11 @@
         },
         {
           "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./dream-glue",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'reject'"
         },

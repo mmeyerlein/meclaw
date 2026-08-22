@@ -23,7 +23,7 @@
         },
         {
           "route": "reject",
-          "because": "a batch this adapter would not take: the participant set or the room is not on it (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'). The body says which and why. NOTHING was parked and NOTHING was marked, so the same batch delivered again over an edge that carries its provenance still drains whole. Drain it: undrained, nobody ever learns that the day never became a memory"
+          "because": "a batch this adapter would not take: the participant set or the room is not on it (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'), or the adapter's own ledger did not answer the op it was asked (`store_refused`, with the ledger's code in `hop.store_error` and the refused op in `hop.store_operation` -- GH #343; that variant is a REPORT, not a refusal to take the batch: refused at the last step of the chain the episodes have already left, and the body names the step so a reader is not told the opposite of what happened). The body says which and why. For the two PROVENANCE reasons nothing was parked and nothing was marked, so the same batch delivered again over an edge that carries its provenance still drains whole; for 'store_refused' how much had already happened depends on the step, and the body names it. Drain it: undrained, nobody ever learns that the day never became a memory"
         }
       ]
     },

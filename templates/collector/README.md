@@ -1,4 +1,4 @@
-# `collector@2.1.0`
+# `collector@2.1.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -102,11 +102,11 @@ Exits leave **from the hive path** on `hop.route`:
 | route | to | notes |
 |---|---|---|
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
-| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` |
+| `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
 | `turn_write` | the SAME batch consumer, per turn | only with `turn_write` set: the day so far, after every stored turn and every stored answer -- the same document as `write`, without `rounds`. See "Per-turn episodes" below. |
-| `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible |
+| `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible -- or, since `collector@2.1.1`, a zero report marked `hop.degraded=1` because the store refused one of the prune chain's own reads or deletes |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
 | `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
 
@@ -522,6 +522,43 @@ Details that keep the policy honest:
 *inside* a `cell.db` -- and `delete` is a first-class operation of the `store` cell type
 (`docs/cell-types.md` § store). No file is deleted or moved by a prune; the durable record
 of the session left with the batch, and R-OS-6 places it with the memory hive, not here.
+
+### When the store says no (GH #343, since `collector@2.1.1`)
+
+The assembler is a state machine over `(context.col_phase, hop.operation)`: it sends the
+store one op, and the reply's `operation` tells it which branch it is in. That reading has
+one hole, and the hole is the whole of this section.
+
+`operation` says **which op answered**. It does not say **whether it worked**. The store
+stamps `hop.operation` on its failing replies too -- it always did for SQL-level failures
+(`unknown_table`, `unknown_column`, `constraint_violation`, `sql_error` all travel through
+the ordinary reply builder), and since [#331](https://github.com/mmeyerlein/meclaw/issues/331)
+it does for `invalid_input`, `query_timeout` and `write_denied` as well, because a return
+edge conditioned on `hop.operation` must not lose exactly the replies that report a
+failure. So a refusal arrives looking **exactly** like an answer: same phase in the
+context, same op in the hop, and an error sentence where the rows should be.
+
+Read as an answer, that sentence became zero rows. Measured: a `query_timeout` on the
+window read wrote an **empty** window leg into the round table, the fan-in completed, the
+seam fired, and the model answered the turn with no conversation at all -- honestly, and
+wrongly, and silently.
+
+Every branch of the machine now reads **both** fields, and a refusal is terminal:
+
+- no further store op leaves -- the phase does not advance;
+- the failure is **said**, on a lane the parent already drains. The prune chain reports on
+  `prune` (the same lane its zero-report already used); every other phase reports on
+  `answer`, which is where that turn was going anyway.
+- the report carries `hop.degraded=1`, `hop.store_error` (the store's own `error_code`)
+  and `hop.store_operation` (the op it refused), and the text names all three.
+
+`hop.store_error` is a free string, not an enum: the store's code list is open, and a
+declaration that had to grow with it would turn the next new code into a failed emit.
+
+This is the shape [#308](https://github.com/mmeyerlein/meclaw/issues/308) put into
+`builder-librarian/retrieve` after the same failure was found there. It is not a
+degradation *strategy* -- the collector does not guess a window it could not read. It
+refuses to pretend it read one.
 
 ### Round robustness (GH #103)
 

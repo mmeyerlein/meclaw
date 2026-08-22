@@ -15,7 +15,7 @@ ships one dated snapshot -- copy it, edit it, pass your own.
 Usage
 -----
     python3 scripts/cost_report.py --db /path/to/colony.db \
-                                   --prices scripts/prices-openrouter-2026-08-15.json
+                                   --prices scripts/prices-openrouter-2026-08-22.json
 
     # narrow the window, break the total down per cell, emit JSON
     python3 scripts/cost_report.py --db colony.db --prices prices.json \

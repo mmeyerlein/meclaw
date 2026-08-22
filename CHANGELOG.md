@@ -11,6 +11,460 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.17.4] — 2026-08-23
+
+### Breaking
+
+- **An unknown key in a `config.json`'s `cell` block refuses the boot, and now
+  refuses the mutation too** ([#353](https://github.com/mmeyerlein/meclaw/issues/353)).
+  `docs/config.md` § Block definition has always closed the `cell` key list —
+  `id`, `type`, `timeout`, `restart_limit`, `idle_timeout_ms`, `mailbox_size`,
+  `message_timeout`, `provenance`, `surface`, plus `template` in a `ref` marker
+  — and the boot did enforce it, through a hand-maintained allow-list inside
+  `bootstrap.rs`. Nothing else consulted that list. So the same template a boot
+  refused went through a mutation without a word, and a typo in a real key
+  (`idle_timout_ms`) took effect as the default for the field it was meant to
+  set: the cell ran with the default idle timeout, the default restart limit,
+  the default mailbox capacity, and nothing said the operator's intent had been
+  dropped. The list now lives on the `CellHeader` deserializer itself
+  (`#[serde(deny_unknown_fields)]`), which every read path goes through — the
+  bootstrap scan and the mutation/staging parse alike, and inside a multi-cell
+  (subtree) template every node's own `cell` block, which the subtree parser
+  keeps as raw JSON and used to hand on unchecked. Both refusals name the
+  offending key and the `config.json` it stands in: a boot error at boot, a
+  normal pre-destructive validation refusal (`error_code: "schema"`) on the
+  mutation path.
+
+  A second half of the same rule: **a `cell.template` (or `cell.type: "ref"`) in
+  an instantiated tree refuses the boot.** A `ref` is template-time only — it is
+  resolved at instantiation and never stands in an instantiated `config.json` —
+  and it used to be a loud boot error for free, because the hand-maintained
+  allow-list simply did not list `template`. Declaring the key on `CellHeader`
+  (so the closed list admits the shipped `ref` markers) would otherwise have
+  traded that loudness for a silent parse of an unresolved reference. The
+  refusal names the key and the file, like every other one here.
+
+  **Migration:** remove the unknown key from the `cell` block. It was doing
+  nothing before — it was either a typo for a real key, in which case fix the
+  spelling and the value takes effect for the first time, or a slot someone used
+  as a comment, in which case it belongs in the top-level `description` block.
+  The shipped `templates/` and `examples/` trees were swept and carry no unknown
+  `cell` key. Rust-internal (not part of the public contract, listed for
+  completeness): `BootstrapError::UnknownCellField` is gone — the boot reports
+  the same refusal as `BootstrapError::InvalidJson`, whose `reason` now names
+  the `config.json` alongside serde's message.
+
+### Deprecated
+
+- **`/colony/graph`: the top-level `{"scope": …}` request body, for one release**
+  ([#341](https://github.com/mmeyerlein/meclaw/issues/341)). The documented shape
+  is the one every `/colony/*` read shares — `{"query": {"scope": "<path>"}}` —
+  and it is what the handler reads from now on. The undocumented top-level
+  `scope` it used to read stays accepted as an alias for exactly one release,
+  logs a deprecation warning naming the scope it applied, and then goes. The
+  alias is consulted only when the documented shape carries no scope, so it can
+  never override it. **Migration:** move `scope` inside the `query` object. The
+  retirement is tracked in `docs/roadmap.md` § HTTP-API / Web-UI (due in the
+  first release after this wave's 0.17.4 cut) — a deprecation without a booked
+  removal date is a promise nobody keeps.
+
+### Fixed
+
+- **A store refusal is no longer read as an empty result set**
+  (`collector@2.1.1`, `memory-hive@2.3.1`, `talky@3.0.13`, `cogny@3.0.10`,
+  [#343](https://github.com/mmeyerlein/meclaw/issues/343)). The four lanes with
+  double-digit dispatch sites — `collector/assemble` (21), `memory-hive/dream-glue`
+  (28), `memory-hive/extract-glue` (23), `memory-hive/recall` (16) — are state
+  machines over `(context.<phase>, hop.operation)`, and not one of them read
+  `hop.error_code`. `operation` says WHICH op answered; it does not say WHETHER
+  it worked. The store stamps it on failing replies too: always for SQL-level
+  failures (`unknown_table`, `unknown_column`, `constraint_violation`,
+  `sql_error` travel through the ordinary reply builder), and since
+  [#331](https://github.com/mmeyerlein/meclaw/issues/331) for `invalid_input`,
+  `query_timeout` and `write_denied` as well. So a refusal arrived looking
+  exactly like an answer — same phase, same op, an error sentence where the rows
+  should be — and every one of the four walked on. Measured: a refused window
+  read made the collector write an **empty** window leg, fire the seam and let
+  the model answer the turn with no conversation at all; a refused keyword leg
+  made `recall` record zero hits, so the bundle said "memory knows nothing"
+  (which is [#308](https://github.com/mmeyerlein/meclaw/issues/308), one hive
+  over); a refused vocabulary read made `extract-glue` prompt the extractor with
+  an empty known-predicate vocabulary and an empty dedup set; and a refused
+  scope read made `dream-glue` book the nightly run `status: "done",
+  facts_in_window: 0`, after which every later night derives `delta_from` from
+  that row and the window nothing ever looked at is skipped forever — the one of
+  the four a later run cannot repair by itself. All 88 dispatch sites now read
+  both fields, and a refusal is terminal: no further store op leaves, the phase
+  does not advance, and the lane says so. The collector reports on lanes its
+  parents already drain (`prune` for the prune chain, `answer` for everything
+  else) with `hop.degraded=1`, `hop.store_error` and `hop.store_operation`; the
+  memory-hive lanes report on `reject` with `hop.reject_reason ==
+  'store_refused'` and the same two keys — `store_error` stays a free string
+  because the store's code list is open, and an enum that had to grow with it
+  would turn the next new code into a failed emit. `memory-hive`'s cron lane got
+  its own door to that egress (`./dream-glue -> .` on `hop.route == 'reject'`);
+  it is the one lane with no caller of its own, and the alternative was
+  reporting nowhere. `talky` and `cogny` are pin rounds: their `collector` ref
+  marker names `collector@2.1.1`, the rest of their contract is unchanged.
+
+- **The same guard on the nine small lanes, and #343 is closed**
+  (`research-assistant@2.0.2`, `coder-pipeline@2.0.3`, `llm-unit@2.0.3`,
+  `memory-drain@2.0.3`, `session-keeper@2.0.3`, `firewall@2.0.3`,
+  `receptionist@2.0.3`, `channel@1.0.2`,
+  [#343](https://github.com/mmeyerlein/meclaw/issues/343)). The rest of the
+  issue's table: the lanes that read `hop.operation` in one, two or four places.
+  Every one was measured against a real refusal before it was touched, and every
+  one was live.
+
+  - **`session-keeper/stamp`** read an unanswered lookup as "this channel has no
+    open session" and **opened a second generation** for one that had. Two
+    sessions, two close batches, one history split down the middle.
+  - **`firewall/screen`** failed **open**, twice: an unanswered `rules` read left
+    it with no blocklist, no allowlist and no pattern rule and it walked on to
+    the rate phase; an unanswered `rate` read counted zero arrivals and emitted
+    `pass`. It now refuses with `reject_reason: "store_refused"` and `rule_id:
+    "store-refused"` — the fail-closed reflex it already had for an unreadable
+    rule row, one level down.
+  - **`receptionist/greet`** read "no row" as "a channel nobody has met" and
+    emitted a **mutation** that grows a second agent, plus a duplicate ledger row.
+  - **`memory-drain/drain`** probed a ledger its `park` insert never reached, and
+    dropped the day in silence at the other end. Nothing was marked either way,
+    so nothing was lost for good — but nobody was told.
+  - **`session-keeper/close`** swept nothing and said nothing (an empty row list
+    reads as "no idle channel"), and read a refused `seal` as the lost guard race
+    it is written to tolerate (`rows_affected` is 0 either way).
+  - **the three small collectors** (`research-assistant/collector`,
+    `coder-pipeline/collector`, `llm-unit/collector`) handed the store a `select`
+    for a thread the refused `insert` never wrote — and on a refused `select` they
+    **died**: `rows_of` calls `json.loads` on the reply text with no `try`, and an
+    error sentence is not JSON.
+
+  All of them now read `error_code` beside `operation` and report instead of
+  walking on: `hop.reject_reason == 'store_refused'`, the store's own code in the
+  free string `hop.store_error`, the refused op in `hop.store_operation`. Where
+  the lane needed a door it got one — `reject` at the hive path for
+  `session-keeper` and `receptionist`, `./collector -> ./drain` in the two
+  pipelines (whose `errors` row now takes its `kind` from `hop.store_error`
+  instead of filing every refusal as `unknown`), and `./collector -> .` renamed
+  onto the existing `error` lane in `llm-unit`. `coder-pipeline/taskarchive` is
+  the one entry judged theoretical and left unchanged: its single `hop.operation`
+  read is an echo guard whose every branch parks, including for the literal
+  `error` op #331 stamps when nothing parseable arrived — it is pinned as such
+  rather than asserted.
+
+  **And a refusal says what is still true at the step it was refused at.** Some
+  of these steps are fire-and-forget: their store op rides in the same emission
+  as the thing that step produced, so their refusal arrives *after* that thing
+  is gone. The screen's arrival `mark` travels with the `pass` verdict, the
+  drain's `mark` with the episodes it covers, the stamp's `touch`/`open` with
+  the stamped turn, the reception's `open` with the mutation *and* the turn.
+  Three of the four now report per step what actually still holds — for the
+  drain's `mark` that the episodes **already left** and only the high-water mark
+  is missing, for the stamp's `open` that the turn travels with a session id
+  whose row was never written (so the next turn opens yet another generation),
+  for the reception's `open` that the agent exists and every later turn will
+  repeat the instantiation the colony then refuses as a name collision. The
+  screen is the exception, because `pass`/`reject` is documented as exactly one
+  of two lanes: a refused arrival mark is **not** reported at all, since a
+  second verdict about one turn leaves the parent with no way to pick. The
+  documented cost is that this arrival is not booked, so the turn did not spend
+  its rate slot and the window undercounts by one.
+
+  **`talky` drains it.** The keeper's new lane got a subscriber inside the
+  composite — `./session-keeper -> ./errors` on `hop.route == 'reject'`, onto
+  talky's one already-declared error exit — so a colony whose session store
+  stops answering is not a silent room. `talky/errors` learned to read
+  `hop.store_error`: a keeper refusal carries no `error_code` of its own,
+  because the keeper did not fail, the store it spoke to did.
+
+  **Two copy-paste guards went with it.** `talky`'s `answer` lane carries three
+  sorts and only one is an answer, but `channel`'s internal reply edge and the
+  edge `receptionist/greet` draws per channel both guarded on
+  `!has(hop.round_capped)` alone — and a store-refused turn carries `hop.degraded`,
+  never `round_capped`. Both would have read a store refusal out to a person as a
+  real reply. Both now guard on both keys; in `channel` the degraded sort leaves
+  on `error` beside the capped one, in the reception it dead-letters where the
+  capped sort already did. **Migration:** nothing for a caller — but a parent that
+  copied either edge out of a README adds `&& !has(hop.degraded)` to it.
+
+- **The two brain descriptors stop calling the memory bundle durable state**
+  (`talky@3.0.13`, `cogny@3.0.10`,
+  [#348](https://github.com/mmeyerlein/meclaw/issues/348)). `collector@2.1.0`
+  ([#278](https://github.com/mmeyerlein/meclaw/issues/278)) moved the ambient
+  recall bundle out of `system.memory`: it arrives as a synthetic `memory_recall`
+  tool result inside the round it was fetched for, and what stays under
+  `system.memory` is a revocation carrying no data. Both brain `config.json`
+  `description.purpose` texts still listed the bundle among the things that
+  *accumulate* in the cell's own `cell.db` — false in the one property the
+  sentence makes a claim about. The bundle is out of that list in both files, and
+  each purpose now says where it went instead. The rest of each list (identity,
+  instructions, tool schemas, and talky's handover of the last closed generation)
+  was and stays correct, as does talky's `consumes_meaning`, which #278 made
+  exactly right. Documentation only, no behaviour change; the repair rides inside
+  the two unreleased versions above rather than bumping them again.
+
+- **The builder stops on a failed rescan instead of dying one cell later**
+  (`builder-hive@2.0.3`,
+  [#355](https://github.com/mmeyerlein/meclaw/issues/355)). `promote` runs in two
+  phases: it copies the approved draft into `templates/`, asks the colony to
+  re-read its template library, and phase B receives that reply. The reply has
+  two shapes — `{"rescan": {"status": "ok"}}` and `{"rescan": {"status":
+  "error", "error": "…"}}` — and phase B read neither. It forwarded the reply
+  verbatim into `deploy.json` and stamped `stage: promoted` on both, so a failed
+  rescan let the deploy edge fire against a registry that never learned the
+  class, and the run died there on `template_missing`. A duplicate template name
+  was reported as a missing one, at the cell after the one that could have said
+  so. Phase B now branches on the status and fails closed — anything that is not
+  `ok` becomes `stage: promote-failed`, which no deploy edge accepts — and the
+  scanner's own string rides on **verbatim** in the plan, because an operator has
+  to be able to search for the words the error was printed with. The error stays
+  in the body and out of the header: a hop key is a routing surface and a
+  Debug-rendered scanner error is unbounded text. A `promote-failed` run ends at
+  `approval-log`, the terminal sink a failed G1 already uses; without that edge
+  the stop would have had no route at all, which would have replaced a misleading
+  symptom with a silent one. **Migration:** none for a caller. A colony that
+  reads the builder's lanes gains one hop value, `promote-failed`, on the same
+  `hop.stage` key the pipeline already used — but note that a run stopped there
+  writes **no `receipt.json`**, because `report` is not on the `approval-log`
+  lane; the cause is in the message the sink received, not on disk. That is
+  unchanged from every other terminal failure lane in this hive (`g1_failed`,
+  `escalated`, `rejected`). What the run it replaces produced was not a truthful
+  receipt either: the receipt did record the refusal (`deploy: {outcome:
+  "rejected", error_code: "template_missing"}`) — under a cause that named the
+  wrong thing — while the **run** claimed to have deployed, because the stage
+  stamped into the message log said `deployed`. The lie was in the trace, not on
+  disk.
+
+- **A mutation the colony refused is no longer reported as a deployment**
+  (`builder-hive@2.0.3`,
+  [#360](https://github.com/mmeyerlein/meclaw/issues/360)). The sibling of #355,
+  one cell further on, found in the same read. `deploy`'s phase B receives the
+  colony's verdict — `outcome: "committed"` or `outcome: "rejected"` — and
+  stamped the literal string `deployed` on both. Milder than #355 and repaired
+  more narrowly for that reason: the verdict did ride along visibly in
+  `hop.outcome`, `report` wrote the full reply into `receipt.json`, and the one
+  edge reading the stage led to that receipt either way, so no wrong action was
+  taken and nothing was lost. What was false is the one word an operator scanning
+  the message log reads first. Phase B now reads the outcome before naming the
+  stage and fails closed exactly as `promote` does: only `committed` is a
+  deployment, anything else — including a verdict shape the script does not
+  recognise — is `stage: deploy-rejected`. That stage goes to **`report`** on its
+  own edge, not to the `approval-log` sink that takes `promote-failed`: a
+  promote-failed run never reached the colony and has nothing to book, while a
+  rejection is a decision the colony made about this build, and the receipt is
+  where a refusal belongs — routing it to a sink would have destroyed information
+  to fix a wording bug. **Migration:** none for a caller; one more value,
+  `deploy-rejected`, on the `hop.stage` key. `hop.outcome` is unchanged. A parent
+  that copied the `./deploy -> ./report` edge out of this README and wants
+  refusals in its own receipt takes the second edge with it.
+
+- **The lease and the in-flight marker are given back, and given back together**
+  (`builder-hive@2.0.3`,
+  [#361](https://github.com/mmeyerlein/meclaw/issues/361)). The third finding
+  from the same read as #355 and #360, and the one that stopped the hive
+  outright. The pipeline took two things under the staging root — the
+  one-builder-per-scope lease and the `.inflight` marker naming the running
+  build — and gave back neither, **not even on the run that succeeded**. The
+  first build that finished on a scope therefore held that scope's lease
+  forever, and every later request there died with `lease_held`; the marker of
+  a run that ended weeks ago stayed lying next to it. The scenario suite never
+  saw it, because every run gets a throw-away colony. The release sits on the
+  terminal cell of each lane, because exactly three lanes take the lease:
+  `deployed` and `deploy-rejected` end at `report` (#360), `promote-failed` at
+  `approval-log` (#355), and all three now give the run state back. `capture`
+  stays the pure sink: it also serves `in_report`, traffic a deployed subtree
+  writes from out in the colony, and the cell that may delete run state does not
+  belong on that lane. Two properties give the release its shape. **One act over
+  both files, marker first** — the two masked each other, a stale marker is
+  harmless only for as long as the never-released lease keeps a second builder
+  out, so repairing only the lease would have re-opened the correlation hole the
+  marker closes; the single intermediate state is "marker gone, lease held",
+  where nothing may start, and never "lease free, marker stale". And **released
+  is only what names this run**: `approval-log` is the sink of four lanes, three
+  of which never took a lease, so a sink that deleted whatever it found would
+  have let a request refused with `lease_held` release the very lease it failed
+  on. Fail closed follows from the same reasoning: a marker that cannot be
+  removed — any `OSError` that is not "already gone" — **keeps the lease held**,
+  because that costs one `lease_held` naming the run, while failing open costs a
+  double mutation. **Migration:** none for a caller, and nothing to do on an
+  existing staging root beyond what the fix now does by itself. A `receipt.json`
+  gains a `released` list (`["inflight", "lease"]`) recording what this run
+  actually gave back — it never claims a release that did not happen. **Not
+  fixed here:** a run that never reaches a terminal cell at all (crash, TTL, a
+  `/colony` reply that never comes) still leaves both behind. Reclaiming those
+  on the next acquire needs a timestamp in the lease and belongs to the
+  mutation-CAS work that replaces this lease outright; it is booked in
+  `docs/roadmap.md` § CAS / Permissions.
+
+- **`/colony/graph` filters on the shape the spec documents and its consumer sends**
+  ([#341](https://github.com/mmeyerlein/meclaw/issues/341)). The handler parsed
+  its filter from a top-level `body.scope`, while the spec's read envelope and
+  the shipped `templates/canvy` probe send `{"query": {"scope": …}}`. Neither
+  side errored: the handler found no `scope`, applied no filter, and answered
+  the unfiltered topology — an ignored filter and an empty filter were
+  indistinguishable from the outside, the failure class of
+  [#298](https://github.com/mmeyerlein/meclaw/issues/298). Nobody saw a wrong
+  answer in practice: canvy asks for the root scope `/`, whose filtered and
+  unfiltered answers are the same graph, so the canvas always drew the whole
+  colony — which is what it wanted. A caller asking for a sub-scope got the
+  whole colony too, and had no way to tell.
+
+  Along with it, the loudness half: **a filter that is present but unreadable is
+  now an error, never an unfiltered answer.** A `query` that is not an object, or
+  a `scope` that is not a string, answers
+  `{"graph": {"status": "error", "error_code": "invalid_query", "details": …}}`
+  and carries no `nodes`. An absent filter is still the documented root default,
+  and a `query` object without a `scope` field still means "root", as documented.
+
+- **The other three `/colony` reads refuse an unreadable filter too, instead of
+  answering unfiltered** ([#359](https://github.com/mmeyerlein/meclaw/issues/359)).
+  `/colony/registry`, `/colony/templates` and `/colony/trace` parsed their
+  filters with `.as_str()` / `.as_bool()` / `.as_u64()` chains that end in `None`
+  on a type mismatch — and `None` meant "no filter". A cell that emitted
+  `{"query": {"active": "true"}}`, `{"query": {"cell_type": 7}}` or
+  `{"query": {"limit": "50"}}` got a well-formed, *unfiltered* answer and no way
+  to tell its filter had been thrown away: the failure class of
+  [#298](https://github.com/mmeyerlein/meclaw/issues/298) and
+  [#341](https://github.com/mmeyerlein/meclaw/issues/341), one level down. All
+  three now answer in their own top-level slot, in the shape `/colony/graph`
+  established: `{"<slot>": {"status": "error", "error_code": "invalid_query",
+  "details": …}}`, carrying no result list.
+
+  `/colony/trace` had the sharper case: `trace_id` and `correlation_id` ran
+  through `Uuid::parse_str(s).ok()`, so a syntactically **broken UUID string**
+  also became "no filter" — a caller asking for one trace got the newest 100
+  entries of every trace back. A broken UUID is now refused like a wrong type.
+
+  Unchanged on purpose: an absent `query`, an absent field, or either of them
+  `null`, is still the documented default and answers everything; and a `limit`
+  out of *range* is still clamped to 1…1000 — clamped is not dropped. The HTTP
+  twins of these reads already refused a wrong-typed filter with `400`
+  (axum's typed `Query<T>` extractor, plus the explicit UUID check in the trace
+  handler); this closes the gap on the EDA side, where the body is free-form
+  JSON.
+
+- **A `bash` command of 128 KiB or more says so instead of reporting an I/O fault**
+  ([#351](https://github.com/mmeyerlein/meclaw/issues/351)). `bash` hands the
+  command to the shell as a single `argv` string (`/bin/sh -c <command>`), which
+  Linux caps at `MAX_ARG_STRLEN` = `32 * PAGE_SIZE` = 131 072 bytes —
+  independent of `ARG_MAX` and not raisable, the same wall that broke `code` in
+  [#349](https://github.com/mmeyerlein/meclaw/issues/349). A command at or above
+  that size died inside `spawn()` with `Argument list too long (os error 7)` and
+  came back as `error_code: "io_error"`, which reads like the child failed —
+  while in truth no child had ever existed. Unlike a `script_inline`, a `bash`
+  command is not template-authored: it arrives per message as the `command`
+  argument of a `tool_call`, so a generated heredoc, an inlined file or a base64
+  payload is the realistic route to the cap. Such a command is **now refused
+  before the spawn** with the existing `error_code: "invalid_input"`, and the
+  message names the actual byte size next to the 131 072 byte limit. No new
+  `error_code` string enters the public contract, and nothing below the cap
+  changes. The `#349` remedy — materialise into a per-spawn temp file — was
+  deliberately not carried over: `sh <file>` is not `sh -c <command>`, `$0`
+  becomes the script path and `$1…` shift by one, so a command reading
+  positional parameters would change meaning above the cap. Whoever needs
+  128 KiB of program or more uses `code`. Regression lock:
+  `gh351_an_oversized_command_is_refused.rs`, driving `BashCell::handle`.
+
+- **The librarian's corpus carries whole sections instead of their first 4000
+  characters** (`builder-librarian@2.0.3`,
+  [#344](https://github.com/mmeyerlein/meclaw/issues/344)). The seed chunker cut
+  every section at `MAX_CHARS` with `body[:MAX_CHARS]`: no continuation, no
+  warning, and no gate that could see it — the existing corpus gate regenerates
+  and byte-compares, and truncation is perfectly deterministic, so a chunk that
+  had lost half its section matched its own regeneration forever. What that cost
+  was measured: when the six `--vault` rows pushed `docs/meclaw-overview.md`
+  § Flags past 4461 characters, the paragraph at offset 4043 — "Info-only Flags
+  sind side-effect-frei", the promise that `--version` and `--help` write nothing
+  — stopped existing for the librarian, and the chunk simply ended mid-sentence.
+  A section over the cap is now carried across continuation rows that keep
+  `source`, `section` and `kind` and take the base row's id with a `-cont<N>`
+  suffix; cuts land on a line break or a space, never mid-word. Corpus-wide that
+  recovered content the tree had already lost: 311 rows became 411, of which 100
+  are continuations, and no row sits on the cap any more (57 did).
+
+  Two consequences of that split are part of the same change. **The briefing
+  heading carries the row id** — `### <source> -- <section> (<kind>) [<id>]`, with
+  `, continued` after the id of a continuation — because those three columns
+  stopped identifying a row: two pieces of one section arrived under an identical
+  heading with different bodies, and a fragment starting mid-argument read as a
+  whole statement. And the generator prints a **counted headroom warning** for
+  every *unsplit* row within 5 % of the cap: 6 today, including the 3899/4000
+  cookbook note the issue measured as the next casualty. An already-split row is
+  excluded on purpose — it lies near the cap because the splitter seams as late
+  as it can, so listing it (44 rows) warns about the split working as designed
+  and buries the genuine near-misses.
+
+  Regression lock: `no_chunk_is_a_silent_truncation` in
+  `crates/meclaw-cells/tests/librarian_seed_corpus.rs`, which reads the product
+  rather than regenerating it and so asks the question the old gate could not —
+  whether the corpus still CONTAINS its sources.
+
+- **The gates of the published tree now run before the publication, not after**
+  ([#356](https://github.com/mmeyerlein/meclaw/issues/356)). `check_claims.py`
+  and `check_adr_anchors.py` behave differently in the private and the published
+  tree by design — the published one carries no German document and no ADR
+  corpus, only the derived registries — and until now CI was the first place
+  either of them ever ran in that shape. That is after the push: the previous
+  release needed three follow-up rounds for defects nothing local could see. The
+  release gate now materialises the export tree and runs both scripts *inside*
+  it — by default, with an explicit `--no-public-gates` to skip it, because a
+  check that only fires when a human remembers it is the same defect one level
+  up. Alongside it runs an unconditional check that every `pinned` row of the
+  claims registry names a test the exported corpus actually contains — the class
+  that shipped last time, where a pin resolved privately and pointed into a file
+  the export deliberately leaves behind. Both were proven against a planted
+  defect: private gate green, public gate red.
+
+  Three consequences travel with it. The CI test job runs with `--no-fail-fast`,
+  because stopping at the first failing binary out of 400+ turns one red run into
+  one repaired defect instead of all of them (exactly what happened last time).
+  The gate's compile check over the published tree gained `--all-targets`, so it
+  now compiles that tree's *test* targets too — without it, a test that builds
+  privately and not publicly walks straight past it. And two test files stop
+  travelling, because they read templates that do not:
+  `gh355_a_failed_rescan_stops_the_promotion.rs` and
+  `gh360_a_rejected_mutation_is_not_a_deployment.rs` (both `builder-hive`, the
+  same standing arrangement as the other builder-hive tests).
+
+  A third, `gh343_the_small_cells_read_the_error_code_too.rs`, was blocklisted
+  with them as an emergency brake and has since been **split** instead
+  ([#362](https://github.com/mmeyerlein/meclaw/issues/362)). It was mixed: six of
+  its thirty-two cases read private collector copies
+  (`research-assistant/collector`, `coder-pipeline/{collector,taskarchive}`,
+  `llm-unit/collector`), the other twenty-six drive `memory-drain`,
+  `session-keeper`, `firewall`, `receptionist` and `talky` — all published. Those
+  six now live in `gh343_the_private_collectors_read_the_error_code_too.rs`,
+  which is what stays behind, and the twenty-six travel. The precedent is the
+  `gh235` pair: split rather than guard, because an `exists()` skip would ship a
+  test that asserts nothing ([#234](https://github.com/mmeyerlein/meclaw/issues/234))
+  — the test *is* the proof over the shipped files. The cost is the helper block,
+  duplicated across both files by choice rather than by necessity: a shared home
+  exists (`meclaw-testing`, a dev-dependency both halves already import), and the
+  duplication follows the sanctioned `gh235` shape instead. Thirty-two cases
+  before, thirty-two after.
+
+- **The cost report stops pricing embeddings at a twentieth of what they cost**
+  ([#357](https://github.com/mmeyerlein/meclaw/issues/357)). The only price
+  snapshot shipped alongside `scripts/cost_report.py` was
+  `prices-openrouter-2026-08-15.json`, and it maps the embedding role to
+  `qwen/qwen3-embedding-8b` at 0.01 USD/M. The shipped embedding generation moved
+  to `google/gemini-embedding-2` — 0.20 USD/M, measured — on 2026-08-19, so every
+  report run after that date booked the embedding lane twenty times too cheap,
+  and the `/embed` fallback rule attributed those tokens to a model the colony had
+  stopped calling. `scripts/prices-openrouter-2026-08-22.json` lands **beside** the
+  old file, never on top of it, exactly as `docs/costs.md` § 4 requires: the
+  2026-08-15 list stays because the M-tier window further down was computed from
+  it, and both travel. Re-checking the chat rows against
+  `https://openrouter.ai/api/v1/models` on 2026-08-22 turned up a second drift
+  nobody had filed: `openai/gpt-5.6-luna` has doubled to 0.20 / 1.20 USD/M
+  (`anthropic/claude-opus-5` is unchanged). Measured against one eval colony's
+  message log, the two corrections together move a 0.33 h window from 0.070 to
+  0.141 USD. The eval pre-flight
+  (`workshop/evals/p5-longmemeval/preflight.py`) carried the retired model id in
+  three separate default literals; all three now derive from the one active row in
+  `templates/memory-hive/store/seed/emb_models.jsonl`, which is the file the
+  `cell.db` is actually built from.
+
 ## [0.17.3] — 2026-08-22
 
 ### Changed

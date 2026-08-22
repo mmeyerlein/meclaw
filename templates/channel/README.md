@@ -1,4 +1,4 @@
-# `channel@1.0.1`
+# `channel@1.0.2`
 
 One channel as one hive. Inside it: the connector that owns the chat's credential, and
 one slot that the channel's current agent occupies.
@@ -73,14 +73,19 @@ behind it is a facade you have to learn twice.
 | `tool` | out | a tool call; `hop.tool_name` says which |
 | `error` | out | every failure of this channel, normalised. **MUST** be wired, and `required_drains` says so |
 
-Three sorts arrive on `error`, on purpose: a reply the connector could not deliver, a
-failed inference, and a round that hit its iteration cap. From outside a channel, all
-three are the same event -- the room went quiet -- and a parent drains one edge instead
-of three.
+Four sorts arrive on `error`, on purpose: a reply the connector could not deliver, a
+failed inference, a round that hit its iteration cap, and -- since `collector@2.1.1` --
+a turn the generation could not assemble at all because its store refused a read or a
+write ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). From outside a channel,
+all four are the same event -- the room went quiet -- and a parent drains one edge
+instead of four.
 
 **The reply never leaves the hive.** The generation's `answer` goes straight to the
-connector on an internal edge, guarded by `!has(hop.round_capped)`; the capped sort
-leaves on `error` instead of being said out loud in the chat.
+connector on an internal edge, guarded by `!has(hop.round_capped) && !has(hop.degraded)`;
+the capped sort and the store-refused sort leave on `error` instead of being said out
+loud in the chat. The second key is not optional: a degraded turn carries **no**
+`round_capped`, so a guard on `round_capped` alone would put a store refusal in front of
+a person as a real reply.
 
 ## Wiring one
 
@@ -124,7 +129,7 @@ the same reason it must not be duplicated. **One channel, one connector, one tok
 channels means two tokens:
 
 ```json
-{"name": "channel-2", "template": "channel@1.0.1",
+{"name": "channel-2", "template": "channel@1.0.2",
  "override_params": {"telegram-connector/proxy": {"bot_token": "${TELEGRAM_BOT_TOKEN_2}"}}}
 ```
 
@@ -137,7 +142,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@3.0.12"}],
+   "add_nodes": [{"name": "talky", "template": "talky@3.0.13"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -160,7 +165,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.12"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.13"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}

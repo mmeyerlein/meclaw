@@ -23,6 +23,10 @@
         {
           "route": "mutate",
           "because": "the tree this reception decided to grow, as an ordinary mutation body. BOOTSTRAP ONLY -- no mutation can create the edge that carries it on to /colony/mutations"
+        },
+        {
+          "route": "reject",
+          "because": "a step of this reception that the channel ledger did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the ledger's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. Drain it: an unanswered lookup has the same shape as a channel nobody has met, and read as the second it used to grow a SECOND agent for a channel that already had one. The body names the STEP: at 'look' nothing is built and no row is written, so the same turn delivered again once the ledger answers is served correctly; at 'open' the agent was already built and the turn already left in the same emission, and only the ledger row is missing -- which makes every later turn on that channel repeat the instantiation, refused each time as a name collision"
         }
       ]
     },
@@ -61,6 +65,11 @@
           "from": "./greet",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'mutate'"
+        },
+        {
+          "from": "./greet",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
         }
       ]
     }

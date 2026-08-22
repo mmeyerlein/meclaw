@@ -1,6 +1,6 @@
 {
   "name": "memory-drain",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": {
     "purpose": "The missing piece between a closed session and the central memory (GH #101): a collector hands its day out as ONE write batch, the memory hive's writer takes ONE turn at a time, and nothing spoke both forms - so a closed day never reached memory. This hive is that translation. It decomposes the batch into single-turn episodes in the order of the day, fires each of them at the memory hive's EXISTING write lane, and keeps its own ledger so that the same batch delivered twice writes nothing the second time. It lives outside the memory hive and speaks only its documented lanes: not one line of the hive changes.",
     "use_when": "One per talky whose closed sessions belong in the central memory. Instantiate it and wire the ports in the SAME mutation: the talky's 'write' route into ./drain (lane in_batch), ./drain's 'episode' route into the memory hive on its in_episode lane, and ./drain's 'reject' route wherever refusals are read. It is a SECOND parent edge on the write route - whatever else consumes the batch (a summarizer, an archive) keeps consuming it. The edge that carries the batch IN owes it the provenance the memory requires: context.audience_set and context.channel. A colony wired from `channel@1` already has both in context (ADR-0002 E8) and adds nothing; anything else declares them on that edge.",

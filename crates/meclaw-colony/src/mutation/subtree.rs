@@ -180,6 +180,22 @@ fn collect_cells(
         let config: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| MutationError::Schema(format!("parse {}: {e}", config_path.display())))?;
 
+        // GH #353 (fix round 1): the closed `cell` key list is a barrier HERE
+        // too. Everything below keeps the config as a raw `serde_json::Value`
+        // (`CellNode::config`), and so do the readers downstream
+        // (`mutation/stage.rs`), so an unknown key inside a subtree node used to
+        // travel all the way through validation into the written tree — where
+        // the boot walk, which DOES parse `CellHeader`, then refused it. A
+        // mutation that commits a tree the next restart rejects is the failure
+        // this closes. Same struct, same serde message, same naming as the
+        // single-cell path in `mutation/header_views.rs`: the key comes from
+        // serde, the file from here.
+        if let Some(cell_block) = config.get("cell") {
+            serde_json::from_value::<crate::config::CellHeader>(cell_block.clone()).map_err(
+                |e| MutationError::Schema(format!("parse {}: cell: {e}", config_path.display())),
+            )?;
+        }
+
         // Determine if this is a hive cell.
         let cell_type = config
             .get("cell")
@@ -3620,6 +3636,13 @@ mod tests {
     }
 
     /// A ref without a usable `cell.template` names nothing to resolve.
+    ///
+    /// Two shapes, two readers since GH #353: the closed key list
+    /// ([`crate::config::CellHeader`]) is now the FIRST reader of every `cell`
+    /// block in this walk, so a `template` of the wrong *type* is caught there
+    /// — with the file named, which the ref-specific message never did. A
+    /// `template` that is simply ABSENT still parses (the key is optional) and
+    /// keeps reaching `expand_ref`'s own message.
     #[test]
     fn a_ref_without_a_template_string_is_refused() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -3633,6 +3656,19 @@ mod tests {
             r#"{"cell":{"type":"ref","template":7}}"#,
         );
 
+        let err = parse_subtree(&outer, &inner_registry(&inner)).expect_err("no template");
+        let MutationError::Schema(message) = &err else {
+            panic!("a non-string cell.template is a schema refusal, got {err:?}");
+        };
+        assert!(
+            message.contains("child/config.json") && message.contains("expected a string"),
+            "the refusal must name the file and the type violation, got: {message}"
+        );
+
+        write_json(
+            &outer.join("child/config.json"),
+            r#"{"cell":{"type":"ref"}}"#,
+        );
         let err = parse_subtree(&outer, &inner_registry(&inner)).expect_err("no template");
         assert_eq!(
             err,

@@ -72,7 +72,7 @@
         },
         {
           "route": "error",
-          "because": "a normalised failure of this channel -- the connector's own, the generation's, and a round that hit its iteration cap. The parent MUST wire it"
+          "because": "a normalised failure of this channel -- the connector's own, the generation's, a round that hit its iteration cap, and (since `collector@2.1.1`) a turn the generation could not assemble because its store refused a read or a write, marked `hop.degraded`. Both of the last two arrive on the generation's `answer` lane and neither is an answer, so the internal reply edge guards on `!has(hop.round_capped) && !has(hop.degraded)` and sends them here instead -- a store refusal spoken out loud in the chat reads as a real reply (GH #343). The parent MUST wire it"
         }
       ]
     },
@@ -113,7 +113,7 @@
         {
           "from": "./terminal",
           "to": "./telegram-connector",
-          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)",
+          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)",
           "modifier": {
             "set_hop": {
               "route": "'in_reply'"
@@ -145,7 +145,7 @@
         {
           "from": "./terminal",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.round_capped)",
+          "condition": "has(hop.route) && hop.route == 'answer' && (has(hop.round_capped) || has(hop.degraded))",
           "modifier": {
             "set_hop": {
               "route": "'error'"

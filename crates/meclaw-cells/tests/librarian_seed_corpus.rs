@@ -29,10 +29,22 @@
 //! nothing for one of the two cases and sat one line above the generator saying
 //! so.
 //!
-//! **R2b guard.** Both reads are guarded: where the generator or the corpus does
+//! **Reproducible is not complete (GH #344).** The regeneration gate above
+//! compares the corpus with itself, and truncation is deterministic: a chunk
+//! that lost half its section byte-matches its own regeneration forever. The
+//! generator cut every section at `MAX_CHARS = 4000` with `body[:MAX_CHARS]`,
+//! and when the overview's `Flags` section grew past that line, the paragraph
+//! behind the cut — the one promising `--version`/`--help` write nothing —
+//! stopped existing for the librarian with nothing going red. So the second
+//! gate here reads the product and asks whether it still CONTAINS its sources:
+//! no chunk sitting exactly on the cap (the signature of an arithmetic cut,
+//! since the splitter always seams below it), and the lost paragraph present.
+//!
+//! **R2b guard.** Every read is guarded: where the generator or the corpus does
 //! not ship, and where `python3` will not spawn, this skips rather than fails on
 //! a dead reference.
 
+use meclaw_core::serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -42,6 +54,16 @@ fn repo_root() -> PathBuf {
 
 const GENERATOR: &str = "workshop/tools/build_librarian_seed.py";
 const CORPUS: &str = "templates/builder-librarian/store/seed/docs.jsonl";
+
+/// The generator's cap, in characters. Mirrored, not imported — the point of
+/// this gate is to fail if the two ever disagree about what a full chunk is.
+const MAX_CHARS: usize = 4000;
+
+/// The sentence GH #344 measured falling off the end of the `Flags` chunk. It
+/// is quoted from `docs/meclaw-overview.md`, the file the corpus is built from,
+/// so it is the German wording — the English twin lives in `.en.md`, which the
+/// generator does not read.
+const LOST_PARAGRAPH: &str = "Info-only Flags sind side-effect-frei";
 
 /// The generator and its product, or `None` where this tree does not carry them.
 fn shipped() -> Option<PathBuf> {
@@ -114,5 +136,54 @@ fn the_check_mode_does_not_touch_the_committed_corpus() {
     assert_eq!(
         before, after,
         "{GENERATOR} --check rewrote {CORPUS}; check mode must only report"
+    );
+}
+
+/// GH #344 — the corpus carries whole sections, not their first 4000 characters.
+///
+/// Two assertions, and the first is the general one: a chunk whose text is
+/// exactly `MAX_CHARS` long was ended by arithmetic. The splitter seams on a
+/// line break or a space and therefore lands strictly below the cap, so a chunk
+/// sitting on it means somebody restored `body[:MAX_CHARS]` — the silent delete
+/// this issue is about, which the regeneration gate cannot see because it is
+/// perfectly reproducible.
+///
+/// The second names the casualty, so a regression reads as the loss it is
+/// rather than as an arithmetic curiosity.
+#[test]
+fn no_chunk_is_a_silent_truncation() {
+    let Some(root) = shipped() else { return };
+    let corpus = std::fs::read_to_string(root.join(CORPUS)).expect("read corpus");
+
+    let mut on_the_cap = Vec::new();
+    let mut carries_the_paragraph = false;
+    // Line 1 is the schema header, every line after it is a row.
+    for line in corpus.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let row: Value = meclaw_core::serde_json::from_str(line).expect("corpus row is JSON");
+        let text = row["text"].as_str().expect("every row has text");
+        if text.chars().count() == MAX_CHARS {
+            on_the_cap.push(format!(
+                "{} ({} § {})",
+                row["id"].as_str().unwrap_or("?"),
+                row["source"].as_str().unwrap_or("?"),
+                row["section"].as_str().unwrap_or("?"),
+            ));
+        }
+        carries_the_paragraph |= text.contains(LOST_PARAGRAPH);
+    }
+
+    assert!(
+        on_the_cap.is_empty(),
+        "{} chunk(s) in {CORPUS} end exactly on the {MAX_CHARS}-character cap, which is what a \
+         hard cut looks like: the section continues in the source and not in the corpus. The \
+         generator must split an over-long section into `-cont<N>` rows, not truncate it.\n  {}",
+        on_the_cap.len(),
+        on_the_cap.join("\n  "),
+    );
+    assert!(
+        carries_the_paragraph,
+        "{CORPUS} does not contain {LOST_PARAGRAPH:?}. That paragraph is in \
+         docs/meclaw-overview.md § Flags, past the 4000-character mark; if it is missing here, \
+         the chunker is dropping section tails again (GH #344)."
     );
 }

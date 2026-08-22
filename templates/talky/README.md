@@ -1,4 +1,4 @@
-# `talky@3.0.12`
+# `talky@3.0.13`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -7,7 +7,7 @@ its template's own name -- plus an `llm` brain and one error collector. No new c
 type, no Rust.
 
 **The Egon rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, summarizer on the close path -- twenty-two edges, each of
+dispatcher for the fan-out, summarizer on the close path -- twenty-three edges, each of
 them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -31,9 +31,10 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
   summarizer, whose one recency-weighted summary lands in the brain's `system.handover`
   slot -- without a provider call, because a system update carries no `messages[]`. The
   next generation opens lazily on the first morning turn and already knows yesterday.
-- **One place errors leave from.** The brain's failed inference and the summarizer's
-  failed summary fan into `./errors` and leave as one normalised report. A parent drains
-  one edge, not three.
+- **One place errors leave from.** The brain's failed inference, its content filter,
+  the summarizer's failed summary and the session-keeper's store refusal -- four failure
+  lanes from three cells -- fan into `./errors` and leave as one normalised report. A
+  parent drains one edge, not four lanes.
 
 ## Cells
 
@@ -59,13 +60,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.0"}}
+{"cell": {"type": "ref", "template": "collector@2.1.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.0`, with
-`talky@3.0.12` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@2.1.1`, with
+`talky@3.0.13` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -95,7 +96,7 @@ spawns.
 | lane | direction | what travels |
 |---|---|---|
 | `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory |
-| `answer` | out | the finished turn. Two sorts, told apart by `hop.round_capped` |
+| `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
 | `write` | out | the closed session as one batch |
 | `error` | out | a normalised failure report. **MUST** be wired |
 
@@ -157,7 +158,7 @@ Plus, per instance, the two **advisor lanes** to an agent core -- see below.
               "set_context": {"channel": "hop.chat_id",
                               "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"}}},
 {"from": "./talky", "to": "<reply sink>",
- "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped)"},
+ "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
 {"from": "./talky", "to": "<day archive or memory>",
  "condition": "has(hop.route) && hop.route == 'write'",
  "modifier": {"set_hop": {"route": "'in_batch'"}}},
@@ -183,11 +184,18 @@ anywhere on the path invents one (GH #273).
 them as `uint`, and a bare `hop.user_id == 12345` is silently **false** -- no error, no
 log line. Every numeric condition on the ingress edge carries the cast.
 
-**The reply lane carries two sorts.** A real answer and a round that hit
-`max_iter`, told apart by `hop.round_capped == "1"`. The composite does not
-decide which of them a user sees: guard the reply edge with `!has(hop.round_capped)` and
-give the capped sort its own edge (the error drain is the usual target) -- or let it
-through deliberately.
+**The reply lane carries three sorts.** A real answer; a round that hit
+`max_iter`, marked `hop.round_capped == "1"`; and -- since `collector@2.1.1` -- a turn
+that could not be assembled at all because the store refused a read or a write, marked
+`hop.degraded == "1"` with `hop.store_error` and `hop.store_operation` beside it
+([#343](https://github.com/mmeyerlein/meclaw/issues/343)). The third sort carries **no**
+`round_capped`, so a guard written against that key alone lets a failure through as a
+real reply -- which is why the example edge above tests both.
+
+The composite does not decide which of them a user sees: guard the reply edge with
+`!has(hop.round_capped) && !has(hop.degraded)` and give each of the other two its own
+edge (the error drain is the usual target for both) -- or let them through
+deliberately.
 
 ### Per-instance lanes (not lanes of this template)
 
@@ -298,10 +306,10 @@ a path that is model-free by design.
 
 ## The internal wiring, edge by edge
 
-Twelve edges of round in this hive's `params.graph` -- plus the nine that ARE the
-boundary (three door edges from `.`, six leaving towards it, and those are the lanes
-above) and the eighteen the three sealed sub-units bring with them. Every one of the
-twelve names a sub-unit **by its path**: three of the five nodes below are sealed hives,
+Thirteen edges of round in this hive's `params.graph` -- plus the ten that ARE the
+boundary (three door edges from `.`, seven leaving towards it, and those are the lanes
+above) and the twenty the three sealed sub-units bring with them. Every one of the
+thirteen names a sub-unit **by its path**: three of the five nodes below are sealed hives,
 so the address is the hive and the lane in the third column is what the door behind it
 reads. Read it as the round it is:
 
@@ -313,6 +321,7 @@ collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
 brain --(stop | tool_calls)------> dispatcher
 brain --(length)-----------------> collector    in_answer
 brain --(error | content_filter)-> errors
+session-keeper --(reject)--------> errors    <- the session store refused a step
 
 dispatcher --(calls)---> collector   in_calls    dispatcher --(tool)--> [your tools]
 dispatcher --(result)--> collector   in_tool
@@ -325,11 +334,11 @@ summarizer --(summary_error)-> errors
 [sealed]  session-keeper   collector   summarizer      [plain cells]  brain  dispatcher  errors
 ```
 
-**The eighteen are not drawn here, and that is the point.** A sealed sub-unit takes its
+**The twenty are not drawn here, and that is the point.** A sealed sub-unit takes its
 lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
-alone brings nine edges, `collector` four, `summarizer` five -- and none of that is
-visible to, or wireable by, the hive above. What the twelve edges above state is the whole
-of talky's own topology.
+alone brings eleven edges, `collector` four, `summarizer` five -- and none of that is
+visible to, or wireable by, the hive above. What the thirteen edges above state is the
+whole of talky's own topology.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter` (default 8), which

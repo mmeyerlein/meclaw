@@ -1,4 +1,4 @@
-# `cogny@3.0.9`
+# `cogny@3.0.10`
 
 The agent core as one template. Four units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
@@ -64,13 +64,13 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.0"}}
+{"cell": {"type": "ref", "template": "collector@2.1.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.0`, with
-`cogny@3.0.9` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@2.1.1`, with
+`cogny@3.0.10` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -99,7 +99,7 @@ there too and are wired per instance, see [Lanes](#lanes).
 | port | endpoint | direction | what travels |
 |---|---|---|---|
 | consult ingress | `./cogny` | in | the errand on lane `in_turn`, carrying `context.consult_id` **and `context.consult_class`** |
-| advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice **or** a question back |
+| advice exit | `./cogny` | out | `hop.route == 'answer'` -- the advice, a question back, **or** a store refusal marked `hop.degraded` (see Lanes) |
 
 ```json
 {"from": "<front>/talky", "to": "./cogny",
@@ -368,7 +368,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@3.0.9", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@3.0.10", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -510,7 +510,7 @@ rides on `hop.route`.
 | `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier |
 | `in_tool` | in | one tool result, coming back from a tool cell the parent wired |
 | `in_bundle` | in | a memory bundle, coming back from whatever keeps this agent's memory |
-| `answer` | out | the core's answer, for whoever asked |
+| `answer` | out | the core's answer, for whoever asked. Since `collector@2.1.1` a **third** sort travels here -- beside a real answer and a round that hit `max_iter` (`hop.round_capped`) -- and it is marked `hop.degraded == "1"`: a turn that could not be assembled at all because the store refused a read or a write, with `hop.store_error` (the store's `error_code`) and `hop.store_operation` beside it ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It carries no `round_capped`, so an asker that renders an advice must branch on `degraded` -- without it a failure reads as a real answer |
 | `tool` | out | a tool call for a cell the parent wired; `hop.tool_name` says which one |
 | `recall` | out | a memory read this turn needs |
 | `error` | out | a failed inference on either brain. **Wire it** -- unwired it dead-letters, loudly |

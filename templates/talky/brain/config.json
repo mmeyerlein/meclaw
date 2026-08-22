@@ -88,7 +88,7 @@
     ]
   },
   "description": {
-    "purpose": "The agent's brain: the one inference of the composite. It answers the assembled context the collector hands it over the seam, and its system state - identity, instructions, tool schemas, the memory bundle, the handover of the last closed generation - accumulates in its own cell.db, one writer per path.",
+    "purpose": "The agent's brain: the one inference of the composite. It answers the assembled context the collector hands it over the seam, and its system state - identity, instructions, tool schemas, the handover of the last closed generation - accumulates in its own cell.db, one writer per path. The memory bundle is NOT part of that state: since collector 2.1.0 it arrives per round as a synthetic memory_recall tool result in messages[] and expires with that round (GH #278).",
     "use_when": "Inside the talky composite. The seam edge (collector -> here) carries the iteration bound and restore_ttl; the answer edge (here -> split) carries stop and tool_calls, and the split decides which of the two it is.",
     "not_in_scope": "No tool execution, no context assembly, no persona of its own beyond what is seeded or written into it. Provider and auth are instance business: the shipped default is the OpenRouter chat lane, a subscription or another provider is override_params.",
     "emits_meaning": "finish_reason 'stop'/'tool_calls' -> ./dispatcher (the dispatcher tells a final answer from a tool bundle); 'length' -> the collector's in_answer lane (a truncated answer is an answer); 'error'/'content_filter' -> ./errors, because an error echo carries the PROMPT back and must never be filed as the agent's own words.",

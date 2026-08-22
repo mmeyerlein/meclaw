@@ -88,7 +88,7 @@
     ]
   },
   "description": {
-    "purpose": "The agent core's one inference (R-CG-1): reasoning, LLM-backed tool work and everything a channel voice hands over. Its system state - identity, core instructions, tool schemas, the memory bundle of the central hive - accumulates in its own cell.db, one writer per system path.",
+    "purpose": "The agent core's one inference (R-CG-1): reasoning, LLM-backed tool work and everything a channel voice hands over. Its system state - identity, core instructions, tool schemas - accumulates in its own cell.db, one writer per system path. The memory bundle of the central hive is NOT part of that state: since collector 2.1.0 it arrives per round as a synthetic memory_recall tool result in messages[] and expires with that round (GH #278).",
     "use_when": "Inside the cogny composite, behind the collector's seam. Slower and stronger than a talky brain on purpose; the whole point of the advisor split is that nobody waits for this call.",
     "not_in_scope": "No tool execution, no context assembly, no channel persona. Cogny never speaks to a user directly - it answers the channel voice, which verbalises the result in its own tone. Provider and auth are instance business: the shipped default is the OpenRouter chat lane, a subscription or another provider is override_params.",
     "emits_meaning": "finish_reason 'stop'/'tool_calls' -> ./dispatcher (the dispatcher tells a final answer from a tool bundle); 'length' -> the collector's in_answer lane (a truncated answer is an answer); 'error'/'content_filter' -> the parent's drain, wired from ./brain, because an error echo carries the PROMPT back and must never be filed as the core's own words.",

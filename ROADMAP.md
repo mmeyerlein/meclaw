@@ -145,9 +145,9 @@ the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 The template surface is open: a template is a directory, a README and a
 `template.json`. Nineteen are listed in
 [`templates/README.md`](templates/README.md) as worked examples — sixteen
-single-purpose ones plus three composites: `talky@3.0.12`, which references four
-of them as sub-units, `cogny@3.0.9`, which references two, and
-`memory-hive@2.3.0`, a member's long-term memory as a hive of twelve cells.
+single-purpose ones plus three composites: `talky@3.0.13`, which references four
+of them as sub-units, `cogny@3.0.10`, which references two, and
+`memory-hive@2.3.1`, a member's long-term memory as a hive of twelve cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
@@ -174,6 +174,23 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.17.4 — a refusal stops arriving as a result.** A `store` error reply was
+  read as an empty result set by the lanes that consume it, so a failed read
+  looked like "nothing is there" and a failed write like a success; every lane
+  that talks to a `store` checks `error_code` before it reads rows now, which
+  closes [#343](https://github.com/mmeyerlein/meclaw/issues/343) on the nine
+  small ones too. The same class in other places: a `/colony` read dropped a
+  filter it could not parse and answered with the unfiltered set (all four
+  refuse with `invalid_query` now), a builder deployment reported a mutation the
+  colony had refused, a failed rescan let the run die one cell later instead of
+  stopping there, and a `bash` command of 128 KiB or more reported an I/O fault
+  rather than its size. The builder hands back its scope lease and its in-flight
+  marker together at the end of every lane, never one without the other.
+  **Breaking:** an unknown key in a `cell` block refuses the mutation the way it
+  has always refused the boot ([#353](https://github.com/mmeyerlein/meclaw/issues/353));
+  the migration is to remove the key. Plus the export audit runs the published
+  tree's gates before the publication rather than after, and the librarian's
+  corpus carries whole sections instead of their first 4000 characters.
 - **v0.17.3 — a template can put another template inside itself.** `cell.type:
   "ref"` names a template as a sub-unit, so `talky` and `cogny` reference the
   four and the two units they used to carry as byte copies, and a cell records

@@ -43,8 +43,14 @@ jobs:
         run: cargo fmt --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # `--no-fail-fast` because the default stops at the first failing test
+      # BINARY, and this suite has 400+ of them. A red run then reports one
+      # defect and hides every other -- W3's export CI showed exactly one of two
+      # identically-caused vacuity-floor failures, so the fix session repaired
+      # one, pushed, and found the second on the next run (GH #356). One run
+      # should cost one round, not one defect.
       - name: test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   windows:
     runs-on: windows-latest

@@ -174,6 +174,34 @@ def rel(path: Path) -> str:
         return str(path)
 
 
+def test_fns_in_text(text: str) -> set[str]:
+    """Names of every `#[test]` / `#[tokio::test]`-annotated `fn` in ONE source text.
+
+    Cut out of `collect_test_fns` so that the taxonomy AND the walk over it exist
+    exactly once. The export gate (`plans/export-fixtures/make_export.py`, R13)
+    asks the same question of a corpus that is not on disk -- the blobs of the
+    export tree -- and a second copy of this loop would be a second answer that
+    ages silently. Whoever changes what counts as a test changes it here.
+    """
+    names: set[str] = set()
+    pending = False
+    for line in text.splitlines():
+        fn = FN_RE.match(line)
+        if fn:
+            if pending:
+                names.add(fn.group(1))
+            pending = False
+            continue
+        if ATTR_RE.match(line):
+            if TEST_ATTR_RE.match(line):
+                pending = True
+            continue
+        if IGNORABLE_RE.match(line):
+            continue
+        pending = False
+    return names
+
+
 def collect_test_fns() -> set[str]:
     """Names of every `#[test]` / `#[tokio::test]`-annotated `fn` under `crates/`.
 
@@ -185,21 +213,7 @@ def collect_test_fns() -> set[str]:
     if not CRATES_DIR.is_dir():
         return names
     for src in CRATES_DIR.rglob("*.rs"):
-        pending = False
-        for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
-            fn = FN_RE.match(line)
-            if fn:
-                if pending:
-                    names.add(fn.group(1))
-                pending = False
-                continue
-            if ATTR_RE.match(line):
-                if TEST_ATTR_RE.match(line):
-                    pending = True
-                continue
-            if IGNORABLE_RE.match(line):
-                continue
-            pending = False
+        names |= test_fns_in_text(src.read_text(encoding="utf-8", errors="replace"))
     return names
 
 

@@ -1,4 +1,4 @@
-# `firewall@2.0.2`
+# `firewall@2.0.3`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -41,6 +41,28 @@ hot-updatable, visible in the tree, and **loud** when it fires.
 | 4 | **sender allowlist** | `kind=sender, action=allow` | `sender_not_allowed` | `allowlist:<field>` |
 | 5 | **pattern blocklist** | `kind=substring` / `kind=prefix` | `pattern_blocked` | that row |
 | 6 | **rate limit** | `FIREWALL_RATE_MAX` / `_WINDOW_MS` | `rate_limited` | `rate-limit` |
+
+**And one refusal that is not a rule.** If the `rules` store does not answer the read
+that decides the verdict -- a timeout, a bad column, a table that is not there -- the
+screen rejects the turn with `reject_reason` `store_refused` and `rule_id`
+`store-refused`, carrying the store's own `error_code` in `hop.store_error` and the
+refused op in `hop.store_operation`
+([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It is the same fail-closed
+reflex as rule 2, one level down: before that guard existed, an unanswered rule read
+left the screen with **no** blocklist, **no** allowlist and **no** pattern rule and it
+walked on, and an unanswered rate read counted zero arrivals and emitted `pass`. A
+firewall whose store times out must refuse the turn, not wave it through.
+
+**But only the two reads that still owe a verdict.** The screen makes three store calls,
+and the third is not a question: the arrival `mark` of a passed turn is written
+fire-and-forget, in the **same** emission as the `pass` itself. By the time a refusal of
+that insert comes back, the parent has already been told what this turn was -- and
+`pass`/`reject` is exactly one of two lanes, so a second verdict would leave it with no
+way to pick. A refused `mark` therefore emits **nothing**; it writes one line to stderr
+(`firewall/screen: arrival mark refused (<code>), rate window undercounts by one`) and
+ends there. The cost is stated rather than hidden: that arrival is not booked, so this
+turn did not spend its rate slot and the window is short by one -- a bounded fail-open in
+the rate dimension alone, for a turn every other rule has already passed.
 
 Three of those positions are arguments, not taste:
 
@@ -125,7 +147,7 @@ Every endpoint is the firewall HIVE (`params.ports` is empty): `in_turn` in, `pa
 |---|---|
 | ingress | names the lane (`hop.route == 'in_turn'`) and promotes **both** identity dimensions. **Without `context.channel` every surface shares the bucket `default` and is rate-limited as one.** Without `context.user_id` the second dimension is the empty string, so every `field: "user_id"` rule is decided against nothing: an `allow` row on that dimension then rejects every turn (`sender_not_allowed`, `allowlist:user_id`) and a `reject` row never fires. Both keys are declared on the lane in `params.contract` |
 | pass | the only edge into the agent. `delete_context` drops the parked copy of the turn. |
-| reject | the loud lane. `hop.reject_reason` + `hop.rule_id` say what happened; what the parent does with it — drain, log, refuse politely, ban — is the parent's decision. |
+| reject | the loud lane. `hop.reject_reason` + `hop.rule_id` say what happened; what the parent does with it — drain, log, refuse politely, ban — is the parent's decision. One reason is not a rule at all: `store_refused` (`rule_id` `store-refused`) means the `rules` store did not answer the read that decides the verdict, and then `hop.store_error` carries its `error_code` and `hop.store_operation` the refused op. A refused arrival `mark` does **not** travel here -- that turn already left on `pass`, and one turn gets one verdict; see the rule catalogue. |
 
 **Both exits clear the firewall's own context keys, and the hive does it itself now.**
 `context.fw_body` holds a full copy of the turn (that is how a stateless cell carries it

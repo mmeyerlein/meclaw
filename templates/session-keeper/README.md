@@ -1,4 +1,4 @@
-# `session-keeper@2.0.2`
+# `session-keeper@2.0.3`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Four cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -71,6 +71,7 @@ that names it is refused (see above).
 |---|---|---|---|
 | `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. |
 | `close` | `close` | the consumer of a finished session | one request per generation; promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below). |
+| `reject` | `stamp`, `close` | wherever a broken keeper is read | the session store did not answer a step of this keeper ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). `hop.reject_reason` is `store_refused`, `hop.store_error` carries the store's own `error_code` (a free string -- the store's code list is open) and `hop.store_operation` the refused op. **Drain it.** Every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session -- and used to **open a second generation** for one that had one -- and an unanswered nightly sweep looks like a night with no idle channel. The body names the **step**, because they do not leave the same thing standing: at `touch` and `open` the stamped turn has already left in the same emission, and the `open` case is the sharp one -- the turn travels with a session id whose row was never written, so the next turn opens yet another generation. |
 
 **The close lane, as a port convention (Track K/E):** the keeper emits `hop.route == 'close'`
 carrying `hop.session_id`, `hop.channel` and `hop.audience_set`, and a body with no turns

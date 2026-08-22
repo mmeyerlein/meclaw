@@ -22,7 +22,7 @@
         },
         {
           "route": "reject",
-          "because": "the turn was refused. hop.reject_reason and hop.rule_id say what happened; what to do about it is the parent's decision"
+          "because": "the turn was refused. hop.reject_reason and hop.rule_id say what happened; what to do about it is the parent's decision. One of the reasons is not a rule at all: 'store_refused' (rule_id 'store-refused') means the rules store did not answer, and the screen fails CLOSED on that the way it fails closed on an unreadable rule row -- hop.store_error then carries the store's own error_code and hop.store_operation the refused op (GH #343)"
         }
       ]
     },

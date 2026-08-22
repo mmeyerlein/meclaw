@@ -22,7 +22,7 @@
       "emits": [
         {
           "route": "answer",
-          "because": "the core's answer, for whoever asked"
+          "because": "the core's answer, for whoever asked. Since collector@2.1.1 a THIRD sort travels here and it is told apart by `hop.degraded`, not by `round_capped` (which such a message does not carry): a turn that could not be assembled at all because the store refused a read or a write (GH #343). `hop.store_error` carries the store's `error_code`, `hop.store_operation` the op it refused, and the text names both. A parent that renders an answer must branch on `degraded` -- without it a failure reads as a real reply"
         },
         {
           "route": "tool",

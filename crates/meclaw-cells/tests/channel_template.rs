@@ -1,4 +1,4 @@
-//! `channel@1.0.1` carries its sub-units as byte copies, and they are pinned.
+//! `channel@1.0.2` carries its sub-units as byte copies, and they are pinned.
 //!
 //! The substrate DOES have a template-in-template reference since GH #277
 //! (`cell.type: "ref"`), but `channel` does not use it: it still holds its
