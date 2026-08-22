@@ -17,7 +17,8 @@
 //! `${VAR:-default}` is resolved the way the colony resolves it at
 //! instantiation, and the module body runs against a stub stdin.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn recall_script() -> String {
     let raw = std::fs::read_to_string("../../templates/memory-hive/recall/config.json")
@@ -69,6 +70,29 @@ fn stdin_doc(flat: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({"envelope": envelope, "body": slots, "params": {}})
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 fn run_with_stdin(stdin: &str, probe: &str) -> String {
     let src = format!(
         concat!(
@@ -90,11 +114,7 @@ fn run_with_stdin(stdin: &str, probe: &str) -> String {
         serde_json::to_string(stdin).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -322,11 +342,22 @@ fn the_tier1_bundle_reports_the_verdict_in_json_header_and_text() {
     assert_eq!(bundle["query"], BARE_QUESTION);
     assert_eq!(bundle["query_hygiene"]["step"], "question");
     assert_eq!(msg["header"]["query_hygiene"], "question");
+    // GH #279 re-point: the verdict still stands in the text the model reads —
+    // it is a statement about THIS answer's reliability — but in words rather
+    // than as a key name. `question`, `from_chars` and `to_chars` are the
+    // caller's half and are asserted above, out of the JSON.
     let text = msg["messages"][0]["text"].as_str().unwrap();
+    let sentence = text
+        .lines()
+        .find(|l| l.contains("shortened"))
+        .unwrap_or_else(|| panic!("the model reads the text, not the JSON: {text}"));
     assert!(
-        text.lines()
-            .any(|l| l.starts_with("- query_hygiene: question")),
-        "the model reads the text, not the JSON beside it: {text}"
+        sentence.contains("missing"),
+        "and it says what the clamp costs the answer: {sentence}"
+    );
+    assert!(
+        !text.contains("query_hygiene"),
+        "a reader who has to decode a key name is a reader who gets it wrong: {text}"
     );
 }
 
@@ -340,9 +371,32 @@ fn a_healthy_query_leaves_the_tier1_bundle_byte_identical() {
     assert_eq!(bundle["query"], BARE_QUESTION);
     assert_eq!(bundle.get("query_hygiene"), None);
     assert_eq!(msg["header"].get("query_hygiene"), None);
+    // GH #279: the byte-identical rendering of an empty run moved one slot over.
+    // It is still exactly this string — the guard's promise was that a healthy
+    // query changes nothing, and that promise is kept against the document the
+    // string now lives in.
     assert_eq!(
-        msg["messages"][0]["text"],
+        msg["recall_diagnostic"]["text"],
         "MEMORY (tier 1, 0 candidates, RRF over no leg)"
+    );
+    // The payload half (#297): a run that found nothing does not hand the model
+    // a header over no rows — it says, in one sentence, that this memory holds
+    // no answer to the question. Nothing was looked up that could have been
+    // floored away here, so the sentence carries no reason clause.
+    let rendered = msg["messages"][0]["text"].as_str().unwrap();
+    assert_eq!(
+        rendered,
+        "Nothing in this memory answers this question (as of 2026-08-14)."
+    );
+    assert_eq!(
+        msg["header"]["recall_empty"], "1",
+        "and the same verdict travels on the header: {}",
+        msg["header"]
+    );
+    let bundle_answers = &bundle["answers"];
+    assert_eq!(
+        bundle_answers, "none",
+        "…and in the bundle the caller parses: {bundle}"
     );
 }
 

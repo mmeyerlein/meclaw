@@ -68,7 +68,14 @@ impl CodeCell {
 }
 
 /// Build `(cmd, args)` for `tokio::process::Command::new(cmd).args(args)`.
-fn build_command(p: &CodeParams) -> (String, Vec<String>) {
+///
+/// `materialised` is the temp file an oversized `script_inline` was written to
+/// (GH #349, see [`crate::code::script_file`]); when it is `Some`, the runner is
+/// pointed at that path instead of being handed the script in `argv`.
+fn build_command(p: &CodeParams, materialised: Option<&std::path::Path>) -> (String, Vec<String>) {
+    if let Some(path) = materialised {
+        return (p.runner.clone(), vec![path.to_string_lossy().into_owned()]);
+    }
     match &p.script {
         Script::Path(path) => (p.runner.clone(), vec![path.clone()]),
         Script::Inline(code) => (p.runner.clone(), vec!["-c".into(), code.clone()]),
@@ -290,7 +297,38 @@ impl StatelessCell for CodeCell {
                 }
             };
 
-            let (cmd, args) = build_command(&self.params);
+            let timeout =
+                std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));
+
+            // GH #349: an inline script above the platform's per-argv-string cap
+            // (Linux: MAX_ARG_STRLEN = 32 * PAGE_SIZE) cannot be handed to the
+            // runner in `argv` at all — `spawn()` answers `Argument list too
+            // long`. stdin is not free either: it carries the DOCUMENT, which
+            // the script reads. So the script goes to a per-spawn temp file and
+            // the runner is pointed at it, the same `<runner> <path>` form
+            // `script_path` already uses. Scripts under the cap keep the argv
+            // path unchanged. The guard unlinks the file when it drops — bound
+            // for the whole handler so the file outlives the child.
+            let materialised = match &self.params.script {
+                Script::Inline(code) => {
+                    match crate::code::script_file::materialise_if_oversized(code, timeout).await {
+                        Ok(m) => m,
+                        Err(e) => {
+                            emit_spawn_error(
+                                sink,
+                                &reply_target,
+                                format!("inline script could not be materialised: {e}"),
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
+                Script::Path(_) => None,
+            };
+            let script_file_path = materialised.as_ref().map(|m| m.path());
+
+            let (cmd, args) = build_command(&self.params, script_file_path);
             let mut command = tokio::process::Command::new(&cmd);
             command
                 .args(&args)
@@ -304,7 +342,19 @@ impl StatelessCell for CodeCell {
             // GH #85: the returned scope owns the child's cgroup and must stay
             // alive until the child is reaped, so it is bound rather than
             // dropped on the spot.
-            let _sandbox_scope = match &self.params.sandbox {
+            //
+            // GH #349: when the script was materialised, the profile gets one
+            // extra read grant — the script file itself. `cell-types.md` §
+            // `code` promises a `script_inline` needs no declaration of its own,
+            // and the runner has to be able to open the program it is told to
+            // run. Nothing else is widened, and nothing of this reaches
+            // `config.json`.
+            let effective_profile = match (&self.params.sandbox, script_file_path) {
+                (Some(profile), Some(path)) => Some(profile.with_readable_file(path)),
+                _ => None,
+            };
+            let profile_in_force = effective_profile.as_ref().or(self.params.sandbox.as_ref());
+            let _sandbox_scope = match profile_in_force {
                 None => crate::sandbox::SandboxScope::empty(),
                 Some(profile) => match crate::sandbox::apply(profile, &mut command) {
                     Ok(scope) => scope,
@@ -347,8 +397,6 @@ impl StatelessCell for CodeCell {
                 }
             });
 
-            let timeout =
-                std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));
             let out = match with_killing_timeout(child, timeout).await {
                 Ok(o) => o,
                 Err(KillingTimeoutErr::Elapsed) => {

@@ -68,25 +68,49 @@ fn assemble_params(over: &[(&str, &str)]) -> serde_json::Value {
     serde_json::Value::Object(p)
 }
 
-fn emit_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
-    let mut doc = doc;
-    // Last, exactly like `build_stdin_json` -- a body slot cannot shadow it.
-    doc["params"] = assemble_params(over);
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
     let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(assemble_script())
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+fn emit_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
+    let mut doc = doc;
+    // Last, exactly like `build_stdin_json` -- a body slot cannot shadow it.
+    doc["params"] = assemble_params(over);
+    let out = run_script_on_stdin(
+        &assemble_script(),
+        &meclaw_testing::code_stdin(&doc).to_string(),
+    );
     assert!(
         out.status.success(),
         "assemble exited non-zero: {}",

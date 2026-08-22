@@ -92,8 +92,9 @@ pub enum ColonyWriteOp {
         /// Unix seconds of the relocation.
         updated_at: i64,
     },
-    /// GH #62: UPDATE-only fill of the three `registry` provenance columns
-    /// (`template`, `template_version`, `instantiated_at`) for an existing row.
+    /// GH #62: UPDATE-only fill of the four `registry` provenance columns
+    /// (`template`, `template_version`, `instantiated_at` and, since GH #277,
+    /// the JSON-serialized `template_chain`) for an existing row.
     ///
     /// Same shape and the same reason as [`Self::SetRegistryStatus`]: the row is
     /// created by `UpsertRegistry`, and this op is the SOLE write-authority for
@@ -495,12 +496,20 @@ fn apply_op(
             )?;
         }
         ColonyWriteOp::SetRegistryProvenance { path, provenance } => {
+            // GH #277: an absent chain stays SQL NULL — serializing `None` into
+            // the string "null" would put a chain-shaped value in a column that
+            // means "no chain was recorded".
+            let template_chain = provenance
+                .template_chain
+                .as_ref()
+                .and_then(|chain| meclaw_core::serde_json::to_string(chain).ok());
             tx.execute(
-                "UPDATE registry SET template=?, template_version=?, instantiated_at=? \
-                 WHERE path=?",
+                "UPDATE registry SET template=?, template_version=?, template_chain=?, \
+                 instantiated_at=? WHERE path=?",
                 rusqlite::params![
                     provenance.template,
                     provenance.template_version,
+                    template_chain,
                     provenance.instantiated_at,
                     path.as_str()
                 ],
@@ -1169,6 +1178,7 @@ mod tests {
                 provenance: crate::config::NodeProvenance {
                     template: "sink-tpl".into(),
                     template_version: Some("1.0.0".into()),
+                    template_chain: None,
                     instantiated_at: 1_700_000_000,
                 },
             },
@@ -1220,6 +1230,7 @@ mod tests {
                 provenance: crate::config::NodeProvenance {
                     template: "bare".into(),
                     template_version: None,
+                    template_chain: None,
                     instantiated_at: 42,
                 },
             },
@@ -1236,6 +1247,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ver, None);
+    }
+
+    /// GH #277: the fourth provenance column carries the whole chain as JSON —
+    /// outermost first, the node's own template last. The round-trip has to
+    /// return exactly the pairs that went in, and a node without a chain has to
+    /// read SQL NULL: `"null"` in the column would be a chain-shaped lie.
+    #[test]
+    fn set_registry_provenance_writes_the_template_chain() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::schema::setup_colony_db(&conn).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        for path in ["/composite", "/bare"] {
+            apply_op(
+                &tx,
+                ColonyWriteOp::UpsertRegistry {
+                    path: Path::new(path),
+                    cell_id: "c".into(),
+                    cell_type: "echo".into(),
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .expect("apply_op in test");
+        }
+        let chain = vec![
+            ("outer".to_string(), Some("1.0.0".to_string())),
+            ("inner".to_string(), None),
+        ];
+        apply_op(
+            &tx,
+            ColonyWriteOp::SetRegistryProvenance {
+                path: Path::new("/composite"),
+                provenance: crate::config::NodeProvenance {
+                    template: "inner".into(),
+                    template_version: None,
+                    template_chain: Some(chain.clone()),
+                    instantiated_at: 7,
+                },
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("apply_op in test");
+        apply_op(
+            &tx,
+            ColonyWriteOp::SetRegistryProvenance {
+                path: Path::new("/bare"),
+                provenance: crate::config::NodeProvenance {
+                    template: "solo".into(),
+                    template_version: Some("2.0.0".into()),
+                    template_chain: None,
+                    instantiated_at: 7,
+                },
+            },
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("apply_op in test");
+        tx.commit().unwrap();
+
+        let (tpl, ver, chain_json): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT template, template_version, template_chain \
+                 FROM registry WHERE path = ?",
+                ["/composite"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tpl, "inner", "the leaf stamp stays the last chain element");
+        assert_eq!(ver, None);
+        let round_tripped: Vec<(String, Option<String>)> =
+            meclaw_core::serde_json::from_str(&chain_json.expect("template_chain written"))
+                .expect("the column holds a chain");
+        assert_eq!(round_tripped, chain);
+
+        let bare: Option<String> = conn
+            .query_row(
+                "SELECT template_chain FROM registry WHERE path = ?",
+                ["/bare"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bare, None, "a None chain writes SQL NULL, never \"null\"");
     }
 
     /// Phase-13.5 Task 4 — `InitialApply` persists `condition` and `modifier` per edge.

@@ -133,20 +133,70 @@ pub(crate) fn canonical_port_name(raw: &str) -> Option<&str> {
 ///
 /// Pre-destructive by contract: the caller runs this before staging, so a reject
 /// leaves the colony (registry, edge table, filesystem) untouched.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_port_boundary`]: the
+/// FIRST breach the collecting core produces is, by construction, the one this
+/// function returned before, so every verdict it ever gave is byte-identical.
 pub fn validate_hive_port_boundary(
     diff: &JsonValue,
     guard_scope: &str,
     sealed: &[SealedHive],
 ) -> Result<(), MutationError> {
+    addressed_port_boundary(diff, guard_scope, sealed)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _)| Err(error))
+}
+
+/// GH #293 — stage 6 ([`Stage::ContractLocality`]) as a COLLECTING check, the
+/// port-boundary third of it: EVERY `add_edges` entry that wires past a sealed
+/// hive's port is named, not only the first one.
+///
+/// Reaching in and reaching out are the same breach seen from two ends, so a
+/// diff that does both used to cost two round trips to learn one mistake.
+///
+/// **This changes no verdict** — see [`validate_hive_port_boundary`], which is
+/// now the first-error face of the same core.
+///
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_hive_port_boundary(
+    diff: &JsonValue,
+    guard_scope: &str,
+    sealed: &[SealedHive],
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address) in addressed_port_boundary(diff, guard_scope, sealed) {
+        into.push(Violation::from_error(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+        ));
+    }
+}
+
+/// The collecting core: every boundary breach, with the RESOLVED interior
+/// endpoint it concerns as its address.
+///
+/// The address is the resolved absolute path rather than the raw endpoint
+/// spelling, because that is the node the seal is about and two different
+/// spellings (`./aff/store`, `aff/store`) name the same breach.
+fn addressed_port_boundary(
+    diff: &JsonValue,
+    guard_scope: &str,
+    sealed: &[SealedHive],
+) -> Vec<(MutationError, String)> {
+    let mut violations = Vec::new();
     if sealed.is_empty() {
-        return Ok(());
+        return violations;
     }
     let Some(obj) = diff.as_object() else {
         // Shape errors are surfaced by schema validation; nothing to bound.
-        return Ok(());
+        return violations;
     };
     let Some(adds) = obj.get("add_edges").and_then(|v| v.as_array()) else {
-        return Ok(());
+        return violations;
     };
     for e in adds {
         let (Some(from), Some(to)) = (
@@ -159,43 +209,65 @@ pub fn validate_hive_port_boundary(
         let from_abs = crate::mutation::resolve_scoped_path(guard_scope, from);
         let to_abs = crate::mutation::resolve_scoped_path(guard_scope, to);
         for hive in sealed {
-            check_endpoint_pair(hive, from, from_abs.as_str(), to_abs.as_str(), "from")?;
-            check_endpoint_pair(hive, to, to_abs.as_str(), from_abs.as_str(), "to")?;
+            check_endpoint_pair(
+                hive,
+                from,
+                from_abs.as_str(),
+                to_abs.as_str(),
+                "from",
+                &mut violations,
+            );
+            check_endpoint_pair(
+                hive,
+                to,
+                to_abs.as_str(),
+                from_abs.as_str(),
+                "to",
+                &mut violations,
+            );
         }
     }
-    Ok(())
+    violations
 }
 
 /// One half of the symmetric check: `endpoint_abs` is the endpoint under
 /// scrutiny, `other_abs` its partner on the same edge.
+///
+/// GH #293: pushes instead of returning. The three early exits are unchanged —
+/// they are the constellations that are LEGAL, and a legal endpoint contributes
+/// nothing either way.
 fn check_endpoint_pair(
     hive: &SealedHive,
     endpoint_raw: &str,
     endpoint_abs: &str,
     other_abs: &str,
     side: &str,
-) -> Result<(), MutationError> {
+    out: &mut Vec<(MutationError, String)>,
+) {
     if !hive.is_interior(endpoint_abs) {
-        return Ok(()); // not inside this hive — no boundary involved
+        return; // not inside this hive — no boundary involved
     }
     if hive.is_port(endpoint_abs) {
-        return Ok(()); // that IS the port
+        return; // that IS the port
     }
     if hive.contains(other_abs) {
-        return Ok(()); // both ends inside the hive (or the hive marker itself)
+        return; // both ends inside the hive (or the hive marker itself)
     }
     let ports = if hive.ports.is_empty() {
         "none (transit through the hive path only)".to_string()
     } else {
         hive.ports.join(", ")
     };
-    Err(MutationError::HivePortBoundary(format!(
-        "add_edges[].{side}='{endpoint_raw}' resolves to '{endpoint_abs}', an interior node of the \
-         sealed hive '{hive_path}', while the edge's other endpoint '{other_abs}' lies outside it \
-         — that wires past the port. Declared ports of '{hive_path}': {ports}. Wire the hive path \
-         itself or one of its ports.",
-        hive_path = hive.path
-    )))
+    out.push((
+        MutationError::HivePortBoundary(format!(
+            "add_edges[].{side}='{endpoint_raw}' resolves to '{endpoint_abs}', an interior node of \
+             the sealed hive '{hive_path}', while the edge's other endpoint '{other_abs}' lies \
+             outside it — that wires past the port. Declared ports of '{hive_path}': {ports}. \
+             Wire the hive path itself or one of its ports.",
+            hive_path = hive.path
+        )),
+        endpoint_abs.to_string(),
+    ));
 }
 
 /// Call-site adapter (NOT pure — reads `config.json`): collect the hives that

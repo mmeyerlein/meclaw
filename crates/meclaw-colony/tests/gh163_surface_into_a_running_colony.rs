@@ -164,9 +164,13 @@ fn a_template_may_declare_its_own_lane_to_the_colony_graph() {
     let td = tempfile::TempDir::new().unwrap();
     template_with_absolute_lane(td.path(), "/colony/graph");
 
-    let resolved =
-        meclaw_colony::mutation::subtree::resolve_subtree(td.path(), "/org/acme/member", "canvy")
-            .expect("a lane to /colony/graph must be in bounds at any scope");
+    let resolved = meclaw_colony::mutation::subtree::resolve_subtree(
+        td.path(),
+        "/org/acme/member",
+        "canvy",
+        &meclaw_colony::templates::TemplatesRegistry::default(),
+    )
+    .expect("a lane to /colony/graph must be in bounds at any scope");
     assert!(
         resolved
             .internal_edges
@@ -184,9 +188,13 @@ fn a_template_may_not_declare_a_lane_to_the_mutation_endpoint() {
     let td = tempfile::TempDir::new().unwrap();
     template_with_absolute_lane(td.path(), "/colony/mutations");
 
-    let err =
-        meclaw_colony::mutation::subtree::resolve_subtree(td.path(), "/org/acme/member", "canvy")
-            .expect_err("/colony/mutations must stay out of bounds for a mutation");
+    let err = meclaw_colony::mutation::subtree::resolve_subtree(
+        td.path(),
+        "/org/acme/member",
+        "canvy",
+        &meclaw_colony::templates::TemplatesRegistry::default(),
+    )
+    .expect_err("/colony/mutations must stay out of bounds for a mutation");
     match err {
         meclaw_colony::mutation::MutationError::Schema(s) => assert!(
             s.contains("/colony/mutations") && s.contains("escapes subtree root"),
@@ -207,9 +215,13 @@ fn the_shipped_canvy_hive_resolves_at_a_nested_scope() {
     if !src.join("config.json").is_file() {
         return;
     }
-    let resolved =
-        meclaw_colony::mutation::subtree::resolve_subtree(&src, "/org/acme/member/alice", "canvy")
-            .expect("the shipped canvy hive must instantiate at a nested scope");
+    let resolved = meclaw_colony::mutation::subtree::resolve_subtree(
+        &src,
+        "/org/acme/member/alice",
+        "canvy",
+        &meclaw_colony::templates::TemplatesRegistry::default(),
+    )
+    .expect("the shipped canvy hive must instantiate at a nested scope");
     let has = |from: &str, to: &str| {
         resolved
             .internal_edges

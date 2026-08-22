@@ -15,18 +15,26 @@
 //! not close, because #140 could not have known which cells would later become
 //! hives.
 //!
+//! **Since GH #294 this file no longer stands in for a missing declaration.**
+//! The param half is checked by the substrate — a mutation whose
+//! `override_params` names a param the addressed cell does not have is refused,
+//! for every cell and not just for a hive
+//! (`crates/meclaw-colony/tests/gh294_an_override_names_a_param_that_exists.rs`,
+//! ruling Q6). What was inferred here from `HiveParams`'
+//! `#[serde(deny_unknown_fields)]` — a hive-shaped guess at "would this have
+//! any effect" — is gone with the test that guarded it. A shipped DOCUMENT is
+//! still never executed, so the sweep stays: it asks the substrate's own
+//! question of every recipe a reader could copy.
+//!
 //! **The question is asked of the substrate, never of a second opinion.** Two
 //! substrate calls decide every finding and neither is re-derived here:
 //!
-//! - `parse_subtree` reads the template off disk and says which of its cells
-//!   are hives. A list of "the hives we know about" maintained in this file
-//!   would agree with itself and drift from the tree, which is the state this
-//!   defect lived in.
-//! - `HiveParams` (`#[serde(deny_unknown_fields)]`) says whether a hive reads
-//!   the params the recipe sets. If deserialisation fails on an unknown field,
-//!   that field is by definition not consumed — the type IS the answer to
-//!   "would this have any effect", so a recipe that sets `ports` on a hive is
-//!   correctly left alone while one that sets `memory_tier` is not.
+//! - `parse_subtree` reads the template off disk and says which cells it has.
+//!   A list of "the cells we know about" maintained in this file would agree
+//!   with itself and drift from the tree, which is the state this defect lived
+//!   in.
+//! - `check_override_params` is the very function the mutation validator calls.
+//!   A recipe this file passes is a recipe a colony accepts, by construction.
 //!
 //! **What is scanned, and why that is not prose-parsing.** Only a literal
 //! `override_params: {…}` whose enclosing object also carries a literal
@@ -39,12 +47,37 @@
 //! gh203 leaves ports TABLE rows alone: it is not distinguishable from prose,
 //! and a check that guessed there is a check people learn to work around.
 
-use meclaw_colony::config::HiveParams;
-use meclaw_colony::mutation::subtree::parse_subtree;
+use meclaw_colony::mutation::subtree::{check_override_params, parse_subtree};
+use meclaw_colony::templates::{TemplateEntry, TemplatesRegistry, scan_templates_dir};
 use meclaw_core::serde_json::{Map, Value};
 
 fn core_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The shipped `templates/` directory as a registry snapshot — what a real
+/// mutation resolves a `cell.type: "ref"` sub-unit against (GH #277).
+///
+/// Since `talky` and `cogny` reference their sub-units instead of carrying
+/// copies, an empty snapshot would make [`parse_subtree`] fail on exactly the
+/// two composites this check exists for, and a failed parse is SKIPPED here —
+/// the sweep would go quietly vacuous on its main subjects. So the scan reads
+/// the same library the colony reads.
+fn shipped_registry() -> TemplatesRegistry {
+    let scanned = scan_templates_dir(&core_root().join("templates")).unwrap_or_default();
+    TemplatesRegistry::from_entries(
+        scanned
+            .into_iter()
+            .map(|s| TemplateEntry {
+                // The registry key a reference resolves by is `name@version`;
+                // the surrogate id is never read back.
+                template_id: format!("scan-{}", s.name),
+                name: s.name,
+                version: s.version,
+                filesystem_path: s.filesystem_path,
+            })
+            .collect(),
+    )
 }
 
 // ─────────────────────────────────────── what the shipped docs write down
@@ -231,12 +264,13 @@ fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(St
 
 // ─────────────────────────────────────────────────────────────── the check
 
-/// Every documented `override_params` key that lands on a hive which does not
-/// read what is set there, as one sentence each. `resolved` counts the recipes
-/// that were actually placed against a template on disk, so a caller can tell
-/// "nothing wrong" from "nothing read".
+/// Every documented `override_params` key the substrate would refuse, as one
+/// sentence each. `resolved` counts the recipes that were actually placed
+/// against a template on disk, so a caller can tell "nothing wrong" from
+/// "nothing read".
 fn findings(docs: &[(String, String)], resolved: &mut usize) -> Vec<String> {
     let templates = core_root().join("templates");
+    let registry = shipped_registry();
     let mut out = Vec::new();
     for (file, text) in docs {
         for r in recipes_in(file, text) {
@@ -249,7 +283,10 @@ fn findings(docs: &[(String, String)], resolved: &mut usize) -> Vec<String> {
             if !dir.join("config.json").is_file() {
                 continue;
             }
-            let Ok(parsed) = parse_subtree(&dir) else {
+            // GH #277: the registry is what resolves a `cell.type: "ref"`
+            // sub-unit, and `talky`/`cogny` declare theirs — so the tree parsed
+            // here is the tree the mutation would produce, sub-units included.
+            let Ok(parsed) = parse_subtree(&dir, &registry) else {
                 continue;
             };
             if parsed.cells.len() <= 1 {
@@ -257,14 +294,16 @@ fn findings(docs: &[(String, String)], resolved: &mut usize) -> Vec<String> {
             }
             *resolved += 1;
             for (key, value) in &r.params {
-                if !parsed.hives.contains(key) {
+                // A key that names no cell at all is the GH #140 half, refused
+                // by the same validator; this file's subject is the recipe that
+                // places itself correctly and sets the wrong thing.
+                let Some(cell) = parsed.cells.iter().find(|c| &c.rel_path == key) else {
                     continue;
-                }
-                // The hive's own params type decides. An unknown field is, by
-                // the type's `deny_unknown_fields`, one the hive does not read.
-                let Err(why) = meclaw_core::serde_json::from_value::<HiveParams>(value.clone())
+                };
+                // GH #294: the substrate's own answer, not a second opinion.
+                let Err(why) = check_override_params(cell, Some(key), &r.template_ref, value)
                 else {
-                    continue; // `graph`/`ports`/`contract` — set on a hive on purpose
+                    continue; // every key names a param the cell actually has
                 };
                 let shown = if key.is_empty() {
                     "\"\" (the subtree root)".to_string()
@@ -278,11 +317,10 @@ fn findings(docs: &[(String, String)], resolved: &mut usize) -> Vec<String> {
                     .filter(|p| !p.is_empty() && !parsed.hives.iter().any(|h| h == p))
                     .collect();
                 out.push(format!(
-                    "{}:{}: override_params[{shown}] on template '{}' addresses a HIVE, and a \
-                     hive reads only graph/ports/required_drains/contract ({why}). The key is \
-                     accepted, the params are never read, and the instance comes up \
-                     unconfigured. Address the cell that reads them; this template's non-hive \
-                     cells are: {}.",
+                    "{}:{}: override_params[{shown}] on template '{}' sets what the cell it \
+                     addresses does not have ({why:?}). A colony refuses this mutation, so the \
+                     recipe cannot be copied. Address the cell that reads them; this template's \
+                     non-hive cells are: {}.",
                     r.file,
                     r.line,
                     r.template_ref,
@@ -347,19 +385,9 @@ fn the_scan_reports_the_recipe_this_issue_was_filed_about() {
     );
 }
 
-/// A key that sets a hive's OWN params is legitimate and must stay silent —
-/// otherwise the check would push people away from the one thing addressing a
-/// hive is good for.
-#[test]
-fn a_key_that_sets_what_a_hive_actually_reads_is_not_a_finding() {
-    let deliberate = [(
-        "synthetic".to_string(),
-        r#"{"name": "core", "template": "cogny",
-            "override_params": {"collector": {"ports": ["assemble"]}}}"#
-            .to_string(),
-    )];
-    let mut resolved = 0usize;
-    let found = findings(&deliberate, &mut resolved);
-    assert!(found.is_empty(), "a hive param was flagged: {found:#?}");
-    assert_eq!(resolved, 1, "the synthetic recipe was not placed at all");
-}
+// GH #294 retired `a_key_that_sets_what_a_hive_actually_reads_is_not_a_finding`
+// together with the `HiveParams` inference it guarded. The property it held —
+// a key that sets what the addressed cell DOES declare must stay silent — is
+// now held for every shipped template and every one of their cells at once, by
+// `gh294_an_override_names_a_param_that_exists.rs`'s
+// `every_shipped_template_instantiates_unchanged`.

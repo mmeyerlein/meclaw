@@ -61,32 +61,53 @@ fn read_json(p: &std::path::Path) -> Value {
         .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-/// Run a cell's shipped script exactly as the `code` cell runs it: the runner
-/// from `params.runner`, the script from `params.script_inline` via `-c`, the
-/// stdin document from `wire::build_stdin_json`'s three-key shape.
-fn run_shipped(root: &std::path::Path, cell: &str, stdin_doc: Value) -> Vec<Value> {
+/// Run a shipped script over a real stdin document, handing the script to the
+/// runner **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `<runner> -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `-c` ran it: same `__main__` globals, same stdout, same
+/// exit status.
+fn run_script_on_stdin(runner: &str, script: &str, stdin_doc: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let cfg = read_json(&root.join(cell).join("config.json"));
-    let runner = cfg["params"]["runner"].as_str().unwrap();
-    let script = cfg["params"]["script_inline"].as_str().unwrap();
-
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        meclaw_core::serde_json::to_string(script).unwrap(),
+        meclaw_core::serde_json::to_string(stdin_doc).unwrap(),
+    );
     let mut child = Command::new(runner)
-        .arg("-c")
-        .arg(script)
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn python3");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin_doc.to_string().as_bytes())
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+/// Run a cell's shipped script exactly as the `code` cell runs it: the runner
+/// from `params.runner`, the script from `params.script_inline`, the stdin
+/// document from `wire::build_stdin_json`'s three-key shape.
+fn run_shipped(root: &std::path::Path, cell: &str, stdin_doc: Value) -> Vec<Value> {
+    let cfg = read_json(&root.join(cell).join("config.json"));
+    let runner = cfg["params"]["runner"].as_str().unwrap();
+    let script = cfg["params"]["script_inline"].as_str().unwrap();
+
+    let out = run_script_on_stdin(runner, script, &stdin_doc.to_string());
     assert!(
         out.status.success(),
         "{cell} exited {:?}\nstderr: {}",

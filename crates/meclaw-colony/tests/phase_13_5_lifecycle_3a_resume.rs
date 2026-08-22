@@ -450,3 +450,131 @@ async fn add_nodes_at_path_with_other_type_rejects_resume_type_mismatch() {
 
     h.shutdown().await;
 }
+
+// ── GH #292: a Resume does not have to repeat the template's contract ────────
+
+/// Root hive + a `persist_mock` template that DECLARES a required `ctx` key and
+/// uses it (`requires.ctx.model`, `${ctx.model}` in its params). The stateful
+/// type is what makes the second `add_nodes` a clean Resume: the cell is
+/// `NotYetSpawned` after instantiation, so the Awake guard (A2) does not fire.
+fn write_requiring_template(td: &std::path::Path) {
+    std::fs::create_dir_all(td.join("main")).unwrap();
+    std::fs::write(
+        td.join("main/config.json"),
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    )
+    .unwrap();
+
+    let tpl_dir = td.join("templates").join("persist_mock");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+    std::fs::write(
+        tpl_dir.join("template.json"),
+        r#"{"name":"persist_mock","requires":{"ctx":{"model":{"type":"string","required":true,
+             "because":"the brain this cell infers with"}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tpl_dir.join("config.json"),
+        r#"{"cell":{"type":"persist_mock","idle_timeout_ms":60000},"params":{"terminal":true,"model":"${ctx.model}"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    )
+    .unwrap();
+}
+
+/// GH #292: the `requires` check refuses an INSTANTIATION that omits a declared
+/// key — but a Reconnect/Resume at an existing path instantiates nothing. It
+/// stages nothing, substitutes no `${ctx.X}` and rewrites no `config.json` (A1),
+/// so it consumes none of the declared keys and must not be refused for them.
+///
+/// The third mutation is the counter-proof in the same colony: a FRESH name
+/// with the same template and the same empty `ctx` is still refused. The
+/// exemption belongs to the Resume, not to the check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_does_not_have_to_repeat_the_templates_required_ctx_keys() {
+    let td = tempfile::TempDir::new().unwrap();
+    write_requiring_template(td.path());
+
+    let spawn_count = Arc::new(AtomicU32::new(0));
+    let h = ColonyHandle::new_with_factories_at(
+        &td,
+        vec![(
+            "persist_mock".to_string(),
+            Arc::new(PersistCellFactory {
+                spawn_count: spawn_count.clone(),
+            }) as Arc<dyn CellFactory>,
+        )],
+    );
+    let mut reg = CellFactoryRegistry::new();
+    reg.insert(
+        "persist_mock".into(),
+        Arc::new(PersistCellFactory {
+            spawn_count: spawn_count.clone(),
+        }) as Arc<dyn CellFactory>,
+    );
+    bootstrap_from_filesystem(td.path(), &reg, &h.runtime())
+        .await
+        .expect("bootstrap must succeed");
+    rescan_templates(&h, td.path().join("templates")).await;
+
+    // 1. The instantiation supplies the declared key and commits.
+    let first = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name": "q", "template": "persist_mock"}]},
+            "ctx": {"model": "some-model"}
+        }),
+    )
+    .await;
+    assert!(
+        matches!(first, MutationOutcome::Committed { .. }),
+        "the instantiation supplies ctx.model and must commit; got {first:?}"
+    );
+    let before = read_entry(&h, "/q").await.expect("/q must be registered");
+    let cell_id_before = before.cell_id.clone();
+    let config_before = std::fs::read_to_string(td.path().join("main/q/config.json")).unwrap();
+
+    // 2. The Resume at the same path, with NO ctx at all.
+    let resume = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name": "q", "template": "persist_mock"}]}
+        }),
+    )
+    .await;
+    assert!(
+        matches!(resume, MutationOutcome::Committed { .. }),
+        "a Resume consumes none of the declared keys and must commit; got {resume:?}"
+    );
+    let after = read_entry(&h, "/q")
+        .await
+        .expect("/q must still be registered after the resume");
+    assert_eq!(
+        after.cell_id, cell_id_before,
+        "the Resume keeps the identity (no re-mint)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(td.path().join("main/q/config.json")).unwrap(),
+        config_before,
+        "the Resume rewrites no config.json — which is why it needs no ctx"
+    );
+
+    // 3. Counter-proof: a fresh instantiation with the same empty ctx is refused.
+    let fresh = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name": "fresh", "template": "persist_mock"}]}
+        }),
+    )
+    .await;
+    match &fresh {
+        MutationOutcome::Rejected { error_code, .. } => assert_eq!(
+            error_code, "requirement_missing",
+            "the exemption belongs to the Resume, not to the check; got {fresh:?}"
+        ),
+        other => panic!("a fresh instantiation without ctx.model must be refused, got {other:?}"),
+    }
+
+    h.shutdown().await;
+}

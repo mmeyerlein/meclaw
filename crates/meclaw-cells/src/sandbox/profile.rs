@@ -198,6 +198,40 @@ impl SandboxProfile {
             )),
         }
     }
+
+    /// A copy of this profile that additionally grants read+execute on `path`.
+    ///
+    /// GH #349: `cell-types.md` § `code` promises that a `script_inline` needs
+    /// no filesystem declaration of its own — only a `script_path` does. When
+    /// the substrate has to materialise an oversized inline script into a file
+    /// to spawn it at all, the runner must still be able to open its own
+    /// program, so the substrate grants exactly that one file and nothing else.
+    /// This is not an operator-declared path and never reaches `config.json`;
+    /// it exists for the length of one spawn.
+    ///
+    /// A [`SandboxProfile::Trusted`] profile enforces nothing and is returned
+    /// unchanged.
+    #[must_use]
+    pub fn with_readable_file(&self, path: &std::path::Path) -> Self {
+        match self {
+            Self::Trusted => Self::Trusted,
+            Self::Restricted {
+                network,
+                filesystem,
+                limits,
+                syscalls,
+            } => {
+                let mut filesystem = filesystem.clone();
+                filesystem.read.push(path.to_path_buf());
+                Self::Restricted {
+                    network: *network,
+                    filesystem,
+                    limits: *limits,
+                    syscalls: *syscalls,
+                }
+            }
+        }
+    }
 }
 
 /// Render a rejected value for an error message: the string if it is one, the

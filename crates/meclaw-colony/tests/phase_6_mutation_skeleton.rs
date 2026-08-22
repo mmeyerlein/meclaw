@@ -22,7 +22,7 @@ async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
     std::fs::write(
         tpl.join("config.json"),
         format!(
-            r#"{{"cell":{{"type":"{cell_type}"}},"params":{{}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            r#"{{"cell":{{"type":"{cell_type}"}},"params":{{"emitted_target":"/unset"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
         ),
     )
     .unwrap();

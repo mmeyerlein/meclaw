@@ -22,7 +22,14 @@ use meclaw_core::{Path, Uuid};
 use meclaw_testing::ColonyHandle;
 
 /// Phase-11 T16: create + load a template directory for `name`/`cell_type`.
-async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
+///
+/// GH #294: `params` is the template's own params block, written verbatim. A
+/// template must DECLARE the param a mutation overrides, so the tests that set
+/// `emitted_target` hand in a declaration for it — while
+/// [`apply_stage_spawn_failure_logs_failed_not_rejected`] deliberately hands in
+/// `{}`, because its whole subject is a node that reaches the spawn step
+/// WITHOUT that param.
+async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str, params: &str) {
     let root = h.tempdir_path();
     let templates_root = root.join("templates");
     let tpl = templates_root.join(name);
@@ -31,7 +38,7 @@ async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
     std::fs::write(
         tpl.join("config.json"),
         format!(
-            r#"{{"cell":{{"type":"{cell_type}"}},"params":{{}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            r#"{{"cell":{{"type":"{cell_type}"}},"params":{params},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
         ),
     )
     .unwrap();
@@ -169,7 +176,7 @@ async fn synchronous_reject_reply_is_unchanged() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn audit_read_shows_rejected_next_to_committed() {
     let h = ColonyHandle::new_with_echo();
-    setup_template(&h, "echo", "echo").await;
+    setup_template(&h, "echo", "echo", r#"{"emitted_target":"/unset"}"#).await;
 
     let committed = send_mutation(&h, commit_payload("alpha"), None, Uuid::now_v7()).await;
     assert!(
@@ -197,7 +204,7 @@ async fn audit_read_shows_rejected_next_to_committed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn committed_mutation_leaves_single_committed_row_no_reject() {
     let h = ColonyHandle::new_with_echo();
-    setup_template(&h, "echo", "echo").await;
+    setup_template(&h, "echo", "echo", r#"{"emitted_target":"/unset"}"#).await;
 
     let id = match send_mutation(&h, commit_payload("beta"), None, Uuid::now_v7()).await {
         MutationOutcome::Committed { id } => id,
@@ -228,7 +235,7 @@ async fn committed_mutation_leaves_single_committed_row_no_reject() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn apply_stage_spawn_failure_logs_failed_not_rejected() {
     let h = ColonyHandle::new_with_echo();
-    setup_template(&h, "echo", "echo").await;
+    setup_template(&h, "echo", "echo", "{}").await;
 
     // echo template loaded, but no `emitted_target` override → passes validation,
     // fails at the spawn step (Apply stage).
@@ -276,7 +283,7 @@ async fn apply_stage_spawn_failure_logs_failed_not_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reject_row_is_structurally_distinct_from_committed() {
     let h = ColonyHandle::new_with_echo();
-    setup_template(&h, "echo", "echo").await;
+    setup_template(&h, "echo", "echo", r#"{"emitted_target":"/unset"}"#).await;
 
     send_mutation(&h, commit_payload("gamma"), None, Uuid::now_v7()).await;
     send_mutation(&h, reject_payload(), None, Uuid::now_v7()).await;

@@ -1,4 +1,4 @@
-# `memory-hive@2.2.1`
+# `memory-hive@2.3.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Twelve cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
@@ -17,7 +17,9 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   facts → recent episodes). No LLM, no embedding, fixed latency.
 - **Recall tier 1**: four retrieval legs — keyword (`search`), semantic (`similar`), graph
   (`traverse`), temporal (as-of `select`) — fused by RRF in code. Still **LLM-free** and
-  deterministic; every candidate says which leg found it.
+  deterministic. The message it delivers holds two documents: a bundle written for the model
+  that has to answer, and the retrieval's own record beside it, in which every candidate says
+  which leg found it — see [One tier-1 message, two documents](#one-tier-1-message-two-documents-gh-296).
 - **Recall tier 2**: `dialectic` synthesises one answer over the tier-1 candidates with the
   source priority beliefs → facts → episodes and a **mandatory gap statement**.
 - **As-of recall**: any tier can be evaluated at a past instant (`recall_as_of`) — "what was
@@ -26,7 +28,8 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   question is asked, on the version chain. Order alone decides only within ONE statement (a
   re-assertion of the same canonical claim); across two different values a span ends where an
   explicit closure says so, and `expired_at` is read rather than recomputed. A hit on a closed
-  statement answers with the one that closed it and carries the predecessors as `history`. The
+  statement answers with the one that closed it and names the claim it replaced (`previously` in
+  the bundle, the whole `history` chain in the diagnostic beside it). The
   invariant that buys: the same recall before and after a dream run returns the same candidates,
   byte for byte.
 - **Time-range recall (P15)**: `recall_window_from`/`_to` turn the temporal leg from a point
@@ -866,7 +869,7 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_EXTRACT_ERROR_BUDGET` | `3` | consecutive provider errors one batch may cost before the lane **parks** it instead of re-sending (GH #143). Parked is terminal for the automatic lane: the rows keep their turns, carry status `error_parked` and a mark in `scratch`, and a recovery sweep does not take them back |
 | `MEMORY_EXTRACT_BACKOFF_SEC` | `60` | base of the backoff window after a failed extraction attempt (GH #143); it doubles per attempt, so 60 gives 60 s / 120 s / 240 s. Without it the flush cadence IS the retry cadence |
 | `MEMORY_TIER1_LEG_LIMIT` | `20` | per-leg candidate cap of the tier-1 fan |
-| `MEMORY_TIER1_AXIS_LIMIT` | `200` | page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without** `history` rather than with a guessed one |
+| `MEMORY_TIER1_AXIS_LIMIT` | `200` | page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
 | `MEMORY_EXTRACT_WINDOW_AXES` | `8` | axes whose OPEN statements travel in the extraction prompt as the replacement window (statement identity W4). An axis with more open statements than one page is skipped rather than truncated. The PAGE fetches twice this many by recency; which of them the prompt SHOWS is decided by subject matter against the batch's own turns (GH #67), with recency as the stable tie-break |
 | `MEMORY_EXTRACT_VOCAB_ROWS` | `512` | cap of the axis-hint read (GH #68). Deduplicated by the store, so it counts AXES, not facts; ordering is subject-major, so the cap cuts whole subjects off the tail |
 | `MEMORY_EXTRACT_WINDOW_SCAN` | `512` | cap of the recency page that picks the window's candidate axes (GH #68). Counts open fact rows, newest assertion first |
@@ -879,11 +882,14 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_CANON_MAX_CLOSED_AXES` | `12` | how many spellings out of that page reach the two identity questions (GH #73). ON TOP of `MEMORY_CANON_MAX_PREDICATES`, not out of it: a spelling a closure just proved belongs to another one is the best-founded question a night has, and the open vocabulary's budget was never sized for it |
 | `MEMORY_DREAM_AXIS_LIMIT` | `5000` | page bound of the dream lane's axis select. A **full** page means the chain may be incomplete, so the materialisation SKIPS the derivation for that page instead of guessing supersession from half a chain |
 | `MEMORY_TIER1_TOPK` | `20` | how many fused candidates survive the RRF cut into the tier-1 bundle |
-| `MEMORY_TIER1_TOKENS` | `2000` | token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit |
+| `MEMORY_TIER1_TOKENS` | `2000` | token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `MEMORY_TIER1_TOPK` stays the count cap |
 | `MEMORY_TIER1_ITEM_CHARS` | `400` | per-item truncation inside the tier-1 bundle (a claim, an episode's content, a supersession marker). Truncate, never drop |
 | `MEMORY_BUNDLE_EPISODE_BUDGET` | `6` | the episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
 | `MEMORY_TIER1_GRAPH_DEPTH` | `2` | `max_depth` of the graph leg's `traverse` (store cap: 5) |
 | `MEMORY_TIER1_GRAPH_NODES` | `200` | `max_nodes` of the graph leg's `traverse` — the fan-out kill switch, so one hub entity cannot turn a recall into a walk of the whole graph |
+| `MEMORY_SEM_MAX_DISTANCE` | `0.5` | relevance floor of the **semantic** leg (#297), as a fraction of the embedding's BIT WIDTH: a hit at or beyond `0.5 × dim` differing bits is where a random binary vector sits, so at the default the cut removes coin flips and cannot cost a genuine hit. `similar` RANKS and never filters — without this every one of its `MEMORY_TIER1_LEG_LIMIT` rows votes in the fusion as loudly as a real hit. A missing, zero or non-numeric `dim` means no scale, and without a scale there is no cut |
+| `MEMORY_KW_MIN_SCORE_RATIO` | `0.10` | relevance floor of the **keyword** leg (#297), as a fraction of that page's OWN best bm25 rank — so the fact search and the episode search are never measured against each other's scale. bm25 is smaller-is-better, so the floor is `best × ratio` and a row survives at or below it. `0` switches the cut off (the ablation knob), and a page whose best rank is not negative carries no usable signal, so it is left uncut |
+| `MEMORY_RRF_AGREEMENT` | `0.5` | strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
 | `MEMORY_RRF_K` | `60` | RRF constant |
 | `MEMORY_RRF_W_KEYWORD` | `1.0` | fusion weight of the keyword (FTS) leg |
 | `MEMORY_RRF_W_SEMANTIC` | `1.0` | fusion weight of the semantic (embedding) leg |
@@ -963,6 +969,134 @@ exists.
 | 1 | no LLM, one embedding call | four retrieval legs → RRF fusion → hydration → ranked candidates |
 | 2 | one LLM call on top of tier 1 | `dialectic` synthesises an answer with a mandatory gap statement |
 
+### One tier-1 message, two documents (GH #296)
+
+A tier-1 recall leaves on the `bundle` lane as ONE message written for **two** readers, and the
+split is the whole point of the shape:
+
+| slot | reader | what is in it |
+|---|---|---|
+| `system.memory.bundle` (a `json` document) plus the `tool_result` turn rendered from it | the **model** that has to answer the question | what answers the question, and nothing else |
+| `recall_diagnostic` — a top-level body slot beside `system` and `messages` | the **person** who has to explain an answer afterwards | the run's own bookkeeping: the candidate records whole, the flat ranking in its old wording, the leg sizes before and after the relevance floors |
+
+`recall_diagnostic` is declared in `contract.emits.body` and is a body slot on purpose: the
+`collector`'s `in_bundle` lane keeps `system` and `messages` and nothing else, so the diagnostic
+is dropped before the next prompt is assembled while `/colony/messages` — which stores whole
+bodies — keeps it. The trace survives without ever being paid for in prompt budget. The tier-2
+`dialectic` call is the one consumer that gets the **full internal records** (ids, scores,
+`agreement`, sessions and all): it is a reasoning step over the retrieval, not the answer, and
+#296 draws its line at what reaches the ANSWERING model, not at what reaches every model.
+
+Tier 0 emits neither slot — no `recall_diagnostic`, no `answers` key — and neither does the
+tier-2 final answer on `system.memory.answer`: an absent `answers` is not a relevance judgement
+of `"none"`, it is the absence of one.
+
+**Explicit retraction** (`docs/development-rules.md` § 3). Up to `memory-hive@2.2.1` the payload
+candidate carried the retrieval's own bookkeeping and this README said so. It no longer does.
+Nothing was deleted: every field below is reachable in the SAME message, which is the only reason
+it was allowed to leave the bundle at all.
+
+| gone from the payload candidate | where to read it now |
+|---|---|
+| `id` | `recall_diagnostic.candidates[].id` — and in the dialectic payload |
+| `session_id`, `episode_id` | ditto; a fact carries both since #148 |
+| `rank`, `score` | ditto, `score` next to the `agreement` it was multiplied by |
+| `legs` | ditto — leg attribution answers "which leg found this", which is a question about the RUN |
+| `superseded_by` (the successor's row id) | ditto; the payload answers the reader's question instead, with `until` — the DAY the statement stopped |
+| the full `history` chain | ditto; the payload carries at most ONE `previously` entry |
+| exact instants | ditto; the payload carries days (below) |
+| `legs_present`, `leg_sizes`, `semantic_degraded` (bundle level) | `recall_diagnostic`, at bundle level — they describe the RUN, never the answer. `leg_sizes_raw` and `leg_capped` are new in 2.3.0 and were never in the payload |
+
+**What a payload candidate carries, per kind.** Every key is absent unless known, so a candidate
+that knows nothing pays no byte for saying so:
+
+| kind | keys |
+|---|---|
+| `fact` | `kind`, `subject`, `predicate` (the axis, either half may be missing), `text` (the claim), `since`, `until`, `confidence`, `intent`, `supersession_unknown`, `superseded`, `span`, `previously` |
+| episode | `kind`, `text`, `who` (the sender), `when`, `seen` (only above 1) |
+
+Two of them are provenance the store always held and the bundle used to throw away (#280):
+`confidence` — the store keeps one per fact and the hydration selects it, so a hedged claim stops
+reading like a certain one — and `until`, the day the statement stopped, read off the store's own
+`valid_until`/`expired_at` rather than derived a second time. The other two qualifiers are older
+and unchanged: `intent` marks a plan as a plan rather than as an accomplished thing (GH #67), and
+`supersession_unknown` says the audience gate cannot vouch for this statement's currency.
+
+**Instants arrive as DAYS.** `since`, `until`, `when`, `span` and the day inside `previously` all
+go through the same `fmt_day` the rendered line uses. A "since when?" question is answered at day
+resolution, and the two halves of the message answer it identically. The exact timestamps are in
+the diagnostic.
+
+**`previously` is one entry, never a chain.** The version chain is sorted by start, so the last
+entry is the claim this one immediately replaced — everything older is the history OF that
+history and answers a question nobody asked this round. It renders as `[{"claim": …, "until": …}]`
+(the `until` absent when the predecessor's end is unknown). The whole chain stays in the
+diagnostic.
+
+**`superseded` is copied by PRESENCE, not by truth.** Present-and-empty is an answer of its own:
+closed, with no successor anybody can name. Absent means the statement is open.
+
+**`span` is window mode's answer.** In a time-range question every version stays its own
+candidate and carries `span: {from, until}` in days, with `until: null` for an open end — the
+versions themselves are what the question asked for, so nothing collapses onto a current value.
+
+**The bundle's verdict on itself.** Three keys sit beside the candidate list and none of them is
+bookkeeping:
+
+* **`answers`** — `"direct"` when the list holds something, `"none"` when it does not (#297). A
+  caller that has to branch on "did memory answer this" reads one word instead of measuring a
+  list and guessing what an empty one meant. `answers: "none"` does **not** forbid a tier-2
+  answer: the `dialectic` may still answer from a belief that addresses the question directly,
+  and the two statements are about different things — the candidate list, and the answer.
+* **`complete` / `complete_reason`** (#280) — only the producer knows whether the list is the
+  whole answer, and a question that COUNTS is answered wrong off an undeclared prefix. Three cuts
+  can shorten it and each is read where it happened: capped legs (off the pages that reported
+  it — and only legs that VOTE, see O-4 below, because a leg that nominates nothing cannot have
+  cost the answer a row), the fusion cut at `TOPK`, the token budget. `complete_reason` is absent
+  on a complete bundle.
+* **`query_hygiene: {step, from_chars, to_chars}`** (GH #88) — present when the hygiene guard
+  shortened an over-long query, absent when the query reached the legs untouched. Same verdict
+  the rendered text and the `hop` header carry, so a reader never has to infer from the candidate
+  list that the legs ran on the surviving tail rather than on everything the caller pasted.
+
+**The readable half.** The `tool_result` turn is what a model actually reads, and since #279/#281
+it is written for that reader:
+
+```
+WHAT THIS MEMORY HOLDS (as of 2026-08-21)
+The question was shortened before this was looked up (612 -> 250 characters) -- …   [only if it was]
+Not everything that matches is here -- the fusion cut at TOPK=20.                    [only if cut]
+FACTS (extracted, canonical, dated)
+  user favorite_editor = vscode   since 2026-08-08 (previously: Helix until 2026-08-08)
+WHAT WAS SAID (verbatim, not interpreted)
+  user on 2026-08-08: "I've switched to vscode."
+```
+
+The kind is the SECTION, not a bracket in front of the row, and a section with no rows is left
+out. The header ASSERTS — it says what the document IS and as of when, which is the one piece of
+framing a reader can use. The run's own description is not gone: it is the first line of
+`recall_diagnostic["text"]`, `MEMORY (tier 1, N candidates, RRF over …)` followed by the flat
+ranked lines with their leg tags, byte for byte what the bundle used to show.
+
+**The empty state says so, and hedges nothing (#297).** A recall that found nothing used to emit
+the asserting header over no rows, and a model handed that reads it as "the lookup ran, this is
+what memory holds" and answers from somewhere else. So over an empty list there is no header, no
+completeness sentence (a hedge about a list that does not exist invites exactly the "there must
+be more" reading) and one sentence instead:
+
+* `Nothing in this memory answers this question (as of <day>).` — nothing about this was stored;
+* `… : N stored hits came back for it and none of them cleared the relevance floor …` — something
+  was stored and every hit died at a floor. `leg_sizes` reports 0 for both, so the discriminator
+  is the pre-floor `leg_sizes_raw` map, read defensively (a missing raw count is never a floor
+  claim).
+
+The JSON says the same thing with `answers: "none"`, and the hop carries `recall_empty: "1"` —
+absent unless true, like every other marker on that header, so a router can branch without
+parsing the bundle it was handed on. `semantic_degraded` is deliberately NOT what this sentence
+reads: it means the embedder produced no vector, and the floor empties the semantic list exactly
+as a dead embedder does. "Hits came back and were floored" is visible as `leg_sizes` against
+`leg_sizes_raw` in the diagnostic; the flag stays there, for whoever debugs the embedder.
+
 **The four legs (tier 1).** Each leg returns a *ranked id list*; content is fetched once, at the
 end, in a single hydration round. That is what keeps the fusion cheap and the scratch payloads
 small.
@@ -974,9 +1108,17 @@ small.
 | graph | `select entities` → `traverse entity_edges` | depth, then accumulated weight | episodes (via the edge's `episode_id`) |
 | temporal | point mode: as-of `select facts` · window mode: a generous interval pre-filter, exact cut in code | point mode: `recorded_at` desc · window mode: `valid_from` desc, `recorded_at` desc, `id` asc | facts |
 
-**RRF.** `score(d) = Σ_legs w_leg / (K + rank_leg(d))`, `K = 60`, weights 1.0 — except the
-temporal leg, whose weight depends on the mode (O-4, below). A candidate found by two legs adds
-both terms — that is the entire point. Ties break by best rank, then leg priority (keyword,
+**RRF.** `score(d) = (Σ_legs w_leg / (K + rank_leg(d))) × (1 + A × (agreement(d) − 1))`, `K = 60`,
+weights 1.0 — except the temporal leg, whose weight depends on the mode (O-4, below) — and
+`A = MEMORY_RRF_AGREEMENT`, default **0.5**, `0` restoring the plain sum. A candidate found by two
+**voting** legs adds both terms *and* is multiplied once for the agreement: two legs that
+independently found the same row is a different kind of evidence than one leg finding it a little
+higher, and the plain sum leaves that difference in the leg tags, which nobody sums. `agreement`
+counts only legs that VOTE. A leg with weight 0 contributes a zero term, breaks ties (O-2, below),
+performs its own cut — and **nominates nothing**: a candidate no voting leg found does not reach
+the ranking at all, and one that a voting and a non-voting leg both found has an agreement of one.
+Every fused candidate carries the count in `recall_diagnostic`; `legs` keeps meaning discovery
+(O-4b, below) and keeps listing the non-voting leg. Ties break by best rank, then leg priority (keyword,
 semantic, graph, temporal), then — on an **exact** score tie — the temporal leg's own rank, and
 only then kind and id: two identical requests produce byte-identical candidate lists.
 
@@ -992,6 +1134,18 @@ win of the weighted arm was a temporal-reasoning question, and window mode is wh
 ordering is the answer rather than a vote (O-2). The tie-break is untouched by all of this: it
 reads the temporal **position**, not the temporal score, so it still decides an exact tie at
 weight 0.
+
+**A weight of 0 is three things and not a fourth (Q8, #297).** A zero-weight leg still runs, so
+it still performs its own cut — the as-of trim is the point of the temporal leg and survives the
+weight. It still breaks an exact tie by position (O-2). It still appears in a candidate's `legs`,
+because that field is discovery (O-4b). What it does **not** do is nominate: a candidate no
+VOTING leg found never reaches the ranking, and a candidate a voting and a non-voting leg both
+found has an `agreement` of one. Two consequences worth writing down, because both were wrong
+once: `capped_legs` is derived from the voting legs only (a full page on a leg that nominates
+nothing cannot have shortened the answer, and in point mode the temporal page is full almost
+every time), and `agreement` in the diagnostic is the count of VOTING legs — never
+`len(legs)`, which counts discovery and grows again when several hits of one axis collapse into
+one candidate (O-4b).
 
 **Why the temporal leg breaks an exact tie (P15 O-2).** Symmetric ranks across two legs (keyword
 1/2 against temporal 2/1) produce bit-identical sums — `1/61 + 1/62` either way — so the tie is
@@ -1016,9 +1170,9 @@ fact that did not exist yet.
 
 | Mode | What a fact hit becomes |
 |---|---|
-| point (no window) | the **current** statement of the hit's axis, i.e. the one its closures lead to, carrying `history: [{id, claim, from, until}]`. A CLOSED hit is therefore never a candidate of its own — it is a field on the statement that closed it. Two hits landing on one statement collapse into one candidate, and that candidate carries the **union** of both hits' `legs` (P15 O-4b) |
+| point (no window) | the **current** statement of the hit's axis, i.e. the one its closures lead to, carrying its predecessors: the whole chain as `history: [{id, claim, from, until}]` on the record in `recall_diagnostic` and in the dialectic payload, its LAST entry as `previously` in the bundle (see the retraction above — the payload has carried one entry since 2.3.0). A CLOSED hit is therefore never a candidate of its own — it is a field on the statement that closed it. Two hits landing on one statement collapse into one candidate, and that candidate carries the **union** of both hits' `legs` (P15 O-4b) |
 | window | **every** version stays its own candidate and carries `span: {from, until}` — in a time-range question the versions themselves are the answer, so nothing collapses |
-| multivalued axis | untouched: no `history`, every value stands (see below) |
+| multivalued axis | untouched: no predecessors at all — no `history` on the record, no `previously` in the payload — every value stands (see below) |
 
 **The supersession unit is the STATEMENT, not the axis (statement identity W2, GitHub #13,
 ruling Q1).** A statement is `(canonical_subject, canonical_predicate, canonical_claim)` — the
@@ -1228,9 +1382,10 @@ Pinned by `crates/meclaw-cells/tests/w5_judged_cardinality.rs` and the scenario 
 identically built axes, one closure each, and the cardinality verdict as the only difference
 between them.
 
-**The fallback is a candidate without history, never a lost candidate.** If the axis select was
-truncated (`MEMORY_TIER1_AXIS_LIMIT`) or carried no matching `(subject, predicate)` pair, the hit
-is delivered as it came, with `history: []`. Losing a candidate would be the worse failure.
+**The fallback is a candidate without predecessors, never a lost candidate.** If the axis select
+was truncated (`MEMORY_TIER1_AXIS_LIMIT`) or carried no matching `(subject, predicate)` pair, the
+hit is delivered as it came — `history: []` on the record, and therefore no `previously` key in
+the payload. Losing a candidate would be the worse failure.
 
 **A superseded candidate says so on its own line (statement identity W1, GitHub #13, ruling Q6).**
 `previously:` says what a candidate REPLACED; the inverse was missing, and the P8a run measured
@@ -1245,9 +1400,10 @@ for a closure whose replacement is out of reach. Three properties keep it narrow
   let a judged closure (W3) show up here without a second mechanism.
 * **A closure in the future of the read instant has not happened yet.** As-of questions keep spec
   D.5: the annotation never leaks the existence of a value that did not exist at the time asked.
-* **Nothing is dropped and nothing is re-ranked.** Superseded values stay in the bundle (history
-  questions need them, and hiding them would hide the store's own uncertainty), the key is absent
-  on an open statement, and a line without it renders byte for byte as before. Demoting closed
+* **Nothing is dropped and nothing is re-ranked.** A superseded value stays a candidate of the
+  bundle (a question about what changed needs it, and hiding it would hide the store's own
+  uncertainty), the `superseded` key is absent on an open statement, and a line without it renders
+  byte for byte as before. Demoting closed
   statements below open ones within an axis is a *ranking* change and a separate package.
   Scenario `C8` pins both modes of one axis.
 
@@ -1346,13 +1502,14 @@ Three shapes are answerable, and they differ only in what the caller puts in the
 
 | Question | Hop | What comes back |
 |---|---|---|
-| "what does Alex use?" (now) | `recall_as_of: ""`, both window keys `""` | the current fact of each axis, predecessors attached as `history` |
+| "what does Alex use?" (now) | `recall_as_of: ""`, both window keys `""` | the current fact of each axis, with the claim it replaced attached — `previously` in the payload, the whole `history` chain in `recall_diagnostic` |
 | "what did he use in May?" (an instant) | `recall_as_of: "2026-05-01T00:00:00Z"`, both window keys `""` | the chain trimmed to that instant first — the answer is what was true THEN, not what is true now with a date attached |
 | "what did he use between March and now?" (a range) | `recall_window_from` + `recall_window_to` both set | every version whose derived span intersects the window, newest validity first, each with its own `span` |
 
-**"And what was it before?" is a field, not a second query.** The predecessors travel with the
-current candidate (`history`), so the change is answerable from one recall — which is the whole
-reason supersession moved to read time.
+**"And what was it before?" is a field, not a second query.** The predecessor travels with the
+current candidate — `previously` in the payload, the full `history` chain in `recall_diagnostic`
+beside it — so the change is answerable from one recall, which is the whole reason supersession
+moved to read time.
 
 What is deliberately **not** answerable:
 

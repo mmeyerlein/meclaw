@@ -15,6 +15,12 @@
 //! Free of a real provider by construction: both `llm` cells talk to the mock
 //! OpenAI wire, and every other cell is a `code`/`store`/`timer` cell that
 //! reports what it was given.
+//!
+//! The byte-identity pin over the four sub-unit copies retired with the copies
+//! themselves (GH #277): `talky` references its sub-units now, so there is
+//! nothing left to drift. Its successor is
+//! `meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs`,
+//! test `a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it`.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -42,6 +48,7 @@ fn templates_root() -> std::path::PathBuf {
 /// The shipped template, copied cell by cell: only `config.json` files travel,
 /// so the tree under test IS the template and nothing else.
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
+    let src = &resolve_template_ref(src);
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -52,6 +59,31 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
             std::fs::copy(&from, dst.join("config.json")).unwrap();
         }
     }
+}
+
+/// GH #277: a directory whose `config.json` declares `cell.type: "ref"` is a
+/// REFERENCE, not a cell -- the referenced template's tree belongs in its
+/// place. `talky` names its four sub-units that way, so a tree copied straight
+/// off the library follows the same hop the substrate's staging path follows.
+fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..8 {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return dir;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
+            return dir;
+        };
+        if v["cell"]["type"] != "ref" {
+            return dir;
+        }
+        let reference = v["cell"]["template"]
+            .as_str()
+            .expect("a ref cell names a template");
+        let name = reference.split('@').next().unwrap_or_default();
+        dir = templates_root().join(name);
+    }
+    panic!("template ref chain does not terminate at {}", dir.display());
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -372,64 +404,6 @@ async fn recv_lane(rx: &mut mpsc::Receiver<Message>, route: &str) -> Option<Mess
 }
 
 // ═══════════════════════════════════════════════════════════════════════ pins
-
-/// The substrate instantiates a template by COPYING its directory, and there
-/// is no template-in-template reference to lean on -- so the composite carries
-/// materialised copies of the four sub-templates, and this pin is what keeps
-/// "carries" from decaying into "forked". Every copied `config.json` must be
-/// byte-identical to the sub-template it came from; a sub-template change that
-/// does not travel into the composite fails here instead of in production.
-#[test]
-fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
-    let root = templates_root();
-    let mut checked = 0usize;
-    for (sub, unit) in [
-        ("session-keeper", "session-keeper"),
-        ("collector", "collector"),
-        ("summarizer", "summarizer"),
-    ] {
-        let src = root.join(sub);
-        let dst = root.join("talky").join(unit);
-        let mut rels = Vec::new();
-        collect_configs(&src, &src, &mut rels);
-        assert!(!rels.is_empty(), "{sub}: no config.json found");
-        for rel in rels {
-            let a = std::fs::read(src.join(&rel)).unwrap();
-            let b = std::fs::read(dst.join(&rel)).unwrap_or_else(|e| {
-                panic!("talky/{unit}/{} missing ({e}) -- the sub-template grew a cell the composite does not carry", rel.display())
-            });
-            assert!(
-                a == b,
-                "talky/{unit}/{} drifted from {sub}/{}",
-                rel.display(),
-                rel.display()
-            );
-            checked += 1;
-        }
-    }
-    // The dispatcher is a single-cell template: its root config IS the cell.
-    let a = std::fs::read(root.join("dispatcher/config.json")).unwrap();
-    let b = std::fs::read(root.join("talky/dispatcher/config.json")).unwrap();
-    assert!(a == b, "talky/dispatcher drifted from dispatcher");
-    checked += 1;
-    assert!(checked >= 10, "the pin swept almost nothing: {checked}");
-}
-
-fn collect_configs(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    out: &mut Vec<std::path::PathBuf>,
-) {
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
-        let p = entry.path();
-        if p.is_dir() {
-            collect_configs(root, &p, out);
-        } else if entry.file_name() == "config.json" {
-            out.push(p.strip_prefix(root).unwrap().to_path_buf());
-        }
-    }
-}
 
 /// The whole point of the composite: one turn runs through keeper, collector,
 /// brain, dispatcher, a tool and back to the seam without a single edge being

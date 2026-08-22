@@ -76,11 +76,14 @@ async fn instanziieren_aus_template_via_mutation() {
         r#"{"name":"echo-cell","version":"1.0.0","description":{"purpose":"echo smoke test"}}"#,
     )
     .unwrap();
-    // Template config.json: cell.type = "echo" (the EchoCellFactory key), params empty.
-    // override_params in the mutation diff supplies emitted_target + greeting (with ${GREETING}).
+    // Template config.json: cell.type = "echo" (the EchoCellFactory key). GH #294:
+    // the template DECLARES the two params the mutation sets — an override may
+    // only name a param the addressed cell has — and the mutation's
+    // override_params then supplies the real emitted_target + greeting (with
+    // ${GREETING}).
     std::fs::write(
         tpl_dir.join("config.json"),
-        r#"{"cell":{"type":"echo"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/unset","greeting":""},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 

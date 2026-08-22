@@ -10,7 +10,9 @@ use meclaw_core::serde_json::Value;
 pub enum Script {
     /// Filesystem path to a Python script (executed via `runner` binary).
     Path(String),
-    /// Inline Python code (passed to `runner` as `-c <code>`).
+    /// Inline Python code. Handed to `runner` as `-c <code>`, except above the
+    /// platform's per-argv-string cap, where it is materialised into a
+    /// per-spawn temp file instead (GH #349, [`crate::code::script_file`]).
     Inline(String),
 }
 

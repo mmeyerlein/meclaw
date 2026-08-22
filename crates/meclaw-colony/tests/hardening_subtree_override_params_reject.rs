@@ -107,7 +107,7 @@ fn write_templates(root: &std::path::Path) {
     write(
         &solo,
         "config.json",
-        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/capture","external_timeout_ms":1000},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
 }
 

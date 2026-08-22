@@ -144,7 +144,7 @@ fn write_root_tree(td: &std::path::Path) {
     std::fs::write(tpl_dir.join("template.json"), r#"{"name":"recorder"}"#).unwrap();
     std::fs::write(
         tpl_dir.join("config.json"),
-        r#"{"cell":{"type":"recorder"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"recorder"},"params":{"greeting":""},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }
@@ -208,7 +208,7 @@ async fn adoption_substitutes_from_pinned_env_source() {
     write(
         td.path(),
         "main/foo/config.json",
-        r#"{"cell":{"type":"recorder"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"recorder"},"params":{"greeting":""},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     );
     let env_dir = tempfile::TempDir::new().unwrap();
     let env_file = env_dir.path().join("staging.env");

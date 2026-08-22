@@ -1,15 +1,25 @@
-//! `channel@1.0.0` carries its sub-units as byte copies, and they are pinned.
+//! `channel@1.0.1` carries its sub-units as byte copies, and they are pinned.
 //!
-//! The substrate has no template-in-template reference: instantiation is a
-//! recursive directory copy, and a nested `template.json` would only register a
-//! second template with the scanner. So a composite holds its sub-units as
-//! copies of their `config.json` files -- which is a fork risk unless something
-//! reads both sides.
+//! The substrate DOES have a template-in-template reference since GH #277
+//! (`cell.type: "ref"`), but `channel` does not use it: it still holds its
+//! sub-units as copies of their `config.json` files, which is a fork risk
+//! unless something reads both sides. This file is that something.
 //!
-//! Same shape and same reasoning as `talky_composite` and `cogny_template`: a
-//! change to `telegram-connector@1` or `terminal@1` that does not travel into
-//! `channel/` fails here, in the same test run, instead of drifting into a
-//! colony that instantiated the composite.
+//! `talky` and `cogny` carried their sub-units the same way until GH #277
+//! turned those copies into `cell.type: "ref"` markers, and their byte pins
+//! retired with them. **`channel` is deliberately NOT converted**: GH #303
+//! dissolves the template altogether in a later wave, and converting a
+//! template on its way out buys nothing. So the byte pin below stays alive --
+//! a pin lives exactly as long as the byte copy it guards, and this one dies
+//! with the template that carries it (orchestrator ruling 2026-08-21). Until
+//! then a change to `telegram-connector@1` or `terminal@1` that does not
+//! travel into `channel/` fails here, in the same test run, instead of
+//! drifting into a colony that instantiated the composite.
+//!
+//! The file used to be called `channel_composite.rs`; it was renamed in the
+//! same commit that converted `cogny` (GH #277, W3 task 11), because the two
+//! `*_composite.rs` names now mean two different things and only this one
+//! still watches copies.
 //!
 //! The second test is about the slot rather than the copies. `channel` ships
 //! with its generation slot occupied by a terminal, because a `params.graph`

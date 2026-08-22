@@ -9,6 +9,7 @@ pub mod hive_contract;
 pub mod hook;
 pub mod port_boundary;
 pub mod recovery;
+pub mod rejection;
 pub(crate) mod relocate;
 pub mod rename;
 pub mod required_drains;
@@ -111,6 +112,13 @@ pub enum MutationError {
     Cycle(String),
     EdgeSchema(String),
     TemplateMissing(String),
+    /// GH #277: a template `ref` chain closes a ring — a template that is
+    /// already on the resolution stack is entered a second time. Because the
+    /// stack itself is the guard, composition needs no depth cap: a ring is
+    /// caught at its first repetition, and a finite registry cannot produce an
+    /// unbounded ring-free chain. Pre-destructive (raised while parsing, before
+    /// any staging). Carries the ring rendered as `a@1.0.0 -> b@1.0.0 -> a@1.0.0`.
+    TemplateRefCycle(String),
     EnvVarMissing(String),
     /// A `${...}` substitution token uses an operator form that meclaw does not
     /// support (e.g. `${VAR:=x}`, `${VAR-x}`, `${VAR:+x}`, `${VAR:?msg}`). Only
@@ -119,6 +127,12 @@ pub enum MutationError {
     /// Carries the offending token inner string. Never silently passed through.
     UnsupportedSubstitution(String),
     CtxKeyMissing(String),
+    /// GH #292: an `add_nodes` names a template that declares a key
+    /// (`requires.ctx` / `requires.env`) the mutation does not supply — or one
+    /// of the templates it reaches through a `ref` does. Raised before staging,
+    /// so nothing is copied, renamed or registered; the message names the
+    /// template, the class, the key and the template's own `because`.
+    RequirementMissing(String),
     ScopeOutOfBounds {
         path: Path,
     },
@@ -186,9 +200,11 @@ impl MutationError {
             Self::Cycle(_) => "cycle",
             Self::EdgeSchema(_) => "edge_schema",
             Self::TemplateMissing(_) => "template_missing",
+            Self::TemplateRefCycle(_) => "template_ref_cycle",
             Self::EnvVarMissing(_) => "env_var_missing",
             Self::UnsupportedSubstitution(_) => "unsupported_substitution",
             Self::CtxKeyMissing(_) => "ctx_key_missing",
+            Self::RequirementMissing(_) => "requirement_missing",
             Self::ScopeOutOfBounds { .. } => "scope_out_of_bounds",
             Self::UnknownCellType(_) => "unknown_cell_type",
             Self::ResumeRequiresStoppedCell(_) => "resume_requires_stopped_cell",
@@ -202,6 +218,41 @@ impl MutationError {
             // (overview Z.293) stays unchanged — LiveTreeMutated is a strict-fail
             // signal, not an over-the-wire reject code.
             Self::LiveTreeMutated(_) => "schema",
+        }
+    }
+
+    /// The human-readable payload string this error carries.
+    ///
+    /// Exhaustive on purpose — no `_` arm — so a new variant is a compile error
+    /// here rather than a silently empty message. Lives next to
+    /// [`MutationError::error_code`] because the two answer the same question
+    /// about the same value ("what does this refusal say, and under which
+    /// token"), and a second copy in
+    /// [`crate::mutation::rejection`] had already started to be one: the
+    /// rendered refusal and the `Result`-form reply must never disagree about
+    /// what an error says (GH #293, W3 T21).
+    pub fn message(&self) -> String {
+        match self {
+            Self::Schema(s)
+            | Self::MatchNoHit(s)
+            | Self::NamingCollision(s)
+            | Self::Cycle(s)
+            | Self::EdgeSchema(s)
+            | Self::TemplateMissing(s)
+            | Self::TemplateRefCycle(s)
+            | Self::EnvVarMissing(s)
+            | Self::UnsupportedSubstitution(s)
+            | Self::CtxKeyMissing(s)
+            | Self::RequirementMissing(s)
+            | Self::UnknownCellType(s)
+            | Self::ResumeRequiresStoppedCell(s)
+            | Self::ResumeTypeMismatch(s)
+            | Self::ContractIncomplete(s)
+            | Self::HivePortBoundary(s)
+            | Self::RequiredDrainMissing(s)
+            | Self::HiveContract(s)
+            | Self::LiveTreeMutated(s) => s.clone(),
+            Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
         }
     }
 }
@@ -229,6 +280,17 @@ pub enum MutationOutcome {
         id: Option<String>,
         error_code: String,
         details: String,
+        /// GH #293 — the structured form of the same refusal: every violation
+        /// the refusing stage produced, in the order the stage produced them.
+        ///
+        /// ADDITIVE. `error_code` and `details` keep saying exactly what they
+        /// said (`details` being the rendered form of these entries when the
+        /// refusal came out of the collecting pipeline), so a reader that only
+        /// knows the two string fields is unaffected. Empty for the refusals
+        /// that do not run through the pipeline — the apply-stage and runtime
+        /// ones, which judge what happens when a diff is applied rather than
+        /// what the diff says.
+        violations: Vec<rejection::Violation>,
     },
 }
 
@@ -267,6 +329,14 @@ mod tests {
         assert_eq!(
             MutationError::ContractIncomplete("x".into()).error_code(),
             "contract_incomplete"
+        );
+        assert_eq!(
+            MutationError::TemplateRefCycle("x".into()).error_code(),
+            "template_ref_cycle"
+        );
+        assert_eq!(
+            MutationError::RequirementMissing("x".into()).error_code(),
+            "requirement_missing"
         );
     }
 

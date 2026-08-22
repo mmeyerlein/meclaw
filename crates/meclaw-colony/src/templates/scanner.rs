@@ -12,6 +12,18 @@ pub enum ScannerError {
     /// JSON parse error or missing required field.
     #[error("parse {0}: {1}")]
     Parse(PathBuf, String),
+    /// Two `template.json`s under `templates/` declare the same `name`.
+    #[error(
+        "duplicate template name {name:?}: {first} and {second} — a template name must be unique so a bare-name reference has one answer"
+    )]
+    DuplicateName {
+        /// The `name` both templates declare.
+        name: String,
+        /// Directory of the template seen first.
+        first: PathBuf,
+        /// Directory of the template that collides with it.
+        second: PathBuf,
+    },
 }
 
 /// A successfully parsed `template.json` with its resolved filesystem path.
@@ -37,12 +49,21 @@ pub struct ScannedTemplate {
 /// - If `template.json` is present → parse and collect it (do not recurse into sub-dirs).
 /// - Otherwise → push all sub-directories onto the stack.
 ///
+/// A template name is unique across the whole tree: the second `template.json`
+/// declaring an already-seen `name` aborts the scan with
+/// [`ScannerError::DuplicateName`], regardless of its `version`.
+///
 /// Missing `templates_root` returns an empty `Vec` (not an error).
 pub fn scan_templates_dir(templates_root: &Path) -> Result<Vec<ScannedTemplate>, ScannerError> {
     if !templates_root.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
+    // Uniqueness is by `name` alone, not by `name@version`: a bare-name `ref` must
+    // have exactly one answer (GH #277, ruling Q7). The DFS below stops descending
+    // at a `template.json`, so a nested marker can only collide when it sits in a
+    // *sibling* subtree — never as a child of another template.
+    let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     let mut stack = vec![templates_root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|e| ScannerError::Io(dir.clone(), e))?;
@@ -52,7 +73,16 @@ pub fn scan_templates_dir(templates_root: &Path) -> Result<Vec<ScannedTemplate>,
             if p.is_dir() {
                 let tjson = p.join("template.json");
                 if tjson.is_file() {
-                    out.push(parse_template_json(&tjson)?);
+                    let t = parse_template_json(&tjson)?;
+                    if let Some(first) = seen.get(&t.name) {
+                        return Err(ScannerError::DuplicateName {
+                            name: t.name,
+                            first: first.clone(),
+                            second: t.filesystem_path,
+                        });
+                    }
+                    seen.insert(t.name.clone(), t.filesystem_path.clone());
+                    out.push(t);
                 } else {
                     stack.push(p);
                 }
@@ -201,6 +231,44 @@ mod tests {
         let found = scan_templates_dir(td.path()).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "real");
+    }
+
+    /// A template name is an identity, not a label: a bare-name `ref` must have
+    /// exactly one answer, so two `template.json`s declaring the same `name`
+    /// abort the scan (GH #277, ruling Q7).
+    #[test]
+    fn walk_refuses_two_templates_declaring_one_name() {
+        let td = TempDir::new().unwrap();
+        write_template(&td, "a", r#"{"name":"dup","version":"1.0.0"}"#);
+        write_template(&td, "nested/b", r#"{"name":"dup","version":"2.0.0"}"#);
+        let err = scan_templates_dir(td.path()).unwrap_err();
+        assert!(
+            matches!(err, ScannerError::DuplicateName { .. }),
+            "expected DuplicateName, got {err:?}"
+        );
+        let rendered = err.to_string();
+        let first = td.path().join("a").display().to_string();
+        let second = td.path().join("nested/b").display().to_string();
+        assert!(
+            rendered.contains(&first) && rendered.contains(&second),
+            "message must name both directories, got {rendered}"
+        );
+    }
+
+    /// Uniqueness is by `name`, **not** by `name@version`: the `templates` table's
+    /// unique index is `(name, COALESCE(version,''))`, and this scan rule is
+    /// deliberately stricter than that index, because a bare name must resolve to
+    /// exactly one directory (GH #277, ruling Q7).
+    #[test]
+    fn walk_refuses_two_versions_of_one_name_in_one_directory_pair() {
+        let td = TempDir::new().unwrap();
+        write_template(&td, "llm@1.0.0", r#"{"name":"llm","version":"1.0.0"}"#);
+        write_template(&td, "llm@2.0.0", r#"{"name":"llm","version":"2.0.0"}"#);
+        let err = scan_templates_dir(td.path()).unwrap_err();
+        assert!(
+            matches!(err, ScannerError::DuplicateName { .. }),
+            "expected DuplicateName, got {err:?}"
+        );
     }
 
     #[test]

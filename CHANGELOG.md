@@ -11,6 +11,333 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **A tier-1 recall delivers two documents in one message** (`memory-hive@2.3.0`,
+  [#296](https://github.com/mmeyerlein/meclaw/issues/296)). The bundle on
+  `system.memory.bundle` now carries what answers the question — the claim, the
+  axis it sits on, the days it held — and the retrieval's own bookkeeping moved
+  into `recall_diagnostic`, a top-level body slot beside `system` and
+  `messages`. The `collector`'s `in_bundle` lane keeps `system` and `messages`
+  and nothing else, so the record reaches the message log and never the next
+  prompt. Whether the smaller bundle answers questions any better is a
+  measurement this release does not have; what it has is a bundle whose fields
+  a reader can act on and a trace that still holds everything the old one did.
+
+- **The readable half is written for the reader who has to answer**
+  ([#281](https://github.com/mmeyerlein/meclaw/issues/281)). The flat ranked
+  list with a `- [fact keyword]` tag in front of every row is gone from the
+  bundle text. What a model gets instead is two sections — `FACTS (extracted,
+  canonical, dated)` and `WHAT WAS SAID (verbatim, not interpreted)` — under a
+  header that says what the document is and as of when. A past question no
+  longer renders in the same shape as an asserted fact.
+
+- **The bundle stops describing the run and starts describing itself**
+  ([#279](https://github.com/mmeyerlein/meclaw/issues/279)). The opening line
+  used to name the retrieval — how many candidates, fused by RRF over which
+  legs — and a model told it holds N ranked hits reads every row under it as a
+  maybe. It now says what the document IS and as of when. The run's own
+  description is not gone: `MEMORY (tier 1, N candidates, RRF over …)` and the
+  flat ranked lines with their leg tags are the `text` field of
+  `recall_diagnostic`, byte for byte what the bundle used to show.
+
+- **The two ranking legs that could not filter themselves now can**
+  ([#297](https://github.com/mmeyerlein/meclaw/issues/297)). `similar` and
+  `search` RANK, they never filter, so a question with no near neighbour still
+  came back with a full page and every row in it voted in the fusion as loudly
+  as a real hit. Each leg got a floor measured on its own scale
+  (`MEMORY_SEM_MAX_DISTANCE`, `MEMORY_KW_MIN_SCORE_RATIO`), the fusion pays a
+  factor for two legs agreeing (`MEMORY_RRF_AGREEMENT`), and a leg with weight
+  0 no longer nominates candidates it does not vote for. This is a PoC memory
+  and the retrieval quality it buys is not measured end to end yet; the knobs
+  exist so that it can be, including with the cuts switched off. The
+  measurement was attempted and could not run at the time: the `recall` script
+  had grown past the 128 KiB that a single `-c` argument may carry on Linux, so
+  the cell did not spawn at all. That blocker is **fixed**
+  ([#349](https://github.com/mmeyerlein/meclaw/issues/349), commit `1dff52f9` —
+  see § Fixed below), and a live tier-0 recall against the shipped template
+  answers again. The measurement itself is still **pending**: no end-to-end
+  number changes hands with this release.
+
+- **A bundle with no candidates says so instead of showing an empty list**
+  ([#297](https://github.com/mmeyerlein/meclaw/issues/297)). The asserting
+  header over no rows read as "the lookup ran, this is what memory holds" and
+  invited an answer from somewhere else. The empty case now states the result
+  in one sentence, names the case where hits came back and every one of them
+  died at a relevance floor, and drops the completeness hedge — a hedge about a
+  list that does not exist. `answers: "none"` in the JSON, `hop.recall_empty`
+  for a router. It does not suppress a tier-2 answer from a directly relevant
+  belief: those are statements about different things.
+
+- **The ambient recall leg arrives as evidence of the round, not as durable
+  state** (`collector@2.1.0`,
+  [#278](https://github.com/mmeyerlein/meclaw/issues/278)). The per-turn bundle
+  used to be written into `system.memory` and stay there — upserted per slot
+  path in the brain cell, in the place an agent's instructions live, with
+  nothing marking it as the answer to one question asked once. It now leaves the
+  seam as a synthetic `memory_recall` `tool_call` / `tool_result` pair at the end
+  of `messages[]`, under a call id derived from the bundle itself (a sha256 over
+  `as_of` and the query), so a re-assembly of the same turn stays the same call
+  instead of looking like a second question. The slot it used to occupy is
+  revoked on every turn — an empty leaf on the fixed path `system.memory.recall`
+  plus the `$replace` marker on the node above it — unconditionally, and no
+  longer tied to `memory_form`. This is the channel the hive already served on
+  `in_memory_call` ([#78](https://github.com/mmeyerlein/meclaw/issues/78)), so it
+  is not a new mechanism; a model's own `memory_recall` call is untouched and
+  still answers under its original `tool_call_id` with no synthetic pair.
+  `talky@3.0.12` and `cogny@3.0.9` re-pin their `collector` reference to the new
+  version.
+
+- **`memory_chars` caps the bundle where the bundle now travels**
+  (`collector@2.1.0`, [#278](https://github.com/mmeyerlein/meclaw/issues/278)).
+  The knob bounds the synthetic tool result, and it is ONE cap over that text:
+  under `memory_form: both` it bounds the readable block and the
+  machine-readable form *together* rather than each of them separately, which
+  changes what a given number buys. `hop.memory_capped` is measured on the
+  result. The bundle's bytes always counted towards the curator's budget — they
+  reached it as part of `sys_chars`; what changes is that they are now
+  attributable, item by item, in the round they belong to.
+
+- **A cell's provenance names the template the CELL came from, not the composite
+  it sits in** ([#277](https://github.com/mmeyerlein/meclaw/issues/277)). A
+  subtree template used to stamp `cell.provenance` of *every* node of the
+  instance — nested cells and hive markers included — with the subtree
+  template's own name. So a `collector` cell inside `talky` claimed to be an
+  instance of `talky`, and the question "which cells are instances of
+  `collector`?" had no answer anywhere in the system. Each node now records the
+  template **it** is an instance of, and the new `template_chain` beside it
+  names the composites that placed it (see § Added). `template` and
+  `template_version` are the projection of the chain's last element; an instance
+  of a ref-free template carries a one-element chain, so nothing that read the
+  old two fields reads anything different. `instantiated_at` stays the same
+  timestamp for every node of one instance.
+
+- **`talky@3.0.12` and `cogny@3.0.9` reference their sub-units instead of
+  carrying copies of them**
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)). `talky` names
+  `collector`, `summarizer`, `session-keeper` and `dispatcher`; `cogny` names
+  `collector` and `dispatcher`. The instantiated tree is byte-identical to what
+  the copies produced — pinned per file by the golden manifests in
+  `gh277_composite_instantiation_is_byte_identical.rs` — so a colony grown from
+  either template gets exactly the tree it got before, with one difference: the
+  cells inside now say where they came from. The two byte pins that guarded the
+  copies against drift (`the_sub_unit_copies_are_byte_identical_to_their_templates`
+  in `talky_composite.rs` and its `cogny` counterpart) retired with the copies:
+  there is nothing left to drift. `templates/channel` keeps its pin — it is
+  scheduled for dissolution in [#303](https://github.com/mmeyerlein/meclaw/issues/303)
+  and gets no throwaway conversion; the check moved whole into
+  `channel_template.rs`.
+
+- **A refused mutation names every violation of the stage that refused it, not
+  the first one** ([#293](https://github.com/mmeyerlein/meclaw/issues/293)).
+  Validation runs as seven ordered stages and stops at the first stage that has
+  anything to say; that stage then reports **all** of its findings instead of
+  only the first. A diff with four bad edge endpoints used to cost four round
+  trips. **Where the findings are readable:** the structured `violations` array
+  is a Rust-internal field on `MutationOutcome::Rejected` — a crate that embeds
+  the colony (the substrate's own tests, an in-process host) reads the findings
+  item by item. The HTTP and EDA wire carries what it always carried: the
+  unchanged `error_code` plus the rendered `details` string, which now lists
+  every finding of the refusing stage instead of one. No wire field was added.
+  **Stability note:** the `error_code` of a diff with defects in *different*
+  stages may now name a different one of them, because the stages were put into
+  the order the spec gives (template resolution before requirements). Each
+  individual verdict — accept or refuse — is unchanged; what changed is which
+  refusal speaks first when there is more than one. `details` stays
+  substring-compatible with what it said before.
+
+### Added
+
+- **A bundle candidate carries the provenance the store already held**
+  ([#280](https://github.com/mmeyerlein/meclaw/issues/280)). Four items:
+  `confidence` per fact (a hedged claim stops reading like a certain one),
+  `query_hygiene` (built in #88, only now written down), `complete` /
+  `complete_reason` naming which of the three cuts shortened the list, and the
+  store's own `valid_until` / `superseded_by` instead of only the derived
+  currency marker. In the payload the last pair travels as `until` — the day
+  the statement stopped — because a successor's row id says nothing to a
+  reader.
+
+- **Three configuration knobs for the fusion, all with defaults that can be
+  switched off** ([#297](https://github.com/mmeyerlein/meclaw/issues/297)).
+  `MEMORY_SEM_MAX_DISTANCE` (`0.5` of the embedding's bit width),
+  `MEMORY_KW_MIN_SCORE_RATIO` (`0.10` of the page's own best bm25 rank) and
+  `MEMORY_RRF_AGREEMENT` (`0.5`; `0` restores the plain rank sum). Documented
+  in `templates/memory-hive/README.md` § Variables, together with a re-worded
+  `MEMORY_TIER1_TOKENS`: the budget measures the payload candidate, never the
+  record in the trace beside it.
+
+- **`contract.emits` entries may carry a `description`** — one sentence saying
+  what a declared slot means, for whoever reads the contract rather than the
+  code. Permitted by the parser all along and now documented in
+  `docs/config.md`; the `recall` cell's `recall_diagnostic` and `recall_empty`
+  declarations are the first users
+  ([#296](https://github.com/mmeyerlein/meclaw/issues/296)).
+
+- **A template can put another template inside itself: `cell.type: "ref"`**
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)). A directory whose
+  `config.json` says `"type": "ref"` describes no cell — it names a template
+  (`cell.template`, as `<name>` or `<name>@<version>`, the same form
+  `TemplatesRegistry::resolve` takes) and the referenced tree is put at that
+  position when the composite is instantiated. `ref` is a **template-time**
+  type: it is resolved during staging, has no factory, no dispatcher path and
+  no registry row, and never reaches an instantiated `config.json`. A `ref`
+  directory carries its `config.json` and nothing else — a second file there
+  would give one address two sources and is refused at parse time. At a
+  resolved reference the referenced root's `README.md` is dropped together with
+  its `template.json`: the two are the descriptor pair of a standalone template
+  and belong to it, not to the instance that placed it; the composite's own
+  README is untouched. `override_params` sits **top-level beside `cell`**,
+  addresses the referenced template's cells by their path inside that template
+  (`""` is its root) and layers **below** a mutation's `override_params`: the
+  reference sets the default, the caller overrides it key by key. Two new
+  `error_code` strings: **`template_ref_cycle`** — a ring of references,
+  rendered as the ring itself (`a@1.0.0 -> b@1.0.0 -> a@1.0.0`) — and
+  **`requirement_missing`** (below). A reference that resolves to nothing keeps
+  the existing `template_missing`, now naming the versions the registry does
+  hold under that name (or `none`). Documented in `docs/config.md` § Spezialfall
+  Template-Referenz and `docs/cell-types.md`; the decision behind it is
+  ADR-0011 (*A template references another template as a sub-unit*).
+
+- **`registry.template_chain` — the composites that placed a cell**
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)). `colony.db` schema
+  **v6**, purely additive: one nullable `TEXT` column holding a JSON array of
+  `[name, version]` pairs, outermost first, the cell's own template last
+  (`[["talky","3.0.12"],["collector","2.1.0"]]`); `version` is `null` when the
+  template declares none. An update to a composite finds its instances through
+  the **first** element, an update to a referenced sub-unit through the **last**
+  — the question GH #277 was filed about. The column is written at
+  instantiation and at every boot; `NULL` and an unreadable value both read as
+  "no chain recorded", because the instance's `config.json` stays the source of
+  truth and the table is the index. Older databases migrate in place; nothing
+  that read schema v5 changes.
+
+- **A template declares what it needs: the `requires` block**
+  ([#292](https://github.com/mmeyerlein/meclaw/issues/292)). `template.json` may
+  carry `requires.ctx` / `requires.env` — the keys an instantiation must supply,
+  each with an optional `because` that the refusal quotes back. It is checked
+  where a contract belongs: `validate_requires` runs inside `handle_mutation`
+  right after the template resolution and **before the first byte is staged**,
+  so a forgotten `ctx.model` is refused instead of being copied to disk and
+  breaking during substitution, and a missing `env` key is caught at all (it
+  used to surface only at run time, on a cell that was already born). The
+  requirements of a template's `ref`s are requirements of the composite. Refusal
+  code: **`requirement_missing`**. A `resume`/reconnect `add_nodes` entry is
+  exempt — it re-attaches an existing cell and does not repeat the template's
+  contract. **Documented limit:** a composite whose subtree already partly
+  exists takes the merge path and still stages before the check bites, so there
+  the old late `ctx_key_missing` remains; tracked with the `swap_nodes[].with`
+  gap in [#347](https://github.com/mmeyerlein/meclaw/issues/347). **Shipped with
+  a `requires` block in this release:** `talky@3.0.12`, `cogny@3.0.9`,
+  `summarizer@2.0.1` and `llm-unit@2.0.2` — each declaring the `ctx` keys its
+  own cells substitute (`model` for all four, plus `model_fast` for `cogny`'s
+  lookup lane). The blocks were derived from what the trees already read, not
+  invented beside them.
+
+### Breaking
+
+- **The tier-1 bundle candidate no longer carries the retrieval's bookkeeping**
+  ([#296](https://github.com/mmeyerlein/meclaw/issues/296)). Gone from
+  `system.memory.bundle`: `id`, `rank`, `score`, `legs`, `session_id`,
+  `episode_id`, the successor row id `superseded_by`, the full `history` chain
+  and the exact instants (days now). Gone from the bundle level:
+  `legs_present`, `leg_sizes`, `semantic_degraded`. **Migration:** every one of
+  them is in the SAME message, in the `recall_diagnostic` body slot — which the
+  message log stores whole, so `/colony/messages` is the place a past run is
+  read back from. The tier-2 `dialectic` call still receives the full internal
+  records. A consumer that read these off the bundle must be re-pointed at
+  `recall_diagnostic.candidates`; reading them off the payload does not raise,
+  it silently yields nothing, which is the failure mode to look for.
+
+- **A consumer reading the recall bundle out of `system.memory` finds a
+  revocation there** (`collector@2.1.0`,
+  [#278](https://github.com/mmeyerlein/meclaw/issues/278)).
+  `system.memory.recall` carries an empty text on every turn, and the `json`
+  form's per-bundle keys are gone from the brain message entirely — the
+  `$replace` marker on `system.memory` clears them. **Migration:** the bundle is
+  the last `tool_result` of the round, answering the synthetic `memory_recall`
+  call immediately before it; read it out of `messages[]` instead. An `llm`
+  cell's `system_writable` allowlist is unaffected and must still carry `memory`
+  as a prefix, because the replace ROOT is checked.
+
+- **An `override_params` key must name a param the target cell really has**
+  ([#294](https://github.com/mmeyerlein/meclaw/issues/294)). The check that a
+  key addresses an existing *cell* has been there since #140; what it never
+  checked is the key inside it, so `{"brain": {"temprature": 0.2}}` was written
+  into the instance and silently did nothing. A key that names no declared param
+  is now a refusal that lists the params the cell declares. **Migration
+  note — this refuses instantiations that used to succeed.** A template whose
+  cell carries `"params": {}` (or no `params` at all) declares **no** params, so
+  every `override_params` key against that cell is now refused: an opt-in
+  knob is only settable if the template declares it. This tree was swept in the
+  same change; an out-of-tree template that relied on the silent write must
+  declare the param. The escape is documented and costs one line: declare the key with
+  `null` — a declaration whose value is `null` says "this cell takes this param,
+  and has no default for it", and an override against it is accepted. The same
+  layering as before applies: the `ref` marker's `override_params` underneath,
+  the mutation's on top. **What the new check covers, precisely:** the param
+  half — "does the key name a param the cell declares?" — is checked on the
+  **mutation's** `override_params`. A `ref` marker's own `override_params` gets
+  the older cell half only ("does it address a cell that exists?"); its keys are
+  not yet held against the target cell's declared params. That gap is tracked
+  with the `swap_nodes[].with` one in
+  [#347](https://github.com/mmeyerlein/meclaw/issues/347).
+
+- **Two templates under `templates/` may no longer declare the same `name`**
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)). A bare-name
+  reference — which is what `cell.template` and a mutation's `"template"` field
+  usually are — must have exactly one answer, so the scanner refuses a second
+  `template.json` declaring an already-seen `name`, **regardless of its
+  version**, with `duplicate template name … — a template name must be unique so
+  a bare-name reference has one answer`. **Migration note — this is breaking on
+  user trees.** A library that keeps two versions of one template side by side
+  (`templates/talky-3.0.11/` and `templates/talky-3.0.12/`, both declaring
+  `"name": "talky"`) no longer scans at all: the scan aborts, and with it the
+  boot or the `RescanTemplates` that would have loaded the library. Keep one
+  directory per name; a version that must stay reachable belongs in a separate
+  library root, not beside its successor.
+
+### Fixed
+
+- **A rescan triggered from inside the colony walks the template library, not
+  the whole workspace**
+  ([#277](https://github.com/mmeyerlein/meclaw/issues/277)).
+  `/colony/templates/rescan` has two doors. The HTTP door always handed the
+  colony the `--templates` path; the EDA door — a cell emitting to the endpoint
+  — handed it the colony ROOT instead, so a rescan from within the colony
+  descended into `main/`, `blobs/` and every other directory under the root and
+  offered as a class whatever `template.json` it found on the way. The
+  divergence was survivable while a repeated name was merely shadowed. With the
+  Q7 uniqueness rule of this wave a repeated name aborts the scan, and the
+  builder hive keeps the approved draft in its staging directory while moving a
+  copy into the library — two directories, one name, both under the root. The
+  scan aborted, NOTHING was registered, and the deploy that followed failed with
+  `template_missing`. Both doors now scan the same library; the CLI passes the
+  resolved `--templates` path to the colony task. Regression lock:
+  `gh277_rescan_scans_the_templates_root.rs`.
+
+- **A `code` cell whose `script_inline` exceeds 128 KiB spawns again**
+  ([#349](https://github.com/mmeyerlein/meclaw/issues/349)). The substrate handed
+  an inline script to the runner as one `argv` string (`<runner> -c <script>`).
+  Linux caps a **single** `argv` string at `MAX_ARG_STRLEN` = `32 * PAGE_SIZE` =
+  131 072 bytes — independent of `ARG_MAX` and not raisable — so every `code`
+  cell above that line died at `spawn()` with `Argument list too long (os error
+  7)`. `memory-hive/recall` crossed the cap during this wave (141 063 bytes as
+  shipped, 140 387 with `${VAR:-default}` resolved) and its read path could not
+  start at all: every query timed out as "no bundle" instead of reporting that
+  the cell never ran. An inline script above the cap is
+  now written to a per-spawn temporary file (mode `0600`, unlinked when the spawn
+  ends) and the runner is pointed at that path — the very `<runner> <path>` form
+  `script_path` already uses. stdin is untouched and still carries the document.
+  Under `trust: "restricted"` the substrate grants that one file a read right and
+  nothing else, so the standing promise that a `script_inline` needs no
+  filesystem declaration of its own survives. **Below the cap nothing changes**:
+  the `-c` form stays, and with it `sys.path[0]`, `__file__` and the shape of a
+  traceback. No test had ever driven the argv path — every probe of a shipped
+  script pipes it to `python3 -`, where no cap exists — which is why the suite
+  stayed green while the shipped cell could not boot; the regression lock
+  (`gh349_a_big_script_still_spawns.rs`) goes through `CodeCell::handle`.
+
 ## [0.17.2] — 2026-08-21
 
 ### Fixed

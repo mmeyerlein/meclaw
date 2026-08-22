@@ -47,6 +47,53 @@ fn recall_script() -> String {
     )
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
+    run_python(&src)
+}
+
 /// Call a pure function of the script: the module body runs against a stub stdin
 /// and its `park()` exit is swallowed, then the probe runs in the same globals.
 fn run_probe(probe: &str) -> String {
@@ -68,11 +115,7 @@ fn run_probe(probe: &str) -> String {
         serde_json::to_string(&recall_script()).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -83,21 +126,10 @@ fn run_probe(probe: &str) -> String {
 
 /// Run the real script against a real stdin document and return the emitted messages.
 fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(recall_script())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    let out = run_script_on_stdin(
+        &recall_script(),
+        &meclaw_testing::code_stdin(&doc).to_string(),
+    );
     assert!(
         out.status.success(),
         "recall exited non-zero: {}",
@@ -157,10 +189,30 @@ fn bundle_of(msgs: &[serde_json::Value]) -> serde_json::Value {
     serde_json::from_str(text).expect("bundle json")
 }
 
+/// The internal candidate records of the emission (#296).
+///
+/// The collapse is a statement about the RETRIEVAL — which slot a copy owns,
+/// which rank it holds, which legs nominated it — and since #296 that half
+/// travels in `recall_diagnostic` rather than in the payload a model reads.
+/// The payload carries the collapsed line and its count; everything this file
+/// asserts about ids, ranks, scores and legs is asserted about the record.
+fn record_of(msgs: &[serde_json::Value]) -> serde_json::Value {
+    msgs[0]["recall_diagnostic"]["candidates"].clone()
+}
+
 fn rendered_of(msgs: &[serde_json::Value]) -> String {
     msgs[0]["messages"][0]["text"]
         .as_str()
         .expect("rendered text")
+        .to_string()
+}
+
+/// The diagnostic rendering of the same emission (#279) — the flat ranked form
+/// with the leg tags, which is what explains a collapse afterwards.
+fn diagnostic_text(msgs: &[serde_json::Value]) -> String {
+    msgs[0]["recall_diagnostic"]["text"]
+        .as_str()
+        .expect("diagnostic text")
         .to_string()
 }
 
@@ -242,12 +294,22 @@ fn the_scripts_normal_form_is_the_stores_normal_form() {
 fn five_verbatim_copies_leave_one_episode_line() {
     let (candidates, eps) = five_copies();
     let msgs = emit(emit_doc(candidates, eps, serde_json::json!([])));
-    let bundle = bundle_of(&msgs);
-    let items = bundle["candidates"].as_array().expect("candidates");
-    assert_eq!(items.len(), 1, "bundle: {bundle}");
+    let record = record_of(&msgs);
+    let items = record.as_array().expect("candidates");
+    assert_eq!(items.len(), 1, "record: {record}");
     assert_eq!(items[0]["seen"], 5);
     assert_eq!(items[0]["rank"], 1);
-    assert_eq!(rendered_of(&msgs).lines().count(), 2);
+    // And the payload says the same thing in the shape a reader gets it in:
+    // one candidate, standing for five copies.
+    let bundle = bundle_of(&msgs);
+    assert_eq!(
+        bundle["candidates"].as_array().expect("candidates").len(),
+        1,
+        "bundle: {bundle}"
+    );
+    assert_eq!(bundle["candidates"][0]["seen"], 5, "bundle: {bundle}");
+    // #281: the run's header, the section the row belongs to, and the one row.
+    assert_eq!(rendered_of(&msgs).lines().count(), 3);
 }
 
 /// The slot belongs to the best-ranked copy, the wording to the newest one: a
@@ -257,18 +319,41 @@ fn five_verbatim_copies_leave_one_episode_line() {
 fn the_newest_copy_owns_the_surviving_line() {
     let (candidates, eps) = five_copies();
     let msgs = emit(emit_doc(candidates, eps, serde_json::json!([])));
-    let bundle = bundle_of(&msgs);
-    let item = &bundle["candidates"][0];
+    let record = record_of(&msgs);
+    let item = &record[0];
     assert_eq!(item["id"], "e5");
     assert_eq!(item["text"], "which  editor  did I prefer?");
     assert_eq!(item["happened_at"], "2026-08-09T13:00:00.000000Z");
     assert_eq!(item["score"], 0.05);
     assert_eq!(item["legs"], serde_json::json!(["keyword", "graph"]));
+    // The wording is the half a reader gets — the newest copy's, on the day it
+    // last happened (#296: the id, the score and the legs are the record's).
+    let bundle = bundle_of(&msgs);
+    assert_eq!(
+        bundle["candidates"][0]["text"], "which  editor  did I prefer?",
+        "bundle: {bundle}"
+    );
+    assert_eq!(
+        bundle["candidates"][0]["when"], "2026-08-09",
+        "bundle: {bundle}"
+    );
+    // #281: the readable half is the PAYLOAD form — an utterance stands under
+    // its own header, opening with who said it and when, and the count is the
+    // same annotation in the same place.
     assert!(
         rendered_of(&msgs)
-            .contains("- [episode keyword/graph] which  editor  did I prefer? (seen: 5)"),
+            .contains("  user on 2026-08-09: \"which  editor  did I prefer?\" (seen: 5)"),
         "rendered: {}",
         rendered_of(&msgs)
+    );
+    // #279: and the byte-identical diagnostic line is back, one slot over —
+    // the flat ranked form with the legs that nominated the surviving copy,
+    // which is the document whoever explains this collapse afterwards reads.
+    assert!(
+        diagnostic_text(&msgs)
+            .contains("- [episode keyword/graph] which  editor  did I prefer? (seen: 5)"),
+        "diagnostic: {}",
+        diagnostic_text(&msgs)
     );
 }
 
@@ -293,12 +378,21 @@ fn two_different_episodes_stay_two_lines() {
         )
     ]);
     let msgs = emit(emit_doc(candidates, eps, serde_json::json!([])));
+    let record = record_of(&msgs);
+    assert_eq!(record.as_array().expect("candidates").len(), 2);
+    assert_eq!(record[0]["seen"], 1);
+    // #296: a count of one is absent from the payload, exactly as it is absent
+    // from the rendered line — the two agree about what "nothing repeated"
+    // looks like.
     let bundle = bundle_of(&msgs);
     assert_eq!(
         bundle["candidates"].as_array().expect("candidates").len(),
         2
     );
-    assert_eq!(bundle["candidates"][0]["seen"], 1);
+    assert!(
+        bundle["candidates"][0].get("seen").is_none(),
+        "bundle: {bundle}"
+    );
     assert!(
         !rendered_of(&msgs).contains("seen:"),
         "{}",
@@ -322,13 +416,23 @@ fn a_fact_line_renders_exactly_as_before() {
          "valid_from": "2026-08-02T09:00:00Z", "valid_until": null, "confidence": 100}
     ]);
     let msgs = emit(emit_doc(candidates, serde_json::json!([]), facts));
-    let bundle = bundle_of(&msgs);
-    assert!(bundle["candidates"][0].get("seen").is_none(), "{bundle}");
+    let record = record_of(&msgs);
+    assert!(record[0].get("seen").is_none(), "{record}");
+    // #281: same line in the payload form — the axis, the claim and the day it
+    // started, under the facts header.
     assert!(
-        rendered_of(&msgs)
-            .contains("- [fact keyword] user:u1 favorite_editor: the preferred editor is vscode"),
+        rendered_of(&msgs).contains(
+            "  user:u1 favorite_editor = the preferred editor is vscode   since 2026-08-02"
+        ),
         "rendered: {}",
         rendered_of(&msgs)
+    );
+    // #279: and the diagnostic form, byte for byte as it always rendered.
+    assert!(
+        diagnostic_text(&msgs)
+            .contains("- [fact keyword] user:u1 favorite_editor: the preferred editor is vscode"),
+        "diagnostic: {}",
+        diagnostic_text(&msgs)
     );
     assert!(
         !rendered_of(&msgs).contains("seen"),

@@ -7,9 +7,9 @@
 //!
 //! What is pinned here is exactly what a template has to carry:
 //!
-//! 1. **The copies did not fork.** `collector` and `dispatcher@1` live in this
-//!    composite as byte copies -- the substrate has no template-in-template
-//!    reference -- so a sub-template change that does not travel fails here.
+//! 1. **The sub-units are named, not copied (GH #277).** `collector` and
+//!    `dispatcher` sit here as `cell.type: "ref"` markers with an explicitly
+//!    pinned version; editing the standalone template IS the sync.
 //! 2. **The core is a tool loop.** A consult errand arrives on the documented
 //!    ingress, the brain asks for a tool, the core runs its OWN round, and the
 //!    advice leaves on the `answer` lane. Not one internal edge is wired by this
@@ -35,6 +35,16 @@
 //! per file by [`shipped_cogny`]; where the template does not ship, these tests
 //! skip instead of failing on a dead `templates/` reference. That is what keeps
 //! this file honest on both sides of the export.
+//!
+//! The byte-identity pin over the two sub-unit copies retired with the copies
+//! themselves (GH #277): `cogny` references its sub-units now, so there is
+//! nothing left to drift. Its successors live in
+//! `meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` --
+//! `cogny_instantiates_the_same_tree_as_its_golden_manifest` proves the
+//! resolved tree is the byte tree the copies produced, and
+//! `a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it`
+//! proves the other half of the same mechanism: a cell that came through a ref
+//! records which template it really is an instance of.
 
 #[path = "mock_openai.rs"]
 mod mock_openai;
@@ -61,15 +71,18 @@ fn templates_root() -> std::path::PathBuf {
 
 /// Every file the composite is made of. The list is the guard AND the
 /// inventory: a cell that silently disappears from the template makes these
-/// tests skip rather than pass, which is why the byte pin below counts what it
-/// swept.
+/// tests skip rather than pass.
+///
+/// Since GH #277 `collector/config.json` and `dispatcher/config.json` are `ref`
+/// markers, not cells -- the sub-units' own trees live in `templates/collector/`
+/// and `templates/dispatcher/` and are pulled in at instantiation time. That is
+/// why `collector/assemble` and `collector/window` are no longer listed here:
+/// they are not files of THIS template any more.
 const COGNY_FILES: &[&str] = &[
     "config.json",
     "brain/config.json",
     "brain_fast/config.json",
     "collector/config.json",
-    "collector/assemble/config.json",
-    "collector/window/config.json",
     "dispatcher/config.json",
 ];
 
@@ -101,6 +114,7 @@ fn shipped_cogny() -> Option<std::path::PathBuf> {
 /// recursive directory copy, `docs/meclaw-overview.md` § Instanziierungs-Flow).
 /// So the tree under test IS the template and nothing else.
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
+    let src = &resolve_template_ref(src);
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -117,6 +131,31 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
             std::fs::copy(&from, dst.join(name)).unwrap();
         }
     }
+}
+
+/// GH #277: a directory whose `config.json` declares `cell.type: "ref"` is a
+/// REFERENCE, not a cell -- the referenced template's tree belongs in its
+/// place. `cogny` names its two sub-units that way, so a tree copied straight
+/// off the library follows the same hop the substrate's staging path follows.
+fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..8 {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return dir;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
+            return dir;
+        };
+        if v["cell"]["type"] != "ref" {
+            return dir;
+        }
+        let reference = v["cell"]["template"]
+            .as_str()
+            .expect("a ref cell names a template");
+        let name = reference.split('@').next().unwrap_or_default();
+        dir = templates_root().join(name);
+    }
+    panic!("template ref chain does not terminate at {}", dir.display());
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -391,46 +430,6 @@ fn lane_of(req: &mock_openai::OpenAiRequestSnapshot) -> &str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════ pins
-
-/// The substrate instantiates a template by COPYING its directory, and there is
-/// no template-in-template reference to lean on -- so the composite carries
-/// materialised copies of its two sub-templates, and this pin is what keeps
-/// "carries" from decaying into "forked". A change to `collector` that does
-/// not travel into `cogny/collector/` fails here instead of in production.
-#[test]
-fn the_sub_unit_copies_are_byte_identical_to_their_templates() {
-    let Some(cogny) = shipped_cogny() else {
-        return;
-    };
-    let root = templates_root();
-    let mut checked = 0usize;
-    let src = root.join("collector");
-    let mut rels = Vec::new();
-    collect_configs(&src, &src, &mut rels);
-    assert!(!rels.is_empty(), "collector: no config.json found");
-    for rel in rels {
-        let a = std::fs::read(src.join(&rel)).unwrap();
-        let b = std::fs::read(cogny.join("collector").join(&rel)).unwrap_or_else(|e| {
-            panic!(
-                "cogny/collector/{} missing ({e}) -- collector grew a cell the core does not carry",
-                rel.display()
-            )
-        });
-        assert!(
-            a == b,
-            "cogny/collector/{} drifted from collector/{}",
-            rel.display(),
-            rel.display()
-        );
-        checked += 1;
-    }
-    // The dispatcher is a single-cell template: its root config IS the cell.
-    let a = std::fs::read(root.join("dispatcher/config.json")).unwrap();
-    let b = std::fs::read(cogny.join("dispatcher/config.json")).unwrap();
-    assert!(a == b, "cogny/dispatcher drifted from dispatcher");
-    checked += 1;
-    assert!(checked >= 4, "the pin swept almost nothing: {checked}");
-}
 
 fn collect_configs(
     root: &std::path::Path,

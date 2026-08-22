@@ -426,7 +426,7 @@ impl ColonyDb {
     pub fn read_registry(&self) -> rusqlite::Result<Vec<PersistedRegistryEntry>> {
         let mut stmt = self.read_conn.prepare(
             "SELECT path, cell_id, cell_type, status, template, template_version, \
-                 instantiated_at FROM registry ORDER BY path",
+                 instantiated_at, template_chain FROM registry ORDER BY path",
         )?;
         let rows = stmt.query_map([], |r| {
             let path_str: String = r.get(0)?;
@@ -439,9 +439,19 @@ impl ColonyDb {
             let template: Option<String> = r.get(4)?;
             let template_version: Option<String> = r.get(5)?;
             let instantiated_at: Option<i64> = r.get(6)?;
+            // GH #277: the chain is stored as JSON in one column. NULL means
+            // "no chain was recorded" and an unparseable value means the same
+            // thing here — the instance's own `config.json` is the source, this
+            // table is the index, so a broken index entry loses a query hit,
+            // never the truth.
+            let template_chain: Option<String> = r.get(7)?;
+            let template_chain = template_chain
+                .as_deref()
+                .and_then(|json| meclaw_core::serde_json::from_str(json).ok());
             let provenance = template.map(|template| crate::config::NodeProvenance {
                 template,
                 template_version,
+                template_chain,
                 instantiated_at: instantiated_at.unwrap_or(0),
             });
             let cell_id = meclaw_core::Uuid::parse_str(&cell_id_str).map_err(|e| {
@@ -719,8 +729,9 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='5' (GH #62: the
-        // registry provenance columns, on top of the W6d dead_letters table).
+        // Schema check: the meta table has schema_version='6' (GH #277: the
+        // registry `template_chain` column, on top of the GH #62 provenance
+        // triple and the W6d dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -729,7 +740,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "5");
+        assert_eq!(v, "6");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

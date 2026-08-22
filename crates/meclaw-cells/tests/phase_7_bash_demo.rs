@@ -35,7 +35,7 @@ async fn setup_bash_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyH
     std::fs::write(bash_tpl.join("template.json"), r#"{"name":"bash"}"#).unwrap();
     std::fs::write(
         bash_tpl.join("config.json"),
-        r#"{"cell":{"type":"bash"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"bash"},"params":{"max_concurrency":1,"external_timeout_ms":30000},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

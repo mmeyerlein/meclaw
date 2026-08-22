@@ -35,7 +35,7 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
         std::fs::write(tpl.join("template.json"), r#"{"name":"multi_update"}"#).unwrap();
         std::fs::write(
             tpl.join("config.json"),
-            r#"{"cell":{"type":"multi_update"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"multi_update"},"params":{"sink_target":"/unset"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         )
         .unwrap();
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

@@ -77,6 +77,17 @@ const GROWN_FROM: [(&str, &str); 4] = [
 /// eleven from `talky`, two from `memory-drain`, one from `terminal@1`.
 const CELLS_AFTER_GROW: usize = 18;
 
+/// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
+/// them, so the library the colony scans has to hold them next to it. They are
+/// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
+/// registry resolves the rest.
+const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+    ("collector", "templates/collector"),
+    ("summarizer", "templates/summarizer"),
+    ("session-keeper", "templates/session-keeper"),
+    ("dispatcher", "templates/dispatcher"),
+];
+
 /// The three months of the story live in `past.jsonl`, next to the seed -- the
 /// file the README's import loop reads is the file this test replays. These are
 /// the marks it is measured by: the February one is the answer, the other two
@@ -277,7 +288,7 @@ fn grow_json_sets_the_per_turn_lane_at_instantiation() {
     );
 
     // The shipped default is empty, so the override is the whole difference.
-    let shipped = read_json(&repo_path("templates/talky/collector/assemble/config.json"));
+    let shipped = read_json(&repo_path("templates/collector/assemble/config.json"));
     assert_eq!(
         shipped["params"]["turn_write"],
         json!(""),
@@ -309,12 +320,12 @@ const NEVER: &str = "0 0 0 1 1 *";
 fn build_root(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
     copy_tree(&example_path("seed"), root);
-    for (name, dir) in GROWN_FROM {
+    for (name, dir) in GROWN_FROM.iter().chain(REFERENCED_SUB_UNITS.iter()) {
         copy_tree(&repo_path(dir), &root.join("templates").join(name));
     }
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summarizer/writer/config.json",
+        "templates/summarizer/writer/config.json",
     ] {
         patch(&root.join(rel), |v| {
             v["params"]["base_url"] = json!(base_url)

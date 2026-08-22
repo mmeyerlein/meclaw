@@ -142,16 +142,30 @@ impl Run {
 /// a contract break (the cell must never die on a bad embedder), so it is
 /// asserted here rather than in every case.
 async fn run_embed(script: &str, stdin_doc: &str) -> Run {
+    // The script travels on stdin, never in argv: a single argv string is capped
+    // at 128 KiB (`MAX_ARG_STRLEN`) and the shipped scripts have grown to within
+    // a few KB of it (GH #279, precedent 89a522e4). The document rides inside the
+    // program and is put under `sys.stdin` before the script runs, so the script
+    // itself sees exactly what `python3 -c` gave it.
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
     let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn python3");
     let mut stdin = child.stdin.take().expect("stdin");
-    stdin.write_all(stdin_doc.as_bytes()).await.expect("write");
+    stdin.write_all(src.as_bytes()).await.expect("write");
     drop(stdin);
     let out = child.wait_with_output().await.expect("python3 output");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();

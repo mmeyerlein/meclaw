@@ -37,7 +37,7 @@ async fn setup_web_fetch_template(td: &tempfile::TempDir, h: &meclaw_testing::Co
         tpl.join("config.json"),
         // GH #117: the demo fetches a mock server on 127.0.0.1, which the
         // shipped default refuses. The template takes the documented opt-out.
-        r#"{"cell":{"type":"web_fetch"},"params":{"allow_private_networks":true},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"web_fetch"},"params":{"allow_private_networks":true,"max_concurrency":1,"external_timeout_ms":30000},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

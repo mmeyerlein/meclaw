@@ -83,7 +83,7 @@ Two of these are watches rather than fixes, and stay open on purpose:
   shipped templates — 104 of the 128 occurrences sit in `script_inline` — and they
   migrate to params one template at a time, defaults bit-identical. Order:
   `memory-hive` (48, of which `recall` alone holds 22), then the small ones;
-  `talky` and `cogny` own none of their own, theirs are byte copies of sub-units
+  `talky` and `cogny` own none of their own, theirs come from their sub-units
 
 ## Later: memory, after the measurement
 
@@ -125,9 +125,9 @@ the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 The template surface is open: a template is a directory, a README and a
 `template.json`. Nineteen are listed in
 [`templates/README.md`](templates/README.md) as worked examples — sixteen
-single-purpose ones plus three composites: `talky@3.0.8`, which carries four of
-them as sub-units, `cogny@3.0.6`, which carries two, and `memory-hive@2.2.1`, a
-member's long-term memory as a hive of twelve cells.
+single-purpose ones plus three composites: `talky@3.0.12`, which references four
+of them as sub-units, `cogny@3.0.9`, which references two, and
+`memory-hive@2.3.0`, a member's long-term memory as a hive of twelve cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a

@@ -23,7 +23,7 @@ async fn setup_file_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyH
     std::fs::write(file_tpl.join("template.json"), r#"{"name":"file"}"#).unwrap();
     std::fs::write(
         file_tpl.join("config.json"),
-        r#"{"cell":{"type":"file"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"file"},"params":{"base_path":"/tmp","max_concurrency":1},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

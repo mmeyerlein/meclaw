@@ -156,7 +156,7 @@ fn cell_dir_of(root: &std::path::Path, path: &McPath) -> PathBuf {
 /// that now exists.
 ///
 /// GH #195: in-diff claims are decided in ONE place now, and it is not this one.
-/// `reject_duplicate_claims` (`validate.rs`) spans `add_nodes`,
+/// `collect_duplicate_claims` (`validate.rs`) spans `add_nodes`,
 /// `swap_nodes[].with` and `move_nodes[].to` and runs before this function, so a
 /// duplicate claim is already refused — with a message that names both entries —
 /// by the time a move gets here. The `add_names` check below stays because this

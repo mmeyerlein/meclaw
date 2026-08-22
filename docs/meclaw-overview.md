@@ -248,7 +248,7 @@ The `nodes` key in the block below is built **only in the mutation usage**; in a
 }
 ```
 
-**`nodes`** *(specified, not built — see GH #277)*: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (highest available version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
+**`nodes`** *(specified, not built — see GH #277)*: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (the one registered version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
 
 **The key exists in the mutation diff only, and that retracts the promise above** ("the same schema … in two write usages"). On the bootstrap path `GraphHints` knows only `edges` under `deny_unknown_fields` — a hive `config.json` carrying the `nodes` block fails the parser and **aborts the boot** instead of creating the node. Whoever creates a node today sends a mutation diff (`add_nodes`, see "Mutation format"). The schema stays in full because it is GH #277's target picture.
 
@@ -537,7 +537,7 @@ A mutation is a message to `/colony/mutations` whose body carries a **diff** plu
 
 | Operation | Effect |
 |---|---|
-| `add_nodes` | Instantiate new cells in the scope (template reference, optional `override_params`). On a **single-cell template** `override_params` is a flat params object. On a **subtree template** it is **addressed** (GH #140): the keys are the paths of the cells INSIDE the template, `""` being the subtree root — `{"assemble": {…}, "window": {…}}`. A key that names no cell of the template is rejected pre-destructively with `schema`, and the message lists the cells that do exist. This continues the R10 ruling (2026-06-11) rather than reversing it: R10's finding was an override that **committed and did nothing** — addressing removes the cause instead of the feature, and an unaddressable key stays a loud error. `${ctx.*}` substitution remains the way for values the template itself distributes. |
+| `add_nodes` | Instantiate new cells in the scope (template reference, optional `override_params`). On a **single-cell template** `override_params` is a flat params object. On a **subtree template** it is **addressed** (GH #140): the keys are the paths of the cells INSIDE the template, `""` being the subtree root — `{"assemble": {…}, "window": {…}}`. A key that names no cell of the template is rejected pre-destructively with `schema`, and the message lists the cells that do exist. This continues the R10 ruling (2026-06-11) rather than reversing it: R10's finding was an override that **committed and did nothing** — addressing removes the cause instead of the feature, and an unaddressable key stays a loud error. **One level down the same rule holds (GH #294, ruling Q6): every param key of an override entry must be a param the addressed cell carries under `params` in its template `config.json`** — otherwise `schema`, and the message names the param, the cell, its cell type, the template and the params that do exist. It is a pure **existence check** on the template's raw `params` object (the key set does not depend on the values, so instance substitution is irrelevant here); types and a `because` may arrive later as declarations. A cell with **no** `params` block has the empty set and refuses every override — it used to swallow it silently at staging. Both forms go through the same check in validation, so they cannot drift apart. Consequence for template authors: **a param that is meant to be set per instance has to be declared in the template** (a default value is enough; `null` is a legal placeholder for an opt-in such as `ports`). `${ctx.*}` substitution remains the way for values the template itself distributes. |
 | `remove_nodes` | Removes all edges in which the referenced nodes participate → the nodes are disconnected and marked inactive (including subtree cascade at hives). Registry entry, filesystem, and `cell_id` remain (no-delete, see "Connectivity and activity"). |
 | `add_edges` | New edges in colony's edge table, scoped |
 | `remove_edges` | Remove edges from the edge table, scoped. **Applied before `add_edges`**, so an edge can be replaced in ONE mutation (old one out, new one in) with the lane never missing in between. The other way round, the `match` pattern deleted the edge the same diff had just inserted (GitHub #158). |
@@ -560,6 +560,28 @@ Single-stage in colony. Before application, the hypothetical post_state is compu
 
 On an error **before** the atomic rename phase (schema, match, cycle, edge schema, template, `.env`, staging build): the entire diff is rejected, no partial commit, the live tree untouched.
 
+#### The collecting validator: one refusal, every violation of the stage (GH #293)
+
+**What is accepted and what is refused does not change** — same verdicts, complete report. The checks run in seven stages, in this order:
+
+1. diff schema
+2. template resolution (reference resolvable, `ref`s, rings)
+3. `requires` — `ctx` and `env` keys (§ `requires`)
+4. post-state addresses (naming collision, match-no-hit, `override_params` addressing, cell type, the `adopt` grammar, `swap_nodes[].with`)
+5. edge endpoints
+6. contract locality (hive port boundary, inbound lanes, header contract locality)
+7. `required_drains`
+
+**Inside** a stage nothing stops: a diff with five independent violations of the same stage is refused **once** and names all five. **Between** stages it does stop, at the first stage that produced any entry at all. That is deliberate: an unresolved template makes every later endpoint error a consequence rather than a cause, and twenty derived errors hide the one real one.
+
+For existing readers the **shape** of the answer is unchanged. `error_code` is the **first** entry's code — exactly the one the earlier single-violation validation would have reported within that same stage — and `details` remains a single string: every violation, one per line, in the form `<stage>/<code> <address>: <message> — <because>` (the address and `because` parts are omitted where there are none). A contract's own `because` (`required_drains[].because`, `LaneSpec.because`) therefore travels verbatim for **every** affected entry, not only for whichever one happened to be found first.
+
+**Which `error_code` a multi-defect diff reports can have moved, because of the staging.** Template resolution is stage 2 and therefore runs before the point at which the earlier sequential validation actually decided it (inside the post-state check, i.e. after `requires` and after the naming checks). A diff that pairs an unresolvable template with a missing `requires` key or a naming collision now reports `template_missing` instead of `requirement_missing` / `naming_collision`. The **verdict** is unchanged: the same mutation is refused as before, only the reported cause is the earlier stage. Since `error_code` is a stability surface (README § Stability), this is written down here and not only in the code.
+
+Checks that are not stages (the resume/`adopt` filesystem guards, the subtree pre-checks, scope containment, `remove_edges`, the relocation gate) keep their own single refusal where they are: they judge exactly one thing and can only ever have one answer. Their `details` stays the earlier debug form (`MatchNoHit("x")`); only the staged rejects carry the rendered line form. Two shapes, on purpose — `details` is prose for a human, not a format.
+
+The two post-state validations after the rename phase (`required_drain_missing`, `hive_contract`) collect by the same rule; they run there because they need the post_state edge table (see below).
+
 **Inside** the rename phase the audit model applies: an error after the first successful `rename(2)` is no longer a clean reject (earlier renames already stand in the live tree); the substrate strict-fails loudly (panic), and the half-state is made visible at the next boot as non-registered orphan dirs (§ Startup algorithm), never silently adopted.
 
 **After** the rename phase but before the commit, a mutation can still be refused: by the two post-state validations (`required_drain_missing`, `hive_contract`), by the two runtime conditions of a disconnect (`stop_wiring_unavailable`, `term_timeout`), and by a failed cell spawn. These rejects are **clean** again (GH #276): the two validations run before the spawn/registry step, so nothing is registered in the first place; the runtime rejects take the diff's registry entries back out. In both cases the in-RAM edge ops roll back and the freshly renamed-in directories are removed — the single cell directories as well as the rename-roots of a subtree template; adopted and relocated ones stay (no-delete), and so does every node that was already there on a merge resume. The `write_buffer` is discarded (`colony.db` never sees a registry row), and the `mutation_log` row is terminalized (`failed`). A 422 answer and an `in_flight` row therefore cannot contradict each other. A cell that had already spawned `Awake` is peace-stopped and its death ack waited for **before** its directory goes, so the substrate never clears a directory out from under an open `cell.db`.
@@ -574,7 +596,7 @@ Error message to `reply_to` (if set) with:
 }
 ```
 
-`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary` | `hive_contract` | `required_drain_missing`.
+`error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` | `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` | `scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` | `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` | `contract_incomplete` | `hive_port_boundary` | `hive_contract` | `required_drain_missing` | `template_ref_cycle` | `requirement_missing`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter codes carry (§ "Canonical `error_code` strings"): new reject reasons **extend** the list, existing ones never change their string form. A condition may therefore match on a code, but it must not assume the list is complete — an unknown code is a future code, not a bug. Notes on the substrate codes:
 
@@ -590,6 +612,8 @@ These strings are part of the stable mutation API contract, with the same promis
 - `hive_port_boundary` (GH #133): an `add_edges` endpoint reaches into a hive that declared its ports (`params.ports`, opt-in — see `cell-types.md` § `hive`) while the edge's other endpoint lies outside that hive: a deep endpoint past the port, which would bypass whatever the hive puts in front of it. Pre-destructive, emitted by `validate_hive_port_boundary` (`mutation/port_boundary.rs`) before staging. A hive without the declaration is not sealed and never produces this code. **Mutations only** (ruling 2026-08-15): a hive's `params.graph` at boot is the colony author's sovereign birth design and is never rejected by the seal, which guards the runtime instead; boot-time enforcement, if it ever comes, arrives as its own opt-in switch rather than by widening this one.
 - `hive_contract` (GH #173): a hive declared its interface as lanes (`params.contract`, opt-in — see `config.en.md` § `params.contract`) and something contradicts it. Two shapes: an `add_edges` edge onto the hive path stamps a constant `hop.route` the hive does not accept; or the hive's own graph no longer carries a lane it promises (an `accepts` lane with no door, an `emits` lane with no exit through the hive path). Pre-destructive, emitted by `mutation/hive_contract.rs`; checked with the real router (`apply_edges`) rather than by comparing text, and an edge whose route is only knowable at runtime is not judged. A hive without the declaration never produces this code. **Mutations only** — boot warns, for the same reason the port seal does.
 - `required_drain_missing` (GH #147/#237): a hive declared a pair (`params.required_drains`, opt-in — see `cell-types.en.md` § `hive`): a port with its drain, or an accepted lane with the answer lane the caller has to take. Something from outside serves one half and the other is missing once the diff stands. It needs the post_state edge table (the mutation this rule wants people to write brings both halves in ONE diff) and therefore runs after staging but before the spawn/registry step — the reject is spurless. Emitted by `mutation/required_drains.rs`, checked with the real router.
+- `template_ref_cycle` (GH #277): a template `ref` closes a ring — a template already on the resolution stack is entered a second time. The stack itself is the guard, which is why composition needs no depth cap: a ring is refused at its first repetition, and without a ring a chain cannot outgrow the finite registry. Pre-destructive, emitted by `expand_ref` (`mutation/subtree.rs`) during parsing, before any staging; the message renders the ring as `a@1.0.0 -> b@1.0.0 -> a@1.0.0`. A `ref` that points at nothing is not a ring but `template_missing`, whose message names the reference plus the versions the registry does hold under that name (or `none`).
+- `requirement_missing` (GH #292): an `add_nodes` names a template that declares a key (`requires.ctx` / `requires.env`, see § `requires`) the mutation does not supply — a `ctx` key missing from the mutation's `ctx` block, or an environment variable the loaded `.env` does not hold. The set spans the named template **and**, through its `ref`s, every referenced one: what a part needs, the composite needs. Pre-destructive, emitted by `validate_requires` (`mutation/validate.rs`) before scope containment and therefore before any staging; the message names the template, the class, the key and the template's own `because` verbatim. A template without a `requires` block never produces this code. **A resume does not repeat the contract:** an `add_nodes` at an already existing path is a Reconnect/Resume (§ Authority model, “Instantiation and cell_id stability”) that stages nothing, resolves no `${ctx.X}` and rewrites no `config.json` — so it never consumes the declared keys and is not refused for them. The requirement belongs to the instantiation, not to the address. **Known limit:** for a partially existing composite subtree (the root stands, individual children are missing) the merge path still stages the missing children; a key missing there continues to surface late, as `ctx_key_missing` during substitution. That is no regression against the state before GH #292 — there it surfaced that way in EVERY case; a more precise rule, per node instead of per entry, is a follow-up issue.
 
 `uuid_provider_exhausted` is **not** live code: the enum variant `MutationError::UuidProviderExhausted` was dead code (`Uuid::now_v7()` is infallible, never constructed; additionally mapped as the string `"uuid_provider"` instead of `"uuid_provider_exhausted"`) and **was removed with paket 7** (D-034; verified 2026-06-10: 0 code hits). The note remains as re-discovery protection.
 
@@ -1676,6 +1700,7 @@ For a complete store-backed implementation, follow the [examples/telegram-resear
 - Templates are cells (or whole subtrees including hive scope markers) under `templates/`. Their role: class / blueprint.
 - **The directory structure within `templates/` is freely choosable**, sub-folders, groups, namespaces are allowed. The scanner finds templates by the `template.json` file.
 - **Identification by name**, because template-internal graphs need stable name references (UUIDs are assigned only after instantiation).
+- **The name is unique across `templates/`**: if two `template.json`s declare the same `name`, the scan aborts with an error (`ScannerError::DuplicateName`), regardless of depth and `version`, because a bare-name reference must have exactly one answer (GH #277).
 - **Versioning optional**: directory name `<name>@<version>` (e.g. `llm-openai@2.1.0/`) or simply `<name>/` (counts as unversioned).
 
 ### `template.json`: template index
@@ -1702,6 +1727,29 @@ Every template has a `template.json` in its root directory that describes the te
 `template.json` describes exclusively the template itself (metadata for discovery), no statement about the internal cell-type structure.
 
 The `description` in `template.json` has exactly **four slots** (`purpose`, `use_when`, `not_in_scope`, `examples`); the **six-slot form** (additionally `emits_meaning`/`consumes_meaning`) applies to cell-`config` descriptions, see `config.md` § `description`. (Ruling 2026-06-10.)
+
+#### `requires`: what an instantiation has to supply
+
+Optional block (GH #292); a template without one requires nothing and keeps working exactly as before. It states machine-readably what an instantiation must provide — until now that could only be learned by being rejected, one key per attempt.
+
+```json
+"requires": {
+  "ctx": {
+    "model": {"type": "string", "required": true, "because": "the model the brain infers with"}
+  },
+  "env": {
+    "OPENROUTER_API_KEY": {"because": "the cell infers"}
+  }
+}
+```
+
+A declared key **without** `required` is required (it is declared because it is needed); `because` is quoted verbatim when a mutation fails on it.
+
+**The two placeholder classes stay apart because they behave differently** (§ Variable substitution): `${ctx.X}` is resolved **once, onto disk** at instantiation and stands as a value in the instance's `config.json` afterwards; `${ENV_VAR}` stays a token on disk and **binds again at every read** (boot as well as instantiation). One pot for both would turn a secret into an instance parameter — precisely the materialisation GH #20 prevents.
+
+**The declaration is derived, not written down beside it.** What a shipped template names under `requires.ctx` is exactly the set of `${ctx.X}` occurring in its own `config.json` **values** — checked in both directions: a placeholder without an entry is a template that rejects a mutation for a key it never advertised; an entry without a placeholder is a leaflet asking for a value nobody reads. Prose does not count — a `${ctx.model}` quoted by a `description` or a README is an explanation, not a requirement.
+
+**Authoring rule — `param` or `ctx`?** Anything that can differ between two instances of one template is a **param**: addressable per instance through `override_params` (on a subtree template by the cell's path inside the template, GH #140). `${ctx.X}`, by contrast, is **mutation-wide** — one mutation carries exactly one `ctx`, so every instance *that* mutation creates gets the same value. Setting two instances differently needs a param, or a second mutation.
 
 ### Templates registry (in `colony.db`)
 
@@ -1731,11 +1779,11 @@ Colony holds a persistent registry. Schema:
 Referenced in the graph via:
 
 ```json
-"template": "llm-openai"           // → highest available version
+"template": "llm-openai"           // → the one registered version
 "template": "llm-openai@2.1.0"     // → exactly this version
 ```
 
-- Without a version: the highest SemVer version. Unversioned templates count as smaller than all versioned ones.
+- Without a version: the **one** version registered under that name. **Correction (GH #277):** this said "Without a version: the highest SemVer version. Unversioned templates count as smaller than all versioned ones"; that is dead under the uniqueness rule. The scan aborts as soon as two `template.json`s declare the same `name` — **regardless of `version`** (§ Template definition) — so a scanned registry holds exactly one entry per name, and a bare-name reference has exactly one answer. The highest-version rule lives on only as a tie-break inside `TemplatesRegistry::resolve` and applies solely to a registry built by some means other than the scan.
 - SemVer ranges (`^`, `~`) only post-roadmap (marketplace relevance).
 
 ### Behavior on errors
@@ -1754,7 +1802,7 @@ Referenced in the graph via:
 4. Generates a new UUID v7 for all copied cells and edges.
 5. Patches `config.json` with the new UUIDs. **The name stays as in the template (or as given in `override_params`)**; on a collision with sibling names within the same scope the mutation is rejected, see "Naming collisions" below.
 6. Resolves the instance class (`${ctx.*}`, `${uuid7:*}`); the environment class (`${VAR}`) stays literal in the written `config.json` and is resolved in memory only, for the cell being started (see "Variable substitution").
-6a. Stamps the **origin** into `cell.provenance`: resolved template name, resolved template version, instantiation time (unix seconds). The same write as `cell.id`, and never again. For a subtree template **every** node of the instance receives the same stamp. Details: `docs/config.md` § Origin.
+6a. Stamps the **origin** into `cell.provenance`: resolved template name, resolved template version, instantiation time (unix seconds). The same write as `cell.id`, and never again. **Correction (GH #277):** this said "For a subtree template **every** node of the instance receives the same stamp." — that is retracted. Every node receives the stamp of **the template it is an instance of**; the composites that placed it are listed in `cell.provenance.template_chain`, outermost first, the node's own template as the last element. Details: `docs/config.md` § Origin.
 7. Initializes `cell.db` from `seed/`, if present.
 8. Atomic `rename(2)` from staging to the target path.
 9. Registers the instance in colony's `HashMap<Path, ActorHandle>` and spawns the actor task: for **stateful** cells the `cell_task` loop, for **stateless** cells the `stateless_dispatcher` loop (with a `Semaphore` from `params.max_concurrency`), for **long-running** cells the double-task pattern (handler + I/O). In all three cases the mailbox is allocated as a bounded mpsc (default capacity 1000, overridable via `cell.mailbox_size` from phase 5).

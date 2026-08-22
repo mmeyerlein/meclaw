@@ -95,23 +95,47 @@ fn script_of(cell: &str, over: &[(&str, &str)]) -> String {
     )
 }
 
-/// Run the real script against a real stdin document and return the emissions.
-fn greet(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
     let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script_of("greet", over))
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+/// Run the real script against a real stdin document and return the emissions.
+fn greet(over: &[(&str, &str)], doc: Value) -> Vec<Value> {
+    let out = run_script_on_stdin(
+        &script_of("greet", over),
+        &meclaw_testing::code_stdin(&doc).to_string(),
+    );
     assert!(
         out.status.success(),
         "greet exited non-zero: {}",
@@ -521,6 +545,7 @@ fn templates_root() -> std::path::PathBuf {
 
 /// Only `config.json` files travel -- the tree under test IS the template.
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
+    let src = &resolve_template_ref(src);
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -533,12 +558,80 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
+/// GH #277: a directory whose `config.json` declares `cell.type: "ref"` is a
+/// REFERENCE, not a cell -- the referenced template's tree belongs in its
+/// place. `talky` names its four sub-units that way, so a tree copied straight
+/// off the library follows the same hop the substrate's staging path follows.
+fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..8 {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return dir;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
+            return dir;
+        };
+        if v["cell"]["type"] != "ref" {
+            return dir;
+        }
+        let reference = v["cell"]["template"]
+            .as_str()
+            .expect("a ref cell names a template");
+        let name = reference.split('@').next().unwrap_or_default();
+        dir = templates_root().join(name);
+    }
+    panic!("template ref chain does not terminate at {}", dir.display());
+}
+
 /// A template directory the colony can scan: cells plus the `template.json`.
 fn copy_template(name: &str, dst_root: &std::path::Path) {
     let src = templates_root().join(name);
     let dst = dst_root.join(name);
-    copy_cells(&src, &dst);
+    copy_cells_verbatim(&src, &dst);
     std::fs::copy(src.join("template.json"), dst.join("template.json")).unwrap();
+    // GH #277: the template travels VERBATIM -- a `cell.type: "ref"` sub-unit
+    // stays a ref, because resolving it is the substrate's job and that is what
+    // this test drives. So every template it names travels next to it, exactly
+    // as the shipped library carries them.
+    for referenced in refs_in(&dst) {
+        if !dst_root.join(&referenced).is_dir() {
+            copy_template(&referenced, dst_root);
+        }
+    }
+}
+
+/// `copy_cells` without the ref hop: the tree as the library holds it.
+fn copy_cells_verbatim(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        if from.is_dir() {
+            copy_cells_verbatim(&from, &dst.join(entry.file_name()));
+        } else if entry.file_name() == "config.json" {
+            std::fs::copy(&from, dst.join("config.json")).unwrap();
+        }
+    }
+}
+
+/// Every template name a `cell.type: "ref"` marker under `dir` points at.
+fn refs_in(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let p = entry.path();
+        if p.is_dir() {
+            out.extend(refs_in(&p));
+        } else if entry.file_name() == "config.json" {
+            let raw = std::fs::read_to_string(&p).unwrap();
+            let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
+            if v["cell"]["type"] == "ref" {
+                let r = v["cell"]["template"].as_str().expect("a ref names one");
+                out.push(r.split('@').next().unwrap_or_default().to_string());
+            }
+        }
+    }
+    out
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
@@ -656,7 +749,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     copy_template("talky", &root.join("templates"));
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summarizer/writer/config.json",
+        "templates/summarizer/writer/config.json",
     ] {
         patch(root, rel, |v| v["params"]["base_url"] = json!(base_url));
     }

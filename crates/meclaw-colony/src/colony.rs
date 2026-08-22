@@ -1279,6 +1279,13 @@ pub struct ColonyTaskConfig {
     pub factories: crate::CellFactoryRegistry,
     /// Staging-dir base for the Mutation arm.
     pub root: std::path::PathBuf,
+    /// GH #277: the template LIBRARY — the directory a rescan walks. Defaults to
+    /// `root/templates` and is overridden by the CLI's `--templates`, so the
+    /// EDA door of `/colony/templates/rescan` sees exactly what the HTTP door
+    /// (`ColonyHandle.templates_root`) and the boot scan see. It is deliberately
+    /// NOT `root`: the workspace also holds instantiated trees and the builder's
+    /// staging history, and a `template.json` down there is not a class offer.
+    pub templates_root: std::path::PathBuf,
     /// Phase-13.5 A7 — idle-default + blob threshold.
     pub colony_config: crate::ColonyConfig,
     /// Phase-13.5 A8 — delivery-boundary resolution.
@@ -1330,6 +1337,7 @@ impl ColonyTaskConfig {
             outputs_rx,
             colony_db,
             factories,
+            templates_root: root.join("templates"),
             root,
             colony_config,
             blob_store,
@@ -1345,6 +1353,15 @@ impl ColonyTaskConfig {
     /// tick on `tx` ~10×/s.
     pub fn with_heartbeat(mut self, tx: mpsc::Sender<crate::watchdog::Beat>) -> Self {
         self.heartbeat_tx = Some(tx);
+        self
+    }
+
+    /// GH #277: point the rescan at a library that is not `root/templates`.
+    /// The CLI calls this with the resolved `--templates` path, which is the
+    /// same value it hands the boot scan and `ColonyHandle.templates_root` —
+    /// one library, three doors.
+    pub fn with_templates_root(mut self, templates_root: std::path::PathBuf) -> Self {
+        self.templates_root = templates_root;
         self
     }
 
@@ -1419,6 +1436,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         colony_db,
         factories,
         root,
+        templates_root: eda_templates_root,
         colony_config,
         blob_store,
         env_source,
@@ -1610,7 +1628,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                             filesystem_path: std::path::PathBuf::from(r.filesystem_path),
                                                         }).collect(),
                                                 );
-                                                let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &root));
+                                                // GH #277: the LIBRARY, not the workspace. `root` also holds the
+                                                // instantiated trees and the builder's staging history; a name
+                                                // repeated down there is not a duplicate class offer, and since
+                                                // ruling Q7 it would abort the whole scan.
+                                                let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &eda_templates_root));
                                                 let db_path = colony_db.db_path().to_path_buf();
                                                 let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                                     &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters,
@@ -1889,7 +1911,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                 filesystem_path: std::path::PathBuf::from(r.filesystem_path),
                                             }).collect(),
                                     );
-                                    let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &root));
+                                    // GH #277: the LIBRARY, not the workspace. `root` also holds the
+                                    // instantiated trees and the builder's staging history; a name
+                                    // repeated down there is not a duplicate class offer, and since
+                                    // ruling Q7 it would abort the whole scan.
+                                    let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &eda_templates_root));
                                     let db_path = colony_db.db_path().to_path_buf();
                                     let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                         &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters,
@@ -2391,7 +2417,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                             filesystem_path: std::path::PathBuf::from(r.filesystem_path),
                                         }).collect(),
                                 );
-                                let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &root));
+                                // GH #277: the LIBRARY, not the workspace. `root` also holds the
+                                // instantiated trees and the builder's staging history; a name
+                                // repeated down there is not a duplicate class offer, and since
+                                // ruling Q7 it would abort the whole scan.
+                                let rescan_future = Box::pin(crate::colony_dispatch::handle_rescan_templates(&colony_db, &eda_templates_root));
                                 let db_path = colony_db.db_path().to_path_buf();
                                 let follow = crate::colony_dispatch::dispatch_colony_endpoint(
                                     &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters,
@@ -3077,6 +3107,7 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: err.error_code().into(),
                     details: format!("{err:?}"),
+                    violations: Vec::new(),
                 };
             }
         };
@@ -3106,6 +3137,14 @@ pub(crate) async fn handle_mutation(
     // it is declared (step 9), so a `failed` cell resumed on its own path is
     // reactivated (cleared + reset) exactly like an `add_edges` reconnect.
     let mut resume_targets: Vec<Path> = Vec::new();
+    // GH #292: the `add_nodes[].name` of every entry Step 1a identified as a
+    // Resume, spelled exactly as the diff spells it. The requirements check
+    // (Step 1c) reads this: a Resume instantiates nothing — it stages nothing,
+    // substitutes no `${ctx.X}` and rewrites no `config.json` — so it does not
+    // have to repeat a contract it never consumes. Unlike `resume_names` (which
+    // holds canonical SHORT names only, for the naming-collision subtraction)
+    // this list carries every Resume, deep names included.
+    let mut resume_entry_names: Vec<String> = Vec::new();
     if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
         for n in adds {
             let Some(name) = n.get("name").and_then(|v| v.as_str()) else {
@@ -3191,6 +3230,7 @@ pub(crate) async fn handle_mutation(
                             id: Some(id),
                             error_code: err.error_code().into(),
                             details: format!("{err:?}"),
+                            violations: Vec::new(),
                         };
                     }
                 }
@@ -3226,6 +3266,7 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: err.error_code().into(),
                     details: format!("{err:?}"),
+                    violations: Vec::new(),
                 };
             }
             // Paket-5 T11 (F2-Ruling): resume type-compat. The existing node is a
@@ -3266,6 +3307,7 @@ pub(crate) async fn handle_mutation(
                         id: Some(id),
                         error_code: err.error_code().into(),
                         details: format!("{err:?}"),
+                        violations: Vec::new(),
                     };
                 }
             }
@@ -3281,6 +3323,7 @@ pub(crate) async fn handle_mutation(
             {
                 resume_names.push(short.to_string());
             }
+            resume_entry_names.push(name.to_string());
             resume_targets.push(target);
         }
     }
@@ -3329,248 +3372,319 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: err.error_code().into(),
                     details: format!("{err:?}"),
+                    violations: Vec::new(),
                 };
             }
             // Err from resolve: fall through — validate will catch it as template_missing.
         }
     }
 
-    // Step 2: validate (post-state checks against current registry + edges).
-    // Phase-11 T17: additive validation via validate_post_state_with_templates.
-    // Build template→cell.type mapping from each template's config.json (sync FS
-    // read; skip on IO/parse error — validator will reject as TemplateMissing).
-    // Phase-13.5 Lifecycle-3a (A1): exclude Resume targets (Step 1a) from the
-    // registry-name set so the naming-collision check does NOT flag a Resume at
-    // an existing name as a duplicate. Resume keeps the identity — the existing
-    // node IS the "new" node; the post-state still has the name exactly once via
-    // `add_names`. A name not hit by a Resume-add stays and collides normally.
-    // paket-2 T1 A2 scope-binding: only names whose full path lives DIRECTLY
-    // within `guard_scope` (parent path == guard_scope) are visible to the
-    // validator. A node at `/other/foo` does NOT contribute `"foo"` when the
-    // mutation scope is `/main` — preventing cross-scope `with.name` slipthrough.
-    let scope_prefix = canonical_scope_prefix(guard_scope);
-    let registry_names: Vec<String> = registry
-        .keys()
-        .filter(|p| {
-            // Retain only paths whose parent is exactly `scope_prefix`.
-            // e.g. scope="/main", path="/main/foo" → parent="/main" ✓
-            //      scope="/main", path="/other/foo" → parent="/other" ✗
-            //      scope="/",     path="/foo"        → parent="/"     ✓
-            let s = p.as_str();
-            if let Some(last_slash) = s.rfind('/') {
-                let parent = if last_slash == 0 {
-                    "/"
-                } else {
-                    &s[..last_slash]
-                };
-                parent == scope_prefix
-            } else {
-                false
-            }
-        })
-        .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
-        .filter(|n| !resume_names.contains(n))
-        .collect();
-    // Phase 13.5 step-6: hive short-names are valid edge endpoints too — collect
-    // them (last path segment, mirroring `registry_names`) so `add_edges` may
-    // reference an existing hive symmetrically to a cell.
-    // NOTE: hive names are colony-global and intentionally NOT scope-filtered
-    // (unlike `registry_names`): hives define transit scopes reachable from
-    // anywhere in the colony, so they must be visible regardless of guard_scope.
-    let hive_endpoint_names: Vec<String> = hive_scopes
-        .paths()
-        .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
-        .collect();
-    // paket-5 T4 (P10b companion): SCOPE-FILTERED hive short-names for the
-    // `swap_nodes` `match.name` existence check. Mirrors the `registry_names`
-    // parent==scope_prefix filter above: only hives whose full path lives DIRECTLY
-    // within `guard_scope` contribute their short-name. A `match.name` is scope-bound
-    // (spec Z.265 "Names are unique per scope"), so a hive in a FOREIGN scope must
-    // NOT satisfy a short-name match — otherwise validate passes a node that the
-    // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (finding
-    // Paket-2-b'). This is DISTINCT from `hive_endpoint_names` (global, for add_edges
-    // endpoints, which are scope-relative and may legitimately reference any hive).
-    let hive_match_names: Vec<String> = hive_scopes
-        .paths()
-        .filter(|p| {
-            let s = p.as_str();
-            if let Some(last_slash) = s.rfind('/') {
-                let parent = if last_slash == 0 {
-                    "/"
-                } else {
-                    &s[..last_slash]
-                };
-                parent == scope_prefix
-            } else {
-                false
-            }
-        })
-        .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
-        .collect();
-    // GH #179: the absolute-path twins of `registry_names` / `hive_match_names`
-    // above — the SAME pre-state, spelled the way a multi-segment diff name has
-    // to be looked up. `add_nodes[].name` and `match.name` may name a node one or
-    // more levels below the scope (the containment guard resolves them against
-    // the scope and only refuses `..`/absolute), and such a name matches nothing
-    // in a set of short names — so `naming_collision` stayed silent on an
-    // occupied deep path and `match_no_hit` fired on every populated one.
+    // ── GH #293: the collecting validator ────────────────────────────────────
     //
-    // Colony-global rather than scope-filtered, unlike the short-name sets: a
-    // resolved deep name is scope-contained by construction
-    // (`validate_scope_containment` ran above), so it cannot borrow a node from a
-    // foreign scope the way a bare short name could.
+    // Every stage below runs its COLLECTING variant and pushes into one
+    // `MutationRejection`; the pipeline stops at the first stage that produced
+    // any entry, and the single reject at the end carries `error_code()` (the
+    // first violation's code — the one the sequential pipeline reported) and
+    // `render()` (every violation, one per line).
     //
-    // Resume targets leave the collision set here exactly as their short names
-    // leave `registry_names`: an `add_nodes` at an existing path is a
-    // Reconnect/Resume (overview Z.170-180), the same node keeping its identity,
-    // not a duplicate.
-    let deep_registry_paths: Vec<String> = registry
-        .keys()
-        .filter(|p| !resume_targets.iter().any(|t| t == *p))
-        .map(|p| p.as_str().to_string())
-        .collect();
-    let deep_hive_paths: Vec<String> = hive_scopes
-        .paths()
-        .map(|p| p.as_str().to_string())
-        .collect();
-    let existing_edges: Vec<(String, String)> = edges
-        .iter()
-        .map(|e| (e.from.as_str().to_string(), e.to.as_str().to_string()))
-        .collect();
-    // R12: pre-state absolute paths at ANY depth (registry ∪ hive scopes) for
-    // the depth-endpoint membership test (spec Z.227: edge paths are
-    // scope-relative WITHOUT a depth restriction). Colony-global is safe here:
-    // `validate_scope_containment` runs BEFORE the post-state validation and
-    // rejects `..`/absolute endpoints, so a resolved depth endpoint is
-    // scope-contained by construction.
-    let deep_endpoint_paths: Vec<String> = registry
-        .keys()
-        .map(|p| p.as_str().to_string())
-        .chain(hive_scopes.paths().map(|p| p.as_str().to_string()))
-        .collect();
-    let template_to_cell_type: Vec<(String, String)> = templates
-        .entries_iter()
-        .filter_map(|t| {
-            let cfg_path = t.filesystem_path.join("config.json");
-            let raw = std::fs::read_to_string(&cfg_path).ok()?;
-            let val: meclaw_core::JsonValue = meclaw_core::serde_json::from_str(&raw).ok()?;
-            let ct = val
-                .get("cell")
-                .and_then(|c| c.get("type"))
-                .and_then(|v| v.as_str())?;
-            Some((t.name.clone(), ct.to_string()))
-        })
-        .collect();
-    // Paket-5 T12 (P9 per-node subtree resume): pre-resolve + pre-destructively
-    // validate SUBTREE `add_nodes` BEFORE staging. For each add_nodes entry whose
-    // template is a subtree (`cells.len() > 1`):
-    //   - `classify_subtree_nodes` (PURE): partition the template nodes against the
-    //     live FS into `missing` (instantiate) vs `existing` (resume). This REPLACES
-    //     the former F4 `subtree_root_conflict` reject — a subtree at a partially or
-    //     fully existing root path is now a per-node resume, not a rejection.
-    //   - Awake-Schranke (T7): any `existing` node whose cell is currently `Awake`
-    //     → reject `resume_requires_stopped_cell` (spec Z.296), pre-destructive.
-    //   - F2 type-compat (T11): each `existing` node's on-disk `cell.type` MUST be
-    //     compatible with the template node's `cell.type` at the same rel-path; a
-    //     mismatch → reject `resume_type_mismatch` via the SHARED helper.
-    //   - `resolve_subtree` (PURE): contribute the subtree's absolute node endpoints
-    //     (existing ∪ missing — every template cell) + resolved internal edges to
-    //     the validator, so an internal edge referencing an EXISTING node validates
-    //     and the merged graph (cycle / out-of-subtree edge) is rejected up front —
-    //     leaving NO `.staging` leak and nothing in registry/db on reject.
-    let mut all_subtree_node_endpoints: Vec<String> = Vec::new();
-    let mut all_subtree_internal_edges: Vec<(String, String)> = Vec::new();
-    if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
-        for n in adds {
-            let (Some(name), Some(tpl_ref)) = (
-                n.get("name").and_then(|v| v.as_str()),
-                n.get("template").and_then(|v| v.as_str()),
-            ) else {
-                continue; // schema-validate below reports the missing field.
-            };
-            let Ok(tpl) = templates.resolve(tpl_ref) else {
-                continue; // validate below rejects as template_missing.
-            };
-            let is_subtree = crate::mutation::subtree::parse_subtree(&tpl.filesystem_path)
-                .map(|t| t.cells.len() > 1)
-                .unwrap_or(false);
-            if !is_subtree {
-                continue;
-            }
-            // Per-node classification (T6) — partition against the live FS.
-            let partition = match crate::mutation::subtree::classify_subtree_nodes(
-                root,
-                guard_scope,
-                name,
-                &tpl.filesystem_path,
-            ) {
-                Ok(p) => p,
-                Err(err) => {
-                    send_eda_reject(
-                        &id,
-                        &err,
-                        reply_to.as_ref(),
-                        trace_id,
-                        parent_message_id,
-                        registry,
-                        hive_scopes,
-                        dead_letters,
-                        log_tx,
-                        &blob_store,
-                        blob_inline_max_bytes,
-                        &payload,
-                    )
-                    .await;
-                    return MutationOutcome::Rejected {
-                        id: Some(id),
-                        error_code: err.error_code().into(),
-                        details: format!("{err:?}"),
+    // Stopping BETWEEN stages is deliberate: an unresolved template makes every
+    // later endpoint error a consequence rather than a cause, and twenty
+    // derived errors hide the one real one. Within a stage nothing stops — a
+    // diff with five bad addresses is refused once, naming five.
+    //
+    // WHICH code a multi-defect diff reports can therefore move, and did:
+    // template resolution is stage 2, so it now runs BEFORE the point at which
+    // the sequential pipeline effectively decided it (inside
+    // `validate_post_state_with_templates_scoped`, after `validate_requires`
+    // and after the naming checks). A diff that pairs an unresolvable template
+    // with a missing requirement or a naming collision now reports
+    // `template_missing` where it used to report `requirement_missing` /
+    // `naming_collision`. `error_code` is a stability surface (README
+    // § Stability), so this is written down here and in the overview rather
+    // than left to be rediscovered. What does NOT move is the verdict itself:
+    // no mutation changed side, and within a stage the first entry is still the
+    // error the sequential form returned.
+    //
+    // The checks that are NOT stages keep their own single reject exactly where
+    // they are (the resume/adopt filesystem guards above, the subtree
+    // pre-checks, scope containment, `remove_edges`, the relocation gate). They
+    // judge one thing and can only ever have one answer; giving them a stage tag
+    // the spec does not define would be inventing an order, not preserving one.
+    // Their `details` stays the Debug form (`{err:?}`); only the staged rejects
+    // carry the rendered one. Two shapes, on purpose, and both documented.
+    //
+    // Parse economy (accepted, not fixed — this is a COST, not parity): stages
+    // 2, 3 and 4 each call `parse_subtree` per `add_nodes` entry, so a diff can
+    // pay up to three synchronous template-tree parses per entry inside the
+    // colony task, on top of the parse staging does for the same entry
+    // (`stage.rs`, subtree dispatch).
+    //
+    // On the ACCEPT path this costs ONE ADDITIONAL parse per entry compared to
+    // the sequential pipeline: stage 2 (`collect_template_resolution`) is new
+    // and parses every resolved entry to walk its `ref` chain. Stage 3's and
+    // stage 4's parses, and staging's own, were already being paid. Do not read
+    // this paragraph as "the accept path costs what it always cost" — it does
+    // not; it costs that plus stage 2.
+    //
+    // On a REFUSING diff it can be more again, because the collecting cores
+    // walk to the end of their stage instead of returning at the first error.
+    // Threading one parse result through three public signatures built in W3
+    // tasks 18–20 would be a far larger change than the saving is worth, and a
+    // refused mutation is the cheap case. Correctness first.
+    let mut hive_contracts: Vec<crate::mutation::hive_contract::HiveContract> = Vec::new();
+    let mut planned_moves: Vec<crate::mutation::relocate::PlannedMove> = Vec::new();
+    let mut relocated_nodes: Vec<crate::mutation::relocate::RelocatedNode> = Vec::new();
+    let rejection = 'validate: {
+        let mut rejection = crate::mutation::rejection::MutationRejection::new();
+
+        // Stage 2 — template resolution: every reference resolves, including the
+        // `ref` chains and the rings they can close. First, because a diff whose
+        // template does not exist has nothing later worth measuring.
+        //
+        // Unlike stage 3 this takes NO Resume exemption, and
+        // `collect_template_resolution` documents why: staging parses the
+        // template for a Resume too (`stage.rs`, subtree-dispatch ahead of the
+        // existence-skip), so a broken `ref` was always refused — this only
+        // moves the refusal earlier, into the pre-destructive window.
+        crate::mutation::validate::collect_template_resolution(
+            &diff_subst,
+            &templates,
+            &mut rejection,
+        );
+        if !rejection.is_empty() {
+            break 'validate rejection;
+        }
+
+        // Stage 3 (GH #292): what the template DECLARED it needs. A template
+        // names its `ctx`/`env` keys (`requires`), and the union over the named
+        // template plus everything it reaches through a `ref` must be supplied
+        // by this mutation's `ctx` and the loaded `.env`. Checked HERE — after
+        // the lazy template check, before scope containment and therefore before
+        // the first byte of staging: a missing key used to surface as
+        // `ctx_key_missing` while the already-copied tree was substituted, and a
+        // missing env var not at all. The Resume entries Step 1a collected are
+        // exempt: a Reconnect instantiates nothing and consumes none of the
+        // keys, so requiring them would refuse a reconnect that was legal
+        // before.
+        crate::mutation::validate::collect_requires(
+            &diff_subst,
+            &templates,
+            &ctx,
+            &env,
+            &resume_entry_names,
+            &mut rejection,
+        );
+        if !rejection.is_empty() {
+            break 'validate rejection;
+        }
+
+        // Step 2: validate (post-state checks against current registry + edges).
+        // Phase-11 T17: additive validation via validate_post_state_with_templates.
+        // Build template→cell.type mapping from each template's config.json (sync FS
+        // read; skip on IO/parse error — validator will reject as TemplateMissing).
+        // Phase-13.5 Lifecycle-3a (A1): exclude Resume targets (Step 1a) from the
+        // registry-name set so the naming-collision check does NOT flag a Resume at
+        // an existing name as a duplicate. Resume keeps the identity — the existing
+        // node IS the "new" node; the post-state still has the name exactly once via
+        // `add_names`. A name not hit by a Resume-add stays and collides normally.
+        // paket-2 T1 A2 scope-binding: only names whose full path lives DIRECTLY
+        // within `guard_scope` (parent path == guard_scope) are visible to the
+        // validator. A node at `/other/foo` does NOT contribute `"foo"` when the
+        // mutation scope is `/main` — preventing cross-scope `with.name` slipthrough.
+        let scope_prefix = canonical_scope_prefix(guard_scope);
+        let registry_names: Vec<String> = registry
+            .keys()
+            .filter(|p| {
+                // Retain only paths whose parent is exactly `scope_prefix`.
+                // e.g. scope="/main", path="/main/foo" → parent="/main" ✓
+                //      scope="/main", path="/other/foo" → parent="/other" ✗
+                //      scope="/",     path="/foo"        → parent="/"     ✓
+                let s = p.as_str();
+                if let Some(last_slash) = s.rfind('/') {
+                    let parent = if last_slash == 0 {
+                        "/"
+                    } else {
+                        &s[..last_slash]
                     };
+                    parent == scope_prefix
+                } else {
+                    false
                 }
-            };
-            // Awake-Schranke (T7): an EXISTING node with a running task cannot be
-            // resumed (it cannot race-free release its live `cell.db`). Maps the
-            // colony `CellStatus` into the helper's minimal `AwakeState`.
-            if let Err(err) =
-                crate::mutation::subtree::subtree_resume_awake_check(&partition.existing, |p| {
-                    registry.get(p).map(|e| match e.status {
-                        CellStatus::Awake => crate::mutation::subtree::AwakeState::Awake,
-                        _ => crate::mutation::subtree::AwakeState::NotAwake,
+            })
+            .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
+            .filter(|n| !resume_names.contains(n))
+            .collect();
+        // Phase 13.5 step-6: hive short-names are valid edge endpoints too — collect
+        // them (last path segment, mirroring `registry_names`) so `add_edges` may
+        // reference an existing hive symmetrically to a cell.
+        // NOTE: hive names are colony-global and intentionally NOT scope-filtered
+        // (unlike `registry_names`): hives define transit scopes reachable from
+        // anywhere in the colony, so they must be visible regardless of guard_scope.
+        let hive_endpoint_names: Vec<String> = hive_scopes
+            .paths()
+            .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
+            .collect();
+        // paket-5 T4 (P10b companion): SCOPE-FILTERED hive short-names for the
+        // `swap_nodes` `match.name` existence check. Mirrors the `registry_names`
+        // parent==scope_prefix filter above: only hives whose full path lives DIRECTLY
+        // within `guard_scope` contribute their short-name. A `match.name` is scope-bound
+        // (spec Z.265 "Names are unique per scope"), so a hive in a FOREIGN scope must
+        // NOT satisfy a short-name match — otherwise validate passes a node that the
+        // scope-correct apply-side (`resolve_scoped_path`) cannot resolve (finding
+        // Paket-2-b'). This is DISTINCT from `hive_endpoint_names` (global, for add_edges
+        // endpoints, which are scope-relative and may legitimately reference any hive).
+        let hive_match_names: Vec<String> = hive_scopes
+            .paths()
+            .filter(|p| {
+                let s = p.as_str();
+                if let Some(last_slash) = s.rfind('/') {
+                    let parent = if last_slash == 0 {
+                        "/"
+                    } else {
+                        &s[..last_slash]
+                    };
+                    parent == scope_prefix
+                } else {
+                    false
+                }
+            })
+            .filter_map(|p| p.as_str().rsplit('/').next().map(|s| s.to_string()))
+            .collect();
+        // GH #179: the absolute-path twins of `registry_names` / `hive_match_names`
+        // above — the SAME pre-state, spelled the way a multi-segment diff name has
+        // to be looked up. `add_nodes[].name` and `match.name` may name a node one or
+        // more levels below the scope (the containment guard resolves them against
+        // the scope and only refuses `..`/absolute), and such a name matches nothing
+        // in a set of short names — so `naming_collision` stayed silent on an
+        // occupied deep path and `match_no_hit` fired on every populated one.
+        //
+        // Colony-global rather than scope-filtered, unlike the short-name sets: a
+        // resolved deep name is scope-contained by construction
+        // (`validate_scope_containment` ran above), so it cannot borrow a node from a
+        // foreign scope the way a bare short name could.
+        //
+        // Resume targets leave the collision set here exactly as their short names
+        // leave `registry_names`: an `add_nodes` at an existing path is a
+        // Reconnect/Resume (overview Z.170-180), the same node keeping its identity,
+        // not a duplicate.
+        let deep_registry_paths: Vec<String> = registry
+            .keys()
+            .filter(|p| !resume_targets.iter().any(|t| t == *p))
+            .map(|p| p.as_str().to_string())
+            .collect();
+        let deep_hive_paths: Vec<String> = hive_scopes
+            .paths()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        let existing_edges: Vec<(String, String)> = edges
+            .iter()
+            .map(|e| (e.from.as_str().to_string(), e.to.as_str().to_string()))
+            .collect();
+        // R12: pre-state absolute paths at ANY depth (registry ∪ hive scopes) for
+        // the depth-endpoint membership test (spec Z.227: edge paths are
+        // scope-relative WITHOUT a depth restriction). Colony-global is safe here:
+        // `validate_scope_containment` runs BEFORE the post-state validation and
+        // rejects `..`/absolute endpoints, so a resolved depth endpoint is
+        // scope-contained by construction.
+        let deep_endpoint_paths: Vec<String> = registry
+            .keys()
+            .map(|p| p.as_str().to_string())
+            .chain(hive_scopes.paths().map(|p| p.as_str().to_string()))
+            .collect();
+        let template_to_cell_type: Vec<(String, String)> = templates
+            .entries_iter()
+            .filter_map(|t| {
+                let cfg_path = t.filesystem_path.join("config.json");
+                let raw = std::fs::read_to_string(&cfg_path).ok()?;
+                let val: meclaw_core::JsonValue = meclaw_core::serde_json::from_str(&raw).ok()?;
+                let ct = val
+                    .get("cell")
+                    .and_then(|c| c.get("type"))
+                    .and_then(|v| v.as_str())?;
+                Some((t.name.clone(), ct.to_string()))
+            })
+            .collect();
+        // Paket-5 T12 (P9 per-node subtree resume): pre-resolve + pre-destructively
+        // validate SUBTREE `add_nodes` BEFORE staging. For each add_nodes entry whose
+        // template is a subtree (`cells.len() > 1`):
+        //   - `classify_subtree_nodes` (PURE): partition the template nodes against the
+        //     live FS into `missing` (instantiate) vs `existing` (resume). This REPLACES
+        //     the former F4 `subtree_root_conflict` reject — a subtree at a partially or
+        //     fully existing root path is now a per-node resume, not a rejection.
+        //   - Awake-Schranke (T7): any `existing` node whose cell is currently `Awake`
+        //     → reject `resume_requires_stopped_cell` (spec Z.296), pre-destructive.
+        //   - F2 type-compat (T11): each `existing` node's on-disk `cell.type` MUST be
+        //     compatible with the template node's `cell.type` at the same rel-path; a
+        //     mismatch → reject `resume_type_mismatch` via the SHARED helper.
+        //   - `resolve_subtree` (PURE): contribute the subtree's absolute node endpoints
+        //     (existing ∪ missing — every template cell) + resolved internal edges to
+        //     the validator, so an internal edge referencing an EXISTING node validates
+        //     and the merged graph (cycle / out-of-subtree edge) is rejected up front —
+        //     leaving NO `.staging` leak and nothing in registry/db on reject.
+        let mut all_subtree_node_endpoints: Vec<String> = Vec::new();
+        let mut all_subtree_internal_edges: Vec<(String, String)> = Vec::new();
+        if let Some(adds) = diff_subst.get("add_nodes").and_then(|v| v.as_array()) {
+            for n in adds {
+                let (Some(name), Some(tpl_ref)) = (
+                    n.get("name").and_then(|v| v.as_str()),
+                    n.get("template").and_then(|v| v.as_str()),
+                ) else {
+                    continue; // schema-validate below reports the missing field.
+                };
+                let Ok(tpl) = templates.resolve(tpl_ref) else {
+                    continue; // validate below rejects as template_missing.
+                };
+                let is_subtree =
+                    crate::mutation::subtree::parse_subtree(&tpl.filesystem_path, &templates)
+                        .map(|t| t.cells.len() > 1)
+                        .unwrap_or(false);
+                if !is_subtree {
+                    continue;
+                }
+                // Per-node classification (T6) — partition against the live FS.
+                let partition = match crate::mutation::subtree::classify_subtree_nodes(
+                    root,
+                    guard_scope,
+                    name,
+                    &tpl.filesystem_path,
+                    &templates,
+                ) {
+                    Ok(p) => p,
+                    Err(err) => {
+                        send_eda_reject(
+                            &id,
+                            &err,
+                            reply_to.as_ref(),
+                            trace_id,
+                            parent_message_id,
+                            registry,
+                            hive_scopes,
+                            dead_letters,
+                            log_tx,
+                            &blob_store,
+                            blob_inline_max_bytes,
+                            &payload,
+                        )
+                        .await;
+                        return MutationOutcome::Rejected {
+                            id: Some(id),
+                            error_code: err.error_code().into(),
+                            details: format!("{err:?}"),
+                            violations: Vec::new(),
+                        };
+                    }
+                };
+                // Awake-Schranke (T7): an EXISTING node with a running task cannot be
+                // resumed (it cannot race-free release its live `cell.db`). Maps the
+                // colony `CellStatus` into the helper's minimal `AwakeState`.
+                if let Err(err) =
+                    crate::mutation::subtree::subtree_resume_awake_check(&partition.existing, |p| {
+                        registry.get(p).map(|e| match e.status {
+                            CellStatus::Awake => crate::mutation::subtree::AwakeState::Awake,
+                            _ => crate::mutation::subtree::AwakeState::NotAwake,
+                        })
                     })
-                })
-            {
-                send_eda_reject(
-                    &id,
-                    &err,
-                    reply_to.as_ref(),
-                    trace_id,
-                    parent_message_id,
-                    registry,
-                    hive_scopes,
-                    dead_letters,
-                    log_tx,
-                    &blob_store,
-                    blob_inline_max_bytes,
-                    &payload,
-                )
-                .await;
-                return MutationOutcome::Rejected {
-                    id: Some(id),
-                    error_code: err.error_code().into(),
-                    details: format!("{err:?}"),
-                };
-            }
-            // F2 type-compat (T11): each existing node's on-disk `cell.type` MUST be
-            // compatible with the template node's `cell.type`. SAME shared helper as
-            // the single-cell resume path. Both reads are pre-destructive.
-            for ex in &partition.existing {
-                if let (Some(existing_type), Some(template_type)) =
-                    (&ex.on_disk_cell_type, &ex.template_cell_type)
-                    && !crate::mutation::resume_type_compatible(existing_type, template_type)
                 {
-                    let err = crate::mutation::MutationError::ResumeTypeMismatch(
-                        ex.absolute_path.as_str().to_string(),
-                    );
                     send_eda_reject(
                         &id,
                         &err,
@@ -3590,255 +3704,88 @@ pub(crate) async fn handle_mutation(
                         id: Some(id),
                         error_code: err.error_code().into(),
                         details: format!("{err:?}"),
+                        violations: Vec::new(),
                     };
                 }
-            }
-            // PURE resolution (no FS writes). Containment failure (edge escaping
-            // the subtree root) rejects HERE — before staging.
-            match crate::mutation::subtree::resolve_subtree(&tpl.filesystem_path, guard_scope, name)
-            {
-                Ok(resolved) => {
-                    all_subtree_node_endpoints.extend(resolved.node_endpoints);
-                    all_subtree_internal_edges.extend(resolved.internal_edges);
+                // F2 type-compat (T11): each existing node's on-disk `cell.type` MUST be
+                // compatible with the template node's `cell.type`. SAME shared helper as
+                // the single-cell resume path. Both reads are pre-destructive.
+                for ex in &partition.existing {
+                    if let (Some(existing_type), Some(template_type)) =
+                        (&ex.on_disk_cell_type, &ex.template_cell_type)
+                        && !crate::mutation::resume_type_compatible(existing_type, template_type)
+                    {
+                        let err = crate::mutation::MutationError::ResumeTypeMismatch(
+                            ex.absolute_path.as_str().to_string(),
+                        );
+                        send_eda_reject(
+                            &id,
+                            &err,
+                            reply_to.as_ref(),
+                            trace_id,
+                            parent_message_id,
+                            registry,
+                            hive_scopes,
+                            dead_letters,
+                            log_tx,
+                            &blob_store,
+                            blob_inline_max_bytes,
+                            &payload,
+                        )
+                        .await;
+                        return MutationOutcome::Rejected {
+                            id: Some(id),
+                            error_code: err.error_code().into(),
+                            details: format!("{err:?}"),
+                            violations: Vec::new(),
+                        };
+                    }
                 }
-                Err(err) => {
-                    send_eda_reject(
-                        &id,
-                        &err,
-                        reply_to.as_ref(),
-                        trace_id,
-                        parent_message_id,
-                        registry,
-                        hive_scopes,
-                        dead_letters,
-                        log_tx,
-                        &blob_store,
-                        blob_inline_max_bytes,
-                        &payload,
-                    )
-                    .await;
-                    return MutationOutcome::Rejected {
-                        id: Some(id),
-                        error_code: err.error_code().into(),
-                        details: format!("{err:?}"),
-                    };
+                // PURE resolution (no FS writes). Containment failure (edge escaping
+                // the subtree root) rejects HERE — before staging.
+                match crate::mutation::subtree::resolve_subtree(
+                    &tpl.filesystem_path,
+                    guard_scope,
+                    name,
+                    &templates,
+                ) {
+                    Ok(resolved) => {
+                        all_subtree_node_endpoints.extend(resolved.node_endpoints);
+                        all_subtree_internal_edges.extend(resolved.internal_edges);
+                    }
+                    Err(err) => {
+                        send_eda_reject(
+                            &id,
+                            &err,
+                            reply_to.as_ref(),
+                            trace_id,
+                            parent_message_id,
+                            registry,
+                            hive_scopes,
+                            dead_letters,
+                            log_tx,
+                            &blob_store,
+                            blob_inline_max_bytes,
+                            &payload,
+                        )
+                        .await;
+                        return MutationOutcome::Rejected {
+                            id: Some(id),
+                            error_code: err.error_code().into(),
+                            details: format!("{err:?}"),
+                            violations: Vec::new(),
+                        };
+                    }
                 }
             }
         }
-    }
 
-    // Befund 22: scope-containment guard — reject any scoped name whose resolved
-    // path escapes `guard_scope` (e.g. via `..`) BEFORE any FS/registry mutation,
-    // parallel to naming_collision/match_no_hit. ScopeOutOfBounds → 422.
-    if let Err(err) =
-        crate::mutation::validate::validate_scope_containment(&diff_subst, guard_scope)
-    {
-        send_eda_reject(
-            &id,
-            &err,
-            reply_to.as_ref(),
-            trace_id,
-            parent_message_id,
-            registry,
-            hive_scopes,
-            dead_letters,
-            log_tx,
-            &blob_store,
-            blob_inline_max_bytes,
-            &payload,
-        )
-        .await;
-        return MutationOutcome::Rejected {
-            id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
-        };
-    }
-
-    if let Err(err) = crate::mutation::validate::validate_post_state_with_templates_scoped(
-        &diff_subst,
-        &templates,
-        factories,
-        &registry_names,
-        &existing_edges,
-        &template_to_cell_type,
-        &hive_endpoint_names,
-        &hive_match_names,
-        &all_subtree_node_endpoints,
-        &all_subtree_internal_edges,
-        guard_scope,
-        &deep_endpoint_paths,
-        &deep_registry_paths,
-        &deep_hive_paths,
-    ) {
-        send_eda_reject(
-            &id,
-            &err,
-            reply_to.as_ref(),
-            trace_id,
-            parent_message_id,
-            registry,
-            hive_scopes,
-            dead_letters,
-            log_tx,
-            &blob_store,
-            blob_inline_max_bytes,
-            &payload,
-        )
-        .await;
-        return MutationOutcome::Rejected {
-            id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
-        };
-    }
-
-    // GH #133: the hive port boundary. Runs AFTER the post-state validation, so
-    // an endpoint that does not exist at all is still reported as `edge_schema`
-    // and only a KNOWN endpoint can produce `hive_port_boundary`. Opt-in: the
-    // collector reads each registered hive's `config.json` and returns only the
-    // hives that declared `params.ports` — an empty result makes the check
-    // vacuous, which is the state of every topology shipped so far. Still
-    // pre-destructive: nothing has been staged, spawned or wired at this point.
-    let sealed_hives =
-        crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
-    if let Err(err) = crate::mutation::port_boundary::validate_hive_port_boundary(
-        &diff_subst,
-        guard_scope,
-        &sealed_hives,
-    ) {
-        send_eda_reject(
-            &id,
-            &err,
-            reply_to.as_ref(),
-            trace_id,
-            parent_message_id,
-            registry,
-            hive_scopes,
-            dead_letters,
-            log_tx,
-            &blob_store,
-            blob_inline_max_bytes,
-            &payload,
-        )
-        .await;
-        return MutationOutcome::Rejected {
-            id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
-        };
-    }
-
-    // GH #173: the outward half of the hive contract. Runs next to the port
-    // boundary and for the same reason — both answer "may this edge be drawn",
-    // both are pure over the diff, and both are cheaper than staging. The port
-    // boundary says WHERE an edge may land; the contract says WHICH LANE it may
-    // carry once it lands on the hive path. Opt-in: only hives that declared
-    // `params.contract` contribute, and an edge whose route is computed rather
-    // than stated is left alone.
-    let hive_contracts =
-        crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
-    if let Err(err) = crate::mutation::hive_contract::check_inbound_lanes(
-        &diff_subst,
-        guard_scope,
-        &hive_contracts,
-    ) {
-        send_eda_reject(
-            &id,
-            &err,
-            reply_to.as_ref(),
-            trace_id,
-            parent_message_id,
-            registry,
-            hive_scopes,
-            dead_letters,
-            log_tx,
-            &blob_store,
-            blob_inline_max_bytes,
-            &payload,
-        )
-        .await;
-        return MutationOutcome::Rejected {
-            id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
-        };
-    }
-
-    // Paket-5 T1/T2 (P10a / D-031): validate-time reject for malformed / no-hit
-    // `remove_edges` patterns — parity with remove_nodes / swap_nodes (Z.272).
-    // Build the F6 edge-view (absolute endpoints + stored condition/modifier
-    // sources) so validate compares EXACTLY like the apply-time arm below.
-    let remove_edges_view: Vec<crate::mutation::validate::EdgeMatchView> = edges
-        .iter()
-        .map(crate::mutation::validate::EdgeMatchView::from)
-        .collect();
-    if let Err(err) = crate::mutation::validate::validate_remove_edges(
-        &diff_subst,
-        guard_scope,
-        &remove_edges_view,
-    ) {
-        send_eda_reject(
-            &id,
-            &err,
-            reply_to.as_ref(),
-            trace_id,
-            parent_message_id,
-            registry,
-            hive_scopes,
-            dead_letters,
-            log_tx,
-            &blob_store,
-            blob_inline_max_bytes,
-            &payload,
-        )
-        .await;
-        return MutationOutcome::Rejected {
-            id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
-        };
-    }
-
-    // GH #169: `move_nodes` — the relocation's whole pre-destructive gate, in
-    // one place. The source must be a cell that exists and has nothing beneath
-    // it, the target must be free in every namespace that can hold ground
-    // (registry, hive scopes, this diff's own claims, the filesystem), and
-    // neither end may be a hive. Scope containment is NOT re-checked here:
-    // `validate_scope_containment` ran above and already refused `..` segments
-    // and absolute names, which is what makes the resolved paths below
-    // scope-contained by construction.
-    // The names this diff's own `add_nodes` claim — a move and an instantiation
-    // aiming at one free path are two claims on it, and whichever applies second
-    // lands on a directory that by then exists.
-    let add_names_in_diff: Vec<String> = diff_subst
-        .get("add_nodes")
-        .and_then(|v| v.as_array())
-        .map(|adds| {
-            adds.iter()
-                .filter_map(|n| n.get("name").and_then(|v| v.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let planned_moves = match crate::mutation::relocate::plan_moves(guard_scope, &diff_subst, root)
-        .and_then(|moves| {
-            crate::mutation::relocate::validate_move_nodes(
-                &moves,
-                guard_scope,
-                &registry_names,
-                &deep_registry_paths,
-                &hive_match_names,
-                &deep_hive_paths,
-                &add_names_in_diff,
-                &|mv| crate::mutation::relocate::TargetGround {
-                    occupied: mv.to_dir.exists(),
-                    parent_exists: mv.to_dir.parent().is_some_and(|p| p.is_dir()),
-                },
-            )
-            .map(|()| moves)
-        }) {
-        Ok(moves) => moves,
-        Err(err) => {
+        // Befund 22: scope-containment guard — reject any scoped name whose resolved
+        // path escapes `guard_scope` (e.g. via `..`) BEFORE any FS/registry mutation,
+        // parallel to naming_collision/match_no_hit. ScopeOutOfBounds → 422.
+        if let Err(err) =
+            crate::mutation::validate::validate_scope_containment(&diff_subst, guard_scope)
+        {
             send_eda_reject(
                 &id,
                 &err,
@@ -3858,41 +3805,173 @@ pub(crate) async fn handle_mutation(
                 id: Some(id),
                 error_code: err.error_code().into(),
                 details: format!("{err:?}"),
+                violations: Vec::new(),
             };
         }
-    };
-    // GH #169: the stop-wiring question, asked before anything moves. A move
-    // takes the source's registry entry out and re-registers the cell at the new
-    // address, so an `Awake` cell whose task cannot be peace-stopped would be
-    // left running with no entry naming it — the same silent "task ⇔ active"
-    // zombie the step-10b guard exists to prevent, and refused the same way.
-    for mv in &planned_moves {
-        let Some(entry) = registry.get(&mv.from) else {
-            continue; // validate guaranteed the hit; a miss is not this guard's.
-        };
-        if matches!(entry.status, CellStatus::Awake) && entry.stop_tx.is_none() {
-            let details = format!(
-                "move of Awake cell {} without live stop-wiring — the old task could not be \
-                 stopped and would outlive its address",
-                mv.from.as_str()
-            );
-            tracing::warn!(path = %mv.from.as_str(), "{details}");
+
+        // Stage 4 — the addresses the post-state would carry: naming collisions, a
+        // `match` that hits nothing, an `override_params` key addressing nothing,
+        // an unserved cell type, the `adopt` grammar and the `swap_nodes[].with`
+        // shape. Everything `validate_post_state_with_templates_scoped` decides
+        // except its edge half, which is stage 5 below — the split is the spec's
+        // (`:184-192`), not a reordering: the two ran back to back inside one
+        // function and still run back to back here.
+        crate::mutation::validate::collect_post_state_addresses(
+            &diff_subst,
+            &templates,
+            factories,
+            &registry_names,
+            &template_to_cell_type,
+            &hive_match_names,
+            guard_scope,
+            &deep_registry_paths,
+            &deep_hive_paths,
+            &mut rejection,
+        );
+        if !rejection.is_empty() {
+            break 'validate rejection;
+        }
+
+        // Stage 5 — both endpoints of every edge exist in the post-state.
+        crate::mutation::validate::collect_edge_endpoints(
+            &diff_subst,
+            &registry_names,
+            &existing_edges,
+            &hive_endpoint_names,
+            &all_subtree_node_endpoints,
+            &all_subtree_internal_edges,
+            guard_scope,
+            &deep_endpoint_paths,
+            &mut rejection,
+        );
+        if !rejection.is_empty() {
+            break 'validate rejection;
+        }
+
+        // GH #133: the hive port boundary. Runs AFTER the post-state validation, so
+        // an endpoint that does not exist at all is still reported as `edge_schema`
+        // and only a KNOWN endpoint can produce `hive_port_boundary`. Opt-in: the
+        // collector reads each registered hive's `config.json` and returns only the
+        // hives that declared `params.ports` — an empty result makes the check
+        // vacuous, which is the state of every topology shipped so far. Still
+        // pre-destructive: nothing has been staged, spawned or wired at this point.
+        //
+        // Stage 6 (contract locality) — first of its three checks. The port
+        // boundary and the inbound lanes are adjacent, so they are collected
+        // together and only then measured.
+        //
+        // The third check (header contract locality) is NOT adjacent: it runs
+        // some 180 lines below, because it needs the post-state header views,
+        // which need `remove_edges` and the relocation gate to have had their
+        // say first. The position is the one it has always had and moving it
+        // would reorder the pipeline — but it leaves a gap worth naming: a diff
+        // that breaks a port boundary AND a header contract is refused at the
+        // break above and reports only that half. Closing it means either
+        // hoisting the header views (which changes what they see) or letting
+        // stage 6 span a `remove_edges` reject, and neither is this task's to
+        // decide.
+        let sealed_hives =
+            crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
+        crate::mutation::port_boundary::collect_hive_port_boundary(
+            &diff_subst,
+            guard_scope,
+            &sealed_hives,
+            &mut rejection,
+        );
+
+        // GH #173: the outward half of the hive contract. Runs next to the port
+        // boundary and for the same reason — both answer "may this edge be drawn",
+        // both are pure over the diff, and both are cheaper than staging. The port
+        // boundary says WHERE an edge may land; the contract says WHICH LANE it may
+        // carry once it lands on the hive path. Opt-in: only hives that declared
+        // `params.contract` contribute, and an edge whose route is computed rather
+        // than stated is left alone.
+        hive_contracts =
+            crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
+        crate::mutation::hive_contract::collect_inbound_lanes(
+            &diff_subst,
+            guard_scope,
+            &hive_contracts,
+            &mut rejection,
+        );
+        if !rejection.is_empty() {
+            break 'validate rejection;
+        }
+
+        // Paket-5 T1/T2 (P10a / D-031): validate-time reject for malformed / no-hit
+        // `remove_edges` patterns — parity with remove_nodes / swap_nodes (Z.272).
+        // Build the F6 edge-view (absolute endpoints + stored condition/modifier
+        // sources) so validate compares EXACTLY like the apply-time arm below.
+        let remove_edges_view: Vec<crate::mutation::validate::EdgeMatchView> = edges
+            .iter()
+            .map(crate::mutation::validate::EdgeMatchView::from)
+            .collect();
+        if let Err(err) = crate::mutation::validate::validate_remove_edges(
+            &diff_subst,
+            guard_scope,
+            &remove_edges_view,
+        ) {
+            send_eda_reject(
+                &id,
+                &err,
+                reply_to.as_ref(),
+                trace_id,
+                parent_message_id,
+                registry,
+                hive_scopes,
+                dead_letters,
+                log_tx,
+                &blob_store,
+                blob_inline_max_bytes,
+                &payload,
+            )
+            .await;
             return MutationOutcome::Rejected {
                 id: Some(id),
-                error_code: STOP_WIRING_UNAVAILABLE_ERROR_CODE.into(),
-                details,
+                error_code: err.error_code().into(),
+                details: format!("{err:?}"),
+                violations: Vec::new(),
             };
         }
-    }
-    // GH #169: read each relocating node's own `config.json` NOW, while the
-    // reject is still free. A relocation names no template — the cell is built
-    // at its new address from the configuration it already carries — so a file
-    // that cannot be read, substituted, parsed or compiled has to stop the
-    // mutation here, not half-way through a rename sequence.
-    let mut relocated_nodes = Vec::with_capacity(planned_moves.len());
-    for mv in &planned_moves {
-        match crate::mutation::relocate::read_relocated_node(&mv.from_dir, &env) {
-            Ok(node) => relocated_nodes.push(node),
+
+        // GH #169: `move_nodes` — the relocation's whole pre-destructive gate, in
+        // one place. The source must be a cell that exists and has nothing beneath
+        // it, the target must be free in every namespace that can hold ground
+        // (registry, hive scopes, this diff's own claims, the filesystem), and
+        // neither end may be a hive. Scope containment is NOT re-checked here:
+        // `validate_scope_containment` ran above and already refused `..` segments
+        // and absolute names, which is what makes the resolved paths below
+        // scope-contained by construction.
+        // The names this diff's own `add_nodes` claim — a move and an instantiation
+        // aiming at one free path are two claims on it, and whichever applies second
+        // lands on a directory that by then exists.
+        let add_names_in_diff: Vec<String> = diff_subst
+            .get("add_nodes")
+            .and_then(|v| v.as_array())
+            .map(|adds| {
+                adds.iter()
+                    .filter_map(|n| n.get("name").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        planned_moves = match crate::mutation::relocate::plan_moves(guard_scope, &diff_subst, root)
+            .and_then(|moves| {
+                crate::mutation::relocate::validate_move_nodes(
+                    &moves,
+                    guard_scope,
+                    &registry_names,
+                    &deep_registry_paths,
+                    &hive_match_names,
+                    &deep_hive_paths,
+                    &add_names_in_diff,
+                    &|mv| crate::mutation::relocate::TargetGround {
+                        occupied: mv.to_dir.exists(),
+                        parent_exists: mv.to_dir.parent().is_some_and(|p| p.is_dir()),
+                    },
+                )
+                .map(|()| moves)
+            }) {
+            Ok(moves) => moves,
             Err(err) => {
                 send_eda_reject(
                     &id,
@@ -3913,29 +3992,96 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: err.error_code().into(),
                     details: format!("{err:?}"),
+                    violations: Vec::new(),
+                };
+            }
+        };
+        // GH #169: the stop-wiring question, asked before anything moves. A move
+        // takes the source's registry entry out and re-registers the cell at the new
+        // address, so an `Awake` cell whose task cannot be peace-stopped would be
+        // left running with no entry naming it — the same silent "task ⇔ active"
+        // zombie the step-10b guard exists to prevent, and refused the same way.
+        for mv in &planned_moves {
+            let Some(entry) = registry.get(&mv.from) else {
+                continue; // validate guaranteed the hit; a miss is not this guard's.
+            };
+            if matches!(entry.status, CellStatus::Awake) && entry.stop_tx.is_none() {
+                let details = format!(
+                    "move of Awake cell {} without live stop-wiring — the old task could not be \
+                 stopped and would outlive its address",
+                    mv.from.as_str()
+                );
+                tracing::warn!(path = %mv.from.as_str(), "{details}");
+                return MutationOutcome::Rejected {
+                    id: Some(id),
+                    error_code: STOP_WIRING_UNAVAILABLE_ERROR_CODE.into(),
+                    details,
+                    violations: Vec::new(),
                 };
             }
         }
-    }
+        // GH #169: read each relocating node's own `config.json` NOW, while the
+        // reject is still free. A relocation names no template — the cell is built
+        // at its new address from the configuration it already carries — so a file
+        // that cannot be read, substituted, parsed or compiled has to stop the
+        // mutation here, not half-way through a rename sequence.
+        relocated_nodes.reserve(planned_moves.len());
+        for mv in &planned_moves {
+            match crate::mutation::relocate::read_relocated_node(&mv.from_dir, &env) {
+                Ok(node) => relocated_nodes.push(node),
+                Err(err) => {
+                    send_eda_reject(
+                        &id,
+                        &err,
+                        reply_to.as_ref(),
+                        trace_id,
+                        parent_message_id,
+                        registry,
+                        hive_scopes,
+                        dead_letters,
+                        log_tx,
+                        &blob_store,
+                        blob_inline_max_bytes,
+                        &payload,
+                    )
+                    .await;
+                    return MutationOutcome::Rejected {
+                        id: Some(id),
+                        error_code: err.error_code().into(),
+                        details: format!("{err:?}"),
+                        violations: Vec::new(),
+                    };
+                }
+            }
+        }
 
-    // Slice 1 (roadmap Z.138): 14-B header-contract locality on the FULL
-    // hypothetical post_state — the same pure check the bootstrap runs, fed
-    // from live views instead of config.json. Pre-destructive: reject before
-    // staging/FS/registry are touched.
-    match crate::mutation::header_views::build_post_state_header_views(
-        &*node_contracts,
-        &*edges,
-        &diff_subst,
-        guard_scope,
-        &templates,
-        hive_scopes,
-    ) {
-        Ok((post_nodes, post_edges, post_hives)) => {
-            if let Err(err) = crate::mutation::validate::validate_header_contract_locality(
-                &post_nodes,
-                &post_edges,
-                &post_hives,
-            ) {
+        // Slice 1 (roadmap Z.138): 14-B header-contract locality on the FULL
+        // hypothetical post_state — the same pure check the bootstrap runs, fed
+        // from live views instead of config.json. Pre-destructive: reject before
+        // staging/FS/registry are touched.
+        match crate::mutation::header_views::build_post_state_header_views(
+            &*node_contracts,
+            &*edges,
+            &diff_subst,
+            guard_scope,
+            &templates,
+            hive_scopes,
+        ) {
+            Ok((post_nodes, post_edges, post_hives)) => {
+                // Stage 6, third check. Same stage tag as the two above — it decides
+                // contract locality — but it runs from here, where the post-state
+                // header views exist. Nothing was collected before it (the pipeline
+                // broke out otherwise), so the stop rule reads the same either way.
+                crate::mutation::validate::collect_header_contract_locality(
+                    &post_nodes,
+                    &post_edges,
+                    &post_hives,
+                    &mut rejection,
+                );
+            }
+            Err(err) => {
+                // Not a stage: the post-state view could not be BUILT, so no stage
+                // ran at all and there is nothing to collect alongside it.
                 send_eda_reject(
                     &id,
                     &err,
@@ -3955,31 +4101,41 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: err.error_code().into(),
                     details: format!("{err:?}"),
+                    violations: Vec::new(),
                 };
             }
         }
-        Err(err) => {
-            send_eda_reject(
-                &id,
-                &err,
-                reply_to.as_ref(),
-                trace_id,
-                parent_message_id,
-                registry,
-                hive_scopes,
-                dead_letters,
-                log_tx,
-                &blob_store,
-                blob_inline_max_bytes,
-                &payload,
-            )
-            .await;
-            return MutationOutcome::Rejected {
-                id: Some(id),
-                error_code: err.error_code().into(),
-                details: format!("{err:?}"),
-            };
-        }
+
+        rejection
+    };
+
+    // The ONE reject the collecting pipeline sends. `error_code()` is the first
+    // violation's — what the sequential pipeline reported — and `details` is
+    // every violation of that stage, one per line.
+    if let Some(error_code) = rejection.error_code() {
+        let details = rejection.render();
+        send_eda_reject_rendered(
+            &id,
+            error_code,
+            &details,
+            reply_to.as_ref(),
+            trace_id,
+            parent_message_id,
+            registry,
+            hive_scopes,
+            dead_letters,
+            log_tx,
+            &blob_store,
+            blob_inline_max_bytes,
+            &payload,
+        )
+        .await;
+        return MutationOutcome::Rejected {
+            id: Some(id),
+            error_code: error_code.into(),
+            details,
+            violations: rejection.entries().to_vec(),
+        };
     }
 
     // Apply sequence step 5: durable in_flight insert.
@@ -4014,6 +4170,7 @@ pub(crate) async fn handle_mutation(
                 id: Some(id),
                 error_code: "db".into(),
                 details: format!("{e:?}"),
+                violations: Vec::new(),
             };
         }
     }
@@ -4093,6 +4250,7 @@ pub(crate) async fn handle_mutation(
                 id: Some(id),
                 error_code: e.error_code().into(),
                 details: format!("{e:?}"),
+                violations: Vec::new(),
             };
         }
     };
@@ -4781,13 +4939,24 @@ pub(crate) async fn handle_mutation(
     // Pre-destructive all the same — the edge ops so far live in RAM, the
     // `write_buffer` has not been flushed, and no `active` flip has happened at
     // this point. Same rollback as the stop-wiring guard below.
+    //
+    // GH #293 — stage 7 (`required_drains`), collecting like every other stage:
+    // a diff that leaves three declared pairings unmet says all three at once,
+    // and each entry carries the declaring hive's own `because` in
+    // `Violation::because` as well as inside its prose.
     let drain_reqs =
         crate::mutation::required_drains::collect_required_drains(root, hive_scopes.paths());
-    if !drain_reqs.is_empty()
-        && let Err(err) =
-            crate::mutation::required_drains::check_required_drains(&drain_reqs, edges)
-    {
-        tracing::warn!(reason = %format!("{err:?}"), "required drain missing — rejecting mutation");
+    let mut post_state_rejection = crate::mutation::rejection::MutationRejection::new();
+    if !drain_reqs.is_empty() {
+        crate::mutation::required_drains::collect_drain_violations(
+            &drain_reqs,
+            edges,
+            &mut post_state_rejection,
+        );
+    }
+    if let Some(error_code) = post_state_rejection.error_code() {
+        let details = post_state_rejection.render();
+        tracing::warn!(reason = %details, "required drain missing — rejecting mutation");
         for eid in &inserted_edge_ids {
             edges.remove(eid);
         }
@@ -4805,11 +4974,12 @@ pub(crate) async fn handle_mutation(
             root,
             &id,
         );
-        terminalize_apply_reject(log_tx, &id, format!("{err:?}")).await;
+        terminalize_apply_reject(log_tx, &id, details.clone()).await;
         return MutationOutcome::Rejected {
             id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
+            error_code: error_code.into(),
+            details,
+            violations: post_state_rejection.entries().to_vec(),
         };
     }
 
@@ -4823,10 +4993,23 @@ pub(crate) async fn handle_mutation(
     // The contracts were already collected before staging; re-using that list
     // keeps one filesystem read per mutation, and a hive added by THIS diff has
     // no contract to break yet — its `config.json` is what the diff installs.
-    if !hive_contracts.is_empty()
-        && let Err(err) = crate::mutation::hive_contract::check_lane_doors(&hive_contracts, edges)
-    {
-        tracing::warn!(reason = %format!("{err:?}"), "hive contract broken — rejecting mutation");
+    //
+    // GH #293 — collecting too, and for the reason `LaneSpec.because` exists:
+    // the hive's own sentence about the lane travels verbatim into the refusal
+    // (spec § Part 3, `:198-201`), and it reached the caller only for whichever
+    // broken lane happened to be found first. `post_state_rejection` is empty
+    // here — the drain stage above returned if it was not — so this is a fresh
+    // stage, not an append.
+    if !hive_contracts.is_empty() {
+        crate::mutation::hive_contract::collect_lane_doors(
+            &hive_contracts,
+            edges,
+            &mut post_state_rejection,
+        );
+    }
+    if let Some(error_code) = post_state_rejection.error_code() {
+        let details = post_state_rejection.render();
+        tracing::warn!(reason = %details, "hive contract broken — rejecting mutation");
         for eid in &inserted_edge_ids {
             edges.remove(eid);
         }
@@ -4843,11 +5026,12 @@ pub(crate) async fn handle_mutation(
             root,
             &id,
         );
-        terminalize_apply_reject(log_tx, &id, format!("{err:?}")).await;
+        terminalize_apply_reject(log_tx, &id, details.clone()).await;
         return MutationOutcome::Rejected {
             id: Some(id),
-            error_code: err.error_code().into(),
-            details: format!("{err:?}"),
+            error_code: error_code.into(),
+            details,
+            violations: post_state_rejection.entries().to_vec(),
         };
     }
 
@@ -4908,6 +5092,7 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: "spawn".into(),
                     details: format!("factory missing for {}", sd.template),
+                    violations: Vec::new(),
                 };
             }
         };
@@ -5095,6 +5280,7 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: "spawn".into(),
                     details: e,
+                    violations: Vec::new(),
                 };
             }
         };
@@ -5570,6 +5756,7 @@ pub(crate) async fn handle_mutation(
                     "disconnect of Awake cell {} without live stop-wiring (interim guard)",
                     node.as_str()
                 ),
+                violations: Vec::new(),
             };
         }
     }
@@ -5740,6 +5927,7 @@ pub(crate) async fn handle_mutation(
                     id: Some(id),
                     error_code: TERM_TIMEOUT_ERROR_CODE.into(),
                     details: reason,
+                    violations: Vec::new(),
                 };
             }
         }
@@ -5778,10 +5966,56 @@ pub(crate) async fn handle_mutation(
 
 /// Helper for `handle_mutation`: route an EDA error-reply to `reply_to` (if set)
 /// via `route_with_log`, draining the cascade.
+///
+/// The single-error face of [`send_eda_reject_rendered`], for the reject sites
+/// that judge one thing and can only ever have one answer.
 #[allow(clippy::too_many_arguments)]
 async fn send_eda_reject(
     id: &str,
     err: &crate::mutation::MutationError,
+    reply_to: Option<&Path>,
+    trace_id: Uuid,
+    parent_message_id: Uuid,
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    payload: &meclaw_core::JsonValue,
+) {
+    send_eda_reject_rendered(
+        id,
+        err.error_code(),
+        &format!("{err:?}"),
+        reply_to,
+        trace_id,
+        parent_message_id,
+        registry,
+        hive_scopes,
+        dead_letters,
+        log_tx,
+        blob_store,
+        blob_inline_max_bytes,
+        payload,
+    )
+    .await;
+}
+
+/// The same reject, told with an already-rendered `error_code` + `details`
+/// pair (GH #293).
+///
+/// The collecting pipeline refuses with a [`crate::mutation::rejection::MutationRejection`]
+/// rather than a single `MutationError`, so the two strings arrive rendered:
+/// `error_code` is the first violation's code — the one the sequential
+/// pipeline reported — and `details` is every violation, one per line. Both the
+/// durable `mutation_log` reject row and the EDA reply carry the same pair, so
+/// the audit and the caller never disagree about why a mutation was refused.
+#[allow(clippy::too_many_arguments)]
+async fn send_eda_reject_rendered(
+    id: &str,
+    error_code: &str,
+    details: &str,
     reply_to: Option<&Path>,
     trace_id: Uuid,
     parent_message_id: Uuid,
@@ -5826,8 +6060,8 @@ async fn send_eda_reject(
                     id: id.to_string(),
                     scope,
                     payload_json,
-                    error_code: err.error_code().to_string(),
-                    reason: format!("{err:?}"),
+                    error_code: error_code.to_string(),
+                    reason: details.to_string(),
                     trace_id: trace_id.to_string(),
                     created_at: now,
                     ack: Some(ack_tx),
@@ -5845,8 +6079,8 @@ async fn send_eda_reject(
     };
     let err_msg = crate::mutation::build_error_reply(
         id,
-        err.error_code(),
-        &format!("{err:?}"),
+        error_code,
+        details,
         rt.clone(),
         trace_id,
         parent_message_id,

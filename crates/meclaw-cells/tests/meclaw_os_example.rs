@@ -80,6 +80,17 @@ const GROWN_FROM: [(&str, &str); 5] = [
 /// The second declaration names exactly one template, and it ships too.
 const GROWN_FROM_COGNY: [(&str, &str); 1] = [("cogny", "templates/cogny")];
 
+/// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
+/// them, so the library the colony scans has to hold them next to it. They are
+/// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
+/// registry resolves the rest.
+const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+    ("collector", "templates/collector"),
+    ("summarizer", "templates/summarizer"),
+    ("session-keeper", "templates/session-keeper"),
+    ("dispatcher", "templates/dispatcher"),
+];
+
 /// One cell from `door@1`, two from `firewall@1`, eleven from `talky`, two
 /// from `memory-drain`, one from `terminal@1`.
 const CELLS_AFTER_GROW: usize = 17;
@@ -188,6 +199,41 @@ fn grow_cogny_json_only_names_templates_that_ship() {
 
 // ════════════════════ 2. the two templates this example put into the library
 
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 /// Runs a shipped `params.script_inline` against a real stdin document.
 fn run_script(template_dir: &str, doc: Value) -> String {
     let cfg = read_json(&repo_path(template_dir).join("config.json"));
@@ -195,21 +241,7 @@ fn run_script(template_dir: &str, doc: Value) -> String {
         .as_str()
         .expect("script_inline")
         .to_string();
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    let out = run_script_on_stdin(&script, &meclaw_testing::code_stdin(&doc).to_string());
     assert!(
         out.status.success(),
         "{template_dir} script exited non-zero: {}",
@@ -297,12 +329,16 @@ const NEVER: &str = "0 0 0 1 1 *";
 fn build_root(td: &tempfile::TempDir, base_url: &str) {
     let root = td.path();
     copy_tree(&example_path("seed"), root);
-    for (name, dir) in GROWN_FROM.iter().chain(GROWN_FROM_COGNY.iter()) {
+    for (name, dir) in GROWN_FROM
+        .iter()
+        .chain(GROWN_FROM_COGNY.iter())
+        .chain(REFERENCED_SUB_UNITS.iter())
+    {
         copy_tree(&repo_path(dir), &root.join("templates").join(name));
     }
     for rel in [
         "templates/talky/brain/config.json",
-        "templates/talky/summarizer/writer/config.json",
+        "templates/summarizer/writer/config.json",
         "templates/cogny/brain/config.json",
         "templates/cogny/brain_fast/config.json",
     ] {

@@ -252,7 +252,7 @@ pub fn build_post_state_header_views(
                 .map_err(|_| MutationError::TemplateMissing(tpl_ref.to_string()))?;
             // Same subtree discriminator as `handle_mutation` (parse error →
             // not a subtree → the single-cell path surfaces it as Schema).
-            let parsed_subtree = super::subtree::parse_subtree(&tpl.filesystem_path)
+            let parsed_subtree = super::subtree::parse_subtree(&tpl.filesystem_path, templates)
                 .ok()
                 .filter(|t| t.cells.len() > 1);
             if let Some(template) = parsed_subtree {
@@ -293,7 +293,8 @@ pub fn build_post_state_header_views(
                 }
                 // Internal edges via the SHARED resolver (one resolution
                 // truth) — full form with condition + modifier JSON.
-                let resolved = super::subtree::resolve_subtree(&tpl.filesystem_path, scope, name)?;
+                let resolved =
+                    super::subtree::resolve_subtree(&tpl.filesystem_path, scope, name, templates)?;
                 for re in resolved.internal_edges_resolved {
                     let spec: Option<ModifierSpec> = match re.modifier {
                         None => None,

@@ -267,7 +267,7 @@ async fn demo_production_mutation_spawn_with_state() {
         std::fs::write(tpl.join("template.json"), r#"{"name":"persist_mock"}"#).unwrap();
         std::fs::write(
             tpl.join("config.json"),
-            r#"{"cell":{"type":"persist_mock"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            r#"{"cell":{"type":"persist_mock"},"params":{"emitted_target":"/unset"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
         )
         .unwrap();
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

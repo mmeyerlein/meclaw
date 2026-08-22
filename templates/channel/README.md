@@ -17,11 +17,13 @@ nothing here can get it wrong, because it is never written down twice.
 | `telegram-connector` | hive + `proxy` | [`telegram-connector@1.0.0`](../telegram-connector/) **(sealed)** |
 | `terminal` | `code` | [`terminal@1.0.0`](../terminal/) -- the generation slot, still empty |
 
-Both are **byte copies** of their templates: the substrate has no template-in-template
-reference, instantiation is a recursive directory copy, and a nested `template.json`
-would only register a second template with the scanner. The copies are pinned rather
-than hoped away -- `crates/meclaw-cells/tests/channel_composite.rs` fails if one of them
-drifts from its source.
+Both are **byte copies** of their templates. The substrate has carried a
+template-in-template reference since GH #277 (`cell.type: "ref"`, as `talky` and `cogny`
+use it), but this template does not: it is dissolved by
+[#303](https://github.com/mmeyerlein/meclaw/issues/303), and converting a template on its
+way out buys nothing. So the copies stay, pinned rather than hoped away --
+`crates/meclaw-cells/tests/channel_template.rs` fails if one of them drifts from its
+source.
 
 Swap the connector sub-unit for another provider's and the rest of this template is
 unchanged: the lanes it speaks (`in_reply` in, `turn` and `error` out) are the connector
@@ -135,7 +137,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@3.0.9"}],
+   "add_nodes": [{"name": "talky", "template": "talky@3.0.12"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -158,7 +160,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.9"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.12"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}

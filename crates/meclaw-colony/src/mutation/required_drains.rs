@@ -229,16 +229,77 @@ fn lane_drain_exists(req: &DrainRequirement, emits: &str, edges: &EdgeTable) -> 
 /// `edges` is the POST-state — the table as it will be once the diff is
 /// applied. Checking the pre-state would refuse the very mutation that wires
 /// both edges together, which is the mutation this rule wants people to write.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_required_drains`]:
+/// the FIRST violation the collecting core produces is, by construction, the
+/// one this function returned before, so every verdict it ever gave is
+/// byte-identical.
 pub fn check_required_drains(
     reqs: &[DrainRequirement],
     edges: &EdgeTable,
 ) -> Result<(), MutationError> {
-    for req in reqs {
-        if let Some(msg) = unmet(req, edges) {
-            return Err(MutationError::RequiredDrainMissing(msg));
-        }
+    addressed_required_drains(reqs, edges)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _, _)| Err(error))
+}
+
+/// The collecting core of [`check_required_drains`]: every declared pairing
+/// this post-state leaves unmet, with the declaring hive's path and its own
+/// `because`.
+///
+/// The loop simply keeps going — [`unmet`] already answers per requirement with
+/// an `Option<String>`, so there was never a first-error short-circuit inside
+/// it, only the `return` this function no longer does.
+fn addressed_required_drains(
+    reqs: &[DrainRequirement],
+    edges: &EdgeTable,
+) -> Vec<(MutationError, String, String)> {
+    reqs.iter()
+        .filter_map(|req| {
+            unmet(req, edges).map(|msg| {
+                (
+                    MutationError::RequiredDrainMissing(msg),
+                    req.hive_path.clone(),
+                    req.because.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// GH #293 — stage 7 ([`Stage::RequiredDrains`]) as a COLLECTING check: every
+/// declared pairing the post-state leaves unmet, in one refusal.
+///
+/// **This changes no verdict** — see [`check_required_drains`], which is now
+/// the first-error face of the same core.
+///
+/// The hive's own `because` travels in [`Violation::because`] as well as inside
+/// the prose message: a structured reader gets the sentence without parsing it
+/// back out (spec § Part 3, `required_drains[].because` and `LaneSpec.because`
+/// "exist precisely to travel verbatim into a refusal").
+///
+/// Deliberately NOT named `collect_required_drains` — that name belongs to the
+/// call-site adapter above, which reads the declarations out of the hives'
+/// `config.json`. This one judges them.
+///
+/// [`Stage::RequiredDrains`]: crate::mutation::rejection::Stage::RequiredDrains
+/// [`Violation::because`]: crate::mutation::rejection::Violation::because
+pub fn collect_drain_violations(
+    reqs: &[DrainRequirement],
+    edges: &EdgeTable,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, hive_path, because) in addressed_required_drains(reqs, edges) {
+        into.push(Violation::from_error_because(
+            Stage::RequiredDrains,
+            &error,
+            Some(hive_path),
+            because,
+        ));
     }
-    Ok(())
 }
 
 /// The one sentence a requirement has to say when it is not met, or `None`

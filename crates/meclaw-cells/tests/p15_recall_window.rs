@@ -6,7 +6,8 @@
 //! `${VAR:-default}` is resolved the way the colony resolves it at instantiation, the
 //! module body runs against a stub stdin and its `park()` exit is swallowed.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn recall_script() -> String {
     let raw = std::fs::read_to_string("../../templates/memory-hive/recall/config.json")
@@ -35,6 +36,29 @@ fn resolve_vars(script: &str) -> String {
     out
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 fn run_probe_window(probe: &str) -> String {
     let src = format!(
         concat!(
@@ -54,11 +78,7 @@ fn run_probe_window(probe: &str) -> String {
         serde_json::to_string(&recall_script()).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -155,8 +175,8 @@ a = {"keyword": [mk("a"), mk("b")], "semantic": [], "graph": [],
      "temporal": [mk("b"), mk("a")]}
 b = {"keyword": [mk("b"), mk("a")], "semantic": [], "graph": [],
      "temporal": [mk("a"), mk("b")]}
-ra, sa, _la = fuse_rank(a)
-rb, _sb, _lb = fuse_rank(b)
+ra, sa, _la, _va = fuse_rank(a)
+rb, _sb, _lb, _vb = fuse_rank(b)
 print("|".join(k[1] for k in ra))
 print("|".join(k[1] for k in rb))
 print(sa[("fact","a")] == sa[("fact","b")])
@@ -171,7 +191,7 @@ fn a_candidate_the_temporal_leg_never_saw_sorts_behind_one_it_did() {
 def mk(i): return {"kind": "fact", "id": i}
 lists = {"keyword": [mk("a"), mk("b")], "semantic": [], "graph": [],
          "temporal": [mk("b")]}
-r, s, _l = fuse_rank(lists)
+r, s, _l, _v = fuse_rank(lists)
 print("|".join(k[1] for k in r), s[("fact","a")] == s[("fact","b")])
 "#;
     // b: keyword rank 2 + temporal rank 1; a: keyword rank 1 only -> 1/62 + 1/61
@@ -192,17 +212,31 @@ lists = {"keyword": [mk("a"), mk("b")], "semantic": [mk("a"), mk("b")], "graph":
          "temporal": [mk("b"), mk("c")]}
 w = fusion_weights({})
 print(w["temporal"], w["keyword"])
-r, s, l = fuse_rank(lists, w)
+r, s, l, _v = fuse_rank(lists, w)
 print("|".join(k[1] for k in r))
 print(round(s[("fact","c")], 8), l[("fact","c")])
 print(round(s[("fact","a")], 8), round(s[("fact","b")], 8))
 "#;
     // a: keyword 1 + semantic 1. b: keyword 2 + semantic 2 + temporal 1 -- under the old
     // weight the third leg alone carried b past a (0.04865151 > 0.03278689). It does not
-    // any more. c is a temporal-ONLY candidate: it stays a candidate, with score 0.
+    // any more.
+    //
+    // RETRACTION (GH #297): this pin used to read `a|b|c` and said "c is a temporal-ONLY
+    // candidate: it stays a candidate, with score 0". That promise is withdrawn -- a leg
+    // that does not vote does not nominate either, so the temporal-only c no longer
+    // reaches the ranking. What is NOT withdrawn is everything else the line below still
+    // asserts: c keeps its entry in the score table (0.0) and its leg attribution
+    // (['temporal']), because the term, the rank and the leg record are still collected
+    // for every leg -- that is what keeps the O-2 tie-break and the diagnostics honest.
+    //
+    // The two scores in the last line are 1.5x what they were before GH #297 (Q8): a and b
+    // are each found by TWO voting legs, and agreement is now priced into the score
+    // (`1 + AGREEMENT * (voters - 1)`). Both are scaled by the same factor, so what this
+    // test pins -- that the temporal leg no longer carries b past a -- is untouched. c is
+    // found by the non-voting leg only, so it has no agreement to pay for and stays 0.0.
     assert_eq!(
         run_probe_window(probe),
-        "0.0 1.0\na|b|c\n0.0 ['temporal']\n0.03278689 0.03225806"
+        "0.0 1.0\na|b\n0.0 ['temporal']\n0.04918033 0.0483871"
     );
 }
 
@@ -218,13 +252,17 @@ lists = {"keyword": [mk("a"), mk("b")], "semantic": [mk("a"), mk("b")], "graph":
 w = fusion_weights({"recall_window_from": "2026-08-01T00:00:00Z",
                     "recall_window_to": "2026-09-01T00:00:00Z"})
 print(w["temporal"])
-r, s, _l = fuse_rank(lists, w)
+r, s, _l, _v = fuse_rank(lists, w)
 print("|".join(k[1] for k in r))
 print(round(s[("fact","b")], 8), round(s[("fact","a")], 8), round(s[("fact","c")], 8))
 "#;
+    // Q8 (GH #297): the scores carry the agreement factor now -- b is found by THREE
+    // voting legs here (x2.0), a by two (x1.5), c by one (unchanged). The ordering this
+    // test pins is what the factor reinforces rather than changes: b keeps its weighted
+    // temporal term and stays in front.
     assert_eq!(
         run_probe_window(probe),
-        "1.0\nb|a|c\n0.04865151 0.03278689 0.01612903"
+        "1.0\nb|a|c\n0.09730301 0.04918033 0.01612903"
     );
 }
 
@@ -241,13 +279,16 @@ a = {"keyword": [mk("a"), mk("b")], "semantic": [mk("b"), mk("a")], "graph": [],
 b = {"keyword": [mk("a"), mk("b")], "semantic": [mk("b"), mk("a")], "graph": [],
      "temporal": [mk("a"), mk("b")]}
 w = fusion_weights({})
-ra, sa, _la = fuse_rank(a, w)
-rb, _sb, _lb = fuse_rank(b, w)
+ra, sa, _la, _va = fuse_rank(a, w)
+rb, _sb, _lb, _vb = fuse_rank(b, w)
 print("|".join(k[1] for k in ra))
 print("|".join(k[1] for k in rb))
 print(sa[("fact","a")] == sa[("fact","b")], round(sa[("fact","a")], 8), w["temporal"])
 "#;
-    assert_eq!(run_probe_window(probe), "b|a\na|b\nTrue 0.03252247 0.0");
+    // Q8 (GH #297): both candidates are found by the same two voting legs, so both are
+    // multiplied by the same 1.5 -- the tie the temporal position breaks is bit-identical
+    // before and after the agreement factor, only the shared scale moved.
+    assert_eq!(run_probe_window(probe), "b|a\na|b\nTrue 0.04878371 0.0");
 }
 
 /// Ruling O-4b: when several hits of one `(subject, predicate)` axis collapse onto a single

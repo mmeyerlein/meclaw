@@ -33,7 +33,7 @@ async fn setup_edit_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyH
     std::fs::write(edit_tpl.join("template.json"), r#"{"name":"edit"}"#).unwrap();
     std::fs::write(
         edit_tpl.join("config.json"),
-        r#"{"cell":{"type":"edit"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"edit"},"params":{"base_path":"/tmp","max_concurrency":1},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

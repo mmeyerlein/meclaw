@@ -222,7 +222,7 @@ pub fn build_staging_tree_from_templates(
         // internal-edge remap, hive-scope collection); existing nodes are left
         // untouched (F1). The whole-fresh case (root absent) yields exactly one
         // rename-root equal to today's fresh-subtree staging.
-        if crate::mutation::subtree::parse_subtree(&tpl.filesystem_path)?
+        if crate::mutation::subtree::parse_subtree(&tpl.filesystem_path, templates)?
             .cells
             .len()
             > 1
@@ -235,14 +235,18 @@ pub fn build_staging_tree_from_templates(
                 &tpl.filesystem_path,
                 env,
                 ctx,
-                // GH #62: one stamp for the whole subtree instance — every
-                // nested cell names the subtree template, which is the unit an
-                // update addresses.
+                // GH #62 + Korrektur GH #277: this is the stamp of the
+                // instantiation as a WHOLE, not the stamp every nested cell
+                // ends up with. `provenance_for` derives each node's own from
+                // it — a node behind a `cell.type: "ref"` names the referenced
+                // template and carries this one as the first hop of its
+                // `template_chain`.
                 Some(&provenance_of(tpl)),
                 // GH #140: per-cell `override_params`, addressed by the cell's
                 // path inside the template. Validation has already refused any
                 // key that names no cell, so an entry here always lands.
                 &crate::mutation::subtree::SubtreeOverrides::from_add_node(n),
+                templates,
             )?;
             subtrees.push(staged_subtree);
             continue;
@@ -424,6 +428,9 @@ pub(crate) fn provenance_of(
     crate::config::NodeProvenance {
         template: tpl.name.clone(),
         template_version: tpl.version.clone(),
+        // GH #277: a direct instance came through exactly one template — its
+        // own. The chain is that one hop, never empty and never absent.
+        template_chain: Some(vec![(tpl.name.clone(), tpl.version.clone())]),
         instantiated_at: unix_now(),
     }
 }

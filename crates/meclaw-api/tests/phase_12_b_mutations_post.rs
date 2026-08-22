@@ -32,7 +32,7 @@ async fn setup_template(h: &meclaw_testing::ColonyHandle, name: &str, cell_type:
     std::fs::write(
         tpl.join("config.json"),
         format!(
-            r#"{{"cell":{{"type":"{cell_type}"}},"params":{{}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            r#"{{"cell":{{"type":"{cell_type}"}},"params":{{"emitted_target":"/unset"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
         ),
     )
     .unwrap();
@@ -64,7 +64,9 @@ async fn post_valid_mutation_returns_200_with_committed_slot() {
         meclaw_api::router::SurfaceState::disabled(),
     );
 
-    // `override_params.emitted_target` is mandatory for EchoCell (otherwise spawn reject).
+    // `override_params.emitted_target` is mandatory for EchoCell (otherwise spawn
+    // reject); GH #294 additionally requires the template to DECLARE the param,
+    // which `setup_template` does.
     // We set a plausible path — the cell is never actually pinged, we only want
     // to observe Committed.
     let body_json = serde_json::json!({

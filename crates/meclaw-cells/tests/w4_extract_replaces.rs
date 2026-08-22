@@ -66,21 +66,7 @@ fn script_of(path: &str) -> String {
 
 /// Run a real script with a real stdin document; returns (messages, stderr).
 fn run(script: &str, doc: serde_json::Value) -> (Vec<serde_json::Value>, String) {
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    let out = run_script_on_stdin(script, &meclaw_testing::code_stdin(&doc).to_string());
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "script exited non-zero: {err}");
     let msgs = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
@@ -1486,6 +1472,53 @@ fn the_run_receipt_carries_the_reason_of_every_contradiction() {
     assert_eq!(verdicts["reopenings"][0]["closed_by"], "extract:b1");
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
+    run_python(&src)
+}
+
 /// Run a probe against the module body of the real dream script. The `park()`
 /// exit at its end is swallowed so the probe can call the helpers the script
 /// defines -- the construction `w2_statement_chain.rs` introduced.
@@ -1508,11 +1541,7 @@ fn run_probe(probe: &str) -> String {
         serde_json::to_string(&script_of(DREAM_CONFIG)).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",

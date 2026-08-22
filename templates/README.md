@@ -100,26 +100,26 @@ depends on one.
 | [`archive-bridge`](archive-bridge/) | 1.0.0 | Turns an llm's last answer into a store-native insert -- and swallows the store's reply echo, so an append-only archive costs one cell instead of a loop. |
 | [`canvy`](canvy/) | 0.3.1 | An interactive canvas the colony serves itself over HTTP: a `code` cell draws the picture server-side, the browser owns only the drag. The first thing it draws is the colony. Ask it for a fresh snapshot on `in_refresh`; the drawn page leaves on `surface`. |
 | [`channel`](channel/) | 1.0.1 | One channel as one hive: the connector that owns the chat credential, plus the slot its current `talky` generation occupies. The hive IS the channel -- the identity that stays -- and the generations inside it come and go by one `swap_nodes`, the older ones disconnected and preserved. Ships with the slot occupied by a terminal, so every lane is true from instantiation on. |
-| [`cogny`](cogny/) | 3.0.6 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. Asked on `in_turn`; answers on `answer`, calls tools on `tool`, asks a memory on `recall` and drains a failed inference on `error`. |
-| [`collector`](collector/) | 2.0.6 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
+| [`cogny`](cogny/) | 3.0.9 | The agent core as one node: a tool loop of `collector` + `dispatcher` around an llm brain slot, every internal edge pre-wired. A talky without a channel. Asked on `in_turn`; answers on `answer`, calls tools on `tool`, asks a memory on `recall` and drains a failed inference on `error`. |
+| [`collector`](collector/) | 2.1.0 | Context assembly as a hive: a rolling conversation window, the memory bundle and the tool round fanned back in -- each leg capped by configuration, not by a model's judgement. |
 | [`dispatcher`](dispatcher/) | 1.0.1 | The fan-out half of a tool loop: splits a brain's `tool_call` bundle into one routable message per call, announces the round to the fan-in, and passes a final answer through. |
 | [`door`](door/) | 1.0.1 | The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, an empty hop -- and puts the turn on a named lane, carrying the channel identity with it. |
 | [`firewall`](firewall/) | 2.0.2 | Deterministic screening in front of an agent: size, sender, forbidden literal and rate, each verdict naming the rule that fired. Nothing here asks a model, and nothing here can. |
 | [`memory-drain`](memory-drain/) | 2.0.2 | The adapter between a closed session and a central memory: decomposes one write batch into single-turn episodes, in order, idempotent across replays. |
-| [`memory-hive`](memory-hive/) | 2.2.1 | A member's long-term memory as a hive — one source of truth that every agent of that member reads: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Twelve cells, no Rust. Since 2.2.0 the remembered content can also leave the hive as a versioned document and enter another running one, idempotently -- the template-level answer to #243, while #253 is the substrate one. |
+| [`memory-hive`](memory-hive/) | 2.3.0 | A member's long-term memory as a hive — one source of truth that every agent of that member reads: an LLM-free write path, a token-budgeted tier-0 bundle, a four-leg retrieval fan fused without a model, and a nightly consolidation that supersedes instead of deleting. Twelve cells, no Rust. Since 2.2.0 the remembered content can also leave the hive as a versioned document and enter another running one, idempotently -- the template-level answer to #243, while #253 is the substrate one. Since 2.3.0 a tier-1 recall delivers two documents in one message: a bundle written for the model that has to answer -- provenance, currency and an explicit "nothing here answers this" -- and the retrieval's own record beside it, for whoever has to explain the answer afterwards. |
 | [`receptionist`](receptionist/) | 2.0.2 | One agent per channel, built on demand: the first turn of a channel nobody has met instantiates a fresh `talky` for exactly that channel and hands the turn straight into it. |
 | [`retry`](retry/) | 1.0.0 | A bounded retry loop around one tool, as a single cell. At the cap the give-up lane hands the last error on with its `error_code` intact. |
 | [`session-keeper`](session-keeper/) | 2.0.2 | A session as a channel generation, modelled on a phone call: minted at the surface, stamped onto every inbound turn, ended by arithmetic (a timer plus an idle threshold) rather than by judgement. |
 | [`steward`](steward/) | 2.0.6 | The colony's control loop: charter, deterministic measurement, a judge that simulates before it decides, a params update to the cell it names, an immediate health check, and keep-or-revert after the window -- every cycle a receipt. Ships with every goal disabled. |
-| [`summarizer`](summarizer/) | 2.0.0 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
-| [`talky`](talky/) | 3.0.9 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
+| [`summarizer`](summarizer/) | 2.0.1 | The handover step: when a generation closes, it folds the day's write batch into one recency-weighted summary and emits it as a `system.handover` update. |
+| [`talky`](talky/) | 3.0.12 | The full composite agent: `session-keeper`, `collector`, `dispatcher` and `summarizer` around an llm brain slot, with the loopback, the close path and the handover return already wired. |
 | [`telegram-connector`](telegram-connector/) | 1.0.0 | A Telegram chat as one address: one sealed hive around the credential-bearing `proxy` cell, taken verbatim from `bot-basic@2.0.0`. A turn in from the chat on `turn`, a finished answer back on `in_reply`, the connector's own failures on `error`. No persona, no model, no answer of its own. |
 | [`vault`](vault/) | 1.0.1 | A secret store with no operation that returns a secret -- not a policy over a store, but a cell type whose route surface has no read on it. Secrets enter over the user channel only; the broker may ask it to USE one. |
 | [`terminal`](terminal/) | 1.0.0 | The last cell of a lane, as one code cell: it accepts anything and emits nothing. Its whole job is to be an address, so that a lane without a destination yet still HAS one -- the message arrives, the trace records it, and the dead-letter queue stays empty. |
 
 Read a template's `template.json` before wiring it -- the `description` slots (`purpose`,
 `use_when`, `not_in_scope`, `examples`) say what it is for, and for a hive its `params.contract`
-says which lanes it accepts and emits, which is what you need in order to connect it. `cogny` and `talky` are composites: they carry byte-identical copies of the
+says which lanes it accepts and emits, which is what you need in order to connect it. `cogny` and `talky` are composites: they build on the
 smaller templates as sub-units, so instantiating one of them pulls in nothing that is not in
 this table.
 
@@ -171,8 +171,13 @@ declare are in [`../docs/cell-types.md`](../docs/cell-types.md).
 ## Versioning
 
 A reference in a mutation is either `name` or `name@major.minor.patch`. With a version it is an
-**exact** match (`talky@2.0.0`); without one, the highest version on disk wins. Semver ranges
-(`^`, `~`) are not parsed today, so `talky@2` is not a resolvable reference -- when you see
+**exact** match (`talky@2.0.0`); without one, it resolves to **the one version registered under
+that name**. **Correction (GH #277):** this line used to say "the highest version on disk wins".
+That is dead under the uniqueness rule — the scan aborts as soon as two `template.json`s declare
+the same `name`, *regardless of their versions*, so a scanned library holds exactly one entry per
+name and a bare-name reference has exactly one answer. There is no "highest" to pick from.
+
+Semver ranges (`^`, `~`) are not parsed today, so `talky@2` is not a resolvable reference -- when you see
 `talky@2` in prose here or in an issue, it names the major line of the template, not a string you
 put in a mutation.
 
@@ -191,6 +196,17 @@ a design. The intent: **starting with 0.9.0, superseded template versions remain
 so a pinned reference keeps resolving after the version it names has been superseded. Until
 that lands, treat `name@exact-version` as a statement about what you built against, and vendor
 the directory if you need to rebuild it later.
+
+**Correction (GH #277) — how that promise has to be read now.** The obvious reading of "superseded
+versions remain available" was: keep the old directory beside the new one
+(`templates/talky-3.0.11/` next to `templates/talky-3.0.12/`, both declaring `"name": "talky"`).
+That reading is no longer merely unsupported, it is a **scan error**: the uniqueness rule refuses
+the second `template.json` declaring an already-seen name, regardless of version, and the whole
+scan aborts — taking the boot or the `RescanTemplates` with it. The promise itself stands, but it
+now needs a mechanism it did not need before: an archive or a registry that holds superseded
+versions *outside* the one-directory-per-name library (a separate library root, a content store —
+undecided), not a second directory inside it. Until such a mechanism exists, one directory per
+name is the only shape a library may have.
 
 ## Env knobs are an experimental surface
 

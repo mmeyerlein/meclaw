@@ -33,6 +33,8 @@ id	doc	anchor	class	test_or_issue
 #
 PIN-mutation-reject-clean-de	docs/meclaw-overview.md	Diese Rejects sind wieder **sauber** (GH #276)	pinned	a_required_drain_reject_registers_nothing
 PIN-mutation-reject-clean-en	docs/meclaw-overview.en.md	These rejects are **clean** again (GH #276)	pinned	a_stop_wiring_reject_registers_nothing
+PIN-mutation-collecting-validator-de	docs/meclaw-overview.md	wird **einmal** abgelehnt und benennt alle fünf	pinned	a_mutation_with_five_violations_in_one_stage_is_refused_once_naming_all_five
+PIN-mutation-collecting-validator-en	docs/meclaw-overview.en.md	is refused **once** and names all five	pinned	a_mutation_with_five_violations_in_one_stage_is_refused_once_naming_all_five
 PIN-transfer-export	docs/meclaw-overview.md	wird vom **Substrat** beantwortet	pinned	an_exported_document_is_a_seed_file_and_births_the_same_rows
 PIN-transfer-import	docs/cell-types.md	Kein Cell-Type-Feature, sondern ein **Substrat**-Slot	pinned	import_inserts_what_is_missing_and_the_target_wins_every_collision
 PIN-transfer-exempt	docs/config.md	nimmt die `cell.db` dieser Zelle vom `transfer`-Body-Slot aus	pinned	a_declared_transfer_exemption_reaches_the_view_the_substrate_spawns_with
@@ -52,7 +54,22 @@ PIN-vault-error-codes-de	docs/cell-types.md	`unknown_op` (ein Op, den dieser Cel
 PIN-vault-error-codes-en	docs/cell-types.en.md	`unknown_op` (an op this cell type does not have	pinned	there_is_no_operation_that_hands_a_secret_back
 PIN-always-edge-de	docs/meclaw-overview.md	ist **kein Default, sondern eine Always-Edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
 PIN-always-edge-en	docs/meclaw-overview.en.md	is **not a default: it is an always edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
+PIN-template-name-unique-de	docs/meclaw-overview.md	bricht der Scan mit einem Fehler ab	pinned	walk_refuses_two_templates_declaring_one_name
+PIN-template-name-unique-en	docs/meclaw-overview.en.md	the scan aborts with an error	pinned	walk_refuses_two_templates_declaring_one_name
+PIN-ref-type-de	docs/config.md	Was in der Instanz landet, ist der Inhalt des referenzierten Templates an der Position der Referenz	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
+PIN-ref-type-en	docs/config.en.md	What lands in the instance is the referenced template's content at the reference's position	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
+PIN-provenance-chain-de	docs/config.md	nennt das **referenzierte** Template, nicht das Composite darüber	pinned	a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it
+PIN-provenance-chain-en	docs/config.en.md	names the **referenced** template, not the composite above it	pinned	a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it
+PIN-requires-derived-de	docs/meclaw-overview.md	Die Deklaration ist abgeleitet, nicht danebengeschrieben	pinned	every_ctx_key_a_template_uses_is_declared
+PIN-requires-derived-en	docs/meclaw-overview.en.md	The declaration is derived, not written down beside it	pinned	every_declared_ctx_key_is_used
 #
+PIN-override-param-exists-de	docs/meclaw-overview.md	jeder Param-Schlüssel eines Override-Eintrags muss ein Param sein	pinned	an_override_naming_no_param_of_the_cell_is_refused_and_names_both
+PIN-override-param-exists-en	docs/meclaw-overview.en.md	every param key of an override entry must be a param the addressed cell carries	pinned	an_override_naming_no_param_of_the_cell_is_refused_and_names_both
+#
+PIN-code-oversized-inline-de	docs/cell-types.md	in eine Temp-Datei pro Spawn geschrieben und der Runner auf diesen Pfad gezeigt	pinned	a_big_script_still_spawns
+PIN-code-oversized-inline-en	docs/cell-types.en.md	written to a per-spawn temporary file and the runner is pointed at that path	pinned	a_big_script_still_spawns
+PIN-code-oversized-inline-sandbox-de	docs/cell-types.md	das Substrat gewährt der materialisierten Datei genau ein Lese-Recht	pinned	a_big_script_still_spawns_under_a_restricted_sandbox
+PIN-code-oversized-inline-sandbox-en	docs/cell-types.en.md	the substrate grants the materialised file exactly one read right	pinned	a_big_script_still_spawns_under_a_restricted_sandbox
 # --- built-unpinned -----------------------------------------------------
 # The substrate does it; nothing proves it. Each row is a candidate test --
 # the regressions waiting to happen (GH #254 bucket 2).

@@ -11,7 +11,8 @@
 //!
 //! Both run the REAL `params.script_inline`, never a copy (P5 pattern).
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn script_of(config: &str) -> String {
     let raw = std::fs::read_to_string(config).expect("config");
@@ -88,6 +89,29 @@ fn chain_helpers_are_byte_identical_in_both_scripts() {
     );
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 fn run_probe(probe: &str) -> String {
     let src = format!(
         concat!(
@@ -107,11 +131,7 @@ fn run_probe(probe: &str) -> String {
         serde_json::to_string(&dream_glue_script()).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",

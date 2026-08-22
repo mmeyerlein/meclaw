@@ -1,4 +1,4 @@
-# `talky@3.0.9`
+# `talky@3.0.12`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -53,19 +53,36 @@ addresses an edge from outside may name; `./session-keeper/stamp` and
 message up is decided by the `in_` lane the edge sets, by the hive's own door edges. That
 is what lets the inside of a sub-unit change without touching a caller.
 
-### How the sub-units are referenced: materialised copies, pinned
+### How the sub-units are referenced: by name and version (GH #277)
 
-The substrate has **no template-in-template reference**. Instantiation is a recursive
-directory copy (`docs/meclaw-overview.md` § Instanziierungs-Flow), and a `template.json`
-inside the tree would only register a second template with the scanner. So the four
-sub-units live here as **byte copies of their `config.json` files** -- no
-`template.json`, no README, nothing patched.
+The four sub-units are **references**, not copies. Each of the four directories holds
+one `config.json` and nothing else:
 
-That is a fork risk, and it is pinned rather than hoped away:
-`crates/meclaw-cells/tests/talky_composite.rs` asserts every copied `config.json` is
-byte-identical to its source template. A change to `collector@2` that does not travel
-into `talky/collector/` fails there, in the same test run, instead of drifting into
-production.
+```json
+{"cell": {"type": "ref", "template": "collector@2.1.0"}}
+```
+
+At instantiation the referenced template's tree takes that position, so the instance is
+byte-for-byte the tree the copies used to produce -- and every cell inside it now records
+the template it really came from: `collector/assemble` is stamped `collector@2.1.0`, with
+`talky@3.0.12` above it in its provenance chain.
+
+**The library has to carry the four.** A reference resolves against the colony's template
+registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
+the same `templates/` directory as `talky` -- as they do in the shipped library. A tree
+that copied `talky` alone gets `template not found` at the mutation, not at boot.
+
+**The version is pinned on purpose.** A bare `collector` would resolve to whatever the
+highest version on disk happens to be, so a standalone bump would silently re-point this
+composite. The pin makes the composite say which version it was built against; moving it
+is a `talky` bump, in the same commit.
+
+Until GH #277 the sub-units lived here as byte copies of their `config.json` files, held
+against their sources by a byte-identity pin. Its successor is
+`crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs`: the two
+golden manifests prove the instantiated bytes did not move, and
+`a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it` proves
+the origin is recorded.
 
 ## Lanes
 
@@ -641,7 +658,11 @@ Two things to have ready before the mutation:
   whose batch
   reaches the write port AND becomes the handover that the NEXT generation's prompt
   carries -- with exactly one extra provider call, which is what proves the system
-  update is silent. Plus the byte-identity pin over the four sub-unit copies.
+  update is silent.
+- `crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` -- the
+  two golden manifests over the instantiated tree (the sub-unit refs produce the same
+  bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
+  its OWN template and names `talky` above it.
 - `crates/meclaw-colony/tests/gh245_a_stub_names_a_lane_the_hive_admits.rs` -- the lane
   a curator stub names against the SHIPPED hive files: an edge stamping `in_thread_call`
   into the collector commits, an edge stamping `in_batch` is refused now that nothing

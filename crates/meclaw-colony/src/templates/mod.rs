@@ -1,10 +1,12 @@
 //! Templates subsystem (phase 11). Spec: docs/meclaw-overview.md § Template system.
 
 pub mod registry;
+pub mod requires;
 pub mod scanner;
 pub mod version;
 
 pub use registry::{ResolveError, TemplateEntry, TemplatesRegistry};
+pub use requires::{RequiredKey, RequiresError, TemplateRequires, read_requires};
 pub use scanner::{ScannedTemplate, ScannerError, parse_template_json, scan_templates_dir};
 pub use version::{SimpleVersion, VersionError, parse_simple_version};
 
@@ -251,8 +253,10 @@ mod sync_tests {
             "a rescan of unchanged templates must not re-mint their ids"
         );
 
-        // A genuinely new (name, version) still mints a fresh id.
-        make_template(&td, "a@2.0.0", "a", Some("2.0.0"));
+        // A genuinely new template still mints a fresh id. It must carry a new
+        // *name*: a second version of "a" is a duplicate name and would abort the
+        // scan (GH #277, ruling Q7).
+        make_template(&td, "c@2.0.0", "c", Some("2.0.0"));
         apply_scan_result(&root, &db, 300).await.unwrap();
         let rows = db.read_templates().unwrap();
         let ids: std::collections::HashSet<String> =
@@ -260,7 +264,7 @@ mod sync_tests {
         assert_eq!(ids.len(), 3, "three distinct templates, three distinct ids");
         assert!(
             ids.contains(before.get("a").unwrap()),
-            "the 1.0.0 entry keeps its id when a 2.0.0 sibling appears"
+            "the \"a\" entry keeps its id when an unrelated template appears"
         );
     }
 

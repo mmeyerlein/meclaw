@@ -28,7 +28,7 @@
 
 use super::MutationError;
 use meclaw_core::JsonValue;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub fn substitute_env_only(
     diff: &JsonValue,
@@ -189,6 +189,66 @@ fn resolve_env_token(inner: &str, env: &HashMap<String, String>) -> Result<Strin
 
 fn replace_env(s: &str, env: &HashMap<String, String>) -> Result<String, MutationError> {
     expand(s, |inner| resolve_env_token(inner, env))
+}
+
+/// Every `${ctx.<key>}` key that occurs in a STRING VALUE of `value` (GH #292).
+///
+/// This is the read half of the `requires.ctx` declaration: what a template
+/// ASKS for is derived from what it USES, so the two cannot drift apart. It is
+/// asked of the substrate's own scanner ([`expand_with`], the one
+/// [`substitute_instance_only`] resolves with) rather than of a pattern of its
+/// own, and three properties follow from that rather than from a rule written
+/// down here:
+///
+/// - an escaped `$${ctx.x}` is a literal, so it is not a requirement — the
+///   scanner never hands an escape to the resolver;
+/// - a malformed token (`${ctx.x` with no closing brace) is the SAME error it
+///   already is on the resolving path, instead of a key silently dropped;
+/// - object KEYS are not scanned. A key literally named `ctx.model` is a name,
+///   not a placeholder, and only values are ever substituted.
+///
+/// The result is ordered, so a message listing missing or superfluous keys is
+/// stable.
+pub fn collect_ctx_keys(value: &JsonValue) -> Result<BTreeSet<String>, MutationError> {
+    // `expand_with` takes `impl Fn`; the accumulator therefore needs interior
+    // mutability, the same single-threaded RefCell as `replace_full`'s uuid7
+    // cache (one cell task, no contention — AGENTS.md concurrency model).
+    let found = std::cell::RefCell::new(BTreeSet::new());
+    walk_ctx_keys(value, &found)?;
+    Ok(found.into_inner())
+}
+
+fn walk_ctx_keys(
+    v: &JsonValue,
+    found: &std::cell::RefCell<BTreeSet<String>>,
+) -> Result<(), MutationError> {
+    match v {
+        JsonValue::String(s) => {
+            // The expansion itself is discarded: every token resolves to the
+            // empty string, because the question is WHICH keys occur and no
+            // value is available (or needed) to answer it.
+            expand_with(s, true, |inner| {
+                if let Some(key) = inner.strip_prefix("ctx.") {
+                    found.borrow_mut().insert(key.to_owned());
+                }
+                Ok(String::new())
+            })?;
+            Ok(())
+        }
+        JsonValue::Array(a) => {
+            for item in a {
+                walk_ctx_keys(item, found)?;
+            }
+            Ok(())
+        }
+        JsonValue::Object(m) => {
+            for val in m.values() {
+                walk_ctx_keys(val, found)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Phase-6 T8: substitute both `${ENV_VAR}` and `${ctx.<key>}`. `${uuid7:*}` still
@@ -881,6 +941,46 @@ mod tests {
         env.insert("V".into(), "v".into());
         let out = substitute_mutation_diff(&json!(["${V}"]), &env, &HashMap::new()).unwrap();
         assert_eq!(out[0], "v");
+    }
+
+    // --- GH #292: which ctx keys a JSON value USES ---
+
+    /// The exact shape of the brief: two keys in string values (one nested, one
+    /// mixed with an env token), a KEY that merely looks like a token, and an
+    /// escaped token that is a literal and therefore not a requirement.
+    #[test]
+    fn collect_ctx_keys_reads_string_values_only() {
+        let v = json!({
+            "a": "${ctx.model}",
+            "b": {"c": "${ctx.model_fast}/${ENV}"},
+            "ctx.not_a_token": 1,
+            "d": "$${ctx.escaped}"
+        });
+        let keys = collect_ctx_keys(&v).unwrap();
+        assert_eq!(
+            keys,
+            ["model", "model_fast"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<String>>()
+        );
+    }
+
+    /// Arrays are walked, and one key used twice is one requirement.
+    #[test]
+    fn collect_ctx_keys_walks_arrays_and_deduplicates() {
+        let v = json!({"xs": ["${ctx.model}", {"y": "${ctx.model}"}, "${uuid7:s}", 7]});
+        let keys = collect_ctx_keys(&v).unwrap();
+        assert_eq!(keys.len(), 1, "one key, however often it occurs: {keys:?}");
+        assert!(keys.contains("model"));
+    }
+
+    /// The scanner is the substrate's own, so a token nothing can resolve is the
+    /// same error here as on the resolving path — not a silently dropped key.
+    #[test]
+    fn collect_ctx_keys_reports_a_malformed_token_as_the_substrate_does() {
+        let err = collect_ctx_keys(&json!({"x": "${ctx.model"})).unwrap_err();
+        assert_eq!(err.error_code(), "schema");
     }
 
     #[test]

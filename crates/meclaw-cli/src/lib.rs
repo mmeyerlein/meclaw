@@ -791,6 +791,10 @@ pub async fn run_with_hooks_tuned(
         Some(blob_store.clone()),
         cli.env.clone(), // U8 (RULED A8): the colony remembers its env source from startup — the same source as the boot substitution path (bootstrap_from_filesystem_with_env below)
     )
+    // GH #277: the same library the boot scan and `ColonyHandle` use, so a
+    // rescan triggered from inside the colony walks `--templates` and not the
+    // whole workspace.
+    .with_templates_root(templates_root.clone())
     .with_heartbeat(heartbeat_tx);
     if let Some(egress_tx) = egress_tx_opt {
         colony_cfg = colony_cfg.with_egress(egress_tx);

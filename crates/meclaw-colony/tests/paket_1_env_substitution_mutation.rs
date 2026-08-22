@@ -151,7 +151,7 @@ fn setup(
     std::fs::write(tpl_dir.join("template.json"), r#"{"name":"recorder"}"#).unwrap();
     std::fs::write(
         tpl_dir.join("config.json"),
-        r#"{"cell":{"type":"recorder"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"recorder"},"params":{"greeting":""},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 

@@ -753,10 +753,14 @@ fn build_mutation_reply(
             "outcome": "committed",
             "id": id,
         }),
+        // GH #293 — `violations` is deliberately NOT on this wire yet. The EDA
+        // reply body is a public contract surface (README § Stability), and the
+        // rendered `details` already carries every violation, one per line.
         MutationOutcome::Rejected {
             id,
             error_code,
             details,
+            violations: _,
         } => meclaw_core::serde_json::json!({
             "outcome": "rejected",
             "id": id,

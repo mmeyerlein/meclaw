@@ -83,31 +83,52 @@ fn retrieve_script(root: &Path) -> String {
         .to_string()
 }
 
-/// Run the shipped script exactly as the `code` cell runs it: `params.runner`
-/// with the script via `-c`, the stdin document in the three-key wire shape.
-fn run_retrieve(root: &Path, stdin_doc: Value) -> Value {
+/// Run a shipped script over a real stdin document, handing the script to the
+/// runner **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `<runner> -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `-c` ran it: same `__main__` globals, same stdout, same
+/// exit status.
+fn run_script_on_stdin(runner: &str, script: &str, stdin_doc: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let cfg = read_json(&root.join("retrieve/config.json"));
-    let runner = cfg["params"]["runner"].as_str().unwrap();
-    let script = retrieve_script(root);
-
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        meclaw_core::serde_json::to_string(script).unwrap(),
+        meclaw_core::serde_json::to_string(stdin_doc).unwrap(),
+    );
     let mut child = Command::new(runner)
-        .arg("-c")
-        .arg(&script)
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn the shipped runner");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin_doc.to_string().as_bytes())
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
+/// Run the shipped script exactly as the `code` cell runs it: `params.runner`
+/// with the shipped script, the stdin document in the three-key wire shape.
+fn run_retrieve(root: &Path, stdin_doc: Value) -> Value {
+    let cfg = read_json(&root.join("retrieve/config.json"));
+    let runner = cfg["params"]["runner"].as_str().unwrap();
+    let script = retrieve_script(root);
+
+    let out = run_script_on_stdin(runner, &script, &stdin_doc.to_string());
     assert!(
         out.status.success(),
         "retrieve exited {:?}\nstderr: {}",

@@ -58,27 +58,51 @@ fn assemble_params(over: &[(&str, &str)]) -> serde_json::Value {
     serde_json::Value::Object(p)
 }
 
+/// Run a shipped script over a real stdin document, handing the script to
+/// python3 **on stdin** instead of in argv.
+///
+/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
+/// scripts have grown to within a few KB of that line, so `python3 -c <whole
+/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
+/// precedent 89a522e4). stdin carries the program, so the document rides inside
+/// it and is put under `sys.stdin` before the script runs. From there the script
+/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
+/// stdout, same exit status.
+fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(stdin_doc).unwrap(),
+    );
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 /// Run the real script against a real stdin document and return the emitted
 /// messages.
 fn emit_with(over: &[(&str, &str)], doc: serde_json::Value) -> Vec<serde_json::Value> {
     let mut doc = doc;
     // Last, exactly like `build_stdin_json` -- a body slot cannot shadow it.
     doc["params"] = assemble_params(over);
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(assemble_script())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
+    let out = run_script_on_stdin(
+        &assemble_script(),
+        &meclaw_testing::code_stdin(&doc).to_string(),
+    );
     assert!(
         out.status.success(),
         "assemble exited non-zero: {}",
@@ -154,6 +178,20 @@ fn leg_window_row(turns: serde_json::Value, dropped: i64, capped: i64) -> serde_
     serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-window",
                        "turn": payload.to_string(), "fired": 0})
 }
+
+/// The readable half of a bundle in the form `memory-hive@2.3.0` renders it: an
+/// ASSERTING opening line (#279) and one section per kind (#281).
+const READABLE: &str = "WHAT THIS MEMORY HOLDS (as of 2026-08-16)\n\
+                        FACTS (extracted, canonical, dated)\n  \
+                        alex editor = the editor is helix   since 2026-08-01";
+
+/// The machine-readable half beside it, with the slim payload candidates of
+/// #296 — no row ids, no fused scores, no legs.
+const BUNDLE_JSON: &str = "{\"answers\": \"direct\", \"as_of\": \"2026-08-16T00:00:00Z\", \
+                           \"query\": \"and my editor?\", \"tier\": 0}";
+
+/// The one sentence a bundle with no candidate says about itself (#297).
+const EMPTY_STATE: &str = "Nothing in this memory answers this question (as of 2026-08-16).";
 
 fn texts_of(msg: &serde_json::Value) -> Vec<String> {
     msg["messages"]
@@ -477,6 +515,17 @@ fn the_brain_is_handed_one_assembled_context_over_one_route() {
     assert_eq!(msg["header"]["iter"], "0", "the first call of the turn");
 }
 
+/// The memory leg end to end: asked once per turn, filed as a leg, and handed
+/// to the brain VERBATIM up to its cap.
+///
+/// The last third moved with GH #278. The bundle used to reach the brain in
+/// `system.memory` — durable state, upserted per slot path, sitting where the
+/// agent's instructions live. It now reaches it as what it is: the result of a
+/// `memory_recall` call, at the end of the round, in the round's own budget.
+/// The two halves of the claim are unchanged — the collector renders nothing of
+/// its own, and `memory_form` chooses which form travels — only the channel is
+/// different, and `gh278_the_ambient_recall_is_a_tool_result.rs` is where the
+/// channel itself is pinned.
 #[test]
 fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
     let over = [("memory_tier", "0")];
@@ -504,15 +553,15 @@ fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
     let bundle = serde_json::json!({
         "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0"},
                    "hop": {"route": "in_bundle"}},
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"}}},
+        "system": {"memory": {"bundle": {"text": BUNDLE_JSON}}},
         "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                      "text": "MEMORY (tier 0)\n- belief: the editor is helix"}]
+                      "text": READABLE}]
     });
     let out = emit_with(&over, bundle);
     let op = op_of(&out[0]);
     assert_eq!(op["row"]["role"], "leg-memory");
 
-    // And it reaches the brain in the system slot, not in the conversation.
+    // And it reaches the brain as the answer to a call, not as durable state.
     let leg_memory = serde_json::json!({
         "turn_id": "t1", "iter": 0, "role": "leg-memory",
         "turn": op["row"]["turn"], "fired": 0
@@ -528,32 +577,52 @@ fn the_memory_bundle_enters_through_the_collector_and_verbatim() {
     let out = emit_with(&over, reply_doc("fire", "select", 2, rows.clone()));
     assert_eq!(out.len(), 1);
     let msg = &out[0];
+    let msgs = msg["messages"].as_array().expect("messages");
+    assert_eq!(msgs.len(), 3, "the conversation, then the pair: {msg}");
+    assert_eq!(msgs[0]["text"], "and my editor?");
+    assert_eq!(msgs[1]["type"], "tool_call");
+    assert_eq!(msgs[2]["type"], "tool_result");
+    assert_eq!(msgs[2]["id"], msgs[1]["id"], "a result answers its call");
     assert_eq!(
-        msg["system"]["memory"]["recall"]["text"], "MEMORY (tier 0)\n- belief: the editor is helix",
-        "the readable form the memory hive rendered, byte for byte"
+        msgs[2]["text"], READABLE,
+        "the readable form the memory hive rendered, byte for byte: {msg}"
     );
     assert_eq!(
-        texts_of(msg),
-        vec!["and my editor?"],
-        "a tool_result without its tool_call has no business in a chat thread"
+        msg["system"]["memory"]["recall"]["text"], "",
+        "and nothing of it stays behind in durable state (GH #278): {msg}"
     );
+
     // The machine-readable half is a configuration choice, not a second render.
     let out = emit_with(
         &[("memory_tier", "0"), ("memory_form", "json")],
         reply_doc("fire", "select", 2, rows),
     );
+    let msgs = out[0]["messages"].as_array().expect("messages");
+    let last: serde_json::Value =
+        serde_json::from_str(msgs[msgs.len() - 1]["text"].as_str().expect("result text"))
+            .expect("the json form is json");
     assert_eq!(
-        out[0]["system"]["memory"]["bundle"]["text"],
-        "{\"beliefs\":[]}"
+        last,
+        serde_json::json!({"bundle": {"text": BUNDLE_JSON}}),
+        "under `json` the same channel carries the other form: {}",
+        out[0]
     );
-    assert!(out[0]["system"]["memory"]["recall"].is_null());
 }
 
-/// GH #259, the SAME class on the other slot family: a recall that came back
-/// with nothing has to overwrite the previous turn's bundle, because
-/// `system.memory.recall` is a fixed path that the brain cell upserts and
-/// never expires on its own. A bundle from a turn ago, presented as this
-/// turn's memory, is the worse half of the same bug.
+/// GH #259, re-pointed by GH #278: a recall that came back with nothing must
+/// not leave the previous turn's bundle standing in the prompt.
+///
+/// The bug #259 named is closed twice over now. The bundle no longer LIVES in
+/// `system.memory`, so a stale one cannot survive there in the first place —
+/// and the fixed path is sent empty every turn regardless, because a brain that
+/// was written to by an older collector still carries whatever stood there
+/// last (`system.*` is upserted per slot path; a path nobody sends is a path
+/// nobody touches).
+///
+/// What replaces the old assertion is the honest one: an empty leg still
+/// produces a PAIR, and its result says so in words. A turn where memory was
+/// asked and answered nothing is a different fact from a turn where memory was
+/// never asked, and the model has to be able to tell them apart.
 ///
 /// Two rounds, and the second one is the test.
 #[test]
@@ -568,11 +637,18 @@ fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
         serde_json::json!({"turn_id": "t1", "iter": 0, "role": "leg-memory",
                            "turn": payload.to_string(), "fired": 0})
     };
+    let last_text = |out: &[serde_json::Value]| {
+        let msgs = out[0]["messages"].as_array().expect("messages").clone();
+        msgs[msgs.len() - 1]["text"]
+            .as_str()
+            .expect("result text")
+            .to_string()
+    };
 
     let full = leg(serde_json::json!({
         "system": {},
         "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                      "text": "MEMORY (tier 0)\n- belief: the editor is helix"}]
+                      "text": READABLE}]
     }));
     let first = emit_with(
         &over,
@@ -583,23 +659,48 @@ fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
             serde_json::json!([window.clone(), full]),
         ),
     );
-    assert_eq!(
-        first[0]["system"]["memory"]["recall"]["text"],
-        "MEMORY (tier 0)\n- belief: the editor is helix"
-    );
+    assert_eq!(last_text(&first), READABLE);
 
-    // Round two: the leg fired and came back empty.
+    // Round two: the leg fired and came back with nothing at all.
     let empty = leg(serde_json::json!({"system": {}, "messages": []}));
     let second = emit_with(
         &over,
-        reply_doc("fire", "select", 2, serde_json::json!([window, empty])),
+        reply_doc(
+            "fire",
+            "select",
+            2,
+            serde_json::json!([window.clone(), empty]),
+        ),
+    );
+    assert_eq!(
+        last_text(&second),
+        "memory recall returned nothing",
+        "an empty leg still answers its call -- a tool_call left unanswered is \
+         a malformed turn for every provider: {}",
+        second[0]
     );
     assert_eq!(
         second[0]["system"]["memory"]["recall"]["text"], "",
-        "the empty bundle must be SENT -- an omitted path leaves the previous \
-         turn's memory standing in the prompt: {}",
+        "and the fixed path is still revoked, whatever an older collector left \
+         standing there: {}",
         second[0]
     );
+
+    // Round three: the empty state a `memory-hive@2.3.0` actually emits — one
+    // sentence in the payload, `answers: none` beside it. It travels as itself;
+    // the collector renders nothing of its own here either.
+    let sentence = leg(serde_json::json!({
+        "system": {"memory": {"bundle": {"text":
+            "{\"answers\": \"none\", \"as_of\": \"2026-08-16T00:00:00Z\", \
+              \"candidates\": [], \"query\": \"and my editor?\"}"}}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": EMPTY_STATE}]
+    }));
+    let third = emit_with(
+        &over,
+        reply_doc("fire", "select", 2, serde_json::json!([window, sentence])),
+    );
+    assert_eq!(last_text(&third), EMPTY_STATE, "{}", third[0]);
 }
 
 /// GH #266, the half #259 could not reach: the `json` form of the recall
@@ -608,6 +709,12 @@ fn a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before() {
 /// path leaves a key nobody sends standing in the prompt. The repair is the GH
 /// #264 marker on the ONE node the collector owns, `system.memory`: below it,
 /// exactly what this message carries holds.
+///
+/// GH #278 makes the same guarantee STRONGER and the test says so: no
+/// hive-named key reaches `system` at all any more, because the bundle no
+/// longer travels there. The marker stays, and it is not redundant — a brain
+/// written to by an older collector, or by any other writer that ever put a key
+/// under this node, is cleared by exactly this message and by nothing else.
 ///
 /// Two rounds, and the second one is the test — a pin on the first round is
 /// green with and without the repair, the same lesson as GH #259.
@@ -626,7 +733,7 @@ fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
 
     // Round one: the hive names two keys.
     let two = leg(serde_json::json!({
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"},
+        "system": {"memory": {"bundle": {"text": BUNDLE_JSON},
                               "answer": {"text": "helix"}}},
         "messages": []
     }));
@@ -639,11 +746,15 @@ fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
             serde_json::json!([window.clone(), two]),
         ),
     );
-    assert_eq!(first[0]["system"]["memory"]["answer"]["text"], "helix");
+    assert!(
+        first[0]["system"]["memory"]["answer"].is_null(),
+        "a hive-named key has no business in durable state (GH #278): {}",
+        first[0]
+    );
 
     // Round two: the same leg, one key. The other is not named and cannot be.
     let one = leg(serde_json::json!({
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[1]}"}}},
+        "system": {"memory": {"bundle": {"text": BUNDLE_JSON}}},
         "messages": []
     }));
     let second = emit_with(
@@ -654,21 +765,29 @@ fn a_json_key_the_next_turn_does_not_name_is_revoked_with_the_bundle() {
     assert_eq!(
         mem["$replace"],
         serde_json::json!(true),
-        "without the marker the brain keeps `memory.answer` from the turn \
-         before, and the collector has no path to name it empty: {}",
+        "without the marker the brain keeps `memory.answer` from whoever wrote \
+         it, and the collector has no path to name it empty: {}",
         second[0]
     );
-    assert_eq!(mem["bundle"]["text"], "{\"beliefs\":[1]}");
     assert!(
         mem.get("answer").is_none(),
         "the collector must not invent the key it is revoking: {}",
         second[0]
     );
+    // Where the bundle went instead.
+    let msgs = second[0]["messages"].as_array().expect("messages");
+    assert_eq!(msgs[msgs.len() - 1]["type"], "tool_result", "{}", second[0]);
 }
 
 /// GH #266 — the marker covers BOTH legs, because both hang under the same
 /// node. One marker, no second one, and the `text` form keeps the fixed path
 /// GH #259 gave it.
+///
+/// GH #278 emptied both legs of their data: under every form the node now holds
+/// the revocation and nothing else, and the bundle — in whichever form
+/// `memory_form` selects — is the tool result at the end of the round. The
+/// marker and the fixed leaf are what remains, and what they cover is the same
+/// subtree as before.
 #[test]
 fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
     let over = [("memory_tier", "0"), ("memory_form", "both")];
@@ -683,10 +802,10 @@ fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
     };
 
     let two = leg(serde_json::json!({
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[]}"},
+        "system": {"memory": {"bundle": {"text": BUNDLE_JSON},
                               "answer": {"text": "helix"}}},
         "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                      "text": "MEMORY (tier 0)"}]
+                      "text": READABLE}]
     }));
     let first = emit_with(
         &over,
@@ -697,16 +816,21 @@ fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
             serde_json::json!([window.clone(), two]),
         ),
     );
-    assert_eq!(first[0]["system"]["memory"]["answer"]["text"], "helix");
+    assert!(
+        first[0]["system"]["memory"]["answer"].is_null(),
+        "{}",
+        first[0]
+    );
     assert_eq!(
-        first[0]["system"]["memory"]["recall"]["text"],
-        "MEMORY (tier 0)"
+        first[0]["system"]["memory"]["recall"]["text"], "",
+        "the fixed leaf is a revocation now, not a rendering: {}",
+        first[0]
     );
 
     let one = leg(serde_json::json!({
-        "system": {"memory": {"bundle": {"text": "{\"beliefs\":[1]}"}}},
+        "system": {"memory": {"bundle": {"text": BUNDLE_JSON}}},
         "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
-                      "text": "MEMORY (tier 0) again"}]
+                      "text": READABLE}]
     }));
     let second = emit_with(
         &over,
@@ -716,18 +840,25 @@ fn under_both_forms_one_marker_covers_the_whole_memory_subtree() {
     assert_eq!(
         mem["$replace"],
         serde_json::json!(true),
-        "one marker above both legs, or the json leg keeps its stale key: {}",
+        "one marker above both legs, or a stale key from any writer stands: {}",
         second[0]
     );
     assert!(mem.get("answer").is_none(), "{}", second[0]);
-    assert_eq!(
-        mem["recall"]["text"], "MEMORY (tier 0) again",
-        "the readable leg keeps the FIXED path GH #259 gave it, below the \
-         marked node instead of beside a second marker"
-    );
     assert!(
         mem["recall"].get("$replace").is_none(),
         "the readable leaf carries no marker of its own: {}",
+        second[0]
+    );
+    // Both forms, one channel: `both` concatenates them into the ONE result.
+    let msgs = second[0]["messages"].as_array().expect("messages");
+    let result = msgs[msgs.len() - 1]["text"].as_str().expect("result text");
+    let tail = result
+        .strip_prefix(&format!("{READABLE}\n"))
+        .unwrap_or_else(|| panic!("the readable half comes first: {result}"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(tail).expect("the json half is json"),
+        serde_json::json!({"bundle": {"text": BUNDLE_JSON}}),
+        "{}",
         second[0]
     );
 }
@@ -779,42 +910,52 @@ fn the_marker_sits_on_the_memory_node_and_on_nothing_else() {
     );
 }
 
-/// GH #266 — the bare marker as the honest pure revocation. In the `json` form
-/// there is no fixed path to send empty, so a leg that found nothing has
-/// nothing to write and everything to withdraw. Before the marker this
-/// projection carried no `system.memory` at all, and the previous turn's
-/// bundle stood in the prompt untouched.
+/// GH #266 — the marker as the honest pure revocation, RE-POINTED by GH #278.
 ///
-/// The `readable` leg keeps its empty leaf instead (see
-/// `a_recall_that_found_nothing_overwrites_the_bundle_of_the_turn_before`):
-/// that path is FIXED and collector-owned, and its owner must not change with
-/// what the hive happened to return.
+/// The `json` form was the case that needed it: no fixed path to send empty, so
+/// a leg that found nothing had nothing to write and everything to withdraw.
+/// Since #278 that is the case for EVERY form and every leg — the node carries
+/// no data at all any more — and the revocation is therefore one literal rather
+/// than something assembled out of what the hive returned.
+///
+/// The empty leaf travels with it under every form, and that is a change: it
+/// used to be the `readable` leg's own path, which made its owner depend on a
+/// knob. A fixed path does not change owner per instance, and an instance
+/// retuned from `readable` to `json` would otherwise carry its last rendering
+/// for the rest of its life.
 #[test]
-fn a_json_bundle_that_found_nothing_revokes_with_a_bare_marker() {
-    let over = [("memory_tier", "0"), ("memory_form", "json")];
-    let rows = serde_json::json!([
-        leg_window_row(
-            serde_json::json!([{"role": "user", "text": "and my editor?"}]),
-            0,
-            0
-        ),
-        {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
-         "turn": serde_json::json!({"system": {}, "messages": []}).to_string()}
-    ]);
-    let out = emit_with(&over, reply_doc("fire", "select", 2, rows));
-    assert_eq!(
-        out[0]["system"]["memory"],
-        serde_json::json!({"$replace": true}),
-        "an empty json bundle is a revocation and nothing else: {}",
-        out[0]
-    );
+fn a_bundle_that_found_nothing_revokes_under_every_form() {
+    for form in ["readable", "json", "both"] {
+        let over = [("memory_tier", "0"), ("memory_form", form)];
+        let rows = serde_json::json!([
+            leg_window_row(
+                serde_json::json!([{"role": "user", "text": "and my editor?"}]),
+                0,
+                0
+            ),
+            {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
+             "turn": serde_json::json!({"system": {}, "messages": []}).to_string()}
+        ]);
+        let out = emit_with(&over, reply_doc("fire", "select", 2, rows));
+        assert_eq!(
+            out[0]["system"]["memory"],
+            serde_json::json!({"recall": {"text": ""}, "$replace": true}),
+            "under `memory_form` {form} the node is a revocation and nothing \
+             else: {}",
+            out[0]
+        );
+    }
 }
 
 /// GH #266 — the marker is the collector's own statement about a node it owns,
 /// so a bundle key of the same name cannot overwrite it with data. `$` is the
-/// substrate's reserved namespace inside a system subtree; the collector
-/// stamps its marker after the legs, which is the only reason a hive that
-/// emits `$replace` cannot silently switch the revocation off.
+/// substrate's reserved namespace inside a system subtree.
+///
+/// GH #278 turned the protection from an ORDERING into a structural one, and
+/// that is worth keeping a test on: the marker used to be stamped after the
+/// legs, so a hive emitting `$replace: false` was beaten by one line of
+/// sequencing. Now nothing a hive emits reaches this node at all — the slot is
+/// a literal — and a bundle that names the marker cannot even be considered.
 #[test]
 fn a_bundle_key_cannot_overwrite_the_marker() {
     let over = [("memory_tier", "0"), ("memory_form", "json")];
@@ -1169,8 +1310,14 @@ fn the_first_assembly_of_a_turn_is_never_the_capped_one() {
     assert_eq!(out[0]["header"]["round_capped"], "0");
 }
 
+/// GH #91, re-pointed by GH #278: `memory_chars` caps the bundle where the
+/// bundle now travels — the tool result of the round, not a `system` leaf. Same
+/// knob, same discipline, same reason: an oversized bundle would otherwise pass
+/// every other window knob uncapped, and the full text stays addressable in the
+/// `round` table either way. `hop.memory_capped` keeps its meaning and is
+/// measured on the result.
 #[test]
-fn the_rendered_memory_bundle_is_capped_before_it_enters_the_system_slot() {
+fn the_rendered_memory_bundle_is_capped_before_it_enters_the_round() {
     let big = "m".repeat(500);
     let bundle = serde_json::json!({
         "system": {"memory": {"bundle": {"text": big}}},
@@ -1181,17 +1328,22 @@ fn the_rendered_memory_bundle_is_capped_before_it_enters_the_system_slot() {
         {"turn_id": "t1", "iter": 0, "role": "leg-memory",
          "turn": bundle.to_string(), "fired": 0}
     ]);
+    let capped_len = |out: &[serde_json::Value]| {
+        let msgs = out[0]["messages"].as_array().expect("messages").clone();
+        msgs[msgs.len() - 1]["text"]
+            .as_str()
+            .expect("result text")
+            .len()
+    };
     let out = emit_with(
         &[("memory_tier", "0"), ("memory_chars", "20")],
         reply_doc("fire", "select", 2, rows.clone()),
     );
     assert_eq!(
-        out[0]["system"]["memory"]["recall"]["text"]
-            .as_str()
-            .expect("recall")
-            .len(),
+        capped_len(&out),
         20,
-        "an oversized bundle cannot flood the window past every other knob"
+        "an oversized bundle cannot flood the window past every other knob: {}",
+        out[0]
     );
     assert_eq!(out[0]["header"]["memory_capped"], "1");
 
@@ -1204,13 +1356,8 @@ fn the_rendered_memory_bundle_is_capped_before_it_enters_the_system_slot() {
         ],
         reply_doc("fire", "select", 2, rows),
     );
-    assert_eq!(
-        out[0]["system"]["memory"]["bundle"]["text"]
-            .as_str()
-            .expect("bundle")
-            .len(),
-        20
-    );
+    assert_eq!(capped_len(&out), 20, "{}", out[0]);
+    assert_eq!(out[0]["header"]["memory_capped"], "1");
 }
 
 #[test]

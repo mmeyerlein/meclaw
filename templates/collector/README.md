@@ -1,4 +1,4 @@
-# `collector@2.0.6`
+# `collector@2.1.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -14,10 +14,19 @@ the window and what leaves it**, in one place, and hands the result to the brain
   before it calls the brain. That is the whole "the agent only knows its current turn"
   gap: turn 3 can name what turn 1 said because the window carried it, not because a
   retrieval leg happened to find it.
-- **The memory bundle, through one door.** With `memory_tier` set, every turn
-  asks the memory hive once, and the bundle enters the context in `system.memory`. The
-  collector renders nothing of its own; it only chooses which of the two forms the memory
-  hive emitted travels on, and how much of it.
+- **The memory bundle, as the evidence of a round.** With `memory_tier` set, every turn
+  asks the memory hive once, and what comes back enters the round as a synthetic
+  `memory_recall` **pair** at the end of `messages[]`: a `tool_call` nobody emitted, under
+  a call id derived from the bundle itself (`call_recall_` + a sha256 over `as_of` and the
+  query, so a re-assembly of the same turn is the same call and not a second question; a
+  tier-0 bundle carries no `as_of` at all -- it is a deterministic projection, not a dated
+  lookup -- so the hash falls back to the rendered block, and two tier-0 turns whose bundle
+  renders identically share an id, which is the honest reading: it is the same evidence,
+  handed over again), and the bundle as its `tool_result` (`collector@2.1.0`,
+  [#278](https://github.com/mmeyerlein/meclaw/issues/278)). What is left under
+  `system.memory` is the **revocation** of the slot the bundle used to occupy, and nothing
+  else. The collector renders nothing of its own; it only chooses which of the two forms
+  the memory hive emitted travels on, and how much of it.
 - **A memory the model can ask itself.** That ambient leg is fired before the model has
   seen the turn, so nothing in an agent could ever *decide* to ask about a **time range**
   (GH #78). The `in_memory_call` lane closes it: the brain emits a `memory_recall`
@@ -92,7 +101,7 @@ Exits leave **from the hive path** on `hop.route`:
 
 | route | to | notes |
 |---|---|---|
-| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. The same rule holds for `system.memory.recall`: a recall leg that came back with nothing sends an empty text and overwrites the previous turn's bundle. An empty `text` leaf contributes nothing to the system prompt. Since `collector@2.0.4` the whole `system.memory` node carries `"$replace": true` (GH #264): the collector fills that node wholesale every turn, and the marker is what lets it revoke the `json` form's keys, which are named by the memory hive and which no fixed path could name empty. **Consequence for an `llm` cell with a `system_writable` allowlist**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone no longer suffices. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
+| `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
 | `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
@@ -146,17 +155,32 @@ Two consequences, both deliberate:
   one message answers all of it in one message, and the fan-in closes every call in it.
   Until `collector@2.0.2` the lane kept `messages[0]`, so the other calls stayed open and
   the round waited for results that had already arrived until `round_idle_ms` expired.
-- **A `system` slot on this lane is dropped, and so is a top-level body slot.** The
-  `in_bundle` lane keeps `system` and it is *not* the precedent it looks like. What leaves
-  the seam in `system.*` is UPSERTed into the brain cell's own `cell.db` and stands in the
-  prompt until something overwrites that exact slot path -- it is durable state of the
-  agent, not evidence of one round. The recall bundle survives that treatment because it
-  is re-sent under a fixed path on **every** turn and can never go stale; a single tool
-  result gets no second chance to correct itself, and a brief about one subject would
-  still be in the prompt three subjects later. `system.*` is also out of the curator's
-  reach and out of the round's byte budget on purpose -- it is where hard *constraints*
-  belong -- so a tool writing there would grow the prompt with nothing left able to cut
-  it, against a slot budget the `llm` cell caps at 256 (GH #118).
+- **A `system` slot on this lane is dropped, and so is a top-level body slot.** What
+  leaves the seam in `system.*` is UPSERTed into the brain cell's own `cell.db` and stands
+  in the prompt until something overwrites that exact slot path -- it is durable state of
+  the agent, not evidence of one round. A single tool result gets no second chance to
+  correct itself, and a brief about one subject would still be in the prompt three
+  subjects later. `system.*` is also out of the curator's reach on purpose -- it is where
+  hard *constraints* belong -- so a tool writing there would grow the prompt with nothing
+  left able to cut it, against a slot budget the `llm` cell caps at 256 (GH #118).
+
+  **Retracted in `collector@2.1.0`
+  ([#278](https://github.com/mmeyerlein/meclaw/issues/278)).** Up to `collector@2.0.6`
+  this paragraph made one exception and named it here: the recall bundle, it argued,
+  *survives* durable treatment because it is re-sent under a fixed path on **every** turn
+  and can therefore never go stale. That argument is withdrawn, and the bundle has left
+  `system.*` altogether. Three consequences were measured, and re-sending addresses none
+  of them: a model shown a lookup in the place its instructions live **discounts** it, the
+  way it discounts any configuration; a slot nothing expires goes **stale in silence** the
+  first turn that does not re-send it -- a restart, a tier switched off, a recall port that
+  stopped answering -- and nothing in the prompt says so; and `system.*` is out of the
+  curator's reach, so the bytes of the one payload that grows with an agent's memory were
+  counted as an anonymous lump of `sys_chars` that no stage could attribute to anything.
+  The bundle now travels as the `memory_recall` `tool_result` of its own round -- the
+  channel this hive already served on `in_memory_call` (GH #78) -- where it is evidence
+  under a name, expires with the round it was fetched for, and is counted item by item
+  beside every other result. The `in_bundle` lane still keeps `system`, because that is how
+  the bundle reaches this cell at all; what changed is where it goes from here.
 
 **So a tool with structure to hand back puts it in the text of its result**, serialised
 however its caller can read it. That is not a workaround for a missing channel; it is the
@@ -184,11 +208,11 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `turn_chars` | `4000` | per-turn character cap applied before the byte cap, so one pathological turn cannot eat the window. |
 | `tool_chars` | `4000` | per-item character cap on tool **result** texts before they enter the seam. |
 | `round_bytes` | `16000` | byte cap over the whole tool round, counted from the newest iteration backwards. What does not fit falls as a whole **iteration**. |
-| `memory_chars` | `8000` | character cap on the memory bundle as it enters `system.memory` -- the readable block and every `{text}` leaf of the machine-readable form. |
+| `memory_chars` | `8000` | character cap on the memory bundle **where the bundle travels**: the synthetic `memory_recall` tool result. ONE cap over the whole result text, so under `memory_form: both` it bounds the readable block and the machine-readable form *together* rather than each of them separately. `hop.memory_capped` is measured on that result. |
 | `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
-| `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn. |
-| `memory_form` | `"readable"` | which form of the bundle reaches the brain: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both`. Applies to the ambient leg and to a `memory_recall` result alike. The `readable` form travels on the FIXED path `system.memory.recall`: a leg that found nothing sends an empty text and the previous turn's bundle is overwritten. The `json` form has no fixed path -- its sub-keys are named by the memory hive per bundle -- and is revoked instead by the marker on the node above it (see the `brain` lane, `collector@2.0.4`). Both forms therefore expire with the turn they belong to; under `both` the ONE marker covers both legs. |
+| `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
+| `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the ambient leg and to a model's own `memory_recall` call alike. Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `brain` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
 | `memory_call_tier` | `"1"` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
@@ -260,9 +284,16 @@ reports how far it had to go.
 #### What is never touched, at any stage and any budget
 
 - the **conversation window** -- every user and assistant turn, verbatim
-- **`system.*`** -- instructions, handover, the memory bundle. It counts towards the budget
-  and is never a candidate, which is exactly why hard constraints belong there and not in
-  the chat: what is only in the conversation is compaction-mortal everywhere else
+- **`system.*`** -- instructions and handover. It counts towards the budget and is never a
+  candidate, which is exactly why hard constraints belong there and not in the chat: what
+  is only in the conversation is compaction-mortal everywhere else. Since
+  `collector@2.1.0` the **memory bundle is no longer on this list** (GH #278): it is an
+  ordinary row of the round now, in `messages[]` beside every other result. Saying so
+  explicitly, because "not on the never-touched list" reads like "elidable" and it is not:
+  curation only ever touches results carrying an iteration tag, and the synthetic pair
+  belongs to no iteration -- and even if it did, `recoverability` classes everything it
+  does not name as **`unique`**, so `memory_recall` is `unique` unless somebody declares it
+  otherwise, and `unique` is never elided
 - the **`tool_call` name** of every round -- the action protocol (Anthropic's
   `clear_tool_inputs: false`). The record of *what* was done is what stops an agent from
   doing it a second time
@@ -864,6 +895,13 @@ still tell an event from a user's word.
   both legs under `both`, and -- the counter-pin that matters more -- the marker sits on
   that node and on no other, so `system.consult` and every slot the collector never wrote
   stay untouched.
+- `crates/meclaw-cells/tests/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
+  itself, since 2.1.0: the ambient bundle leaves the seam as the last `tool_call` /
+  `tool_result` pair of `messages[]`, the call id is derived and therefore stable across a
+  re-assembly of the same turn, `system.memory` carries the revocation and no data under
+  every `memory_form`, `memory_chars` caps the result text, the pair is appended before the
+  curator runs and is never a curation candidate, and a model's OWN `memory_recall` still
+  answers under its original `tool_call_id` without a synthetic pair.
 - `crates/meclaw-cells/tests/w9a_per_turn_episodes.rs` -- the per-turn lane at script
   level: the two occasions, the lane switched off by default, the day it hands out, and
   the proof that the `turn_write` document and the `write` document are the same

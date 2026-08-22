@@ -145,7 +145,7 @@ pub struct CellHeader {
 /// instance is a **detached copy**: `template.json` is stripped at staging, and
 /// an exported or restored tree has to be able to name its own origin without
 /// the colony that created it. `colony.db`'s `registry` table carries the same
-/// three values as a query index (see `ColonyWriteOp::SetRegistryProvenance`);
+/// four values as a query index (see `ColonyWriteOp::SetRegistryProvenance`);
 /// the file is the source, the table is the index.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NodeProvenance {
@@ -157,6 +157,22 @@ pub struct NodeProvenance {
     /// version" is a different fact from "the version is unknown".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_version: Option<String>,
+    /// GH #277: every template this node came through, outermost first, the
+    /// node's OWN template last — `[["outer","1.0.0"],["inner","1.0.0"]]`.
+    ///
+    /// [`template`](Self::template) / [`template_version`](Self::template_version)
+    /// are a projection of the last element, so the leaf stamp alone answers
+    /// "what is this node an instance of" — but not "which instances does a bump
+    /// of an inner template touch". Before this field the parent's name was
+    /// recorded and the child's was missing; the leaf stamp alone reverses that
+    /// loss instead of repairing it. Only the chain holds both ends: an update
+    /// addressing `outer` finds this node through the first hop, one addressing
+    /// `inner` through the last.
+    ///
+    /// A node instantiated from a ref-free template carries a one-element chain.
+    /// `None` means "written before this field existed", not "no chain".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_chain: Option<Vec<(String, Option<String>)>>,
     /// Unix seconds at which this node was instantiated. Same unit as every
     /// `created_at` in `colony.db`.
     pub instantiated_at: i64,

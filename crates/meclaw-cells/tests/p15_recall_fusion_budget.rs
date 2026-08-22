@@ -7,7 +7,8 @@
 //! stdin, and the `park()` exit at its end is swallowed so the probe can call
 //! `fuse_rank` directly with synthetic leg lists.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn recall_script() -> String {
     let raw = std::fs::read_to_string("../../templates/memory-hive/recall/config.json")
@@ -36,6 +37,29 @@ fn resolve_vars(script: &str) -> String {
     out
 }
 
+/// Hand a probe program to python3 **on stdin**, never in argv.
+///
+/// A probe embeds the whole shipped script as a literal, and a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`). The recall script crossed
+/// that line in W2, and the failure mode is an opaque `ArgumentListTooLong`
+/// that looks like a broken test rather than like a size limit. `python3 -`
+/// reads and compiles the whole program from stdin before it runs a line of
+/// it, so the probe's own `sys.stdin` replacement below is unaffected.
+fn run_python(src: &str) -> std::process::Output {
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
+    child.wait_with_output().expect("wait")
+}
+
 fn run_probe(probe: &str) -> String {
     let src = format!(
         concat!(
@@ -55,11 +79,7 @@ fn run_probe(probe: &str) -> String {
         serde_json::to_string(&recall_script()).unwrap(),
         probe
     );
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(src)
-        .output()
-        .expect("python3");
+    let out = run_python(&src);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -93,7 +113,7 @@ kw = [mkf("F01"), mke("E01"), mkf("F02"), mke("E02")] + \
      [mke("E%02d" % i) for i in range(3, 13)]
 temporal = [mkf("F01"), mkf("F02")] + [mkf("T%02d" % i) for i in range(3, 13)] + \
            [mkf("FVSCODE"), mkf("FHELIX")]
-ranked, _, _ = fuse_rank({"keyword": kw, "temporal": temporal})
+ranked, _, _, _ = fuse_rank({"keyword": kw, "temporal": temporal})
 ids, eps, facts = shape(ranked)
 print(len(ranked), eps, facts)
 print("FVSCODE" in ids, "FHELIX" in ids)
@@ -115,7 +135,7 @@ fn a_thin_episode_side_keeps_its_budget_against_a_full_fact_side() {
 kw = [mkf("F%02d" % i) for i in range(1, 18)] + [mke("E%d" % i) for i in range(1, 4)]
 sem = [mkf("F%02d" % i) for i in range(1, 31)]
 temporal = [mkf("F%02d" % i) for i in range(1, 31)]
-ranked, _, _ = fuse_rank({"keyword": kw, "semantic": sem, "temporal": temporal})
+ranked, _, _, _ = fuse_rank({"keyword": kw, "semantic": sem, "temporal": temporal})
 ids, eps, facts = shape(ranked)
 print(len(ranked), eps, facts)
 print(all("E%d" % i in ids for i in (1, 2, 3)))
@@ -135,7 +155,7 @@ fn the_budget_backfills_when_the_fact_side_cannot_fill_the_bundle() {
         r#"
 kw = [mkf("F1"), mke("E01"), mkf("F2")] + [mke("E%02d" % i) for i in range(2, 13)]
 temporal = [mkf("F1"), mkf("F2")]
-ranked, _, _ = fuse_rank({"keyword": kw, "temporal": temporal})
+ranked, _, _, _ = fuse_rank({"keyword": kw, "temporal": temporal})
 ids, eps, facts = shape(ranked)
 print(len(ranked), eps, facts)
 print("F1" in ids, "F2" in ids)
@@ -157,7 +177,7 @@ kw = [mkf("F01"), mke("E01"), mkf("F02"), mke("E02")] + \
      [mke("E%02d" % i) for i in range(3, 13)]
 temporal = [mkf("F01"), mkf("F02")] + [mkf("T%02d" % i) for i in range(3, 13)] + \
            [mkf("FVSCODE"), mkf("FHELIX")]
-ranked, scores, _ = fuse_rank({"keyword": kw, "temporal": temporal})
+ranked, scores, _, _ = fuse_rank({"keyword": kw, "temporal": temporal})
 # monotone non-increasing scores == no reordering happened, and no key was
 # duplicated by the membership filter.
 print(all(scores[a] >= scores[b] for a, b in zip(ranked, ranked[1:])))

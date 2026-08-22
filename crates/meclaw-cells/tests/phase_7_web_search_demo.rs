@@ -32,7 +32,7 @@ async fn setup_web_search_template(td: &tempfile::TempDir, h: &meclaw_testing::C
     std::fs::write(tpl.join("template.json"), r#"{"name":"web_search"}"#).unwrap();
     std::fs::write(
         tpl.join("config.json"),
-        r#"{"cell":{"type":"web_search"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"cell":{"type":"web_search"},"params":{"endpoint":"http://127.0.0.1:1","max_concurrency":1,"external_timeout_ms":30000},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();

@@ -77,10 +77,15 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
 fn write_templates(root: &std::path::Path) {
     let unit = root.join("templates").join("unit");
     write(&unit, "template.json", r#"{"name":"unit"}"#);
+    // GH #294: `ports` is an OPT-IN hive param, and an override may only name a
+    // param the addressed cell declares — so the root declares it as `null`,
+    // which is exactly the open, unsealed state `Option<Vec<String>>` reads out
+    // of an absent key. `the_subtree_root_is_addressed_by_the_empty_string`
+    // then seals it at instantiation, as before.
     write(
         &unit,
         "config.json",
-        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"./s","to":"./e"}]}}}"#,
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"./s","to":"./e"}]},"ports":null}}"#,
     );
     write(
         &unit,

@@ -225,10 +225,66 @@ fn exit_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
 /// `edges` is the table as it will be once the diff is applied: the mutation
 /// that instantiates a hive brings its own internal graph along, and a
 /// pre-state check would refuse exactly that mutation.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_lane_doors`]: the
+/// FIRST violation the collecting core produces is, by construction, the one
+/// this function returned before, so every verdict it ever gave is
+/// byte-identical.
 pub fn check_lane_doors(
     contracts: &[HiveContract],
     edges: &EdgeTable,
 ) -> Result<(), MutationError> {
+    addressed_lane_doors(contracts, edges)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _, _)| Err(error))
+}
+
+/// GH #293 — the lane-door check as a COLLECTING one: every declared lane of
+/// every wired, contracted hive that lost its door, in one refusal.
+///
+/// This is where the hive's own `because` becomes structured (spec § Part 3:
+/// "`required_drains[].because` and `LaneSpec.because` exist precisely to travel
+/// verbatim into a refusal"). The sentence stays in the message, exactly where
+/// it was, AND rides along in [`Violation::because`] — so a reader that wants
+/// the hive's reason no longer has to fish it out of prose with a bracket
+/// match.
+///
+/// Tagged [`Stage::ContractLocality`] because that is what it decides: whether
+/// the lanes a hive's contract promises are still local to it. It runs later in
+/// the pipeline than the other two contract-locality checks — it needs the
+/// POST-state edge table, which does not exist until the diff's edges are in RAM
+/// — and it keeps its own rollback path there.
+///
+/// **This changes no verdict** — see [`check_lane_doors`], which is now the
+/// first-error face of the same core.
+///
+/// [`Violation::because`]: crate::mutation::rejection::Violation::because
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_lane_doors(
+    contracts: &[HiveContract],
+    edges: &EdgeTable,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address, because) in addressed_lane_doors(contracts, edges) {
+        into.push(Violation::from_error_because(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+            because,
+        ));
+    }
+}
+
+/// The collecting core: every lane without a door, with the hive path it
+/// concerns and the hive's own sentence about that lane.
+fn addressed_lane_doors(
+    contracts: &[HiveContract],
+    edges: &EdgeTable,
+) -> Vec<(MutationError, String, String)> {
+    let mut violations = Vec::new();
     for c in contracts {
         if !hive_path_is_wired(c, edges) {
             continue;
@@ -237,31 +293,39 @@ pub fn check_lane_doors(
             if door_exists(c, &lane.route, edges) {
                 continue;
             }
-            return Err(MutationError::HiveContract(format!(
-                "hive '{hive}' declares it accepts the lane '{route}' ({because}), but nothing \
-                 routes a message arriving at '{hive}' with hop.route='{route}' to a cell inside \
-                 it. Either the contract names a lane the hive lost, or the door edge \
-                 {{\"from\": \".\"}} is missing.",
-                hive = c.hive_path,
-                route = lane.route,
-                because = lane.because,
-            )));
+            violations.push((
+                MutationError::HiveContract(format!(
+                    "hive '{hive}' declares it accepts the lane '{route}' ({because}), but \
+                     nothing routes a message arriving at '{hive}' with hop.route='{route}' to a \
+                     cell inside it. Either the contract names a lane the hive lost, or the door \
+                     edge {{\"from\": \".\"}} is missing.",
+                    hive = c.hive_path,
+                    route = lane.route,
+                    because = lane.because,
+                )),
+                c.hive_path.clone(),
+                lane.because.clone(),
+            ));
         }
         for lane in &c.emits {
             if exit_exists(c, &lane.route, edges) {
                 continue;
             }
-            return Err(MutationError::HiveContract(format!(
-                "hive '{hive}' declares it emits the lane '{route}' ({because}), but no cell \
-                 inside it routes a message with hop.route='{route}' back out through '{hive}'. \
-                 A lane a caller cannot receive is not part of an interface.",
-                hive = c.hive_path,
-                route = lane.route,
-                because = lane.because,
-            )));
+            violations.push((
+                MutationError::HiveContract(format!(
+                    "hive '{hive}' declares it emits the lane '{route}' ({because}), but no cell \
+                     inside it routes a message with hop.route='{route}' back out through \
+                     '{hive}'. A lane a caller cannot receive is not part of an interface.",
+                    hive = c.hive_path,
+                    route = lane.route,
+                    because = lane.because,
+                )),
+                c.hive_path.clone(),
+                lane.because.clone(),
+            ));
         }
     }
-    Ok(())
+    violations
 }
 
 /// The `hop.route` an edge's own modifier STATES, if it states a constant.
@@ -304,16 +368,66 @@ pub(crate) fn constant_route(src: &str) -> Option<String> {
 ///
 /// Pre-destructive by contract: the caller runs this before staging, so a
 /// reject leaves the colony untouched.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_inbound_lanes`]: the
+/// FIRST violation the collecting core produces is, by construction, the one
+/// this function returned before, so every verdict it ever gave is
+/// byte-identical.
 pub fn check_inbound_lanes(
     diff: &JsonValue,
     guard_scope: &str,
     contracts: &[HiveContract],
 ) -> Result<(), MutationError> {
+    addressed_inbound_lanes(diff, guard_scope, contracts)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _)| Err(error))
+}
+
+/// GH #293 — stage 6 ([`Stage::ContractLocality`]) as a COLLECTING check, the
+/// inbound-lane third of it: EVERY `add_edges` entry that sends a stated lane
+/// into a hive that does not accept it is named, not only the first one.
+///
+/// **This changes no verdict** — see [`check_inbound_lanes`], which is now the
+/// first-error face of the same core.
+///
+/// No `because` travels with these entries, and that is not an omission: the
+/// lane being refused is one the hive precisely does NOT declare, so there is no
+/// contract sentence about it to quote. The `because` of the lanes it DOES
+/// declare is already in the message, as the list of what is on offer.
+///
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_inbound_lanes(
+    diff: &JsonValue,
+    guard_scope: &str,
+    contracts: &[HiveContract],
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address) in addressed_inbound_lanes(diff, guard_scope, contracts) {
+        into.push(Violation::from_error(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+        ));
+    }
+}
+
+/// The collecting core: every stated lane an `add_edges` entry sends into a hive
+/// that does not accept it, with the RESOLVED hive path it was sent to as its
+/// address.
+fn addressed_inbound_lanes(
+    diff: &JsonValue,
+    guard_scope: &str,
+    contracts: &[HiveContract],
+) -> Vec<(MutationError, String)> {
+    let mut violations = Vec::new();
     if contracts.is_empty() {
-        return Ok(());
+        return violations;
     }
     let Some(adds) = diff.get("add_edges").and_then(|v| v.as_array()) else {
-        return Ok(());
+        return violations;
     };
     for e in adds {
         let Some(to) = e.get("to").and_then(|v| v.as_str()) else {
@@ -338,14 +452,17 @@ pub fn check_inbound_lanes(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        return Err(MutationError::HiveContract(format!(
-            "add_edges[].to='{to}' sends hop.route='{route}' into hive '{hive}', which does not \
-             accept that lane. Lanes '{hive}' accepts: {offered}. A hive's interface is its \
-             lanes, not its cells — pick one, or the hive has to grow a door for yours.",
-            hive = c.hive_path,
-        )));
+        violations.push((
+            MutationError::HiveContract(format!(
+                "add_edges[].to='{to}' sends hop.route='{route}' into hive '{hive}', which does \
+                 not accept that lane. Lanes '{hive}' accepts: {offered}. A hive's interface is \
+                 its lanes, not its cells — pick one, or the hive has to grow a door for yours.",
+                hive = c.hive_path,
+            )),
+            c.hive_path.clone(),
+        ));
     }
-    Ok(())
+    violations
 }
 
 /// Call-site adapter (NOT pure — reads `config.json`): collect the contract

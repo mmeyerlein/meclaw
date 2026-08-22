@@ -267,7 +267,13 @@ fn diff_path_claims(
     claims
 }
 
-/// GH #195 — refuse a diff in which two entries claim one path.
+/// GH #195 — every duplicated claim in a diff: two entries that name one path.
+///
+/// It REPORTS, it does not refuse (the name it carried until GH #293 said
+/// otherwise, and a name that promises a verdict is worth correcting): the
+/// caller — [`addressed_naming_and_match`] — decides what happens to the claims
+/// handed back, and its own `Result` face turns the first of them into the
+/// refusal this used to return directly.
 ///
 /// The pre-state sets this used to be left to cannot answer it. They arrive
 /// resume-filtered, so an `add_nodes` at an existing path is taken out of them
@@ -282,23 +288,31 @@ fn diff_path_claims(
 /// Claims are compared as RESOLVED paths, the one namespace decision
 /// `scoped_name` makes everywhere else on this surface (#179): the apply side
 /// renames onto the resolved path, so `unit/n1` and `./unit/n1` are one target.
-fn reject_duplicate_claims(
+///
+/// GH #293 — collecting: every duplicated claim is reported, in claim order.
+/// The FIRST one is the error the `Result` form returned before, so no verdict
+/// moves; the ones after it used to cost a round trip apiece.
+fn collect_duplicate_claims(
     scope: &str,
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
-) -> Result<(), MutationError> {
+) -> Vec<(MutationError, Option<String>)> {
     let claims = diff_path_claims(scope, obj);
     let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut violations = Vec::new();
     for PathClaim { path, entry, .. } in &claims {
         if let Some(first) = seen.insert(path.as_str(), entry.as_str()) {
-            return Err(MutationError::NamingCollision(format!(
-                "{entry} and {first} both claim {path} in this diff. One path holds \
-                 one node, so whichever entry is applied second lands on what the \
-                 first one just put there. Nothing was written — give them \
-                 different names, or drop one of the two entries."
-            )));
+            violations.push((
+                MutationError::NamingCollision(format!(
+                    "{entry} and {first} both claim {path} in this diff. One path holds \
+                     one node, so whichever entry is applied second lands on what the \
+                     first one just put there. Nothing was written — give them \
+                     different names, or drop one of the two entries."
+                )),
+                Some(path.clone()),
+            ));
         }
     }
-    Ok(())
+    violations
 }
 
 /// Inner helper: naming-collision + match-no-hit checks, shared between
@@ -326,6 +340,10 @@ fn reject_duplicate_claims(
 /// validate-side false-positive — Paket-5 companion finding Paket-2-b'). Pass an empty
 /// slice for callers that do not have this information (e.g. `validate_post_state_full`,
 /// which does not know hive names; existing swap-of-cell tests are unaffected).
+///
+/// GH #293 — this is the thin `Result` face of [`collect_naming_and_match`]: the
+/// FIRST violation the collecting core produces is, by construction, the one
+/// this function returned before, so every verdict it ever gave is byte-identical.
 fn validate_naming_and_match(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
     registry_names: &[String],
@@ -334,51 +352,137 @@ fn validate_naming_and_match(
     deep_registry_paths: &[String],
     deep_hive_paths: &[String],
 ) -> Result<(), MutationError> {
+    collect_naming_and_match(
+        obj,
+        registry_names,
+        hive_match_names,
+        scope,
+        deep_registry_paths,
+        deep_hive_paths,
+    )
+    .into_iter()
+    .next()
+    .map_or(Ok(()), Err)
+}
+
+/// GH #293 — the collecting core of [`validate_naming_and_match`]: every naming
+/// collision and every `match` that hits nothing, in the order the checks used
+/// to abort at.
+///
+/// The addresses are dropped here; [`collect_post_state_addresses`] takes the
+/// addressed form so a rejection can say WHICH name each violation is about
+/// without a reader parsing the prose back apart.
+fn collect_naming_and_match(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    registry_names: &[String],
+    hive_match_names: &[String],
+    scope: &str,
+    deep_registry_paths: &[String],
+    deep_hive_paths: &[String],
+) -> Vec<MutationError> {
+    addressed_naming_and_match(
+        obj,
+        registry_names,
+        hive_match_names,
+        scope,
+        deep_registry_paths,
+        deep_hive_paths,
+    )
+    .into_iter()
+    .map(|(error, _)| error)
+    .collect()
+}
+
+/// [`collect_naming_and_match`] with the address each check already had in hand
+/// — the name or path the violation is about.
+///
+/// The per-item bodies are the ones [`validate_naming_and_match`] used to
+/// `return` from; they push and carry on instead. A malformed entry pushes its
+/// `Schema` error and the loop moves to the next one, which is the only way a
+/// second violation of the same kind can ever be seen.
+fn addressed_naming_and_match(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    registry_names: &[String],
+    hive_match_names: &[String],
+    scope: &str,
+    deep_registry_paths: &[String],
+    deep_hive_paths: &[String],
+) -> Vec<(MutationError, Option<String>)> {
     // GH #195: the diff against ITSELF, before it is measured against the
     // pre-state — a path claimed twice by one diff is a different problem from a
     // path that was already occupied, and the pre-state check cannot name it.
-    reject_duplicate_claims(scope, obj)?;
-    if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
-        for n in adds {
-            let name = n
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("add_nodes[].name missing".into()))?;
-            if name_is_taken(scope, name, registry_names, deep_registry_paths) {
-                return Err(MutationError::NamingCollision(name.into()));
+    let mut violations = collect_duplicate_claims(scope, obj);
+    {
+        let mut refuse = |error: MutationError, address: String| {
+            violations.push((error, Some(address)));
+        };
+        if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
+            for (i, n) in adds.iter().enumerate() {
+                let Some(name) = n.get("name").and_then(|v| v.as_str()) else {
+                    refuse(
+                        MutationError::Schema("add_nodes[].name missing".into()),
+                        format!("add_nodes[{i}]"),
+                    );
+                    continue;
+                };
+                if name_is_taken(scope, name, registry_names, deep_registry_paths) {
+                    refuse(
+                        MutationError::NamingCollision(name.into()),
+                        name.to_string(),
+                    );
+                }
+            }
+        }
+        if let Some(rems) = obj.get("remove_nodes").and_then(|v| v.as_array()) {
+            for (i, r) in rems.iter().enumerate() {
+                let Some(pat_name) = r
+                    .get("match")
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str())
+                else {
+                    refuse(
+                        MutationError::Schema("remove_nodes[].match.name missing".into()),
+                        format!("remove_nodes[{i}]"),
+                    );
+                    continue;
+                };
+                if !name_is_taken(scope, pat_name, registry_names, deep_registry_paths) {
+                    refuse(
+                        MutationError::MatchNoHit(pat_name.into()),
+                        pat_name.to_string(),
+                    );
+                }
+            }
+        }
+        if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
+            for (i, s) in swaps.iter().enumerate() {
+                let Some(pat_name) = s
+                    .get("match")
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str())
+                else {
+                    refuse(
+                        MutationError::Schema("swap_nodes[].match.name missing".into()),
+                        format!("swap_nodes[{i}]"),
+                    );
+                    continue;
+                };
+                // PRE-STATE check: cell registry OR hive scope (hive is a valid swap source
+                // because it carries external edges). Both sets are scope-filtered by the
+                // caller — a hive in a foreign scope must NOT satisfy this short-name match.
+                let in_registry =
+                    name_is_taken(scope, pat_name, registry_names, deep_registry_paths);
+                let in_hives = name_is_taken(scope, pat_name, hive_match_names, deep_hive_paths);
+                if !in_registry && !in_hives {
+                    refuse(
+                        MutationError::MatchNoHit(pat_name.into()),
+                        pat_name.to_string(),
+                    );
+                }
             }
         }
     }
-    if let Some(rems) = obj.get("remove_nodes").and_then(|v| v.as_array()) {
-        for r in rems {
-            let pat_name = r
-                .get("match")
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("remove_nodes[].match.name missing".into()))?;
-            if !name_is_taken(scope, pat_name, registry_names, deep_registry_paths) {
-                return Err(MutationError::MatchNoHit(pat_name.into()));
-            }
-        }
-    }
-    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
-        for s in swaps {
-            let pat_name = s
-                .get("match")
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("swap_nodes[].match.name missing".into()))?;
-            // PRE-STATE check: cell registry OR hive scope (hive is a valid swap source
-            // because it carries external edges). Both sets are scope-filtered by the
-            // caller — a hive in a foreign scope must NOT satisfy this short-name match.
-            let in_registry = name_is_taken(scope, pat_name, registry_names, deep_registry_paths);
-            let in_hives = name_is_taken(scope, pat_name, hive_match_names, deep_hive_paths);
-            if !in_registry && !in_hives {
-                return Err(MutationError::MatchNoHit(pat_name.into()));
-            }
-        }
-    }
-    Ok(())
+    violations
 }
 
 /// Take `name` out of BOTH spellings of the post-state view (GH #194).
@@ -469,6 +573,10 @@ fn occupy(
 /// target, but the swing runs over the PRE-diff edges, so a lane this diff adds
 /// onto it is not carried along), and `move_nodes[].match` (an address the
 /// mutation vacates by `rename(2)`).
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_edges_and_cycle`]:
+/// the FIRST violation the collecting core produces is, by construction, the one
+/// this function returned before, so every verdict it ever gave is byte-identical.
 #[allow(clippy::too_many_arguments)]
 fn validate_edges_and_cycle(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
@@ -480,7 +588,52 @@ fn validate_edges_and_cycle(
     scope: &str,
     deep_endpoint_paths: &[String],
 ) -> Result<(), MutationError> {
+    addressed_edges_and_cycle(
+        obj,
+        registry_names,
+        existing_edges,
+        hive_endpoint_names,
+        subtree_node_endpoints,
+        subtree_internal_edges,
+        scope,
+        deep_endpoint_paths,
+    )
+    .into_iter()
+    .next()
+    .map_or(Ok(()), |(error, _)| Err(error))
+}
+
+/// GH #293 — the collecting core of [`validate_edges_and_cycle`], with the
+/// address each check already had in hand: every endpoint that no post-state
+/// node answers to and every malformed `add_edges` entry, in the order the
+/// checks used to abort at.
+///
+/// The per-item bodies are the ones [`validate_edges_and_cycle`] used to
+/// `return` from; they push and carry on instead. An edge whose `from` is
+/// missing is skipped rather than measured — without endpoints there is nothing
+/// left to say about it — but the NEXT edge is still checked, which is the only
+/// way a second dangling endpoint can ever be seen.
+///
+/// **On the cycle half of the name:** there is no cycle entry to collect. The
+/// topological cycle gate was removed by Befund 2 (see the closing comment
+/// below) and the spec is explicit that meclaw-core does not reject cycles in
+/// general. Were it ever reinstated it would contribute AT MOST ONE entry, and
+/// after the endpoint entries: a cycle is a property of the whole edge set, not
+/// of one edge, so it cannot be attributed to an endpoint and it cannot be
+/// counted twice.
+#[allow(clippy::too_many_arguments)]
+fn addressed_edges_and_cycle(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    registry_names: &[String],
+    existing_edges: &[(String, String)],
+    hive_endpoint_names: &[String],
+    subtree_node_endpoints: &[String],
+    subtree_internal_edges: &[(String, String)],
+    scope: &str,
+    deep_endpoint_paths: &[String],
+) -> Vec<(MutationError, Option<String>)> {
     use std::collections::HashSet;
+    let mut violations: Vec<(MutationError, Option<String>)> = Vec::new();
     let mut nodes: HashSet<String> = registry_names.iter().cloned().collect();
     // Phase 13.5 step-6: hives are valid edge endpoints too (Cell ∪ Hive). Add
     // their short-names before the add_edges endpoint check below.
@@ -584,26 +737,34 @@ fn validate_edges_and_cycle(
     // this diff). Endpoint-existence only — no cycle accumulation (Befund 2).
     for (from, to) in subtree_internal_edges {
         if !nodes.contains(from.as_str()) {
-            return Err(MutationError::EdgeSchema(format!(
-                "subtree internal edge from='{from}' unknown"
-            )));
+            violations.push((
+                MutationError::EdgeSchema(format!("subtree internal edge from='{from}' unknown")),
+                Some(from.clone()),
+            ));
         }
         if !nodes.contains(to.as_str()) {
-            return Err(MutationError::EdgeSchema(format!(
-                "subtree internal edge to='{to}' unknown"
-            )));
+            violations.push((
+                MutationError::EdgeSchema(format!("subtree internal edge to='{to}' unknown")),
+                Some(to.clone()),
+            ));
         }
     }
     if let Some(adds) = obj.get("add_edges").and_then(|v| v.as_array()) {
-        for e in adds {
-            let from = e
-                .get("from")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("add_edges[].from missing".into()))?;
-            let to = e
-                .get("to")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| MutationError::Schema("add_edges[].to missing".into()))?;
+        for (i, e) in adds.iter().enumerate() {
+            let Some(from) = e.get("from").and_then(|v| v.as_str()) else {
+                violations.push((
+                    MutationError::Schema("add_edges[].from missing".into()),
+                    Some(format!("add_edges[{i}]")),
+                ));
+                continue;
+            };
+            let Some(to) = e.get("to").and_then(|v| v.as_str()) else {
+                violations.push((
+                    MutationError::Schema("add_edges[].to missing".into()),
+                    Some(format!("add_edges[{i}]")),
+                ));
+                continue;
+            };
             // Befund 6: endpoints are scope-relative; the canonical mutation
             // form is `./name` (overview § Variable substitution example). Both
             // `./name` and the bare `name` denote the same scope-local node, so
@@ -636,10 +797,16 @@ fn validate_edges_and_cycle(
                 }
             };
             if !known(from) {
-                return Err(MutationError::EdgeSchema(format!("from='{from}' unknown")));
+                violations.push((
+                    MutationError::EdgeSchema(format!("from='{from}' unknown")),
+                    Some(from.to_string()),
+                ));
             }
             if !known(to) {
-                return Err(MutationError::EdgeSchema(format!("to='{to}' unknown")));
+                violations.push((
+                    MutationError::EdgeSchema(format!("to='{to}' unknown")),
+                    Some(to.to_string()),
+                ));
             }
             // Phase 13.5-A1 T4 (Slice 3): CEL parse-validate for condition +
             // modifier.set_context.* / set_hop.*. Parse-fail → MutationError::
@@ -648,9 +815,10 @@ fn validate_edges_and_cycle(
             if let Some(cond_str) = e.get("condition").and_then(|v| v.as_str())
                 && let Err(p) = crate::cel_eval::parse_condition(cond_str)
             {
-                return Err(MutationError::EdgeSchema(format!(
-                    "add_edges[].condition invalid cel: {p}"
-                )));
+                violations.push((
+                    MutationError::EdgeSchema(format!("add_edges[].condition invalid cel: {p}")),
+                    Some(format!("add_edges[{i}]")),
+                ));
             }
             if let Some(modif) = e.get("modifier") {
                 // Befund-6-Folge: the modifier must match the
@@ -668,29 +836,40 @@ fn validate_edges_and_cycle(
                                 | "delete_hop"
                                 | "restore_ttl"
                         ) {
-                            return Err(MutationError::EdgeSchema(format!(
-                                "add_edges[].modifier unknown key '{k}' (valid: set_context, \
-                                 delete_context, set_hop, delete_hop, restore_ttl)"
-                            )));
+                            violations.push((
+                                MutationError::EdgeSchema(format!(
+                                    "add_edges[].modifier unknown key '{k}' (valid: set_context, \
+                                     delete_context, set_hop, delete_hop, restore_ttl)"
+                                )),
+                                Some(format!("add_edges[{i}]")),
+                            ));
                         }
                     }
                 } else {
-                    return Err(MutationError::EdgeSchema(
-                        "add_edges[].modifier must be an object".into(),
+                    violations.push((
+                        MutationError::EdgeSchema("add_edges[].modifier must be an object".into()),
+                        Some(format!("add_edges[{i}]")),
                     ));
                 }
                 for set_key in ["set_context", "set_hop"] {
                     if let Some(set_obj) = modif.get(set_key).and_then(|v| v.as_object()) {
                         for (k, v) in set_obj {
-                            let expr_str = v.as_str().ok_or_else(|| {
-                                MutationError::EdgeSchema(format!(
-                                    "add_edges[].modifier.{set_key}.{k} must be string"
-                                ))
-                            })?;
+                            let Some(expr_str) = v.as_str() else {
+                                violations.push((
+                                    MutationError::EdgeSchema(format!(
+                                        "add_edges[].modifier.{set_key}.{k} must be string"
+                                    )),
+                                    Some(format!("add_edges[{i}]")),
+                                ));
+                                continue;
+                            };
                             if let Err(p) = crate::cel_eval::parse_condition(expr_str) {
-                                return Err(MutationError::EdgeSchema(format!(
-                                    "add_edges[].modifier.{set_key}.{k} invalid cel: {p}"
-                                )));
+                                violations.push((
+                                    MutationError::EdgeSchema(format!(
+                                        "add_edges[].modifier.{set_key}.{k} invalid cel: {p}"
+                                    )),
+                                    Some(format!("add_edges[{i}]")),
+                                ));
                             }
                         }
                     }
@@ -699,9 +878,12 @@ fn validate_edges_and_cycle(
                     if let Some(del) = modif.get(del_key)
                         && del.as_array().is_none()
                     {
-                        return Err(MutationError::EdgeSchema(format!(
-                            "add_edges[].modifier.{del_key} must be array"
-                        )));
+                        violations.push((
+                            MutationError::EdgeSchema(format!(
+                                "add_edges[].modifier.{del_key} must be array"
+                            )),
+                            Some(format!("add_edges[{i}]")),
+                        ));
                     }
                 }
                 // GH #82 (ruling 2026-08-13): `restore_ttl` is a boolean
@@ -712,17 +894,24 @@ fn validate_edges_and_cycle(
                 // without a `condition` is rejected.
                 if let Some(rt) = modif.get("restore_ttl") {
                     let Some(rt) = rt.as_bool() else {
-                        return Err(MutationError::EdgeSchema(
-                            "add_edges[].modifier.restore_ttl must be boolean".into(),
+                        violations.push((
+                            MutationError::EdgeSchema(
+                                "add_edges[].modifier.restore_ttl must be boolean".into(),
+                            ),
+                            Some(format!("add_edges[{i}]")),
                         ));
+                        continue;
                     };
                     if rt && e.get("condition").and_then(|v| v.as_str()).is_none() {
-                        return Err(MutationError::EdgeSchema(format!(
-                            "add_edges[] {from}->{to}: modifier.restore_ttl needs a condition — a \
-                             ttl-restoring edge is exempt from the TTL loop guard, so it must be \
-                             bounded by its own iteration condition (e.g. \
-                             \"int(context.iter) < 12\")"
-                        )));
+                        violations.push((
+                            MutationError::EdgeSchema(format!(
+                                "add_edges[] {from}->{to}: modifier.restore_ttl needs a condition \
+                                 — a ttl-restoring edge is exempt from the TTL loop guard, so it \
+                                 must be bounded by its own iteration condition (e.g. \
+                                 \"int(context.iter) < 12\")"
+                            )),
+                            Some(format!("add_edges[{i}]")),
+                        ));
                     }
                 }
             }
@@ -734,7 +923,55 @@ fn validate_edges_and_cycle(
     // instantiable per mutation (and boot fine from the filesystem); the
     // runtime TTL loop-guard bounds any traversal cycle. Edge endpoints were
     // verified above (node-set membership); the topological cycle gate is gone.
-    Ok(())
+    //
+    // GH #293: if it ever came back it would be appended HERE, after the loop —
+    // one entry at most, and after every endpoint entry, because a cycle is a
+    // property of the whole edge set rather than of any single edge.
+    violations
+}
+
+/// GH #293 — stage 5 ([`Stage::EdgeEndpoints`]) as a COLLECTING check: every
+/// endpoint of every `add_edges` entry that no post-state node answers to, plus
+/// every malformed edge entry, in one refusal.
+///
+/// **This changes no verdict.** The body is the collecting core the `Result`
+/// form now calls ([`addressed_edges_and_cycle`]), so the messages are the same
+/// strings and the first entry is the error the single-violation path returned.
+///
+/// Same parameters as [`validate_edges_and_cycle`], except that the diff arrives
+/// as the whole [`JsonValue`] — a diff that is not an object is a stage-1
+/// (`diff_schema`) matter and contributes nothing here.
+///
+/// [`Stage::EdgeEndpoints`]: crate::mutation::rejection::Stage::EdgeEndpoints
+#[allow(clippy::too_many_arguments)]
+pub fn collect_edge_endpoints(
+    diff: &JsonValue,
+    registry_names: &[String],
+    existing_edges: &[(String, String)],
+    hive_endpoint_names: &[String],
+    subtree_node_endpoints: &[String],
+    subtree_internal_edges: &[(String, String)],
+    scope: &str,
+    deep_endpoint_paths: &[String],
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    let Some(obj) = diff.as_object() else {
+        return;
+    };
+    for (error, address) in addressed_edges_and_cycle(
+        obj,
+        registry_names,
+        existing_edges,
+        hive_endpoint_names,
+        subtree_node_endpoints,
+        subtree_internal_edges,
+        scope,
+        deep_endpoint_paths,
+    ) {
+        into.push(Violation::from_error(Stage::EdgeEndpoints, &error, address));
+    }
 }
 
 /// Phase-11 T14 — additive validation for template-based mutations.
@@ -866,30 +1103,9 @@ pub fn validate_post_state_with_templates_scoped(
             // checks (path exists, unregistered, on-disk type/version match) live
             // in `colony::handle_mutation` Step 1a. Skip the template-existence /
             // factory checks below for an adopt entry.
-            if let Some(adopt) = n.get("adopt") {
-                if n.get("template").is_some() {
-                    return Err(MutationError::Schema(
-                        "add_nodes[].adopt and .template are mutually exclusive".into(),
-                    ));
-                }
-                let adopt_obj = adopt.as_object().ok_or_else(|| {
-                    MutationError::Schema(
-                        "add_nodes[].adopt must be an object declaring the expected `type` \
-                         (no blind adoption)"
-                            .into(),
-                    )
-                })?;
-                if adopt_obj
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .is_none()
-                {
-                    return Err(MutationError::Schema(
-                        "add_nodes[].adopt.type (non-empty string) is required — no blind \
-                         adoption"
-                            .into(),
-                    ));
+            if n.get("adopt").is_some() {
+                if let Some(error) = adopt_grammar(n) {
+                    return Err(error);
                 }
                 continue;
             }
@@ -903,68 +1119,22 @@ pub fn validate_post_state_with_templates_scoped(
                 .resolve(template)
                 .map_err(|_| MutationError::TemplateMissing(template.into()))?;
 
-            // GH #140 (supersedes the R10 blanket reject of 2026-06-11): on a
-            // SUBTREE template, `override_params` is ADDRESSED — its keys are
-            // the cells' paths inside the template, `""` being the subtree
-            // root. R10's complaint was that the flat form committed as a
-            // silent no-op; addressing removes the cause rather than the
-            // feature. What R10 protected is kept exactly: a key that names no
-            // cell is refused pre-destructively and told what the template
-            // actually contains, so nothing can be "set" into the void again.
-            if let Some(over) = n.get("override_params") {
-                let parsed = crate::mutation::subtree::parse_subtree(&entry.filesystem_path)?;
-                if parsed.cells.len() > 1 {
-                    let obj = over.as_object().ok_or_else(|| {
-                        MutationError::Schema(format!(
-                            "override_params on the subtree template '{template}' must be an \
-                             object keyed by the cells' paths inside the template (\"\" is the \
-                             subtree root)"
-                        ))
-                    })?;
-                    let known: Vec<&str> =
-                        parsed.cells.iter().map(|c| c.rel_path.as_str()).collect();
-                    for key in obj.keys() {
-                        if !known.contains(&key.as_str()) {
-                            let mut listed: Vec<String> = known
-                                .iter()
-                                .map(|k| {
-                                    if k.is_empty() {
-                                        "\"\" (root)".to_string()
-                                    } else {
-                                        format!("'{k}'")
-                                    }
-                                })
-                                .collect();
-                            listed.sort();
-                            return Err(MutationError::Schema(format!(
-                                "override_params['{key}'] names no cell of the subtree template \
-                                 '{template}'. Its cells are: {}",
-                                listed.join(", ")
-                            )));
-                        }
-                        if !obj[key].is_object() {
-                            return Err(MutationError::Schema(format!(
-                                "override_params['{key}'] must be a params object"
-                            )));
-                        }
-                    }
-                }
-            }
-
-            // Ebene 2: cell.type for resolved template must be in factories.
-            // Use entry.name (resolved name, e.g. "echo") not raw template string
-            // (e.g. "echo@1.0.0") as ct_map key — fixes R3 versioned-ref mismatch.
-            let cell_type = ct_map
-                .get(entry.name.as_str())
-                .ok_or_else(|| MutationError::TemplateMissing(template.into()))?;
-            // Phase-13.5 a5-subtree T8b-1: a SUBTREE template's ROOT cell.type is
-            // `hive` — a scope marker, never an actor, so it has NO factory by
-            // design (CONTRIBUTING.md: "a hive is not an actor"). Skip the level-2
-            // factory check for a hive root; the spawnable nested cells are
-            // staged + registered by `stage_subtree` (their own cell-types are
-            // validated by bootstrap-side factory presence at spawn time).
-            if *cell_type != "hive" && !factories.contains_key(*cell_type) {
-                return Err(MutationError::UnknownCellType((*cell_type).into()));
+            // Ebene 1b/2 — `override_params` addressing and cell type. Shared
+            // with [`collect_post_state_addresses`] so the two cannot drift
+            // (GH #293): the collecting core decides, this call site takes its
+            // first answer, which is the one this loop returned before.
+            let mut errors = Vec::new();
+            collect_add_node_addresses(
+                entry,
+                n,
+                template,
+                templates,
+                factories,
+                &ct_map,
+                &mut errors,
+            );
+            if let Some(error) = errors.into_iter().next() {
+                return Err(error);
             }
         }
     }
@@ -973,44 +1143,8 @@ pub fn validate_post_state_with_templates_scoped(
     // T5 Part 1: collect add_names (scope-bound, from add_nodes in this same diff)
     // so that `with.name` (existing form) can forward-reference a node being added
     // in the same composite diff. The post-state set = registry_names ∪ add_names.
-    //
-    // GH #199: canonicalised through `scoped_name`, not collected as written.
-    // `name_is_taken` below consults this set as the SHORT-NAME namespace, and
-    // it strips the canonical `./` prefix before comparing — so a raw
-    // `./successor` sat in a set that is only ever queried with `successor`, and
-    // an `add_nodes` spelled the canonical way was invisible to a forward
-    // reference in EITHER spelling. #189's exact shape at the one call site
-    // #189 did not touch, lenient-opposite (a valid diff refused, nothing
-    // committed wrong), which is why it outlived four passes over this family.
-    let add_names: Vec<String> = obj
-        .get("add_nodes")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|n| n.get("name").and_then(|v| v.as_str()))
-                .map(|name| match scoped_name(scope, name) {
-                    ScopedName::Short(s) => s.to_string(),
-                    // A deep name is never queried in the short namespace; it is
-                    // answered from `add_paths` below. Keeping the resolved form
-                    // here rather than the raw one means no entry of this set is
-                    // a spelling.
-                    ScopedName::Deep(abs) => abs,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    // GH #179: the same forward-reference set spelled as absolute paths, for a
-    // multi-segment `with.name` (see `name_is_taken`). This half was always
-    // correct — `resolve_scoped_path` normalises the prefix — which is exactly
-    // why the defect was depth-invisible and short-name-only.
-    let add_paths: Vec<String> = add_names
-        .iter()
-        .map(|n| {
-            crate::mutation::resolve_scoped_path(scope, n)
-                .as_str()
-                .to_string()
-        })
-        .collect();
+    // Both spellings and the GH #199 canonicalisation live in `add_name_claims`.
+    let (add_names, add_paths) = add_name_claims(obj, scope);
     if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
         for s in swaps {
             let match_name = s
@@ -1048,6 +1182,469 @@ pub fn validate_post_state_with_templates_scoped(
         deep_endpoint_paths,
     )?;
     Ok(())
+}
+
+/// The pure `adopt` grammar of one `add_nodes` entry, or `None` when it holds
+/// (A5b 2b, ruling 2026-06-12).
+///
+/// `adopt` is an object declaring the expected identity with a mandatory
+/// non-empty `type`, and `template` is mutually exclusive with it. A bare
+/// `adopt: true` or an `adopt` without `type` is a `schema` reject: no blind
+/// adoption. The FS/registry-dependent half (the path exists, is unregistered,
+/// and carries the declared identity) lives in `colony::handle_mutation`
+/// Step 1a.
+///
+/// Called by the `Result` form and by [`collect_post_state_addresses`] alike
+/// (GH #293, W3 T21) — the collecting stage 4 must refuse exactly what the
+/// sequential one refused, and a second copy of three message strings is how
+/// that stops being true.
+fn adopt_grammar(n: &JsonValue) -> Option<MutationError> {
+    let adopt = n.get("adopt")?;
+    if n.get("template").is_some() {
+        return Some(MutationError::Schema(
+            "add_nodes[].adopt and .template are mutually exclusive".into(),
+        ));
+    }
+    let Some(adopt_obj) = adopt.as_object() else {
+        return Some(MutationError::Schema(
+            "add_nodes[].adopt must be an object declaring the expected `type` \
+             (no blind adoption)"
+                .into(),
+        ));
+    };
+    if adopt_obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        return Some(MutationError::Schema(
+            "add_nodes[].adopt.type (non-empty string) is required — no blind adoption".into(),
+        ));
+    }
+    None
+}
+
+/// The names this diff's own `add_nodes` claim, in both spellings: the
+/// short-name namespace (`.0`, deep names kept resolved) and the absolute-path
+/// one (`.1`).
+///
+/// A `swap_nodes[].with.name` may forward-reference a node the same diff adds
+/// (T5 Part 1), so the post-state set a `with` is measured against is
+/// `registry_names ∪ add_names`. Extracted so the `Result` form and
+/// [`collect_post_state_addresses`] build the same set (GH #293, W3 T21).
+///
+/// GH #199 / GH #179: canonicalised through [`scoped_name`], not collected as
+/// written — `name_is_taken` strips the canonical `./` prefix before comparing,
+/// so a raw `./successor` sat in a set that is only ever queried with
+/// `successor`.
+fn add_name_claims(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    scope: &str,
+) -> (Vec<String>, Vec<String>) {
+    let add_names: Vec<String> = obj
+        .get("add_nodes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|n| n.get("name").and_then(|v| v.as_str()))
+                .map(|name| match scoped_name(scope, name) {
+                    ScopedName::Short(s) => s.to_string(),
+                    // A deep name is never queried in the short namespace; it is
+                    // answered from `add_paths` below. Keeping the resolved form
+                    // here rather than the raw one means no entry of this set is
+                    // a spelling.
+                    ScopedName::Deep(abs) => abs,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // GH #179: the same forward-reference set spelled as absolute paths, for a
+    // multi-segment `with.name` (see `name_is_taken`). This half was always
+    // correct — `resolve_scoped_path` normalises the prefix — which is exactly
+    // why the defect was depth-invisible and short-name-only.
+    let add_paths: Vec<String> = add_names
+        .iter()
+        .map(|n| {
+            crate::mutation::resolve_scoped_path(scope, n)
+                .as_str()
+                .to_string()
+        })
+        .collect();
+    (add_names, add_paths)
+}
+
+/// The post-state ADDRESS half of one `add_nodes` entry, collecting: which
+/// cells and params its `override_params` addresses, and whether the colony has
+/// a factory for its cell type.
+///
+/// GH #140 (supersedes the R10 blanket reject of 2026-06-11): on a SUBTREE
+/// template, `override_params` is ADDRESSED — its keys are the cells' paths
+/// inside the template, `""` being the subtree root. R10's complaint was that
+/// the flat form committed as a silent no-op; addressing removes the cause
+/// rather than the feature. What R10 protected is kept exactly: a key that names
+/// no cell is refused pre-destructively and told what the template actually
+/// contains, so nothing can be "set" into the void again.
+///
+/// GH #294 (ruling Q6, 2026-08-21) adds the PARAM half one nesting level down:
+/// an addressed key that names no param of the cell it reached is refused the
+/// same way, for the same reason — a typo inside the entry committed and the
+/// cell spawned with its default. Both forms go through
+/// [`crate::mutation::subtree::check_override_params`]: the ADDRESSED form of a
+/// subtree template and the FLAT form of a single-cell template, whose merge
+/// lives in `stage::patch_and_substitute_config`. Putting the flat form's check
+/// HERE rather than in staging is what keeps the two from drifting apart.
+///
+/// GH #293 — collecting, and for the same reason the checks above live in one
+/// place: [`validate_post_state_with_templates_scoped`] takes the first pushed
+/// error (byte-identical verdict, since that is the one its loop returned) and
+/// [`collect_post_state_addresses`] takes all of them. A diff whose override
+/// misspells four keys names four keys.
+fn collect_add_node_addresses(
+    entry: &crate::templates::TemplateEntry,
+    n: &JsonValue,
+    template: &str,
+    templates: &crate::templates::TemplatesRegistry,
+    factories: &CellFactoryRegistry,
+    ct_map: &std::collections::HashMap<&str, &str>,
+    out: &mut Vec<MutationError>,
+) {
+    if let Some(over) = n.get("override_params") {
+        match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
+            // A template that does not parse is a stage-2 matter
+            // ([`collect_template_resolution`]); it is reported here too because
+            // the `Result` form raised it here and the first-error identity must
+            // hold. The pipeline stops at stage 2 long before stage 4 sees it.
+            Err(error) => out.push(error),
+            Ok(parsed) => {
+                if parsed.cells.len() > 1 {
+                    match over.as_object() {
+                        None => out.push(MutationError::Schema(format!(
+                            "override_params on the subtree template '{template}' must be an \
+                             object keyed by the cells' paths inside the template (\"\" is the \
+                             subtree root)"
+                        ))),
+                        Some(obj) => {
+                            let known: Vec<&str> =
+                                parsed.cells.iter().map(|c| c.rel_path.as_str()).collect();
+                            for (key, params) in obj {
+                                let Some(cell) = parsed.cells.iter().find(|c| &c.rel_path == key)
+                                else {
+                                    out.push(MutationError::Schema(format!(
+                                        "override_params['{key}'] names no cell of the subtree \
+                                         template '{template}'. Its cells are: {}",
+                                        crate::mutation::subtree::render_cell_list(&known)
+                                    )));
+                                    continue;
+                                };
+                                if !params.is_object() {
+                                    out.push(MutationError::Schema(format!(
+                                        "override_params['{key}'] must be a params object"
+                                    )));
+                                    continue;
+                                }
+                                if let Err(error) = crate::mutation::subtree::check_override_params(
+                                    cell,
+                                    Some(key),
+                                    template,
+                                    params,
+                                ) {
+                                    out.push(error);
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(cell) = parsed.cells.first()
+                    && let Err(error) =
+                        crate::mutation::subtree::check_override_params(cell, None, template, over)
+                {
+                    out.push(error);
+                }
+            }
+        }
+    }
+
+    // Ebene 2: cell.type for resolved template must be in factories.
+    // Use entry.name (resolved name, e.g. "echo") not raw template string
+    // (e.g. "echo@1.0.0") as ct_map key — fixes R3 versioned-ref mismatch.
+    let Some(cell_type) = ct_map.get(entry.name.as_str()) else {
+        // Stage-2-shaped (`template_missing`) but raised here because this is
+        // where the `Result` form raises it; unreachable through the pipeline,
+        // which stops at stage 2 whenever a reference does not resolve.
+        out.push(MutationError::TemplateMissing(template.into()));
+        return;
+    };
+    // Phase-13.5 a5-subtree T8b-1: a SUBTREE template's ROOT cell.type is
+    // `hive` — a scope marker, never an actor, so it has NO factory by
+    // design (CONTRIBUTING.md: "a hive is not an actor"). Skip the level-2
+    // factory check for a hive root; the spawnable nested cells are
+    // staged + registered by `stage_subtree` (their own cell-types are
+    // validated by bootstrap-side factory presence at spawn time).
+    if *cell_type != "hive" && !factories.contains_key(*cell_type) {
+        out.push(MutationError::UnknownCellType((*cell_type).into()));
+    }
+}
+
+/// GH #293 — stage 4 ([`Stage::PostStateAddresses`]) as a COLLECTING check:
+/// every address the post-state would carry that does not hold up, in one
+/// refusal.
+///
+/// Everything [`validate_post_state_with_templates_scoped`] decides except its
+/// edge half (that is stage 5, [`collect_edge_endpoints`]), walked in that same
+/// order:
+///
+/// 1. naming collisions — a diff claiming a path twice, or a name the pre-state
+///    already holds,
+/// 2. a `remove_nodes` / `swap_nodes` `match` that hits nothing,
+/// 3. the `adopt` grammar of an `add_nodes` entry ([`adopt_grammar`]),
+/// 4. an `add_nodes` entry with neither `adopt` nor `template`,
+/// 5. an `override_params` key addressing no cell of the template, or no param
+///    of the cell it reached (GH #140 + GH #294),
+/// 6. a cell type no factory serves, and
+/// 7. the shape and the installed name of a `swap_nodes[].with`
+///    ([`validate_swap_with_entry_full`]).
+///
+/// **This changes no verdict.** The shared halves are the collecting cores the
+/// `Result` form now calls ([`addressed_naming_and_match`],
+/// [`collect_add_node_addresses`]) and the shared helpers it now uses
+/// ([`adopt_grammar`], [`add_name_claims`]), so the messages are the same
+/// strings and the first entry is the error the single-violation path returned.
+/// Points 3, 4 and 7 are here because nothing else refuses them: dropping them
+/// from the pipeline would turn refused mutations into applied ones.
+///
+/// An `add_nodes` entry whose template does not resolve is SKIPPED, not
+/// reported: that is stage 2's verdict, and the pipeline stops there. Reporting
+/// it again here is exactly the derived-error noise GH #293 exists to remove.
+/// (The `Result` form raises `template_missing` at that point instead — the one
+/// place where the two deliberately differ, and it is unreachable through the
+/// pipeline.)
+///
+/// [`Stage::PostStateAddresses`]: crate::mutation::rejection::Stage::PostStateAddresses
+#[allow(clippy::too_many_arguments)]
+pub fn collect_post_state_addresses(
+    diff: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    factories: &CellFactoryRegistry,
+    registry_names: &[String],
+    template_to_cell_type: &[(String, String)],
+    hive_match_names: &[String],
+    scope: &str,
+    deep_registry_paths: &[String],
+    deep_hive_paths: &[String],
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    let mut refuse = |error: &MutationError, address: Option<String>| {
+        into.push(Violation::from_error(
+            Stage::PostStateAddresses,
+            error,
+            address,
+        ));
+    };
+
+    let Some(obj) = diff.as_object() else {
+        // A diff that is not an object is shaped like stage 1, but this is the
+        // check that actually decides it — there is no earlier one, and dropping
+        // it here would turn a refused mutation into an applied one. Kept where
+        // the verdict is made rather than moved to a stage that does not run it.
+        refuse(&MutationError::Schema("diff is not an object".into()), None);
+        return;
+    };
+    for (error, address) in addressed_naming_and_match(
+        obj,
+        registry_names,
+        hive_match_names,
+        scope,
+        deep_registry_paths,
+        deep_hive_paths,
+    ) {
+        refuse(&error, address);
+    }
+
+    let ct_map: std::collections::HashMap<&str, &str> = template_to_cell_type
+        .iter()
+        .map(|(t, c)| (t.as_str(), c.as_str()))
+        .collect();
+    if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
+        for (i, n) in adds.iter().enumerate() {
+            // The address is the node this entry puts at a path — the one thing
+            // its checks are about. The message names the key or the type.
+            let address = n
+                .get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| n.get("template").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("add_nodes[{i}]"));
+            if n.get("adopt").is_some() {
+                if let Some(error) = adopt_grammar(n) {
+                    refuse(&error, Some(address));
+                }
+                continue;
+            }
+            let Some(template) = n.get("template").and_then(|v| v.as_str()) else {
+                refuse(
+                    &MutationError::Schema("add_nodes[].template missing".into()),
+                    Some(address),
+                );
+                continue;
+            };
+            let Ok(entry) = templates.resolve(template) else {
+                // Stage 2's verdict ([`collect_template_resolution`]), and the
+                // pipeline stops there — reporting it again here is exactly the
+                // derived-error noise GH #293 exists to remove. The `Result`
+                // form raises `template_missing` at this point instead; it never
+                // reaches stage 4 through the pipeline.
+                continue;
+            };
+            let mut errors = Vec::new();
+            collect_add_node_addresses(
+                entry,
+                n,
+                template,
+                templates,
+                factories,
+                &ct_map,
+                &mut errors,
+            );
+            for error in errors {
+                refuse(&error, Some(address.clone()));
+            }
+        }
+    }
+
+    // `swap_nodes[].with`: the shape of the replacement, and whether the name it
+    // installs is free in the post-state. Its three refusals
+    // (`NamingCollision` / `MatchNoHit` / `TemplateMissing`, plus the two
+    // `Schema` shapes above them) are stage-4 addresses like every other, and
+    // they are checked here for the reason the collector exists: a diff that
+    // swaps four nodes onto four taken names should say so once.
+    let (add_names, add_paths) = add_name_claims(obj, scope);
+    if let Some(swaps) = obj.get("swap_nodes").and_then(|v| v.as_array()) {
+        for (i, s) in swaps.iter().enumerate() {
+            let address = format!("swap_nodes[{i}]");
+            let Some(match_name) = s
+                .get("match")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+            else {
+                refuse(
+                    &MutationError::Schema("swap_nodes[].match.name missing".into()),
+                    Some(address),
+                );
+                continue;
+            };
+            let Some(with_val) = s.get("with") else {
+                refuse(
+                    &MutationError::Schema("swap_nodes[].with missing".into()),
+                    Some(match_name.to_string()),
+                );
+                continue;
+            };
+            if let Err(error) = validate_swap_with_entry_full(
+                with_val,
+                match_name,
+                registry_names,
+                &add_names,
+                templates,
+                scope,
+                deep_registry_paths,
+                &add_paths,
+            ) {
+                refuse(&error, Some(match_name.to_string()));
+            }
+        }
+    }
+}
+
+/// GH #293 — stage 2 ([`Stage::TemplateResolution`]) as a COLLECTING check:
+/// EVERY `add_nodes` entry whose template reference does not resolve is named,
+/// not only the first one.
+///
+/// **This changes no verdict.** It is additive: the `Result` forms above keep
+/// their signatures and answer exactly what they answered before, and the first
+/// violation pushed here is the one they returned. What changes is the report —
+/// a diff naming three unresolvable templates costs one round trip instead of
+/// three.
+///
+/// Four failure shapes land in this stage, and the last two are why the check
+/// has to walk the template rather than merely look it up:
+///
+/// - the reference names no template at all ([`MutationError::TemplateMissing`],
+///   the same payload — the raw reference string — the single-violation path
+///   builds),
+/// - the reference names a malformed `@<version>` (same variant, same payload),
+/// - a `cell.type: "ref"` sub-unit points at a template the registry does not
+///   hold, and
+/// - the refs close a ring ([`MutationError::TemplateRefCycle`]).
+///
+/// The last two only exist once the subtree is parsed, so
+/// [`crate::mutation::subtree::parse_subtree`] runs here for every entry — the
+/// same call, hence the same messages, as the `override_params` path in
+/// [`validate_post_state_with_templates_scoped`], which reaches them only when
+/// an override happens to be present.
+///
+/// An `adopt` entry instantiates from an existing on-disk node and names no
+/// template, and an entry with no `template` key is a stage-1 (`diff_schema`)
+/// matter; both are skipped here rather than reported twice.
+///
+/// # Why a Resume is NOT exempt here, unlike at stage 3
+///
+/// [`validate_requires`] takes a `resumed_names` list and skips those entries,
+/// because a Reconnect instantiates nothing and would otherwise be refused for
+/// a contract it never consumes — a real accept→refuse flip (Task 15). The
+/// mirror-image exemption does not belong here, and the reason is one line of
+/// `stage.rs`: `build_staging_tree_from_templates` calls
+/// [`crate::mutation::subtree::parse_subtree`] with a `?` **before** its
+/// single-cell existence-skip (the subtree-dispatch, deliberately ahead of the
+/// skip so a partially-existing subtree still merge-stages). A Resume onto a
+/// template with a broken `ref` was therefore always refused with the same
+/// `template_missing` — at staging rather than at validation. There is no
+/// acceptance to preserve; exempting the walk here would only move that refusal
+/// back to where it costs a `.staging` directory and a `failed` audit row
+/// instead of a clean pre-destructive `rejected` one (GH #276's whole
+/// direction). Pinned by
+/// `a_broken_ref_is_refused_for_a_resume_and_a_fresh_instantiation_alike`.
+///
+/// [`Stage::TemplateResolution`]: crate::mutation::rejection::Stage::TemplateResolution
+pub fn collect_template_resolution(
+    diff: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    let Some(adds) = diff
+        .as_object()
+        .and_then(|obj| obj.get("add_nodes"))
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+    for n in adds {
+        if n.get("adopt").is_some() {
+            continue;
+        }
+        let Some(template) = n.get("template").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let mut refuse = |error: &MutationError| {
+            into.push(Violation::from_error(
+                Stage::TemplateResolution,
+                error,
+                Some(template.to_string()),
+            ));
+        };
+        let Ok(entry) = templates.resolve(template) else {
+            refuse(&MutationError::TemplateMissing(template.into()));
+            continue;
+        };
+        if let Err(error) =
+            crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates)
+        {
+            refuse(&error);
+        }
+    }
 }
 
 /// Paket-2 T1 — Validate a `swap_nodes[].with` object.
@@ -1614,12 +2211,65 @@ pub struct HeaderEdgeView {
 ///
 /// Empty `consumes` (no required keys) makes the check vacuously true, so
 /// existing topologies that declare no `consumes` never break.
+///
+/// GH #293 — this is the thin `Result` face of
+/// [`addressed_header_contract_locality`]: the FIRST violation the collecting
+/// core produces is, by construction, the one this function returned before, so
+/// every verdict it ever gave is byte-identical.
 pub fn validate_header_contract_locality(
     node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
     edges: &[HeaderEdgeView],
     hives: &std::collections::BTreeSet<String>,
 ) -> Result<(), MutationError> {
+    addressed_header_contract_locality(node_contracts, edges, hives)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _)| Err(error))
+}
+
+/// GH #293 — stage 6 ([`Stage::ContractLocality`]) as a COLLECTING check, the
+/// header-locality third of it: EVERY node whose header contract cannot be
+/// honoured by the post-state topology is named, not only the first one.
+///
+/// **This changes no verdict** — see [`validate_header_contract_locality`],
+/// which is now the first-error face of the same core.
+///
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_header_contract_locality(
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
+    edges: &[HeaderEdgeView],
+    hives: &std::collections::BTreeSet<String>,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address) in addressed_header_contract_locality(node_contracts, edges, hives) {
+        into.push(Violation::from_error(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+        ));
+    }
+}
+
+/// The collecting core of [`validate_header_contract_locality`], with the node
+/// each violation concerns as its address.
+///
+/// The per-node bodies are the ones the `Result` form used to `return` from;
+/// they push and carry on to the NEXT node instead. One deliberate exception
+/// inside a node: once Rule 0 has refused an ingress claim, that node's rules 1
+/// and 2 are skipped — exactly the reason Rule 0 runs first (a nonsensical claim
+/// would otherwise resurface as an unreachable key somewhere downstream, which
+/// is a derived error, and derived errors are what GH #293 exists to keep out of
+/// a refusal).
+fn addressed_header_contract_locality(
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
+    edges: &[HeaderEdgeView],
+    hives: &std::collections::BTreeSet<String>,
+) -> Vec<(MutationError, String)> {
     use std::collections::HashMap;
+
+    let mut violations: Vec<(MutationError, String)> = Vec::new();
 
     // Index incoming edges per node (by `to`), as indices into `edges` — the
     // transit walk needs a cycle guard, and the index is the edge identity.
@@ -1634,50 +2284,70 @@ pub fn validate_header_contract_locality(
         // widen it. Checked before the two rules below so a nonsensical claim
         // is named as such instead of surfacing as an unreachable key somewhere
         // downstream.
+        let ingress_violations = violations.len();
         for key in &view.ingress_context {
             if !INGRESS_CONTEXT_KEYS.contains(&key.as_str()) {
-                return Err(MutationError::EdgeSchema(format!(
-                    "node '{node}' declares contract.ingress.context '{key}', which is not a \
-                     standard header key born at ingress (allowed: {}) — a key outside that set \
-                     reaches context through an edge modifier.set_context",
-                    INGRESS_CONTEXT_KEYS.join(", ")
-                )));
+                violations.push((
+                    MutationError::EdgeSchema(format!(
+                        "node '{node}' declares contract.ingress.context '{key}', which is not a \
+                         standard header key born at ingress (allowed: {}) — a key outside that \
+                         set reaches context through an edge modifier.set_context",
+                        INGRESS_CONTEXT_KEYS.join(", ")
+                    )),
+                    node.clone(),
+                ));
             }
+        }
+        if violations.len() > ingress_violations {
+            // The claim this node makes about itself is nonsense; everything
+            // rules 1 and 2 would say about it follows from that.
+            continue;
         }
 
         // ── Rule 1: hop locality (fan-in intersection) ──────────────────────
         if !view.required_hop.is_empty() {
-            let in_edges = incoming.get(node.as_str());
             // A node with required hop keys but no incoming edge can never have
-            // those keys delivered → reject.
-            let Some(in_edges) = in_edges else {
-                let key = view.required_hop.iter().next().cloned().unwrap_or_default();
-                return Err(MutationError::EdgeSchema(format!(
-                    "node '{node}' requires consumes.hop '{key}' but has no incoming edge \
-                     (14-B locality / fan-in intersection)"
-                )));
-            };
-            for key in &view.required_hop {
-                // The key must be provided by EVERY incoming edge (transit
-                // edges recurse into the hive's inbound fan-in — F1 fix).
-                let provided_by_all = in_edges.iter().all(|&ei| {
-                    let mut walk = std::collections::HashSet::new();
-                    edge_provides_hop_key(
-                        ei,
-                        key,
-                        edges,
-                        node_contracts,
-                        hives,
-                        &incoming,
-                        &mut walk,
-                    )
-                });
-                if !provided_by_all {
-                    return Err(MutationError::EdgeSchema(format!(
-                        "node '{node}' requires consumes.hop '{key}' not in the fan-in \
-                         intersection of all incoming edges \
-                         (14-B locality / fan-in intersection)"
-                    )));
+            // those keys delivered → reject. Its per-key verdicts would all be
+            // the same sentence in a longer form, so the node is named ONCE and
+            // rule 2 — a statement about a different compartment — still runs.
+            match incoming.get(node.as_str()) {
+                None => {
+                    let key = view.required_hop.iter().next().cloned().unwrap_or_default();
+                    violations.push((
+                        MutationError::EdgeSchema(format!(
+                            "node '{node}' requires consumes.hop '{key}' but has no incoming edge \
+                             (14-B locality / fan-in intersection)"
+                        )),
+                        node.clone(),
+                    ));
+                }
+                Some(in_edges) => {
+                    for key in &view.required_hop {
+                        // The key must be provided by EVERY incoming edge (transit
+                        // edges recurse into the hive's inbound fan-in — F1 fix).
+                        let provided_by_all = in_edges.iter().all(|&ei| {
+                            let mut walk = std::collections::HashSet::new();
+                            edge_provides_hop_key(
+                                ei,
+                                key,
+                                edges,
+                                node_contracts,
+                                hives,
+                                &incoming,
+                                &mut walk,
+                            )
+                        });
+                        if !provided_by_all {
+                            violations.push((
+                                MutationError::EdgeSchema(format!(
+                                    "node '{node}' requires consumes.hop '{key}' not in the \
+                                     fan-in intersection of all incoming edges \
+                                     (14-B locality / fan-in intersection)"
+                                )),
+                                node.clone(),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1693,14 +2363,17 @@ pub fn validate_header_contract_locality(
                 } else {
                     String::new()
                 };
-                return Err(MutationError::EdgeSchema(format!(
-                    "node '{node}' requires consumes.context '{key}' but context presence \
-                     not reachable from any setter{hint}"
-                )));
+                violations.push((
+                    MutationError::EdgeSchema(format!(
+                        "node '{node}' requires consumes.context '{key}' but context presence \
+                         not reachable from any setter{hint}"
+                    )),
+                    node.clone(),
+                ));
             }
         }
     }
-    Ok(())
+    violations
 }
 
 /// Contribution test for one incoming edge in Rule 1 of
@@ -1818,6 +2491,232 @@ fn context_key_reachable(
         }
     }
     false
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GH #292 — a template's `requires` declaration, enforced before staging
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Render the refusal for one missing key.
+///
+/// `{ref}: {class} key {key:?} is required — {because}`; the `— {because}` half
+/// is omitted when the declaration carries none, because an empty dash is worse
+/// than no dash. `class` is `ctx` or `env` — the two placeholder classes stay
+/// apart in the message for the same reason they stay apart in the declaration:
+/// a `ctx` key is supplied by the mutation, an `env` key by the colony's `.env`,
+/// and the reader has to know which of the two to go and fix.
+fn requirement_missing(
+    reference: &str,
+    class: &str,
+    key: &str,
+    decl: &crate::templates::RequiredKey,
+) -> MutationError {
+    let head = format!("{reference}: {class} key {key:?} is required");
+    MutationError::RequirementMissing(match &decl.because {
+        Some(because) => format!("{head} — {because}"),
+        None => head,
+    })
+}
+
+/// Check one template directory's own declaration against `ctx` and `env`.
+///
+/// `reference` is how the template was named (the mutation's `template` string
+/// for the outer one, `name@version` for a template reached through a `ref`) —
+/// it is what the refusal leads with, so a composite's refusal says WHICH unit
+/// asked for the key.
+///
+/// GH #293 — collecting: a template missing three keys names three keys. The
+/// caller takes the first entry when it wants the old single answer, and that
+/// first entry is unchanged (both maps are ordered and `ctx` is still read
+/// before `env`). The malformed-declaration case is the one that still returns
+/// alone: once the file does not parse there is nothing further to read out of
+/// it.
+fn check_declared_requirements(
+    reference: &str,
+    template_dir: &std::path::Path,
+    ctx: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+    out: &mut Vec<MutationError>,
+) {
+    let req = match crate::templates::read_requires(template_dir) {
+        Ok(req) => req,
+        Err(e) => {
+            out.push(MutationError::Schema(e.to_string()));
+            return;
+        }
+    };
+    // Both maps are ordered, and `ctx` is checked before `env`, so a template
+    // missing several keys always names the same one first.
+    for (key, decl) in &req.ctx {
+        if decl.required && !ctx.contains_key(key) {
+            out.push(requirement_missing(reference, "ctx", key, decl));
+        }
+    }
+    for (key, decl) in &req.env {
+        if decl.required && !env.contains_key(key) {
+            out.push(requirement_missing(reference, "env", key, decl));
+        }
+    }
+}
+
+/// GH #292 — refuse an `add_nodes` whose template declares a key the mutation
+/// does not supply, BEFORE anything is staged.
+///
+/// A template says what it needs (`requires.ctx` / `requires.env`, see
+/// `templates/requires.rs`). Until this check existed the declaration was
+/// documentation: a missing `${ctx.X}` only surfaced while the already-copied
+/// tree was substituted (`ctx_key_missing`, after the copy), and a missing
+/// environment variable not at all — the instance was born and failed at run
+/// time. The declaration is a contract, so it is enforced where a contract
+/// belongs: before the first byte is written.
+///
+/// **The union spans the refs.** A composite is refused for what its parts
+/// need: every distinct `(name, version)` hop recorded in the parsed
+/// [`crate::mutation::subtree::CellNode::ref_chain`] is resolved back to its
+/// registry entry and read too. A template that names a ref therefore inherits
+/// the ref's requirements without restating them — restating them is exactly
+/// the drift this declaration exists to remove.
+///
+/// Pure with respect to colony state: it reads `template.json` files and the
+/// two supplied maps, and touches neither registry nor filesystem tree.
+///
+/// # Errors
+/// - [`MutationError::RequirementMissing`] naming the template, the class, the
+///   key and the template's own `because`.
+/// - [`MutationError::Schema`] if a `requires` block is malformed (the message
+///   names the file), plus whatever
+///   [`crate::mutation::subtree::parse_subtree`] reports for a broken ref — the
+///   same errors staging would raise, only earlier.
+///
+/// **A Resume is exempt.** `resumed_names` carries the `add_nodes[].name` of
+/// every entry the caller identified as a Reconnect/Resume (`colony.rs` Step
+/// 1a: the target directory exists). A Resume instantiates nothing — it stages
+/// nothing, substitutes no `${ctx.X}` and rewrites no `config.json` (overview
+/// Z.170-180, A1) — so it never consumes the declared keys, and requiring them
+/// would refuse a reconnect that was legal before the declaration existed. The
+/// requirement belongs to the instantiation, not to the address.
+///
+/// An entry without a `template` (an `adopt`, or a schema error the schema
+/// check names) and a `template` the registry does not hold are both skipped:
+/// neither is this check's finding.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_requires`]: the
+/// FIRST violation the collecting core produces is, by construction, the one
+/// this function returned before, so every verdict it ever gave is
+/// byte-identical.
+pub fn validate_requires(
+    diff: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    ctx: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+    resumed_names: &[String],
+) -> Result<(), MutationError> {
+    addressed_requires(diff, templates, ctx, env, resumed_names)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _)| Err(error))
+}
+
+/// GH #293 — stage 3 ([`Stage::Requires`]) as a COLLECTING check: every
+/// `add_nodes` entry whose template declares a key the mutation does not
+/// supply, in one refusal.
+///
+/// **This changes no verdict** — see [`validate_requires`], which is now the
+/// first-error face of the same core.
+///
+/// [`Stage::Requires`]: crate::mutation::rejection::Stage::Requires
+pub fn collect_requires(
+    diff: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    ctx: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+    resumed_names: &[String],
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address) in addressed_requires(diff, templates, ctx, env, resumed_names) {
+        into.push(Violation::from_error(Stage::Requires, &error, address));
+    }
+}
+
+/// The collecting core of [`validate_requires`], with the template reference
+/// each violation concerns.
+///
+/// One entry per unmet requirement — a template naming three keys the mutation
+/// supplies none of says all three, and the refusal is one round trip instead
+/// of three. Nothing short-circuits: a `parse_subtree` failure (which used to
+/// end the whole walk) is now one more entry, and the next `add_nodes` entry is
+/// read all the same. Only the malformed-declaration case stops within its own
+/// template — once the file does not parse there is nothing further to read out
+/// of it.
+fn addressed_requires(
+    diff: &JsonValue,
+    templates: &crate::templates::TemplatesRegistry,
+    ctx: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+    resumed_names: &[String],
+) -> Vec<(MutationError, Option<String>)> {
+    let mut violations: Vec<(MutationError, Option<String>)> = Vec::new();
+    let Some(adds) = diff.get("add_nodes").and_then(|v| v.as_array()) else {
+        return violations;
+    };
+    for n in adds {
+        // Spelled as the diff spells it — `resumed_names` is filled from the
+        // same field of the same entry, so the two always agree.
+        if n.get("name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|name| resumed_names.iter().any(|r| r == name))
+        {
+            continue;
+        }
+        let Some(reference) = n
+            .get("template")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let Ok(entry) = templates.resolve(reference) else {
+            continue; // `template_missing` is the schema validator's finding.
+        };
+        let mut errors = Vec::new();
+        check_declared_requirements(reference, &entry.filesystem_path, ctx, env, &mut errors);
+
+        // The refs: parse once, walk every distinct hop, read each one's own
+        // declaration. `parse_subtree` is what staging runs anyway, so a
+        // ref-free template costs one directory walk and nothing else.
+        match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
+            Err(error) => errors.push(error),
+            Ok(parsed) => {
+                let mut seen: Vec<(String, Option<String>)> = Vec::new();
+                for cell in &parsed.cells {
+                    for hop in &cell.ref_chain {
+                        if seen.contains(hop) {
+                            continue;
+                        }
+                        seen.push(hop.clone());
+                        let hop_ref = match &hop.1 {
+                            Some(version) => format!("{}@{}", hop.0, version),
+                            None => hop.0.clone(),
+                        };
+                        let Ok(hop_entry) = templates.resolve(&hop_ref) else {
+                            continue; // resolved once already during parsing.
+                        };
+                        check_declared_requirements(
+                            &hop_ref,
+                            &hop_entry.filesystem_path,
+                            ctx,
+                            env,
+                            &mut errors,
+                        );
+                    }
+                }
+            }
+        }
+        violations.extend(errors.into_iter().map(|e| (e, Some(reference.to_string()))));
+    }
+    violations
 }
 
 #[cfg(test)]
@@ -4116,5 +5015,103 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");
+    }
+
+    /// GH #293 — the collecting core and the `Result` form must answer the same
+    /// thing, fixture by fixture.
+    ///
+    /// Every single-violation shape `validate_naming_and_match` can produce is
+    /// listed here, and for each one the FIRST element the collecting core
+    /// pushes is compared against the error the `Result` form returns. That
+    /// equality is the whole safety statement of the refactor: the report grew,
+    /// the verdict did not. A future edit that reorders a check, or that pushes
+    /// a differently-worded error before the one it used to return, turns this
+    /// test red rather than silently changing what an operator is told.
+    #[test]
+    fn the_collecting_core_answers_first_what_the_result_form_answers() {
+        // (label, diff, registry_names, hive_match_names)
+        let fixtures: Vec<(&str, JsonValue, Vec<String>, Vec<String>)> = vec![
+            (
+                "two entries claim one path",
+                json!({"add_nodes":[
+                    {"name":"n1","template":"t"},
+                    {"name":"n1","template":"t"}
+                ]}),
+                vec![],
+                vec![],
+            ),
+            (
+                "add_nodes name already taken",
+                json!({"add_nodes":[{"name":"a","template":"t"}]}),
+                vec!["a".to_string()],
+                vec![],
+            ),
+            (
+                "add_nodes without a name",
+                json!({"add_nodes":[{"template":"t"}]}),
+                vec![],
+                vec![],
+            ),
+            (
+                "remove_nodes match hits nothing",
+                json!({"remove_nodes":[{"match":{"name":"gone"}}]}),
+                vec![],
+                vec![],
+            ),
+            (
+                "remove_nodes without a match name",
+                json!({"remove_nodes":[{"match":{}}]}),
+                vec![],
+                vec![],
+            ),
+            (
+                "swap_nodes match hits neither a cell nor a hive",
+                json!({"swap_nodes":[{"match":{"name":"gone"},"with":{"name":"x"}}]}),
+                vec!["other".to_string()],
+                vec!["some_hive".to_string()],
+            ),
+            (
+                "swap_nodes without a match name",
+                json!({"swap_nodes":[{"with":{"name":"x"}}]}),
+                vec![],
+                vec![],
+            ),
+        ];
+
+        for (label, diff, registry_names, hive_match_names) in fixtures {
+            let obj = diff.as_object().expect("fixture is an object");
+            let collected =
+                collect_naming_and_match(obj, &registry_names, &hive_match_names, "/", &[], &[]);
+            let returned =
+                validate_naming_and_match(obj, &registry_names, &hive_match_names, "/", &[], &[])
+                    .expect_err(&format!("fixture '{label}' must be refused"));
+            assert_eq!(
+                collected.len(),
+                1,
+                "fixture '{label}' is a SINGLE-violation fixture: {collected:?}"
+            );
+            assert_eq!(
+                collected.into_iter().next(),
+                Some(returned),
+                "fixture '{label}': the collecting core's first element is the \
+                 error the Result form returns"
+            );
+        }
+    }
+
+    /// The other direction: a diff with nothing wrong collects nothing, so the
+    /// `Result` form's `Ok(())` is not an artefact of taking `.next()` on a list
+    /// that happened to be empty for the wrong reason.
+    #[test]
+    fn a_clean_diff_collects_no_naming_or_match_violation() {
+        let diff = json!({
+            "add_nodes":[{"name":"fresh","template":"t"}],
+            "remove_nodes":[{"match":{"name":"here"}}],
+            "swap_nodes":[{"match":{"name":"here"},"with":{"name":"fresh"}}]
+        });
+        let obj = diff.as_object().unwrap();
+        let names = vec!["here".to_string()];
+        assert!(collect_naming_and_match(obj, &names, &[], "/", &[], &[]).is_empty());
+        assert!(validate_naming_and_match(obj, &names, &[], "/", &[], &[]).is_ok());
     }
 }

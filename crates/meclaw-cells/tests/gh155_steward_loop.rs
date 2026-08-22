@@ -89,22 +89,37 @@ fn emit(script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
 /// so a test that wants it to find a ledger has to run the script where the
 /// fixture is. Without this the only reachable probe verdict is
 /// `probe_unavailable`, which is why the mechanism below went unpinned.
+///
+/// The script travels to python3 **on stdin**, never in argv: a single argv
+/// string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped scripts have
+/// grown to within a few KB of it (GH #279, precedent 89a522e4). stdin carries
+/// the program, so the document rides inside it and is put under `sys.stdin`
+/// before the script runs — same `__main__` globals, same stdout, same exit
+/// status as `python3 -c` gave it.
 fn emit_in(dir: &std::path::Path, script: &str, doc: serde_json::Value) -> Vec<serde_json::Value> {
+    let stdin_doc = meclaw_testing::code_stdin(&doc).to_string();
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(script).unwrap(),
+        serde_json::to_string(&stdin_doc).unwrap(),
+    );
     let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
+        .arg("-")
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("python3");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(&meclaw_testing::code_stdin_bytes(&doc))
-        .expect("write stdin");
+    // Dropped, not merely borrowed: python reads until EOF.
+    let mut sink = child.stdin.take().expect("stdin");
+    sink.write_all(src.as_bytes()).expect("write program");
+    drop(sink);
     let out = child.wait_with_output().expect("wait");
     assert!(
         out.status.success(),

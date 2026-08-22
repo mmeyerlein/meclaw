@@ -1,6 +1,6 @@
 {
   "name": "summarizer",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": {
     "purpose": "The session handover step (R-OS-3): when a session generation closes and the collector hands the day out as one write batch, this hive turns that batch into ONE fresh, recency-weighted summary - more from the last turns, phase-out before, hard facts kept - and emits it as a system.handover update, the form an llm cell consumes without a provider call. The next generation opens lazily and wakes up with yesterday instead of with nothing, so the transition is not noticeable. A glue cell shapes the prompt (the prompt lives in the glue phase, not in the llm config), a writer llm writes the prose, and a failed call leaves on its own error route instead of being swallowed.",
     "use_when": "One per agent, behind the collector's 'write' route. Instantiate with ctx.model (a resolved literal, K-H2) and wire the ports in the SAME mutation: the batch lane in, the summary route to wherever the handover belongs - typically the agent llm's system.handover slot - and a drain or alarm for summary_error. This hive is the ONLY writer of system.handover (R-OS-1 slot discipline).",
@@ -11,6 +11,15 @@
       "the provider fails with a 500 -> exactly one message on route 'summary_error' with error_code provider_error, and no half-summary behind it",
       "an empty session closes -> the prompt says '0 turns' and the shipped instructions demand a short honest summary instead of invention"
     ]
+  },
+  "requires": {
+    "ctx": {
+      "model": {
+        "type": "string",
+        "required": true,
+        "because": "the model the handover writer uses"
+      }
+    }
   },
   "tags": [
     "summarizer",

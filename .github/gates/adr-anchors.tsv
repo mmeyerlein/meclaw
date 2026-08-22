@@ -31,3 +31,6 @@ adr	status	anchor_home	target
 0010-universal-body-stays-a-json-value.md	accepted	self	test:inline_variant_round_trips_value
 0010-universal-body-stays-a-json-value.md	accepted	self	code:pub fn validate_ubf_body
 0010-universal-body-stays-a-json-value.md	accepted	self	test:turn_object_user_text_is_valid
+0011-composition-reference.md	accepted	self	test:parse_subtree_places_the_referenced_templates_content_at_the_ref_position
+0011-composition-reference.md	accepted	self	code:pub struct NodeProvenance
+0011-composition-reference.md	accepted	self	code:NodeProvenance::template_chain

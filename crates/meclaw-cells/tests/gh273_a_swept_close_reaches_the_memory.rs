@@ -56,6 +56,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// The shipped template, copied cell by cell: only `config.json` files travel,
 /// so the tree under test IS the template and nothing else.
 fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
+    let src = &resolve_template_ref(src);
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
@@ -66,6 +67,31 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
             std::fs::copy(&from, dst.join("config.json")).unwrap();
         }
     }
+}
+
+/// GH #277: a directory whose `config.json` declares `cell.type: "ref"` is a
+/// REFERENCE, not a cell -- the referenced template's tree belongs in its
+/// place. `talky` names its four sub-units that way, so a tree copied straight
+/// off the library follows the same hop the substrate's staging path follows.
+fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..8 {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return dir;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
+            return dir;
+        };
+        if v["cell"]["type"] != "ref" {
+            return dir;
+        }
+        let reference = v["cell"]["template"]
+            .as_str()
+            .expect("a ref cell names a template");
+        let name = reference.split('@').next().unwrap_or_default();
+        dir = repo("templates").join(name);
+    }
+    panic!("template ref chain does not terminate at {}", dir.display());
 }
 
 fn write(root: &std::path::Path, rel: &str, v: &Value) {

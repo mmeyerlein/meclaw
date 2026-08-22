@@ -19,13 +19,22 @@
 //! `config.json` (`cell.provenance`). ALTER TABLE in-place; rows written before
 //! the stamp existed read NULL, which is the honest answer for a node whose
 //! origin was never recorded.
+//! v6 (GH #277 composition substrate): `registry` gains `template_chain` as a
+//! NULL-able TEXT column — the JSON-serialized list of every template a node
+//! came through, outermost first, the node's own template last. The v5 triple
+//! answers "what is this node an instance of"; the chain answers "which
+//! instances does a bump of an INNER template touch", which a composite
+//! instance cannot answer from the leaf stamp alone. ALTER TABLE in-place;
+//! rows written before the chain existed read NULL, and so does a row whose
+//! value cannot be parsed — the instance's own `config.json` stays the source,
+//! the table is the index.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 5;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 6;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -53,7 +62,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=4 => {
+        1..=5 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -121,6 +130,19 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                         tx.execute(&format!("ALTER TABLE registry ADD COLUMN {col} {ty}"), [])?;
                     }
                 }
+            }
+            // v5→v6 (GH #277): the fourth provenance column, the template
+            // chain. NULL-able, additive — an existing row keeps every value it
+            // had and reads NULL for the new column. Same two guards and the
+            // same rationale as v4→v5 above: `column_exists` so an aborted
+            // earlier run re-runs cleanly, `table_exists` because the
+            // pure-`migrate` path (without the `setup_colony_db` DDL) may be
+            // handed a DB that has no `registry` table at all.
+            if current <= 5
+                && table_exists(&tx, "registry")?
+                && !column_exists(&tx, "registry", "template_chain")?
+            {
+                tx.execute("ALTER TABLE registry ADD COLUMN template_chain TEXT", [])?;
             }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -222,7 +244,8 @@ mod tests {
         assert_eq!(at, None);
     }
 
-    /// A colony.db that is already at v4 receives ONLY the v5 step.
+    /// A colony.db that is already at v4 skips the v1–v4 stages and receives
+    /// the v5 step (plus every stage after it) in one pass.
     #[test]
     fn migrate_v4_to_v5_adds_only_the_registry_provenance_columns() {
         let conn = Connection::open_in_memory().unwrap();
@@ -240,7 +263,67 @@ mod tests {
         assert!(cols.contains(&"template".to_string()), "got {cols:?}");
         assert!(cols.contains(&"template_version".to_string()));
         assert!(cols.contains(&"instantiated_at".to_string()));
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+    }
+
+    /// GH #277 (v5→v6): the `registry` table gains `template_chain`. Additive
+    /// `ADD COLUMN` like the v5 triple, so an existing colony keeps every row
+    /// and reads NULL for nodes born before the chain was recorded.
+    #[test]
+    fn migrate_v1_to_v6_adds_the_registry_template_chain_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        open_v1(&conn);
+        conn.execute(
+            "INSERT INTO registry (path, cell_id, cell_type, status, created_at, updated_at) \
+             VALUES ('/a', 'id-a', 'echo', 'active', 1, 1)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        let cols = registry_columns(&conn);
+        assert!(
+            cols.contains(&"template_chain".to_string()),
+            "template_chain missing, got {cols:?}"
+        );
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        let row: (String, String, String, String, i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT path, cell_id, cell_type, status, created_at, updated_at, \
+                 template_chain FROM registry WHERE path = '/a'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                row.0.as_str(),
+                row.1.as_str(),
+                row.2.as_str(),
+                row.3.as_str(),
+                row.4,
+                row.5
+            ),
+            ("/a", "id-a", "echo", "active", 1, 1),
+            "a pre-existing row keeps every value it had"
+        );
+        assert_eq!(row.6, None, "a pre-existing row keeps NULL for the chain");
     }
 
     fn columns(conn: &Connection) -> Vec<String> {
@@ -286,7 +369,10 @@ mod tests {
             "error_code missing"
         );
         assert!(cols.contains(&"trace_id".to_string()), "trace_id missing");
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     /// Phase-16 W3 (A6): a v2 colony.db (edges already migrated) migrates to v3,
@@ -307,7 +393,10 @@ mod tests {
         let cols = mutation_log_columns(&conn);
         assert!(cols.contains(&"error_code".to_string()));
         assert!(cols.contains(&"trace_id".to_string()));
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     /// W6d (A6): the v1→v4 chain also creates the persistent `dead_letters`
@@ -325,7 +414,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1, "dead_letters table missing after v1→v4 migration");
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     /// W6d (A6): a v3 colony.db (mutation_log already migrated) migrates to v4,
@@ -352,7 +444,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(super::super::schema::read_schema_version(&conn).unwrap(), 5);
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     #[test]

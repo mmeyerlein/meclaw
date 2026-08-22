@@ -1,4 +1,4 @@
-# `cogny@3.0.6`
+# `cogny@3.0.9`
 
 The agent core as one template. Four units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
@@ -58,19 +58,36 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 `./collector/assemble` is refused with `hive_port_boundary`; which cell inside takes the
 message is decided by the `in_` lane the edge sets.
 
-### How the sub-units are referenced: materialised copies, pinned
+### How the sub-units are referenced: by name and version (GH #277)
 
-The substrate has **no template-in-template reference**. Instantiation is a recursive
-directory copy (`docs/meclaw-overview.md` § Instanziierungs-Flow), and a `template.json`
-inside the tree would only register a second template with the scanner. So the two
-sub-units live here as **byte copies of their `config.json` files** -- no
-`template.json`, no README, nothing patched.
+The two sub-units are **references**, not copies. Each of the two directories holds one
+`config.json` and nothing else:
 
-That is a fork risk, and it is pinned rather than hoped away:
-`crates/meclaw-cells/tests/cogny_template.rs` asserts every copied `config.json` is
-byte-identical to its source template. A change to `collector@2` that does not travel
-into `cogny/collector/` fails there, in the same test run, instead of drifting into
-production.
+```json
+{"cell": {"type": "ref", "template": "collector@2.1.0"}}
+```
+
+At instantiation the referenced template's tree takes that position, so the instance is
+byte-for-byte the tree the copies used to produce -- and every cell inside it now records
+the template it really came from: `collector/assemble` is stamped `collector@2.1.0`, with
+`cogny@3.0.9` above it in its provenance chain.
+
+**The library has to carry both.** A reference resolves against the colony's template
+registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
+as `cogny` -- as they do in the shipped library. A tree that copied `cogny` alone gets
+`template not found` at the mutation, not at boot.
+
+**The version is pinned on purpose.** A bare `collector` would resolve to whatever the
+highest version on disk happens to be, so a standalone bump would silently re-point this
+composite. The pin makes the composite say which version it was built against; moving it
+is a `cogny` bump, in the same commit.
+
+Until GH #277 the sub-units lived here as byte copies of their `config.json` files, held
+against their sources by a byte-identity pin. Its successor is
+`crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs`: the two
+golden manifests prove the instantiated bytes did not move, and
+`a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it` proves
+the origin is recorded.
 
 ## Ports
 
@@ -339,18 +356,19 @@ surface.** They are colony-global by construction and will follow the collector'
 something that moves, not as a stable contract (`refs #138`).
 
 **The sharp edge is gone (1.3.0).** Until `collector@1.1.0` every collector knob was a
-colony-global env name, and because the sub-units are byte copies, a `cogny` and a `talky` in
-the same colony read the *same* `COLLECTOR_*` keys. R-CG-1 moves the memory leg to the core --
+colony-global env name, and because an env key is colony-global by construction, a `cogny` and
+a `talky` in the same colony read the *same* `COLLECTOR_*` keys. R-CG-1 moves the memory leg to the core --
 but setting `COLLECTOR_MEMORY_TIER` in `.env` turned it on at *every* collector in the tree,
 including talkies whose `recall` port is not wired. The two ways out were "wire the talkies'
 recall port too and pay for the extra leg" and "`override_params` on
-`…/assemble.params.script_inline`", which was a fork of the script that the byte pin did not
-cover.
+`…/assemble.params.script_inline`", which was a fork of the script that the byte pin of the
+day did not cover.
 
-Now the knob is set where it belongs, and the byte pin still holds:
+Now the knob is set where it belongs, and the sub-unit stays a reference to the standalone
+`collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@3.0.6", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@3.0.9", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -472,7 +490,10 @@ knowledge ends.
   reaches `brain_fast` under its own `max_tokens` with the `brevity` slot on the wire, and
   a fast lane that calls `escalate_to_deep` gets its answer from `brain` instead. The two
   lanes are told apart by the model id on the wire, which no edge can fake.
-  Plus the byte-identity pin over the sub-unit copies.
+- `crates/meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs` -- the
+  two golden manifests over the instantiated tree (the sub-unit refs produce the same
+  bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
+  its OWN template and names the composite above it.
 - `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the other half: the bilateral
   advisor connection end to end, from a talky's interim answer to the correlated
   follow-up in the channel.

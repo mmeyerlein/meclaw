@@ -101,7 +101,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
     std::fs::write(tpl.join("template.json"), br#"{"name":"bashtpl"}"#).unwrap();
     std::fs::write(
         tpl.join("config.json"),
-        br#"{"cell":{"type":"bash"},"params":{"command":"true"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        br#"{"cell":{"type":"bash"},"params":{"command":"true","marker":"placeholder"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 
