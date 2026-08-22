@@ -368,8 +368,21 @@ fn every_shipped_template_instantiates_unchanged() {
                 });
         }
     }
+    // Measured, in BOTH tree shapes, and it has to hold in the smaller one:
+    // 31 top-level templates carry a `template.json` in the private tree
+    // (2026-08-22), 19 in the subset the export publishes (`PUBLIC_TEMPLATES`
+    // in `plans/export-fixtures/make_export.py`). The floor first read 20 --
+    // calibrated against the private directory only, one above what the public
+    // tree can ever reach -- and the published clone went red on it while this
+    // tree stayed green. Same defect class as the vacuity floor in
+    // `meclaw-cells/tests/gh204_declared_defaults_match_the_inline.rs`.
+    //
+    // 15 keeps roughly a fifth of the public library as headroom and still
+    // demands four fifths of it be swept. The failure this guards -- the
+    // `template.json` filter matching nothing, so the loop body never runs --
+    // drives the count to zero, not down by a few.
     assert!(
-        seen >= 20,
+        seen >= 15,
         "the sweep found almost no shipped template: {seen}"
     );
 }

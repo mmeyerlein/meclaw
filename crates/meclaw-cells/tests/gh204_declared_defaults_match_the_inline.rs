@@ -158,8 +158,30 @@ fn a_declared_default_is_the_default_the_script_resolves() {
         findings.join("\n  ")
     );
     // "Nothing disagrees" and "nothing was compared" look the same from outside.
+    //
+    // The floor is MEASURED, in both tree shapes, and it has to hold in the
+    // smaller one. Measured 2026-08-22: 61 comparisons over the private
+    // `templates/`, 49 over the subset the export publishes
+    // (`PUBLIC_TEMPLATES` in `plans/export-fixtures/make_export.py`).
+    //
+    // It used to read 50, measured on 2026-08-18 at 69 private / 57 public --
+    // and it went red in the public CI, not here. GH #277's W3 conversion
+    // replaced the byte-copied sub-units inside `talky` and `cogny` with
+    // six-line `cell.type: "ref"` markers, and those copies were carrying
+    // declared defaults: `talky/summarizer/prep` (4), `talky/dispatcher` (2),
+    // `talky/session-keeper/close` (2), `cogny/dispatcher` (2). The standalone
+    // templates they now reference are in the pool already, so the ten
+    // comparisons are not lost, they were DOUBLE-COUNTED before. Resolving the
+    // refs here to win the number back would re-tell that lie; the honest move
+    // is a floor that matches what is really compared.
+    //
+    // 40 keeps roughly a fifth of the public corpus as headroom for the next
+    // composite that stops byte-copying, while still demanding four fifths of
+    // it be present. The failure this guard exists for -- the env-var
+    // convention matching nothing, so every setting is skipped -- collapses the
+    // count towards zero, not by twenty percent.
     assert!(
-        compared >= 50,
+        compared >= 40,
         "the check compared almost no defaults: {compared}"
     );
 }

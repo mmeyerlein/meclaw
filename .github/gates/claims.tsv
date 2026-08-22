@@ -58,8 +58,8 @@ PIN-template-name-unique-de	docs/meclaw-overview.md	bricht der Scan mit einem Fe
 PIN-template-name-unique-en	docs/meclaw-overview.en.md	the scan aborts with an error	pinned	walk_refuses_two_templates_declaring_one_name
 PIN-ref-type-de	docs/config.md	Was in der Instanz landet, ist der Inhalt des referenzierten Templates an der Position der Referenz	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
 PIN-ref-type-en	docs/config.en.md	What lands in the instance is the referenced template's content at the reference's position	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
-PIN-provenance-chain-de	docs/config.md	nennt das **referenzierte** Template, nicht das Composite darüber	pinned	a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it
-PIN-provenance-chain-en	docs/config.en.md	names the **referenced** template, not the composite above it	pinned	a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it
+PIN-provenance-chain-de	docs/config.md	nennt das **referenzierte** Template, nicht das Composite darüber	pinned	which_cells_are_instances_of_collector_has_an_answer
+PIN-provenance-chain-en	docs/config.en.md	names the **referenced** template, not the composite above it	pinned	which_cells_are_instances_of_collector_has_an_answer
 PIN-requires-derived-de	docs/meclaw-overview.md	Die Deklaration ist abgeleitet, nicht danebengeschrieben	pinned	every_ctx_key_a_template_uses_is_declared
 PIN-requires-derived-en	docs/meclaw-overview.en.md	The declaration is derived, not written down beside it	pinned	every_declared_ctx_key_is_used
 #
