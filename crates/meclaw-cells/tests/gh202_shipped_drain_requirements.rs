@@ -58,6 +58,7 @@ fn edge(from: &str, to: &str, condition: Option<&str>) -> Edge {
         condition: condition
             .map(|c| meclaw_colony::cel_eval::parse_condition(c).expect("test condition parses")),
         modifier: None,
+        is_default: false,
     }
 }
 

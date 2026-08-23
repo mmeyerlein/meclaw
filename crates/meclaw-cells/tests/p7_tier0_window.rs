@@ -120,23 +120,36 @@ fn context(from: &str, to: &str, phase: &str) -> serde_json::Value {
                        "recall_window_from": from, "recall_window_to": to})
 }
 
-/// The `fire` document of a tier-0 request: the scratch select that carries the
-/// three fixed legs, delivered with the request context.
-fn fire_doc(from: &str, to: &str) -> serde_json::Value {
+/// The store's answer to a tier-0 request: ONE bundle carrying all three fixed
+/// legs (GH #295). Schema-pure `tool_result` turns in call order, the per-leg
+/// metadata beside them in the body's top-level `results[]` slot, correlated by
+/// `tool_call_id` — the shape `store` really builds for N ops.
+fn bundle_doc(from: &str, to: &str) -> serde_json::Value {
     let episodes = serde_json::json!([
-        {"id": "e1", "sender": "user", "content": "The editor of choice is vscode.",
-         "happened_at": "2026-08-09T09:00:00.000000Z"}
-    ]);
-    let rows = serde_json::json!([
-        {"request_id": "r1", "leg": "leg-episodes", "payload": episodes.to_string(), "fired": 1},
-        {"request_id": "r1", "leg": "leg-beliefs", "payload": "[]", "fired": 1},
-        {"request_id": "r1", "leg": "leg-foresight", "payload": "[]", "fired": 1}
+        {"id": "e1", "session_id": "s1", "sender": "user",
+         "content": "The editor of choice is vscode.",
+         "happened_at": "2026-08-09T09:00:00.000000Z",
+         "recorded_at": "2026-08-09T09:00:01.000000Z",
+         "channel": "c-p7", "audience_set": r#"["member:user","agent:assistant"]"#}
     ]);
     serde_json::json!({
-        "header": {"context": context(from, to, "fire"),
-                   "hop": {"operation": "select", "rows_affected": 3}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "r",
-                      "text": rows.to_string()}]
+        "header": {"context": context(from, to, "legs"),
+                   "hop": {"operation": "bundle", "rows_affected": 1, "duration_ms": 2,
+                           "bundle_errors": 0}},
+        "messages": [
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-episodes",
+             "text": episodes.to_string()},
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-beliefs", "text": "[]"},
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-foresight", "text": "[]"}
+        ],
+        "results": [
+            {"tool_call_id": "r-leg-episodes", "operation": "select", "rows_affected": 1,
+             "duration_ms": 1},
+            {"tool_call_id": "r-leg-beliefs", "operation": "select", "rows_affected": 0,
+             "duration_ms": 1},
+            {"tool_call_id": "r-leg-foresight", "operation": "select", "rows_affected": 0,
+             "duration_ms": 1}
+        ]
     })
 }
 
@@ -178,7 +191,7 @@ fn phases(msgs: &[serde_json::Value]) -> Vec<String> {
 /// JSON body, in the text the model reads, and on the hop for a router.
 #[test]
 fn a_complete_window_on_tier_0_is_named_in_the_bundle() {
-    let msgs = emit(fire_doc(FROM, TO));
+    let msgs = emit(bundle_doc(FROM, TO));
     let bundle = bundle_of(&msgs);
     assert_eq!(
         bundle["window_ignored"],
@@ -200,7 +213,7 @@ fn a_complete_window_on_tier_0_is_named_in_the_bundle() {
 /// all, in neither half of the message.
 #[test]
 fn a_request_without_a_window_carries_no_marker() {
-    let msgs = emit(fire_doc("", ""));
+    let msgs = emit(bundle_doc("", ""));
     let bundle = bundle_of(&msgs);
     assert!(bundle.get("window_ignored").is_none(), "bundle: {bundle}");
     assert!(msgs[0]["header"].get("window_ignored").is_none());
@@ -222,8 +235,7 @@ fn the_half_window_reject_survives_the_marker() {
     assert_eq!(half[0]["header"]["phase"], "request");
 
     let complete = emit(request_doc(FROM, TO));
-    assert_eq!(
-        phases(&complete),
-        vec!["leg-episodes", "leg-beliefs", "leg-foresight"]
-    );
+    // Since GH #295 the "ordinary tier-0 fan" is ONE message holding the three
+    // fixed legs, not three messages holding one each.
+    assert_eq!(phases(&complete), vec!["legs"]);
 }

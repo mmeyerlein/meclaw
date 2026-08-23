@@ -1453,6 +1453,17 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     let mut node_contracts: HashMap<Path, NodeContract> = HashMap::new();
     let mut edges: EdgeTable = EdgeTable::new();
     let mut hive_scopes: HiveScopeTable = HiveScopeTable::new();
+    // GH #285 (W4 T11): what a message meets at a declared slot nothing is bound
+    // behind. Read off the hives' own `config.json` files, never per message —
+    // `slot_table_dirty` is set by the events that can change a declaration (the
+    // boot apply, a hive scope, a mutation) and consumed at the top of the loop,
+    // i.e. BEFORE the next message is handled.
+    let mut slot_table: SlotTable = SlotTable::new();
+    let mut slot_table_dirty = true;
+    // GH #285 (W4 T12): what the `park` slots are holding. Same ownership rule
+    // as `slot_table` — colony state in the colony task, no lock — and the same
+    // consequence stated once, in `ParkedSlots`: a shutdown discards it.
+    let mut parked: ParkedSlots = ParkedSlots::new();
     // Issue #7: per-I/O-task progress marks, owned by this task alone. Key = the
     // cell's path, value = when its I/O sub-task last completed a successful
     // external round trip (`None` = announced, none yet). Written only by the
@@ -1493,6 +1504,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     to: e.to,
                     condition: e.condition,
                     modifier: e.modifier,
+                    // GH #365: the default phase is part of the edge's identity
+                    // (GH #283) — dropping it here rehydrates a fallback lane as
+                    // a second regular lane, i.e. double delivery one restart
+                    // later. `read_edges` carries the persisted column.
+                    is_default: e.is_default,
                 });
             }
             // Hard-fail (symmetric to read_edges above): a corrupt persisted
@@ -1549,6 +1565,88 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // the start of the next event unpersisted, so a Read/Drain (always the next
         // event) sees it after its fence. Empty buffer ⇒ no-op (no await).
         persist_dead_letters(&mut dead_letters, &colony_db.writer_tx).await;
+        // GH #285 (W4 T11): re-read the slot declarations if the previous event
+        // could have changed them. Here rather than at each of those events so
+        // one topology change costs one filesystem pass whatever it touched —
+        // and it lands before the next message is taken, which is the only
+        // ordering the delivery filter needs.
+        if slot_table_dirty {
+            slot_table = rebuild_slot_table(&root, &hive_scopes);
+            slot_table_dirty = false;
+        }
+        // GH #285 (W4 T12): release the queue of every `park` slot something is
+        // now bound behind. Here rather than inside the mutation apply for two
+        // reasons: every way a slot can BECOME bound passes this point (the
+        // mutation arm, the cell-emitted mutation, the boot apply, a hive
+        // scope — and a plain `Register` too, which the apply path would miss),
+        // and a mutation that registers a node and is rejected afterwards has
+        // already rolled that registration back by the time the loop comes
+        // round. The release lands BEFORE the next event is taken, which is the
+        // ordering a caller who just committed the binding mutation can see.
+        if !parked.is_empty() {
+            let mut released = take_released_slots(&mut parked, &registry, &hive_scopes);
+            while let Some((s, m)) = released.pop_front() {
+                if let Some(n) = build_ttl_notice(&m, &s, &colony_config) {
+                    released.push_back(n);
+                }
+                match route_with_log(
+                    &mut registry,
+                    &hive_scopes,
+                    &mut dead_letters,
+                    &colony_db.writer_tx,
+                    s,
+                    m,
+                    &blob_store,
+                    colony_config.blob_inline_max_bytes,
+                )
+                .await
+                {
+                    RouteAction::Done => {}
+                    RouteAction::Cascade { sender, msg } => {
+                        released.push_back((sender, msg));
+                    }
+                    RouteAction::HiveTransit { hive_path, msg } => {
+                        enqueue_hive_transit(
+                            &mut released,
+                            &mut dead_letters,
+                            &edges,
+                            hive_path,
+                            msg,
+                            egress_tx.as_ref(),
+                            egress_policy,
+                            colony_config.message_default_ttl,
+                            &slot_table,
+                            &registry,
+                            &hive_scopes,
+                            &mut parked,
+                            colony_config.slot_park_max,
+                        );
+                    }
+                    RouteAction::ColonyDispatch {
+                        endpoint: _,
+                        msg,
+                        sender,
+                    } => {
+                        // A released message that ends at a `/colony/*` endpoint is
+                        // the one action this loop cannot carry out itself (the
+                        // dispatcher needs the `ColonyDb` borrows the arms below
+                        // hold). Hand it back to the inbox instead of dropping it —
+                        // `try_send`, never `await`: the loop is the only consumer of
+                        // that channel and awaiting it from here would wedge it.
+                        if let Err(e) = inbox_self_tx.try_send(ColonyMsg::Route {
+                            sender_path: sender,
+                            msg,
+                        }) {
+                            tracing::warn!(
+                                error = %e,
+                                reason = "released_colony_dispatch_undeliverable",
+                                "released park message for a colony endpoint could not be re-enqueued"
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // GH #165: the work item is done and the loop is about to wait for the
         // next event. Silence from HERE has no operation to blame — that is the
         // one phase in which a quiet loop implicates itself.
@@ -1577,7 +1675,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, eager_on_reconnect, reg_ack).await;
                                 }
                                 ColonyMsg::AddEdge { id, from, to, ack: edge_ack } => {
-                                    edges.insert(Edge { id, from, to, condition: None, modifier: None });
+                                    edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false });
                                     let _ = edge_ack.send(());
                                 }
                                 ColonyMsg::SetNodeContract { path, contract, ack: nc_ack } => {
@@ -1650,9 +1748,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                                     env_source.as_deref(),
                                                 ).await;
                                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
+                                                // GH #285: no slot-table refresh here on purpose —
+                                                // this is the shutdown drain, and the loop breaks
+                                                // before the top-of-loop refresh could run again.
                                             }
                                             RouteAction::HiveTransit { hive_path, msg } => {
-                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
+                                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl, &slot_table, &registry, &hive_scopes, &mut parked, colony_config.slot_park_max);
                                             }
                                         }
                                     }
@@ -1717,13 +1818,19 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                             hive_scopes.register(HiveScope { path: s.clone() });
                                         }
                                         for e in &ia_edges {
-                                            // Phase 13.5-A1: carry condition/modifier over from PlannedEdge.
+                                            // Phase 13.5-A1: carry condition/modifier over from
+                                            // PlannedEdge. GH #283: and the default flag, which
+                                            // the boot declaration is the only writer of — a
+                                            // hard-coded `false` here loses the whole declaration
+                                            // on a FIRST boot, and this arm is one of two by
+                                            // construction.
                                             edges.insert(Edge {
                                                 id: e.id,
                                                 from: e.from.clone(),
                                                 to: e.to.clone(),
                                                 condition: e.condition.clone(),
                                                 modifier: e.modifier.clone(),
+                                                is_default: e.is_default,
                                             });
                                         }
                                         // Direct send via writer_tx (NOT &ColonyDb across .await,
@@ -1859,7 +1966,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         handle_register_dormant(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, sender, receiver, respawn, wake, restart_limit, cell_id, cell_type, active, failed, eager_on_reconnect, ack).await;
                     }
                     ColonyMsg::AddEdge { id, from, to, ack } => {
-                        edges.insert(Edge { id, from, to, condition: None, modifier: None });
+                        edges.insert(Edge { id, from, to, condition: None, modifier: None, is_default: false });
                         let _ = ack.send(());
                     }
                     ColonyMsg::SetNodeContract { path, contract, ack } => {
@@ -1872,6 +1979,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::AddHiveScope { path, ack } => {
                         hive_scopes.register(HiveScope { path });
+                        // GH #285: a new hive may carry slot declarations.
+                        slot_table_dirty = true;
                         let _ = ack.send(());
                     }
                     // Issue #7: an I/O sub-task reports on itself. Pure in-memory
@@ -1933,9 +2042,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                         env_source.as_deref(),
                                     ).await;
                                     enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
+                                    // GH #285: a cell-emitted mutation may change a slot declaration too.
+                                    slot_table_dirty = true;
+                                    // GH #285 (review I3): the dispatch above may have BOUND a park slot, and
+                                    // the rest of this drain is younger than what the slot is holding — so the
+                                    // queue is released to the FRONT of it, not left to the loop head.
+                                    prepend_released_slots(&mut work, &mut parked, &registry, &hive_scopes);
                                 }
                                 RouteAction::HiveTransit { hive_path, msg } => {
-                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
+                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl, &slot_table, &registry, &hive_scopes, &mut parked, colony_config.slot_park_max);
                                 }
                             }
                         }
@@ -2001,13 +2116,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 hive_scopes.register(HiveScope { path: s.clone() });
                             }
                             for e in &ia_edges {
-                                // Phase 13.5-A1: carry condition/modifier over from PlannedEdge.
+                                // Phase 13.5-A1: carry condition/modifier over from
+                                // PlannedEdge. GH #283: and the default flag (see the
+                                // twin arm above).
                                 edges.insert(Edge {
                                     id: e.id,
                                     from: e.from.clone(),
                                     to: e.to.clone(),
                                     condition: e.condition.clone(),
                                     modifier: e.modifier.clone(),
+                                    is_default: e.is_default,
                                 });
                             }
                             // op-before-ack. Direct send via writer_tx (NOT &ColonyDb
@@ -2031,6 +2149,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 .expect("writer thread dead");
                         }
                         // Reboot: skip — edges/hive_scopes were hydrated at boot start.
+                        // GH #285: the boot declaration is where most slots enter.
+                        slot_table_dirty = true;
                         let _ = ack.send(());
                     }
                     ColonyMsg::BeginInitialApply { ack } => {
@@ -2139,6 +2259,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             env_source.as_deref(),
                             death_ack_wait_tx.as_ref(),
                         ).await;
+                        // GH #285: a mutation may add a hive, fill a slot, or
+                        // rewrite a `params.ports` declaration.
+                        slot_table_dirty = true;
                         let _ = ack.send(outcome);
                     }
                     ColonyMsg::Sleep { path, receiver } => {
@@ -2383,7 +2506,29 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
 
                 for dec in decisions {
                     let restores = dec.restore_ttl;
+                    let slot_target = dec.target.clone();
                     let mut follow_up = build_follow_up_with(em.clone(), dec.target, dec.headers_out);
+                    // GH #285 (W4 T11): a decision that ends at a DECLARED SLOT with
+                    // nothing bound behind it is resolved by the hive's declaration
+                    // before it becomes a routed message — `drop` discards it in
+                    // silence, `error` dead-letters it as `slot_unbound`. `route()` is
+                    // untouched: a decision that survives this filter takes exactly
+                    // today's path.
+                    if let Some(behaviour) =
+                        unbound_slot_behaviour(&slot_table, &registry, &hive_scopes, &slot_target)
+                        && resolve_unbound_slot(
+                            &mut dead_letters,
+                            &mut parked,
+                            colony_config.slot_park_max,
+                            behaviour,
+                            &from,
+                            &em.target,
+                            &slot_target,
+                            &follow_up,
+                        )
+                    {
+                        continue;
+                    }
                     // GH #82: a restoring edge lifts the follow-up's routing budget
                     // back to `colony.json message_default_ttl`. Post-build, outside
                     // the frozen corridor — Colony stays the sole envelope setter.
@@ -2439,9 +2584,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     env_source.as_deref(),
                                 ).await;
                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
+                                // GH #285: a cell-emitted mutation may change a slot declaration too.
+                                slot_table_dirty = true;
+                                // GH #285 (review I3): the dispatch above may have BOUND a park slot, and
+                                // the rest of this drain is younger than what the slot is holding — so the
+                                // queue is released to the FRONT of it, not left to the loop head.
+                                prepend_released_slots(&mut work, &mut parked, &registry, &hive_scopes);
                             }
                             RouteAction::HiveTransit { hive_path, msg } => {
-                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl);
+                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl, &slot_table, &registry, &hive_scopes, &mut parked, colony_config.slot_park_max);
                             }
                         }
                     }
@@ -2928,11 +3079,19 @@ fn remove_swept_dir(dir: &std::path::Path, id: &str) {
 /// the audit model describes. On timeout the sweep proceeds anyway and the
 /// removal error (if any) is logged: a wedged task must not hold the colony
 /// inbox open, which is the same trade [`term_timeout`] itself makes.
+///
+/// GH #285 (W4 T12 review I2): the **hive-scope half** is rolled back too — see
+/// [`rollback_registered_hive_scopes`], which this calls and which the two
+/// post-state reject blocks (that register nothing and therefore never call
+/// this) call for themselves.
 async fn rollback_registered_nodes(
     registry: &mut HashMap<Path, RegistryEntry>,
     node_contracts: &mut HashMap<Path, NodeContract>,
+    hive_scopes: &mut HiveScopeTable,
     registered: &[Path],
+    registered_hive_scopes: &[Path],
 ) {
+    rollback_registered_hive_scopes(hive_scopes, registered_hive_scopes);
     let mut death_acks: Vec<(Path, oneshot::Receiver<()>)> = Vec::new();
     for path in registered {
         if let Some(mut entry) = registry.remove(path)
@@ -2951,6 +3110,37 @@ async fn rollback_registered_nodes(
                 path = %path.as_str(),
                 "rolled-back cell did not answer the peace-stop within the term-timeout — \
                  sweeping its directory while its task may still hold cell.db"
+            );
+        }
+    }
+}
+
+/// GH #285 (W4 T12 review I2) — take back the hive scopes a rejected mutation
+/// registered.
+///
+/// The scope half of an apply-stage rollback never existed: `HiveScopeTable` had
+/// no removal at all, and a subtree instantiation registers its scope markers in
+/// apply step 9c, well before the last checks that can still refuse the diff.
+/// Every reject after that point therefore left a marker with nothing behind it,
+/// and every later reader — routing, `rebuild_slot_table`, and since this task
+/// the park release, which treats a scope as "bound" — believed a hive lived
+/// there. A park queue released into such a phantom dies as `hive_no_route`,
+/// which is the opposite of what the `park` declaration promised.
+///
+/// The durable half needs no undo for the same reason the registry's does not:
+/// the `InsertHiveScope` write-ops ride in the mutation's `write_buffer` and a
+/// reject returns before the flush, so `colony.db` never saw them. Removing the
+/// RAM entry makes the two agree rather than diverge.
+///
+/// Only scopes this mutation brought into EXISTENCE are listed by the caller;
+/// re-registering an already-live hive (apply step 9c(2b)) is idempotent and
+/// must survive.
+fn rollback_registered_hive_scopes(hive_scopes: &mut HiveScopeTable, registered: &[Path]) {
+    for path in registered {
+        if hive_scopes.remove(path) {
+            tracing::debug!(
+                path = %path.as_str(),
+                "rolled back the hive scope this rejected mutation registered"
             );
         }
     }
@@ -3832,6 +4022,17 @@ pub(crate) async fn handle_mutation(
             break 'validate rejection;
         }
 
+        // GH #133/#285: the hives that declared `params.ports`, read out of their
+        // own `config.json`. Hoisted above stage 5 because the SLOT half of that
+        // declaration belongs to the endpoint check: a slot is an address a hive
+        // announced as possibly EMPTY, so stage 5 has to know about it before it
+        // can decide whether an endpoint resolves at all. The port boundary below
+        // consumes the same read — one FS pass, one answer, no chance of the two
+        // halves of one declaration disagreeing.
+        let sealed_hives =
+            crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
+        let slot_endpoints = crate::mutation::port_boundary::slot_endpoint_addresses(&sealed_hives);
+
         // Stage 5 — both endpoints of every edge exist in the post-state.
         crate::mutation::validate::collect_edge_endpoints(
             &diff_subst,
@@ -3842,6 +4043,7 @@ pub(crate) async fn handle_mutation(
             &all_subtree_internal_edges,
             guard_scope,
             &deep_endpoint_paths,
+            &slot_endpoints,
             &mut rejection,
         );
         if !rejection.is_empty() {
@@ -3856,22 +4058,24 @@ pub(crate) async fn handle_mutation(
         // vacuous, which is the state of every topology shipped so far. Still
         // pre-destructive: nothing has been staged, spawned or wired at this point.
         //
-        // Stage 6 (contract locality) — first of its three checks. The port
+        // Stage 6 (contract locality) — first of its four checks. The port
         // boundary and the inbound lanes are adjacent, so they are collected
         // together and only then measured.
         //
-        // The third check (header contract locality) is NOT adjacent: it runs
-        // some 180 lines below, because it needs the post-state header views,
-        // which need `remove_edges` and the relocation gate to have had their
-        // say first. The position is the one it has always had and moving it
-        // would reorder the pipeline — but it leaves a gap worth naming: a diff
-        // that breaks a port boundary AND a header contract is refused at the
+        // The third and fourth checks (header contract locality, hive lane
+        // context) are NOT adjacent: they run some 180 lines below, because
+        // they need the post-state header views, which need `remove_edges` and
+        // the relocation gate to have had their say first. The position is the
+        // one it has always had and moving it would reorder the pipeline — but
+        // it leaves a gap worth naming: a diff that breaks a port boundary AND
+        // a header contract is refused at the
         // break above and reports only that half. Closing it means either
         // hoisting the header views (which changes what they see) or letting
         // stage 6 span a `remove_edges` reject, and neither is this task's to
         // decide.
-        let sealed_hives =
-            crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
+        //
+        // `sealed_hives` was read above stage 5 (the slot half of the same
+        // declaration is an endpoint question); this is the same list.
         crate::mutation::port_boundary::collect_hive_port_boundary(
             &diff_subst,
             guard_scope,
@@ -4075,6 +4279,28 @@ pub(crate) async fn handle_mutation(
                 crate::mutation::validate::collect_header_contract_locality(
                     &post_nodes,
                     &post_edges,
+                    &post_hives,
+                    &mut rejection,
+                );
+
+                // GH #291 — Stage 6, fourth check. `accepts[].context` is a
+                // REQUIREMENT, not a note for a reader: an edge that states a
+                // declared lane into a contracted hive must have the lane's keys
+                // promoted by the time it arrives. It runs HERE, next to the
+                // header-contract locality check, because it asks the identical
+                // question of the identical post-state views — is the context
+                // this obligation names local to the wiring that uses it — and
+                // is answered by the SAME backwards walk (GH #185), so the two
+                // can never disagree about one key.
+                //
+                // The requirements come from the `hive_contracts` collected for
+                // the inbound-lane check above; one read of the hives' configs
+                // serves both halves. Same stage tag, no `send_eda_reject`, no
+                // early return: the pipeline's one reject is emitted at the end.
+                crate::mutation::validate::collect_hive_lane_context(
+                    &crate::mutation::hive_contract::lane_requirements(&hive_contracts),
+                    &post_edges,
+                    &post_nodes,
                     &post_hives,
                     &mut rejection,
                 );
@@ -4466,6 +4692,15 @@ pub(crate) async fn handle_mutation(
     // its registry row moved in step 7b, which is a live-tree effect outside the
     // rollback window; unregistering it would lose the cell rather than restore it.
     let mut registered_by_this_mutation: Vec<Path> = Vec::new();
+    // GH #285 (W4 T12 review I2): the hive scopes this mutation brings into
+    // EXISTENCE, for the same rollback. The registry half above has been rolled
+    // back since #276; the scope half never was, because `HiveScopeTable` had no
+    // removal at all — so a subtree instantiation that was rejected after step
+    // 9c left a scope nothing stands behind, and every later reader (routing,
+    // `rebuild_slot_table`, the park release) believed a hive lived there.
+    // Only scopes the table did not already carry are listed: re-registering an
+    // EXISTING hive (step 9c(2b)) is idempotent and must survive the rollback.
+    let mut hive_scopes_registered_by_this_mutation: Vec<Path> = Vec::new();
     // Paths directly involved in this mutation's edge ops (recompute seeds).
     let mut involved: Vec<Path> = Vec::new();
     // Paket 6 Block D: single-cell `add_nodes`-Resume targets are direct
@@ -4515,6 +4750,7 @@ pub(crate) async fn handle_mutation(
                     to: sw.to.clone(),
                     condition: sw.condition,
                     modifier: sw.modifier,
+                    is_default: sw.is_default,
                 });
                 inserted_edge_ids.push(edge_id);
                 write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -4524,6 +4760,11 @@ pub(crate) async fn handle_mutation(
                     created_at: now_edges,
                     condition: sw.cond_src,
                     modifier: sw.mod_src,
+                    // GH #283: the phase the swung edge was inserted with above.
+                    // A swing carries condition, modifier AND phase verbatim
+                    // (`SwungEdge::is_default`), so the row and the RAM edge say
+                    // the same thing side by side.
+                    is_default: sw.is_default,
                 });
             }
             // THEN remove the old edges (fetch each removed Edge for rollback,
@@ -4575,6 +4816,7 @@ pub(crate) async fn handle_mutation(
                 to: sw.to.clone(),
                 condition: sw.condition,
                 modifier: sw.modifier,
+                is_default: sw.is_default,
             });
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -4584,6 +4826,10 @@ pub(crate) async fn handle_mutation(
                 created_at: now_edges,
                 condition: sw.cond_src,
                 modifier: sw.mod_src,
+                // GH #283: as in the swap above — the phase the re-pointed edge
+                // was inserted with, kept beside the RAM insert. A move changes
+                // an address, never what an edge means.
+                is_default: sw.is_default,
             });
         }
         for old_id in plan.remove_ids {
@@ -4641,6 +4887,11 @@ pub(crate) async fn handle_mutation(
             .iter()
             .flat_map(|r| r.hive_scopes.iter())
         {
+            // GH #285 (review I2): remember it only if it is genuinely new, so a
+            // reject after this point takes back exactly what this mutation added.
+            if hive_scopes.get(hive_path).is_none() {
+                hive_scopes_registered_by_this_mutation.push(hive_path.clone());
+            }
             hive_scopes.register(crate::hive_scope::HiveScope {
                 path: hive_path.clone(),
             });
@@ -4686,15 +4937,22 @@ pub(crate) async fn handle_mutation(
             });
             // Paket-5 T8 (A1): global edge-dedup, identical discipline to the
             // `add_edges` block below — skip insert + writer-op + fresh UUID for
-            // a content-equal edge (identity = from+to+condition+modifier, spec
-            // Z.265), but still seed `involved` so the recompute reaches the
-            // endpoints.
+            // a content-equal edge, but still seed `involved` so the recompute
+            // reaches the endpoints. Identity is the FIVE terms
+            // from+to+condition+modifier+is_default (spec Z.265 plus GH #283,
+            // T4): the phase is a full term, so an edge that differs only in it
+            // is a different edge and lands beside its twin.
             let candidate = crate::edge_table::Edge {
                 id: Uuid::now_v7(),
                 from: edge.from.clone(),
                 to: edge.to.clone(),
                 condition: cel_condition,
                 modifier: cel_modifier,
+                // GH #283: the phase the TEMPLATE declared, resolved onto this
+                // instance. It is also part of edge identity (T4), so the
+                // dedup below distinguishes a default from an otherwise equal
+                // ordinary edge instead of swallowing it.
+                is_default: edge.is_default,
             };
             involved.push(edge.from.clone());
             involved.push(edge.to.clone());
@@ -4707,6 +4965,10 @@ pub(crate) async fn handle_mutation(
                 .modifier
                 .as_ref()
                 .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
+            // GH #283: read the phase off the candidate BEFORE the move into the
+            // table, exactly like the two source strings above — the row and the
+            // RAM edge then carry the same value by construction.
+            let is_default = candidate.is_default;
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -4716,6 +4978,7 @@ pub(crate) async fn handle_mutation(
                 created_at: now_spawn,
                 condition: cond_src,
                 modifier: mod_src,
+                is_default,
             });
         }
     }
@@ -4796,6 +5059,12 @@ pub(crate) async fn handle_mutation(
                 .and_then(|v| v.get("condition"))
                 .and_then(|v| v.as_str());
             let pat_modifier = r.get("match").and_then(|v| v.get("modifier"));
+            // GH #283: the routing phase, optional like condition/modifier —
+            // absent means the pattern takes BOTH phases.
+            let pat_default = r
+                .get("match")
+                .and_then(|v| v.get("default"))
+                .and_then(|v| v.as_bool());
             let from_path = crate::mutation::resolve_scoped_path(&scope, from_name);
             let to_path = crate::mutation::resolve_scoped_path(&scope, to_name);
             // A5: clone the matched edges (not just ids) so a timeout can
@@ -4812,6 +5081,7 @@ pub(crate) async fn handle_mutation(
                         to_path.as_str(),
                         pat_condition,
                         pat_modifier,
+                        pat_default,
                     )
                 })
                 .cloned()
@@ -4891,19 +5161,31 @@ pub(crate) async fn handle_mutation(
                     .expect("validate guaranteed add_edges[].modifier.set_* is valid CEL")
             });
             // Paket-5 T8 (A1): global edge-dedup. Edge identity = from + to +
-            // condition + modifier (spec Z.265, NOT the UUID). A re-applied
-            // COMPLETE diff (Phase-15 builder) re-sends the same add_edges; a
-            // duplicate insert would mean DOUBLE delivery on the routing
-            // cascade. Skip the insert + the matching `InsertEdge` writer-op +
-            // the fresh UUID — the existing equal edge keeps its old id
-            // (identity-stable). `involved` IS still seeded below so the
-            // recompute reaches both endpoints (the route still exists).
+            // condition + modifier + is_default (spec Z.265 plus GH #283, NOT
+            // the UUID). A re-applied COMPLETE diff (Phase-15 builder) re-sends
+            // the same add_edges; a duplicate insert would mean DOUBLE delivery
+            // on the routing cascade. Skip the insert + the matching
+            // `InsertEdge` writer-op + the fresh UUID — the existing equal edge
+            // keeps its old id (identity-stable). `involved` IS still seeded
+            // below so the recompute reaches both endpoints (the route still
+            // exists).
+            //
+            // The phase belongs in the identity for the migration this entrance
+            // exists for: laying the default BESIDE the unconditional edge it
+            // replaces, and taking the old one away afterwards. On the
+            // four-term identity the dedup would swallow that second insert and
+            // report `Committed` over a topology missing an edge nobody named.
             let candidate = crate::edge_table::Edge {
                 id: Uuid::now_v7(),
                 from: from_path.clone(),
                 to: to_path.clone(),
                 condition: cel_condition,
                 modifier: cel_modifier,
+                // GH #283: the phase the DIFF declared. Absent = regular;
+                // validate has already refused every non-boolean, so a
+                // surviving non-bool cannot reach this point and `unwrap_or`
+                // is the same default the absent case takes.
+                is_default: e.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
             };
             involved.push(from_path.clone());
             involved.push(to_path.clone());
@@ -4917,6 +5199,8 @@ pub(crate) async fn handle_mutation(
                 .modifier
                 .as_ref()
                 .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
+            // GH #283: the phase, read off before the same move.
+            let is_default = candidate.is_default;
             edges.insert(candidate);
             inserted_edge_ids.push(edge_id);
             write_buffer.push(crate::persist::writer::ColonyWriteOp::InsertEdge {
@@ -4926,6 +5210,7 @@ pub(crate) async fn handle_mutation(
                 created_at: now_edges,
                 condition: cond_src,
                 modifier: mod_src,
+                is_default,
             });
         }
     }
@@ -4963,6 +5248,10 @@ pub(crate) async fn handle_mutation(
         for edge in std::mem::take(&mut removed_edges_saved) {
             edges.insert(edge);
         }
+        // GH #285 (review I2): this block registers nothing and therefore
+        // never reaches `rollback_registered_nodes` — but apply step 9c ran
+        // above it and may have brought a hive scope into existence.
+        rollback_registered_hive_scopes(hive_scopes, &hive_scopes_registered_by_this_mutation);
         // GH #276: nothing is registered yet (step 9 runs below), so the only
         // residue is on disk — the staged directories renamed in by step 7 — and
         // the `in_flight` log row the caller would otherwise be left with.
@@ -5016,6 +5305,10 @@ pub(crate) async fn handle_mutation(
         for edge in std::mem::take(&mut removed_edges_saved) {
             edges.insert(edge);
         }
+        // GH #285 (review I2): this block registers nothing and therefore
+        // never reaches `rollback_registered_nodes` — but apply step 9c ran
+        // above it and may have brought a hive scope into existence.
+        rollback_registered_hive_scopes(hive_scopes, &hive_scopes_registered_by_this_mutation);
         // GH #276: same as the drain check above — nothing registered, staged
         // directories swept, log row terminalized.
         sweep_reject_residue(
@@ -5072,8 +5365,14 @@ pub(crate) async fn handle_mutation(
                 for edge in std::mem::take(&mut removed_edges_saved) {
                     edges.insert(edge);
                 }
-                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
-                    .await;
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -5265,8 +5564,14 @@ pub(crate) async fn handle_mutation(
                 for edge in std::mem::take(&mut removed_edges_saved) {
                     edges.insert(edge);
                 }
-                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
-                    .await;
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -5735,7 +6040,14 @@ pub(crate) async fn handle_mutation(
             // above step 9, so the nodes this diff registered come out again
             // here — otherwise a refused disconnect would leave a live,
             // addressable cell the caller was told does not exist.
-            rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation).await;
+            rollback_registered_nodes(
+                registry,
+                node_contracts,
+                hive_scopes,
+                &registered_by_this_mutation,
+                &hive_scopes_registered_by_this_mutation,
+            )
+            .await;
             sweep_reject_residue(
                 &staged,
                 &staged_subtrees,
@@ -5911,8 +6223,14 @@ pub(crate) async fn handle_mutation(
                 // terminalized rather than left for the next boot's recovery:
                 // an operator reading the audit after a 422 must not find
                 // `in_flight`.
-                rollback_registered_nodes(registry, node_contracts, &registered_by_this_mutation)
-                    .await;
+                rollback_registered_nodes(
+                    registry,
+                    node_contracts,
+                    hive_scopes,
+                    &registered_by_this_mutation,
+                    &hive_scopes_registered_by_this_mutation,
+                )
+                .await;
                 sweep_reject_residue(
                     &staged,
                     &staged_subtrees,
@@ -6767,10 +7085,243 @@ impl EgressPolicy {
     }
 }
 
+/// GH #285 (W4 T11) — the declared slots of this colony, and what a message
+/// meets at one while nothing is bound behind it.
+///
+/// Colony state like every other table in `colony_task`: owned by the one task,
+/// no lock (one task per actor). It is rebuilt from the hives' own
+/// `config.json` files whenever something could have changed a declaration —
+/// the boot apply, an `AddHiveScope`, a mutation — so the two delivery sites do
+/// no filesystem work of their own and read a plain map.
+type SlotTable = HashMap<Path, crate::config::UnboundBehaviour>;
+
+/// GH #285 (W4 T12) — the messages a `park` slot is holding, per slot address.
+///
+/// Each queue is a FIFO of `(sender, message)`: the sender travels with the
+/// message because it is what the routing of a RELEASED message is logged and
+/// dead-lettered against — a queue that forgot who sent its contents would
+/// release them anonymously.
+///
+/// Colony state like `SlotTable`, owned by the one colony task, no lock
+/// (invariant § Concurrency). Consequence, and deliberate: **a colony shutdown
+/// discards whatever is still parked.** The queue is a promise about the
+/// running colony's topology being finished, not a durable outbox; persisting
+/// it would make a half-built graph survive a restart as a set of deliveries
+/// nobody is expecting any more.
+type ParkedSlots = HashMap<Path, VecDeque<(Path, Message)>>;
+
+/// Read every registered hive's port declaration back off disk and keep the
+/// slot half of it.
+///
+/// Deliberately the SAME reader the mutation edge check uses
+/// (`collect_sealed_hives` + `slot_unbound_behaviours`): a slot that one rule
+/// finds wireable and another spells differently is a slot that is announced
+/// and then behaves like a typo. Synchronous filesystem work — one
+/// `config.json` per registered hive — which is why it runs on topology change
+/// only and never per message.
+fn rebuild_slot_table(root: &std::path::Path, hive_scopes: &HiveScopeTable) -> SlotTable {
+    let sealed = crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
+    crate::mutation::port_boundary::slot_unbound_behaviours(&sealed)
+        .into_iter()
+        .map(|(address, unbound)| (Path::new(&address), unbound))
+        .collect()
+}
+
+/// GH #285 (W4 T11) — what a routing decision meets when its target is a
+/// declared slot with nothing bound behind it.
+///
+/// `None` is "none of this filter's business", and it has two causes that must
+/// stay indistinguishable to the caller: the address was never declared a slot,
+/// or something IS bound there — a registered cell, or a hive scope whose
+/// subtree was instantiated at the address. A bound slot is an ordinary address
+/// and takes exactly the path it took before this filter existed; the
+/// declaration governs the UNBOUND state and nothing else.
+fn unbound_slot_behaviour(
+    slots: &SlotTable,
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    target: &Path,
+) -> Option<crate::config::UnboundBehaviour> {
+    let declared = *slots.get(target)?;
+    if registry.contains_key(target) || hive_scopes.get(target).is_some() {
+        return None;
+    }
+    Some(declared)
+}
+
+/// GH #285 (W4 T11) — carry out a slot's declaration for one decision.
+///
+/// Returns `true` when the decision was RESOLVED here and must not be routed:
+/// `drop` discarded it (no delivery, no dead letter — the hive said the absence
+/// is normal, and an incident report would contradict the declaration it gave),
+/// `error` dead-lettered it as `slot_unbound`.
+///
+/// `park` (W4 Task 12) holds the message in the slot's own FIFO queue and also
+/// returns `true`: it is not routed now, but unlike `drop` it is not gone
+/// either — the queue is released, in order, once something is bound at the
+/// address. The queue is bounded by `colony.json slot_park_max`; at the bound
+/// the NEWEST arrival dead-letters as `slot_park_overflow` and the earlier ones
+/// stay held, because the beginning of a conversation is the part a later
+/// reader cannot reconstruct.
+#[allow(clippy::too_many_arguments)]
+fn resolve_unbound_slot(
+    dead_letters: &mut VecDeque<DeadLetter>,
+    parked: &mut ParkedSlots,
+    park_max: usize,
+    behaviour: crate::config::UnboundBehaviour,
+    sender_path: &Path,
+    original_target: &Path,
+    slot: &Path,
+    message: &Message,
+) -> bool {
+    // The two halves an operator needs to find the topology that is not
+    // finished. `DeadLetter` carries no free text, so the address IS the
+    // sentence: `resolved_target` is `<hive>/<slot>`.
+    let hive = slot.parent();
+    let slot_name = slot.as_str().rsplit('/').next().unwrap_or("");
+    match behaviour {
+        crate::config::UnboundBehaviour::Drop => {
+            tracing::debug!(
+                sender = %sender_path.as_str(),
+                hive = %hive.as_str(),
+                slot = %slot_name,
+                trace_id = %message.trace_id,
+                "unbound slot declared `drop` — message discarded"
+            );
+            true
+        }
+        crate::config::UnboundBehaviour::Error => {
+            tracing::warn!(
+                sender = %sender_path.as_str(),
+                hive = %hive.as_str(),
+                slot = %slot_name,
+                trace_id = %message.trace_id,
+                reason = "SlotUnbound",
+                "unbound slot declared `error` — dead-letter (slot_unbound)"
+            );
+            push_dead_letter(
+                dead_letters,
+                DeadLetter {
+                    sender_path: sender_path.clone(),
+                    original_target: original_target.clone(),
+                    resolved_target: slot.clone(),
+                    message: message.clone(),
+                    reason: crate::dead_letter::DeadLetterReason::SlotUnbound,
+                },
+            );
+            true
+        }
+        crate::config::UnboundBehaviour::Park => {
+            // The bound is read BEFORE the entry is created (review M1): with the
+            // documented `slot_park_max: 0` kill switch an `or_default()` first
+            // would leave an empty queue behind that nothing ever removes, and
+            // `parked` would never be empty again for the colony's whole life.
+            let held = parked.get(slot).map_or(0, VecDeque::len);
+            if held >= park_max {
+                tracing::warn!(
+                    sender = %sender_path.as_str(),
+                    hive = %hive.as_str(),
+                    slot = %slot_name,
+                    trace_id = %message.trace_id,
+                    park_max,
+                    reason = "SlotParkOverflow",
+                    "park queue full — dead-letter the newest (slot_park_overflow)"
+                );
+                push_dead_letter(
+                    dead_letters,
+                    DeadLetter {
+                        sender_path: sender_path.clone(),
+                        original_target: original_target.clone(),
+                        resolved_target: slot.clone(),
+                        message: message.clone(),
+                        reason: crate::dead_letter::DeadLetterReason::SlotParkOverflow,
+                    },
+                );
+            } else {
+                let queue = parked.entry(slot.clone()).or_default();
+                queue.push_back((sender_path.clone(), message.clone()));
+                tracing::debug!(
+                    sender = %sender_path.as_str(),
+                    hive = %hive.as_str(),
+                    slot = %slot_name,
+                    trace_id = %message.trace_id,
+                    queued = queue.len(),
+                    "unbound slot declared `park` — message held"
+                );
+            }
+            true
+        }
+    }
+}
+
+/// GH #285 (W4 T12) — release every park queue whose slot is now bound.
+///
+/// "Bound" is the SAME question `unbound_slot_behaviour` asks in the negative
+/// (T11): a registered cell OR a hive scope at the address. A subtree
+/// instantiation that fills a slot with a HIVE therefore releases the queue
+/// too — the messages go to the hive path through the ordinary delivery path,
+/// which is what turns them into that hive's out-edge decisions and reaches its
+/// members. Nothing here knows what a hive is; it just does not treat the two
+/// kinds of occupant differently.
+///
+/// The released messages are handed back to the router, not to a mailbox
+/// directly: a lazy occupant still has to be woken, an inactive one must still
+/// dead-letter as `cell_inactive`, and a hive still has to evaluate its edges.
+/// A queue released past the router would be a second, quieter routing rule.
+/// GH #285 (W4 T12 review I3) — release into a drain that is already running,
+/// AHEAD of what is still queued in it.
+///
+/// A binding does not only happen between events: one work drain can carry a
+/// `/colony/mutations` dispatch at item *k* and a message for the slot it just
+/// filled at item *k+1*. Item *k+1* would then pass the delivery filter as bound
+/// and be delivered while the older parked messages waited for the loop head —
+/// a newer message overtaking the queue it was supposed to queue behind.
+///
+/// So the release goes to the FRONT: everything parked is, by construction,
+/// older than everything still standing in this drain. The items are pushed in
+/// reverse so their own FIFO order survives the prepend, and the drain's own
+/// loop routes them — same router, same wake, same hive-transit and colony
+/// dispatch handling as any other item in it.
+fn prepend_released_slots(
+    work: &mut VecDeque<(Path, Message)>,
+    parked: &mut ParkedSlots,
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+) {
+    let released = take_released_slots(parked, registry, hive_scopes);
+    for item in released.into_iter().rev() {
+        work.push_front(item);
+    }
+}
+
+fn take_released_slots(
+    parked: &mut ParkedSlots,
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+) -> VecDeque<(Path, Message)> {
+    // Two passes so each queue's FIFO order survives the borrow: name the
+    // addresses that became bound, then move their queues out whole.
+    let bound: Vec<Path> = parked
+        .keys()
+        .filter(|slot| registry.contains_key(*slot) || hive_scopes.get(slot).is_some())
+        .cloned()
+        .collect();
+    let mut released: VecDeque<(Path, Message)> = VecDeque::new();
+    for slot in bound {
+        if let Some(queue) = parked.remove(&slot) {
+            released.extend(queue);
+        }
+    }
+    released
+}
+
 /// Evaluate a hive's out-edges (the single edge evaluator `apply_edges`) and
 /// enqueue one transit follow-up per match. No match (edge-list empty or all
 /// CEL conditions false) → DLQ `hive_no_route` (Spec Z.553, trennscharf zu
 /// `unresolved_path`: the hive WAS reachable, the graph just did not forward).
+///
+/// GH #285 (W4 T11): a match whose target is an UNBOUND declared slot is
+/// resolved by the hive's declaration before the transit follow-up is enqueued.
 #[allow(clippy::too_many_arguments)]
 fn enqueue_hive_transit(
     work: &mut VecDeque<(Path, Message)>,
@@ -6781,6 +7332,11 @@ fn enqueue_hive_transit(
     egress_tx: Option<&mpsc::Sender<Message>>,
     egress_policy: EgressPolicy,
     ttl_budget: u32,
+    slots: &SlotTable,
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    parked: &mut ParkedSlots,
+    park_max: usize,
 ) {
     let decisions = apply_edges(edges, &hive_path, &msg.headers);
     if decisions.is_empty() {
@@ -6835,9 +7391,33 @@ fn enqueue_hive_transit(
             },
         );
     } else {
+        // GH #285: the same origin the `hive_no_route` branch above names — the
+        // cell that emitted INTO the hive, not the hive itself.
+        let origin_sender = msg.reply_to.clone().unwrap_or_else(|| hive_path.clone());
+        let inbound_target = msg.target.clone();
         for dec in decisions {
             let restores = dec.restore_ttl;
+            let slot_target = dec.target.clone();
             let mut transit = build_transit_follow_up(&msg, dec.target, dec.headers_out);
+            // GH #285 (W4 T11): the hive's own out-edge may end at a slot it
+            // declared and nothing has filled. Then the declaration answers, not
+            // the router — `hive_no_route` is not it either, because the edge
+            // matched and the address is announced.
+            if let Some(behaviour) =
+                unbound_slot_behaviour(slots, registry, hive_scopes, &slot_target)
+                && resolve_unbound_slot(
+                    dead_letters,
+                    parked,
+                    park_max,
+                    behaviour,
+                    &origin_sender,
+                    &inbound_target,
+                    &slot_target,
+                    &transit,
+                )
+            {
+                continue;
+            }
             // GH #82: a hive out-edge may declare `restore_ttl` too — same edge
             // schema, same semantics. Applied here rather than inside the
             // builder so both edge kinds share one restore rule.
@@ -6905,6 +7485,13 @@ mod tests {
             Some(&egress_tx),
             EgressPolicy::All,
             meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #285: these egress tests describe topologies that declare no
+            // slot at all — the vacuous state of the filter.
+            &SlotTable::new(),
+            &HashMap::new(),
+            &HiveScopeTable::new(),
+            &mut ParkedSlots::new(),
+            64,
         );
         assert!(
             dead_letters.is_empty(),
@@ -6948,6 +7535,13 @@ mod tests {
             Some(&egress_tx),
             EgressPolicy::Marked("surface_reply"),
             meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #285: these egress tests describe topologies that declare no
+            // slot at all — the vacuous state of the filter.
+            &SlotTable::new(),
+            &HashMap::new(),
+            &HiveScopeTable::new(),
+            &mut ParkedSlots::new(),
+            64,
         );
         assert!(dead_letters.is_empty(), "a marked message must not DLQ");
         assert!(egress_rx.try_recv().is_ok(), "a marked message must go out");
@@ -6974,6 +7568,13 @@ mod tests {
             Some(&egress_tx),
             EgressPolicy::Marked("surface_reply"),
             meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #285: these egress tests describe topologies that declare no
+            // slot at all — the vacuous state of the filter.
+            &SlotTable::new(),
+            &HashMap::new(),
+            &HiveScopeTable::new(),
+            &mut ParkedSlots::new(),
+            64,
         );
         assert_eq!(
             dead_letters.len(),
@@ -7016,6 +7617,13 @@ mod tests {
             Some(&egress_tx),
             EgressPolicy::Marked("surface_reply"),
             meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #285: these egress tests describe topologies that declare no
+            // slot at all — the vacuous state of the filter.
+            &SlotTable::new(),
+            &HashMap::new(),
+            &HiveScopeTable::new(),
+            &mut ParkedSlots::new(),
+            64,
         );
         assert_eq!(dead_letters.len(), 1);
         assert!(egress_rx.try_recv().is_err());
@@ -7039,6 +7647,13 @@ mod tests {
                 None,
                 policy,
                 meclaw_core::MESSAGE_DEFAULT_TTL,
+                // GH #285: these egress tests describe topologies that declare no
+                // slot at all — the vacuous state of the filter.
+                &SlotTable::new(),
+                &HashMap::new(),
+                &HiveScopeTable::new(),
+                &mut ParkedSlots::new(),
+                64,
             );
             assert_eq!(dead_letters.len(), 1, "policy {policy:?} with no sink");
         }
@@ -7071,6 +7686,13 @@ mod tests {
             Some(&egress_tx),
             EgressPolicy::All,
             meclaw_core::MESSAGE_DEFAULT_TTL,
+            // GH #285: these egress tests describe topologies that declare no
+            // slot at all — the vacuous state of the filter.
+            &SlotTable::new(),
+            &HashMap::new(),
+            &HiveScopeTable::new(),
+            &mut ParkedSlots::new(),
+            64,
         );
         assert_eq!(
             dead_letters.len(),
@@ -9191,6 +9813,7 @@ mod tests {
             to: Path::new("/sink_a"),
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec_a).unwrap()),
+            is_default: false,
         };
         let edge_b = crate::bootstrap::PlannedEdge {
             id: Uuid::now_v7(),
@@ -9198,6 +9821,7 @@ mod tests {
             to: Path::new("/sink_b"),
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec_b).unwrap()),
+            is_default: false,
         };
         let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
         inbox_tx

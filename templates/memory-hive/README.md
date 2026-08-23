@@ -1,4 +1,4 @@
-# `memory-hive@2.3.1`
+# `memory-hive@2.3.4`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Twelve cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
@@ -1000,9 +1000,42 @@ alternative to hearing about it never.
 
 | Tier | Cost | What it does |
 |---|---|---|
-| 0 | no LLM, no embedding, ~1 round trip per leg | three fixed legs (session episodes, active beliefs, open foresight) → one token-budgeted bundle |
+| 0 | no LLM, no embedding, ONE store round trip | three fixed legs (session episodes, active beliefs, open foresight) → one token-budgeted bundle |
 | 1 | no LLM, one embedding call | four retrieval legs → RRF fusion → hydration → ranked candidates |
 | 2 | one LLM call on top of tier 1 | `dialectic` synthesises an answer with a mandatory gap statement |
+
+### One round trip for tier 0 (GH #295)
+
+A tier-0 recall costs the store **one message and one reply**, whatever its three legs find.
+
+Until 2.3.1 — the last version shipped before this one — it cost nine. The three legs left as
+three messages, each answer was parked as a `recall_scratch` row, a select asked whether all
+three had landed, a guarded update elected the one hop allowed to build the bundle, and a last
+select read the parked payloads back: three selects, three inserts, two selects and an update
+for a question whose legs never read each other's rows. That machinery is the fan-in of a
+fan-out, and since the `store` cell answers **N ops in one bundle**
+([#295](https://github.com/mmeyerlein/meclaw/issues/295)) there is no fan-out left to fan in.
+
+So the three legs travel as three `tool_call` turns in ONE message (`hop.phase == 'legs'`, ids
+`r-leg-episodes`, `r-leg-beliefs`, `r-leg-foresight`) and come back as one bundle
+(`hop.operation == 'bundle'`): schema-pure `tool_result` turns in call order plus a top-level
+`results[]` slot holding each leg's own `operation`, `rows_affected`, `duration_ms` and, if it
+failed, `error_code` — correlated by `tool_call_id`, because the UBF turn schema is closed and a
+turn cannot carry metadata of its own. That single hop gates the rows, projects them, folds the
+token budget and emits the bundle.
+
+Nothing about **what** the bundle says moved with it: the audience gate, the per-leg caps, the
+`supersession_unknown` marker and the fixed leg priority (beliefs → open foresight → recent
+episodes) are the same code they were, and a tier-0 round now writes **no `recall_scratch` row
+at all**. Tier 1 is untouched — its legs really do read each other (the fusion needs all six
+before it can rank), so it keeps its scratch fan-in and its three guard rows.
+
+**A refused leg is still terminal** ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). A
+bundle is explicitly not a transaction, so one leg can fail while its siblings carry rows — and
+`hop.bundle_errors > 0` is exactly the "memory knows nothing" bundle #343 exists to prevent.
+Tier 0 keeps the strictness it had: any refused leg stops the round on the `reject` lane with
+`reject_reason: "store_refused"`, `hop.store_error` = that leg's `error_code` and
+`hop.store_operation` = the op it refused, read off `results[]`.
 
 ### One tier-1 message, two documents (GH #296)
 
@@ -1579,7 +1612,7 @@ What is deliberately **not** answerable:
 | guarded `update … where {status:'claimed', claimed_at:{lt: now - lease}}` | the recovery sweep (#72). Idempotency is not the same as free: the `(episode_id, claim_hash)` dedup makes a re-extraction write nothing new, so the OLD sweep took back every claimed row and called that safe. It was safe for the data and expensive for everything else — a batch reclaimed while its extractor call is still in flight is extracted, and paid for, twice, which is where 5 859 batched items for 3 839 turns came from. The claim now carries the instant it was taken, so the sweep can tell a dead chain from a slow one |
 | guarded `update … set {status:'inline'} where {episode_id in …, status:'pending'}` | inline coverage (#52) -- a turn already extracted inline is never offered to a batch; a row a batch already claimed is left to the batch that owns it |
 | `select episodes where {session_id, sender:'user'} order by recorded_at desc limit 1` | the inline BIND -- the turn a block that names none is speaking for. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest user turn" is not |
-| guarded `update recall_scratch set fired=1 where {request_id, fired:0}` | recall fires exactly once per request |
+| guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` | each tier-1 gate of a recall fires exactly once per request. Tier 0 has no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
 | `set_alias` upserts on the alias, `reject_pair` upserts on the ordered pair, `canonicalize` reports only the rows that MOVED | canonicalisation round — re-judging a pair writes no second row, and a second run over unchanged data reports 0 |
 | every dream write derives its timestamp from `delta_to`, belief ids from `sha256(holder\|statement)` | dream lane, stage 3 — replay is byte-identical |

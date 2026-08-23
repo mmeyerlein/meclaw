@@ -58,8 +58,8 @@ pub use bootstrap::{
     PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state, registered_hive_paths,
 };
 pub use bootstrap_apply::{
-    BootstrapReport, apply_bootstrap_plan, bootstrap_from_filesystem,
-    bootstrap_from_filesystem_with_env, unresolved_boot_endpoints,
+    BootstrapReport, apply_bootstrap_plan, boot_edges_from_graph, bootstrap_from_filesystem,
+    bootstrap_from_filesystem_with_env, declared_slot_endpoints, unresolved_boot_endpoints,
 };
 pub use build_task::{
     build_long_running_task, build_stateful_task_with_peace, build_stateless_boot_inactive_respawn,

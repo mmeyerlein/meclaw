@@ -9,10 +9,9 @@
         {
           "route": "in_turn",
           "context": [
-            "channel",
-            "user_id"
+            "channel"
           ],
-          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one. context.user_id is the SECOND identity dimension: the sender rules address it by name (field 'user_id', two rows in the shipped seed), and a caller that never promotes it leaves that whole rule class matching the empty string -- an allow row on user_id then rejects every turn, and a deny row on it never fires"
+          "because": "a turn to screen before it reaches the agent. The caller MUST promote the identity to context.channel, or every surface shares one bucket and is rate-limited as one. context.user_id is the SECOND identity dimension and is OPTIONAL: the sender rules address it by name (field 'user_id'), but the screen reads it as the empty string when nobody promotes it and screens it like any other value -- a dimension with no enabled allow row is unconstrained (RULE 4), and a deny row on the empty string cannot exist because a row without a value is refused as rules_unreadable (RULE 2). The shipped seed's two user_id rows are enabled: 0, so an unpromoted user_id costs a shipped colony nothing. It starts costing the moment an operator enables an allow row on that dimension: from then on every turn without a promoted user_id is rejected with sender_not_allowed / allowlist:user_id. Promote it if this colony has per-user rules -- that is a wiring decision, and this lane will not make it for you"
         }
       ],
       "emits": [

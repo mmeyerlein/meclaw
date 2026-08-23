@@ -11,6 +11,286 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-23
+
+### Added
+
+- **An out-edge may declare itself the default: `"default": true`**
+  ([#283](https://github.com/mmeyerlein/meclaw/issues/283)). Until now the
+  substrate had no fallback construct. An unconditional out-edge is not one —
+  it is an **always edge** that fires *in addition to* every matching edge, never
+  instead of them — so a topology that wanted a real default had to spell it out
+  as the negation of every other arm, and every new arm had to be added to that
+  negation by hand. Anything nobody enumerated dead-lettered as `no_route`. A
+  boolean `default` beside `from`/`to` replaces the spelling: routing runs in two
+  phases, and an edge carrying the key is consulted **only after no regular
+  out-edge of the same sender fired for this message**. That makes it the
+  declared consumer for exactly what would otherwise dead-letter — including at
+  a hive path, where an out-edge `{"from": ".", "default": true}` takes the
+  remainder that would leave as `hive_no_route`. A default edge may carry a
+  `condition` as well (the remainder narrowed to the part the hive really
+  means); whatever the guard excludes still dead-letters as before. An
+  **unguarded** default edge is legitimate: the boot notes it in the colony's
+  advisories and an `add_edges` commits it with a `warn` log line — never a
+  refusal.
+
+  The key is live on all three surfaces that carry an edge: `params.graph`
+  in a `config.json`, `add_edges[].default` on a mutation (a non-boolean value
+  is `edge_schema`), and `remove_edges[].match.default` as a pattern term. The
+  match term follows the convention of the two optional fields beside it: with
+  the key absent the routing phase is unconstrained and the pattern hits regular
+  **and** default edges alike; with the key present the edge must run in exactly
+  that phase. **An existing topology does nothing.** An edge without the key is
+  unchanged in every respect, `colony.db` migrates **v6 → v7** and every existing
+  row reads `is_default = 0`.
+
+- **`/colony/graph` names an edge's routing phase**
+  ([#367](https://github.com/mmeyerlein/meclaw/issues/367)). Every edge object
+  in the graph read carries a **`default`** key beside `id`, `from`, `to`,
+  `condition` and `modifier`. Unlike those last two it is emitted **always, on
+  both values**: an absent `condition` *is* the statement that the edge has
+  none, but a routing phase is never absent — every edge runs in one of the two
+  — so omitting it on `false` would leave a reader unable to tell a regular edge
+  from a server that does not report phases. Without the key a default edge and
+  an ordinary one were the same object from outside, and
+  [#283](https://github.com/mmeyerlein/meclaw/issues/283) shipped a phase nobody
+  could observe.
+
+  The reader that needed it most is the colony's own boot. The two boot probes —
+  the required-drain check and the hive-contract lane-door check — do not read
+  the live edge table; they **rebuild** one out of `/colony/graph` and then ask
+  it routing questions. With no phase on the wire that rebuilt table said
+  "regular" for every edge, so a default edge appeared in phase one, where it
+  fires *beside* the regular arms instead of after them, and both probes judged
+  a topology the colony does not run. They now judge the one that does — which
+  can change a boot advisory: a hive whose only door to its interior is a
+  default edge shadowed by a regular out-edge that always fires has, correctly,
+  no door for that lane.
+
+- **A hive port may be a slot: an address that is allowed to stand empty**
+  ([#285](https://github.com/mmeyerlein/meclaw/issues/285)). `params.ports`
+  entries take a second form beside the plain child name — the object
+  `{"name": "gen", "slot": true, "unbound": "park" | "drop" | "error"}`, both
+  keys mandatory. The declaration buys exactly two exemptions, and no more: an
+  edge onto the slot is not a dangling endpoint at boot, and a mutation may wire
+  it with `add_edges` before anything is behind it. An address that is *not*
+  declared a slot and carries no occupant stays what it was: a hard error under
+  `--validate-strict`. Without the construct a topology could not be wired
+  before it was populated, which is the ordinary shape of a colony that grows
+  its own workers.
+
+  `unbound` says what happens to a message that reaches the unbound slot **over
+  an edge**: `drop` discards it silently, `error` dead-letters it as
+  **`slot_unbound`**, and `park` holds it FIFO until something binds at the
+  address, at which point the queue leaves in emission order ahead of anything
+  the caller sent after the binding. The park queue is bounded per slot by the
+  new `colony.json` key **`slot_park_max`** (default 64, `0` is a valid kill
+  switch); at the bound the **newest** arrival is refused as
+  **`slot_park_overflow`**, so the beginning of a history — the part a later
+  reader cannot reconstruct — is the part the bound protects. The queue lives in
+  the colony task, not on disk: a shutdown discards whatever is still parked. A
+  message addressing the slot path directly from outside does not meet the
+  declaration and stays `unresolved_path`; a slot is a valid `add_edges`
+  endpoint but never a `remove_nodes` or `swap_nodes[].match` target; and a slot
+  declared at the root scope buys nothing, because the root has no port
+  boundary.
+
+- **The store answers N operations in one message**
+  ([#295](https://github.com/mmeyerlein/meclaw/issues/295)). A body with **N
+  `tool_call` turns** is answered with **one** reply carrying N `tool_result`
+  turns in call order. What is counted are `tool_call` turns, not entries in
+  `messages[]`. Before, the store read `messages[0]` and silently dropped every
+  call after the first — an `llm` cell that emitted three calls got one answer
+  and no word about the other two — so every caller that needed N operations
+  serialised them into N round trips and carried the correlation itself. On the
+  bundle path (two or more `tool_call` turns) anything that is not a `tool_call`
+  is skipped: the prose an `llm` puts beside its calls is not an operation. At
+  **N == 1 nothing changes at all** — the same reply as before, byte for byte,
+  no `results[]`, no `bundle_errors`.
+
+  The turns stay **schema-pure** (`origin`, `type`, `text`, `id`): `TurnObject`
+  in `ubf-body.json` is `additionalProperties: false`, and a turn carrying
+  per-operation metadata would dead-letter the whole reply as `InvalidUbfBody`.
+  That metadata therefore rides in the store's own **top-level body slot
+  `results[]`** — one entry per operation, in call order, with `tool_call_id` as
+  the correlation key to its turn, plus `operation`, `rows_affected`,
+  `duration_ms` and `error_code` if that one operation failed. The headers
+  describe the bundle as a whole: `operation: "bundle"`, `rows_affected` as the
+  raw sum, `duration_ms` as the total, and the new header key **`bundle_errors`**
+  as the number of operations that failed. That last one is what an edge needs
+  ([#343](https://github.com/mmeyerlein/meclaw/issues/343)): the routing
+  decision — did any leg fail — is taken at the header with a single read,
+  without opening the body. `bundle_errors` is present on **every** bundle reply,
+  `0` included (checked-and-clean is not the same as nobody-counted) and **never**
+  on a single-operation reply. The header's own `error_code` keeps its hard
+  meaning: the whole reply is a refusal, never a partial failure.
+
+- **The shipped tier-0 recall asks once instead of nine times**
+  (`memory-hive@2.3.4`,
+  [#295](https://github.com/mmeyerlein/meclaw/issues/295)). The first consumer
+  of the bundle. A tier-0 read used to cost nine store round trips — three
+  `select`s, three `recall_scratch` inserts, one select asking whether all three
+  had landed, one guarded update electing the hop allowed to fire, one final
+  select reading the parked payloads back. It is now one message with three
+  `tool_call` turns, one bundle reply, and the bundle assembled in that same
+  hop; a tier-0 round writes no `recall_scratch` row at all. The emitted bundle
+  is byte-identical to the one the nine-hop chain produced — the expectation was
+  recorded from the old chain before the change, not copied from the new code. A
+  bundle reply carrying `bundle_errors > 0` stops the recall on `reject` instead
+  of reporting a memory that knows nothing.
+
+### Breaking
+
+- **A hive lane's `accepts[].context` is a requirement, and it is now checked at
+  the mutation** ([#291](https://github.com/mmeyerlein/meclaw/issues/291)). The
+  key has been documented as a requirement since GH #173 and was enforced
+  nowhere: `docs/config.md` said in as many words that `accepts[].context` was
+  *not* checked. A hive could declare that its `in_query` lane needs
+  `recall_query` promoted beforehand, and an `add_edges` that named the lane
+  without promoting a thing committed without comment — after which the hive's
+  interior refused every message with a key it had asked for in writing. From
+  this release an edge that names an `accepts` lane **constantly** must carry
+  that lane's `context` keys, on the edge itself (`set_context`) or reachable
+  backwards from its `from`; otherwise the mutation is rejected as
+  `hive_contract`, pre-destructively, and the refusal names the key, the lane,
+  the hive path and the lane's own `because`. Two cases stay unchecked out of
+  the same conservatism the rest of `hive_contract` already applies: an edge
+  whose route is **computed** rather than stated (what cannot be placed must not
+  be rejected), and an edge whose caller side is a hive path with **no inbound
+  edge** (nothing can be delivered there, so the requirement is dormant). At
+  boot the finding is **reported**, not fatal — the colony comes up and
+  `--validate --validate-strict` turns the same finding into a non-zero exit.
+
+  **Migration:** either fill `accepts[].context` on the lane so it states what it
+  really needs, or wire the promotion on the edge that names the lane. **The
+  shipped stack instantiates unchanged** — every lane of `memory-hive`, `access`
+  and `cogny` was migrated to a declaration its own cell contracts back
+  (`memory-hive@2.3.4`, `access@2.0.5`, `cogny@3.0.11`), and the shipped
+  `in_query` declaration is pinned as satisfiable by a colony-level test.
+  `firewall@2.0.4` is the one contract that was **relaxed** rather than
+  declared: its `in_turn` prose demanded `user_id`, the runtime tolerates an
+  empty one and screens it itself, so the key left the lane's context list with
+  a `because` sentence saying why — a declaration nobody can satisfy is a false
+  statement, not a stricter one.
+
+  **And the sharp edge, named because it is new for this key:** the check judges
+  the **full post-state** of the graph, not the diff. A colony that already
+  carries a legacy violation can therefore see an *unrelated* mutation refused
+  with a `hive_contract` finding about an edge the diff never mentioned. That is
+  the same rule the locality validator has always applied (a mutation is
+  accepted only if what stands afterwards is sound), and the finding names the
+  offending edge and key — but a caller that has never met it reads a refusal
+  about something it did not touch. Repair the named edge, then repeat the
+  mutation.
+
+### Fixed
+
+- **A reboot dropped the default flag off every edge it hydrated**
+  ([#365](https://github.com/mmeyerlein/meclaw/issues/365)). Found and fixed
+  inside this wave, before either half shipped: the reboot hydration arm rebuilt
+  its edges without the new column, so a default edge declared in a
+  `config.json` was a default edge until the colony restarted and a regular one
+  afterwards — the worst shape a routing flag can take, because the topology
+  file and the running table disagree in silence. The persistence half's test
+  had not caught it because it never went through the real reboot path; the
+  regression is pinned there now.
+
+- **The hive store's `emits` contract names every header it stamps and the body
+  slot it writes** (`memory-hive@2.3.4`,
+  [#366](https://github.com/mmeyerlein/meclaw/issues/366)). `contract.emits.hop`
+  of `templates/memory-hive/store/config.json` declared `operation`,
+  `rows_affected` and `error_code` — but the cell has always stamped
+  `duration_ms` as well, and since [#295](https://github.com/mmeyerlein/meclaw/issues/295)
+  it stamps `bundle_errors` on every bundle reply. `contract.emits.body` had the
+  same gap one compartment over: it named `messages` and not the bundle's
+  top-level slot `results[]`. All three are declared now, and `emits_meaning`
+  says what they mean — including the rule that `bundle_errors` and `results[]`
+  ride on every bundle reply and never on a single-operation one. Nothing gated
+  on the gap, but `emits` is the promise surface a reader wires against, and
+  `emits.hop` is what the locality validator reads to decide whether a
+  downstream cell may condition on a header. The recall lane already conditions
+  on `bundle_errors`
+  ([#343](https://github.com/mmeyerlein/meclaw/issues/343)'s terminal guard), so
+  the key it routes on is now the key the store says it stamps. Declaration
+  only: no runtime behaviour changes, and not a byte of a reply moves.
+
+- **Every shipped store tells the same truth about its replies, not just the
+  hive's** (`affinity@2.0.7`, `builder-librarian@2.0.4`, `canvy@0.3.2`,
+  `channel@1.0.3`, `coder-pipeline@2.0.4`, `collector@2.1.2`,
+  `llm-registry@2.0.3`, `llm-unit@2.0.4`, `memory-drain@2.0.4`,
+  `receptionist@2.0.4`, `research-assistant@2.0.3`, `session-keeper@2.0.4`,
+  `steward@2.0.7`, `talky@3.0.14`,
+  [#368](https://github.com/mmeyerlein/meclaw/issues/368)). The fix above landed
+  in one template, and the bundle reply is a property of the `store` **cell
+  type**, not of `memory-hive`: sixteen shipped templates carry a store cell,
+  and fifteen of them still declared the pre-bundle contract. All sixteen now
+  declare the same five hop keys (`operation`, `rows_affected`, `duration_ms`,
+  `error_code`, `bundle_errors`) and the same body slots (`messages`,
+  `results`), and every `emits_meaning` that existed says what the three new
+  ones mean, in the hive's wording. One of the fifteen was further out than the
+  issue counted: `builder-librarian`'s store never declared `rows_affected` at
+  all, which is the very number a bundle sums, so it moved in the same batch.
+  Declaration only, additive only —
+  `emits` schemas leave `additionalProperties` at the default, so no reply
+  validated differently before and none does now. `access@2.0.5`,
+  `firewall@2.0.4` and `cogny@3.0.11` were minted inside this unreleased block
+  and absorb their change without a further number; `channel@1.0.3` and
+  `talky@3.0.14` are pin rounds (a bumped sub-unit's `cell.type: "ref"` marker
+  and the instantiation recipes that name it move in the same commit, or a
+  pasted block asks for a version nobody can resolve). A sweep over the shipped
+  tree keeps it that way: it discovers the store configs by walking the library
+  rather than from a list, so the store of a template added tomorrow is checked
+  by the test written today.
+
+- **`operation` is `required: true` in every shipped store, not in fourteen of
+  sixteen** (`steward@2.0.7`,
+  [#369](https://github.com/mmeyerlein/meclaw/issues/369)). The entry above gave
+  all sixteen stores the same five hop keys; two of them — `steward`'s `charter`
+  and `receipts` — still declared `operation` **optional**, where the other
+  fourteen had long declared it required. It is not optional: every emit path of
+  the `store` cell stamps it, the error surface included
+  ([#331](https://github.com/mmeyerlein/meclaw/issues/331)), and since
+  [#370](https://github.com/mmeyerlein/meclaw/issues/370) the degraded
+  substitute does too. `required: false` told a reader the field may be absent,
+  which is the reason a return edge conditioned on `hop.operation` would be
+  written to tolerate a gap that does not exist. Unlike the entry above this one
+  is **not** purely declarative: `required: true` puts the key into the emits
+  schema's `required` list, so a steward store reply without it would now be
+  discarded as `contract_violation` rather than delivered. That is why it waited
+  for #370 — the one store path that could still emit without the key was the
+  degraded cell, and tightening the declaration first would have widened a false
+  statement from fourteen templates to sixteen instead of correcting it. The
+  shipped-store sweep asserts the flag now, so the next store added cannot
+  re-open the split; the same sweep also grew `rows_affected` into its checked
+  key set, the key #368 found furthest out. `steward@2.0.7` was minted inside
+  this unreleased block by the change above and absorbs this one without a
+  further number.
+
+- **A store that lost its database said so, and the substrate threw the answer
+  away** ([#370](https://github.com/mmeyerlein/meclaw/issues/370)). When a
+  `store` cell cannot open its `cell.db` at wake or at respawn, the factory
+  installs a degraded cell whose whole job is that every message comes back
+  naming the defect (`error_code: "sql_error"`) instead of vanishing
+  ([#57](https://github.com/mmeyerlein/meclaw/issues/57),
+  [#63](https://github.com/mmeyerlein/meclaw/issues/63)). Its reply carried no
+  `operation` header — but fourteen shipped stores declare `hop.operation`
+  `required: true`, and the colony's emits check is on in every debug build. The
+  reply was therefore discarded and replaced by a generic `contract_violation`,
+  which hides exactly the diagnosis the degraded cell exists to deliver, and a
+  return edge conditioned on `hop.operation` dropped it either way. The degraded
+  reply now names the refused op by the rule the healthy store states
+  ([#331](https://github.com/mmeyerlein/meclaw/issues/331), `cell-types.md`
+  § store): the operation the caller asked for, the literal `error` when nothing
+  parseable arrived, and `bundle` when two or more `tool_call` turns were
+  refused together — naming one leg would claim the others had been weighed on
+  their own. It is the stated rule, not the healthy cell's behaviour
+  byte-for-byte: two inbound shapes where that cell answers `error` because a
+  PARSE refused (a call sitting behind a prose turn, and a bundle with an
+  unparsable leg) are named here instead, because this cell never dispatches
+  anything and so has nothing to refuse. Both are contract-conform, both are
+  pinned. Runtime only: no declaration moves, so no template number does
+  either.
+
 ## [0.17.4] — 2026-08-23
 
 ### Breaking

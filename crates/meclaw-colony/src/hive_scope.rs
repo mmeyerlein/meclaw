@@ -36,6 +36,20 @@ impl HiveScopeTable {
         self.by_path.get(path)
     }
 
+    /// Take a hive scope back out of the table.
+    ///
+    /// GH #285 (W4 T12): the ONE legitimate caller is the mutation apply
+    /// rollback — a subtree instantiation that registered a scope in step 9c and
+    /// was then rejected must not leave the marker behind. It is **not** a
+    /// delete: the No-Delete-Policy is about the filesystem, and the rejected
+    /// mutation's directory is swept by the reject path, not by this. Everything
+    /// else that wants a hive gone uses disconnect, exactly as for a cell.
+    ///
+    /// Returns `true` if a scope was actually removed.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        self.by_path.remove(path).is_some()
+    }
+
     /// Iterate over the absolute paths of all registered hive scopes.
     ///
     /// Used by the mutation callsite to collect hive short-names (last path
@@ -69,6 +83,20 @@ mod tests {
         assert!(table.get(&Path::new("/")).is_some());
         assert!(table.get(&Path::new("/missing")).is_none());
         assert_eq!(table.len(), 1);
+    }
+
+    /// GH #285 (W4 T12): a scope can be taken back out, and taking out one that
+    /// was never there says so instead of pretending.
+    #[test]
+    fn remove_takes_a_scope_back_out() {
+        let mut table = HiveScopeTable::new();
+        table.register(HiveScope {
+            path: Path::new("/hn"),
+        });
+        assert!(table.remove(&Path::new("/hn")));
+        assert!(table.get(&Path::new("/hn")).is_none());
+        assert!(table.is_empty());
+        assert!(!table.remove(&Path::new("/hn")));
     }
 
     #[test]

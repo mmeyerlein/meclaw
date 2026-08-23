@@ -563,6 +563,10 @@ pub fn handle_read_graph(
                 .modifier
                 .as_ref()
                 .and_then(|m| meclaw_core::serde_json::to_value(&m.source).ok()),
+            // GH #367: the routing phase (GH #283) is part of what an edge IS,
+            // so a reader of the graph — a boot probe, a builder, the UI — has
+            // to be able to see it.
+            is_default: e.is_default,
         })
         .collect();
     crate::api_dto::ReadGraphReply {

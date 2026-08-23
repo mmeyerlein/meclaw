@@ -50,10 +50,18 @@ PIN-timer-at-in-past	docs/cell-types.md	ein einmaliger Schedule, dessen `at` ber
 PIN-ingress-declaration	docs/config.md	eine Zelle erklärt, dass sie ein Eingang ist (GH #185)	pinned	an_ingress_that_does_not_say_so_is_refused_and_the_message_names_the_declaration
 PIN-store-error-operation-de	docs/cell-types.md	`operation` trägt **jede** Antwort, die Fehler-Fläche eingeschlossen	pinned	a_rejected_select_answers_with_its_own_operation
 PIN-store-error-operation-en	docs/cell-types.en.md	`operation` is present on **every** reply, the error surface included	pinned	a_rejected_select_answers_with_its_own_operation
+PIN-store-bundle-de	docs/cell-types.md	wird mit **einer** Message beantwortet, die N `tool_result`-Turns in Aufruf-Reihenfolge trägt	pinned	three_ops_come_back_in_one_message_in_order
+PIN-store-bundle-en	docs/cell-types.en.md	is answered with **one** message carrying N `tool_result` turns in call order	pinned	three_ops_come_back_in_one_message_in_order
+PIN-store-bundle-single-call	docs/cell-types.md	Bei **N == 1 bleibt alles, wie es war**	pinned	a_single_tool_call_is_byte_identical
+PIN-store-bundle-errors-de	docs/cell-types.md	`bundle_errors` trägt **jede** Bündel-Antwort, auch als `0`	pinned	a_failing_op_does_not_stop_its_siblings
+PIN-store-bundle-errors-en	docs/cell-types.en.md	`bundle_errors` is present on **every** bundle reply, `0` included	pinned	a_failing_op_does_not_stop_its_siblings
 PIN-vault-error-codes-de	docs/cell-types.md	`unknown_op` (ein Op, den dieser Cell-Type nicht hat	pinned	there_is_no_operation_that_hands_a_secret_back
 PIN-vault-error-codes-en	docs/cell-types.en.md	`unknown_op` (an op this cell type does not have	pinned	there_is_no_operation_that_hands_a_secret_back
 PIN-always-edge-de	docs/meclaw-overview.md	ist **kein Default, sondern eine Always-Edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
 PIN-always-edge-en	docs/meclaw-overview.en.md	is **not a default: it is an always edge**	pinned	an_unconditional_edge_fires_beside_a_matching_one
+PIN-default-edge-de	docs/meclaw-overview.md	feuert genau dann, wenn keine reguläre Out-Edge desselben Senders	pinned	a_default_edge_stays_silent_while_a_regular_edge_fires
+PIN-default-edge-en	docs/meclaw-overview.en.md	fires exactly when no regular out-edge of the same sender	pinned	a_default_edge_stays_silent_while_a_regular_edge_fires
+PIN-default-edge-guard	docs/meclaw-overview.en.md	the guard decides which part of that traffic it consumes	pinned	an_eight_way_tool_surface_needs_no_negation_chain
 PIN-template-name-unique-de	docs/meclaw-overview.md	bricht der Scan mit einem Fehler ab	pinned	walk_refuses_two_templates_declaring_one_name
 PIN-template-name-unique-en	docs/meclaw-overview.en.md	the scan aborts with an error	pinned	walk_refuses_two_templates_declaring_one_name
 PIN-ref-type-de	docs/config.md	Was in der Instanz landet, ist der Inhalt des referenzierten Templates an der Position der Referenz	pinned	parse_subtree_places_the_referenced_templates_content_at_the_ref_position
@@ -68,6 +76,9 @@ PIN-cell-key-closed-subtree-de	docs/config.md	schließt **jeden Knoten eines meh
 PIN-cell-key-closed-subtree-en	docs/config.en.md	includes **every node of a multi-cell (subtree) template**	pinned	a_staged_subtree_template_with_an_unknown_inner_cell_key_is_refused
 PIN-cell-ref-boot-refusal-de	docs/config.md	ist eine unaufgelöste Referenz und damit derselbe harte Boot-Fehler wie ein unbekannter Schlüssel	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
 PIN-cell-ref-boot-refusal-en	docs/config.en.md	is an unresolved reference, and so the same hard boot error as an unknown key	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
+#
+PIN-lane-context-enforced-de	docs/config.md	muss deren `accepts[].context`-Keys mitbringen	pinned	a_lane_without_its_promoted_key_is_refused
+PIN-lane-context-enforced-en	docs/config.en.md	must carry that lane's `accepts[].context` keys	pinned	a_lane_without_its_promoted_key_is_refused
 PIN-requires-derived-de	docs/meclaw-overview.md	Die Deklaration ist abgeleitet, nicht danebengeschrieben	pinned	every_ctx_key_a_template_uses_is_declared
 PIN-requires-derived-en	docs/meclaw-overview.en.md	The declaration is derived, not written down beside it	pinned	every_declared_ctx_key_is_used
 #
@@ -88,6 +99,13 @@ PIN-read-filter-broken-uuid-de	docs/meclaw-overview.md	`trace_id`/`correlation_i
 PIN-read-filter-broken-uuid-en	docs/meclaw-overview.en.md	`trace_id`/`correlation_id` not a valid UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
 PIN-graph-scope-alias-de	docs/meclaw-overview.md	nimmt einen Top-Level-`{ scope }` weiterhin als Alias an	pinned	the_deprecated_top_level_scope_still_filters
 PIN-graph-scope-alias-en	docs/meclaw-overview.en.md	still accepts a top-level `{ scope }` as an alias	pinned	the_deprecated_top_level_scope_still_filters
+PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
+PIN-graph-edge-default-en	docs/meclaw-overview.en.md	is there **always, on both values**	pinned	every_edge_object_names_its_phase
+#
+PIN-slot-declaration-de	docs/cell-types.md	Eine Edge auf einen deklarierten Slot ist kein unauflösbarer Endpunkt	pinned	a_declared_slot_is_not_a_dangling_endpoint
+PIN-slot-declaration-en	docs/cell-types.en.md	An edge onto a declared slot is not an unresolvable endpoint	pinned	a_declared_slot_is_not_a_dangling_endpoint
+PIN-slot-unbound-behaviour-de	docs/cell-types.md	muss sagen, was mit einer Message geschieht, die sie erreicht, solange nichts dahinter gebunden ist	pinned	an_unbound_slot_drops_or_errors_as_its_hive_declared
+PIN-slot-unbound-behaviour-en	docs/cell-types.en.md	must say what happens to a message that reaches it while nothing is bound behind it	pinned	an_unbound_slot_drops_or_errors_as_its_hive_declared
 # --- built-unpinned -----------------------------------------------------
 # The substrate does it; nothing proves it. Each row is a candidate test --
 # the regressions waiting to happen (GH #254 bucket 2).

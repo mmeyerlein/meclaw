@@ -296,6 +296,12 @@ pub struct PlannedEdge {
     pub condition: Option<crate::cel_eval::CompiledCondition>,
     /// Pre-compiled CEL modifier (Phase 13.5-A1). `None` = identity headers.
     pub modifier: Option<crate::cel_eval::CompiledModifier>,
+    /// GH #283: the edge was declared with `"default": true` — the router
+    /// consults it only after every ordinary edge out of `from` declined
+    /// (`EdgeTable::apply_edges`, second phase). Carried from
+    /// [`crate::config::EdgeSpec::is_default`] and threaded into
+    /// [`crate::edge_table::Edge::is_default`] by the `InitialApply` conversion.
+    pub is_default: bool,
 }
 
 /// A fully validated bootstrap plan. `apply_bootstrap_plan` (Task 15b) takes
@@ -333,6 +339,25 @@ pub struct BootstrapPlan {
     /// violation stays a hard `BootstrapError::HeaderContractViolation`, and
     /// this stays empty.
     pub header_contract_findings: Vec<String>,
+    /// GH #283 (ruling Q1 2026-08-21): operator hints about the planned
+    /// topology — and the FIRST finding channel `--validate-strict`
+    /// deliberately does **not** promote to an error.
+    ///
+    /// That is the whole reason it exists rather than reusing one of the three
+    /// channels above. `unresolved_boot_endpoints`, `unregistered_nodes` and
+    /// `header_contract_findings` are each warned at boot and each turned into
+    /// a non-zero exit by `--validate-strict`. Q1 ruled that an unguarded
+    /// default edge is a HINT: it names a shape that is usually not what the
+    /// author meant, but it is a legal, working topology and no flag may refuse
+    /// it. Pushing that string onto a promoting channel would turn the hint
+    /// into exactly the refusal the ruling refused, so it gets its own,
+    /// non-promoting one.
+    ///
+    /// A live boot logs each entry at `warn` beside the existing warnings;
+    /// `--validate` prints them as `validate: note: …` and keeps exit 0, under
+    /// `--validate-strict` as well (pinned by
+    /// `meclaw-cli/tests/phase_16_w1a_validate_strict.rs`).
+    pub advisories: Vec<String>,
 }
 
 /// Probe for cell.db integrity. Returns `Ok(())` for absent or healthy DBs and
@@ -630,6 +655,46 @@ pub fn plan_bootstrap_with_env(
             } else {
                 cfg.params.clone()
             };
+            // GH #283: `default` is a boolean, and a non-boolean one is named
+            // as such. Serde's own type error is the truthful source, but it
+            // arrives as one opaque `params: …` string for the whole hive; an
+            // operator reading it learns the type and not the edge. So the raw
+            // edge array is asked the narrow question first, and each offender
+            // becomes its own error naming scope/from/to. The parse below still
+            // runs for every OTHER defect — this pre-check only claims the one
+            // shape it can locate better than serde can.
+            let mut bad_default = false;
+            if let Some(raw_edges) = params_value
+                .get("graph")
+                .and_then(|g| g.get("edges"))
+                .and_then(|e| e.as_array())
+            {
+                for raw in raw_edges {
+                    match raw.get("default") {
+                        None => {}
+                        Some(v) if v.is_boolean() => {}
+                        Some(_) => {
+                            bad_default = true;
+                            errors.push(BootstrapError::EdgeDefaultNotBoolean {
+                                scope: mc_path.clone(),
+                                from: raw
+                                    .get("from")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                to: raw
+                                    .get("to")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            if bad_default {
+                continue;
+            }
             let hp: HiveParams = match serde_json::from_value(params_value) {
                 Ok(h) => h,
                 Err(e) => {
@@ -697,6 +762,11 @@ pub fn plan_bootstrap_with_env(
                     to: to_abs,
                     condition: compiled_condition,
                     modifier: compiled_modifier,
+                    // GH #283: the declaration, carried as declared. It is read
+                    // AFTER the restore-ttl guard above on purpose — a default
+                    // that also restores is still a restoring edge and still
+                    // owes its own bound, for exactly the same reason.
+                    is_default: spec.is_default,
                 });
             }
         } else {
@@ -922,27 +992,51 @@ pub fn plan_bootstrap_with_env(
         header_hives = spec_hives;
     }
 
+    // GH #283 (ruling Q1 2026-08-21): one advisory per UNGUARDED default. An
+    // unguarded default takes everything the ordinary edges out of `from`
+    // declined — which is exactly what a default is for, and also a very large
+    // thing to do by accident. So it is said out loud and nothing more: the
+    // topology is legal, it boots, and `--validate-strict` does not promote
+    // this (see `BootstrapPlan::advisories`).
+    //
+    // Derived from `plan.edges` rather than collected in the walk, for the same
+    // reason `header_edges` below is: the hint then describes the graph the
+    // colony will actually run with, on a reboot as on a first boot, and cannot
+    // drift from it.
+    for edge in &plan.edges {
+        if edge.is_default && edge.condition.is_none() {
+            plan.advisories.push(format!(
+                "edge {} -> {} is an unguarded default: it consumes everything that would \
+                 otherwise dead-letter as no_route from {}; a condition narrows it to the \
+                 traffic you mean",
+                edge.from.as_str(),
+                edge.to.as_str(),
+                edge.from.as_str()
+            ));
+        }
+    }
+
     // Slice 6: project the RUNNING edges' modifier key-sets into the view the
     // locality check consumes (from/to as absolute meclaw paths — the same
     // namespace as the per-node contract keys collected during the walk).
     // Derived from `plan.edges` rather than collected alongside it, so the
     // check can never again see a different graph than the colony runs.
+    //
+    // GH #291, Task 17: the projection itself is no longer written out here.
+    // A `CompiledModifier`'s `source` IS the `ModifierSpec` the mutation-side
+    // projection takes, so the two sites can — and therefore must — be one
+    // function: a hand-copy is a second place for the key-sets and the stated
+    // lane to drift, and a boot check that reads the graph differently from
+    // the mutation check is the defect this whole strand is about.
     let header_edges: Vec<crate::mutation::validate::HeaderEdgeView> = plan
         .edges
         .iter()
         .map(|e| {
-            let mut view = crate::mutation::validate::HeaderEdgeView {
-                from: e.from.as_str().to_string(),
-                to: e.to.as_str().to_string(),
-                ..Default::default()
-            };
-            if let Some(m) = &e.modifier {
-                view.set_context = m.source.set_context.keys().cloned().collect();
-                view.delete_context = m.source.delete_context.iter().cloned().collect();
-                view.set_hop = m.source.set_hop.keys().cloned().collect();
-                view.delete_hop = m.source.delete_hop.iter().cloned().collect();
-            }
-            view
+            crate::mutation::header_views::edge_view_from_modifier_spec(
+                e.from.as_str(),
+                e.to.as_str(),
+                e.modifier.as_ref().map(|m| &m.source),
+            )
         })
         .collect();
 
@@ -969,6 +1063,7 @@ pub fn plan_bootstrap_with_env(
                 to: e.to.clone(),
                 condition: None,
                 modifier: None,
+                is_default: false,
             });
         }
         let mut hive_view = crate::hive_scope::HiveScopeTable::new();
@@ -1047,6 +1142,52 @@ pub fn plan_bootstrap_with_env(
         )
     {
         errors.push(BootstrapError::HeaderContractViolation { reason });
+    }
+
+    // GH #291, the boot half: a lane whose `context` requirement the birth
+    // topology does not meet is REPORTED, in BOTH boot kinds, and never refuses
+    // the start.
+    //
+    // Not the FirstBoot/Reboot split above, on purpose: this rule is about a
+    // HIVE CONTRACT, and boot has always answered a broken contract with a
+    // warning rather than a refusal (`hive_contract::warn_on_broken_contracts`,
+    // and the port boundary before it) — the birth topology is the colony
+    // author's sovereign design, and a colony that cannot boot is worse than
+    // one that boots with a loud line in its log. What travels through
+    // `header_contract_findings` is the promotion channel, not the boot
+    // verdict: `bootstrap_from_filesystem` warns per finding and
+    // `--validate --validate-strict` turns the same list into a non-zero exit,
+    // which is exactly the "report, with a strict surface" this needs.
+    //
+    // The requirements come out of the SAME projection the mutation pipeline
+    // uses (`hive_contract::lane_requirements`), read from the hives this boot
+    // knows about, and are answered over the SAME views the header check just
+    // ran on — so the boot and the mutation can never judge one wiring
+    // differently.
+    {
+        use crate::mutation::rejection::Violation;
+
+        let hive_paths: Vec<McPath> = header_hives.iter().map(|p| McPath::new(p)).collect();
+        let contracts =
+            crate::mutation::hive_contract::collect_hive_contracts(root, hive_paths.iter());
+        let mut lane_findings = crate::mutation::rejection::MutationRejection::new();
+        crate::mutation::validate::collect_hive_lane_context(
+            &crate::mutation::hive_contract::lane_requirements(&contracts),
+            &header_edges,
+            &active_header_nodes,
+            &header_hives,
+            &mut lane_findings,
+        );
+        // Rendered, NOT `.message` alone: the lane's own sentence lives in
+        // `Violation::because`, and `Violation::render` is the one place that
+        // puts it back on the line (the prose message deliberately does not
+        // repeat it — see `addressed_hive_lane_context`). Cloning the message
+        // here dropped the sentence out of every boot warning and out of
+        // `--validate --validate-strict`, which is precisely the half a report
+        // exists to deliver: a finding that cannot say what it protects is one
+        // an operator routes around.
+        plan.header_contract_findings
+            .extend(lane_findings.entries().iter().map(Violation::render));
     }
 
     errors.into_result(plan)
@@ -1353,6 +1494,21 @@ pub enum BootstrapError {
         /// Scope-relative `from` path.
         from: String,
         /// Scope-relative `to` path.
+        to: String,
+    },
+    /// GH #283 (ruling Q1 2026-08-21): an edge declares `default` with
+    /// something other than a boolean. `"default": "yes"` is not a default —
+    /// it is a typo with an opinion, and the edge it stands on would have
+    /// silently been an ordinary one. Serde's own type error is the source;
+    /// this variant is what an operator reads, because it names the edge and
+    /// serde names only the type.
+    EdgeDefaultNotBoolean {
+        /// Hive scope where the edge was declared.
+        scope: McPath,
+        /// Scope-relative `from` path (empty if the edge omits it — the parse
+        /// that would have said so is the one this error pre-empts).
+        from: String,
+        /// Scope-relative `to` path (empty if the edge omits it).
         to: String,
     },
     /// More than one top-level cell directory under {root} (after blacklist).

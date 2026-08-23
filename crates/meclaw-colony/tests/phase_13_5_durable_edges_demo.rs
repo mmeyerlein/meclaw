@@ -34,7 +34,8 @@
 //! "not received" is a BOUNDED timeout (never an unbounded `recv` that hangs).
 
 use meclaw_colony::{
-    CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, bootstrap_from_filesystem,
+    CellFactory, CellFactoryRegistry, ColonyMsg, Edge, EdgeTable, MutationOutcome, apply_edges,
+    bootstrap_from_filesystem,
 };
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
@@ -167,12 +168,13 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
         .flatten()
 }
 
-/// Assert /sink does NOT receive within a bounded window (no unbounded recv).
+/// Assert the given capture sink does NOT receive within a bounded window (no
+/// unbounded recv). `ctx` names the sink and the case.
 async fn assert_not_received(rx: &mut mpsc::Receiver<Message>, ctx: &str) {
     let got = tokio::time::timeout(Duration::from_millis(700), rx.recv()).await;
     assert!(
         got.is_err(),
-        "{ctx}: /sink must NOT receive (condition/modifier guard), got {got:?}"
+        "{ctx}: sink must NOT receive (condition/default guard), got {got:?}"
     );
 }
 
@@ -419,4 +421,187 @@ async fn phase_13_5_durable_edges_reboot_hard_fails_on_corrupt_modifier_json() {
     drop(conn);
 
     assert_reboot_panics_with(&td, "ModifierJsonInvalid").await;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GH #283 — the default phase survives a reboot.
+//
+// A default edge is only a default because the router knows it is one. Before
+// this slice the flag lived in RAM only: a reboot rehydrated every persisted
+// edge as an ordinary one, which silently turned the fallback lane into a
+// second regular lane — double delivery instead of a fallback. The proof is
+// the rehydration path itself plus `apply_edges` over what it produced.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Write a topology whose root hive declares BOTH kinds of out-edge from `/a`:
+/// a guarded regular edge to `/b` and a default to `/fallback`.
+fn write_default_edge_topology(td: &std::path::Path) {
+    for name in ["a", "b", "fallback"] {
+        std::fs::create_dir_all(td.join("main").join(name)).unwrap();
+        std::fs::write(
+            td.join("main").join(name).join("config.json"),
+            format!(
+                r#"{{"cell":{{"type":"echo"}},"params":{{"emitted_target":"/{name}"}},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        td.join("main/config.json"),
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
+             {"from":"./a","to":"./b","condition":"context.kind == 'text'"},
+             {"from":"./a","to":"./fallback","default":true}
+           ]}}}"#,
+    )
+    .unwrap();
+}
+
+/// Headers carrying a single `context` entry (the surface both edges read).
+fn context_headers(pairs: &[(&str, &str)]) -> meclaw_core::Headers {
+    meclaw_core::Headers::from_parts(headers_with(pairs), Map::new())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_default_edge_survives_a_reboot() {
+    let td = TempDir::new().unwrap();
+    write_default_edge_topology(td.path());
+
+    // ── Boot 1: the declaration reaches colony.db ───────────────────────────
+    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    bootstrap_from_filesystem(td.path(), &echo_registry(), &h.runtime())
+        .await
+        .expect("bootstrap must succeed");
+    h.shutdown().await;
+
+    // ── The rehydration path: exactly what a reboot plans with ──────────────
+    let rehydrated =
+        meclaw_colony::persist::colony_db::read_persisted_edges(&td.path().join("colony.db"))
+            .expect("persisted edges must rehydrate");
+    assert_eq!(rehydrated.len(), 2, "got {rehydrated:?}");
+    let regular = rehydrated
+        .iter()
+        .find(|e| e.to == Path::new("/b"))
+        .expect("the /a -> /b edge must be persisted");
+    let default = rehydrated
+        .iter()
+        .find(|e| e.to == Path::new("/fallback"))
+        .expect("the /a -> /fallback edge must be persisted");
+    assert!(
+        !regular.is_default,
+        "an edge declared without `default` rehydrates as a REGULAR edge"
+    );
+    assert!(
+        default.is_default,
+        "an edge declared with `default: true` rehydrates as a DEFAULT edge"
+    );
+
+    // ── The flag still MEANS the same thing after the round-trip ────────────
+    let mut table = EdgeTable::new();
+    for e in rehydrated {
+        table.insert(Edge {
+            id: e.id,
+            from: e.from.clone(),
+            to: e.to.clone(),
+            condition: e.condition.clone(),
+            modifier: e.modifier.clone(),
+            is_default: e.is_default,
+        });
+    }
+    let matched = apply_edges(
+        &table,
+        &Path::new("/a"),
+        &context_headers(&[("kind", "text")]),
+    );
+    assert_eq!(
+        matched
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/b"],
+        "the regular edge matches, so the rehydrated default stays suppressed"
+    );
+    let declined = apply_edges(
+        &table,
+        &Path::new("/a"),
+        &context_headers(&[("kind", "other")]),
+    );
+    assert_eq!(
+        declined
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/fallback"],
+        "with every regular edge declining, the rehydrated default takes the traffic"
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GH #365 — the same proof, but through the colony's OWN hydration arm.
+//
+// The test above rebuilds the `EdgeTable` itself from `read_persisted_edges`,
+// which is precisely why it could stay green while `BootState::Reboot` dropped
+// the flag on the floor: nothing exercised the colony's hydration loop. Here
+// the rebooted colony routes real traffic over the table IT built, so a lost
+// `is_default` shows up as the #283 double delivery, one restart later.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Re-register /a (self-echoing source) plus capture sinks at /b and /fallback
+/// after a reboot. Bootstrap is NOT re-run — the persisted EdgeTable is the
+/// only thing that can still tell the two lanes apart.
+async fn reboot_default_edge_topology(
+    h: &ColonyHandle,
+) -> (mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+    let (b_tx, b_rx) = mpsc::channel::<Message>(8);
+    h.spawn(Path::new("/b"), move || CaptureCell::new(b_tx.clone()))
+        .await;
+    let (fb_tx, fb_rx) = mpsc::channel::<Message>(8);
+    h.spawn(Path::new("/fallback"), move || {
+        CaptureCell::new(fb_tx.clone())
+    })
+    .await;
+    h.spawn(Path::new("/a"), || {
+        EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/a"))
+    })
+    .await;
+    (b_rx, fb_rx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_default_edge_survives_a_real_colony_reboot() {
+    let td = TempDir::new().unwrap();
+    write_default_edge_topology(td.path());
+
+    // ── Boot 1: the declaration reaches colony.db, then a clean shutdown ─────
+    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    bootstrap_from_filesystem(td.path(), &echo_registry(), &h.runtime())
+        .await
+        .expect("bootstrap must succeed");
+    h.shutdown().await;
+
+    // ── Boot 2: the real boot path (BootState::Reboot hydrates the table) ────
+    let h2 = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    let (mut b_rx, mut fb_rx) = reboot_default_edge_topology(&h2).await;
+
+    // The regular edge matches → it takes the traffic ALONE. If the reboot
+    // rehydrated the default as an ordinary edge, /fallback receives too:
+    // that is the #283 double delivery.
+    h2.send(probe_to_a(headers_with(&[("kind", "text")]))).await;
+    let got = recv_bounded(&mut b_rx).await;
+    assert!(
+        got.is_some(),
+        "reboot: kind=text must route to /b via the rehydrated regular edge"
+    );
+    assert_not_received(&mut fb_rx, "reboot kind=text").await;
+
+    // Nothing regular matches → the rehydrated default takes the traffic.
+    h2.send(probe_to_a(headers_with(&[("kind", "other")])))
+        .await;
+    let got = recv_bounded(&mut fb_rx).await;
+    assert!(
+        got.is_some(),
+        "reboot: kind=other must fall through to /fallback via the rehydrated default edge"
+    );
+    assert_not_received(&mut b_rx, "reboot kind=other").await;
+
+    h2.shutdown().await;
 }

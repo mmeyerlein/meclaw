@@ -227,6 +227,14 @@ async fn cell_db_unopenable_at_respawn_restarts_the_cell_degraded() {
         em.content["messages"][0]["id"], "call_1",
         "the tool_call id is echoed so a tool loop can correlate the failure"
     );
+    // GH #370, mirror of the wake side: `hop.operation` is `required: true` in
+    // fourteen shipped stores, so a reply without it is discarded by the central
+    // emits check and replaced by `contract_violation`.
+    assert_eq!(
+        em.content["header"]["operation"], "insert",
+        "the degraded reply names the refused op: {:?}",
+        em.content
+    );
 }
 
 /// SOFT class: the FTS DDL is refused at the restart.

@@ -773,6 +773,7 @@ fn talky_edges() -> meclaw_colony::edge_table::EdgeTable {
                 meclaw_colony::cel_eval::parse_condition(c).expect("shipped condition parses")
             }),
             modifier: None,
+            is_default: false,
         });
     }
     table

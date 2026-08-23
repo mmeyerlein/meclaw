@@ -1,4 +1,4 @@
-# `firewall@2.0.3`
+# `firewall@2.0.4`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -145,7 +145,7 @@ Every endpoint is the firewall HIVE (`params.ports` is empty): `in_turn` in, `pa
 
 | edge | job |
 |---|---|
-| ingress | names the lane (`hop.route == 'in_turn'`) and promotes **both** identity dimensions. **Without `context.channel` every surface shares the bucket `default` and is rate-limited as one.** Without `context.user_id` the second dimension is the empty string, so every `field: "user_id"` rule is decided against nothing: an `allow` row on that dimension then rejects every turn (`sender_not_allowed`, `allowlist:user_id`) and a `reject` row never fires. Both keys are declared on the lane in `params.contract` |
+| ingress | names the lane (`hop.route == 'in_turn'`) and promotes the identity dimensions. **Without `context.channel` every surface shares the bucket `default` and is rate-limited as one** — that harm lands on every turn, so `channel` is the one key the lane DECLARES in `params.contract`, and since [#291](https://github.com/mmeyerlein/meclaw/issues/291) that declaration is checked at the mutation. **`context.user_id` is optional and deliberately not declared:** unpromoted it is the empty string, which the screen treats like any other value — with no *enabled* allow row on that dimension nothing is constrained, and a deny row on the empty string cannot exist (a row without a value is `rules_unreadable`). Enable one `allow` row on `user_id` and the calculus flips: every turn without a promoted `user_id` is then rejected (`sender_not_allowed`, `allowlist:user_id`). Promote it whenever this colony has per-user rules |
 | pass | the only edge into the agent. `delete_context` drops the parked copy of the turn. |
 | reject | the loud lane. `hop.reject_reason` + `hop.rule_id` say what happened; what the parent does with it — drain, log, refuse politely, ban — is the parent's decision. One reason is not a rule at all: `store_refused` (`rule_id` `store-refused`) means the `rules` store did not answer the read that decides the verdict, and then `hop.store_error` carries its `error_code` and `hop.store_operation` the refused op. A refused arrival `mark` does **not** travel here -- that turn already left on `pass`, and one turn gets one verdict; see the rule catalogue. |
 

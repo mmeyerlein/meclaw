@@ -145,9 +145,9 @@ the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 The template surface is open: a template is a directory, a README and a
 `template.json`. Nineteen are listed in
 [`templates/README.md`](templates/README.md) as worked examples — sixteen
-single-purpose ones plus three composites: `talky@3.0.13`, which references four
-of them as sub-units, `cogny@3.0.10`, which references two, and
-`memory-hive@2.3.1`, a member's long-term memory as a hive of twelve cells.
+single-purpose ones plus three composites: `talky@3.0.14`, which references four
+of them as sub-units, `cogny@3.0.11`, which references two, and
+`memory-hive@2.3.4`, a member's long-term memory as a hive of twelve cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a

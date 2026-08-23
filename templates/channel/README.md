@@ -1,4 +1,4 @@
-# `channel@1.0.2`
+# `channel@1.0.3`
 
 One channel as one hive. Inside it: the connector that owns the chat's credential, and
 one slot that the channel's current agent occupies.
@@ -129,7 +129,7 @@ the same reason it must not be duplicated. **One channel, one connector, one tok
 channels means two tokens:
 
 ```json
-{"name": "channel-2", "template": "channel@1.0.2",
+{"name": "channel-2", "template": "channel@1.0.3",
  "override_params": {"telegram-connector/proxy": {"bot_token": "${TELEGRAM_BOT_TOKEN_2}"}}}
 ```
 
@@ -142,7 +142,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@3.0.13"}],
+   "add_nodes": [{"name": "talky", "template": "talky@3.0.14"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -165,7 +165,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.13"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.14"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}

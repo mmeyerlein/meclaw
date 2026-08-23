@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS edges (
   to_path     TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
   condition   TEXT,
-  modifier    TEXT
+  modifier    TEXT,
+  is_default  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_path);
 CREATE TABLE IF NOT EXISTS hive_scopes (
@@ -153,7 +154,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '6');
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7');
 ";
 
 /// Setup a colony.db connection: PRAGMAs + DDL (all phase-5 tables + indexes).
@@ -394,8 +395,8 @@ mod tests {
     }
 
     #[test]
-    fn setup_colony_db_seeds_schema_version_6() {
-        // GH #277: the registry `template_chain` column → schema v6.
+    fn setup_colony_db_seeds_schema_version_7() {
+        // GH #283: the edges `is_default` column → schema v7.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
         let v: String = conn
@@ -405,7 +406,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "6");
+        assert_eq!(v, "7");
     }
 
     #[test]
@@ -431,10 +432,10 @@ mod tests {
     }
 
     #[test]
-    fn read_schema_version_returns_6_after_colony_setup() {
+    fn read_schema_version_returns_7_after_colony_setup() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 6);
+        assert_eq!(read_schema_version(&conn).unwrap(), 7);
     }
 
     #[test]
@@ -555,7 +556,7 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 6);
+        assert_eq!(read_schema_version(&conn).unwrap(), 7);
     }
 
     #[test]
@@ -578,7 +579,7 @@ mod tests {
             .collect();
         assert!(cols.contains(&"condition".to_string()));
         assert!(cols.contains(&"modifier".to_string()));
-        assert_eq!(read_schema_version(&conn).unwrap(), 6);
+        assert_eq!(read_schema_version(&conn).unwrap(), 7);
     }
 
     /// GH #90: a pre-v5 database whose `registry` already exists without the
@@ -601,7 +602,7 @@ mod tests {
         )
         .unwrap();
         setup_colony_db(&conn).unwrap();
-        assert_eq!(read_schema_version(&conn).unwrap(), 6);
+        assert_eq!(read_schema_version(&conn).unwrap(), 7);
         let idx: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_registry_template'",

@@ -36,6 +36,10 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
@@ -53,6 +57,10 @@
         },
         "error_code": {
           "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
           "required": false
         }
       }

@@ -1221,7 +1221,16 @@ fn a_mutation_reaching_inside_the_broker_is_refused_by_the_real_validator() {
             .expect("the shipped params parse as HiveParams");
     let sealed = vec![SealedHive {
         path: "/access".to_string(),
-        ports: params.ports.clone().expect("declared"),
+        // GH #285: an entry may now be a slot object, so the boundary's list of
+        // NAMES is a projection of the declaration, not the declaration itself.
+        ports: params
+            .ports
+            .clone()
+            .expect("declared")
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect(),
+        slots: vec![],
     }];
 
     // The store was a declared port in 1.x. It is the one that mattered.

@@ -1,4 +1,4 @@
-# `memory-drain@2.0.3`
+# `memory-drain@2.0.4`
 
 The adapter between a closed session and the central memory (GitHub #101).
 
@@ -218,7 +218,7 @@ called twice.
   This used to catch every session a timer swept closed, because a sweep carries the
   *sweep's* context and not the conversation's. Since `session-keeper@2.0.1` it does not:
   the keeper records the round on the generation row when the conversation OPENS it and
-  reads it back off that row at the seal, so `talky@3.0.13`'s close edge has a room and a
+  reads it back off that row at the seal, so `talky@3.0.14`'s close edge has a room and a
   round to promote (GH #273). What remains refused is a generation whose ingress door
   never declared one — including every generation that was already open when that edge was
   wired, because provenance is written once and never rewritten (ADR-0002 E12).

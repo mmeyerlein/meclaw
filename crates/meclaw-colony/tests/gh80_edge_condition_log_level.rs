@@ -86,6 +86,7 @@ fn edge(condition: &str) -> Edge {
         to: Path::new("/searcher"),
         condition: Some(parse_condition(condition).expect("parse")),
         modifier: None,
+        is_default: false,
     }
 }
 

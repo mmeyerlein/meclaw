@@ -28,13 +28,20 @@
 //! rows written before the chain existed read NULL, and so does a row whose
 //! value cannot be parsed — the instance's own `config.json` stays the source,
 //! the table is the index.
+//! v7 (GH #283 default edges): `edges` gains `is_default` as an
+//! `INTEGER NOT NULL DEFAULT 0` column — the routing phase an edge belongs to.
+//! A `0` edge is consulted in phase one, a `1` edge only after every phase-one
+//! edge of the same sender declined. The column is `is_default` and not
+//! `default` because `DEFAULT` is a SQL reserved word. ALTER TABLE in-place;
+//! rows written before the phase existed read `0`, which is what they were
+//! routed as — an old lane must never be rehydrated as a default.
 //!
 //! IMPORTANT: affects `colony.db` exclusively. `cell.db` stays at v1.
 
 use rusqlite::Connection;
 
 /// Target schema version for `colony.db` after this slice.
-pub(crate) const TARGET_SCHEMA_VERSION: u32 = 6;
+pub(crate) const TARGET_SCHEMA_VERSION: u32 = 7;
 
 /// Error during the `colony.db` schema migration.
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +69,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     let current = super::schema::read_schema_version(conn)?;
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
-        1..=5 => {
+        1..=6 => {
             let tx = conn.unchecked_transaction()?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
@@ -143,6 +150,22 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
                 && !column_exists(&tx, "registry", "template_chain")?
             {
                 tx.execute("ALTER TABLE registry ADD COLUMN template_chain TEXT", [])?;
+            }
+            // v6→v7 (GH #283): the routing phase of an edge. `NOT NULL
+            // DEFAULT 0`, so every pre-existing row is a REGULAR edge — the
+            // phase it was routed in before the column existed. Same two guards
+            // and the same rationale as the stages above: `column_exists` so an
+            // aborted earlier run re-runs cleanly, `table_exists` because the
+            // pure-`migrate` path (without the `setup_colony_db` DDL) may be
+            // handed a DB that has no `edges` table at all.
+            if current <= 6
+                && table_exists(&tx, "edges")?
+                && !column_exists(&tx, "edges", "is_default")?
+            {
+                tx.execute(
+                    "ALTER TABLE edges ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
             }
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -340,6 +363,73 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// GH #283 (v6→v7): the `edges` table gains `is_default`. `NOT NULL
+    /// DEFAULT 0`, so a row written before the default phase existed reads `0`
+    /// — a REGULAR edge, never a default. Rehydrating an old lane as a default
+    /// would hand it every message the sender's other lanes decline, which is
+    /// the opposite of what that topology was booted with.
+    #[test]
+    fn migrate_v1_to_v7_adds_the_edges_is_default_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        open_v1(&conn);
+        conn.execute(
+            "INSERT INTO edges (id, from_path, to_path, created_at) \
+             VALUES ('edge-1', '/a', '/b', 7)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent second pass
+        let cols = columns(&conn);
+        assert!(
+            cols.contains(&"is_default".to_string()),
+            "is_default missing, got {cols:?}"
+        );
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        let (from, to, is_default): (String, String, i64) = conn
+            .query_row(
+                "SELECT from_path, to_path, is_default FROM edges WHERE id = 'edge-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((from.as_str(), to.as_str()), ("/a", "/b"));
+        assert_eq!(is_default, 0, "a pre-existing edge row is a REGULAR edge");
+    }
+
+    /// A colony.db already at v6 skips every earlier stage and receives only
+    /// the v7 step in one pass.
+    #[test]
+    fn migrate_v6_to_v7_adds_only_the_edges_is_default_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        open_v1(&conn);
+        conn.execute_batch(
+            "ALTER TABLE edges ADD COLUMN condition TEXT;
+             ALTER TABLE edges ADD COLUMN modifier TEXT;
+             ALTER TABLE mutation_log ADD COLUMN error_code TEXT;
+             ALTER TABLE mutation_log ADD COLUMN trace_id TEXT;
+             ALTER TABLE registry ADD COLUMN template TEXT;
+             ALTER TABLE registry ADD COLUMN template_version TEXT;
+             ALTER TABLE registry ADD COLUMN instantiated_at INTEGER;
+             ALTER TABLE registry ADD COLUMN template_chain TEXT;
+             UPDATE meta SET value='6' WHERE key='schema_version';",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let cols = columns(&conn);
+        assert!(
+            cols.contains(&"is_default".to_string()),
+            "is_default missing, got {cols:?}"
+        );
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     #[test]

@@ -276,6 +276,7 @@ pub fn post_state_edges(
             to: to.clone(),
             condition: None,
             modifier: None,
+            is_default: false,
         });
     }
     view
@@ -294,6 +295,7 @@ mod tests {
             to: Path::new(to),
             condition: None,
             modifier: None,
+            is_default: false,
         }
     }
 

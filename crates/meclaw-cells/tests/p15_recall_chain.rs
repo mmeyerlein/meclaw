@@ -349,3 +349,271 @@ for second in ("Helix", "vscode"):
          vscode False None None a Helix 0"
     );
 }
+
+// ==================================================================== GH #295
+// A tier-0 recall asks the store ONCE.
+//
+// Before this task the three fixed legs cost nine store round trips: three
+// selects, three `recall_scratch` inserts to park the projections, a select to
+// see whether all three had landed, a guarded update to elect the one hop that
+// may fire, and a last select to read the parked payloads back. The fan-in was
+// bookkeeping for a fan-out that the store can answer in one message (GH #295,
+// bundle), and the parked rows were state the round did not need.
+//
+// The two tests below run the SHIPPED script over real stdin documents, so the
+// count they measure is the count the hive pays.
+
+/// Run the real `script_inline` over a real stdin document and return what it
+/// emitted. Unlike [`run_probe`] nothing is stubbed: the document decides which
+/// branch runs, and the emission is the answer.
+fn run_recall(doc: serde_json::Value) -> Vec<serde_json::Value> {
+    let src = format!(
+        concat!(
+            "import sys, io\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'recall', 'exec'), globals())\n"
+        ),
+        serde_json::to_string(&recall_script()).unwrap(),
+        serde_json::to_string(&meclaw_testing::code_stdin(&doc).to_string()).unwrap(),
+    );
+    let out = run_python(&src);
+    assert!(
+        out.status.success(),
+        "recall exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "output is not a message array ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+/// The asking round of a tier-0 request. One member asking one agent in one
+/// room — the read path is fail-closed on it since #244, and the fixture rows
+/// below carry a hidden sibling in each leg so the gate is measured, not
+/// assumed.
+fn tier0_context() -> serde_json::Value {
+    serde_json::json!({
+        "memory_tier": "0", "session_id": "s-21",
+        "recall_query": "what do we know?",
+        "audience_now": r#"["member:user","agent:assistant"]"#,
+        "channel": "c-21", "memory_holder": "user:alex"
+    })
+}
+
+/// The rows the store hands back per leg. Each leg carries one row the asking
+/// round may see and one it may not; the hidden foresight row shares the axis of
+/// the visible one, which is what earns it the `supersession_unknown` marker.
+fn leg_rows(id: &str) -> serde_json::Value {
+    match id {
+        "r-leg-episodes" => serde_json::json!([
+            {"id": "e1", "session_id": "s-21", "sender": "user",
+             "content": "The editor of choice is vscode.",
+             "happened_at": "2026-08-09T09:00:00.000000Z",
+             "recorded_at": "2026-08-09T09:00:01.000000Z",
+             "channel": "c-21", "audience_set": r#"["member:user","agent:assistant"]"#},
+            {"id": "e2", "session_id": "s-21", "sender": "user", "content": "A private aside.",
+             "happened_at": "2026-08-09T08:00:00.000000Z",
+             "recorded_at": "2026-08-09T08:00:01.000000Z",
+             "channel": "c-other", "audience_set": r#"["member:other"]"#}
+        ]),
+        "r-leg-beliefs" => serde_json::json!([
+            {"id": "b1", "holder": "user:alex",
+             "statement": "alex prefers keyboard driven tools", "confidence": 0.9,
+             "active": 1, "updated_at": "2026-08-09T07:00:00.000000Z",
+             "audience_set": r#"["member:user","agent:assistant"]"#},
+            {"id": "b2", "holder": "user:alex", "statement": "stale", "confidence": 0.4,
+             "active": 0, "updated_at": "2026-08-08T07:00:00.000000Z",
+             "audience_set": r#"["member:user","agent:assistant"]"#}
+        ]),
+        _ => serde_json::json!([
+            {"id": "f1", "subject": "user:alex", "canonical_subject": "user:alex",
+             "predicate": "plans", "canonical_predicate": "plans",
+             "claim": "ship the release on friday", "fact_kind": "foresight",
+             "valid_from": "2026-08-10T00:00:00.000000Z", "valid_until": null,
+             "expired_at": null, "confidence": 0.8, "channel": "c-21",
+             "audience_set": r#"["member:user","agent:assistant"]"#},
+            {"id": "f2", "subject": "user:alex", "canonical_subject": "user:alex",
+             "predicate": "plans", "canonical_predicate": "plans",
+             "claim": "hidden newer plan", "fact_kind": "foresight",
+             "valid_from": "2026-08-11T00:00:00.000000Z", "valid_until": null,
+             "expired_at": null, "confidence": 0.8, "channel": "c-other",
+             "audience_set": r#"["member:other"]"#}
+        ]),
+    }
+}
+
+/// The store's answer to the legs message, in the shape the `store` cell really
+/// builds for N ops (GH #295, W4 T19): schema-pure `tool_result` turns in call
+/// order, the per-leg metadata beside them in the body's top-level `results[]`
+/// slot, and a header describing the bundle as a whole.
+fn bundle_reply(call: &serde_json::Value, refused_leg: Option<(&str, &str)>) -> serde_json::Value {
+    let mut turns = Vec::new();
+    let mut results = Vec::new();
+    for turn in call["messages"].as_array().expect("tool_call turns") {
+        let id = turn["id"].as_str().expect("tool_call id");
+        let args: serde_json::Value =
+            serde_json::from_str(turn["text"].as_str().expect("args")).expect("args json");
+        let operation = args["operation"].as_str().expect("operation").to_string();
+        match refused_leg {
+            Some((leg, code)) if leg == id => {
+                turns.push(serde_json::json!({
+                    "origin": "tool", "type": "tool_result", "id": id,
+                    "text": "no such column: digest"
+                }));
+                results.push(serde_json::json!({
+                    "tool_call_id": id, "operation": operation, "rows_affected": 0,
+                    "duration_ms": 1, "error_code": code
+                }));
+            }
+            _ => {
+                let rows = leg_rows(id);
+                turns.push(serde_json::json!({
+                    "origin": "tool", "type": "tool_result", "id": id,
+                    "text": rows.to_string()
+                }));
+                results.push(serde_json::json!({
+                    "tool_call_id": id, "operation": operation,
+                    "rows_affected": rows.as_array().expect("rows").len(),
+                    "duration_ms": 1
+                }));
+            }
+        }
+    }
+    let errors = if refused_leg.is_some() { 1 } else { 0 };
+    let rows: i64 = results
+        .iter()
+        .map(|r| r["rows_affected"].as_i64().unwrap_or_default())
+        .sum();
+    let mut context = tier0_context();
+    context["mem_phase"] = call["header"]["phase"].clone();
+    context["recall_id"] = call["header"]["recall_id"].clone();
+    context["store_origin"] = serde_json::json!("recall");
+    serde_json::json!({
+        "header": {
+            "context": context,
+            "hop": {"operation": "bundle", "rows_affected": rows, "duration_ms": 3,
+                    "bundle_errors": errors}
+        },
+        "messages": turns,
+        "results": results
+    })
+}
+
+/// The tier-0 bundle this fixture produces — byte for byte what the nine-round-
+/// trip chain produced for the same rows before GH #295. The projections did not
+/// move: the hidden episode and the inactive belief are gone, and the visible
+/// foresight fact is marked because its axis lost a version this round may not
+/// see.
+const TIER0_BUNDLE: &str = concat!(
+    r#"{"beliefs": [{"confidence": 0.9, "id": "b1", "statement": "alex prefers keyboard driven tools"}], "#,
+    r#""episodes": [{"content": "The editor of choice is vscode.", "happened_at": "2026-08-09T09:00:00.000000Z", "id": "e1", "sender": "user"}], "#,
+    r#""foresight": [{"claim": "ship the release on friday", "id": "f1", "predicate": "plans", "subject": "user:alex", "supersession_unknown": true, "valid_from": "2026-08-10T00:00:00.000000Z"}], "#,
+    r#""query": "what do we know?", "tier": 0, "token_estimate": 96}"#
+);
+
+/// The done-when of #295: the three fixed legs cost ONE store round trip, the
+/// round parks nothing in `recall_scratch`, and the bundle is the one the nine
+/// round trips used to build.
+#[test]
+fn a_tier_zero_recall_costs_one_store_round_trip() {
+    let request = serde_json::json!({
+        "header": {"context": tier0_context(), "hop": {"phase": "recall"}},
+        "messages": [{"origin": "user", "type": "text", "id": "q", "text": "what do we know?"}]
+    });
+    let asked = run_recall(request);
+    let store_ops = |msgs: &[serde_json::Value]| -> usize {
+        msgs.iter()
+            .filter(|m| m["header"]["route"] == "rstore")
+            .count()
+    };
+    assert_eq!(
+        store_ops(&asked),
+        1,
+        "a tier-0 request must reach the store once: {}",
+        serde_json::to_string(&asked).unwrap()
+    );
+    assert_eq!(asked.len(), 1, "and emit nothing else beside it");
+    let call = &asked[0];
+    assert_eq!(call["header"]["phase"], "legs");
+    let ids: Vec<&str> = call["messages"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .map(|t| t["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(
+        ids,
+        ["r-leg-episodes", "r-leg-beliefs", "r-leg-foresight"],
+        "the one message carries all three legs, in leg order"
+    );
+
+    let answered = run_recall(bundle_reply(call, None));
+    assert_eq!(
+        store_ops(&answered),
+        0,
+        "the bundle answers the round outright — nothing goes back to the store: {}",
+        serde_json::to_string(&answered).unwrap()
+    );
+    assert_eq!(answered.len(), 1);
+    assert_eq!(answered[0]["header"]["route"], "bundle");
+    assert_eq!(
+        answered[0]["system"]["memory"]["bundle"]["text"], TIER0_BUNDLE,
+        "the bundle content moved"
+    );
+    assert_eq!(
+        answered[0]["messages"][0]["text"],
+        "MEMORY (tier 0, deterministic bundle)\n\
+         - belief: alex prefers keyboard driven tools\n\
+         - open: ship the release on friday (currency unknown: cannot vouch that this still holds)\n\
+         - user: The editor of choice is vscode."
+    );
+
+    // (c) nothing was parked: no op of this round names `recall_scratch`.
+    let spoken = serde_json::to_string(&(&asked, &answered)).unwrap();
+    assert!(
+        !spoken.contains("recall_scratch"),
+        "a tier-0 round must write no scratch row: {spoken}"
+    );
+}
+
+/// The #343 guard, widened for the bundle (project ruling 2026-08-22, option C).
+/// A bundle is not a transaction, so one leg can be refused while its siblings
+/// carry rows — and a bundle with a refused leg is exactly the "memory knows
+/// nothing" bundle #343 exists to prevent. Tier 0 keeps today's strictness: any
+/// refused leg is terminal on the same `reject` lane, and the phase does not
+/// advance.
+#[test]
+fn a_bundle_with_a_refused_leg_stops_the_recall() {
+    let request = serde_json::json!({
+        "header": {"context": tier0_context(), "hop": {"phase": "recall"}},
+        "messages": [{"origin": "user", "type": "text", "id": "q", "text": "what do we know?"}]
+    });
+    let call = run_recall(request).remove(0);
+    let out = run_recall(bundle_reply(
+        &call,
+        Some(("r-leg-beliefs", "query_timeout")),
+    ));
+    let spoken = serde_json::to_string(&out).unwrap();
+    assert_eq!(out.len(), 1, "one terminal message: {spoken}");
+    assert_eq!(out[0]["header"]["route"], "reject", "{spoken}");
+    assert_eq!(
+        out[0]["header"]["reject_reason"], "store_refused",
+        "{spoken}"
+    );
+    assert_eq!(
+        out[0]["header"]["store_error"], "query_timeout",
+        "the reject names the refused leg's error_code: {spoken}"
+    );
+    assert_eq!(
+        out[0]["header"]["store_operation"], "select",
+        "and the op that leg ran: {spoken}"
+    );
+    assert!(
+        !out.iter().any(|m| m["header"]["route"] == "bundle"),
+        "a poisoned bundle must never be answered as a bundle: {spoken}"
+    );
+}

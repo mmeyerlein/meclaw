@@ -149,10 +149,18 @@ fn fingerprint(reply: &ReadGraphReply) -> (Vec<String>, Vec<(String, String)>) {
 
 /// The caller addresses the HIVE and names a lane. No cell of the hive appears
 /// anywhere in this edge — which is the whole point.
+///
+/// GH #291: the edge also PROMOTES `session_id`, because `SOUND`'s `in_batch`
+/// lane declares `"context": ["session_id"]` and that declaration is now a
+/// requirement rather than a note for a reader. The wiring was the weaker half
+/// of the two: the contract said all along what a caller owes, this edge simply
+/// never paid it and nothing could see that. The lane is the same lane, the
+/// edge still names the hive and nothing below it.
 fn wire_lane(route: &str) -> Value {
     json!({"diff": {"add_edges": [
         {"from": "./caller", "to": "./mem",
-         "modifier": {"set_hop": {"route": format!("'{route}'")}}}
+         "modifier": {"set_hop": {"route": format!("'{route}'")},
+                      "set_context": {"session_id": "'s-1'"}}}
     ]}})
 }
 

@@ -601,7 +601,8 @@ pub(crate) fn read_edges_from(
     use crate::bootstrap::EdgeHydrationError as E;
     let mut stmt = conn
         .prepare(
-            "SELECT id, from_path, to_path, condition, modifier FROM edges ORDER BY created_at",
+            "SELECT id, from_path, to_path, condition, modifier, is_default FROM edges \
+             ORDER BY created_at",
         )
         .map_err(E::Sql)?;
     let rows = stmt
@@ -612,12 +613,13 @@ pub(crate) fn read_edges_from(
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })
         .map_err(E::Sql)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id_str, from_str, to_str, cond_src, mod_src) = row.map_err(E::Sql)?;
+        let (id_str, from_str, to_str, cond_src, mod_src, is_default) = row.map_err(E::Sql)?;
         let id = meclaw_core::Uuid::parse_str(&id_str).map_err(|e| E::InvalidUuid {
             edge_id: id_str.clone(),
             error: e.to_string(),
@@ -659,6 +661,12 @@ pub(crate) fn read_edges_from(
             to: meclaw_core::Path::new(&to_str),
             condition,
             modifier,
+            // GH #283: the routing phase, read back from `edges.is_default`
+            // (schema v7). Anything non-zero is a default — a stray integer
+            // needs no error path of its own, because the column is written
+            // exclusively by the two edge INSERTs from a `bool`, and a row that
+            // predates the column reads the `DEFAULT 0` of a regular edge.
+            is_default: is_default != 0,
         });
     }
     Ok(out)
@@ -729,9 +737,10 @@ mod tests {
         let db_path = td.path().join("colony.db");
         let db = ColonyDb::open(&db_path).unwrap();
         assert!(db_path.exists(), "colony.db file created");
-        // Schema check: the meta table has schema_version='6' (GH #277: the
-        // registry `template_chain` column, on top of the GH #62 provenance
-        // triple and the W6d dead_letters table).
+        // Schema check: the meta table has schema_version='7' (GH #283: the
+        // edges `is_default` column, on top of the GH #277 registry
+        // `template_chain`, the GH #62 provenance triple and the W6d
+        // dead_letters table).
         let v: String = db
             .read_conn
             .query_row(
@@ -740,7 +749,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, "6");
+        assert_eq!(v, "7");
         // Single-owner invariant: writer_tx is present (not consumed)
         let _ = &db.writer_tx;
         drop(db);

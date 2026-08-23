@@ -69,6 +69,18 @@ pub struct ColonyConfig {
     pub blob_inline_max_bytes: usize,
     /// Hard limit for recursive blob-reference resolution.
     pub blob_max_recursion_depth: u32,
+    /// GH #285 (W4 T12) — how many messages ONE `park` slot may hold while
+    /// nothing is bound behind it.
+    ///
+    /// A `park` declaration promises the message a future, and a promise with
+    /// no bound is a memory leak with a nice name: a slot nobody ever fills
+    /// would grow its queue for as long as the colony runs. At the bound the
+    /// substrate refuses the NEWEST arrival (`slot_park_overflow`) so the
+    /// earliest context — the part a later reader cannot reconstruct — is the
+    /// part that survives. `0` is a valid kill-switch: every message onto an
+    /// unbound `park` slot is refused, and the declaration reads like `error`
+    /// with a different code.
+    pub slot_park_max: usize,
     /// Release-build default for JSON-schema validation against `emits`/`consumes`.
     pub strict_validation: bool,
     /// Tracing default level (overridable via `--log-level`).
@@ -108,6 +120,7 @@ impl Default for ColonyConfig {
             restart_max_retries: 5,
             blob_inline_max_bytes: 65_536,
             blob_max_recursion_depth: 64,
+            slot_park_max: 64,
             strict_validation: false,
             log_default_level: "info".to_string(),
             // GH #84: exactly the values `meclaw-cli` used to hard-wire. Making
@@ -213,6 +226,8 @@ impl ColonyConfig {
         //   blob_inline_max_bytes + idle_timeout_default_ms (Slice-6 / A7-A8).
         //   blob_max_recursion_depth (GH #19 / D-025) — carried on the blob
         //     store and read at the cell-delivery boundary.
+        //   slot_park_max (GH #285 / W4 T12) — read at both slot-delivery
+        //     filters, where it bounds a `park` slot's queue.
         // Only the two genuinely-unwired fields below remain forensic-only.
         if self.restart_max_retries != d.restart_max_retries {
             warn("restart_max_retries");

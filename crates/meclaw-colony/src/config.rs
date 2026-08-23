@@ -232,8 +232,11 @@ pub struct HiveParams {
     ///
     /// Names are short names of DIRECT children (no `/`, no `.`/`..`) — a port
     /// is a member of this scope, not a node somewhere below it.
+    ///
+    /// GH #285 — an entry is a plain name OR the object form that declares the
+    /// port a [slot](PortSpec::Slot). See [`PortSpec`].
     #[serde(default)]
-    pub ports: Option<Vec<String>>,
+    pub ports: Option<Vec<PortSpec>>,
     /// GH #147 — **opt-in** drain pairing: ports of this hive whose refusal (or
     /// any other declared) route must be consumed outside the hive once the
     /// port is wired from outside.
@@ -262,6 +265,192 @@ pub struct HiveParams {
     pub contract: Option<HiveContractSpec>,
 }
 
+/// GH #285 — one entry of a hive's `params.ports`.
+///
+/// Two spellings of one list, because a port and a slot are the same thing to
+/// everything that routes: an address a parent may wire. A `"name"` string is
+/// the finished port every shipped template writes today. The object form adds
+/// the one fact a slot has and a port does not — a slot may stand EMPTY, and a
+/// message that arrives while nothing is bound behind it has to meet something.
+///
+/// The object form is deliberately strict (`slot` must be `true`, `unbound`
+/// must be present and one of three words, the name must be a direct child).
+/// A declaration that a reader has to guess at is the defect GH #196 was: an
+/// entry nobody could match, sealing a hive in silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortSpec {
+    /// The plain form: `"brief"` — a port, wired or not, with no promise about
+    /// what lies behind it.
+    Name(String),
+    /// The object form: `{"name": "gen", "slot": true, "unbound": "park"}` — a
+    /// port the hive declares as fillable, plus what an arriving message meets
+    /// while it is unbound.
+    Slot {
+        /// The port name, exactly as written (`gen` or `./gen`). Canonicalised
+        /// by the ONE reader that decides what a port name denotes, so this
+        /// type never re-derives that rule.
+        name: String,
+        /// What happens to a message that reaches this slot while it is unbound.
+        unbound: UnboundBehaviour,
+    },
+}
+
+impl PortSpec {
+    /// The port name as written, whichever form declared it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(n) | Self::Slot { name: n, .. } => n,
+        }
+    }
+}
+
+/// GH #285 — what a message meets at a declared slot that is not bound yet.
+///
+/// Mandatory in the declaration: the hive author knows whether an unfilled slot
+/// is a pause, a nothing, or a mistake, and the substrate does not. Silence
+/// would make the substrate pick one for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnboundBehaviour {
+    /// Hold the message until something is bound behind the slot.
+    Park,
+    /// Discard the message — the slot is optional and its absence is normal.
+    Drop,
+    /// Refuse the message — an unbound slot is a topology that is not finished.
+    Error,
+}
+
+impl UnboundBehaviour {
+    /// The word this behaviour is written with in a `config.json`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Park => "park",
+            Self::Drop => "drop",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// The three words, in the one order every message about them uses.
+const UNBOUND_WORDS: &str = "park | drop | error";
+
+impl<'de> Deserialize<'de> for PortSpec {
+    /// Hand-written on purpose: `#[serde(untagged)]` would answer every
+    /// malformed object with "data did not match any variant", which is exactly
+    /// the sentence a person writing a slot must not be given. Every rejection
+    /// below names what is wrong and what the alternatives are.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(PortSpecVisitor)
+    }
+}
+
+struct PortSpecVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PortSpecVisitor {
+    type Value = PortSpec;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(
+            "a port name, or a slot object {\"name\": …, \"slot\": true, \"unbound\": \"park\" | \
+             \"drop\" | \"error\"}",
+        )
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        // The historical form stays exactly as lenient as it was: an entry that
+        // can never name a direct child is dropped WITH A WARNING by the reader
+        // (GH #196), not refused at boot. Tightening it here would turn shipped
+        // topologies into boot errors.
+        Ok(PortSpec::Name(v.to_string()))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<PortSpec, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as _;
+
+        let mut name: Option<String> = None;
+        let mut slot: Option<bool> = None;
+        let mut unbound: Option<String> = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => {
+                    if name.is_some() {
+                        return Err(A::Error::duplicate_field("name"));
+                    }
+                    name = Some(map.next_value()?);
+                }
+                "slot" => {
+                    if slot.is_some() {
+                        return Err(A::Error::duplicate_field("slot"));
+                    }
+                    slot = Some(map.next_value()?);
+                }
+                "unbound" => {
+                    if unbound.is_some() {
+                        return Err(A::Error::duplicate_field("unbound"));
+                    }
+                    unbound = Some(map.next_value()?);
+                }
+                other => {
+                    return Err(A::Error::unknown_field(other, &["name", "slot", "unbound"]));
+                }
+            }
+        }
+
+        let Some(name) = name else {
+            return Err(A::Error::missing_field("name"));
+        };
+        // One rule for what a port name denotes, and it lives with the boundary
+        // that compares them (GH #196/#202).
+        if crate::mutation::port_boundary::canonical_port_name(&name).is_none() {
+            return Err(A::Error::custom(format!(
+                "params.ports[] entry {name:?}: a port is the short name of a direct child of the \
+                 hive, not a node somewhere below it"
+            )));
+        }
+
+        if slot != Some(true) {
+            // `unbound` is a slot's word; on a non-slot it describes a state the
+            // entry can never be in.
+            if unbound.is_some() {
+                return Err(A::Error::custom(format!(
+                    "params.ports[] entry {name:?} declares `unbound` without `slot: true` — only \
+                     a slot can be unbound; a plain port is written as the string {name:?}"
+                )));
+            }
+            return Err(A::Error::custom(format!(
+                "params.ports[] entry {name:?}: the object form declares a slot and must say \
+                 `\"slot\": true` — a plain port is written as the string {name:?}"
+            )));
+        }
+
+        let Some(unbound) = unbound else {
+            return Err(A::Error::custom(format!(
+                "params.ports[] slot {name:?}: a slot must say what happens to a message that \
+                 reaches it while it is unbound: {UNBOUND_WORDS}"
+            )));
+        };
+        let unbound = match unbound.as_str() {
+            "park" => UnboundBehaviour::Park,
+            "drop" => UnboundBehaviour::Drop,
+            "error" => UnboundBehaviour::Error,
+            other => {
+                return Err(A::Error::custom(format!(
+                    "params.ports[] slot {name:?}: unknown `unbound` behaviour {other:?} — it is \
+                     one of: {UNBOUND_WORDS}"
+                )));
+            }
+        };
+        Ok(PortSpec::Slot { name, unbound })
+    }
+}
+
 /// GH #173 — a hive's `params.contract`: its interface, stated in lanes.
 ///
 /// Deliberately NOT the top-level `contract` block. That key is taken and means
@@ -288,11 +477,26 @@ pub struct LaneSpec {
     /// this being a route and not a cell name.
     pub route: String,
     /// `context` keys a caller must have promoted by the time a message enters
-    /// on this lane. **Declared, not enforced**: a promotion three edges
-    /// upstream is indistinguishable from a missing one to anything that reads
-    /// a single edge, so a machine check here would be guesswork. It is written
-    /// down so a builder can read it, and so the hive's own prose has one place
-    /// to live instead of a free-text paragraph.
+    /// on this lane — a REQUIREMENT, checked (GH #291).
+    ///
+    /// This used to say "declared, not enforced", and the reason it gave was
+    /// that a promotion three edges upstream is indistinguishable from a
+    /// missing one *to anything that reads a single edge*. That was true of a
+    /// check reading a single edge, and stopped being true when GH #185 gave
+    /// the substrate the backwards reachability walk the header-contract rule
+    /// uses for `consumes.context`. The lane requirement is answered with that
+    /// same walk: an edge that STATES this lane into the hive path must have
+    /// every key here either promoted on the edge itself or reachable
+    /// backwards from its `from`. A mutation that wires one without is refused
+    /// `hive_contract`, pre-destructive; a boot with the same defect reports.
+    ///
+    /// Two limits stay, both for the conservatism the rest of `hive_contract`
+    /// runs on: an edge whose route is COMPUTED rather than stated names no
+    /// lane a build-time check can place, so it is not judged at all; and an
+    /// edge whose caller side is a hive path with no inbound edge can deliver
+    /// nothing, so its requirement is DORMANT until one inbound edge lifts it.
+    ///
+    /// Absent and `[]` are the same statement: this lane requires nothing.
     #[serde(default)]
     pub context: Vec<String>,
     /// What this lane is for, in the hive's own words. Travels verbatim into a
@@ -457,6 +661,22 @@ pub struct EdgeSpec {
     /// (Phase 13.5-A1). `None` means identity headers.
     #[serde(default)]
     pub modifier: Option<ModifierSpec>,
+    /// GH #283 (ruling Q1 2026-08-21): when `true`, this edge is a DEFAULT —
+    /// the router consults it only after every ordinary edge out of `from` has
+    /// declined, so it takes the traffic that would otherwise dead-letter as
+    /// `no_route`. It is a phase, not a group: defaults never compete with
+    /// ordinary edges, only with each other.
+    ///
+    /// The JSON key is `default`; the Rust field is not, because `default`
+    /// collides with serde's own attribute vocabulary and reads as the trait
+    /// everywhere else in this file.
+    ///
+    /// A default MAY carry a `condition`, and that is the recommended shape:
+    /// the phase decides WHEN the edge is consulted, the condition decides
+    /// WHICH of that traffic it takes. An unguarded default is legal and boots
+    /// — it earns a `BootstrapPlan::advisories` note, never a refusal.
+    #[serde(rename = "default", default)]
+    pub is_default: bool,
 }
 
 #[cfg(test)]
@@ -492,7 +712,13 @@ mod hive_tests {
     fn parses_hive_params_with_ports() {
         let p: HiveParams =
             serde_json::from_value(serde_json::json!({"ports": ["brief", "gate"]})).unwrap();
-        assert_eq!(p.ports, Some(vec!["brief".to_string(), "gate".to_string()]));
+        assert_eq!(
+            p.ports,
+            Some(vec![
+                PortSpec::Name("brief".to_string()),
+                PortSpec::Name("gate".to_string()),
+            ])
+        );
         assert!(p.graph.edges.is_empty());
 
         // An empty list is legal: "the hive path itself is the only address".
@@ -503,6 +729,120 @@ mod hive_tests {
         assert!(
             serde_json::from_value::<HiveParams>(serde_json::json!({"portz": ["a"]})).is_err(),
             "a typo'd key stays a boot error"
+        );
+    }
+
+    /// GH #285: a port entry may be an OBJECT that declares the port a slot —
+    /// beside, not instead of, the plain string every shipped template writes.
+    #[test]
+    fn a_port_entry_may_be_a_slot_object_beside_a_plain_name() {
+        let p: HiveParams = serde_json::from_value(serde_json::json!({
+            "ports": ["brief", {"name": "gen", "slot": true, "unbound": "park"}]
+        }))
+        .expect("string form and object form parse side by side");
+        let ports = p.ports.expect("declared");
+        assert_eq!(ports.len(), 2, "two entries, two ports: {ports:?}");
+        assert_eq!(ports[0], PortSpec::Name("brief".to_string()));
+        assert_eq!(
+            ports[1],
+            PortSpec::Slot {
+                name: "gen".to_string(),
+                unbound: UnboundBehaviour::Park,
+            }
+        );
+        // Both forms answer the one question every reader of this list asks.
+        assert_eq!(ports[0].name(), "brief");
+        assert_eq!(ports[1].name(), "gen");
+    }
+
+    /// GH #285: the whole point of a slot is that it may be unbound, so the
+    /// declaration is only complete once it says what an arriving message meets
+    /// there. Silence would make the substrate pick — and it must not.
+    #[test]
+    fn a_slot_without_unbound_is_a_parse_error() {
+        let err = serde_json::from_value::<HiveParams>(serde_json::json!({
+            "ports": [{"name": "gen", "slot": true}]
+        }))
+        .expect_err("a slot that does not say what happens must not parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(
+                "a slot must say what happens to a message that reaches it while it is unbound: \
+                 park | drop | error"
+            ),
+            "the error names the missing declaration, got: {msg}"
+        );
+    }
+
+    /// GH #285: `unbound` is a slot's word. On a non-slot it would describe a
+    /// state that entry can never be in.
+    #[test]
+    fn unbound_without_slot_true_is_a_parse_error() {
+        let err = serde_json::from_value::<HiveParams>(serde_json::json!({
+            "ports": [{"name": "gen", "unbound": "park"}]
+        }))
+        .expect_err("`unbound` without `slot: true` must not parse");
+        let msg = err.to_string();
+        assert!(msg.contains("unbound"), "got: {msg}");
+        assert!(
+            msg.contains("slot"),
+            "the error names the missing flag: {msg}"
+        );
+
+        // …and an explicit `false` is the same statement, spelled out.
+        let err = serde_json::from_value::<HiveParams>(serde_json::json!({
+            "ports": [{"name": "gen", "slot": false, "unbound": "park"}]
+        }))
+        .expect_err("`slot: false` with an unbound behaviour must not parse");
+        assert!(err.to_string().contains("slot"), "got: {err}");
+    }
+
+    /// GH #285: three behaviours, and the error says all three — a rejection
+    /// that does not name the alternatives costs a round trip to learn them.
+    #[test]
+    fn an_unknown_unbound_value_is_a_parse_error_listing_the_three() {
+        let err = serde_json::from_value::<HiveParams>(serde_json::json!({
+            "ports": [{"name": "gen", "slot": true, "unbound": "queue"}]
+        }))
+        .expect_err("a fourth behaviour does not exist");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("queue"),
+            "the error quotes what was written: {msg}"
+        );
+        for known in ["park", "drop", "error"] {
+            assert!(msg.contains(known), "the error lists `{known}`: {msg}");
+        }
+    }
+
+    /// GH #285/#196: a port names a DIRECT child, in both forms. The string form
+    /// keeps its historical leniency (the reader drops such an entry with a
+    /// warning); the object form is new, so it can refuse at the door.
+    #[test]
+    fn a_deep_name_in_the_object_form_is_a_parse_error() {
+        let err = serde_json::from_value::<HiveParams>(serde_json::json!({
+            "ports": [{"name": "a/b", "slot": true, "unbound": "park"}]
+        }))
+        .expect_err("a deep name can never match an endpoint");
+        let msg = err.to_string();
+        assert!(msg.contains("a/b"), "the error quotes the entry: {msg}");
+        assert!(
+            msg.contains("short name of a direct child"),
+            "the error states the rule: {msg}"
+        );
+
+        // The canonical `./` spelling is the same node and stays legal.
+        let p: HiveParams = serde_json::from_value(serde_json::json!({
+            "ports": [{"name": "./gen", "slot": true, "unbound": "drop"}]
+        }))
+        .expect("`./gen` and `gen` denote the same direct child (GH #196)");
+        assert_eq!(
+            p.ports.expect("declared")[0],
+            PortSpec::Slot {
+                name: "./gen".to_string(),
+                unbound: UnboundBehaviour::Drop,
+            },
+            "the raw spelling is kept — canonicalisation stays in one place"
         );
     }
 

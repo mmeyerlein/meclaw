@@ -41,7 +41,7 @@ Two of the four blocks have fundamentally different authority. This separation i
 
 **Only `id` and `type` are immutable.** They identify the node instance and its cell type across the entire lifetime. **Effectiveness rule** for all other fields: changes to `cell` or `params` fields (via new instantiation at the path or a new template) take effect **at the next spawn/wake** of the cell. The running cell task does not re-read `config.json` (see § Access, "Read-once").
 
-**Special case hive scope marker** (`cell.type: "hive"`): only `cell` and `params` are relevant. `params` contains the optional `graph` block (initial desired graph, see `meclaw-overview.md` section "Graph schema") and the optional `ports` list (GH #133, see `cell-types.md` section `hive`) plus the optional `required_drains` list (GH #147/#237: `{port, hop, because}` — which ports may only be wired from outside once their paired egress is consumed outside the hive — or, for a sealed hive, `{accepts, emits, because}`: a caller that sends this lane must subscribe to that one), no `dead_letters` override (the `HiveParams` deserializer is `deny_unknown_fields`; the DLQ is always `/colony/dead_letters`). Since GH #173 there is also the optional `params.contract` block — the hive's machine-readable **contract**, see § `params.contract` (hive). The **top-level** `contract` block stays unevaluated on a hive: that key belongs to the cell and carries a different shape there (`version`/`settings`/`consumes`/`emits`, where `emits` is an `EmitSpec` map per output). One word cannot carry two shapes, and the hive's wiring surface lives in `params` anyway (`graph`, `ports`, `required_drains`) — so the contract joined them. In the `cell` block, only `id` and `type` are relevant. `timeout`, `message_timeout`, `idle_timeout_ms`, and `mailbox_size` are ignored (no actor, no mailbox, no `handle()` call). A `description` is allowed, but only serves discovery by builders; `emits_meaning` and `consumes_meaning` are omitted. "Ignored" does **not** mean "anything goes": the closed key list of the `cell` block (§ Block definition) applies here too since GH #353 — an unknown key in a hive scope marker's `cell` block is the same hard error as on a cell, on every path that reads the marker, `move_nodes` included.
+**Special case hive scope marker** (`cell.type: "hive"`): only `cell` and `params` are relevant. `params` contains the optional `graph` block (initial desired graph, see `meclaw-overview.md` section "Graph schema") and the optional `ports` list (GH #133, see `cell-types.md` section `hive`) — whose entries come in **two** forms: the short name of a direct child as a string, or the **slot form** as an object (`{"name": "gen", "slot": true, "unbound": "park" | "drop" | "error"}`, GH #285). A slot is an address that may stand empty: `slot` and `unbound` are both mandatory, and the declaration buys exactly two exemptions — an edge onto the slot is no dangling endpoint at boot, and a mutation may wire it with `add_edges` before it is filled. A path that is not declared as a slot and has no occupant stays exactly what it is today: a hard error under `--validate-strict`. `unbound` says what happens to a message that reaches the unbound slot **over an edge** — `drop` discards it silently, `error` produces a `slot_unbound` dead letter, `park` holds it FIFO until the binding (`colony.json slot_park_max`, default 64; the newest arrival above the bound is refused as `slot_park_overflow`, and a shutdown discards the queue). A message that addresses the slot path directly from outside does not reach the declaration and stays `unresolved_path`. A slot is a valid `add_edges` endpoint but never a `remove_nodes` or `swap_nodes[].match` target; emptying it and rewiring it in the **same** diff commits, because the declaration outlives its occupant. Slots belong in a hive below the root — the root scope has no port boundary, and a slot declared there buys no exemption. Full description: `cell-types.md` § `hive`, **Slots**. Then there is the optional `required_drains` list (GH #147/#237: `{port, hop, because}` — which ports may only be wired from outside once their paired egress is consumed outside the hive — or, for a sealed hive, `{accepts, emits, because}`: a caller that sends this lane must subscribe to that one), no `dead_letters` override (the `HiveParams` deserializer is `deny_unknown_fields`; the DLQ is always `/colony/dead_letters`). Since GH #173 there is also the optional `params.contract` block — the hive's machine-readable **contract**, see § `params.contract` (hive). The **top-level** `contract` block stays unevaluated on a hive: that key belongs to the cell and carries a different shape there (`version`/`settings`/`consumes`/`emits`, where `emits` is an `EmitSpec` map per output). One word cannot carry two shapes, and the hive's wiring surface lives in `params` anyway (`graph`, `ports`, `required_drains`) — so the contract joined them. In the `cell` block, only `id` and `type` are relevant. `timeout`, `message_timeout`, `idle_timeout_ms`, and `mailbox_size` are ignored (no actor, no mailbox, no `handle()` call). A `description` is allowed, but only serves discovery by builders; `emits_meaning` and `consumes_meaning` are omitted. "Ignored" does **not** mean "anything goes": the closed key list of the `cell` block (§ Block definition) applies here too since GH #353 — an unknown key in a hive scope marker's `cell` block is the same hard error as on a cell, on every path that reads the marker, `move_nodes` included.
 
 **Special case template reference** (`cell.type: "ref"`, GH #277): a directory that describes no cell but **places another template at this position**. It carries a `config.json` and **nothing else** — any further file next to it would give one address two sources and is refused at parse time. `cell.template` is a template reference in exactly the form `TemplatesRegistry::resolve` accepts: `<name>` or `<name>@<version>`; SemVer ranges (`^`, `~`) exist here as little as anywhere else (`version.rs` keeps them post-roadmap, see `meclaw-overview.md` § Resolution `name@version`). `override_params` sits **top-level next to `cell`** — not inside the `cell` block (whose key list is closed) and not in `params`, which a `ref` does not have. It is optional, addresses the cells **of the referenced template** by their paths inside that template (`""` is its root), and sits in the layering **below** the mutation's own `override_params`: the reference sets the default, the caller overrides it key by key. A key that names no cell of the referenced template is an error and not a silent no-op — the message lists the cells that do exist.
 
@@ -182,6 +182,22 @@ Cell-type-specific. Each cell type defines its own `params` structure (see `cell
 
 **Convention for I/O cells**: every cell that performs I/O operations of indeterminate duration (HTTP, DB, subprocess, filesystem, MCP calls) declares a `params.external_timeout_ms` field (or a semantically more fitting name like `query_timeout_ms` for `store`). The cell implementation wraps **every** such operation with `tokio::time::timeout` and, on elapsed, emits a regular error message (`header.finish_reason: "error"`, cell-type-specific `error_code` like `provider_timeout` / `query_timeout` / `script_timeout`). This is concept A in `meclaw-overview.md` section "Timeouts", the primary protection, set precisely per operation, manageable by the operator. **`cell.message_timeout`** (in the `cell` block) is the coarse backstop for cell hangs and lies considerably above `external_timeout_ms` (concept B in the same section).
 
+**`params.graph` (hive only) — the fields of an edge.** The hive scope marker is
+the one place where the colony reads into `params`: `graph.edges[]` is the
+initial target graph of its subtree (full form and semantics:
+`meclaw-overview.md` § Graph schema and § Edge model). `from` and `to` are
+mandatory; three optional fields join them:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `condition` | CEL boolean as a string | `null` (= always matches) | decides whether the edge is responsible for this message; reads `context.*` and `hop.*`. |
+| `modifier` | object | `null` (= identity) | `set_context`/`delete_context`/`set_hop`/`delete_hop`/`restore_ttl` — the edge's sole header authority. |
+| `default` | boolean | `false` | GH #283, since **v0.18.0**: `true` makes the edge a **default edge** — it is consulted only after no regular out-edge of the same sender fired, which makes it the declared consumer for what would otherwise dead-letter as `no_route` (or `hive_no_route`). It may carry a `condition` as well; without one the colony boots with a hint in its advisories, never with a refusal. |
+
+An edge in a mutation diff (`add_edges[]`) carries the same three fields, and
+`remove_edges[].match` can pattern on all three — with `default` absent there the
+routing phase is unconstrained and the pattern hits both (§ Mutation format).
+
 ### `params.contract` (hive only) — the contract, in lanes
 
 GH #173. A template is a **class**: instantiate it, wire to its interface, swap
@@ -233,7 +249,7 @@ of the hive appears anywhere — which is what makes the inside free to change.
 | `accepts[]` | Lanes a caller may send **into** the hive path. |
 | `emits[]` | Lanes the hive sends back **out** through its own path. |
 | `…[].route` | The `hop.route` value that **is** the lane. Never a cell name — the whole abstraction rests on this. |
-| `…[].context` | `context` keys a caller must have promoted beforehand. **Declared, not enforced** (see below). |
+| `…[].context` | `context` keys a caller must have promoted beforehand. **A requirement, checked** (see below). |
 | `…[].because` | What the lane is for, in the hive's own words. Travels verbatim into a rejection. |
 
 **How a lane is named.** A lane name **must** say what the caller wants, never
@@ -259,7 +275,8 @@ that breaks no promise makes the lane name wrong, the name was structural.
 | Every `accepts` lane must route **inward** from the hive path (have a door) | mutation (post-state) | reject `hive_contract`, rollback |
 | Every `emits` lane must route **outward** through the hive path from **some** interior cell — carried out, or produced by the door itself | mutation (post-state) | reject `hive_contract`, rollback |
 | the same two checks | boot | `warn!` only — the birth topology is sovereign (as with GH #133/#147) |
-| `accepts[].context` | — | declaration only |
+| An edge naming an `accepts` lane **constantly** must carry that lane's `accepts[].context` keys — on the edge itself (`set_context`) or reachable backwards from its `from` | mutation (post-state) | reject `hive_contract`, pre-destructive |
+| the same check | boot | report only — `warn!` per finding, `--validate --validate-strict` turns it into an error |
 
 The check runs the **real router** (`apply_edges`) rather than comparing
 condition strings: the migrated templates open a whole family of lanes with a
@@ -291,9 +308,14 @@ constant, the sentence above applies again: unplaceable is not rejectable.
   *path*; if no edge touches that path, the hive is an island — freshly
   instantiated, or disconnected by `remove_nodes` — and its contract is dormant.
   Without this exception a contracted hive could not be removed at all.
-- **`accepts[].context`.** A promotion made three edges upstream is
-  indistinguishable from a missing one to anything reading a single edge. Written
-  down for a reader, not enforced against a guess.
+- **`accepts[].context` — no longer.** This stood here until GH #291 and is
+  retracted: the key **is** checked (table above). Two cases stay unchecked,
+  both out of the same conservatism as the rest of `hive_contract`: an edge
+  whose route is **computed** rather than stated — which lane it means is
+  knowable only once a message exists, and what cannot be placed must not be
+  rejected; and an edge whose caller side is a **hive path with no inbound
+  edge** — nothing can be delivered there, so the requirement is **dormant**
+  until one inbound edge lifts it.
 - **How a lane is named.** `writer` is as valid a string as `in_episode`; no
   validator can see whether a name was chosen functionally or structurally. The
   requirement binds regardless — it rests on a reader, not on a check.

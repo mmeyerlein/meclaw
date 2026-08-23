@@ -129,6 +129,9 @@ pub fn validate_post_state_with_edges_and_subtree(
         subtree_internal_edges,
         "/",
         &[],
+        // GH #285: this scope-agnostic face has no hive declarations in hand —
+        // no slots, so the endpoint universe is the one it always had.
+        &std::collections::HashSet::new(),
     )
 }
 
@@ -577,6 +580,9 @@ fn occupy(
 /// GH #293 — this is the thin `Result` face of [`addressed_edges_and_cycle`]:
 /// the FIRST violation the collecting core produces is, by construction, the one
 /// this function returned before, so every verdict it ever gave is byte-identical.
+///
+/// GH #285 — `slot_endpoints` is the second known-set: the absolute addresses
+/// hives declared as SLOTS, an empty set for every caller that has none.
 #[allow(clippy::too_many_arguments)]
 fn validate_edges_and_cycle(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
@@ -587,6 +593,7 @@ fn validate_edges_and_cycle(
     subtree_internal_edges: &[(String, String)],
     scope: &str,
     deep_endpoint_paths: &[String],
+    slot_endpoints: &std::collections::HashSet<String>,
 ) -> Result<(), MutationError> {
     addressed_edges_and_cycle(
         obj,
@@ -597,6 +604,7 @@ fn validate_edges_and_cycle(
         subtree_internal_edges,
         scope,
         deep_endpoint_paths,
+        slot_endpoints,
     )
     .into_iter()
     .next()
@@ -621,6 +629,24 @@ fn validate_edges_and_cycle(
 /// after the endpoint entries: a cycle is a property of the whole edge set, not
 /// of one edge, so it cannot be attributed to an endpoint and it cannot be
 /// counted twice.
+///
+/// **On `slot_endpoints` (GH #285):** the absolute addresses hives declared as
+/// SLOTS — an address that exists and may stand EMPTY, so an `add_edges` onto it
+/// is the edge the declaration invited rather than a lane into nothing. It is a
+/// set of its own and is consulted by the `known` endpoint closure alone:
+/// folding it into `nodes` would make a slot a legal `swap_nodes[].match` or
+/// `remove_nodes` target, i.e. would turn a hive's promise about an empty
+/// address into a node this colony claims to have registered. Empty for every
+/// caller that declares no slots, which leaves every verdict where it was.
+///
+/// It is also, deliberately, the one endpoint term the [`vacate`] subtractions
+/// above do NOT reach: a diff that removes the node filling a slot and wires the
+/// address in the same breath COMMITS, where GH #194 gave `edge_schema` for
+/// every other node on its way out. The reason is what a slot is — the
+/// declaration outlives whatever stood behind it, so after the removal the
+/// address is exactly the empty declared slot the hive announced, and an edge
+/// onto it is the edge that declaration invited. Pinned in
+/// `gh285_a_slot_is_a_declared_empty_address.rs`.
 #[allow(clippy::too_many_arguments)]
 fn addressed_edges_and_cycle(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
@@ -631,6 +657,7 @@ fn addressed_edges_and_cycle(
     subtree_internal_edges: &[(String, String)],
     scope: &str,
     deep_endpoint_paths: &[String],
+    slot_endpoints: &std::collections::HashSet<String>,
 ) -> Vec<(MutationError, Option<String>)> {
     use std::collections::HashSet;
     let mut violations: Vec<(MutationError, Option<String>)> = Vec::new();
@@ -790,10 +817,32 @@ fn addressed_edges_and_cycle(
             // because the pre-state is not the post-state — the diff's own
             // removals have been subtracted from it above, exactly as they are
             // from `nodes`. One view, both spellings.
+            // GH #285: and the second known-set, the only term that resolves an
+            // address with NO node behind it — a hive declared this address a
+            // SLOT, which says it exists and may stand empty, so wiring it
+            // before anything fills it is the whole point of saying so. Slot
+            // addresses are absolute, so both spellings ask them in the
+            // absolute namespace: `./h/gen` from the parent scope and `./gen`
+            // from inside the hive name the same node and must answer alike.
+            // Deliberately NOT merged into `nodes` — see the doc comment.
+            // A short name reaches the slot set only through the scope: the set
+            // speaks absolute addresses, and `./gen` at scope `/h` is the node
+            // `/h/gen` that `./h/gen` at scope `/` also names. The emptiness
+            // guard keeps the resolution out of the hot path of every colony
+            // that declares no slot at all — which is every colony today.
+            let short_is_slot = |short: &str| -> bool {
+                !slot_endpoints.is_empty()
+                    && slot_endpoints
+                        .contains(crate::mutation::resolve_scoped_path(scope, short).as_str())
+            };
             let known = |endpoint: &str| -> bool {
                 match scoped_name(scope, endpoint) {
-                    ScopedName::Short(s) => nodes.contains(s),
-                    ScopedName::Deep(abs) => deep.contains(&abs) || nodes.contains(abs.as_str()),
+                    ScopedName::Short(s) => nodes.contains(s) || short_is_slot(s),
+                    ScopedName::Deep(abs) => {
+                        deep.contains(&abs)
+                            || nodes.contains(abs.as_str())
+                            || slot_endpoints.contains(abs.as_str())
+                    }
                 }
             };
             if !known(from) {
@@ -819,6 +868,48 @@ fn addressed_edges_and_cycle(
                     MutationError::EdgeSchema(format!("add_edges[].condition invalid cel: {p}")),
                     Some(format!("add_edges[{i}]")),
                 ));
+            }
+            // GH #283 — the fifth top-level edge key, and the only one this
+            // loop reads for its TYPE rather than its content. The loop rejects
+            // unknown `modifier` keys but has never rejected unknown TOP-LEVEL
+            // ones, so before this read a `"default": true` was accepted and
+            // then dropped on the floor: the apply arm built its candidate with
+            // a literal `is_default: false`, and the caller got `Committed` for
+            // an edge that is spelled the way the template DSL spells it and
+            // routes as an ordinary always-edge — beside the regular edges
+            // instead of behind them.
+            //
+            // Absent = `false` (an edge is regular unless it says otherwise),
+            // any non-boolean = `edge_schema`. That is the code the neighbouring
+            // edge checks already carry, so this adds no new `error_code` and no
+            // documentation obligation on the README stability surface.
+            match e.get("default") {
+                None => {}
+                Some(v) if v.as_bool().is_some() => {}
+                Some(_) => {
+                    violations.push((
+                        MutationError::EdgeSchema("add_edges[].default must be boolean".into()),
+                        Some(format!("add_edges[{i}]")),
+                    ));
+                }
+            }
+            // GH #283 (ruling Q1 2026-08-21): one advisory per UNGUARDED
+            // default, in the SAME words `bootstrap.rs` puts into
+            // `BootstrapPlan::advisories` — the declaration paths must not
+            // describe the same topology in two different sentences. It is a
+            // hint and nothing more: the mutation commits, and no channel of a
+            // mutation carries findings, so `warn` is the whole of it.
+            if e.get("default").and_then(|v| v.as_bool()) == Some(true)
+                && e.get("condition").is_none()
+            {
+                tracing::warn!(
+                    "edge {} -> {} is an unguarded default: it consumes everything that would \
+                     otherwise dead-letter as no_route from {}; a condition narrows it to the \
+                     traffic you mean",
+                    from,
+                    to,
+                    from
+                );
             }
             if let Some(modif) = e.get("modifier") {
                 // Befund-6-Folge: the modifier must match the
@@ -953,6 +1044,7 @@ pub fn collect_edge_endpoints(
     subtree_internal_edges: &[(String, String)],
     scope: &str,
     deep_endpoint_paths: &[String],
+    slot_endpoints: &std::collections::HashSet<String>,
     into: &mut crate::mutation::rejection::MutationRejection,
 ) {
     use crate::mutation::rejection::{Stage, Violation};
@@ -969,6 +1061,7 @@ pub fn collect_edge_endpoints(
         subtree_internal_edges,
         scope,
         deep_endpoint_paths,
+        slot_endpoints,
     ) {
         into.push(Violation::from_error(Stage::EdgeEndpoints, &error, address));
     }
@@ -1029,6 +1122,8 @@ pub fn validate_post_state_with_templates(
         &[],
         &[],
         &[],
+        // GH #285: no hive declarations in hand at this face — no slots.
+        &std::collections::HashSet::new(),
     )
 }
 
@@ -1051,6 +1146,10 @@ pub fn validate_post_state_with_templates(
 /// `validate_naming_and_match`). Distinct from `deep_endpoint_paths`, which is
 /// the union of both and NOT resume-filtered — an edge may address a node that
 /// is being resumed, an instantiation may not collide with it.
+///
+/// GH #285 — `slot_endpoints` is the absolute addresses this colony's hives
+/// declared as SLOTS. It reaches the edge half only, and it is the one endpoint
+/// term that is not a node: a hive said the address exists and may stand empty.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_post_state_with_templates_scoped(
     diff: &JsonValue,
@@ -1067,6 +1166,7 @@ pub fn validate_post_state_with_templates_scoped(
     deep_endpoint_paths: &[String],
     deep_registry_paths: &[String],
     deep_hive_paths: &[String],
+    slot_endpoints: &std::collections::HashSet<String>,
 ) -> Result<(), MutationError> {
     // Ebene 0a: diff must be an object.
     let obj = diff
@@ -1180,6 +1280,7 @@ pub fn validate_post_state_with_templates_scoped(
         subtree_internal_edges,
         scope,
         deep_endpoint_paths,
+        slot_endpoints,
     )?;
     Ok(())
 }
@@ -1818,6 +1919,12 @@ pub struct EdgeMatchView {
     /// serde-JSON value of `edge.modifier.source`, or `None` for an edge
     /// without a modifier.
     pub modifier_source: Option<JsonValue>,
+    /// GH #283 — the edge's routing phase (`edge.is_default`). Part of the
+    /// edge's identity, so a pattern can name the default edge that sits
+    /// beside a regular one with the same four other terms. Unlike the two
+    /// fields above this is NOT an `Option`: every edge has a phase; the
+    /// PATTERN side is what may leave it unconstrained.
+    pub is_default: bool,
 }
 
 /// Builds an [`EdgeMatchView`] from a live [`crate::edge_table::Edge`] — the
@@ -1835,6 +1942,7 @@ impl From<&crate::edge_table::Edge> for EdgeMatchView {
                 .modifier
                 .as_ref()
                 .and_then(|m| meclaw_core::serde_json::to_value(&m.source).ok()),
+            is_default: e.is_default,
         }
     }
 }
@@ -1851,13 +1959,17 @@ impl From<&crate::edge_table::Edge> for EdgeMatchView {
 ///   byte-for-byte (string equality); if `None`, condition is unconstrained,
 ///   AND
 /// - if `pat_modifier` is `Some`, the edge's `modifier_source` JSON equals it;
-///   if `None`, modifier is unconstrained.
+///   if `None`, modifier is unconstrained, AND
+/// - if `pat_default` is `Some`, the edge's `is_default` equals it; if `None`,
+///   the routing phase is unconstrained and the pattern hits BOTH phases
+///   (GH #283 — same convention as the two optional fields above).
 pub fn remove_edges_pattern_hits(
     edge: &EdgeMatchView,
     from_path: &str,
     to_path: &str,
     pat_condition: Option<&str>,
     pat_modifier: Option<&JsonValue>,
+    pat_default: Option<bool>,
 ) -> bool {
     if edge.from != from_path || edge.to != to_path {
         return false;
@@ -1872,6 +1984,13 @@ pub fn remove_edges_pattern_hits(
     // F6: modifier serde-JSON equality on the stored `ModifierSpec` source.
     if let Some(pm) = pat_modifier
         && edge.modifier_source.as_ref() != Some(pm)
+    {
+        return false;
+    }
+    // GH #283: routing-phase equality. Pattern absent => both phases pass;
+    // pattern present => the edge must run in exactly that phase.
+    if let Some(pd) = pat_default
+        && edge.is_default != pd
     {
         return false;
     }
@@ -1895,7 +2014,8 @@ pub fn remove_edges_pattern_hits(
 /// names resolved with [`crate::mutation::resolve_scoped_path`] before being
 /// compared against the absolute endpoints in `existing_edges` — mirroring
 /// apply EXACTLY so validate and apply agree. The optional `condition` /
-/// `modifier` keys follow the same F6 semantics via [`remove_edges_pattern_hits`].
+/// `modifier` / `default` keys follow the same F6 semantics via
+/// [`remove_edges_pattern_hits`] — absent means unconstrained (GH #283).
 pub fn validate_remove_edges(
     diff: &JsonValue,
     scope: &str,
@@ -1919,6 +2039,7 @@ pub fn validate_remove_edges(
             .ok_or_else(|| MutationError::Schema("remove_edges[].match.to missing".into()))?;
         let pat_condition = m.and_then(|v| v.get("condition")).and_then(|v| v.as_str());
         let pat_modifier = m.and_then(|v| v.get("modifier"));
+        let pat_default = m.and_then(|v| v.get("default")).and_then(|v| v.as_bool());
         let from_path = crate::mutation::resolve_scoped_path(scope, from_name);
         let to_path = crate::mutation::resolve_scoped_path(scope, to_name);
         let hit = existing_edges.iter().any(|e| {
@@ -1928,6 +2049,7 @@ pub fn validate_remove_edges(
                 to_path.as_str(),
                 pat_condition,
                 pat_modifier,
+                pat_default,
             )
         });
         if !hit {
@@ -2168,6 +2290,15 @@ pub struct HeaderEdgeView {
     pub set_hop: std::collections::BTreeSet<String>,
     /// `modifier.delete_hop` keys removed on this edge.
     pub delete_hop: std::collections::BTreeSet<String>,
+    /// The constant lane this edge STATES — the `set_hop.route` value when
+    /// that expression is a constant (`'in_query'` ⇒ `Some("in_query")`).
+    /// `None` when the edge states no route at all, or states an expression
+    /// whose value is not knowable without a message (`hop.upstream_route`):
+    /// unknown, therefore unjudged. Filled by
+    /// `crate::mutation::hive_contract::constant_route` at BOTH projection
+    /// sites (mutation and boot), so the check can never see a different graph
+    /// than the colony runs.
+    pub states_route: Option<String>,
 }
 
 /// Build-time header-contract check (Phase-14-B locality). PURE — the caller
@@ -2494,6 +2625,186 @@ fn context_key_reachable(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GH #291 — a hive lane's `context` requirement, answered by the same walk
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// One lane of one hive contract, as the lane-context check receives it.
+///
+/// The check needs four things and no more: which hive PATH the lane belongs to
+/// (a contract is a statement about the path, never about a cell inside), the
+/// `hop.route` that IS the lane, the `context` keys a caller must have promoted
+/// by the time a message enters on it, and the hive's own sentence about the
+/// lane — which travels verbatim into the refusal, the way every other
+/// `because` in this pipeline does.
+///
+/// Projected from `crate::mutation::hive_contract::HiveContract` at the call
+/// site (one requirement per `accepts[]` entry), so this module stays PURE and
+/// keeps knowing nothing about `config.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HiveLaneRequirement {
+    /// Absolute logical path of the hive scope the lane belongs to.
+    pub hive_path: String,
+    /// The `hop.route` value that IS this lane.
+    pub route: String,
+    /// `context` keys a caller must have promoted by the time a message enters
+    /// on this lane. Empty ⇒ this lane requires nothing and is never judged.
+    pub context: Vec<String>,
+    /// The hive's own sentence about the lane, quoted in the refusal.
+    /// `None` when the lane declares none.
+    pub because: Option<String>,
+}
+
+/// Build-time lane-context check (GH #291). PURE — same inputs as
+/// [`validate_header_contract_locality`] plus the lane requirements.
+///
+/// `LaneSpec.context` used to say "declared, not enforced", and the reason it
+/// gave was that a promotion three edges upstream is indistinguishable from a
+/// missing one *to anything that reads a single edge*. That is true of a check
+/// that reads a single edge; it stopped being true when GH #185 built the
+/// backwards reachability walk ([`context_key_reachable`]) the header rule uses
+/// for `consumes.context`. The lane requirement is answered with that same walk,
+/// started at the CALLER's side of the hive path — so the answer here and the
+/// answer for a `consumes.context` key can never disagree.
+///
+/// Judged: an edge whose `to` IS the hive path and which STATES a constant
+/// `hop.route` naming the lane ([`HeaderEdgeView::states_route`]). Each of the
+/// lane's keys must then be either promoted on that edge itself
+/// (`set_context`) or reachable backwards from its `from`.
+///
+/// Two things are deliberately NOT judged, both for reasons the rest of
+/// `hive_contract` already runs on:
+///
+/// - an edge that states no constant route — which lane it means is knowable
+///   only once a message exists, and a check that cannot say which lane an edge
+///   means must never reject it;
+/// - an edge whose `from` is a HIVE path with NO inbound edge — nothing can be
+///   delivered through it, so the requirement is dormant rather than broken
+///   (the same island reading as `hive_contract::hive_path_is_wired`, and what
+///   keeps a freshly instantiated composite installable). One inbound edge
+///   lifts it.
+///
+/// GH #293 — this is the thin `Result` face of [`addressed_hive_lane_context`]:
+/// the FIRST violation the collecting core produces is the one this function
+/// returns.
+pub fn validate_hive_lane_context(
+    lanes: &[HiveLaneRequirement],
+    edges: &[HeaderEdgeView],
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
+    hives: &std::collections::BTreeSet<String>,
+) -> Result<(), MutationError> {
+    addressed_hive_lane_context(lanes, edges, node_contracts, hives)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |(error, _, _)| Err(error))
+}
+
+/// GH #291 + #293 — the lane-context check as a COLLECTING one: EVERY edge that
+/// sends a declared lane into a hive without the context the lane requires is
+/// named, not only the first one.
+///
+/// **This changes no verdict** — see [`validate_hive_lane_context`], which is
+/// the first-error face of the same core.
+///
+/// Tagged [`Stage::ContractLocality`] because that is what it decides: whether
+/// the context a hive's lane promises is local to the wiring that uses it.
+///
+/// [`Stage::ContractLocality`]: crate::mutation::rejection::Stage::ContractLocality
+pub fn collect_hive_lane_context(
+    lanes: &[HiveLaneRequirement],
+    edges: &[HeaderEdgeView],
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
+    hives: &std::collections::BTreeSet<String>,
+    into: &mut crate::mutation::rejection::MutationRejection,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    for (error, address, because) in
+        addressed_hive_lane_context(lanes, edges, node_contracts, hives)
+    {
+        into.push(match because {
+            Some(because) => Violation::from_error_because(
+                Stage::ContractLocality,
+                &error,
+                Some(address),
+                because,
+            ),
+            None => Violation::from_error(Stage::ContractLocality, &error, Some(address)),
+        });
+    }
+}
+
+/// The collecting core: one entry per violated (edge, key), addressed by the
+/// judged edge rendered `"<from> -> <to>"` — the edge is what an author has to
+/// go and change, so the edge is the address — and carrying the lane's own
+/// `because`.
+fn addressed_hive_lane_context(
+    lanes: &[HiveLaneRequirement],
+    edges: &[HeaderEdgeView],
+    node_contracts: &std::collections::BTreeMap<String, HeaderNodeView>,
+    hives: &std::collections::BTreeSet<String>,
+) -> Vec<(MutationError, String, Option<String>)> {
+    use std::collections::HashMap;
+
+    let mut violations: Vec<(MutationError, String, Option<String>)> = Vec::new();
+    if lanes.is_empty() {
+        return violations;
+    }
+
+    // Same index the locality core builds, and used for the same two purposes:
+    // the reachability walk, and the in-degree question the dormancy rule asks.
+    let mut incoming: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, e) in edges.iter().enumerate() {
+        incoming.entry(e.to.as_str()).or_default().push(i);
+    }
+
+    for lane in lanes {
+        if lane.context.is_empty() {
+            continue;
+        }
+        for e in edges {
+            if e.to != lane.hive_path || e.states_route.as_deref() != Some(lane.route.as_str()) {
+                continue;
+            }
+            // Dormant: the caller side is a hive path nothing addresses, so no
+            // message can travel this edge at all.
+            if hives.contains(e.from.as_str()) && !incoming.contains_key(e.from.as_str()) {
+                continue;
+            }
+            for key in &lane.context {
+                if e.set_context.contains(key)
+                    || context_key_reachable(&e.from, key, edges, &incoming, node_contracts)
+                {
+                    continue;
+                }
+                // The lane's own sentence is NOT interpolated here. It travels
+                // in the third tuple slot into `Violation::because`, and
+                // `Violation::render` appends it once at the end of the line —
+                // so an author reads it exactly once. Quoting it inline as well
+                // put a ~1.4 kB `because` twice into every rendered refusal
+                // (memory-hive's `in_query` sentence is that long), which
+                // buries the one thing the line is FOR: the key that is
+                // missing.
+                violations.push((
+                    MutationError::HiveContract(format!(
+                        "edge '{from} -> {hive}' states hop.route='{route}' into hive '{hive}', \
+                         whose lane '{route}' requires context '{key}', but nothing \
+                         promotes it: neither this edge's modifier.set_context nor any setter \
+                         reachable upstream of '{from}'. Promote the key on the edge, or wire the \
+                         caller behind something that does.",
+                        from = e.from,
+                        hive = lane.hive_path,
+                        route = lane.route,
+                    )),
+                    format!("{} -> {}", e.from, e.to),
+                    lane.because.clone(),
+                ));
+            }
+        }
+    }
+    violations
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // GH #292 — a template's `requires` declaration, enforced before staging
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -2505,6 +2816,20 @@ fn context_key_reachable(
 /// apart in the message for the same reason they stay apart in the declaration:
 /// a `ctx` key is supplied by the mutation, an `env` key by the colony's `.env`,
 /// and the reader has to know which of the two to go and fix.
+///
+/// The `because` stays INLINE here, unlike
+/// [`addressed_hive_lane_context`]'s, and the two are consistent rather than in
+/// disagreement: the rule is that the sentence appears exactly ONCE in a
+/// rendered line, and which half carries it follows from whether a structured
+/// [`Violation::because`] is filled. Stage 3's violations are built with
+/// [`Violation::from_error`] (see [`collect_declared_requirements`]), so
+/// nothing would ever append the sentence for them — inline is the only place
+/// it can live. The lane check fills the field via
+/// [`Violation::from_error_because`], so its message must stay clean.
+///
+/// [`Violation::because`]: crate::mutation::rejection::Violation::because
+/// [`Violation::from_error`]: crate::mutation::rejection::Violation::from_error
+/// [`Violation::from_error_because`]: crate::mutation::rejection::Violation::from_error_because
 fn requirement_missing(
     reference: &str,
     class: &str,
@@ -4236,7 +4561,63 @@ mod tests {
             to: to.into(),
             condition_source: None,
             modifier_source: None,
+            is_default: false,
         }
+    }
+
+    /// GH #283 (W4 T4): `match.default` is the fifth, OPTIONAL constraint. A
+    /// pattern that names the phase hits only edges running in it; a pattern
+    /// that omits it stays unconstrained and hits BOTH — the same convention
+    /// `condition` and `modifier` already follow, asserted here so nobody has
+    /// to infer it from the absence of a check.
+    #[test]
+    fn remove_edges_pattern_hits_constrains_on_the_default_phase() {
+        let regular = edge_view("/main/a", "/main/b");
+        let default = EdgeMatchView {
+            is_default: true,
+            ..regular.clone()
+        };
+        let hits = |e: &EdgeMatchView, pat: Option<bool>| {
+            remove_edges_pattern_hits(e, "/main/a", "/main/b", None, None, pat)
+        };
+
+        // Pattern names the default phase → only the default edge.
+        assert!(hits(&default, Some(true)), "default edge, default pattern");
+        assert!(
+            !hits(&regular, Some(true)),
+            "a `default: true` pattern must NOT take the regular edge beside it"
+        );
+        // Pattern names the regular phase → only the regular edge.
+        assert!(hits(&regular, Some(false)), "regular edge, regular pattern");
+        assert!(
+            !hits(&default, Some(false)),
+            "a `default: false` pattern must NOT take the default edge beside it"
+        );
+        // Pattern omits the key → unconstrained, hits BOTH phases.
+        assert!(
+            hits(&regular, None) && hits(&default, None),
+            "no `default` key => unconstrained: the pattern takes both phases"
+        );
+    }
+
+    /// GH #283 (W4 T4): the constraint reaches `validate_remove_edges`, so a
+    /// pattern naming a phase no live edge runs in is a loud `match_no_hit`
+    /// instead of a silently widened removal.
+    #[test]
+    fn remove_edges_default_constraint_matches_and_misses() {
+        let edges = vec![EdgeMatchView {
+            is_default: true,
+            ..edge_view("/main/a", "/main/b")
+        }];
+        let hit = json!({"remove_edges": [
+            {"match": {"from": "a", "to": "b", "default": true}}
+        ]});
+        assert!(validate_remove_edges(&hit, "/main", &edges).is_ok());
+        let miss = json!({"remove_edges": [
+            {"match": {"from": "a", "to": "b", "default": false}}
+        ]});
+        let err = validate_remove_edges(&miss, "/main", &edges).unwrap_err();
+        assert_eq!(err.error_code(), "match_no_hit");
     }
 
     /// T1 (RED): a `remove_edges` entry with a missing `match.from` →
@@ -4303,6 +4684,7 @@ mod tests {
             to: "/main/b".into(),
             condition_source: Some("hop.x == 'y'".into()),
             modifier_source: None,
+            is_default: false,
         }];
         // Matching condition → Ok.
         let hit = json!({"remove_edges": [
@@ -4327,6 +4709,7 @@ mod tests {
             to: "/main/b".into(),
             condition_source: None,
             modifier_source: Some(modifier.clone()),
+            is_default: false,
         }];
         let diff = json!({"remove_edges": [
             {"match": {"from": "a", "to": "b", "modifier": modifier}}
@@ -4344,6 +4727,7 @@ mod tests {
             to: "/main/b".into(),
             condition_source: None,
             modifier_source: Some(json!({"set_hop": {"tier": "hop.priority"}})),
+            is_default: false,
         }];
         let miss = json!({"remove_edges": [
             {"match": {"from": "a", "to": "b", "modifier": {"set_hop": {"tier": "hop.other"}}}}
@@ -4898,6 +5282,8 @@ mod tests {
             &deep,
             &[],
             &[],
+            // GH #285: no hive declares a slot in this fixture.
+            &std::collections::HashSet::new(),
         );
         assert!(result.is_ok(), "depth endpoint must validate: {result:?}");
     }
@@ -4929,6 +5315,8 @@ mod tests {
             &[],
             &[],
             &[],
+            // GH #285: no hive declares a slot in this fixture.
+            &std::collections::HashSet::new(),
         );
         assert!(
             result.is_ok(),
@@ -4961,6 +5349,8 @@ mod tests {
             &[],
             &[],
             &[],
+            // GH #285: no hive declares a slot in this fixture.
+            &std::collections::HashSet::new(),
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");
@@ -4993,6 +5383,8 @@ mod tests {
             &deep_in_scope,
             &[],
             &[],
+            // GH #285: no hive declares a slot in this fixture.
+            &std::collections::HashSet::new(),
         );
         assert!(result.is_ok(), "in-scope depth node must match: {result:?}");
 
@@ -5012,6 +5404,8 @@ mod tests {
             &deep_foreign,
             &[],
             &[],
+            // GH #285: no hive declares a slot in this fixture.
+            &std::collections::HashSet::new(),
         )
         .unwrap_err();
         assert_eq!(err.error_code(), "edge_schema");

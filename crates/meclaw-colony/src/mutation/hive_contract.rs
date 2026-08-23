@@ -77,9 +77,15 @@
 //!   its contract is dormant, not broken. Without this a contracted hive could
 //!   not be taken out of a colony at all: `remove_nodes` drops the hive path's
 //!   own edges and would leave a contract with no doors behind.
-//! - **`accepts[].context`.** A promotion made three edges upstream is
-//!   indistinguishable from a missing one to anything reading a single edge.
-//!   Declared for a reader, not enforced against a guess.
+//! - **`accepts[].context` — no longer (GH #291).** This bullet claimed a
+//!   promotion three edges upstream was indistinguishable from a missing one.
+//!   It is not: GH #185's backwards reachability walk answers exactly that
+//!   question, and the lane requirement is now checked with it
+//!   ([`crate::mutation::validate::collect_hive_lane_context`], projected from
+//!   these contracts by [`lane_requirements`]). What stays unchecked is an edge
+//!   whose route is COMPUTED rather than stated, and an edge whose caller side
+//!   is a hive path with no inbound edge — a dormant requirement, not a broken
+//!   one.
 //! - **A caller's subscription condition.** Checking that an edge OUT of the
 //!   hive names a declared emit would have to evaluate the caller's condition
 //!   against a probe hop, and the shipped topologies tell lanes apart by a
@@ -100,6 +106,14 @@ use meclaw_core::{Headers, JsonValue, Path};
 pub struct Lane {
     /// The `hop.route` value that IS this lane.
     pub route: String,
+    /// GH #291 — `context` keys a caller must have promoted by the time a
+    /// message enters on this lane. Carried here so the lane-context check
+    /// (`crate::mutation::validate::validate_hive_lane_context`) can be handed
+    /// the requirement without reading `config.json` a second time. Empty ⇒ the
+    /// lane requires nothing, which is also what a lane that omits the key
+    /// says — `LaneSpec::context` is `#[serde(default)]`, so an absent list and
+    /// an explicit `[]` are the same statement.
+    pub context: Vec<String>,
     /// The hive's own sentence about the lane, quoted verbatim in a rejection.
     pub because: String,
 }
@@ -465,6 +479,38 @@ fn addressed_inbound_lanes(
     violations
 }
 
+/// GH #291 — project the collected contracts into the lane requirements the
+/// pure lane-context check consumes
+/// ([`crate::mutation::validate::collect_hive_lane_context`]).
+///
+/// One requirement per `accepts[]` entry, so the check module keeps knowing
+/// nothing about `config.json`. Both call sites — the mutation pipeline's
+/// fourth stage-6 check and the boot report — go through THIS function, which
+/// is the whole point: two projections would be two chances to answer the same
+/// question differently.
+///
+/// The one conversion that happens here: [`Lane::because`] is a `String` and
+/// [`HiveLaneRequirement::because`] is an `Option<String>`, because a lane that
+/// says nothing must render as nothing. An empty sentence becomes `None`, so a
+/// lane without a `because` never produces `lane 'x'()` or a dangling dash in a
+/// refusal.
+pub fn lane_requirements(
+    contracts: &[HiveContract],
+) -> Vec<crate::mutation::validate::HiveLaneRequirement> {
+    let mut out = Vec::new();
+    for contract in contracts {
+        for lane in &contract.accepts {
+            out.push(crate::mutation::validate::HiveLaneRequirement {
+                hive_path: contract.hive_path.clone(),
+                route: lane.route.clone(),
+                context: lane.context.clone(),
+                because: (!lane.because.is_empty()).then(|| lane.because.clone()),
+            });
+        }
+    }
+    out
+}
+
 /// Call-site adapter (NOT pure — reads `config.json`): collect the contract
 /// every hive in the colony declared.
 ///
@@ -509,6 +555,7 @@ pub fn collect_hive_contracts<'a>(
         };
         let lane = |l: &crate::config::LaneSpec| Lane {
             route: l.route.clone(),
+            context: l.context.clone(),
             because: l.because.clone(),
         };
         out.push(HiveContract {
@@ -521,8 +568,18 @@ pub fn collect_hive_contracts<'a>(
 }
 
 /// One edge as the boot check receives it from `/colony/graph`: endpoints, the
-/// `condition` source, and the `modifier` source spec as JSON.
-pub type BootEdge = (String, String, Option<String>, Option<JsonValue>);
+/// `condition` source, the `modifier` source spec as JSON, and the routing
+/// phase.
+///
+/// GH #283: the fifth term is the default phase. The boot checks rebuild an
+/// [`EdgeTable`] from these tuples and then ask it routing questions — so a
+/// term this tuple does not carry is a property the check judges the topology
+/// WITHOUT, on a table that is not the one the colony runs.
+///
+/// GH #367 made the term real: `GraphEdgeDto` names the phase, so
+/// [`crate::boot_edges_from_graph`] fills it from the graph instead of the
+/// literal `false` the producer carried while the DTO was silent.
+pub type BootEdge = (String, String, Option<String>, Option<JsonValue>, bool);
 
 /// GH #173, the boot half: say it out loud when a hive's own graph no longer
 /// carries a lane its contract promises.
@@ -536,8 +593,21 @@ pub fn warn_on_broken_contracts(contracts: &[HiveContract], edges: &[BootEdge]) 
     if contracts.is_empty() {
         return;
     }
+    let table = edge_table_from_boot_edges(edges);
+    if let Err(e) = check_lane_doors(contracts, &table) {
+        tracing::warn!(reason = %format!("{e:?}"), "a hive contract does not match its own graph");
+    }
+}
+
+/// Rebuild a routable [`EdgeTable`] from what `/colony/graph` reported.
+///
+/// This is the table both boot probes ask their routing questions of, so it has
+/// to be the table the colony runs — an edge whose phase or modifier is dropped
+/// here is a verdict taken over a topology that does not exist. An edge whose
+/// condition does not parse is skipped with a warning rather than guessed at.
+pub fn edge_table_from_boot_edges(edges: &[BootEdge]) -> EdgeTable {
     let mut table = EdgeTable::new();
-    for (from, to, cond, modifier) in edges {
+    for (from, to, cond, modifier, is_default) in edges {
         let condition = match cond {
             None => None,
             Some(src) => match crate::cel_eval::parse_condition(src) {
@@ -567,11 +637,11 @@ pub fn warn_on_broken_contracts(contracts: &[HiveContract], edges: &[BootEdge]) 
             to: Path::new(to),
             condition,
             modifier,
+            // GH #283: the phase as the caller read it off the running graph.
+            is_default: *is_default,
         });
     }
-    if let Err(e) = check_lane_doors(contracts, &table) {
-        tracing::warn!(reason = %format!("{e:?}"), "a hive contract does not match its own graph");
-    }
+    table
 }
 
 #[cfg(test)]
@@ -588,6 +658,7 @@ mod tests {
             to: Path::new(to),
             condition: cond.map(|c| parse_condition(c).expect("condition parses")),
             modifier: None,
+            is_default: false,
         }
     }
 
@@ -629,6 +700,7 @@ mod tests {
     fn lane(route: &str) -> Lane {
         Lane {
             route: route.into(),
+            context: Vec::new(),
             because: format!("the {route} lane"),
         }
     }
@@ -836,5 +908,53 @@ mod tests {
             check_inbound_lanes(&stamped("./mem/glue", "'in_bath'"), "/", &drain_contract())
                 .is_ok()
         );
+    }
+
+    /// GH #291 — a lane that says nothing must carry no sentence at all.
+    ///
+    /// `Lane::because` is a `String` (an absent `because` deserialises to `""`)
+    /// and `HiveLaneRequirement::because` is an `Option<String>`. Handing the
+    /// empty string through would put `lane 'in_x'()` — an empty parenthesis,
+    /// or a dangling dash — into a refusal an author has to read.
+    #[test]
+    fn a_lane_without_a_because_projects_to_none() {
+        let contract = HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![
+                Lane {
+                    route: "in_quiet".into(),
+                    context: vec!["k".into()],
+                    because: String::new(),
+                },
+                Lane {
+                    route: "in_loud".into(),
+                    context: vec!["k".into()],
+                    because: "because it matters".into(),
+                },
+            ],
+            emits: vec![],
+        };
+        let reqs = lane_requirements(std::slice::from_ref(&contract));
+        assert_eq!(reqs.len(), 2, "one requirement per accepted lane");
+        assert_eq!(reqs[0].because, None, "an empty sentence is no sentence");
+        assert_eq!(reqs[0].hive_path, "/mem");
+        assert_eq!(reqs[0].context, vec!["k".to_string()]);
+        assert_eq!(reqs[1].because.as_deref(), Some("because it matters"));
+    }
+
+    /// And the emitted half is not a caller requirement: only `accepts[]` says
+    /// what a caller must have promoted on the way IN.
+    #[test]
+    fn only_accepted_lanes_become_requirements() {
+        let contract = HiveContract {
+            hive_path: "/mem".into(),
+            accepts: vec![],
+            emits: vec![Lane {
+                route: "episode".into(),
+                context: vec!["session_id".into()],
+                because: "one message per turn".into(),
+            }],
+        };
+        assert!(lane_requirements(std::slice::from_ref(&contract)).is_empty());
     }
 }

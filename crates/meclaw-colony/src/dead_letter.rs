@@ -72,6 +72,23 @@ pub enum DeadLetterReason {
     /// catch-all out-edge. Canonical string `no_route` — a new entry on the
     /// stable error_code list (spec § Behavior on routing errors).
     NoRoute,
+    /// GH #285: a message reached a hive's DECLARED SLOT while nothing was bound
+    /// behind it, and the hive declared `"unbound": "error"` — an unfinished
+    /// topology, said in the hive's own words. Deliberately distinct from
+    /// `unresolved_path`: that address is not unknown, it is announced and
+    /// empty, and only the declaration can tell the two apart. The counterpart
+    /// `"unbound": "drop"` produces NO dead letter at all. The entry's
+    /// `resolved_target` is the slot address, which names the hive path and the
+    /// slot name. Canonical string `slot_unbound`.
+    SlotUnbound,
+    /// GH #285 (W4 T12): a message reached a hive's declared slot with
+    /// `"unbound": "park"` while that slot's queue already held
+    /// `colony.json slot_park_max` messages. The NEWEST arrival is the one
+    /// refused — the earliest context is what a later reader cannot
+    /// reconstruct, so it is what the bound protects. The entry's
+    /// `resolved_target` is the slot address, exactly as for `slot_unbound`.
+    /// Canonical string `slot_park_overflow`.
+    SlotParkOverflow,
 }
 
 impl DeadLetterReason {
@@ -92,6 +109,8 @@ impl DeadLetterReason {
             Self::ConsumesViolation => "consumes_violation",
             Self::ContractViolation => "contract_violation",
             Self::NoRoute => "no_route",
+            Self::SlotUnbound => "slot_unbound",
+            Self::SlotParkOverflow => "slot_park_overflow",
         }
     }
 
@@ -114,6 +133,8 @@ impl DeadLetterReason {
             "consumes_violation" => Self::ConsumesViolation,
             "contract_violation" => Self::ContractViolation,
             "no_route" => Self::NoRoute,
+            "slot_unbound" => Self::SlotUnbound,
+            "slot_park_overflow" => Self::SlotParkOverflow,
             _ => return None,
         })
     }
@@ -216,6 +237,33 @@ mod tests_3b {
     #[test]
     fn no_route_as_code() {
         assert_eq!(DeadLetterReason::NoRoute.as_code(), "no_route");
+    }
+
+    /// GH #285 (W4 T11): the `slot_unbound` reason pins the canonical
+    /// error_code string, and the round trip through the persisted
+    /// `dead_letters` table — a reason the DLQ drain cannot reconstruct is a
+    /// reason that vanishes on the way back out.
+    #[test]
+    fn slot_unbound_as_code_round_trips() {
+        assert_eq!(DeadLetterReason::SlotUnbound.as_code(), "slot_unbound");
+        assert_eq!(
+            DeadLetterReason::from_code("slot_unbound"),
+            Some(DeadLetterReason::SlotUnbound)
+        );
+    }
+
+    /// GH #285 (W4 T12): the same contract for the bound of a `park` queue —
+    /// canonical string plus the round trip the DLQ drain depends on.
+    #[test]
+    fn slot_park_overflow_as_code_round_trips() {
+        assert_eq!(
+            DeadLetterReason::SlotParkOverflow.as_code(),
+            "slot_park_overflow"
+        );
+        assert_eq!(
+            DeadLetterReason::from_code("slot_park_overflow"),
+            Some(DeadLetterReason::SlotParkOverflow)
+        );
     }
 }
 

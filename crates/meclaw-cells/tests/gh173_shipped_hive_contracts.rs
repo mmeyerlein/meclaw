@@ -159,6 +159,7 @@ fn table_for(hp: &HiveParams) -> EdgeTable {
             // Modifiers do not decide WHETHER an edge is taken, and every set
             // expression here reads keys a bare route probe does not carry.
             modifier: None,
+            is_default: false,
         });
     }
     t
@@ -174,6 +175,7 @@ fn contract_of(hp: &HiveParams) -> Option<HiveContract> {
     let spec = hp.contract.as_ref()?;
     let lane = |l: &meclaw_colony::config::LaneSpec| Lane {
         route: l.route.clone(),
+        context: l.context.clone(),
         because: l.because.clone(),
     };
     Some(HiveContract {
@@ -320,4 +322,151 @@ fn a_lane_is_a_route_never_a_cell_name() {
             );
         }
     }
+}
+
+// ── GH #368/#366 — the bundle reply is a property of the CELL TYPE `store` ───
+
+/// Every `config.json` in the shipped tree whose cell type is `store`, as
+/// (relative directory, its `contract.emits`). Discovered by walking the tree,
+/// never from a list: a template added tomorrow has to be caught by the sweep
+/// that runs today, which is the whole point of a drift lock.
+fn shipped_stores() -> Vec<(String, Value)> {
+    let root = templates_root();
+    let mut out: Vec<(String, Value)> = Vec::new();
+    walk_stores(&root, &root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    // The floor, derived the way GH #173's is: a second, independent, NON-
+    // recursive read of `templates/*/*/config.json`. Every store one level under
+    // a template must turn up in the recursive walk — a walk that lost a subtree
+    // loses these first — and a tree with no store at all is a wrong root, not a
+    // small library. Today the floor happens to be the whole set: a composite
+    // template names its sub-templates with a `cell.type: "ref"` marker instead
+    // of copying their cell directories, so no store config sits deeper than
+    // `templates/*/*/`. The floor is a lower bound, not an equality assertion —
+    // a template that ever does nest a store one level further is caught by the
+    // walk alone, and this read stays the independent witness that the walk runs
+    // at all.
+    let mut floor: Vec<String> = Vec::new();
+    for template in std::fs::read_dir(&root).unwrap() {
+        let template = template.unwrap().path();
+        if !template.is_dir() {
+            continue;
+        }
+        for cell in std::fs::read_dir(&template).unwrap() {
+            let dir = cell.unwrap().path();
+            if is_store_config(&dir.join("config.json")).is_some() {
+                floor.push(dir.strip_prefix(&root).unwrap().display().to_string());
+            }
+        }
+    }
+    assert!(
+        !floor.is_empty(),
+        "no store under {} at all — wrong root",
+        root.display()
+    );
+    let found: std::collections::HashSet<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+    let missed: Vec<&String> = floor
+        .iter()
+        .filter(|f| !found.contains(f.as_str()))
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "the sweep walked past shipped stores: {missed:?}"
+    );
+    out
+}
+
+/// `Some(contract.emits)` iff this path is a `config.json` declaring a `store`.
+/// A store without a `contract` at all yields the empty object, so the sweep
+/// below reports it as a missing declaration rather than skipping it.
+fn is_store_config(p: &std::path::Path) -> Option<Value> {
+    let raw = std::fs::read_to_string(p).ok()?;
+    let val: Value =
+        meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let is_store = val
+        .get("cell")
+        .and_then(|c| c.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("store");
+    is_store.then(|| {
+        val.get("contract")
+            .and_then(|c| c.get("emits"))
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()))
+    })
+}
+
+fn walk_stores(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, Value)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.is_dir() {
+            walk_stores(root, &p, out);
+            continue;
+        }
+        if p.file_name().and_then(|n| n.to_str()) != Some("config.json") {
+            continue;
+        }
+        if let Some(emits) = is_store_config(&p) {
+            let rel = p.strip_prefix(root).unwrap().parent().unwrap();
+            out.push((rel.display().to_string(), emits));
+        }
+    }
+}
+
+/// GH #368 — a `store` cell answers N operations in ONE bundle reply (GH #295)
+/// and stamps `duration_ms` on every reply it has ever sent. Fifteen of the
+/// sixteen shipped stores still declared the pre-bundle contract when #368 found
+/// them, because each template was written against the store of its own day and
+/// nothing re-read the older ones afterwards.
+///
+/// This is the lock against the next one rotting the same way: the sweep finds
+/// the store configs itself, so a template added tomorrow is checked by the test
+/// written today. `emits` is the promise surface a reader wires against, and
+/// `emits.hop` is what the locality validator reads to decide whether a
+/// downstream edge may condition on a header — an undeclared key is a header no
+/// edge may name.
+#[test]
+fn every_shipped_store_tells_the_bundle_truth() {
+    let stores = shipped_stores();
+    for (name, emits) in &stores {
+        let declared = |compartment: &str, key: &str| -> bool {
+            emits.get(compartment).and_then(|c| c.get(key)).is_some()
+        };
+        // `rows_affected` rides along because it is the key #368 found furthest
+        // out: `builder-librarian`'s store had never declared it at all — the
+        // very number a bundle reply sums. A lock that checks only the two keys
+        // the issue was named after lets that one rot back to green.
+        for key in ["operation", "rows_affected", "duration_ms", "bundle_errors"] {
+            assert!(
+                declared("hop", key),
+                "{name}: contract.emits.hop does not declare `{key}` — the store cell \
+                 stamps it and an undeclared header is one no edge may condition on"
+            );
+        }
+        assert!(
+            declared("body", "results"),
+            "{name}: contract.emits.body does not declare the bundle slot `results` — \
+             the cell writes it on every bundle reply (GH #295)"
+        );
+        // GH #369 — `operation` is the one hop key of the five that is not
+        // optional. Every emit path of the `store` cell stamps it, the error
+        // surface included (GH #331), and since GH #370 the degraded substitute
+        // does too. `required: false` on it would say a reply may arrive without
+        // the field, which is untrue and is exactly what a return edge
+        // conditioned on `hop.operation` reads to decide it may not be relied on.
+        assert_eq!(
+            emits
+                .get("hop")
+                .and_then(|h| h.get("operation"))
+                .and_then(|o| o.get("required")),
+            Some(&Value::Bool(true)),
+            "{name}: contract.emits.hop.operation is not `required: true` — every \
+             store reply carries it, the error surface included (GH #331/#370)"
+        );
+    }
+    assert!(
+        stores.len() >= 8,
+        "the sweep checked almost nothing: {} stores",
+        stores.len()
+    );
 }

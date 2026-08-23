@@ -400,17 +400,25 @@ fn a_healthy_query_leaves_the_tier1_bundle_byte_identical() {
     );
 }
 
-/// The tier-0 `fire` hop: the three fixed legs collected, nothing in them.
+/// The tier-0 `legs` hop: the store's bundle answering all three fixed legs in
+/// one reply (GH #295), nothing in any of them.
 fn tier0_fire(query: &str) -> serde_json::Value {
-    let rows = serde_json::json!([
-        {"leg": "leg-episodes", "payload": "[]"},
-        {"leg": "leg-beliefs", "payload": "[]"},
-        {"leg": "leg-foresight", "payload": "[]"},
-    ]);
     serde_json::json!({
-        "header": {"context": {"recall_query": query, "mem_phase": "fire", "recall_id": "r-q2"},
-                   "hop": {"operation": "select"}},
-        "messages": [{"origin": "tool", "type": "tool_result", "text": rows.to_string()}]
+        "header": {"context": {"recall_query": query, "mem_phase": "legs", "recall_id": "r-q2"},
+                   "hop": {"operation": "bundle", "rows_affected": 0, "bundle_errors": 0}},
+        "messages": [
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-episodes", "text": "[]"},
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-beliefs", "text": "[]"},
+            {"origin": "tool", "type": "tool_result", "id": "r-leg-foresight", "text": "[]"}
+        ],
+        "results": [
+            {"tool_call_id": "r-leg-episodes", "operation": "select", "rows_affected": 0,
+             "duration_ms": 0},
+            {"tool_call_id": "r-leg-beliefs", "operation": "select", "rows_affected": 0,
+             "duration_ms": 0},
+            {"tool_call_id": "r-leg-foresight", "operation": "select", "rows_affected": 0,
+             "duration_ms": 0}
+        ]
     })
 }
 

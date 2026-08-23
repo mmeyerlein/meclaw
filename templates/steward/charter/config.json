@@ -42,18 +42,30 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
         "operation": {
           "type": "string",
-          "required": false
+          "required": true
         },
         "error_code": {
           "type": "string",
           "required": false
         },
         "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
           "type": "number",
           "required": false
         }

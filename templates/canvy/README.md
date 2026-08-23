@@ -77,7 +77,7 @@ never the movement in between.
 ```json
 {"scope": "/org/acme/member/alice",
  "ctx": {},
- "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.3.1"}]}}
+ "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.3.2"}]}}
 ```
 
 That is the whole installation. No restart, no lane to grant, no edge for the

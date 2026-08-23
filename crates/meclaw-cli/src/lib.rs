@@ -561,12 +561,19 @@ pub async fn run_with_hooks_tuned(
                     .map(|p| p.as_str().to_string())
                     .collect();
                 known.extend(meclaw_colony::registered_hive_paths(&cli.root));
-                let unresolved = meclaw_colony::unresolved_boot_endpoints(&plan, &known);
+                // GH #285: a hive's DECLARED slot is an address that may stand
+                // empty, so an edge onto it is the edge the declaration invited
+                // — not a typo. Undeclared endpoints are untouched, which is
+                // the point: the exemption is bought by the declaration.
+                let slot_endpoints = meclaw_colony::declared_slot_endpoints(&cli.root, &plan);
+                let unresolved =
+                    meclaw_colony::unresolved_boot_endpoints(&plan, &known, &slot_endpoints);
                 for (edge_id, endpoint) in &unresolved {
                     eprintln!(
                         "validate: warning: dangling edge endpoint {} (edge {edge_id}) — \
-                         resolves to no FS cell/hive or /colony endpoint \
-                         (runtime-spawned cells are invisible to --validate)",
+                         resolves to no FS cell/hive, /colony endpoint or declared \
+                         `params.ports` slot (runtime-spawned cells are invisible to \
+                         --validate)",
                         endpoint.as_str()
                     );
                 }
@@ -599,6 +606,19 @@ pub async fn run_with_hooks_tuned(
                 }
                 if cli.validate_strict && !plan.header_contract_findings.is_empty() {
                     had_error = true;
+                }
+                // GH #283 (ruling Q1 2026-08-21): the fourth channel, and the
+                // only one WITHOUT a `validate_strict` promotion under it. An
+                // unguarded default edge is a legal, working topology — the
+                // ruling asked for a hint and explicitly refused a refusal, so
+                // no flag turns this into a non-zero exit. Printed as `note`
+                // rather than `warning` so the difference is visible in the
+                // output too. Pinned by
+                // `tests/phase_16_w1a_validate_strict.rs::an_unguarded_default_is_a_note_not_a_strict_error`
+                // — a later reviewer who moves this onto a promoting channel
+                // turns that test red.
+                for advisory in &plan.advisories {
+                    eprintln!("validate: note: {advisory}");
                 }
             }
         }

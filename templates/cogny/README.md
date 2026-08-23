@@ -1,4 +1,4 @@
-# `cogny@3.0.10`
+# `cogny@3.0.11`
 
 The agent core as one template. Four units under one hive:
 [`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
@@ -64,13 +64,13 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.1"}}
+{"cell": {"type": "ref", "template": "collector@2.1.2"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.1`, with
-`cogny@3.0.10` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@2.1.2`, with
+`cogny@3.0.11` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -368,7 +368,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@3.0.10", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@3.0.11", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -507,7 +507,7 @@ rides on `hop.route`.
 
 | lane | direction | what travels |
 |---|---|---|
-| `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier |
+| `in_turn` | in | a question for this core -- a consult or a lookup. `context.consult_class` picks the model tier when the caller promotes it; without it the default tier answers, which is why the lane's `accepts[].context` is empty |
 | `in_tool` | in | one tool result, coming back from a tool cell the parent wired |
 | `in_bundle` | in | a memory bundle, coming back from whatever keeps this agent's memory |
 | `answer` | out | the core's answer, for whoever asked. Since `collector@2.1.1` a **third** sort travels here -- beside a real answer and a round that hit `max_iter` (`hop.round_capped`) -- and it is marked `hop.degraded == "1"`: a turn that could not be assembled at all because the store refused a read or a write, with `hop.store_error` (the store's `error_code`) and `hop.store_operation` beside it ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). It carries no `round_capped`, so an asker that renders an advice must branch on `degraded` -- without it a failure reads as a real answer |

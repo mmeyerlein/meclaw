@@ -182,6 +182,23 @@ fn args_of(msg: &Value) -> Value {
     meclaw_core::serde_json::from_str(text).unwrap_or(Value::Null)
 }
 
+/// Every store op one emitted message carries, in call order. Since GH #295 a
+/// store message may hold MORE than one `tool_call` turn — the tier-0 request
+/// sends its three legs as one bundle — and a reader that looks only at
+/// `messages[0]` sees the first leg and calls it the message.
+fn ops_of(msg: &Value) -> Vec<Value> {
+    msg["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|t| t["type"] == json!("tool_call"))
+        .filter_map(|t| {
+            meclaw_core::serde_json::from_str(t["text"].as_str().unwrap_or("null")).ok()
+        })
+        .collect()
+}
+
 // ------------------------------------------------------------- vocabulary
 
 const A: &str = "member:anna";
@@ -237,48 +254,42 @@ fn belief_row(id: &str, statement: &str, audience: &str) -> Value {
 
 // ------------------------------------------------- driving the tier-0 bundle
 
-/// Runs one tier-0 leg of the shipped `recall` script and returns the payload
-/// it put into `recall_scratch` — the projection that survives into the bundle.
-fn leg_payload(leg: &str, rows: &[Value], ctx: &Value) -> String {
-    let mut ctx = ctx.clone();
-    ctx["mem_phase"] = json!(leg);
-    let body = json!({
-        "header": {"context": ctx, "hop": {"operation": "select"}},
-        "messages": [{"origin": "tool", "type": "tool_result",
-                      "text": Value::Array(rows.to_vec()).to_string()}]
-    });
-    let out = emitted(&run_hop("recall", &body));
-    assert_eq!(
-        out.len(),
-        1,
-        "a tier-0 leg emits its collect insert: {out:?}"
-    );
-    args_of(&out[0])["row"]["payload"]
-        .as_str()
-        .expect("the leg payload")
-        .to_string()
+/// One leg of the store's bundle reply: the `tool_result` turn carrying that
+/// leg's rows, under the `tool_call_id` the recall script asked with.
+fn leg_turn(leg: &str, rows: &[Value]) -> Value {
+    json!({"origin": "tool", "type": "tool_result", "id": format!("r-{leg}"),
+           "text": Value::Array(rows.to_vec()).to_string()})
 }
 
-/// The whole tier-0 read path of the shipped `recall` script, hop by hop: the
-/// three legs project their rows, then the `fire` phase fuses them into the
-/// bundle a caller receives. Deliberately drives BOTH halves — the contract
-/// says where the gate must hold (every row leaving the read path), not in
-/// which phase the implementation puts it, and a test that pinned the phase
-/// would forbid a legal implementation.
+/// The whole tier-0 read path of the shipped `recall` script in the ONE hop it
+/// costs since GH #295: the store answers all three fixed legs in a single
+/// bundle, and that hop gates the rows, projects them and assembles the bundle
+/// a caller receives. Deliberately drives the read path as it ships — the
+/// contract says where the gate must hold (every row leaving the read path),
+/// not in which phase the implementation puts it, and a test that pinned the
+/// phase would forbid a legal implementation.
 fn tier0_bundle(ctx: &Value, episodes: &[Value], beliefs: &[Value], foresight: &[Value]) -> Value {
-    let scratch = json!([
-        {"leg": "leg-episodes", "payload": leg_payload("leg-episodes", episodes, ctx)},
-        {"leg": "leg-beliefs", "payload": leg_payload("leg-beliefs", beliefs, ctx)},
-        {"leg": "leg-foresight", "payload": leg_payload("leg-foresight", foresight, ctx)},
-    ]);
     let mut ctx = ctx.clone();
-    ctx["mem_phase"] = json!("fire");
+    ctx["mem_phase"] = json!("legs");
     let body = json!({
-        "header": {"context": ctx, "hop": {"operation": "select"}},
-        "messages": [{"origin": "tool", "type": "tool_result", "text": scratch.to_string()}]
+        "header": {"context": ctx,
+                   "hop": {"operation": "bundle", "rows_affected": 0, "bundle_errors": 0}},
+        "messages": [
+            leg_turn("leg-episodes", episodes),
+            leg_turn("leg-beliefs", beliefs),
+            leg_turn("leg-foresight", foresight)
+        ],
+        "results": [
+            {"tool_call_id": "r-leg-episodes", "operation": "select", "duration_ms": 0,
+             "rows_affected": episodes.len()},
+            {"tool_call_id": "r-leg-beliefs", "operation": "select", "duration_ms": 0,
+             "rows_affected": beliefs.len()},
+            {"tool_call_id": "r-leg-foresight", "operation": "select", "duration_ms": 0,
+             "rows_affected": foresight.len()}
+        ]
     });
     let out = emitted(&run_hop("recall", &body));
-    assert_eq!(out.len(), 1, "the fire phase emits one bundle: {out:?}");
+    assert_eq!(out.len(), 1, "the bundle hop emits one bundle: {out:?}");
     let text = out[0]["system"]["memory"]["bundle"]["text"]
         .as_str()
         .expect("the bundle");
@@ -1110,8 +1121,7 @@ fn the_read_path_selects_the_columns_it_is_going_to_filter_on() {
     // pinned here.
     let out = emitted(&run_hop("recall", &request(asking(&[A, B], CH1, None))));
     let mut seen = 0;
-    for msg in &out {
-        let a = args_of(msg);
+    for a in out.iter().flat_map(ops_of) {
         let Some(table) = a["table"].as_str() else {
             continue;
         };

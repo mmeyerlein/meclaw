@@ -17,6 +17,10 @@ pub struct Edge {
     /// Pre-compiled CEL modifier (four-field: set_context/delete_context/
     /// set_hop/delete_hop). `None` = identity headers.
     pub modifier: Option<CompiledModifier>,
+    /// GH #283 — this edge is a declared consumer for what would otherwise
+    /// dead-letter as `no_route` from this sender; it is evaluated only when no
+    /// regular out-edge of the same sender produced a decision.
+    pub is_default: bool,
 }
 
 /// Table of edges indexed by their source path for O(1) fan-out lookups.
@@ -50,12 +54,20 @@ impl EdgeTable {
     }
 
     /// Returns `true` iff an edge with the SAME identity already lives in the
-    /// table. Edge identity per spec Z.265 is `from` + `to` + `condition` +
-    /// `modifier` (NOT the UUID): two edges are equal iff their `from`/`to`
-    /// paths match AND their `condition.source` strings match AND their
-    /// `modifier.source` serde-JSON values match. This mirrors the F6
-    /// equality used by `remove_edges_pattern_hits` / `EdgeMatchView`
-    /// (string-eq on condition source, serde-JSON-eq on modifier source).
+    /// table. Edge identity (spec Z.265 plus GH #283) is `from` + `to` +
+    /// `condition` + `modifier` + `is_default` (NOT the UUID): two edges are
+    /// equal iff their `from`/`to` paths match AND their `condition.source`
+    /// strings match AND their `modifier.source` serde-JSON values match AND
+    /// they run in the same routing phase. This mirrors the F6 equality used by
+    /// `remove_edges_pattern_hits` / `EdgeMatchView` (string-eq on condition
+    /// source, serde-JSON-eq on modifier source, bool-eq on the phase).
+    ///
+    /// GH #283 — the phase is a full identity term, not a decoration: a
+    /// migration lays the default edge BESIDE the unconditional edge it
+    /// replaces (same four other terms) and takes the old one away afterwards.
+    /// On the four-term identity the dedup below would swallow that second
+    /// insert and hand the caller a committed mutation over a topology missing
+    /// an edge nobody reported.
     ///
     /// Paket-5 T8 (A1): the mutation path calls this before every edge
     /// insert to make re-applied diffs idempotent — a duplicate insert would
@@ -68,6 +80,7 @@ impl EdgeTable {
             .and_then(|m| meclaw_core::serde_json::to_value(&m.source).ok());
         self.edges_from(&candidate.from).iter().any(|e| {
             e.to == candidate.to
+                && e.is_default == candidate.is_default
                 && e.condition.as_ref().map(|c| c.source.as_str()) == cand_cond
                 && e.modifier
                     .as_ref()
@@ -189,10 +202,28 @@ pub fn evaluate_edge(edge: &Edge, headers: &Headers) -> Option<EdgeDecision> {
 
 /// Apply all edges matching `from` to `headers`, returning every edge's
 /// decision (used by the outputs-arm for fan-out).
+///
+/// GH #283: evaluation runs in two phases over the same slice. Phase one is
+/// today's behaviour, restricted to the REGULAR (non-default) out-edges — every
+/// match yields a decision, in insertion order. Only if that phase produced
+/// NOTHING does phase two evaluate the sender's `is_default` edges, through the
+/// same [`evaluate_edge`] (so `modifier`, `restore_ttl` and the F3 skip are
+/// identical), also in insertion order. The suppression asks whether ANY regular
+/// edge decided, never whether exactly one did: there is no dispatch group and
+/// no exactly-one semantics here.
 pub fn apply_edges(table: &EdgeTable, from: &Path, headers: &Headers) -> Vec<EdgeDecision> {
-    table
-        .edges_from(from)
+    let edges = table.edges_from(from);
+    let regular: Vec<EdgeDecision> = edges
         .iter()
+        .filter(|e| !e.is_default)
+        .filter_map(|e| evaluate_edge(e, headers))
+        .collect();
+    if !regular.is_empty() {
+        return regular;
+    }
+    edges
+        .iter()
+        .filter(|e| e.is_default)
         .filter_map(|e| evaluate_edge(e, headers))
         .collect()
 }
@@ -210,6 +241,7 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 1);
@@ -225,6 +257,7 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -232,6 +265,7 @@ mod tests {
             to: Path::new("/c"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         let found = table.edges_from(&Path::new("/a"));
         assert_eq!(found.len(), 2);
@@ -254,6 +288,7 @@ mod tests {
             to: Path::new("/c"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -261,6 +296,7 @@ mod tests {
             to: Path::new("/c"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -268,6 +304,7 @@ mod tests {
             to: Path::new("/d"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         let into_c = table.edges_to(&Path::new("/c"));
         assert_eq!(into_c.len(), 2);
@@ -284,6 +321,7 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         assert!(table.edges_to(&Path::new("/x")).is_empty());
     }
@@ -306,6 +344,7 @@ mod tests {
             to: Path::new("/b"),
             condition: Some(cond),
             modifier: Some(modif),
+            is_default: false,
         };
         assert!(e.condition.is_some());
         assert!(e.modifier.is_some());
@@ -327,6 +366,7 @@ mod tests {
             to: Path::new("/b"),
             condition: Some(crate::cel_eval::parse_condition("hop.x == 'y'").unwrap()),
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
+            is_default: false,
         };
         table.insert(base());
 
@@ -361,10 +401,57 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         };
         assert!(
             !table.contains_equal(&identity),
             "None condition/modifier differs from Some(...) → contains_equal false"
+        );
+    }
+
+    /// GH #283 (W4 T4): the default phase is the FIFTH identity term. A
+    /// migration lays the default edge BESIDE the unconditional edge it
+    /// replaces — same `from`, `to`, `condition`, `modifier` — and takes the old
+    /// one away afterwards. On the four-term identity the mutation dedup at both
+    /// `handle_mutation` insert sites would swallow that second insert and
+    /// report `committed` for a topology missing an edge nobody named.
+    #[test]
+    fn contains_equal_separates_a_default_from_a_regular_edge() {
+        let regular = || Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/b"),
+            condition: None,
+            modifier: None,
+            is_default: false,
+        };
+        let default = || Edge {
+            is_default: true,
+            ..regular()
+        };
+
+        // Regular edge in the table: the default one is NOT already there.
+        let mut regular_first = EdgeTable::new();
+        regular_first.insert(regular());
+        assert!(
+            regular_first.contains_equal(&regular()),
+            "same four terms, same phase, fresh UUID → contains_equal true"
+        );
+        assert!(
+            !regular_first.contains_equal(&default()),
+            "a default edge is not the regular edge it sits beside → contains_equal false"
+        );
+
+        // And the other way round — insertion order changes nothing.
+        let mut default_first = EdgeTable::new();
+        default_first.insert(default());
+        assert!(
+            default_first.contains_equal(&default()),
+            "two default edges with the same four terms are still one identity"
+        );
+        assert!(
+            !default_first.contains_equal(&regular()),
+            "a regular edge is not the default edge it sits beside → contains_equal false"
         );
     }
 
@@ -391,6 +478,7 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: Some(m),
+            is_default: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -454,6 +542,7 @@ mod tests {
             to: Path::new("/b"),
             condition: None,
             modifier: Some(m),
+            is_default: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);
@@ -520,6 +609,7 @@ mod hook_tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         };
         let h = headers();
         let dec = evaluate_edge(&e, &h).unwrap();
@@ -543,6 +633,7 @@ mod hook_tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 1);
@@ -558,6 +649,7 @@ mod hook_tests {
             to: Path::new("/b"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -565,6 +657,7 @@ mod hook_tests {
             to: Path::new("/c"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
         let r = apply_edges(&table, &Path::new("/a"), &headers());
         assert_eq!(r.len(), 2);
@@ -599,6 +692,7 @@ mod hook_tests {
                     .expect("condition should parse"),
             ),
             modifier: None,
+            is_default: false,
         });
         table.insert(Edge {
             id: Uuid::now_v7(),
@@ -606,6 +700,7 @@ mod hook_tests {
             to: Path::new("/c"),
             condition: None,
             modifier: None,
+            is_default: false,
         });
 
         let matched = apply_edges(&table, &Path::new("/a"), &hop_tool_name("alpha"));
@@ -625,6 +720,226 @@ mod hook_tests {
         );
     }
 
+    /// GH #283 test support: headers carrying only `hop` keys.
+    fn hop_headers(pairs: &[(&str, &str)]) -> Headers {
+        let mut hop = meclaw_core::serde_json::Map::new();
+        for (k, v) in pairs {
+            hop.insert(
+                (*k).into(),
+                meclaw_core::serde_json::Value::String((*v).into()),
+            );
+        }
+        Headers::from_parts(meclaw_core::serde_json::Map::new(), hop)
+    }
+
+    /// GH #283 test support: a regular `/a → /alpha` edge that only takes the
+    /// message whose `hop.tool_name` is `alpha` — guarded with `has()` so an
+    /// absent key is a plain non-match, not an eval error.
+    fn regular_alpha_edge() -> Edge {
+        Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/alpha"),
+            condition: Some(
+                crate::cel_eval::parse_condition("has(hop.tool_name) && hop.tool_name == 'alpha'")
+                    .expect("condition should parse"),
+            ),
+            modifier: None,
+            is_default: false,
+        }
+    }
+
+    /// GH #283 test support: a default edge from `/a`, optionally guarded.
+    fn default_edge(to: &str, condition: Option<&str>) -> Edge {
+        Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new(to),
+            condition: condition
+                .map(|c| crate::cel_eval::parse_condition(c).expect("condition should parse")),
+            modifier: None,
+            is_default: true,
+        }
+    }
+
+    /// GH #283: a default edge is a declared consumer for what would otherwise
+    /// dead-letter as `no_route` from this sender — so while a regular out-edge
+    /// of the same sender produces a decision, the default stays silent. This is
+    /// the issue's reproduction at unit scale.
+    #[test]
+    fn a_default_edge_stays_silent_while_a_regular_edge_fires() {
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(default_edge("/catchall", None));
+
+        let decisions = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("tool_name", "alpha")]),
+        );
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec!["/alpha"],
+            "a regular edge produced a decision — the default must not fire beside it"
+        );
+    }
+
+    /// GH #283: the same table, a message no regular edge takes — the default
+    /// consumes what would otherwise dead-letter.
+    #[test]
+    fn a_default_edge_fires_when_nothing_regular_did() {
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(default_edge("/catchall", None));
+
+        let decisions = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("tool_name", "gamma")]),
+        );
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec!["/catchall"],
+            "no regular edge decided — the default consumes the message"
+        );
+    }
+
+    /// GH #283: a guarded default consumes only what its guard names. The zero
+    /// case is the point of the guard — the rest of the sender's traffic keeps
+    /// dead-lettering, honestly.
+    #[test]
+    fn a_guarded_default_only_consumes_what_its_guard_names() {
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(default_edge("/catchall", Some("hop.route == 'tool'")));
+
+        let named = apply_edges(&table, &Path::new("/a"), &hop_headers(&[("route", "tool")]));
+        let named_targets: Vec<&str> = named.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            named_targets,
+            vec!["/catchall"],
+            "the guard names this message — the default consumes it"
+        );
+
+        let unnamed = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("route", "write")]),
+        );
+        assert!(
+            unnamed.is_empty(),
+            "the guard does not name this message — it keeps dead-lettering as no_route"
+        );
+    }
+
+    /// GH #283: fan-out among defaults is consistent with the rest of the model,
+    /// not an accident — both guards hold, both defaults fire, in insertion order.
+    #[test]
+    fn two_guarded_defaults_both_fire_when_both_guards_hold() {
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(default_edge("/catchall_a", Some("hop.route == 'tool'")));
+        table.insert(default_edge("/catchall_b", Some("has(hop.tool_name)")));
+
+        let decisions = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("route", "tool"), ("tool_name", "gamma")]),
+        );
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec!["/catchall_a", "/catchall_b"],
+            "both guards hold and no regular edge decided — both defaults fire, in insertion order"
+        );
+    }
+
+    /// GH #283: the suppression asks "did ANY regular edge fire", never "did
+    /// exactly one" — there is no exactly-one semantics in this construct.
+    #[test]
+    fn a_regular_fan_out_still_suppresses_the_default() {
+        let mut table = EdgeTable::new();
+        table.insert(Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/b"),
+            condition: None,
+            modifier: None,
+            is_default: false,
+        });
+        table.insert(Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/c"),
+            condition: None,
+            modifier: None,
+            is_default: false,
+        });
+        table.insert(default_edge("/catchall", None));
+
+        let decisions = apply_edges(&table, &Path::new("/a"), &Headers::new());
+        let targets: Vec<&str> = decisions.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            vec!["/b", "/c"],
+            "two regular edges decided — the default stays silent (no exactly-one semantics)"
+        );
+    }
+
+    /// GH #283: a firing default runs through `evaluate_edge` like every other
+    /// edge rather than through a bypass — so `modifier`, `restore_ttl` and the
+    /// F3 skip behave identically. The modifier stamp is the proof.
+    #[test]
+    fn a_default_edge_applies_its_modifier() {
+        let mut spec = crate::config::ModifierSpec::default();
+        spec.set_hop.insert("lane".into(), "'fallback'".into());
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(Edge {
+            id: Uuid::now_v7(),
+            from: Path::new("/a"),
+            to: Path::new("/catchall"),
+            condition: None,
+            modifier: Some(crate::cel_eval::parse_modifier(&spec).expect("modifier should parse")),
+            is_default: true,
+        });
+
+        let decisions = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("tool_name", "gamma")]),
+        );
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].target.as_str(), "/catchall");
+        assert_eq!(
+            decisions[0].headers_out.hop.get("lane"),
+            Some(&meclaw_core::serde_json::Value::String("fallback".into())),
+            "the default's modifier ran — defaults go through evaluate_edge, not a bypass"
+        );
+    }
+
+    /// GH #283: spec F3 holds for defaults too — a guard reading an absent key
+    /// without `has()` skips the edge, it does not panic. The colony hot path
+    /// stays panic-free.
+    #[test]
+    fn a_default_whose_own_guard_errors_is_skipped() {
+        let mut table = EdgeTable::new();
+        table.insert(regular_alpha_edge());
+        table.insert(default_edge("/catchall", Some("hop.never_was == 'x'")));
+
+        let decisions = apply_edges(
+            &table,
+            &Path::new("/a"),
+            &hop_headers(&[("tool_name", "gamma")]),
+        );
+        assert!(
+            decisions.is_empty(),
+            "F3 for defaults: an erroring guard skips the default, no panic"
+        );
+    }
+
     /// Phase 13.5-A1 T3: condition=false → edge skipped.
     #[test]
     fn evaluate_edge_skips_when_condition_false() {
@@ -635,6 +950,7 @@ mod hook_tests {
             to: Path::new("/b"),
             condition: Some(cond),
             modifier: None,
+            is_default: false,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -658,6 +974,7 @@ mod hook_tests {
             to: Path::new("/b"),
             condition: Some(cond),
             modifier: None,
+            is_default: false,
         };
         let mut hop = meclaw_core::serde_json::Map::new();
         hop.insert(
@@ -681,6 +998,7 @@ mod hook_tests {
             to: meclaw_core::Path::new("/b"),
             condition: Some(cond),
             modifier: None,
+            is_default: false,
         };
         let result = evaluate_edge(&edge, &Headers::new());
         assert!(
@@ -706,6 +1024,7 @@ mod hook_tests {
             to: meclaw_core::Path::new("/planner"),
             condition: None,
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
+            is_default: false,
         };
         let mut ctx = meclaw_core::serde_json::Map::new();
         ctx.insert("iter".into(), meclaw_core::serde_json::json!("0"));
@@ -719,6 +1038,7 @@ mod hook_tests {
             to: meclaw_core::Path::new("/planner"),
             condition: None,
             modifier: None,
+            is_default: false,
         };
         assert!(
             !evaluate_edge(&plain, &h).expect("edge takes").restore_ttl,
@@ -760,6 +1080,7 @@ mod hook_tests {
             to: meclaw_core::Path::new("/b"),
             condition: None,
             modifier: Some(m),
+            is_default: false,
         };
         let mut table = EdgeTable::new();
         table.insert(edge);

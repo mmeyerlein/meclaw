@@ -307,6 +307,9 @@ fn three_dangling_edge_endpoints_are_all_named() {
         &[],
         "/",
         &[],
+        // GH #285: no hive here declares a slot, so the second known-set is empty
+        // and this stage sees exactly the universe it saw before.
+        &std::collections::HashSet::new(),
         &mut rejection,
     );
 
@@ -357,6 +360,9 @@ fn two_port_boundary_breaches_in_one_diff_are_both_named() {
     let sealed = vec![SealedHive {
         path: "/aff".into(),
         ports: vec!["brief".into()],
+        // GH #285: this hive declares no slot; the collecting check does not
+        // read the list either way.
+        slots: vec![],
     }];
     let diff = json!({"add_edges":[
         {"from":"./caller","to":"./aff/store"},

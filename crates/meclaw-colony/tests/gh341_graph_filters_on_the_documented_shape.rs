@@ -57,6 +57,7 @@ fn two_hive_fixture() -> (std::collections::HashMap<Path, RegistryEntry>, EdgeTa
             to: Path::new(&format!("{hive}/two")),
             condition: None,
             modifier: None,
+            is_default: false,
         });
     }
     (registry, edges)

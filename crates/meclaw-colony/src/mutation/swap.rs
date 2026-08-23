@@ -63,6 +63,16 @@ pub(crate) struct SwungEdge {
     /// Pre-serialised modifier JSON string for `InsertEdge` WriteOp.
     /// Equals `serde_json::to_string(&modifier.source)` when `Some`.
     pub(crate) mod_src: Option<String>,
+    /// GH #283: the swung edge's routing PHASE — `true` for a default edge,
+    /// which the router consults only after every ordinary out-edge of the same
+    /// sender declined.
+    ///
+    /// It rides here for the same reason `condition` and `modifier` do: a swing
+    /// re-creates the edge instead of moving it, so anything this struct does
+    /// not carry is silently dropped. Dropping it would demote a default to an
+    /// ordinary edge, which fires BESIDE the regular ones — double delivery on
+    /// exactly the surface #283 reports.
+    pub(crate) is_default: bool,
 }
 
 /// The plan returned by [`plan_edge_swing`].
@@ -113,7 +123,8 @@ pub(crate) fn is_inside_subtree(endpoint: &str, root: &str) -> bool {
 ///    entirely**: it is neither swung nor removed, and stays with the unit it
 ///    wires (GH #256, see the module doc).
 /// 1. Replace the `t2` endpoint(s) with `t3`.
-/// 2. Clone `condition` and `modifier` verbatim.
+/// 2. Clone `condition`, `modifier` and the default phase (`is_default`,
+///    GH #283) verbatim.
 /// 3. If the resulting edge would have `from == to` (both endpoints became
 ///    `t3`) — i.e. the original edge directly connected `t2 ↔ t3` or was a
 ///    self-loop on `t2` — **drop** the insert but **still** remove the old
@@ -193,6 +204,9 @@ pub(crate) fn plan_edge_swing(t2: &Path, t3: &Path, edges: &EdgeTable) -> SwingP
             modifier: e.modifier.clone(),
             cond_src,
             mod_src,
+            // GH #283: verbatim, exactly like condition and modifier above —
+            // a swing changes a swung edge's ENDPOINTS and nothing else.
+            is_default: e.is_default,
         });
     }
 
@@ -214,6 +228,7 @@ mod tests {
             to: Path::new(to),
             condition: None,
             modifier: None,
+            is_default: false,
         }
     }
 
@@ -283,6 +298,7 @@ mod tests {
             to: Path::new("/sink"),
             condition: Some(cond.clone()),
             modifier: Some(modif.clone()),
+            is_default: false,
         };
         let tbl = table_with(vec![e]);
 

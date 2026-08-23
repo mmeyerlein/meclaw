@@ -178,6 +178,22 @@ pub struct GraphEdgeDto {
     /// = edge has no modifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modifier: Option<meclaw_core::JsonValue>,
+    /// GH #367: the edge's routing phase — `true` for a default edge (GH #283),
+    /// which the router consults only after every ordinary out-edge of the same
+    /// sender declined.
+    ///
+    /// On the wire the key is `default`, the same name `params.graph`,
+    /// `add_edges[]` and `remove_edges[].match` use.
+    ///
+    /// **Emitted always**, on both values, unlike the two optional fields above.
+    /// `condition` and `modifier` skip serialisation when absent because for
+    /// them an absent key IS the statement (this edge has no condition). A
+    /// routing phase is never absent — every edge runs in one of the two — so
+    /// omitting it on `false` would leave a reader unable to tell "this edge is
+    /// regular" from "this server does not report phases". That ambiguity is
+    /// what the boot probes were caught in before this key existed.
+    #[serde(default, rename = "default")]
+    pub is_default: bool,
 }
 
 /// Reply for [`crate::ColonyMsg::ReadMutationsAudit`].

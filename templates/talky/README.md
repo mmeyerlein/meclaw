@@ -1,4 +1,4 @@
-# `talky@3.0.13`
+# `talky@3.0.14`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
@@ -60,13 +60,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.1"}}
+{"cell": {"type": "ref", "template": "collector@2.1.2"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.1`, with
-`talky@3.0.13` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@2.1.2`, with
+`talky@3.0.14` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in

@@ -1,4 +1,4 @@
-# `collector@2.1.1`
+# `collector@2.1.2`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).

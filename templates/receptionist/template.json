@@ -1,6 +1,6 @@
 {
   "name": "receptionist",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": {
     "purpose": "One agent per channel, built on demand: the first turn of a channel nobody has met makes the reception instantiate a fresh talky for exactly that channel -- one mutation carrying the node AND its four port edges -- and hands the triggering turn straight into it. Every later turn of that channel takes the lane that mutation drew.",
     "use_when": "In front of a surface that serves many chats, rooms or callers with the same kind of agent. One per colony. The parent writes two edges, both at the HIVE path (`params.ports` is empty since GH #228; an edge naming ./greet is refused with hive_port_boundary): the ingress on lane in_turn (promoting both the channel identity and the round), and the PRIVILEGED mutate lane out to /colony/mutations, which only a bootstrap config.json can grant -- no mutation can create it at any scope.",

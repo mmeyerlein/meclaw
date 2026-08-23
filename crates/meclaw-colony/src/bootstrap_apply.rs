@@ -519,9 +519,18 @@ fn boot_inactive_inert_respawn() -> crate::RespawnFn {
 /// registry-only-without-FS node cannot occur (A5b registration model), so the
 /// check is as sharp as the strict reading there. One entry per unresolved
 /// side of every edge: `(edge_id, missing_endpoint)`.
+///
+/// GH #285 — `slot_endpoints` is the second known-set, and the only term that
+/// resolves an address with no node behind it: a hive that declared a SLOT
+/// (`declared_slot_endpoints`) said the address exists and may stand empty. It
+/// is a separate set on purpose. The persisted set answers "this colony
+/// registered it once"; this one answers "a hive promised it" — and a promise
+/// must not turn its subject into a registered node, which is exactly what
+/// folding the two together would quietly assert.
 pub fn unresolved_boot_endpoints(
     plan: &BootstrapPlan,
     registry_paths: &std::collections::HashSet<String>,
+    slot_endpoints: &std::collections::HashSet<String>,
 ) -> Vec<(meclaw_core::Uuid, meclaw_core::Path)> {
     let resolvable = |p: &meclaw_core::Path| -> bool {
         let s = p.as_str();
@@ -533,6 +542,12 @@ pub fn unresolved_boot_endpoints(
             || plan.cells.iter().any(|c| c.path.as_str() == s)
             || plan.hives.iter().any(|h| h.path.as_str() == s)
             || registry_paths.contains(s)
+            // GH #285: …or a DECLARED slot of a hive in this tree. The only
+            // resolvable address that is not a node: a hive said this address
+            // exists and may stand empty, so the edge onto it is the edge the
+            // declaration invited. Everything else keeps its teeth — a typo
+            // cannot inherit the exemption, because nothing declared it.
+            || slot_endpoints.contains(s)
     };
     let mut out = Vec::new();
     for edge in &plan.edges {
@@ -544,6 +559,36 @@ pub fn unresolved_boot_endpoints(
         }
     }
     out
+}
+
+/// GH #285 — the addresses this plan's hives declared as SLOTS, absolute.
+///
+/// A slot is a hive saying "here is an address a parent may wire, and it may
+/// stand empty". [`unresolved_boot_endpoints`] takes the result as its second
+/// known-set: the declaration is what buys the exemption, so an endpoint that
+/// merely LOOKS like an unbuilt child — a typo, a plain port whose child is
+/// missing — keeps dangling.
+///
+/// Reads each hive's own `config.json` through
+/// [`collect_sealed_hives`](crate::mutation::port_boundary::collect_sealed_hives),
+/// the one reader that decides what a port name denotes (GH #196), so a slot
+/// findable here under a spelling the boundary seals shut cannot happen. A hive
+/// whose config is missing or unparsable contributes nothing — the same silence
+/// that reader already keeps, and the boot reports such a tree on its own.
+#[must_use]
+pub fn declared_slot_endpoints(
+    root: &std::path::Path,
+    plan: &BootstrapPlan,
+) -> std::collections::HashSet<String> {
+    let sealed = crate::mutation::port_boundary::collect_sealed_hives(
+        root,
+        plan.hives.iter().map(|h| &h.path),
+    );
+    // The address rule itself lives next to the reader, because the mutation
+    // edge check (GH #285, second half) asks the SAME question of the hives the
+    // colony is running — and two spellings of "hive path plus one segment" is
+    // how a slot becomes wireable at boot and unknown at mutation time.
+    crate::mutation::port_boundary::slot_endpoint_addresses(&sealed)
 }
 
 /// Top-level bootstrap entry point: plan-phase then apply-phase.
@@ -606,6 +651,17 @@ pub async fn bootstrap_from_filesystem_with_env(
              contract (`meclaw --validate --validate-strict` lists these before a boot)"
         );
     }
+    // GH #283 (ruling Q1 2026-08-21): the plan's advisories — hints about the
+    // topology this boot will run, said out loud and nothing more. Warned
+    // beside the two channels above and NOT promoted anywhere: an unguarded
+    // default is a legal topology, and the boot that finds one starts.
+    for advisory in &plan.advisories {
+        tracing::warn!(
+            advisory = %advisory,
+            "topology advisory — the colony starts; this is a hint about a shape that is \
+             usually not what the author meant, not a defect"
+        );
+    }
     // A8 (Phase-16 W1a, Ruling 2026-06-12): boot endpoint-existence check
     // against the LIVE colony — plan cells/hives ∪ already-live registry paths
     // (runtime-spawned sinks registered before bootstrap) ∪ `/colony/*`. An
@@ -624,7 +680,11 @@ pub async fn bootstrap_from_filesystem_with_env(
     let mut registry_paths = snapshot_registry_paths(runtime).await;
     registry_paths.extend(overlay.keys().map(|p| p.as_str().to_string()));
     registry_paths.extend(crate::bootstrap::registered_hive_paths(root));
-    let unresolved = unresolved_boot_endpoints(&plan, &registry_paths);
+    // GH #285: the third universe, and the only one that is not a node — a hive
+    // that declared a slot invited exactly this edge, and an address that may
+    // stand empty is the one thing the check above cannot infer from a tree.
+    let slot_endpoints = declared_slot_endpoints(root, &plan);
+    let unresolved = unresolved_boot_endpoints(&plan, &registry_paths, &slot_endpoints);
     if !unresolved.is_empty() {
         let mut errors = BootstrapErrors::new();
         for (edge_id, endpoint) in unresolved {
@@ -682,7 +742,23 @@ async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime:
     // caller's `set_hop.route` — so both halves read one and the same edge
     // view.
     let contracts = crate::mutation::hive_contract::collect_hive_contracts(root, hive_paths.iter());
-    let contract_edges: Vec<crate::mutation::hive_contract::BootEdge> = graph
+    let contract_edges = boot_edges_from_graph(&graph);
+    crate::mutation::required_drains::warn_on_missing_drains(&reqs, &contract_edges);
+    crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &contract_edges);
+}
+
+/// Project a `/colony/graph` answer into the edge view both boot probes read.
+///
+/// GH #283 widened the tuple by a fifth term, the routing phase, and GH #367
+/// filled it: `GraphEdgeDto` now names the phase, so the table these probes
+/// rebuild is the table the colony routes on. Before that the term was a
+/// literal `false` for every edge, which put a default edge into phase one —
+/// where it fires BESIDE the regular arms instead of after them — and both
+/// checks judged a topology that does not exist.
+pub fn boot_edges_from_graph(
+    graph: &crate::api_dto::ReadGraphReply,
+) -> Vec<crate::mutation::hive_contract::BootEdge> {
+    graph
         .edges
         .iter()
         .map(|e| {
@@ -691,11 +767,10 @@ async fn warn_on_declared_hive_rules_after_boot(root: &std::path::Path, runtime:
                 e.to.clone(),
                 e.condition.clone(),
                 e.modifier.clone(),
+                e.is_default,
             )
         })
-        .collect();
-    crate::mutation::required_drains::warn_on_missing_drains(&reqs, &contract_edges);
-    crate::mutation::hive_contract::warn_on_broken_contracts(&contracts, &contract_edges);
+        .collect()
 }
 
 /// Snapshot the set of registered node paths from the running colony (A8).
@@ -750,6 +825,7 @@ mod tests {
             to: Path::new(to),
             condition: None,
             modifier: None,
+            is_default: false,
         }
     }
 
@@ -785,8 +861,13 @@ mod tests {
             edges: vec![make_edge("/a", "/b")],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
-        let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let d = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert!(d.is_empty(), "no dangling endpoints expected, got {d:?}");
     }
 
@@ -802,8 +883,13 @@ mod tests {
             edges: vec![make_edge("/a", "/sink")],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
-        let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let d = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(d.len(), 1, "one dangling endpoint expected, got {d:?}");
         assert_eq!(d[0].1.as_str(), "/sink");
     }
@@ -819,8 +905,13 @@ mod tests {
             edges: vec![make_edge("/ghost", "/b")],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
-        let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let d = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(d.len(), 1, "one dangling endpoint expected, got {d:?}");
         assert_eq!(d[0].1.as_str(), "/ghost");
     }
@@ -836,8 +927,13 @@ mod tests {
             edges: vec![make_edge("/x", "/y")],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
-        let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let d = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(d.len(), 2, "two dangling endpoints expected, got {d:?}");
     }
 
@@ -858,8 +954,13 @@ mod tests {
             edges: vec![make_edge("/a", "/pool")],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
-        let d = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let d = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert!(
             d.is_empty(),
             "hive endpoint must not be dangling, got {d:?}"
@@ -885,10 +986,11 @@ mod tests {
             ],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
         let mut registry: HashSet<String> = HashSet::new();
         registry.insert("/sink".to_string());
-        let u = super::unresolved_boot_endpoints(&plan, &registry);
+        let u = super::unresolved_boot_endpoints(&plan, &registry, &HashSet::new());
         assert_eq!(u.len(), 1, "only /bogus must be unresolved, got {u:?}");
         assert_eq!(u[0].1.as_str(), "/bogus");
     }
@@ -928,7 +1030,11 @@ mod tests {
         assert_eq!(plan.edges[0].to.as_str(), "/sink");
 
         // dangling_edge_endpoints identifies /sink as dangling.
-        let dangling = super::unresolved_boot_endpoints(&plan, &std::collections::HashSet::new());
+        let dangling = super::unresolved_boot_endpoints(
+            &plan,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
         assert!(
             dangling.iter().any(|(_, ep)| ep.as_str() == "/sink"),
             "/sink must be identified as dangling, got {dangling:?}"
@@ -945,6 +1051,7 @@ mod tests {
             edges: vec![],
             unregistered_nodes: vec![],
             header_contract_findings: vec![],
+            advisories: vec![],
         };
         let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel(8);
         let (outputs_tx, _) = tokio::sync::mpsc::channel(8);

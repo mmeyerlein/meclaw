@@ -53,6 +53,17 @@ pub struct EdgeSpec {
     pub condition: Option<String>,
     /// Optional header modifier spec for this edge, kept as raw JSON.
     pub modifier: Option<serde_json::Value>,
+    /// GH #283: the edge's routing PHASE as the template declares it
+    /// (`"default": true`). A default edge is consulted only after every
+    /// ordinary out-edge of the same sender declined.
+    ///
+    /// Read here rather than at instantiation because this struct is the only
+    /// thing that survives the template walk — including the walk through a
+    /// `ref`'d sub-template, which reaches the same
+    /// [`edge_spec_from_config`]. Without it a composition template's default
+    /// edge would be right in the template and an ordinary edge in every
+    /// instance.
+    pub is_default: bool,
 }
 
 /// Parsed representation of a SUBTREE template directory.
@@ -646,6 +657,9 @@ fn edge_spec_from_config(spec: ConfigEdgeSpec) -> EdgeSpec {
         modifier: spec
             .modifier
             .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null)),
+        // GH #283: the `default` key of the config edge, carried like any other
+        // edge property. `ConfigEdgeSpec` already type-checked it.
+        is_default: spec.is_default,
     }
 }
 
@@ -1193,6 +1207,8 @@ fn resolve_internal_edges(
                 to,
                 condition: spec.condition,
                 modifier: spec.modifier,
+                // GH #283: the phase travels with the edge, like its condition.
+                is_default: spec.is_default,
             });
         }
     }
@@ -1255,6 +1271,10 @@ pub struct ResolvedEdge {
     pub condition: Option<String>,
     /// Optional header modifier spec (raw JSON), kept verbatim.
     pub modifier: Option<serde_json::Value>,
+    /// GH #283: the declared routing phase, kept verbatim from the hive config
+    /// (`"default": true`). Resolution changes an edge's ENDPOINTS, never what
+    /// it means.
+    pub is_default: bool,
 }
 
 /// Result of staging one SUBTREE template instance into `.staging`.

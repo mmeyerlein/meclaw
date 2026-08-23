@@ -78,6 +78,49 @@ async fn colony_with_one_edge(td: &TempDir) -> ColonyHandle {
     h
 }
 
+/// Two edges between the SAME pair, differing in nothing but the phase: one
+/// regular, one default. GH #283 — this is the neighbourhood a migration
+/// produces, because the natural way to convert a live catch-all is to lay the
+/// default beside the unconditional edge it replaces and take the old one away
+/// afterwards.
+async fn colony_with_a_default_beside_a_regular_edge(td: &TempDir) -> ColonyHandle {
+    create_dir_all(td.path().join("main/a")).unwrap();
+    create_dir_all(td.path().join("main/b")).unwrap();
+    fs::write(
+        td.path().join("main/config.json"),
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
+            {"from":"/a","to":"/b"},
+            {"from":"/a","to":"/b","default":true}
+        ]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        td.path().join("main/a/config.json"),
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/b"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        td.path().join("main/b/config.json"),
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/a"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    )
+    .unwrap();
+    let h = ColonyHandle::new();
+    bootstrap_from_filesystem(td.path(), &factories_with_echo(), &h.runtime())
+        .await
+        .expect("bootstrap");
+    h
+}
+
+/// How many `/a -> /b` edges the graph currently carries.
+async fn edges_a_to_b(h: &ColonyHandle) -> usize {
+    read_graph_root(h)
+        .await
+        .edges
+        .iter()
+        .filter(|e| e.from == "/a" && e.to == "/b")
+        .count()
+}
+
 async fn mutate(h: &ColonyHandle, payload: meclaw_core::serde_json::Value) -> String {
     let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx
@@ -175,5 +218,75 @@ async fn removing_and_adding_unrelated_edges_still_does_both() {
         post.edges.iter().any(|e| e.from == "/b" && e.to == "/a"),
         "the new lane exists: {:?}",
         post.edges
+    );
+}
+
+/// GH #283 (W4 T4): with the phase part of the edge's identity, a `remove_edges`
+/// pattern can NAME one of the two edges between the pair.
+///
+/// The graph DTO does not carry the phase, so "which one survived" is proved by
+/// the validator instead of by inspection: after taking the default away, a
+/// second pattern naming the default hits nothing (`match_no_hit`), while a
+/// pattern naming the regular phase takes the survivor. Counting alone would
+/// pass with a predicate that ignores the flag and removes whichever edge it
+/// reaches first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_edges_can_name_the_default_beside_the_regular_edge() {
+    let td = TempDir::new().unwrap();
+    let h = colony_with_a_default_beside_a_regular_edge(&td).await;
+    assert_eq!(
+        edges_a_to_b(&h).await,
+        2,
+        "boot lays BOTH: same from/to/condition/modifier, different phase"
+    );
+
+    let take_default = json!({"scope": "/", "diff": {
+        "remove_edges": [{"match": {"from": "a", "to": "b", "default": true}}]
+    }});
+    let take_regular = json!({"scope": "/", "diff": {
+        "remove_edges": [{"match": {"from": "a", "to": "b", "default": false}}]
+    }});
+
+    let outcome = mutate(&h, take_default.clone()).await;
+    assert!(outcome.contains("Committed"), "{outcome}");
+    assert_eq!(
+        edges_a_to_b(&h).await,
+        1,
+        "the pattern named ONE of the two, not both"
+    );
+
+    // The default is the one that is gone …
+    let again = mutate(&h, take_default).await;
+    assert!(
+        again.contains("match_no_hit"),
+        "naming the default again hits nothing — it is the edge that was taken: {again}"
+    );
+    // … and the survivor is the regular edge.
+    let last = mutate(&h, take_regular).await;
+    assert!(last.contains("Committed"), "{last}");
+    assert_eq!(edges_a_to_b(&h).await, 0, "and now the pair is unwired");
+}
+
+/// GH #283 (W4 T4): `match.default` is OPTIONAL, and its absence means
+/// unconstrained — the same rule `condition` and `modifier` already follow. A
+/// pattern that does not name the phase takes both edges between the pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remove_edges_pattern_without_default_still_takes_both() {
+    let td = TempDir::new().unwrap();
+    let h = colony_with_a_default_beside_a_regular_edge(&td).await;
+    assert_eq!(edges_a_to_b(&h).await, 2);
+
+    let outcome = mutate(
+        &h,
+        json!({"scope": "/", "diff": {
+            "remove_edges": [{"match": {"from": "a", "to": "b"}}]
+        }}),
+    )
+    .await;
+    assert!(outcome.contains("Committed"), "{outcome}");
+    assert_eq!(
+        edges_a_to_b(&h).await,
+        0,
+        "no `default` key → the phase is unconstrained → both edges go"
     );
 }

@@ -190,6 +190,10 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
@@ -201,8 +205,16 @@
           "type": "number",
           "required": false
         },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
         "error_code": {
           "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
           "required": false
         }
       }
@@ -223,7 +235,7 @@
     "purpose": "The single durable surface of the hive: the three-level memory ladder (episodes -> facts/entities/edges -> beliefs) with bi-temporal validity, plus the embedding generations, the three identity dimensions of a fact (canonical_subject + canonical_predicate + canonical_claim, each with its own store-owned alias table and its own refusal log), the judged cardinality of a relation (predicate_cardinality) and the four machine tables the lanes keep their state in (pending_extraction, consolidation_log, recall_scratch, scratch). Every durable row also carries WHO may be told about it: `episodes` hold the participant set of the turn (plus who spoke and in which channel), `facts` and `entity_edges` inherit it from their episode, and `beliefs`/`skills` carry the intersection of their sources' (#244). `entities` deliberately carries none -- an entity is reached through edges and facts, and those are filtered.",
     "use_when": "Every lane of the hive writes and reads here; no cell keeps private state (code cells have none by design).",
     "not_in_scope": "No joins and no aggregates -- the op dispatcher has neither. The graph and vector legs DO run here (`traverse` and `similar` are shipped store ops), which is the reason the recall fusion is store work and not a walk in a script. Nothing is ever deleted: supersession sets expired_at + superseded_by, belief retraction sets active=0. FTS indexes exist only for tables declared in params.schema — a table created at runtime via create_table cannot carry one. Alias resolution is ONE hop and never transitive: whoever writes an alias writes it already resolved. alias_candidates only PROPOSES pairs; nothing in the store ever merges two entities on similarity. reject_pair records a refusal, it never touches a fact.",
-    "emits_meaning": "messages[]: one tool_result per op; select and search return the projected row array as JSON text, search adds a bm25 `rank` per row (smaller is better). hop.operation drives the lane state machines, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another worker won), hop.error_code surfaces SQL failures as normal results.",
+    "emits_meaning": "messages[]: one tool_result per op; select and search return the projected row array as JSON text, search adds a bm25 `rank` per row (smaller is better). hop.operation drives the lane state machines, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another worker won), hop.error_code surfaces SQL failures as normal results, hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
     "consumes_meaning": "messages[]: tool_call turns with store-native args {operation, table, ...}; select and search need an explicit columns array. where accepts comparison operators (eq/neq/lt/lte/gt/gte/in/is_null/or_null) besides bare equality, plus order_by, limit and (select only) distinct — the last one answers a SET question at the store, so a caller that wants the axes a table carries rather than its rows pays for the axes; under distinct every order_by column has to be projected, else the prefix a limit returns would not be defined. set_alias, reject_pair, canonicalize and alias_candidates name the BOUND table (facts), never the alias table — the binding in params.canonical resolves the rest; a table with two bindings needs `column` (the binding's SOURCE column) to say which dimension is meant, and canonicalize without it re-derives every dimension. The lane that a reply belongs to is carried by context.store_origin ('episode' | 'extract' | 'inline' | 'recall' | 'dream'), promoted by the edge that sent the op.",
     "examples": [
       "{operation: insert, table: episodes, row: {...}} -> tool_result 'ok', hop {operation: 'insert', rows_affected: 1}",

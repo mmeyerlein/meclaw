@@ -39,6 +39,10 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
@@ -50,8 +54,16 @@
           "type": "number",
           "required": false
         },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
         "error_code": {
           "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
           "required": false
         }
       }
@@ -72,7 +84,7 @@
     "purpose": "The state surfaces of one agent's context assembly: `turns` is the rolling conversation (both user and assistant turns, session-scoped, id lexicographically time-ordered, with a `deferred` lifecycle stamp for mid-round turns - the turns-table sibling of round.fired, never content - and a `consult_id` on the rows that came in as an advisor event, which is the correlation the model is shown so it can answer the RIGHT open question), `round` is the per-turn fan-in slate that carries the assembled legs (leg-window, leg-memory) and the tool round (assistant tool_call turns, tool results) with the fired flag both guards read. Both carry `session_id`, because the same two tables are also the record of a session until it closes: then they are read back whole, and the delivery is booked in `batched` - the ledger the prune lane trusts.",
     "use_when": "One per collector hive. No other cell writes here; code cells own no state, so the assembly state machine keeps all of its state in this store.",
     "not_in_scope": "No durable memory of its own. The rolling window is short-term working state and is cut at READ time (order by id desc, limit N); the durable record of a closed session leaves with the write batch, and what of it is worth remembering is decided by whoever receives that batch, never here. Deletes happen only on the collector's evidence-gated prune chain (GH #76): sessions the `batched` ledger names as delivered and aged, cut up to their close boundary - never a cap, never a schedule of this store's own. No FTS, no vectors, no canonical bindings: nothing here is retrieved by similarity, it is retrieved by recency.",
-    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the assembly state machine, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another emission won the race and this one is terminal).",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the assembly state machine, hop.rows_affected carries the RMW guard signal (a guarded update that affected 0 rows means another emission won the race and this one is terminal). hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
     "consumes_meaning": "messages[]: tool_call turns with store-native args. The lane a reply belongs to is carried by context.store_origin ('collector'), the step by context.col_phase, both promoted by the edge that sent the op.",
     "examples": [
       "{operation: insert, table: turns, row: {id, session_id, turn_id, role: 'user', content, recorded_at}} -> the turn is in the window before the window is read",

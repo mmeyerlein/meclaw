@@ -169,6 +169,10 @@ pub enum ColonyWriteOp {
         /// Phase-13.5 durable edges: ModifierSpec as a JSON string (set+delete).
         /// `None` = the edge has no modifier (identity headers).
         modifier: Option<String>,
+        /// GH #283: the edge's routing phase. `true` = a default, consulted only
+        /// after every regular out-edge of the same sender declined. Persisted as
+        /// `edges.is_default` (schema v7) so a reboot rehydrates the phase.
+        is_default: bool,
     },
     /// Phase 6 T21: delete an edge row by id (fire-and-forget; durable via FIFO).
     RemoveEdge {
@@ -450,9 +454,9 @@ fn apply_op(
                     .as_ref()
                     .and_then(|m| meclaw_core::serde_json::to_string(&m.source).ok());
                 tx.execute(
-                    "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier) \
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                    rusqlite::params![e.id.to_string(), e.from.as_str(), e.to.as_str(), now, condition, modifier],
+                    "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![e.id.to_string(), e.from.as_str(), e.to.as_str(), now, condition, modifier, e.is_default],
                 )?;
             }
             // Bootstrap-Recovery: clear the in-flight marker in the SAME
@@ -596,11 +600,12 @@ fn apply_op(
             created_at,
             condition,
             modifier,
+            is_default,
         } => {
             tx.execute(
-                "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-                rusqlite::params![id, from, to, created_at, condition, modifier],
+                "INSERT OR IGNORE INTO edges (id, from_path, to_path, created_at, condition, modifier, is_default) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![id, from, to, created_at, condition, modifier, is_default],
             )?;
         }
         ColonyWriteOp::RemoveEdge { id } => {
@@ -1070,6 +1075,7 @@ mod tests {
                 created_at: 0,
                 condition: Some("hop.kind == 'text'".into()),
                 modifier: Some(r#"{"set_hop":{"tier":"'gold'"}}"#.into()),
+                is_default: false,
             },
             &mut Vec::new(),
             &mut Vec::new(),
@@ -1085,6 +1091,44 @@ mod tests {
             .unwrap();
         assert_eq!(c.as_deref(), Some("hop.kind == 'text'"));
         assert_eq!(m.as_deref(), Some(r#"{"set_hop":{"tier":"'gold'"}}"#));
+    }
+
+    /// GH #283 — `InsertEdge` persists the routing phase, both ways round.
+    ///
+    /// The write path is what a mutation-added default depends on: `true` has
+    /// to reach the `edges.is_default` column as `1`, and `false` as `0` —
+    /// an edge silently written as the wrong phase would route differently
+    /// after the next reboot than it did before it.
+    #[test]
+    fn insert_edge_persists_the_default_phase() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::schema::setup_colony_db(&conn).unwrap();
+        for (path, is_default, expected) in [("/plain", false, 0i64), ("/fallback", true, 1i64)] {
+            let id = meclaw_core::Uuid::now_v7().to_string();
+            let tx = conn.unchecked_transaction().unwrap();
+            apply_op(
+                &tx,
+                ColonyWriteOp::InsertEdge {
+                    id: id.clone(),
+                    from: "/a".into(),
+                    to: path.into(),
+                    created_at: 0,
+                    condition: None,
+                    modifier: None,
+                    is_default,
+                },
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .expect("apply_op in test");
+            tx.commit().unwrap();
+            let got: i64 = conn
+                .query_row("SELECT is_default FROM edges WHERE id = ?", [&id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(got, expected, "edge to {path} persisted the wrong phase");
+        }
     }
 
     /// Phase-13.5 Lifecycle-3b Task 1.3 — `SetRegistryStatus` does an UPDATE-only
@@ -1354,6 +1398,7 @@ mod tests {
             to: meclaw_core::Path::new("/b"),
             condition: Some(crate::cel_eval::parse_condition("hop.kind == 'text'").unwrap()),
             modifier: Some(crate::cel_eval::parse_modifier(&spec).unwrap()),
+            is_default: false,
         };
         let id_str = edge.id.to_string();
 

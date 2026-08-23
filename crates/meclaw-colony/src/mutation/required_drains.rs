@@ -484,7 +484,7 @@ pub fn warn_on_missing_drains(
         return;
     }
     let mut table = EdgeTable::new();
-    for (from, to, cond, modifier) in edges {
+    for (from, to, cond, modifier, is_default) in edges {
         let condition = match cond {
             None => None,
             Some(src) => match crate::cel_eval::parse_condition(src) {
@@ -510,6 +510,10 @@ pub fn warn_on_missing_drains(
             to: Path::new(to),
             condition,
             modifier,
+            // GH #283: the phase, as the fifth term of the same tuple the
+            // contract check reads (`BootEdge`) — the two halves judge one and
+            // the same table.
+            is_default: *is_default,
         });
     }
     for req in reqs {
@@ -574,6 +578,7 @@ mod tests {
             condition: condition
                 .map(|c| crate::cel_eval::parse_condition(c).expect("test condition parses")),
             modifier: None,
+            is_default: false,
         }
     }
 

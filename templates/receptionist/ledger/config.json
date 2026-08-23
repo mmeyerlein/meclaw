@@ -20,6 +20,10 @@
         "messages": {
           "type": "array",
           "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
@@ -31,8 +35,16 @@
           "type": "number",
           "required": false
         },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
         "error_code": {
           "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
           "required": false
         }
       }
@@ -53,7 +65,7 @@
     "purpose": "The channel register of the reception: one row per channel that has ever spoken, naming the talky instance it owns. It answers exactly one question -- does this channel already have an agent -- and holds nothing else.",
     "use_when": "One per receptionist hive. The greet cell writes here and nowhere else; code cells own no state, so all of it lives in this store.",
     "not_in_scope": "No conversation, no session state, no per-turn bookkeeping: what a channel SAID belongs to its talky's collector, which generation it is in belongs to its keeper. No deletes -- a channel that fell silent keeps its row, and that is what makes the lookup idempotent.",
-    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the dispatch of the reply; an empty select result is the whole definition of an unknown channel.",
+    "emits_meaning": "messages[]: one tool_result per op. hop.operation drives the dispatch of the reply; an empty select result is the whole definition of an unknown channel. hop.duration_ms is what that reply cost in milliseconds. A bundle reply (two or more tool_call turns, GH #295) stamps hop.operation 'bundle', sums hop.rows_affected over its legs and adds hop.bundle_errors: how many legs carry an error_code. That key is present on every bundle reply, 0 included, and never on a single-operation reply -- it is what an edge reads to see that one leg failed without opening the body, while hop.error_code keeps its hard meaning (the WHOLE reply is a refusal). results[]: the per-operation metadata of that same bundle reply, one entry per leg in call order -- {tool_call_id, operation, rows_affected, duration_ms} plus error_code if that one leg failed. It is a top-level body slot and not a key on the turn because a tool_result turn stays schema-pure ({origin, type, text, id}; ubf-body.json $defs/TurnObject is additionalProperties:false, so a metadata key there would dead-letter the whole reply), and tool_call_id is what ties an entry back to its turn. Like bundle_errors the slot exists only on a bundle reply -- a single-operation reply carries messages[] alone.",
     "consumes_meaning": "messages[]: tool_call turns with store-native args. That a reply belongs to the greet pass is carried by context.rec_origin, the step by context.rec_phase, both promoted by the edge that sent the op.",
     "examples": [
       "{operation: select, table: channels, columns: [...], where: {channel}, limit: 1} -> the talky a channel already owns, or nothing",

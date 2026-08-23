@@ -1,8 +1,8 @@
 {
   "name": "talky",
-  "version": "3.0.13",
+  "version": "3.0.14",
   "description": {
-    "purpose": "Composite agent: one hive that references session-keeper@2.0.3, collector@2.1.1, dispatcher@1.0.1 and summarizer@2.0.1 as sub-units plus an llm brain slot, with every internal edge pre-wired -- the stamp promotion, the seam into the brain, the dispatcher lanes, the loopback with restore_ttl and its iteration bound, the close path, the write fan-out and the system.handover return. The topology the Egon rollout wired by hand, as one add_nodes.",
+    "purpose": "Composite agent: one hive that references session-keeper@2.0.4, collector@2.1.2, dispatcher@1.0.1 and summarizer@2.0.1 as sub-units plus an llm brain slot, with every internal edge pre-wired -- the stamp promotion, the seam into the brain, the dispatcher lanes, the loopback with restore_ttl and its iteration bound, the close path, the write fan-out and the system.handover return. The topology the Egon rollout wired by hand, as one add_nodes.",
     "use_when": "Whenever a colony needs a conversational agent that remembers its own session: a chat surface, a phone line, an operator console. Instantiate via add_nodes AND wire the four ports via add_edges IN THE SAME MUTATION - the composite is edge-connected from apply on (no island dance). Instantiation needs ctx.model (a RESOLVED literal, K-H2 lane B).",
     "not_in_scope": "No tool cells - the tool set is the per-agent choice and its lanes are wired per instance on hop.tool_name. No memory hive, no surface proxy, no drain cell, no persona: the write target, the recall port, the reply sink and where errors land are all the parent tree's decision.",
     "examples": [

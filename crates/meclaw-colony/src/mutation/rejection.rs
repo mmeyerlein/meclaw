@@ -91,9 +91,26 @@ pub struct Violation {
     /// The human-readable message — the payload the `MutationError` carries.
     pub message: String,
     /// The contract's own reason string, travelling verbatim into the refusal
-    /// (`required_drains[].because`, `LaneSpec.because`). Present in the
-    /// message too; carried separately so a structured reader need not parse
-    /// prose.
+    /// (`required_drains[].because`, `LaneSpec.because`), carried structurally
+    /// so a reader need not parse it back out of prose.
+    ///
+    /// **The sentence appears exactly once in a rendered line, and this field
+    /// decides where.** [`Violation::render`] appends it, so a producer that
+    /// fills this field must NOT also interpolate it into `message` — that put
+    /// the sentence twice into every line, and for a long `because` (the
+    /// shipped `memory-hive` `in_query` lane runs to ~1.4 kB) the duplicate
+    /// buries what the line is actually for. A producer that leaves this field
+    /// `None` is the other half of the same rule: nothing will append the
+    /// sentence for it, so if it has one it belongs inline in `message` (see
+    /// `validate::requirement_missing`, whose stage-3 violations are built with
+    /// [`Violation::from_error`] and carry no structured `because`).
+    ///
+    /// One producer predates the rule and still breaks it:
+    /// `required_drains::unmet` interpolates `— {because}` into its message
+    /// while `collect_drain_violations` also fills this field, so its rendered
+    /// lines carry the sentence twice. It is left alone here on purpose — changing it is a
+    /// change to a different rule's shipped message format (GH #147 / #237),
+    /// and it belongs in that strand rather than riding along in this one.
     pub because: Option<String>,
 }
 

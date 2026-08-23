@@ -82,6 +82,11 @@ struct PostStateEdge {
     /// component and `EdgeMatchView::modifier_source`. Stays valid across the
     /// swap arm (which only rewrites endpoints, never the modifier).
     modifier_json: Option<serde_json::Value>,
+    /// GH #283 — the edge's routing phase (`edge.is_default` for live edges).
+    /// The fifth identity term, so the dedup and the `remove_edges` predicate
+    /// below keep mirroring `EdgeTable::contains_equal` /
+    /// `remove_edges_pattern_hits` exactly.
+    is_default: bool,
 }
 
 impl PostStateEdge {
@@ -92,6 +97,7 @@ impl PostStateEdge {
         to: String,
         condition_source: Option<String>,
         modifier: Option<ModifierSpec>,
+        is_default: bool,
     ) -> Self {
         let modifier_json = modifier_json(modifier.as_ref());
         Self {
@@ -100,18 +106,21 @@ impl PostStateEdge {
             condition_source,
             modifier,
             modifier_json,
+            is_default,
         }
     }
 
     /// Build the F6 match-view for [`remove_edges_pattern_hits`] — identical
     /// to `EdgeMatchView::from(&Edge)` for live-derived entries
-    /// (`modifier_source` = serde-JSON of the `ModifierSpec` source).
+    /// (`modifier_source` = serde-JSON of the `ModifierSpec` source,
+    /// `is_default` = the routing phase).
     fn match_view(&self) -> EdgeMatchView {
         EdgeMatchView {
             from: self.from.clone(),
             to: self.to.clone(),
             condition_source: self.condition_source.clone(),
             modifier_source: self.modifier_json.clone(),
+            is_default: self.is_default,
         }
     }
 }
@@ -124,14 +133,15 @@ fn modifier_json(m: Option<&ModifierSpec>) -> Option<serde_json::Value> {
 
 /// Append `edge` unless a content-equal edge is already present — mirrors the
 /// `EdgeTable::contains_equal` dedup the apply arms run before every insert
-/// (edge identity = from + to + condition source + modifier source, spec
-/// Z.265).
+/// (edge identity = from + to + condition source + modifier source + routing
+/// phase, spec Z.265 + GH #283).
 fn push_dedup(list: &mut Vec<PostStateEdge>, edge: PostStateEdge) {
     let duplicate = list.iter().any(|e| {
         e.from == edge.from
             && e.to == edge.to
             && e.condition_source == edge.condition_source
             && e.modifier_json == edge.modifier_json
+            && e.is_default == edge.is_default
     });
     if !duplicate {
         list.push(edge);
@@ -140,8 +150,9 @@ fn push_dedup(list: &mut Vec<PostStateEdge>, edge: PostStateEdge) {
 
 /// Project an optional [`ModifierSpec`] into the [`HeaderEdgeView`] key-sets
 /// the 14-B locality check consumes (`set_context.keys()`, `delete_context`,
-/// `set_hop.keys()`, `delete_hop` — same projection as the bootstrap walk).
-/// `None` yields empty key-sets (identity-header edge).
+/// `set_hop.keys()`, `delete_hop` — same projection as the bootstrap walk),
+/// plus the constant lane the edge states (`states_route`, GH #291).
+/// `None` yields empty key-sets and no stated route (identity-header edge).
 pub fn edge_view_from_modifier_spec(
     from: &str,
     to: &str,
@@ -157,6 +168,10 @@ pub fn edge_view_from_modifier_spec(
         view.delete_context = spec.delete_context.iter().cloned().collect();
         view.set_hop = spec.set_hop.keys().cloned().collect();
         view.delete_hop = spec.delete_hop.iter().cloned().collect();
+        view.states_route = spec
+            .set_hop
+            .get("route")
+            .and_then(|src| crate::mutation::hive_contract::constant_route(src));
     }
     view
 }
@@ -216,6 +231,7 @@ pub fn build_post_state_header_views(
                 e.to.as_str().to_string(),
                 e.condition.as_ref().map(|c| c.source.clone()),
                 e.modifier.as_ref().map(|cm| cm.source.clone()),
+                e.is_default,
             )
         })
         .collect();
@@ -306,11 +322,20 @@ pub fn build_post_state_header_views(
                             ))
                         })?),
                     };
+                    // GH #283 — the phase the TEMPLATE declared, carried the
+                    // way the apply arm carries it (`is_default:
+                    // edge.is_default` on the subtree-internal insert). Since
+                    // T5 `ResolvedEdge` has the field, and a literal `false`
+                    // here would make this mirror's `push_dedup` drop a
+                    // template-declared default laid beside a content-equal
+                    // regular edge that the apply arm does insert — validate
+                    // would then judge a post-state the colony never reaches.
                     subtree_edges.push(PostStateEdge::new(
                         re.from.as_str().to_string(),
                         re.to.as_str().to_string(),
                         re.condition,
                         spec,
+                        re.is_default,
                     ));
                 }
             } else {
@@ -471,6 +496,10 @@ pub fn build_post_state_header_views(
                 .and_then(|m| m.get("condition"))
                 .and_then(|v| v.as_str());
             let pat_modifier = r.get("match").and_then(|m| m.get("modifier"));
+            let pat_default = r
+                .get("match")
+                .and_then(|m| m.get("default"))
+                .and_then(|v| v.as_bool());
             let from_path = super::resolve_scoped_path(scope, from_name);
             let to_path = super::resolve_scoped_path(scope, to_name);
             post_edges.retain(|e| {
@@ -480,6 +509,7 @@ pub fn build_post_state_header_views(
                     to_path.as_str(),
                     pat_condition,
                     pat_modifier,
+                    pat_default,
                 )
             });
         }
@@ -510,9 +540,18 @@ pub fn build_post_state_header_views(
                     MutationError::Schema(format!("add_edges {from}->{to} modifier: {err}"))
                 })?),
             };
+            // GH #283 — the phase the entry declares, read the way the apply
+            // arm reads it (absent = regular; validate has already refused
+            // every non-boolean). Hardcoding `false` here was right only while
+            // the apply arm did the same: with the real flag on one side and a
+            // literal on the other, this mirror's `push_dedup` would drop a
+            // default laid beside a content-equal regular edge that the apply
+            // arm inserts — and the header-locality check would then judge a
+            // post-state the colony never reaches.
+            let is_default = e.get("default").and_then(|v| v.as_bool()).unwrap_or(false);
             push_dedup(
                 &mut post_edges,
-                PostStateEdge::new(from, to, condition_source, modifier),
+                PostStateEdge::new(from, to, condition_source, modifier, is_default),
             );
         }
     }
@@ -590,6 +629,7 @@ mod tests {
             to: Path::new(to),
             condition: condition.map(|c| crate::cel_eval::parse_condition(c).unwrap()),
             modifier: modifier.map(|m| crate::cel_eval::parse_modifier(&m).unwrap()),
+            is_default: false,
         }
     }
 
@@ -633,14 +673,46 @@ mod tests {
         assert!(v.delete_hop.is_empty());
     }
 
+    /// A `ModifierSpec` whose only `set_hop` key is `route`, carrying `src` as
+    /// its expression source.
+    fn route_spec(src: &str) -> ModifierSpec {
+        ModifierSpec {
+            set_hop: [("route".to_string(), src.to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn edge_view_from_modifier_spec_states_a_constant_route() {
+        let v = edge_view_from_modifier_spec("/a", "/b", Some(&route_spec("'in_query'")));
+        assert_eq!(v.states_route.as_deref(), Some("in_query"));
+    }
+
+    #[test]
+    fn edge_view_from_modifier_spec_states_no_route_for_an_expression() {
+        // Reads a message that does not exist yet — unknown, therefore
+        // unjudged (same reading as `hive_contract::constant_route`).
+        let v = edge_view_from_modifier_spec("/a", "/b", Some(&route_spec("hop.upstream_route")));
+        assert_eq!(v.states_route, None);
+    }
+
+    #[test]
+    fn edge_view_from_modifier_spec_without_modifier_states_no_route() {
+        let v = edge_view_from_modifier_spec("/a", "/b", None);
+        assert_eq!(v.states_route, None);
+    }
+
     // ── push_dedup ───────────────────────────────────────────────────────────
 
     #[test]
     fn push_dedup_suppresses_content_equal_edge() {
-        // Dedup identity = from + to + condition source + modifier JSON
-        // (spec Z.265, `EdgeTable::contains_equal` mirror).
+        // Dedup identity = from + to + condition source + modifier JSON +
+        // routing phase (spec Z.265 + GH #283, `EdgeTable::contains_equal`
+        // mirror).
         let mk = |m: Option<ModifierSpec>| {
-            PostStateEdge::new("/a".into(), "/b".into(), Some("true".into()), m)
+            PostStateEdge::new("/a".into(), "/b".into(), Some("true".into()), m, false)
         };
         let mut list: Vec<PostStateEdge> = Vec::new();
         push_dedup(&mut list, mk(Some(spec(&["k"], &[], &[], &[]))));
@@ -648,6 +720,21 @@ mod tests {
         assert_eq!(list.len(), 1, "content-equal edge must be suppressed");
         push_dedup(&mut list, mk(Some(spec(&["other"], &[], &[], &[]))));
         assert_eq!(list.len(), 2, "content-differing modifier is a new edge");
+        // GH #283: the phase alone separates two otherwise identical edges —
+        // the mirror agrees with `EdgeTable::contains_equal`.
+        let default_twin = PostStateEdge::new(
+            "/a".into(),
+            "/b".into(),
+            Some("true".into()),
+            Some(spec(&["k"], &[], &[], &[])),
+            true,
+        );
+        push_dedup(&mut list, default_twin);
+        assert_eq!(
+            list.len(),
+            3,
+            "a default edge beside an identical regular one is a SECOND edge"
+        );
     }
 
     // ── Live extraction ──────────────────────────────────────────────────────
@@ -1040,6 +1127,68 @@ mod tests {
         );
         // Positive locality proof: emits.hop h satisfies required hop h.
         assert!(validate_header_contract_locality(&nodes, &edge_views, &hives).is_ok());
+    }
+
+    /// GH #283 — the subtree mirror carries the DECLARED phase, so validate and
+    /// apply judge the same post-state.
+    ///
+    /// The template declares two internal edges that agree in `from`, `to`,
+    /// `condition` and `modifier` and differ ONLY in the phase. The apply arm
+    /// (`handle_mutation`, subtree-internal insert) inserts both, because
+    /// `EdgeTable::contains_equal` counts the phase as the fifth identity term
+    /// (T4). With a literal `false` in this mirror both entries collapsed into
+    /// one here, and the locality check ran over a graph the colony never
+    /// reaches. Two views is the whole claim; `HeaderEdgeView` carries no
+    /// phase, so the COUNT is what distinguishes the two readings.
+    #[test]
+    fn subtree_default_edge_is_not_deduped_against_its_regular_twin() {
+        let td = tempfile::TempDir::new().unwrap();
+        let tpl = td.path().join("templates/sub");
+        std::fs::create_dir_all(&tpl).unwrap();
+        std::fs::write(tpl.join("template.json"), r#"{"name":"sub"}"#).unwrap();
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},
+                "params":{"graph":{"edges":[
+                    {"from":"./inner_a","to":"./inner_b"},
+                    {"from":"./inner_a","to":"./inner_b","default":true}
+                ]}}}"#,
+        )
+        .unwrap();
+        for inner in ["inner_a", "inner_b"] {
+            std::fs::create_dir_all(tpl.join(inner)).unwrap();
+            std::fs::write(
+                tpl.join(inner).join("config.json"),
+                r#"{"cell":{"type":"echo"}}"#,
+            )
+            .unwrap();
+        }
+        let templates = TemplatesRegistry::from_entries(vec![TemplateEntry {
+            template_id: "t1".into(),
+            name: "sub".into(),
+            version: None,
+            filesystem_path: tpl,
+        }]);
+        let diff = json!({"add_nodes": [{"name": "m1", "template": "sub"}]});
+        let (_nodes, edge_views, _hives) = build_post_state_header_views(
+            &HashMap::new(),
+            &table(vec![]),
+            &diff,
+            "/main",
+            &templates,
+            &no_hives(),
+        )
+        .unwrap();
+        assert_eq!(
+            edge_views.len(),
+            2,
+            "the default and its regular twin are two edges the apply arm \
+             inserts, so the mirror holds two: {edge_views:?}"
+        );
+        for view in &edge_views {
+            assert_eq!(view.from, "/main/m1/inner_a");
+            assert_eq!(view.to, "/main/m1/inner_b");
+        }
     }
 
     // ── F1: hive-transit participation (mutation-path twin) ─────────────────

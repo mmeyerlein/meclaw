@@ -1,4 +1,4 @@
-# `steward@2.0.6`
+# `steward@2.0.7`
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.

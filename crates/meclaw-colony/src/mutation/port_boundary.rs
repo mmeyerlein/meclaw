@@ -66,6 +66,16 @@ pub struct SealedHive {
     /// reported and dropped at read. May be empty ("the hive path itself is the
     /// only address").
     pub ports: Vec<String>,
+    /// GH #285 — the subset of [`ports`](Self::ports) that was declared a SLOT,
+    /// with what an arriving message meets there while nothing is bound behind
+    /// it.
+    ///
+    /// A slot is in BOTH lists on purpose: to this boundary a slot is a port,
+    /// because an edge onto it is the edge the slot exists for and not an edge
+    /// "past the port". The second list carries the one fact a plain port does
+    /// not have — and it is a fact about the slot's INSIDE, which the boundary
+    /// itself never consults. Names are canonical, exactly as in `ports`.
+    pub slots: Vec<(String, crate::config::UnboundBehaviour)>,
 }
 
 impl SealedHive {
@@ -319,9 +329,20 @@ pub fn collect_sealed_hives<'a>(
         };
         if let Some(ports) = hp.ports {
             let mut canonical = Vec::with_capacity(ports.len());
-            for raw in &ports {
+            let mut slots = Vec::new();
+            for spec in &ports {
+                let raw = spec.name();
                 match canonical_port_name(raw) {
-                    Some(name) => canonical.push(name.to_string()),
+                    Some(name) => {
+                        canonical.push(name.to_string());
+                        // GH #285: a slot is a port AND a slot. The behaviour
+                        // rides on the canonical name so both lists name the
+                        // same node — a slot findable under one spelling and
+                        // sealed under the other is #196 all over again.
+                        if let crate::config::PortSpec::Slot { unbound, .. } = spec {
+                            slots.push((name.to_string(), *unbound));
+                        }
+                    }
                     // GH #196: loud, not inert. A declaration nobody could
                     // match sealed two shipped templates shut in silence, and
                     // the same silence is what `required_drains` produced for
@@ -340,7 +361,54 @@ pub fn collect_sealed_hives<'a>(
             out.push(SealedHive {
                 path: s.to_string(),
                 ports: canonical,
+                slots,
             });
+        }
+    }
+    out
+}
+
+/// GH #285 — the ABSOLUTE addresses the given hives declared as slots.
+///
+/// One derivation, two readers: the boot check
+/// ([`crate::declared_slot_endpoints`], which plans the tree first) and the
+/// mutation edge check (which asks the hives the colony is running right now).
+/// Both need "hive path plus one segment" and both need it to mean the same
+/// node — a second copy of the prefix rule is how a slot becomes wireable at
+/// boot and unknown at mutation time, or the reverse.
+///
+/// Names arrive canonical from [`collect_sealed_hives`], so the address is the
+/// hive path plus the short name; the root scope is the one path that already
+/// ends in the separator (and it is never sealed, so it never contributes).
+#[must_use]
+pub(crate) fn slot_endpoint_addresses(sealed: &[SealedHive]) -> std::collections::HashSet<String> {
+    slot_unbound_behaviours(sealed)
+        .into_iter()
+        .map(|(address, _)| address)
+        .collect()
+}
+
+/// GH #285 (W4 T11) — the same addresses [`slot_endpoint_addresses`] forms,
+/// each paired with the behaviour its hive declared for the UNBOUND state.
+///
+/// The delivery sites need the pair: an address alone answers "may an edge end
+/// here", and only the word answers "and what happens to the message that
+/// arrives while nothing does". Both readers share this one derivation for the
+/// reason named above — an address the edge check knows and the delivery filter
+/// spells differently is a slot that is wireable and then behaves like a typo.
+#[must_use]
+pub(crate) fn slot_unbound_behaviours(
+    sealed: &[SealedHive],
+) -> Vec<(String, crate::config::UnboundBehaviour)> {
+    let mut out = Vec::new();
+    for hive in sealed {
+        let prefix = if hive.path == "/" {
+            String::from("/")
+        } else {
+            format!("{}/", hive.path)
+        };
+        for (name, unbound) in &hive.slots {
+            out.push((format!("{prefix}{name}"), *unbound));
         }
     }
     out
@@ -355,6 +423,7 @@ mod tests {
         vec![SealedHive {
             path: "/aff".into(),
             ports: vec!["brief".into(), "gate".into()],
+            slots: vec![],
         }]
     }
 
@@ -445,6 +514,7 @@ mod tests {
         let sealed = vec![SealedHive {
             path: "/aff".into(),
             ports: vec![],
+            slots: vec![],
         }];
         assert!(validate_hive_port_boundary(&edge("./caller", "./aff"), "/", &sealed).is_ok());
         let err = validate_hive_port_boundary(&edge("./caller", "./aff/brief"), "/", &sealed)
@@ -464,6 +534,7 @@ mod tests {
             &[SealedHive {
                 path: "/sub/aff".into(),
                 ports: vec!["brief".into()],
+                slots: vec![],
             }],
         )
         .expect_err("nested hive is sealed too");
@@ -515,6 +586,7 @@ mod tests {
             vec![SealedHive {
                 path: "/aff".into(),
                 ports: vec!["brief".into(), "gate".into()],
+                slots: vec![],
             }],
             "both spellings land on one short name"
         );
@@ -543,6 +615,7 @@ mod tests {
             vec![SealedHive {
                 path: "/aff".into(),
                 ports: vec!["gate".into()],
+                slots: vec![],
             }],
             "only the entry that can match survives, and the hive stays sealed"
         );
@@ -591,8 +664,83 @@ mod tests {
             vec![SealedHive {
                 path: "/aff".into(),
                 ports: vec!["brief".into(), "gate".into()],
+                slots: vec![],
             }],
             "only the hive that declared ports is sealed"
+        );
+    }
+
+    /// GH #285: a declared slot IS a port of this boundary. It appears in
+    /// `ports` like any other, because an edge onto a slot is not an edge "past
+    /// the port" — it is the edge the slot exists for. What the slot adds is a
+    /// second fact, in `slots`: what a message meets there while nothing is
+    /// bound behind it.
+    #[test]
+    fn collect_reads_a_slot_as_a_port_and_remembers_its_unbound_behaviour() {
+        use crate::config::UnboundBehaviour;
+
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("main/aff")).unwrap();
+        std::fs::write(
+            root.join("main/aff/config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"ports":[
+                 "brief",
+                 {"name": "gen", "slot": true, "unbound": "park"}
+               ]}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+
+        let paths = [meclaw_core::Path::new("/aff")];
+        let got = collect_sealed_hives(root, paths.iter());
+        assert_eq!(
+            got,
+            vec![SealedHive {
+                path: "/aff".into(),
+                ports: vec!["brief".into(), "gen".into()],
+                slots: vec![("gen".into(), UnboundBehaviour::Park)],
+            }],
+            "a slot is a port for the boundary, and a slot besides"
+        );
+
+        // And that is not a statement about a list: the real boundary lets an
+        // outside edge land on the slot.
+        assert!(validate_hive_port_boundary(&edge("./caller", "./aff/gen"), "/", &got).is_ok());
+        assert_eq!(
+            validate_hive_port_boundary(&edge("./caller", "./aff/store"), "/", &got)
+                .expect_err("a non-port child stays sealed")
+                .error_code(),
+            "hive_port_boundary"
+        );
+    }
+
+    /// A slot written with the canonical `./` prefix lands on the same short
+    /// name in BOTH lists — one canonicalisation, applied once (GH #196/#285).
+    #[test]
+    fn collect_canonicalises_a_slot_name_like_any_other_port() {
+        use crate::config::UnboundBehaviour;
+
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        std::fs::create_dir_all(root.join("main/aff")).unwrap();
+        std::fs::write(
+            root.join("main/aff/config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"ports":[
+                 {"name": "./gen", "slot": true, "unbound": "error"}
+               ]}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("main/config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+
+        let paths = [meclaw_core::Path::new("/aff")];
+        assert_eq!(
+            collect_sealed_hives(root, paths.iter()),
+            vec![SealedHive {
+                path: "/aff".into(),
+                ports: vec!["gen".into()],
+                slots: vec![("gen".into(), UnboundBehaviour::Error)],
+            }]
         );
     }
 }

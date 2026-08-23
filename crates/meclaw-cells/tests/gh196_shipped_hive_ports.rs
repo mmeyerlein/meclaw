@@ -21,8 +21,10 @@
 //! read by `collect_sealed_hives`, and the question asked of every entry is the
 //! only one that matters: does an edge from outside reach the child it names?
 
-use meclaw_colony::config::HiveParams;
-use meclaw_colony::mutation::port_boundary::{collect_sealed_hives, validate_hive_port_boundary};
+use meclaw_colony::config::{HiveParams, PortSpec};
+use meclaw_colony::mutation::port_boundary::{
+    SealedHive, collect_sealed_hives, validate_hive_port_boundary,
+};
 use meclaw_core::serde_json::{Value, json};
 
 /// Where the synthetic hive lives while it is being checked. Any path does; what
@@ -37,7 +39,7 @@ fn templates_root() -> std::path::PathBuf {
 /// root, and let the substrate's own reader say what ports it sees. Only
 /// `config.json` is needed: that file IS the declaration, and reading it per
 /// mutation is how a live colony learns a hive's boundary.
-fn ports_the_substrate_reads(config: &std::path::Path) -> Vec<String> {
+fn seal_the_substrate_reads(config: &std::path::Path) -> SealedHive {
     let td = tempfile::TempDir::new().unwrap();
     let root = td.path();
     std::fs::create_dir_all(root.join("main/h")).unwrap();
@@ -51,7 +53,7 @@ fn ports_the_substrate_reads(config: &std::path::Path) -> Vec<String> {
         "{}: the reader saw no seal",
         config.display()
     );
-    sealed.remove(0).ports
+    sealed.remove(0)
 }
 
 /// Every hive `config.json` in the shipped tree that declared `params.ports`:
@@ -76,8 +78,9 @@ struct Shipped {
     name: String,
     /// The declaration itself, as the substrate would read it.
     config: std::path::PathBuf,
-    /// Entries exactly as the file spells them.
-    declared: Vec<String>,
+    /// Entries exactly as the file spells them — a plain name or, since GH
+    /// #285, a slot object. Either way one entry is one port.
+    declared: Vec<PortSpec>,
     /// Short names of the child directories instantiation would copy along.
     children: Vec<String>,
 }
@@ -145,10 +148,7 @@ fn every_declared_port_opens_a_door_of_the_template_that_declares_it() {
         // the same question has a sharper answer there — the boundary must open
         // ZERO doors, so a hive that quietly regained an interior address is
         // caught by the same assertion rather than by a second one.
-        let sealed = vec![meclaw_colony::mutation::port_boundary::SealedHive {
-            path: HIVE.into(),
-            ports: ports_the_substrate_reads(&t.config),
-        }];
+        let sealed = vec![seal_the_substrate_reads(&t.config)];
         // Which children does the boundary actually let an outside edge reach?
         // An edge onto a port is legal; onto anything else inside the hive it is
         // a `hive_port_boundary` reject. Counting the doors is the only question

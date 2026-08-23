@@ -8,14 +8,17 @@
       "accepts": [
         {
           "route": "in_turn",
-          "because": "a question for this agent core -- a consult or a lookup; context.consult_class picks the model tier"
+          "context": [],
+          "because": "a question for this agent core -- a consult or a lookup. `context.consult_class` picks the model tier when the caller promotes it; without it the default tier answers, so the lane demands no context of its own"
         },
         {
           "route": "in_tool",
+          "context": [],
           "because": "one tool result, coming back from a tool cell the parent wired. The core runs its OWN tool round, so the round is only closable if the results can come home"
         },
         {
           "route": "in_bundle",
+          "context": [],
           "because": "a memory bundle, coming back from whatever keeps this agent's memory. R-CG-1 moved the memory leg off the talkies onto this collector, so this is the lane its answer arrives on"
         }
       ],
