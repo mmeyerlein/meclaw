@@ -233,7 +233,12 @@ fn the_turn_chain_asks_for_open_rounds_before_it_reads_the_window() {
     // fired. The question is asked BEFORE the window is read; the deliberately
     // evolved pin of the pre-#103 chain (turn-w went straight to the window).
     let out = emit(reply_doc("turn-w", "insert", 1, serde_json::json!("ok")));
-    assert_eq!(out.len(), 1);
+    // Two emissions since GH #298: the round check, and beside it the per-turn
+    // episode scan -- `turn_write` ships ON now, and the scan is deliberately
+    // NEXT to the machine rather than inside it (the round check keeps deciding
+    // what happens to this turn). The order is what this pin is about.
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(out[1]["header"]["phase"], "tw-scan", "{out:?}");
     assert_eq!(out[0]["header"]["phase"], "turn-open");
     let op = op_of(&out[0]);
     assert_eq!(op["operation"], "select");
@@ -2557,11 +2562,23 @@ fn an_all_async_bundle_closes_its_round_at_once_and_waits_for_nothing() {
     // fired, so no guard can ever fire it, no sweep can ever find it open, and
     // round_idle_ms never races the advisor's thinking time. The turn
     // is over; the answer comes back later as an EVENT, not as a fan-in.
+    //
+    // Since GH #372 "the turn is over" is a CONDITION, and this bundle meets it
+    // twice over: the model spoke beside the calls (so the dispatcher already
+    // sent that sentence as the interim answer) and the call is a declared
+    // HANDOFF. Either alone would do -- the two neighbouring tests take them
+    // apart -- and neither, and the round stays open.
+    let mut messages = call_bundle(&["c1"]);
+    messages
+        .as_array_mut()
+        .expect("bundle")
+        .push(serde_json::json!({"origin": "assistant", "type": "text",
+                           "text": "one moment, I am asking"}));
     let out = emit(lane_with(
         "in_calls",
-        serde_json::json!({"async_calls": "c1"}),
+        serde_json::json!({"async_calls": "c1", "handoff_calls": "c1"}),
         serde_json::json!({}),
-        call_bundle(&["c1"]),
+        messages,
     ));
 
     assert_eq!(out.len(), 2, "the assistant row plus one ack: {out:?}");
@@ -2583,6 +2600,98 @@ fn an_all_async_bundle_closes_its_round_at_once_and_waits_for_nothing() {
         turn["text"].as_str().unwrap_or_default().contains("later"),
         "and it says what happened: {turn}"
     );
+}
+
+/// GH #372, half one: a bare async call that is NOT a handoff leaves the round
+/// OPEN. Nothing has answered this turn -- the dispatcher sends an interim only
+/// when a sentence stands beside the bundle, and a fire-and-forget write never
+/// comes back -- so filing the row as fired ended the turn in silence. The
+/// acknowledgement still travels, so the fan-in completes on the spot and the
+/// regular guard re-enters the brain for the iteration the model has not spent.
+#[test]
+fn a_bare_async_call_that_hands_nothing_over_leaves_the_round_open() {
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1", "handoff_calls": ""}),
+        serde_json::json!({}),
+        call_bundle(&["c1"]),
+    ));
+
+    assert_eq!(out.len(), 2, "the assistant row plus one ack: {out:?}");
+    assert_eq!(
+        op_of(&out[0])["row"]["fired"],
+        0,
+        "nobody has answered this turn, so the round is not over"
+    );
+    // The ack is unchanged: what makes the round complete is what makes the
+    // guard fire, and that is the same machinery as every other round.
+    let turn: serde_json::Value =
+        serde_json::from_str(op_of(&out[1])["row"]["turn"].as_str().expect("turn"))
+            .expect("turn json");
+    assert_eq!(turn["id"], "c1");
+    assert_eq!(turn["type"], "tool_result");
+}
+
+/// GH #372, half two: the handoff mark alone closes the round, without a word.
+/// That is the escalation shape (`escalate_to_deep`, whose seed prompt says "say
+/// nothing else") and the consult shape -- the answer comes from a later turn,
+/// so this round is over and must not re-enter the brain.
+#[test]
+fn a_handoff_call_closes_its_round_without_a_word() {
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1", "handoff_calls": "c1"}),
+        serde_json::json!({}),
+        call_bundle(&["c1"]),
+    ));
+
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(
+        op_of(&out[0])["row"]["fired"],
+        1,
+        "the turn was handed over: no guard to win, no open round for a sweep"
+    );
+}
+
+/// And the text alone closes it too -- the sentence the dispatcher already put
+/// on the channel IS the answer of this turn (R-CG-3, delta 1).
+#[test]
+fn a_sentence_beside_the_bundle_closes_the_round_without_a_handoff() {
+    let mut messages = call_bundle(&["c1"]);
+    messages
+        .as_array_mut()
+        .expect("bundle")
+        .push(serde_json::json!({"origin": "assistant", "type": "text", "text": "one moment."}));
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1", "handoff_calls": ""}),
+        serde_json::json!({}),
+        messages,
+    ));
+
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(op_of(&out[0])["row"]["fired"], 1);
+}
+
+/// An EMPTY text turn is not a sentence. A provider that sends `content: ""`
+/// beside a bundle has said nothing, and reading it as an answer would put the
+/// silence straight back -- which is why this reads the turns exactly as the
+/// dispatcher does when it decides whether to send an interim answer at all.
+#[test]
+fn an_empty_text_turn_is_not_an_answer() {
+    let mut messages = call_bundle(&["c1"]);
+    messages
+        .as_array_mut()
+        .expect("bundle")
+        .push(serde_json::json!({"origin": "assistant", "type": "text", "text": ""}));
+    let out = emit(lane_with(
+        "in_calls",
+        serde_json::json!({"async_calls": "c1", "handoff_calls": ""}),
+        serde_json::json!({}),
+        messages,
+    ));
+
+    assert_eq!(op_of(&out[0])["row"]["fired"], 0, "{out:?}");
 }
 
 #[test]

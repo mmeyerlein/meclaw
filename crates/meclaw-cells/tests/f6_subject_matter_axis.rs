@@ -17,8 +17,8 @@
 //! Stable across two independent extraction runs, so it is a property of the
 //! lane rather than a bad day.
 //!
-//! The fix is both halves of the issue's direction, and neither of them destroys
-//! the plan/fact distinction -- it MOVES:
+//! The fix was both halves of the issue's direction, and neither of them
+//! destroys the plan/fact distinction -- it MOVES:
 //!
 //! 1. the intention lives on the STATEMENT, in `fact_kind: foresight`, which is
 //!    the column the foresight leg has always read. The predicate is free to
@@ -26,22 +26,28 @@
 //!    reader that could tell them apart while the predicate said `plans_to_*`
 //!    still can: the bundle renders `(planned)`, the nightly currency question
 //!    is shown `"intent": "planned"` on the statement.
-//! 2. the extractor has to SEE the sibling while it decides. The replacement
-//!    window used to be the eight most recently touched axes; recency is a good
-//!    guess about which axes matter and a bad one about which axis a given turn
-//!    is ABOUT. The page now fetches a POOL and the prompt phase -- the only
-//!    phase that holds the turns -- picks the window out of it by subject matter.
+//! 2. the extractor had to SEE the sibling while it decided, which was a
+//!    property of the BATCH PROMPT: the window page fetched a pool and the
+//!    prompt phase picked the shown window out of it by subject matter.
 //!
-//! Everything here runs the REAL `params.script_inline` of `extract-glue`,
-//! `recall` and `dream-glue` against injected store replies, so no model is
-//! called and nothing costs anything. Whether an extractor USES the discipline
-//! is a model property and belongs to the end-of-wave measurement; the free
-//! scenario C22 proves the chain end to end on a real colony.
+//! **Half 2 is retired (wave 5, GitHub #298).** Per-turn extraction has no batch
+//! prompt, no window page and no subject-matter selection -- the front model is
+//! standing in the turn it is annotating, so there is no window to choose for it
+//! and `matter_tokens` has no caller. The eight cases that pinned that selection
+//! (and the `matter_tokens` probe under it) are gone with the mechanism; what the
+//! model is TOLD about naming the matter rather than the speech act is a property
+//! of the shipped extraction contract now, not of a prompt this lane builds.
+//!
+//! What remains here is half 1, which is untouched by the wave: the marker on the
+//! statement, from the store column through the recall bundle to the nightly
+//! currency question, plus the seed file that states the rule's authority.
+//! Everything runs the REAL `params.script_inline` of `recall` and `dream-glue`
+//! against injected store replies, so no model is called and nothing costs
+//! anything.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const EXTRACT_CONFIG: &str = "../../templates/memory-hive/extract-glue/config.json";
 const RECALL_CONFIG: &str = "../../templates/memory-hive/recall/config.json";
 const DREAM_CONFIG: &str = "../../templates/memory-hive/dream-glue/config.json";
 
@@ -167,365 +173,6 @@ fn probe(config: &str, name: &str, body: &str) -> String {
 fn args_of(msg: &serde_json::Value) -> serde_json::Value {
     let text = msg["messages"][0]["text"].as_str().expect("op text");
     serde_json::from_str(text).expect("op args")
-}
-
-// ============================================================ extract-glue
-
-const BATCH: &str = "b1";
-/// `MEMORY_EXTRACT_WINDOW_AXES` of the template: what the prompt SHOWS.
-const WINDOW_MAX_AXES: usize = 8;
-
-fn emit_x(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    run(&script_of(EXTRACT_CONFIG), doc)
-}
-
-fn x_reply(phase: &str, operation: &str, rows: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "header": {
-            "context": {"store_origin": "extract", "mem_phase": phase, "batch_id": BATCH},
-            "hop": {"operation": operation, "rows_affected": 1}
-        },
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "r", "text": rows.to_string()}]
-    })
-}
-
-/// One open fact row in the shape the window page projects.
-fn fact_row(id: &str, predicate: &str, claim: &str, from: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": id, "subject": "user", "canonical_subject": "user",
-        "predicate": predicate, "canonical_predicate": predicate,
-        "claim": claim, "canonical_claim": claim,
-        "valid_from": from, "recorded_at": from
-    })
-}
-
-/// One pool entry in the shape `open_statements` parks it.
-fn pool_axis(predicate: &str, id: &str, claim: &str, since: &str) -> serde_json::Value {
-    serde_json::json!({
-        "subject": "user", "predicate": predicate,
-        "statements": [{"id": id, "claim": claim, "since": since}]
-    })
-}
-
-/// The 5K corpus as the page fetches it: nine axes the conversation touched
-/// recently, and the personal best -- older than every one of them, and the only
-/// one the turns are about. Recency alone cuts it off the end of the window.
-fn crowded_pool() -> Vec<serde_json::Value> {
-    let mut pool: Vec<serde_json::Value> = (0..9)
-        .rev()
-        .map(|i| {
-            pool_axis(
-                &format!("axis_{i}"),
-                &format!("a{i}"),
-                &format!("filler value {i}"),
-                &format!("2026-06-{:02}T00:00:00Z", i + 1),
-            )
-        })
-        .collect();
-    pool.push(pool_axis(
-        "personal_record",
-        "f1",
-        "personal best time of 27:12 in the charity 5K run",
-        "2026-03-01T00:00:00Z",
-    ));
-    pool
-}
-
-/// The two turns of the 5K case, the second one in a later session.
-fn running_turns() -> serde_json::Value {
-    serde_json::json!([
-        {"episode_id": "e1", "sender": "user",
-         "content": "I ran the charity 5K and set a personal best of 27:12."},
-        {"episode_id": "e2", "sender": "user",
-         "content": "Next spring I want to beat that personal best and run 25:50."}
-    ])
-}
-
-/// Everything the prompt phase emits for a batch that meets `pool` and `items`.
-fn prompt_round(pool: &[serde_json::Value], items: serde_json::Value) -> Vec<serde_json::Value> {
-    let rows = serde_json::json!([
-        {"key": BATCH, "kind": "batch", "payload": items.to_string()},
-        {"key": BATCH, "kind": "vocab", "payload": "{\"user\": [\"personal_record\"]}"},
-        {"key": BATCH, "kind": "window-pool",
-         "payload": serde_json::Value::from(pool.to_vec()).to_string()}
-    ]);
-    emit_x(x_reply("prompt", "select", rows))
-}
-
-/// The predicates of the window the prompt phase PARKED -- the set guard rail 3
-/// checks a `replaces` against.
-fn shown_axes(msgs: &[serde_json::Value]) -> Vec<String> {
-    let parked = msgs
-        .iter()
-        .map(args_of)
-        .find(|a| a["table"] == "scratch" && a["row"]["kind"] == "window")
-        .expect("the shown window is parked");
-    let window: serde_json::Value =
-        serde_json::from_str(parked["row"]["payload"].as_str().expect("payload")).expect("window");
-    window
-        .as_array()
-        .expect("axes")
-        .iter()
-        .map(|a| a["predicate"].as_str().unwrap_or_default().to_string())
-        .collect()
-}
-
-fn instructions(msgs: &[serde_json::Value]) -> String {
-    msgs.iter()
-        .find(|m| m["header"]["route"] == "extract")
-        .expect("the extractor call")["system"]["instructions"]["text"]
-        .as_str()
-        .expect("instructions text")
-        .to_string()
-}
-
-#[test]
-fn the_axes_a_turn_is_about_are_the_ones_the_extractor_is_shown() {
-    // The defect itself, in the shape the store had it. The sibling axis exists,
-    // it is open, and the page fetched it -- it just sits at the far end of the
-    // recency order, because nine other axes were touched more recently. That is
-    // the whole of "the currency question can never see them together": the
-    // extractor was never shown the value it was about to update.
-    let pool = crowded_pool();
-    assert_eq!(
-        pool.len(),
-        10,
-        "the fixture has to be bigger than the offered window or it proves nothing"
-    );
-    let index = pool
-        .iter()
-        .position(|a| a["predicate"] == "personal_record")
-        .expect("the sibling axis is in the pool");
-    assert!(
-        index >= WINDOW_MAX_AXES,
-        "recency alone must NOT reach this axis, else the pin is tautological"
-    );
-
-    let msgs = prompt_round(&pool, running_turns());
-    let shown = shown_axes(&msgs);
-    assert_eq!(
-        shown.len(),
-        WINDOW_MAX_AXES,
-        "the shown window is still capped: {shown:?}"
-    );
-    assert_eq!(
-        shown[0], "personal_record",
-        "the axis the turns are ABOUT is shown FIRST, not cut off the end: {shown:?}"
-    );
-    let text = instructions(&msgs);
-    assert!(
-        text.contains("personal best time of 27:12 in the charity 5K run"),
-        "the value the turn updates has to be IN the prompt -- an extractor that \
-         cannot see it mints a sibling axis for it:\n{text}"
-    );
-}
-
-#[test]
-fn an_axis_no_turn_mentions_keeps_the_place_recency_gave_it() {
-    // The invariance half: the second sort is stable, so a batch whose turns
-    // match no stored value is shown byte for byte the window it was shown
-    // before this package -- the recency prefix of the pool, in order.
-    let pool = crowded_pool();
-    let msgs = prompt_round(
-        &pool,
-        serde_json::json!([{"episode_id": "e9", "sender": "user",
-                            "content": "We had pasta for dinner tonight."}]),
-    );
-    let shown = shown_axes(&msgs);
-    let recency: Vec<String> = pool[..WINDOW_MAX_AXES]
-        .iter()
-        .map(|a| a["predicate"].as_str().unwrap_or_default().to_string())
-        .collect();
-    assert_eq!(
-        shown, recency,
-        "nothing matched, so nothing may move: the window is the recency prefix"
-    );
-}
-
-#[test]
-fn the_page_fetches_a_pool_and_the_prompt_shows_a_window_out_of_it() {
-    // The split this package introduces, read off the two phases. The PAGE parks
-    // `window-pool` (recency, twice the offered budget) and never asks which
-    // axes matter; the PROMPT parks `window` (subject matter, the offered
-    // budget) because it is the first phase that holds the turns at all.
-    let rows: Vec<serde_json::Value> = (0..12)
-        .map(|i| {
-            fact_row(
-                &format!("p{i}"),
-                &format!("axis_{i:02}"),
-                &format!("value {i}"),
-                &format!("2026-0{}-01T00:00:00Z", i % 9 + 1),
-            )
-        })
-        .collect();
-    let page = emit_x(x_reply(
-        "window-page",
-        "select",
-        serde_json::Value::Array(rows),
-    ));
-    let kinds: Vec<&str> = page
-        .iter()
-        .map(args_of)
-        .filter(|a| a["table"] == "scratch")
-        .map(|a| a["row"]["kind"].as_str().unwrap_or_default().to_string())
-        .map(|s| Box::leak(s.into_boxed_str()) as &str)
-        .collect();
-    assert_eq!(
-        kinds,
-        vec!["window-pool"],
-        "the page parks the pool and nothing else"
-    );
-    let pool: serde_json::Value = serde_json::from_str(
-        page.iter()
-            .map(args_of)
-            .find(|a| a["table"] == "scratch")
-            .expect("the pool")["row"]["payload"]
-            .as_str()
-            .expect("payload"),
-    )
-    .expect("pool");
-    let pool = pool.as_array().expect("axes").clone();
-    assert_eq!(
-        pool.len(),
-        12,
-        "twelve axes fit under the pool cap, so the page keeps all of them"
-    );
-
-    let msgs = prompt_round(&pool, running_turns());
-    assert_eq!(
-        shown_axes(&msgs).len(),
-        WINDOW_MAX_AXES,
-        "and the prompt spends exactly the offered budget on them"
-    );
-}
-
-#[test]
-fn what_may_be_closed_is_what_was_shown_and_never_what_was_only_fetched() {
-    // Guard rail 3 (ruling Q2 rail 3) under the new split, and the reason the
-    // SHOWN window is the row that gets parked: the apply phase checks every
-    // `replaces` against that row, so a selection that widened it would let the
-    // extractor close a statement it was never shown.
-    let pool = crowded_pool();
-    let msgs = prompt_round(&pool, running_turns());
-    let shown = shown_axes(&msgs);
-    let text = instructions(&msgs);
-    for axis in pool.iter() {
-        let predicate = axis["predicate"].as_str().expect("predicate");
-        let id = axis["statements"][0]["id"].as_str().expect("id");
-        let rendered = text.contains(&format!("id {id} | user / {predicate}"));
-        assert_eq!(
-            rendered,
-            shown.iter().any(|p| p == predicate),
-            "the parked window and the rendered block disagree about {predicate}"
-        );
-    }
-    assert!(
-        shown.len() < pool.len(),
-        "the fixture must drop at least one fetched axis or this proves nothing"
-    );
-}
-
-#[test]
-fn the_prompt_says_that_a_speech_act_is_not_an_axis() {
-    // The other half of the fix, and the deterministic half of it: the rule and
-    // its examples are in the block the extractor reads. What a model does with
-    // them is measured at the end of the wave; that the discipline is STATED is
-    // measured here.
-    let text = instructions(&prompt_round(&crowded_pool(), running_turns()));
-    assert!(
-        text.contains("A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT"),
-        "the rule is missing:\n{text}"
-    );
-    for named in ["plans_to_beat", "wants_to_move_to", "hopes_to_visit"] {
-        assert!(
-            text.contains(named),
-            "the rule needs the NAMED shape it refuses, the way every other rule \
-             of this prompt carries one -- missing {named}:\n{text}"
-        );
-    }
-    assert!(
-        text.contains("`personal_record`, claim") || text.contains("\"personal_record\", claim"),
-        "and the subject-matter form to use instead:\n{text}"
-    );
-    assert!(
-        text.contains("`fact_kind: foresight`") || text.contains("`fact_kind` to `foresight`"),
-        "the intention has to be told where it DOES belong, or the rule reads as \
-         'drop the intention':\n{text}"
-    );
-}
-
-#[test]
-fn an_intention_about_a_shown_statement_is_told_where_it_belongs() {
-    // The window block is where the extractor is looking at a concrete value, so
-    // it is where the rule has to be repeated in operational form: same subject,
-    // same predicate, `foresight`, and NO `replaces` -- an intention does not end
-    // the fact it is about.
-    let text = instructions(&prompt_round(&crowded_pool(), running_turns()));
-    let block = text
-        .split("Statements this memory holds OPEN right now")
-        .nth(1)
-        .expect("the replacement block");
-    assert!(
-        block.contains("PLANS, WANTS or HOPES"),
-        "the replacement block never mentions an intention:\n{block}"
-    );
-    assert!(
-        block.contains("Leave `replaces` empty"),
-        "an intention that closed the fact it is about would be the same defect \
-         with the sign flipped:\n{block}"
-    );
-}
-
-#[test]
-fn the_naming_rule_does_not_depend_on_a_window() {
-    // The rule is about the PREDICATE, not about a replacement, so it stands on
-    // a batch that meets no open statement at all -- the inline ingress, and the
-    // very first batch of a fresh memory, which is exactly where a private axis
-    // gets minted and never noticed.
-    let msgs = prompt_round(&[], running_turns());
-    assert_eq!(msgs.len(), 1, "no window, no park, one call");
-    let text = instructions(&msgs);
-    assert!(text.contains("A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT"));
-    assert!(
-        !text.contains("`replaces`"),
-        "a prompt without a window still invites no replacement:\n{text}"
-    );
-}
-
-#[test]
-fn the_matter_of_a_text_is_its_content_words() {
-    // The selection has to be reproducible by hand, so its one non-obvious
-    // function is pinned directly: lower case, split on everything that is not a
-    // letter or a digit, drop what is shorter than four characters, drop the
-    // stop words. Short tokens are dropped rather than stopped because a
-    // three-letter word that survives a stop list ("5k", "run") matches half a
-    // memory and ranks nothing.
-    let out = probe(
-        EXTRACT_CONFIG,
-        "extract-glue",
-        "print('|'.join(sorted(matter_tokens(\
-         'Next spring I want to beat that personal best and run 25:50!'))))\n\
-         print('|'.join(sorted(matter_tokens('Meine Lieblingsfarbe ist Blau'))))\n\
-         print('|'.join(sorted(matter_tokens(None))))\n",
-    );
-    let mut lines = out.lines();
-    assert_eq!(
-        lines.next().unwrap_or_default(),
-        "beat|best|personal|spring",
-        "`want`, `that`, `next` and `and` are stop words, `run`, `to`, `I` and \
-         `25`/`50` are too short"
-    );
-    assert_eq!(
-        lines.next().unwrap_or_default(),
-        "blau|lieblingsfarbe",
-        "the claim stays in the language of the turn, so the matter has to work \
-         in it too"
-    );
-    assert_eq!(
-        lines.next().unwrap_or_default(),
-        "",
-        "no text, no matter -- never an exception"
-    );
 }
 
 // ================================================================== recall

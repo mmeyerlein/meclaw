@@ -406,6 +406,10 @@ async fn boot_workshop() -> Workshop {
     copy_cells(&template_dir("collector"), &root.join("main/collect"));
     // The workshop turn takes ten brain entries, so the seam cap gets headroom;
     // the round slate must carry every result of the turn for the final report.
+    // `turn_write` is switched OFF: it ships on since GH #298 because a shipped
+    // agent has to remember something, and this workshop is the other case --
+    // there is no memory anywhere in this tree, so every per-turn episode would
+    // leave through a route nothing routes and dead-letter once per turn.
     tune_collector(
         root,
         "main/collect/assemble/config.json",
@@ -413,6 +417,7 @@ async fn boot_workshop() -> Workshop {
             ("max_iter", "16"),
             ("round_bytes", "200000"),
             ("tool_chars", "8000"),
+            ("turn_write", "0"),
         ],
     );
     write(

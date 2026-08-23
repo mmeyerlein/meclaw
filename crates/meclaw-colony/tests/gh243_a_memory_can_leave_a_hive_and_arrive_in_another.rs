@@ -420,6 +420,71 @@ fn the_document_covers_every_content_table_the_shipped_store_declares() {
     assert!(pos("episodes") < pos("facts"), "episodes before facts");
 }
 
+/// CLAIM 1b — the thread a turn belonged to travels with it (#298).
+///
+/// `topics` is where per-turn extraction records what a stretch of conversation
+/// was about, and it is remembered content like any other: a table the store
+/// declares but the porter's mirror does not know simply stops at the hive
+/// border, and the memory would arrive on the other side without the thread it
+/// belonged to. Column by column, because a topic that loses `audience_set` or
+/// `closed_at` is a topic nobody can honestly reopen.
+#[test]
+fn the_thread_a_turn_belonged_to_travels_with_it() {
+    let Some(_) = hive_root() else { return };
+    let store = config_at("store/config.json");
+    let decl = declarations();
+    let mirror = decl["SCHEMA"].as_object().unwrap();
+
+    // All `text`, including the two timestamps and the two episode references:
+    // open means `closed_at = ''`, which is a value the store can filter on
+    // without a second column saying whether the first one means anything.
+    let want = json!({
+        "id": "text",
+        "session_id": "text",
+        "channel": "text",
+        "audience_set": "text",
+        "name": "text",
+        "opened_episode_id": "text",
+        "closed_episode_id": "text",
+        "opened_at": "text",
+        "closed_at": "text",
+        "closure_source": "text"
+    });
+    assert_eq!(
+        store["params"]["schema"]["topics"], want,
+        "the store does not declare the topics table"
+    );
+    assert_eq!(
+        mirror.get("topics"),
+        Some(&want),
+        "topics is remembered content and does not travel"
+    );
+
+    let walk: Vec<&str> = decl["WALK"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let pos = |t: &str| {
+        walk.iter()
+            .position(|x| *x == t)
+            .unwrap_or_else(|| panic!("{t} is not on the walk"))
+    };
+    assert!(
+        pos("episodes") < pos("topics"),
+        "a topic names the episode it opened on: episodes travel first"
+    );
+
+    // And the document says so out loud: one part per table, sixteen of them.
+    let exported = walk_export(&|_| vec![]);
+    assert_eq!(exported.parts.len(), 16, "the export is not sixteen parts");
+    assert!(
+        exported.parts.iter().any(|p| p["table"] == "topics"),
+        "no part of the document carries the topics table"
+    );
+}
+
 /// CLAIM 2 — a part projects every column the table declares, provenance first.
 ///
 /// The read path learned this the hard way (#244): a filter over a column

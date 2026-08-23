@@ -1,13 +1,35 @@
 # `memory-drain@2.0.4`
 
-The adapter between a closed session and the central memory (GitHub #101).
+The adapter between a write batch and the central memory (GitHub #101).
 
-A collector hands its day out as **one** write batch (`messages[]` = the whole day,
-top-level slot `rounds`, `hop.session_id`/`turn_count`/`round_count` — see the C3 receipt).
-The memory hive's writer takes **one** turn at a time and writes exactly one `episodes`
-row per turn (hive spec § B.3/D.2 — the memory hive itself is not part of this
-distribution). Nothing spoke both forms,
-so a closed day never reached memory at all.
+> **What this adapter is for: bulk import of foreign history — a benchmark
+> haystack, an exported transcript from another agent, a month of chat out of an
+> archive. Nothing on a live path, and nothing shipped wires it**
+> (**ADR 0012**; [GH #298](https://github.com/mmeyerlein/meclaw/issues/298),
+> ruling Q11).
+> A collector hands out **one message per turn** on its `turn_write` route, with
+> `hop.turn_id`, `hop.turn_index` and `hop.happened_at` on it — which is exactly
+> what the memory hive's `in_episode` lane reads, so a live turn has nothing left
+> for a decomposer to do, and that route is wired straight at the hive. Both
+> shipped examples used to put this hive in the middle of it; neither does any
+> more. The template keeps every line of its code and its version: what it loses
+> is its wires, not its mechanism. The one thing it still owns that nothing else
+> in the distribution owns is the **ledger** — a re-delivered transcript is a
+> skip, which is the property an interrupted import needs and which neither
+> shipped importer has. ADR 0012 decided to keep it on that ground and named the
+> trigger that would retract it (`docs/roadmap.md` § W5-Nachtrag): a transfer
+> lane that learns raw-transcript import, or a second bulk importer written
+> without anybody reaching for this one.
+
+**Where it comes from.** A collector hands its day out as **one** write batch
+(`messages[]` = the whole day, top-level slot `rounds`,
+`hop.session_id`/`turn_count`/`round_count` — see the C3 receipt). The memory hive's writer
+takes **one** turn at a time and writes exactly one `episodes` row per turn (hive spec
+§ B.3/D.2 — the memory hive itself is not part of this distribution). Nothing spoke both
+forms, so a closed day never reached memory at all. That was the gap of GH #101; the live
+half of it closed the other way, by making the conversation itself speak one turn per
+message (GH #298, ruling Q11). What is left of the gap is the one place a batch is still
+genuinely a batch: **history that arrives from somewhere else**.
 
 This hive is that translation, and it lives **outside** the memory hive on purpose
 (ruling R-MD-1): it speaks only the memory hive's documented `in_episode` lane, at the hive
@@ -15,7 +37,7 @@ path, so **not one line of the memory hive changes**, the P15 invariance gate st
 second write path.
 
 ```
-<talky>/collector --route write--> ./drain --route episode--> <memory> (lane in_episode)
+<batch producer> --route write--> ./drain --route episode--> <memory> (lane in_episode)
                                      |  ^          \--route reject--> <wherever refusals are read>
                        route lstore  |  |  context.drain_origin == 'drain'
                                      v  |
@@ -29,7 +51,33 @@ second write path.
 | `drain` | `code` | The phase machine: park the day, ask what was drained, fire the rest. |
 | `ledger` | `store` | One table, two kinds of row: the parked day and the mark that says how far this session got. |
 
+## Not in scope
+
+**Neither the fact path nor the episode path of a live conversation passes through here any
+more** (ADR 0012, GH #298 ruling Q11). Both are written **per turn**: the collector emits one
+finished turn per message on `turn_write` straight at the memory hive's `in_episode` lane,
+and extraction runs off the episode the hive itself wrote. There is no batch adapter on a
+conversational path, and this hive is not one waiting to be plugged back in.
+
+**Nor is it the transfer lane** ([#243](https://github.com/mmeyerlein/meclaw/issues/243)).
+That lane moves a hive's **own records** between hives — episodes, facts, judgements — and
+re-derives nothing. This adapter turns **foreign raw conversation** into episodes, which is
+a derivation with a different guarantee; `templates/memory-hive/porter/config.json`
+§ not_in_scope is explicit that the transfer lane does not take that job.
+
+And, unchanged: no extraction, no summarising, no judgement about what is worth remembering;
+no LLM call and no provider key (the write path is synchronous and model-free by spec); no
+second write path into memory; no session lifecycle of its own; no recall lane — this adapter
+only writes; and no provenance of its own — the participant set and the room are carried
+through untouched, never minted and never defaulted to `["*"]`.
+
 ## Ports
+
+**No shipped topology draws these edges** (GH #298, ruling Q11; ADR 0012). What follows is
+the shape a wiring would have to take, not a wiring that exists. The one case it is meant
+for is an **out-of-band import**: a tree that receives foreign history as a batch and wants
+the ledger's skip on a re-delivery. Never on a conversational path, where `turn_write`
+already speaks the `in_episode` lane one turn at a time.
 
 Instantiate `add_nodes` and both port `add_edges` in **one** mutation — an island whose
 edges are all internal derives inactive, so a two-step instantiation leaves the drain
@@ -38,7 +86,6 @@ dormant (the island-activation rule).
 | Port | Direction | Endpoint | The edge must carry |
 |---|---|---|---|
 | in_batch | in | `./drain` | `condition: has(hop.route) && hop.route == 'write'`, `modifier: {set_hop: {route: "'in_batch'"}, set_context: {session_id: "hop.session_id"}}` — plus `audience_set` and `channel` in `context`, see "The provenance the batch has to carry" |
-| in_batch (per turn) | in | `./drain` | the same entry, a second edge, for a collector with `turn_write` set: `condition: … hop.route == 'turn_write'`, same modifier. See "Two cadences, one ledger". |
 | episode | out | `./drain` → the memory hive's path, lane `in_episode` | `condition: has(hop.route) && hop.route == 'episode'`, `modifier: {set_hop: {route: "'in_episode'"}, set_context: {session_id: "hop.session_id", turn_id: "hop.turn_id", happened_at: "hop.happened_at"}}` |
 | reject | out | `./drain` → wherever refusals are read | `condition: has(hop.route) && hop.route == 'reject'`. **Required**: the template declares the pairing, so a mutation that wires `in_batch` without this edge is refused. |
 
@@ -167,37 +214,34 @@ writer and is the hive's business. The identity this adapter controls — and th
 therefore dedups on — is the `turn_id` that travels as an ingress context key and lands in
 the `episodes` row. Deterministic there is deterministic where it counts.
 
-## Two cadences, one ledger
+## Retracted: "two cadences, one ledger"
 
-A close is a cadence, not a contract. The batch this adapter reads is "the session so
-far", and the collector can hand that out at the close **or** after every stored turn
-(`turn_write`, route `turn_write`). Wire both edges into this same entry and
-the roles fall out by themselves:
+Earlier versions of this file described a **second** in_batch edge, on the collector's
+`turn_write` route, and called the two "cadences of one document": the per-turn lane as
+the ingest, the close lane as the safety net. That is withdrawn
+([GH #298](https://github.com/mmeyerlein/meclaw/issues/298), ruling Q11), and it is
+withdrawn rather than reworded:
 
 ```
-collector --route turn_write--> ./drain    (per turn: the day so far)
-collector --route write------> ./drain     (at the close: the same day, once more)
+collector --route turn_write--> ./drain     <- GONE. Do not wire this.
 ```
 
-- **The per-turn lane is the ingest.** An episode then exists at the turn instead of at
-  the night close, and that is the whole difference between a memory that can answer a
-  question about the last exchange and one that cannot.
-- **The close lane is the safety net.** Nothing about it changes; it simply usually finds
-  nothing to do. The mark says the day is through, the probe skips, the chain ends after
-  its `select`.
-- **The count gate becomes a completeness proof.** It used to say "the batch arrived
-  whole". Now it says "**the per-turn lane lost no turn**": `hop.turn_count` of the close
-  batch equals the episodes of that session, and a close drain that writes **zero** is
-  the success signal, not a broken one. What the per-turn lane did miss -- a restart, a
-  lane switched on mid-session -- the close writes, and only that.
+`turn_write` no longer carries "the day so far". It carries **one finished turn per
+message**, with a deterministic `hop.turn_id` (`<session_id>#<index>`), `hop.turn_index`
+and `hop.happened_at` beside it, and it is addressed at the memory hive's `in_episode`
+lane directly. Idempotence for that lane lives in the collector's own `turns` table
+(`episode_written`), not here. Putting this adapter in front of it therefore does not add
+a gate — it adds a **second minter** over turns the lane already wrote, which is the exact
+failure the retracted paragraph warned about, pointing the other way.
 
-**Why through the drain and not straight into the hive.** The hive's writer inserts
-unconditionally and `episodes.turn_id` carries no unique constraint: this ledger is the
-*only* thing that recognises a turn that is already home. A second, direct per-turn edge
-into `writer` would mint its own ids beside these, and the close drain -- which knows
-nothing of it -- would write the whole day a second time. One minter, one ledger. That is
-also why the `turn_id` formula stays where it is: it is not repeated anywhere, it is
-called twice.
+**The argument that used to stand here is inverted, not weakened.** It read: the hive's
+writer inserts unconditionally and `episodes.turn_id` carries no unique constraint, so
+this ledger is the only thing that recognises a turn already home, and a direct per-turn
+edge into the writer would mint ids beside it. Both halves are still true about the
+*mechanism*; what changed is where the one minter lives. Since GH #298 the collector is
+the minter and its `turns` table is the gate, so the drain beside it is the second one.
+One minter, one gate — that principle is unchanged, and it is now what keeps this hive
+off the live path.
 
 ## Known limits
 
@@ -218,7 +262,7 @@ called twice.
   This used to catch every session a timer swept closed, because a sweep carries the
   *sweep's* context and not the conversation's. Since `session-keeper@2.0.1` it does not:
   the keeper records the round on the generation row when the conversation OPENS it and
-  reads it back off that row at the seal, so `talky@3.0.14`'s close edge has a room and a
+  reads it back off that row at the seal, so `talky@4.0.0`'s close edge has a room and a
   round to promote (GH #273). What remains refused is a generation whose ingress door
   never declared one — including every generation that was already open when that edge was
   wired, because provenance is written once and never rewritten (ADR-0002 E12).
@@ -230,14 +274,13 @@ called twice.
   the collector's close batch is (`select turns where session_id order by id asc`). If a
   session were pruned *between* two drains, the second batch would be a suffix, and both
   the mark and the index-based id would shift with it. Drain before prune.
-- **The batch is unbounded**, exactly like the batch it consumes: a very long day is a very
-  large message and a very large parked row. Per-turn cadence multiplies that: each turn
-  parks the day it was handed, so a day of *n* turns leaves *n* parked copies. Bounded by
-  the same operator lane the ledger already needs, and by nothing else.
+- **The batch is unbounded**, exactly like the batch it consumes: a very long transcript is
+  a very large message and a very large parked row. Bounded by the same operator lane the
+  ledger already needs, and by nothing else.
 - **Select-before-insert is read-modify-write across two hops.** Two batches of the SAME
-  session in flight at once can both probe before either marks, and then both write. A
-  close cadence never produced that (one close per session); a per-turn cadence can, if
-  two turns of one session arrive inside the ledger's own round trip. What it costs is a
-  duplicate episode under an id that already exists -- so a tree that expects bursts on
-  one session wants the guarded-mark variant of this chain, which is a change to this
-  template and not to its wiring.
+  session in flight at once can both probe before either marks, and then both write. One
+  batch per session never produces that; a producer that fires the same session twice
+  inside the ledger's own round trip does. What it costs is a duplicate episode under an
+  id that already exists -- so a tree that expects bursts on one session wants the
+  guarded-mark variant of this chain, which is a change to this template and not to its
+  wiring.

@@ -320,7 +320,56 @@ fn without_the_knob_no_call_is_async() {
         vec![call_turn("c1", "consult_cogny", "{}")],
     ));
     assert_eq!(hop_str(&out[0], "async_calls"), "", "default is empty");
+    assert_eq!(
+        hop_str(&out[0], "handoff_calls"),
+        "",
+        "and it TRAVELS empty: a hop key that is sometimes absent makes a CEL \
+         modifier fail, and a failed modifier skips the edge"
+    );
     assert_eq!(hop_str(&out[1], "async"), "");
+}
+
+/// GH #372: the handoff class. A tool named there is async AND says that the
+/// answer comes from a LATER turn, so the round its call leaves behind is over
+/// even without a sentence beside the bundle. The one declaration does both
+/// jobs -- the two lists are unioned -- and an async call that is not a handoff
+/// stays out of `handoff_calls`, which is what keeps a bare fire-and-forget
+/// call from ending its round in silence.
+#[test]
+fn a_handoff_tool_is_named_on_both_lists_and_declares_itself_async() {
+    let out = emit_with(
+        &[
+            ("DISPATCHER_ASYNC_TOOLS", "remember"),
+            ("DISPATCHER_HANDOFF_TOOLS", "escalate_to_deep"),
+        ],
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "escalate_to_deep", r#"{"question":"why?"}"#),
+                call_turn("c2", "remember", r#"{"facts":[]}"#),
+                call_turn("c3", "web_search", "{}"),
+            ],
+        ),
+    );
+
+    assert_eq!(route_of(&out[0]), "calls");
+    assert_eq!(
+        hop_str(&out[0], "async_calls"),
+        "c1,c2",
+        "the handoff declared itself async without a second entry: {out:?}"
+    );
+    assert_eq!(
+        hop_str(&out[0], "handoff_calls"),
+        "c1",
+        "and only the escalation takes the turn with it: {out:?}"
+    );
+    assert_eq!(
+        hop_str(&out[1], "async"),
+        "1",
+        "the escalation still travels"
+    );
+    assert_eq!(hop_str(&out[2], "async"), "1");
+    assert_eq!(hop_str(&out[3], "async"), "", "a sync tool is untouched");
 }
 
 #[test]

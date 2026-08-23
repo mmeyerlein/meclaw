@@ -213,6 +213,17 @@ overnight figure is pinned to the configuration above and not to a version: a
 colony on the new defaults will produce a different number from the same traffic.
 Re-run the command to get yours.
 
+> **Retraction (`memory-hive@3.0.0`,
+> [#298](https://github.com/mmeyerlein/meclaw/issues/298)): both knobs are gone,
+> and so is the batched extraction round they gated.** The measurement above
+> stands — it happened, on a colony configured exactly that way — but it belongs
+> to that configuration and describes a lane this template no longer has. A
+> memory hive at 3.0.0 or later extracts per turn, on the answering model, and
+> what it spends unattended is the nightly consolidation plus one close pass per
+> closed session (≈ 0.077 EUR, `templates/memory-hive/README.md` § What a close
+> pass costs). Do not carry this row forward as an overnight figure for a current
+> colony; re-run the command.
+
 Per model, over the full window:
 
 | model | calls | prompt tokens | completion tokens | USD |

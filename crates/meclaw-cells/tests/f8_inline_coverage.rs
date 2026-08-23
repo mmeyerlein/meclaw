@@ -224,16 +224,30 @@ fn the_mark_says_who_handled_the_turn_and_guards_on_the_row_it_claims() {
 fn an_empty_facts_block_is_a_verdict_and_covers_its_turn() {
     // The half the issue is explicit about: an empty list is the front model
     // saying "nothing here", and re-asking a second model the same question is
-    // exactly the duplicate this package exists to stop. The block is still
-    // rejected for the fact lane -- there is nothing to insert -- but the turn is
-    // covered.
+    // exactly the duplicate this package exists to stop. So the turn is covered
+    // -- and covered with `nothing` rather than `inline` (wave 5, #298).
+    //
+    // The verdict used to leave through the `reject` port as well, on the
+    // grounds that there was nothing to insert. It no longer does, and the
+    // reason is the one #298 is about: a considered silence that travels on the
+    // refusal lane is indistinguishable from a refusal. Same route, same absence
+    // of a write -- so nothing downstream could tell "a model read this turn and
+    // found nothing" from "this block was garbage", and the queue could not tell
+    // an un-annotated turn (`pending`, the exception worth looking at) from an
+    // annotated-as-empty one. The answer is the emission now; only a block this
+    // lane genuinely cannot read still refuses (see
+    // `a_block_that_is_not_json_covers_nothing` below).
     let payload = serde_json::json!({"episode_id": "e7", "facts": []}).to_string();
     let msgs = emit(inline(&payload));
     let op = queue_op(&msgs).expect("an empty block still covers its episode");
     assert_eq!(covered(&op), vec!["e7".to_string()]);
+    assert_eq!(
+        op["set"]["status"], "nothing",
+        "an annotated-as-empty turn is its own status, not the one a block with content writes"
+    );
     assert!(
-        msgs.iter().any(|m| m["header"]["route"] == "reject"),
-        "an empty block has nothing to insert and still leaves through the reject port"
+        !msgs.iter().any(|m| m["header"]["route"] == "reject"),
+        "an answer is not a refusal: {msgs:?}"
     );
     assert!(
         staged(&msgs).is_none(),

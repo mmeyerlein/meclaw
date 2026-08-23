@@ -1,0 +1,102 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 180000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_CLOSER}",
+    "api_key": "${OPENROUTER_API_KEY}",
+    "base_url": "${MEMORY_LLM_BASE_URL:-https://openrouter.ai/api/v1}",
+    "temperature": 0,
+    "max_tokens": 8192,
+    "external_timeout_ms": 110000,
+    "system_order": [
+      "instructions"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "provider_extra": {
+      "reasoning": {
+        "effort": "${MEMORY_REASONING_CLOSE:-medium}"
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "description": "MODEL_CLOSER — REQUIRED, no default: a model default in code is how a run silently measures a different model than the report claims (P5 finding). Here it would also revoke a ruling: Q9 decides the close pass runs on a strong model, and a close pass that quietly falls back to a cheap one measures nothing and sharpens less than it costs"
+      },
+      "provider_extra": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "reasoning": {
+            "effort": "medium"
+          }
+        },
+        "description": "The provider overlay of this cell. Its one knob is the deliberation budget at provider_extra.reasoning.effort (MEMORY_REASONING_CLOSE) — set explicitly, never inherited from the provider default, and NOT minimal: a strong model asked to sharpen a session it is seeing whole is not a minimal-effort call. Declared as the overlay rather than as the flat `reasoning_effort` param because the overlay is applied last and wins over that param anyway; a setting named after the flat param would name a field this cell does not set."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm"
+    ]
+  },
+  "description": {
+    "purpose": "Reads a CLOSED session whole and sharpens what the turns left rough. Per-turn annotation (#298) is fast and blind in one direction: the front model annotates the turn it has just answered and cannot know the turn after it, so a correction three turns later, a value the conversation only settled at the end and a claim the session itself retracted all land as they were first said. This cell is the one place that sees the session as a whole, and Q9 rules its model class: one strong-model call per close.",
+    "use_when": "Called by close-glue exactly once per closed session, with the session's turns and the open facts they produced in the prompt. Never per turn — the whole value of this call is that the turns are already over.",
+    "not_in_scope": "It does not EXTRACT. A turn nobody annotated stays unannotated: reading the session again to mine it for facts the front model missed would rebuild the batch lane wave 5 deleted, on a more expensive tier. Its four-point contract is what makes that distinction checkable rather than a matter of tone. No store access either, and no writing of its own: what it proposes goes to the inline ingress, which canonicalises, deduplicates and supersedes it like any other block.",
+    "emits_meaning": "messages[]: one assistant turn holding the sharpening JSON. hop.finish_reason='error' is not a crash — close-glue closes the pass, says so on the report lane and leaves every fact the turns already wrote exactly as it found it.",
+    "consumes_meaning": "system.instructions.text: the four-point contract of the pass (what may be sharpened, what may be closed, what must be left alone, and the JSON shape). messages[]: one user turn with the session's turns and its open facts as JSON.",
+    "examples": [
+      "a session whose second turn said \"I live in Berlin\" and whose ninth said \"actually I moved to Lisbon last month\" -> the pass closes the first statement against the second instead of leaving two open claims on one axis",
+      "a session that mentioned a date only in passing (\"since the spring\") and pinned it later (\"March 3rd\") -> the same fact with a valid_from the turn-local annotation could not have known",
+      "a session where nothing was left rough -> an empty proposal. The pass ran, cost one call and changed nothing, and that is a correct outcome, not a failure"
+    ]
+  }
+}

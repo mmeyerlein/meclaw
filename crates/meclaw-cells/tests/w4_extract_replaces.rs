@@ -7,10 +7,10 @@
 //! ruling -- the north star of this memory is "resolve the conflict IN THE TURN",
 //! and the extractor is the only party that is present in the turn.
 //!
-//! So the extraction lane gains three things, and exactly three:
+//! So the extraction lane gained three things, and exactly three:
 //!
-//! 1. its vocabulary window (P1: the axes this memory already carries) now also
-//!    carries the OPEN STATEMENTS of those axes, hard budgeted, because an
+//! 1. its vocabulary window (P1: the axes this memory already carries) also
+//!    carried the OPEN STATEMENTS of those axes, hard budgeted, because an
 //!    extractor that cannot see a value cannot replace it;
 //! 2. a fact may carry `replaces`, naming a statement FROM THAT WINDOW;
 //! 3. a valid `replaces` becomes exactly the W3 write form -- `expired_at`,
@@ -22,11 +22,23 @@
 //! the rest -- it sees recently extract-closed statements on its axis pages and
 //! may contradict them, which is a revert in the W3 shape.
 //!
+//! **Point 1 is retired (wave 5, GitHub #298).** Per-turn extraction has no batch
+//! prompt and no vocabulary leg, so nothing builds a window page any more and the
+//! cases that pinned that leg -- the recency page, the whole-axis read, the axis
+//! hint, the parked window and its caps -- are gone with the mechanism. Points 2
+//! and 3 stand and are what this file still pins:
+//!
+//! * the PRODUCER of `replaces` is now the front model's annotation block, which
+//!   reaches `validate()` through the inline ingress and nowhere else;
+//! * the CONSUMER is unchanged -- the apply phase reads the `window` row back and
+//!   applies guard rail 3 against it, so a batch that meets no window closes
+//!   nothing at all rather than closing something unguarded. The direction guard
+//!   on top of it (GH #71) lives in `f7_closure_direction.rs`.
+//!
 //! Everything here runs the REAL `params.script_inline` of `extract-glue` and
 //! `dream-glue` against injected store replies, so no model is called and nothing
 //! costs anything. Whether an extractor USES `replaces` well is a model property
-//! and belongs to the paid scenario C15; the free scenario C14 proves the chain
-//! end to end on a real colony with the extractor's answer handed in.
+//! and belongs to the paid scenario C15.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -111,622 +123,36 @@ fn parked(msgs: &[serde_json::Value], kind: &str) -> Option<serde_json::Value> {
         })
 }
 
-/// One fact row in the shape the vocabulary leg projects it.
-fn fact_row(
-    id: &str,
-    subject: &str,
-    predicate: &str,
-    claim: &str,
-    from: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "id": id, "subject": subject, "canonical_subject": subject,
-        "predicate": predicate, "canonical_predicate": predicate,
-        "claim": claim, "canonical_claim": claim,
-        "valid_from": from, "recorded_at": from, "expired_at": null
-    })
-}
+/// The room and the cast an annotation block has to arrive with (#244), and the
+/// turn it speaks for. Per-turn extraction (#298) made the INLINE ingress the
+/// only producer that reaches `validate()`, so the three `replaces` cases below
+/// enter through it instead of through the retired `parse` phase.
+const CHANNEL: &str = "c-w4";
+const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
 
-/// A memory with one single-valued axis, one enumeration and one closed value.
-fn vocab_rows() -> serde_json::Value {
-    serde_json::json!([
-        fact_row("f1", "user", "favorite_editor", "favorite editor is helix", "2026-03-05T00:00:00Z"),
-        fact_row("f2", "user", "has_child", "has a child named ada", "2026-02-01T00:00:00Z"),
-        fact_row("f3", "user", "has_child", "has a child named ben", "2026-04-01T00:00:00Z"),
-        {"id": "f4", "subject": "user", "canonical_subject": "user",
-         "predicate": "lives_in", "canonical_predicate": "lives_in",
-         "claim": "lives in zone-a", "canonical_claim": "lives in zone-a",
-         "valid_from": "2026-01-06T00:00:00Z", "recorded_at": "2026-01-06T00:00:00Z",
-         "expired_at": "2026-02-06T00:00:00Z"}
-    ])
-}
-
-/// The cap of the window's own page, as the template declares it
-/// (`MEMORY_EXTRACT_WINDOW_ROWS`). Pinned against the read below, so a changed
-/// default cannot leave the boundary tests measuring a bound nobody applies.
-const WINDOW_MAX_ROWS: usize = 256;
-/// `WINDOW_POOL_AXES` of the template: twice the offered budget since GH #67, so
-/// the subject-matter selection at the prompt phase has something to choose from.
-const WINDOW_POOL_AXES: usize = 16;
-
-/// One row of the recency page, in the shape its narrow projection has.
-fn page_row(subject: &str, predicate: &str, from: &str) -> serde_json::Value {
-    serde_json::json!({
-        "subject": subject, "canonical_subject": subject,
-        "predicate": predicate, "canonical_predicate": predicate,
-        "valid_from": from
-    })
-}
-
-#[test]
-fn the_leg_opens_with_a_bounded_recency_page_over_the_open_facts() {
-    // GH #68: the read that used to open this leg was a `select` over `facts` with
-    // an empty `where`, no `limit` and no `distinct` -- the whole table travelled
-    // the mailbox so that two consumers could fold it down to a few hundred bytes.
-    // The leg now opens with the question the WINDOW actually asks: which axes did
-    // this memory touch most recently, of the ones that are still open.
-    let msgs = emit_x(x_reply("vocab-fetch", "insert", serde_json::json!([])));
-    assert_eq!(msgs.len(), 1, "one read, not a fan-out");
-    let args = args_of(&msgs[0]);
-    assert_eq!(args["operation"], "select");
-    assert_eq!(args["table"], "facts");
-    assert_eq!(
-        args["where"],
-        serde_json::json!({"expired_at": {"is_null": true}}),
-        "a closed statement cannot be closed again, so it never belongs on this page"
-    );
-    assert_eq!(
-        args["order_by"][0],
-        serde_json::json!({"col": "valid_from", "dir": "desc"}),
-        "stated ordering: most recently asserted first -- a replacement lands on \
-         the axis the conversation just touched"
-    );
-    assert!(
-        args["limit"].as_i64().unwrap_or_default() >= 1,
-        "the page has no bound: {args}"
-    );
-    assert_eq!(
-        args["columns"],
-        serde_json::json!([
-            "subject",
-            "canonical_subject",
-            "predicate",
-            "canonical_predicate",
-            "valid_from"
-        ]),
-        "this page only PICKS axes, so it carries no claim, no id and no history \
-         -- the rows it does carry stay cheap"
-    );
-}
-
-/// A recency page holding two axes of one subject.
-fn scan_page() -> serde_json::Value {
-    serde_json::json!([
-        page_row("user", "favorite_editor", "2026-03-05T00:00:00Z"),
-        page_row("user", "has_child", "2026-02-01T00:00:00Z"),
-        page_row("user", "has_child", "2026-04-01T00:00:00Z")
-    ])
-}
-
-#[test]
-fn the_window_reads_its_candidate_axes_whole() {
-    // The paging (GH #68), and the reason it is paging rather than one capped
-    // scan: rule 2 of the window is a COUNT ("an axis with more open statements
-    // than one page is SKIPPED"), and a count can only be taken on a complete
-    // axis. The recency page picks the axes, this read fetches them entirely --
-    // a bucket seen through a cut-off scan looks like a short axis, and a
-    // replacement on it deletes an answer that is true.
-    let msgs = emit_x(x_reply("window-scan", "select", scan_page()));
-    assert_eq!(msgs.len(), 1, "one read, not a fan-out");
-    let args = args_of(&msgs[0]);
-    assert_eq!(args["operation"], "select");
-    assert_eq!(args["table"], "facts");
-    assert_eq!(
-        args["where"]["expired_at"],
-        serde_json::json!({"is_null": true})
-    );
-    assert_eq!(
-        args["where"]["canonical_subject"]["in"],
-        serde_json::json!(["user"]),
-        "the axes of the page, and nothing else, decide what this read costs"
-    );
-    assert_eq!(
-        args["where"]["canonical_predicate"]["in"],
-        serde_json::json!(["favorite_editor", "has_child"])
-    );
-    assert_eq!(
-        args["order_by"],
-        serde_json::json!([{"col": "canonical_subject"}, {"col": "canonical_predicate"},
-                           {"col": "valid_from"}, {"col": "id"}]),
-        "stated ordering: axis-major, so a full page has exactly ONE axis it \
-         cannot prove complete -- its last"
-    );
-    assert_eq!(
-        args["limit"].as_u64().unwrap_or_default() as usize,
-        WINDOW_MAX_ROWS,
-        "the second page is bounded too"
-    );
-    let cols = args["columns"].as_array().expect("columns").clone();
-    for needed in [
-        "id",
-        "claim",
-        "canonical_claim",
-        "valid_from",
-        "recorded_at",
-    ] {
-        assert!(
-            cols.iter().any(|c| c == needed),
-            "the replacement window needs {needed}, got {}",
-            args["columns"]
-        );
-    }
-}
-
-#[test]
-fn a_memory_without_an_open_statement_pages_nothing_and_still_hints() {
-    // No open fact, no window -- and the leg must not stall there: the axis hint
-    // is independent of the window and the batch is waiting behind it.
-    let msgs = emit_x(x_reply("window-scan", "select", serde_json::json!([])));
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(
-        args_of(&msgs[0])["distinct"],
-        serde_json::json!(true),
-        "the leg went on with the axis hint: {msgs:?}"
-    );
-}
-
-#[test]
-fn the_axis_hint_is_deduplicated_at_the_store_and_capped() {
-    // The other half of #68, and the one the issue is named after. The hint asks
-    // a SET question -- which axes exist -- so the dedup happens where the rows
-    // are and the cap counts axes instead of facts.
-    let msgs = emit_x(x_reply("window-page", "select", vocab_rows()));
-    let read = msgs
-        .iter()
-        .map(args_of)
-        .find(|a| a["operation"] == "select")
-        .expect("the axis hint is read");
-    assert_eq!(read["table"], "facts");
-    assert_eq!(
-        read["distinct"],
-        serde_json::json!(true),
-        "an undeduplicated hint read hands the whole memory to the mailbox to \
-         produce a list of axes: {read}"
-    );
-    assert_eq!(
-        read["where"],
-        serde_json::json!({}),
-        "the AXIS hint still reads every row: an axis whose values are all closed \
-         is still the axis a new value belongs on"
-    );
-    assert_eq!(
-        read["columns"],
-        serde_json::json!([
-            "subject",
-            "canonical_subject",
-            "predicate",
-            "canonical_predicate"
-        ]),
-        "and only the four columns an axis IS -- the dedup is over exactly them"
-    );
-    assert_eq!(
-        read["order_by"],
-        serde_json::json!([{"col": "canonical_subject"}, {"col": "canonical_predicate"},
-                           {"col": "subject"}, {"col": "predicate"}]),
-        "stated ordering, subject-major: the cap then cuts whole subjects off the \
-         tail instead of half an axis list out of the middle"
-    );
-    assert!(
-        read["limit"].as_i64().unwrap_or_default() >= 1,
-        "the hint read has no bound: {read}"
-    );
-}
-
-#[test]
-fn every_read_of_the_leg_states_an_order_and_a_bound() {
-    // The pin of GH #68 over the whole leg rather than per read: whatever the
-    // vocabulary leg asks the store, the ANSWER is bounded -- because the answer
-    // is what travels the mailbox. The one read with an empty `where` is the axis
-    // hint, and it pays for that with a store-side dedup.
-    for (phase, operation, rows) in [
-        ("vocab-fetch", "insert", serde_json::json!([])),
-        ("window-scan", "select", scan_page()),
-        ("window-page", "select", vocab_rows()),
-    ] {
-        for op in emit_x(x_reply(phase, operation, rows)).iter().map(args_of) {
-            if op["operation"] != "select" {
-                continue;
-            }
-            assert!(
-                op["limit"].as_i64().unwrap_or_default() >= 1,
-                "phase {phase} reads without a bound: {op}"
-            );
-            assert!(
-                !op["order_by"].as_array().map(Vec::is_empty).unwrap_or(true),
-                "phase {phase} caps a read whose order is undefined: {op}"
-            );
-            if op["where"] == serde_json::json!({}) {
-                assert_eq!(
-                    op["distinct"],
-                    serde_json::json!(true),
-                    "phase {phase} scans every row of the table: {op}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn the_window_is_parked_next_to_the_vocabulary_under_the_same_batch() {
-    // A code cell holds no state and the window has to survive the model call, so
-    // it is parked exactly the way the batch and the vocabulary are (DEC-009).
-    // Under the SAME key, because the apply phase reads that key back as one
-    // result set and the guard rail is checked there.
-    let msgs = emit_x(x_reply("vocab", "select", vocab_rows()));
-    let vocab = parked(&msgs, "vocab").expect("the vocabulary hint is still parked");
-    assert_eq!(
-        vocab["user"],
-        serde_json::json!(["favorite_editor", "has_child", "lives_in"]),
-        "the P1 hint is unchanged -- the reads moved, the payload did not"
-    );
-    let msgs = emit_x(x_reply("window-page", "select", vocab_rows()));
-    // GH #67: the page parks the POOL. Which of these axes reaches the prompt is
-    // decided one phase later, where the turns are -- the claim of this pin is
-    // unchanged, it is about which axes the READ offers at all.
-    let window = parked(&msgs, "window-pool").expect("the pool is parked");
-    for op in msgs.iter().map(args_of) {
-        if op["table"] == "scratch" {
-            assert_eq!(op["row"]["key"], BATCH, "both halves park under the batch");
-        }
-    }
-    let names: Vec<&str> = window
-        .as_array()
-        .expect("window is a list of axes")
-        .iter()
-        .map(|a| a["predicate"].as_str().unwrap_or_default())
-        .collect();
-    assert!(
-        names.contains(&"favorite_editor") && names.contains(&"has_child"),
-        "every axis with open statements is offered: refusing to replace an \
-         enumeration is the EXTRACTOR's answer, not the lane's guess ({names:?})"
-    );
-    assert!(
-        !names.contains(&"lives_in"),
-        "a closed statement has its answer already and cannot be closed again \
-         ({names:?})"
-    );
-}
-
-#[test]
-fn the_window_carries_the_id_the_value_and_the_instant() {
-    let msgs = emit_x(x_reply("window-page", "select", vocab_rows()));
-    let window = parked(&msgs, "window-pool").expect("pool");
-    let axis = window
-        .as_array()
-        .expect("axes")
-        .iter()
-        .find(|a| a["predicate"] == "has_child")
-        .cloned()
-        .expect("the enumeration axis");
-    assert_eq!(axis["subject"], "user");
-    assert_eq!(
-        axis["statements"],
-        serde_json::json!([
-            {"id": "f2", "claim": "has a child named ada", "since": "2026-02-01T00:00:00Z",
-             "last_asserted": "2026-02-01T00:00:00Z"},
-            {"id": "f3", "claim": "has a child named ben", "since": "2026-04-01T00:00:00Z",
-             "last_asserted": "2026-04-01T00:00:00Z"}
-        ]),
-        "oldest first, one entry per STATEMENT, with the id a `replaces` has to name. \
-         The second instant is GH #71: the apply phase compares it against the fact \
-         that wants to replace the statement, and on a statement asserted once the \
-         two are the same value"
-    );
-}
-
-#[test]
-fn two_assertions_of_one_value_are_one_statement_and_offer_the_live_one() {
-    // W2's identity, one lane over: the extractor is shown VALUES, not rows, and
-    // the id it may close is the assertion still standing. Offering the older one
-    // would collide with the closure the chain re-derives by itself every night.
-    let rows = serde_json::json!([
-        fact_row(
-            "y1",
-            "user",
-            "practices",
-            "yoga twice a week",
-            "2026-01-05T00:00:00Z"
-        ),
-        fact_row(
-            "y2",
-            "user",
-            "practices",
-            "yoga twice a week",
-            "2026-05-05T00:00:00Z"
-        )
-    ]);
-    let msgs = emit_x(x_reply("window-page", "select", rows));
-    let window = parked(&msgs, "window-pool").expect("pool");
-    assert_eq!(
-        window[0]["statements"],
-        serde_json::json!([
-            {"id": "y2", "claim": "yoga twice a week", "since": "2026-01-05T00:00:00Z",
-             "last_asserted": "2026-05-05T00:00:00Z"}
-        ]),
-        "one statement, named by its live assertion, dated by its first and -- since \
-         GH #71 -- by its last: a statement still being asserted after the fact that \
-         wants to replace it is not ended by it"
-    );
-}
-
-#[test]
-fn an_axis_longer_than_one_page_is_skipped_and_the_window_is_capped() {
-    // The budget, and it is two rules rather than one. A page that is TOO LONG is
-    // dropped whole (the W3 lesson: a producer that sees six of seventy plans
-    // cannot tell it is a bucket, and a wrong closure there deletes an answer that
-    // is true), and the number of axes is capped because this window is prompt
-    // payload on the lane that runs while someone is talking.
-    let mut rows = vec![];
-    for i in 0..7 {
-        rows.push(fact_row(
-            &format!("p{i}"),
-            "user",
-            "planned_activity",
-            &format!("plan number {i}"),
-            &format!("2026-04-0{}T00:00:00Z", i + 1),
-        ));
-    }
-    // ten axes of two statements each, so the cap has something to cut
-    for i in 0..10 {
-        for j in 0..2 {
-            rows.push(fact_row(
-                &format!("a{i}-{j}"),
-                "user",
-                &format!("axis_{i}"),
-                &format!("value {i}-{j}"),
-                &format!("2026-0{}-0{}T00:00:00Z", i % 9 + 1, j + 1),
-            ));
-        }
-    }
-    let msgs = emit_x(x_reply(
-        "window-page",
-        "select",
-        serde_json::Value::Array(rows),
-    ));
-    let window = parked(&msgs, "window-pool").expect("pool");
-    let axes = window.as_array().expect("axes");
-    let names: Vec<&str> = axes
-        .iter()
-        .map(|a| a["predicate"].as_str().unwrap_or_default())
-        .collect();
-    assert!(
-        !names.contains(&"planned_activity"),
-        "a bucket bigger than the page is SKIPPED, not truncated ({names:?})"
-    );
-    assert!(
-        axes.len() <= WINDOW_POOL_AXES,
-        "the pool is capped over all axes, got {} axes",
-        axes.len()
-    );
-    assert_eq!(
-        names[0], "axis_8",
-        "most recently asserted axis first -- a replacement lands on an axis the \
-         conversation just touched, and the budget has to spend itself there ({names:?})"
-    );
-}
-
-/// A window page of `n` rows in the order the store returns it (axis-major):
-/// one short axis at the head, a long one filling the middle, one short axis at
-/// the tail.
-fn full_page(n: usize) -> serde_json::Value {
-    let mut rows = vec![
-        fact_row(
-            "h1",
-            "user",
-            "aaa_head",
-            "head value one",
-            "2026-01-01T00:00:00Z",
-        ),
-        fact_row(
-            "h2",
-            "user",
-            "aaa_head",
-            "head value two",
-            "2026-01-02T00:00:00Z",
-        ),
-    ];
-    let tail = 3;
-    for i in 0..n - rows.len() - tail {
-        rows.push(fact_row(
-            &format!("m{i}"),
-            "user",
-            "mmm_middle",
-            &format!("middle value {i}"),
-            "2026-02-01T00:00:00Z",
-        ));
-    }
-    for i in 0..tail {
-        rows.push(fact_row(
-            &format!("t{i}"),
-            "user",
-            "zzz_tail",
-            &format!("tail value {i}"),
-            "2026-08-0{i}T00:00:00Z",
-        ));
-    }
-    assert_eq!(rows.len(), n);
-    serde_json::Value::Array(rows)
-}
-
-/// The predicates the window offers for a given page.
-fn offered_axes(page: serde_json::Value) -> Vec<String> {
-    let msgs = emit_x(x_reply("window-page", "select", page));
-    parked(&msgs, "window-pool")
-        .unwrap_or_else(|| serde_json::json!([]))
-        .as_array()
-        .expect("axes")
-        .iter()
-        .map(|a| a["predicate"].as_str().unwrap_or_default().to_string())
-        .collect()
-}
-
-#[test]
-fn a_page_that_fills_its_cap_drops_the_one_axis_it_cannot_prove_complete() {
-    // GH #68, the boundary. A page that came back FULL is a page the store may
-    // have cut, and because it is axis-major there is exactly one axis that may
-    // continue past it: the last. Its statement count is unknown, and counting an
-    // unknown is precisely the bucket mistake ("a producer that sees six of
-    // seventy plans cannot tell it is a bucket") in a page-shaped disguise. So it
-    // is dropped, while every axis before it stays proven and offered.
-    let cut = offered_axes(full_page(WINDOW_MAX_ROWS));
-    assert!(
-        cut.contains(&"aaa_head".to_string()),
-        "a store big enough to trip the cap lost the window it still had: {cut:?}"
-    );
-    assert!(
-        !cut.contains(&"zzz_tail".to_string()),
-        "the unproven axis at the cut was offered anyway: {cut:?}"
-    );
-    // One row short of the cap the store proved it returned everything, so the
-    // very same axis is offered. The bound is the ONLY difference between the two.
-    let whole = offered_axes(full_page(WINDOW_MAX_ROWS - 1));
-    assert!(
-        whole.contains(&"zzz_tail".to_string()) && whole.contains(&"aaa_head".to_string()),
-        "a page that fits under the cap must offer its tail axis: {whole:?}"
-    );
-    assert!(
-        !whole.contains(&"mmm_middle".to_string()),
-        "the bucket in the middle is refused for its LENGTH, cap or no cap: {whole:?}"
-    );
-}
-
-/// The instructions the extractor receives for a batch that meets `window` at
-/// the join-less meeting point.
-fn instructions_for(window: Option<serde_json::Value>) -> String {
-    let items = serde_json::json!([
-        {"episode_id": "e9", "sender": "user", "content": "I use zed now."}
-    ]);
-    let mut rows = vec![
-        serde_json::json!({"key": BATCH, "kind": "batch", "payload": items.to_string()}),
-        serde_json::json!({"key": BATCH, "kind": "vocab",
-                           "payload": "{\"user\": [\"favorite_editor\"]}"}),
-    ];
-    if let Some(w) = window {
-        rows.push(serde_json::json!({"key": BATCH, "kind": "window-pool",
-                                     "payload": w.to_string()}));
-    }
-    let msgs = emit_x(x_reply("prompt", "select", serde_json::Value::Array(rows)));
-    let call = msgs
-        .iter()
-        .find(|m| m["header"]["route"] == "extract")
-        .expect("the extractor call");
-    call["system"]["instructions"]["text"]
-        .as_str()
-        .expect("instructions text")
-        .to_string()
-}
-
-/// One offered axis in the shape the window is parked in.
-fn offered_window() -> serde_json::Value {
-    serde_json::json!([{
-        "subject": "user", "predicate": "favorite_editor",
-        "statements": [
-            {"id": "f1", "claim": "favorite editor is helix", "since": "2026-03-05T00:00:00Z"}
-        ]
-    }])
-}
-
-#[test]
-fn the_prompt_shows_the_open_statements_with_the_id_a_replaces_has_to_name() {
-    // Guard rail 3 read from the other end: the extractor can only ever name what
-    // this block contains, so the block IS the contract. The id has to be in the
-    // rendered text -- a window the model cannot quote is a window it cannot use.
-    let text = instructions_for(Some(offered_window()));
-    assert!(
-        text.contains("favorite editor is helix"),
-        "the current VALUE is missing from the prompt:\n{text}"
-    );
-    assert!(
-        text.contains("f1"),
-        "the id is the reference the parse path validates, so it has to be \
-         rendered:\n{text}"
-    );
-    assert!(
-        text.contains("2026-03-05T00:00:00Z"),
-        "since when the statement holds is what lets a model tell an update from \
-         an addition:\n{text}"
-    );
-    assert!(
-        text.contains("replaces"),
-        "the answer shape has to name the field or nothing can come back:\n{text}"
-    );
-}
-
-#[test]
-fn the_prompt_rules_are_the_p1_discipline_one_dimension_over() {
-    // The three rules ruling Q2 option C asks for, in the prompt rather than in a
-    // comment: replace only the same matter, never an enumeration, and when in
-    // doubt do not -- because the night is the party that can still decide it.
-    let text = instructions_for(Some(offered_window()));
-    let lower = text.to_lowercase();
-    for needle in [
-        "enumerat",
-        "coexist",
-        "not in the list",
-        "leave `replaces` out",
-    ] {
-        assert!(
-            lower.contains(&needle.to_lowercase()),
-            "the replacement rules are missing {needle:?}:\n{text}"
-        );
-    }
-    assert!(
-        text.contains("has_child") || lower.contains("second child"),
-        "the enumeration case needs a NAMED example, the way every other rule of \
-         this prompt carries one:\n{text}"
-    );
-}
-
-#[test]
-fn a_batch_without_a_window_carries_no_replacement_block_at_all() {
-    // The inline ingress and every batch from before this package meet no window
-    // row. The prompt must then not offer a field whose only legal values do not
-    // exist -- and the P1 prompt has to survive untouched, which is what makes
-    // this package additive.
-    let text = instructions_for(None);
-    assert!(
-        !text.contains("`replaces`"),
-        "a prompt without a window invited a replacement it cannot honour:\n{text}"
-    );
-    assert!(text.contains("WORLD STATE") && text.contains("snake_case"));
-    assert!(
-        text.contains("favorite_editor"),
-        "the P1 axis hint is independent of the window and stays"
-    );
-}
-
-/// The extractor's answer as the return edge delivers it.
-fn extractor_answer(text: &str) -> serde_json::Value {
+/// One annotation block as the `inline-extraction` port edge delivers it.
+fn annotation(text: &str) -> serde_json::Value {
     serde_json::json!({
         "header": {
-            "context": {"store_origin": "extract", "mem_phase": "parse", "batch_id": BATCH},
-            "hop": {"finish_reason": "stop"}
+            "context": {"store_origin": "inline", "mem_phase": "inline",
+                        "session_id": "s2", "channel": CHANNEL, "audience_set": AUDIENCE},
+            "hop": {}
         },
-        "messages": [{"origin": "assistant", "type": "text", "text": text}]
+        "messages": [{"origin": "user", "type": "text", "text": text}]
     })
 }
 
-const ONE_REPLACEMENT: &str = r#"{"facts":[
+const ONE_REPLACEMENT: &str = r#"{"episode_id":"e9","facts":[
   {"episode_id":"e9","subject":"user","predicate":"favorite_editor",
    "claim":"favorite editor is zed","fact_kind":"world","replaces":"f1","confidence":90}]}"#;
 
 #[test]
 fn the_replaces_signal_survives_the_validator_into_the_staged_payload() {
-    // The lane is a state machine over a stateless cell: what `parse` does not
+    // The lane is a state machine over a stateless cell: what the ingress does not
     // carry into `scratch` is gone by the time the facts are written. The signal
     // travels with its fact, not next to it -- one fact replaces one statement,
     // and a second list would have to be re-joined to the first.
-    let msgs = emit_x(extractor_answer(ONE_REPLACEMENT));
+    let msgs = emit_x(annotation(ONE_REPLACEMENT));
     let staged = parked(&msgs, "payload").expect("the payload is staged");
     assert_eq!(staged["facts"][0]["replaces"], "f1");
     assert_eq!(
@@ -737,10 +163,11 @@ fn the_replaces_signal_survives_the_validator_into_the_staged_payload() {
 
 #[test]
 fn a_fact_without_the_field_stages_an_empty_signal() {
-    // `replaces` is OPTIONAL, and the P1/P2 answer shape has to keep working
+    // `replaces` is OPTIONAL, and the ordinary answer shape has to keep working
     // unchanged: the overwhelming majority of extracted facts replace nothing.
-    let msgs = emit_x(extractor_answer(
-        r#"{"facts":[{"episode_id":"e9","subject":"user","predicate":"has_child",
+    let msgs = emit_x(annotation(
+        r#"{"episode_id":"e9","facts":[{"episode_id":"e9","subject":"user",
+                      "predicate":"has_child",
                       "claim":"has a child named ben","fact_kind":"world"}]}"#,
     ));
     let staged = parked(&msgs, "payload").expect("payload");
@@ -752,9 +179,10 @@ fn a_replaces_that_is_not_a_plain_reference_is_flattened_not_trusted() {
     // A model that answers with an object, a list or a number must not put a
     // structure into the `where` of a store op. The validator drops everything
     // it cannot read as ONE reference -- the same discipline every other field of
-    // this validator follows, and the reason bad items never abort a batch.
-    let msgs = emit_x(extractor_answer(
-        r#"{"facts":[{"episode_id":"e9","subject":"user","predicate":"favorite_editor",
+    // this validator follows, and the reason bad items never abort a block.
+    let msgs = emit_x(annotation(
+        r#"{"episode_id":"e9","facts":[
+                     {"episode_id":"e9","subject":"user","predicate":"favorite_editor",
                       "claim":"favorite editor is zed","fact_kind":"world",
                       "replaces":{"id":"f1"}},
                      {"episode_id":"e9","subject":"user","predicate":"lives_in",

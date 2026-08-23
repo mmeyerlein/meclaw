@@ -58,7 +58,7 @@
         },
         {
           "route": "turn_write",
-          "because": "the same batch after every stored turn, off unless the instance switches it on"
+          "because": "ONE finished turn per message after every stored turn and every stored answer -- never a batch (GH #298, ruling Q11): one user/assistant turn in messages[], hop.turn_id '<session_id>#<index>', hop.turn_index and hop.happened_at beside it, which is the shape a memory hive's episode lane reads. An occasion may carry several messages, one per turn not yet written. On unless the instance switches the collector's turn_write knob off"
         },
         {
           "route": "recall",

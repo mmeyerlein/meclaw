@@ -40,8 +40,9 @@ fn templates_root() -> std::path::PathBuf {
 /// Every `${VAR:-default}` a script carries, as `VAR -> default`.
 ///
 /// A bare `${VAR}` is deliberately absent: it declares no default, so it is not
-/// a second opinion about one. Same substitution rule as `f9_inline_contract`
-/// and as the colony's own at instantiation.
+/// a second opinion about one. Same substitution rule as
+/// `gh299_the_contract_asks_for_both_parts` and as the colony's own at
+/// instantiation.
 fn inline_defaults(script: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let mut rest = script;

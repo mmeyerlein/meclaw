@@ -97,8 +97,6 @@ PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen vier Reads wir
 PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all four reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
 PIN-read-filter-broken-uuid-de	docs/meclaw-overview.md	`trace_id`/`correlation_id` keine gültige UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
 PIN-read-filter-broken-uuid-en	docs/meclaw-overview.en.md	`trace_id`/`correlation_id` not a valid UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
-PIN-graph-scope-alias-de	docs/meclaw-overview.md	nimmt einen Top-Level-`{ scope }` weiterhin als Alias an	pinned	the_deprecated_top_level_scope_still_filters
-PIN-graph-scope-alias-en	docs/meclaw-overview.en.md	still accepts a top-level `{ scope }` as an alias	pinned	the_deprecated_top_level_scope_still_filters
 PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
 PIN-graph-edge-default-en	docs/meclaw-overview.en.md	is there **always, on both values**	pinned	every_edge_object_names_its_phase
 #

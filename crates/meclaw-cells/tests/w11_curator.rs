@@ -860,8 +860,9 @@ fn the_shipped_contract_declares_every_new_knob_and_key() {
         );
     }
     assert_eq!(
-        v["contract"]["version"], "1.2.0",
+        v["contract"]["version"], "1.3.0",
         "wave 11 added a lane and seven hop keys; wave 13 moved every setting \
-         off the environment onto params -- both are minor versions"
+         off the environment onto params; GH #372 added `consumes.hop.handoff_calls` \
+         -- all three are minor versions, because none of them takes anything away"
     );
 }

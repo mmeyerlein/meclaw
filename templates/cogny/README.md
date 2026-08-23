@@ -1,12 +1,12 @@
-# `cogny@3.0.11`
+# `cogny@4.0.0`
 
 The agent core as one template. Four units under one hive:
-[`collector@2`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
+[`collector@3`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
 template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
 `brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@2`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky@4`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and the memory it reads is the member's central hive rather
@@ -35,10 +35,12 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 - **An answer that is an event.** The advice leaves on the ordinary `answer` route and
   becomes the asking talky's `in_advice` event -- which is why the same lane carries a
   *question back* without a second mechanism.
-- **Nobody waits.** The consult is classified async at the talky's dispatcher
-  (`DISPATCHER_ASYNC_TOOLS=consult_cogny,ask_memory`), so the talky's fan-in opens no
-  expectation for it. Thinking time never races an idle window. That property lives on the
-  *talky* side; this template is the half that is allowed to be slow.
+- **Nobody waits.** The consult is classified at the talky's dispatcher
+  (`DISPATCHER_HANDOFF_TOOLS=consult_cogny,ask_memory` -- a handoff is async and says in
+  the same breath that the answer comes from a later turn, GH #372), so the talky's fan-in
+  opens no expectation for it and the round it leaves behind is over. Thinking time never
+  races an idle window. That property lives on the *talky* side; this template is the half
+  that is allowed to be slow.
 - **And a lookup does not wait either (1.1.0).** The seam has two lanes. A memory question
   and a research question are two classes with two answer times, and one `llm` cell is one
   serial mailbox -- so the class picks a *cell*, not a parameter. See
@@ -48,7 +50,7 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window}` | `code`, `store` | `collector@2` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector@3` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
 | `brain` | `llm` | this template -- the thinking lane |
 | `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
@@ -64,13 +66,13 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.2"}}
+{"cell": {"type": "ref", "template": "collector@3.0.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.2`, with
-`cogny@3.0.11` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
+`cogny@4.0.0` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -264,11 +266,20 @@ class flipped to `'consult'`. The deep lane then answers, one extra assembly lat
 misclassification costs about two seconds -- still cheaper than the fifteen this version
 abolishes, and infinitely cheaper than a wrong answer.
 
-> **Wire `escalate_to_deep` into `DISPATCHER_ASYNC_TOOLS`.** The escalation is answered on
-> a lane of its own (a new turn), not inside the round it left. Declared async, the
-> dispatcher names its id in `hop.async_calls`, the fan-in opens no expectation and the
-> abandoned round is filed as already fired. Left undeclared, that round stays open until
-> the idle exit and re-enters the seam for nothing.
+> **Wire `escalate_to_deep` into `DISPATCHER_HANDOFF_TOOLS`.** The escalation is answered
+> on a lane of its own (a new turn), not inside the round it left. A handoff tool is async
+> by definition -- the two lists are unioned -- so the one declaration does both jobs: the
+> dispatcher names its id in `hop.async_calls` *and* in `hop.handoff_calls`, the fan-in
+> opens no expectation, and the abandoned round is filed as already fired **even though the
+> escalation carries no sentence of its own** (the seed prompt says "say nothing else").
+>
+> Declaring it in `DISPATCHER_ASYNC_TOOLS` alone is no longer enough since
+> [#372](https://github.com/mmeyerlein/meclaw/issues/372): an async call with no text and
+> no handoff mark leaves its round OPEN on purpose, so the brain gets the iteration it has
+> not spent instead of the channel getting nothing. For a bare `remember` that is the fix;
+> for the escalation it would be one wasted fast-lane inference, and the deep lane's turn
+> would defer behind the round it is supposed to replace. Left out of **both** lists, the
+> round stays open until the idle exit and re-enters the seam for nothing.
 
 ## The internal wiring, edge by edge
 
@@ -340,7 +351,7 @@ once.
 | `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` tool; empty = tool off |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
-| `turn_write` | param | `""` | collector -- per-turn episodes; empty = off. Belongs at the **talky**, not here -- see below |
+| `turn_write` | param | `"1"` | collector -- per-turn episodes, **on by default** since GH #298. The write belongs at the **talky**, not here: set it to `"0"` at the core unless the core's own `turn_write` route is wired -- see below |
 | `context_window` | param | `0` | collector -- **the curator's budget in tokens**; `0`/empty = curation off. This is the knob the core wants and the channel voice does not: a cogny is exactly the shape the curator was built for (few turns, huge tool results), a talky is the other one |
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
@@ -348,7 +359,8 @@ once.
 | `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **This composite does not wire it** and a parent cannot: the edge is `./dispatcher -> ./collector` on `hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, which lives in this template's own `params.graph` and needs the same `escalate_to_deep`-style exclusion on the tool exit. Until it is drawn, the stubs the curator leaves have no way back -- so switching `context_window` on here means switching curation on without a recall path |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. **`escalate_to_deep` belongs here** (1.1.0); the `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries all three |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. The `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries them all |
+| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. **`escalate_to_deep` belongs here** (GH #372, before that in `DISPATCHER_ASYNC_TOOLS`); naming it here declares it async as well. So do `consult_cogny` / `ask_memory` on the talky side -- an advisor's answer arrives as its own turn |
 
 **Every `env` knob above and everywhere else in a cogny tree is an EXPERIMENTAL config
 surface.** They are colony-global by construction and will follow the collector's knobs onto
@@ -368,7 +380,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@3.0.11", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.0.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -392,9 +404,13 @@ the override behaves exactly as before.
 the turns of a consultation, the talky sees the conversation -- so the per-turn write belongs
 on the **talky's** collector, exactly where the close batch already goes. Colony-wide it also
 fired at the core's collector, whose `turn_write` route is either unrouted (a dead letter per
-consult turn) or, worse, wired to the same drain, where a second session's turns land in
-memory as if somebody had said them. Set it on the talky that owns the write route, and the
-core never sees it.
+consult turn) or, worse, wired to the same memory, where a second session's turns land as if
+somebody had said them. Being a param, it is decided per collector -- and since GH #298 it
+is decided in the other direction: the knob ships **on**, because it is the only path from a
+conversation into an episodes table and an agent that ships with it off remembers nothing.
+**A core whose `turn_write` route is unwired therefore needs `"turn_write": "0"` in its
+`override_params`**, and that is the one knob this composite expects a parent to switch off
+rather than on.
 
 **`ctx.model` and `ctx.model_fast` are the instantiation-class knobs** and both are
 strict: `add_nodes` without either is rejected with `ctx_key_missing`. Two equally valid

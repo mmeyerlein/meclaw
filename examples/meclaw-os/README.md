@@ -1,7 +1,7 @@
 # examples/meclaw-os
 
 An empty folder, a template library, and one declaration. Out of that: a screened,
-session-keeping, memory-draining conversational agent, seventeen cells, no new Rust.
+session-keeping conversational agent, fifteen cells, no new Rust.
 
 This is the example the other three build up to. `hello` shows you a cell, `swarm` shows you a
 loop, `telegram-research` shows you a real agent written out node by node. This one writes
@@ -15,7 +15,7 @@ meclaw-os/
 ├── seed/                      the --root of the colony. This is the whole tree.
 │   ├── colony.json            substrate defaults. two lines.
 │   └── main/config.json       type: "hive", and its graph is EMPTY
-├── grow.json                  the declaration. five nodes, seven edges.
+├── grow.json                  the declaration. four nodes, six edges.
 ├── grow-cogny.json            step two: the thinking core. one node, two edges.
 └── grow-steward.json          step three: the control loop. one node, one edge.
 ```
@@ -24,7 +24,7 @@ That is **three files**, and none of them is a cell. There is no door in here, n
 agent, no memory, no screening and no persona -- every one of those arrives from `templates/`,
 at runtime, into a colony that is already up.
 
-Two of the five templates were extracted out of this folder to make that true: the
+Two of the four templates were extracted out of this folder to make that true: the
 [`door@1`](../../templates/door/) that names the ingress lane, and the
 [`terminal@1`](../../templates/terminal/) that every outbound lane ends in. They used to be
 "the two cells a library cannot ship". They turned out to be the two cells a library *should*
@@ -32,18 +32,17 @@ ship -- generic, ten lines each, and needed by every tree.
 
 ## What grows
 
-`grow.json` names five templates and draws the edges between them:
+`grow.json` names four templates and draws the edges between them:
 
 | node | from template | what it brings |
 |---|---|---|
 | `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
 | `/firewall` | [`firewall@1`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer, and an `llm` brain, with all twelve internal edges pre-wired. |
-| `/drain` | [`memory-drain`](../../templates/memory-drain/) | 2 cells. Turns a closed session into one episode per turn, idempotently. |
 | `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for four lanes that have not been decided yet. |
 
 ```
-                       grow.json draws these seven
+                        grow.json draws these six
 
   POST /messages
         |
@@ -57,18 +56,26 @@ ship -- generic, ten lines each, and needed by every tree.
                             │                       ⋮
                             │              /talky/collector
                             │                    │           │
-                            │              answer│           │write
-                            │                    v           v
-                            └──reject──────>  /sink  <──episode── /drain
+                            │              answer│           │turn_write
+                            │                    v           │
+                            └──reject──────>  /sink  <───────┘
                                                 ^
                             /talky/errors ──error┘
 ```
 
-Four of those seven edges end in `/sink`, and that is the honest part of this example: an
-answer, a rejection, an error report and a drained episode are **four different decisions**, and
+Four of those six edges end in `/sink`, and that is the honest part of this example: an
+answer, a rejection, an error report and a finished turn are **four different decisions**, and
 this example makes none of them for you. In a real tree the answer goes back out of the surface,
-the rejection into a log, the error onto an alarm, and the episode into a memory hive's
+the rejection into a log, the error onto an alarm, and the turn into a memory hive's
 in_episode lane. Here they all stop in one place so you can watch them arrive in the trace.
+
+**Retraction (GH #298, ruling Q11).** Until this version the fourth lane came out of a
+`memory-drain` node that cut the talky's close batch into single turns. It is gone from this
+declaration, and gone rather than moved: the collector emits one message per turn on
+`turn_write` itself — `hop.turn_id`, `hop.turn_index`, `hop.happened_at` — which is the shape a
+memory hive's `in_episode` lane reads, so there is nothing left for a decomposer to do. What
+this example loses with it is a hive it never had a memory behind anyway; what it keeps is the
+lane, ending where every undecided lane here ends.
 
 ## Run it
 
@@ -96,7 +103,7 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
      -d @examples/meclaw-os/grow.json
 ```
 
-Reload the registry. Seventeen cells.
+Reload the registry. Fifteen cells.
 
 `MODEL_BRAIN` is read at instantiation and again at every read afterwards, so a different model
 is an `.env` line and a reboot, not a config edit. Any OpenAI-compatible endpoint works --
@@ -158,7 +165,7 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
      -d @examples/meclaw-os/grow-cogny.json
 ```
 
-Twenty-two cells. That is the second half of the claim, and it is deliberately a **separate
+Twenty cells. That is the second half of the claim, and it is deliberately a **separate
 declaration** rather than five more lines in `grow.json`: the first file answers "what is this
 agent", the second answers "what does it think with", and the two are different decisions with
 different models behind them (`MODEL_BRAIN` vs `MODEL_CORE`). Splitting them also shows the part
@@ -170,7 +177,9 @@ is the **agent core**: core knowledge, core personality, thinking models that ma
 time, and the heavy reasoning and tool work. One core, N voices -- siblings, never nested.
 
 The talky reaches it like a tool and it answers like an event, so the connection is three edges
-and one knob (`DISPATCHER_ASYNC_TOOLS=consult_cogny,ask_memory` in `.env`). Every edge clears
+and one knob (`DISPATCHER_HANDOFF_TOOLS=consult_cogny,ask_memory` in `.env` -- a handoff is async
+*and* says the answer comes from a later turn, which is what lets the round the consult leaves
+behind end without a sentence of its own, GH #372). Every edge clears
 `col_phase` (the errand leaves another collector's chain mid-assembly and would be refused with
 it still set), promotes `consult_id` to context (single-hop correlation has to survive the
 core's whole chain and come home), and restores the TTL -- an errand is a fresh journey, not the
@@ -204,14 +213,20 @@ by a system update or seeded on first birth. Topology is not persona.
 - **The tree is not the source code.** What is version-controlled here is an empty seed and a
   declaration; the substance lives in a library and arrives at runtime, into a colony that is
   already up. Nothing was restarted -- not for the first declaration and not for the second.
-- **Composition is topology, not framework.** All seventeen cells came from five templates that
-  know nothing about each other. What connects them is seven edges in one file.
+- **Composition is topology, not framework.** All fifteen cells came from four templates that
+  know nothing about each other. What connects them is six edges in one file.
 - **Enforcement is code, phrasing is agentic.** The firewall's verdicts are comparisons; the
   agent never sees a turn it rejected.
 
-Two honest limits: the four outbound lanes all end in one terminal here (a real tree splits
-them), and the drain's `episode` port has no memory hive to write into in this distribution --
-it is wired so you can see the episodes leave, one per turn of a closed session.
+Three honest limits: the four outbound lanes all end in one terminal here (a real tree splits
+them); the `turn_write` lane has no memory hive to write into in this distribution -- it is
+wired so you can see the turns leave, one message per turn, as they are said; and the `write`
+route, which the composite still emits when a session closes, **matches no edge in this
+file**. The talky's own summarizer consumes it inside the hive, but the copy that leaves the
+composite ends nowhere -- naming undecided lanes is this example's whole virtue, and this is
+one it does not name. Since GH #298 (ruling Q11) `write` carries a closed day for whoever
+archives one, and this example archives nothing; a tree that wants that day wires it, and a
+tree that does not should say so with a `terminal` rather than by silence.
 
 This is a proof of concept on a frozen schema. Read
 [`talky`](../../templates/talky/README.md) next -- it is the longest of the template
@@ -222,7 +237,7 @@ READMEs because it is the one that pays off.
 `crates/meclaw-cells/tests/meclaw_os_example.rs` boots this seed and applies **these** two
 declarations -- the files, not copies of them -- against a mock provider, and drives one turn
 from the HTTP surface to the reply port. It measures the seed (two files, zero cells, no edge)
-and both counts (17, then 21). If the example rots, that test goes red first.
+and both counts (15, then 20). If the example rots, that test goes red first.
 
 ## Step three: the colony that measures itself
 

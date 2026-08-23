@@ -12,6 +12,10 @@
 //! filter that is present but unparseable is a hard error, never an unfiltered
 //! answer.
 //!
+//! **The alias round is over.** It ran through 0.18.0 and the removal is paid
+//! here: a top-level `body.scope` is now refused as `invalid_query`, by the
+//! same loudness rule that governs an unparseable filter.
+//!
 //! Spec: `docs/meclaw-overview.en.md` § `/colony` as a virtual endpoint
 //! ("Request body form (cell emissions / EDA)", the reads' half).
 
@@ -111,22 +115,40 @@ fn the_documented_query_shape_filters_the_topology() {
     );
 }
 
-/// (b) The old shape keeps working for exactly one release.
+/// (b) The alias is gone. Its one release round was the 0.18.0 round; from now on
+/// a top-level `scope` is a refused filter, not a second way to say the same
+/// thing. It is refused rather than ignored because of K-1's loudness rule: a
+/// caller who still sends the old shape must learn that its filter no longer
+/// applies, instead of receiving an unfiltered graph that looks like an answer.
 #[test]
-fn the_deprecated_top_level_scope_still_filters() {
+fn a_top_level_scope_is_refused_as_invalid_query() {
     let (registry, edges) = two_hive_fixture();
 
-    let filtered = build_graph_read_reply(&registry, &edges, &json!({"scope": "/a"}));
-    assert_eq!(node_paths(&filtered), vec!["/a/one", "/a/two"]);
-    assert_eq!(filtered["graph"]["scope"], "/a");
-
-    // With both present the documented shape wins — the alias never overrides it.
-    let both = build_graph_read_reply(
-        &registry,
-        &edges,
-        &json!({"query": {"scope": "/a"}, "scope": "/b"}),
-    );
-    assert_eq!(node_paths(&both), vec!["/a/one", "/a/two"]);
+    for body in [
+        json!({"scope": "/a"}),                           // the old shape, alone
+        json!({"query": {"scope": "/a"}, "scope": "/b"}), // old and new together
+    ] {
+        let reply = build_graph_read_reply(&registry, &edges, &body);
+        assert!(
+            reply["graph"]["nodes"].is_null(),
+            "a removed filter must not answer a node list: {body} -> {reply}"
+        );
+        assert_eq!(
+            reply["graph"]["status"], "error",
+            "the removed top-level scope answers a loud error: {body}"
+        );
+        assert_eq!(
+            reply["graph"]["error_code"], "invalid_query",
+            "the error carries the canonical read code: {body}"
+        );
+        let details = reply["graph"]["details"]
+            .as_str()
+            .expect("the error names what it refused");
+        assert!(
+            details.contains("query"),
+            "the error names the migration target: {details}"
+        );
+    }
 }
 
 /// A `query` object without a `scope` field is the documented default, not an
@@ -152,7 +174,7 @@ fn an_unparseable_filter_is_an_error_not_an_unfiltered_answer() {
         json!({"query": ["/a"]}),        // query as an array
         json!({"query": {"scope": 7}}),  // scope not a string
         json!({"query": {"scope": []}}), // scope not a string
-        json!({"scope": 7}),             // deprecated alias, wrong type
+        json!({"scope": 7}),             // removed top-level alias
     ] {
         let reply = build_graph_read_reply(&registry, &edges, &body);
         assert!(

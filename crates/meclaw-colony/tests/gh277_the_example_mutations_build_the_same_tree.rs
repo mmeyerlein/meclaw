@@ -8,13 +8,15 @@
 //! No such fixture existed: the "six mutations, 13 templates, 39 edges" of the
 //! spec is a design sketch, not a file — no test, no script in the tree carried
 //! those numbers. What DOES exist is the five shipped example declarations,
-//! whose `"template":` references sum to exactly thirteen:
+//! whose `"template":` references sum to exactly eleven (they summed to
+//! thirteen until GH #298, ruling Q11, took the `memory-drain` node out of two
+//! of them):
 //!
 //! | file                              | `add_nodes` templates |
 //! |-----------------------------------|-----------------------|
 //! | `examples/hard-shell/grow.json`   | 2                     |
-//! | `examples/never-forgets/grow.json`| 4                     |
-//! | `examples/meclaw-os/grow.json`    | 5                     |
+//! | `examples/never-forgets/grow.json`| 3                     |
+//! | `examples/meclaw-os/grow.json`    | 4                     |
 //! | `examples/meclaw-os/grow-cogny.json`   | 1                |
 //! | `examples/meclaw-os/grow-steward.json` | 1                |
 //!
@@ -402,32 +404,41 @@ async fn run_the_five() -> (tempfile::TempDir, Run) {
 //
 // Every number in this block was READ OFF THE RUN, not taken from the spec.
 // `plans/composition-reference/spec.md` acceptance 7 sketched "13 templates and
-// 39 edges"; only the thirteen is a real property of the shipped files (the
-// `"template":` references of the five declarations sum to it), and it is
+// 39 edges"; the thirteen WAS a real property of the shipped files until GH #298
+// (ruling Q11) removed the `memory-drain` node from two of the five, and it is
 // checked against the files themselves below. The rest is what the substrate
 // really builds.
 
-/// `"template":` references across the five declarations — the one number the
-/// spec sketch got right, and the only one here that is a property of the FILES
-/// rather than of a run. Asserted against the files in
-/// [`the_five_declarations_name_thirteen_templates`].
-const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 13;
+/// `"template":` references across the five declarations — the only number here
+/// that is a property of the FILES rather than of a run. Asserted against the
+/// files in [`the_five_declarations_name_eleven_templates`].
+///
+/// Moved 13 -> 11 with GH #298 (ruling Q11): `memory-drain` left the live stack
+/// and with it `examples/never-forgets/grow.json` and
+/// `examples/meclaw-os/grow.json`, one node each.
+const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 
 /// Registry rows the five declarations add that carry a provenance stamp.
 /// MEASURED, not assumed: read off the first green run (see
-/// [`print_the_measurement`]). Eleven templates instantiated across three
+/// [`print_the_measurement`]). Ten templates instantiated across three
 /// scopes; a hive root is a scope marker and holds no registry row, so this
 /// counts the ACTORS the five declarations brought into being.
-const TEMPLATE_BORN_ROWS: usize = 46;
+///
+/// Moved 46 -> 42 with GH #298 (ruling Q11): two `memory-drain` instances, two
+/// cells each (`drain`, `ledger`).
+const TEMPLATE_BORN_ROWS: usize = 42;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
-/// thirteen references above, because three scopes instantiate the same
-/// `door`/`terminal`/`talky` — and larger than the seven templates the
+/// eleven references above, because three scopes instantiate the same
+/// `door`/`terminal`/`talky` — and larger than the six templates the
 /// declarations actually NAME, by exactly the four sub-units the composites
 /// REFERENCE rather than carry. That difference is the whole point of the wave;
 /// [`REFERENCED_SUB_UNITS`] pins it by name.
 /// MEASURED, not assumed: read off the first green run.
-const DISTINCT_TEMPLATES: usize = 11;
+///
+/// Moved 11 -> 10 with GH #298 (ruling Q11): no declaration names
+/// `memory-drain` any more, so no registry row claims it.
+const DISTINCT_TEMPLATES: usize = 10;
 
 /// The sub-units that appear in the registry although NO declaration names
 /// them: they arrive through `talky`'s and `cogny`'s `cell.type: "ref"` cells.
@@ -453,7 +464,13 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 ///
 /// No other declaration moved: `firewall` and `memory-drain` report their
 /// refusal on doors they already had, and `cogny` has no keeper.
-const EDGES: usize = 167;
+///
+/// Moved 167 -> 154 with GH #298 (ruling Q11), in three parts: -8 for the two
+/// `memory-drain` instances' own four internal edges each, -3 for
+/// `never-forgets` (four declaration edges touching `./drain` out, one
+/// `./talky -> ./memory/keep` in) and -2 for `meclaw-os` (three out, one
+/// `./talky -> ./sink` in).
+const EDGES: usize = 154;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,
@@ -466,9 +483,10 @@ const SEED_BORN_ROWS: usize = 4;
 // the tests
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// The thirteen of the spec, measured on the shipped files rather than quoted.
+/// The template references of the five, measured on the shipped files rather
+/// than quoted from the spec sketch.
 #[test]
-fn the_five_declarations_name_thirteen_templates() {
+fn the_five_declarations_name_eleven_templates() {
     let mut total = 0usize;
     for (file, _) in DECLARATIONS {
         let v = read_json(&repo(file));

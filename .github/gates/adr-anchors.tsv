@@ -34,3 +34,6 @@ adr	status	anchor_home	target
 0011-composition-reference.md	accepted	self	test:parse_subtree_places_the_referenced_templates_content_at_the_ref_position
 0011-composition-reference.md	accepted	self	code:pub struct NodeProvenance
 0011-composition-reference.md	accepted	self	code:NodeProvenance::template_chain
+0012-per-turn-extraction-and-what-is-left-of-the-drain.md	accepted	self	test:the_day_leaves_as_one_message_per_turn_in_the_order_it_happened
+0012-per-turn-extraction-and-what-is-left-of-the-drain.md	accepted	self	test:the_same_turn_twice_writes_no_second_episode
+0012-per-turn-extraction-and-what-is-left-of-the-drain.md	accepted	self	test:two_turns_of_one_session_carry_two_different_speakers

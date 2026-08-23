@@ -2,24 +2,30 @@
 //!
 //! The script pins live in `w9a_per_turn_episodes.rs`. This file asks the
 //! question the track is actually about, and it asks it of a COLONY that
-//! contains the shipped `talky`, the shipped `memory-drain` and the memory
-//! hive's real write path (writer + `episodes` surface, the pinned snapshots of
-//! GH #125, drift-locked by `x2_hive_fixture_drift.rs`):
+//! contains the shipped `talky` and the memory hive's real write path (writer +
+//! `episodes` surface, the pinned snapshots of GH #125, drift-locked by
+//! `x2_hive_fixture_drift.rs`):
 //!
-//!   surface -> talky (keeper, collector, brain) -> route turn_write -> drain
-//!           -> the hive's turn-write port -> episodes
+//!   surface -> talky (keeper, collector, brain) -> route turn_write
+//!           -> the hive's writer port -> episodes
 //!
-//! Two claims, and they are the whole track:
+//! **Ruling Q11 (2026-08-21, GH #298) removed the middle of that line.** Route
+//! `turn_write` no longer hands out the day as a batch for `memory-drain` to
+//! decompose; it hands out ONE message per turn, in the shape the writer port
+//! reads, so the adapter has nothing left to adapt and no ledger left to keep.
+//! What that does to this file's two claims:
 //!
-//! 1. FRESHNESS -- the turn and the answer are `episodes` rows while the
-//!    session is still open. Until now the first row appeared at the night
-//!    close, which is a freshness hole of up to 24 hours and a north-star
-//!    breach ("no question may be answered wrongly").
-//! 2. THE NET STAYS -- the close batch runs into the SAME drain afterwards and
-//!    writes NOTHING, because the ledger recognises its own ids. The count gate
-//!    is the completeness proof: `turn_count` of the close batch equals the
-//!    episodes the per-turn lane already wrote, so a drain that writes zero is
-//!    the success signal.
+//! 1. FRESHNESS -- SURVIVES unchanged as the subject: the turn and the answer
+//!    are `episodes` rows while the session is still open. Before the track the
+//!    first row appeared at the night close, which is a freshness hole of up to
+//!    24 hours and a north-star breach ("no question may be answered wrongly").
+//! 2. THE NET STAYS -- **RETIRED by Q11**, not failed. There is no second lane
+//!    into the memory to be a net: the close batch is a closed DAY for whoever
+//!    archives one, and wiring it into the same memory would be a second writer
+//!    over turns the per-turn lane already wrote. What takes its place is the
+//!    property that made the net unnecessary -- IDEMPOTENCE, now the
+//!    collector's own `episode_written` column, measured here across two turns
+//!    of one live session and across the close that follows them.
 //!
 //! The write path is model-free by spec; the only provider calls in this tree
 //! are the talky's own brain and summarizer, and both talk to the mock wire.
@@ -189,10 +195,12 @@ fn memory_write_path(root: &std::path::Path) {
     }
 }
 
-/// The wiring a parent draws for W-A. Two lanes reach the SAME drain entry:
-/// the per-turn one (`turn_write`, new) and the close one (`write`, the net).
-/// One minter, one ledger -- that is the whole reason the seam sits here and
-/// not on a second edge into the hive.
+/// The wiring a parent draws since Q11: ONE edge from the talky's `turn_write`
+/// route into the hive's writer port, and nothing between them. The close route
+/// (`write`) is deliberately NOT wired into the memory -- it carries a closed
+/// day for whoever archives one, and a second edge into the same memory would
+/// be a second writer over turns this lane already wrote. It ends at the void
+/// here, so an unrouted emission cannot hide inside the DLQ assertion.
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
         {"from": "./surface", "to": "./talky",
@@ -202,53 +210,33 @@ fn main_config() -> Value {
         {"from": "./surface", "to": "./talky",
          "condition": "has(hop.route) && hop.route == 'sweep'",
          "modifier": {"set_hop": {"route": "'in_sweep'"}}},
-        // THE per-turn lane.
-        // Every end names a HIVE, never a cell inside one (overview § Die
-        // Hive-Grenze): both `talky` and `drain` declare their lanes and their
-        // doors, and reaching past those doors delivers twice — once to the
-        // cell and once to a hive path this graph has no exit for.
-        // The batch edges, and the edges that owe the batch its provenance
-        // (#244/#269). `audience_set` says who was in the round and
-        // `speaker`/`agent_id` who said it; `channel` is not set here -- it
-        // travels from the connector seam above (`hop.chat_id` ->
-        // `context.channel`), exactly as it does in a real colony. This colony
-        // is one person talking to one agent in one room, so the round is those
-        // two and nothing wider. A `["*"]` here would make the suite blind to
-        // the very leak the gate exists to stop.
+        // THE per-turn lane, and since Q11 the whole write path.
         //
-        // They are declared HERE, at the door the batch enters by, and not on
-        // the port edge one hop later: the drain refuses a batch whose round it
-        // does not know, because a batch it consumed and could not deliver
-        // would be marked drained and lost (#269).
-        {"from": "./talky", "to": "./drain",
+        // The three keys the collector mints per turn (`turn_id`,
+        // `happened_at`, `session_id`) are promoted here, together with the
+        // provenance the writer refuses to guess (#244/#269): `audience_set`
+        // says who was in the round and `speaker`/`agent_id` who said it;
+        // `channel` is not set here -- it travels from the connector seam above
+        // (`hop.chat_id` -> `context.channel`), exactly as it does in a real
+        // colony. This colony is one person talking to one agent in one room,
+        // so the round is those two and nothing wider. A `["*"]` here would
+        // make the suite blind to the very leak the gate exists to stop.
+        {"from": "./talky", "to": "./memory/writer",
          "condition": "has(hop.route) && hop.route == 'turn_write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        // The safety net, unchanged: the close batch into the same entry.
-        {"from": "./talky", "to": "./drain",
-         "condition": "has(hop.route) && hop.route == 'write'",
-         "modifier": {"set_hop": {"route": "'in_batch'"},
-                      "set_context": {"session_id": "hop.session_id",
-                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
-                                      "speaker": "'member:user'",
-                                      "agent_id": "'agent:assistant'"}}},
-        // The port edge carries the four keys the drain documents; the
-        // provenance simply rides along in `context` from the door above.
-        {"from": "./drain", "to": "./memory/writer",
-         "condition": "has(hop.route) && hop.route == 'episode'",
          "modifier": {"set_context": {"session_id": "hop.session_id",
                                       "turn_id": "hop.turn_id",
-                                      "happened_at": "hop.happened_at"}}},
-        // The drain's refusal lane, drained so a mis-wired batch is read
-        // rather than dead-lettered.
-        {"from": "./drain", "to": "./void",
-         "condition": "has(hop.route) && hop.route == 'reject'"},
+                                      "happened_at": "hop.happened_at",
+                                      "audience_set": "'[\"member:user\",\"agent:assistant\"]'",
+                                      "speaker": "'member:user'",
+                                      "agent_id": "'agent:assistant'"}}},
+        // The close route reaches no memory any more (Q11). It still LEAVES,
+        // and it is captured rather than voided so the close is a POSITIVE
+        // receipt: "the memory did not grow" only means something once the
+        // close it did not grow over has demonstrably happened.
+        {"from": "./talky", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'write'"},
         {"from": "./talky", "to": "/sink",
          "condition": "has(hop.route) && hop.route == 'answer'"},
-        {"from": "./drain/ledger", "to": "/park"},
         {"from": "./talky", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'error'"},
         {"from": "./memory/writer", "to": "./void",
@@ -281,15 +269,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         &code_cell(VOID, &[], json!({})),
     );
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
-    copy_cells(&repo("templates/memory-drain"), &root.join("main/drain"));
     memory_write_path(root);
 
-    // The per-turn lane is off by default; a parent that wires it says so HERE,
-    // in the instance's own params. A colony-global `.env` key is not the
-    // mechanism any more (`collector@1.2.0`).
-    patch(root, "main/talky/collector/assemble/config.json", |v| {
-        v["params"]["turn_write"] = json!("1");
-    });
+    // Nothing patches `turn_write` here on purpose: since GH #298 the lane
+    // ships ON, so what runs below is the shipped instance and not a tuned one.
     patch(root, "main/talky/session-keeper/night/config.json", |v| {
         v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
         v["params"]["schedules"][0]["cron"] = json!(NEVER);
@@ -305,13 +288,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     }
 }
 
-async fn boot(
-    td: &tempfile::TempDir,
-) -> (
-    ColonyHandle,
-    mpsc::Receiver<Message>,
-    mpsc::Receiver<Message>,
-) {
+async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
         vec![
             (
@@ -325,13 +302,8 @@ async fn boot(
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(64);
-    let (park_tx, park_rx) = mpsc::channel::<Message>(64);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
-    })
-    .await;
-    h.spawn(Path::new("/park"), move || {
-        CaptureCell::new(park_tx.clone())
     })
     .await;
     let mut registry = CellFactoryRegistry::new();
@@ -341,7 +313,7 @@ async fn boot(
     bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
         .await
         .expect("bootstrap_from_filesystem must succeed");
-    (h, sink_rx, park_rx)
+    (h, sink_rx)
 }
 
 fn turn(text: &str) -> Message {
@@ -435,40 +407,26 @@ fn await_episodes(db: &std::path::Path, n: usize) -> Vec<Episode> {
     }
 }
 
-/// Waits for `n` ledger replies -- the positive receipt a drain chain leaves
-/// behind. A chain that drains something is insert/select/insert; a chain with
-/// nothing to drain stops after the select.
-async fn chain_ops(rx: &mut mpsc::Receiver<Message>, n: usize) -> Vec<String> {
-    let mut ops = Vec::new();
-    while ops.len() < n {
-        let m = recv_bounded(rx)
-            .await
-            .unwrap_or_else(|| panic!("only {} of {n} ledger replies arrived: {ops:?}", ops.len()));
-        ops.push(hop_of(&m, "operation"));
-    }
-    ops
-}
-
 fn dlq_count(root: &std::path::Path) -> i64 {
     let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
     conn.query_row("SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0))
         .expect("dead_letters count")
 }
 
-/// The track, end to end. One turn, one answer -- and both are in the memory
-/// hive BEFORE anything closes. Then the close runs the same day into the same
-/// drain and writes nothing, which is what makes it a net instead of a second
-/// memory.
+/// The track, end to end. Two turns, two answers -- every one of them an
+/// `episodes` row while the session is still open, each exactly once, and the
+/// close that follows adds nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     let mock = MockOpenAI::start(vec![
         canned_chat_completion("Noted.", "stop"),
+        canned_chat_completion("Noted that too.", "stop"),
         canned_chat_completion("The user named their editor.", "stop"),
     ])
     .await;
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &mock.base_url);
-    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+    let (h, mut sink_rx) = boot(&td).await;
     let db = td.path().join("main/memory/store/cell.db");
 
     h.send(turn("my editor is helix")).await;
@@ -477,7 +435,7 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     assert!(session.starts_with("c-9a-"), "session {session:?}");
 
     // FRESHNESS: the exchange is memory while the session is still open. Two
-    // drain chains ran -- one for the turn, one for the answer.
+    // emissions of the collector, one per stored row -- no batch, no adapter.
     let rows = await_episodes(&db, 2);
     assert_eq!(
         rows,
@@ -493,27 +451,39 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
                 content: "Noted.".to_string(),
             }
         ],
-        "the turn and the answer, each once, under the drain's deterministic ids"
+        "the turn and the answer, each once, under the collector's deterministic ids"
     );
 
-    // Both chains parked, probed and marked: six ledger replies, no more.
+    // IDEMPOTENCE, live: the second turn scans the SAME session again -- the
+    // first two rows are in every scan it makes -- and adds exactly its own two
+    // episodes. Without the `episode_written` guard this is where the memory
+    // starts doubling.
+    h.send(turn("and i cook keto")).await;
+    recv_bounded(&mut sink_rx).await.expect("the second answer");
+    let rows = await_episodes(&db, 4);
     assert_eq!(
-        chain_ops(&mut park_rx, 6).await,
-        vec!["insert", "select", "insert", "insert", "select", "insert"],
-        "one park/probe/mark per turn"
+        rows.iter().map(|e| e.turn_id.clone()).collect::<Vec<_>>(),
+        (0..4).map(|i| format!("{session}#{i}")).collect::<Vec<_>>(),
+        "four turns, four ids, none of them twice -- {rows:?}"
+    );
+    assert_eq!(
+        rows[3],
+        Episode {
+            turn_id: format!("{session}#3"),
+            sender: "assistant".to_string(),
+            content: "Noted that too.".to_string(),
+        }
     );
 
-    // THE NET: the close batch travels the same edge into the same drain.
+    // And the close adds nothing: the day it hands out reaches no memory any
+    // more (Q11), and everything in it is written anyway.
     h.send(sweep()).await;
-    assert_eq!(
-        chain_ops(&mut park_rx, 2).await,
-        vec!["insert", "select"],
-        "the close chain parks and probes -- and stops there, with nothing to mark"
-    );
+    let close = recv_bounded(&mut sink_rx).await.expect("the close batch");
+    assert_eq!(hop_of(&close, "route"), "write", "{close:?}");
     assert_eq!(
         episodes(&db).len(),
-        2,
-        "the row count did not move: the net caught what was already home"
+        4,
+        "the row count did not move over the close"
     );
     assert_eq!(dlq_count(td.path()), 0, "nothing dead-letters on the way");
 

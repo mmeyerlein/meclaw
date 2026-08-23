@@ -54,7 +54,7 @@ occupies the slot* -- and the swap below moves those edges onto the generation v
 `hop.route`. `./telegram-connector` and `./terminal` are not addresses from outside; an
 edge naming one is refused with `hive_port_boundary`.
 
-The inbound lane names are `talky@3`'s own, unchanged. A facade that renames the lanes
+The inbound lane names are `talky@4`'s own, unchanged. A facade that renames the lanes
 behind it is a facade you have to learn twice.
 
 | lane | direction | what travels |
@@ -69,7 +69,7 @@ behind it is a facade you have to learn twice.
 | `turn` | out | the unscreened turn, for the **shared** firewall. `channel`, `chat_id` and `user_id` are already in `context` |
 | `recall` | out | a memory read the active generation needs |
 | `write` | out | the closed session as one write batch |
-| `turn_write` | out | the same batch after every stored turn, off unless the generation switches it on |
+| `turn_write` | out | **one message per turn, never a batch** (GH #298): one `user`/`assistant` turn with `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at`. On unless the generation switches the collector's `turn_write` knob off |
 | `tool` | out | a tool call; `hop.tool_name` says which |
 | `error` | out | every failure of this channel, normalised. **MUST** be wired, and `required_drains` says so |
 
@@ -142,7 +142,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@3.0.14"}],
+   "add_nodes": [{"name": "talky", "template": "talky@4.0.0"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -165,7 +165,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@3.0.14"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@4.0.0"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -214,7 +214,7 @@ leaf and has no inside to drag.
 
 #### Why not a self-loop: the memory tool
 
-`talky@3` serves its own `memory_recall` tool by sending to itself. Inside a channel,
+`talky@4` serves its own `memory_recall` tool by sending to itself. Inside a channel,
 wire that loop **through the hive path** instead -- out on `tool`, back in on
 `in_memory_call`:
 

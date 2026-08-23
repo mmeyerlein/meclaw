@@ -1,4 +1,4 @@
-# `dispatcher@1.0.1`
+# `dispatcher@1.1.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -35,6 +35,13 @@ messages a graph can route.
   the whole bundle -- and their `tool_call_id`s ride out on `hop.async_calls`. The fan-in
   reads that and waits for the *other* calls only, so a tool that thinks for minutes never
   races the round's idle window.
+- **A handoff class on top of it, which also ends the turn.** Names listed in
+  `DISPATCHER_HANDOFF_TOOLS` are async *and* say that the answer comes from a **later
+  turn** -- an advisor's event, an escalation re-entering the seam. Their ids ride out on
+  `hop.handoff_calls` beside `hop.async_calls`, and the fan-in files the round they leave
+  behind as over even when no sentence stood beside the bundle. An async call that is *not*
+  a handoff is fire-and-forget: the model still owes this turn an answer
+  ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).
 
 ## The cell
 
@@ -102,25 +109,38 @@ reference pattern.
 |---|---|---|
 | `DISPATCHER_MAX_CALLS` | `16` | per-answer call budget. **At** the cap the bundle runs; one call over it, the bundle is refused **as a whole** and every id is answered with `call budget exceeded`. |
 | `DISPATCHER_ASYNC_TOOLS` | (empty) | comma-separated tool names that answer on a lane of their own instead of inside the round. Empty = no call is ever async. |
+| `DISPATCHER_HANDOFF_TOOLS` | (empty) | comma-separated tool names whose call ends the **turn**, because the answer comes from a later one. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. |
 
 One knob per concern: the first bounds **one brain answer**, the second says which calls
-the round is allowed to end without. Neither bounds the loop -- see below.
+the round is allowed to end without, the third which of those end the turn with them.
+None of them bounds the loop -- see below.
 
-## The async class (GH #28)
+## The async class (GH #28) and the handoff class (GH #372)
 
 An advisor that thinks does not fit inside a round. Waiting for it would mean betting the
 round's idle window against thinking time -- and losing that bet means a synthetic "tool
 result lost" in the transcript. So the class is declared, once, here:
 
 ```
-DISPATCHER_ASYNC_TOOLS=consult_cogny
+DISPATCHER_HANDOFF_TOOLS=consult_cogny
+DISPATCHER_ASYNC_TOOLS=remember
 ```
 
-What changes for a call whose name is on that list:
+**Two lists, because "does not answer inside the round" and "does not answer this turn at
+all" are two facts.** A consult is a **handoff**: the advisor's answer comes back as its
+own turn, so the round the call leaves behind is over even when the model sent no sentence
+beside it. A memory write is **fire-and-forget**: it answers nothing and never comes back,
+so the model still owes this turn a sentence -- and the fan-in leaves that round OPEN for
+the iteration it has not spent ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).
+Naming a tool in the handoff list declares it async as well, so `consult_cogny` belongs in
+exactly one of the two.
+
+What changes for a call whose name is on either list:
 
 | key | value |
 |---|---|
 | `hop.async_calls` (on the `calls` lane) | the comma-joined `tool_call_id`s of the async calls in this bundle -- the fan-in opens no expectation for them |
+| `hop.handoff_calls` (on the `calls` lane) | the subset of those whose tool is on `DISPATCHER_HANDOFF_TOOLS`. Always present, empty included: a hop key that is sometimes absent makes a CEL modifier fail, and a failed modifier skips the edge |
 | `hop.async` (on the `tool` lane) | `"1"` |
 | `hop.consult_id` | `arguments.consult_id` when the model answers a question the advisor asked back, otherwise the `tool_call_id`. One correlation across the whole exchange, in both directions. |
 | `hop.consult_eta` | `arguments.eta` -- the model's own coarse duration estimate, produced in the SAME turn (GH #123). **Logged, never consumed.** |

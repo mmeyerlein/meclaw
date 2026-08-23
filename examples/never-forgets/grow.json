@@ -19,10 +19,6 @@
         }
       },
       {
-        "name": "drain",
-        "template": "memory-drain"
-      },
-      {
         "name": "sink",
         "template": "terminal"
       }
@@ -59,34 +55,8 @@
       },
       {
         "from": "./talky",
-        "to": "./drain",
-        "condition": "has(hop.route) && hop.route == 'turn_write'",
-        "modifier": {
-          "set_hop": {
-            "route": "'in_batch'"
-          },
-          "set_context": {
-            "session_id": "hop.session_id"
-          }
-        }
-      },
-      {
-        "from": "./talky",
-        "to": "./drain",
-        "condition": "has(hop.route) && hop.route == 'write'",
-        "modifier": {
-          "set_hop": {
-            "route": "'in_batch'"
-          },
-          "set_context": {
-            "session_id": "hop.session_id"
-          }
-        }
-      },
-      {
-        "from": "./drain",
         "to": "./memory/keep",
-        "condition": "has(hop.route) && hop.route == 'episode'",
+        "condition": "has(hop.route) && hop.route == 'turn_write'",
         "modifier": {
           "set_hop": {
             "route": "'in_episode'"
@@ -153,11 +123,6 @@
         "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'error'"
-      },
-      {
-        "from": "./drain",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'reject'"
       }
     ]
   }

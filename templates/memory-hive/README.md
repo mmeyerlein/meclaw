@@ -1,8 +1,8 @@
-# `memory-hive@2.3.4`
+# `memory-hive@3.0.0`
 
-A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Twelve cells:
-`store` (all durable data), `writer`, `recall`, `extract-glue`, `extractor`, `dream-glue`,
-`dreamer`, `judge`, `cron`, `embed`, `dialectic`, `porter`.
+A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
+`store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
+`dream-glue`, `dreamer`, `judge`, `cron`, `embed`, `dialectic`, `porter`.
 
 What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = temporal truth):
 
@@ -35,94 +35,109 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
 - **Time-range recall (P15)**: `recall_window_from`/`_to` turn the temporal leg from a point
   into an interval. Every version whose derived span intersects the window is a candidate of
   its own and carries the `span` it was valid for.
-- **Extraction, two ingresses**: the batched `extractor` (gate at ~128 accumulated tokens or a
-  2-minute-old item) and an **inline ingress** for front-line LLMs that emit their extraction
-  in the answering turn. Both go through the same validator and the same
-  `(episode_id, claim_hash)` dedup.
-  * **The gate is RECOMMENDED, not mandatory, and it is tuned for freshness (GitHub #51).**
-    Batching exists because one call per message is the worst cost constant in the field, and it
-    buys no answer latency either way — extraction is off the answer path. What the gate's VALUES
-    decide is how long a fact stays unqueryable after the message that carried it, and under the
-    operating priority *quality first, time second, cost third* that is the number worth
-    defending: the defaults (`MEMORY_BATCH_TOKENS` 128, `MEMORY_BATCH_MAX_AGE_MIN` 2) put a fact
-    in the store about two minutes after its turn in the worst case. They are a starting point a
-    colony may raise — a colony whose front model emits inline extractions uses the batch lane
-    only as a gap filler and can afford a wider gate — but nothing in the hive requires the old
-    cost-first values, and no lane reads them as a contract.
-  * **One discipline, two ingresses (GitHub #53)**: the batched extractor's contract is
-    rendered by `extract-glue`; the inline one lives in the front model's persona, outside this
-    hive -- so the hive SHIPS it, in [`inline-contract.md`](inline-contract.md), the way it ships
-    `predicate-core.json`. The block a persona pastes states the same five rules the batch
-    prompt states: the assistant's own answer is not a fact, a question is not a fact, restating
-    stored knowledge mints nothing, only new world state carried by the user's turn qualifies,
-    and an empty facts block is a correct extraction. Measured without it: two history questions
-    minted their own answers as facts on a fresh predicate spelling, each with a `valid_until`
-    taken from the question's date range -- closed on arrival, so the as-of leg could not see
-    them while keyword and semantic still could. Drift lock in both directions:
-    `crates/meclaw-cells/tests/f9_inline_contract.rs`.
-  * **One turn is extracted once (GitHub #52)**: an inline block takes the queue rows of the
-    turns it named out of the queue, with a status of its own (`inline`). The batch lane then
-    serves the purpose it exists for -- the turns of models that emit no block -- instead of
-    buying a second opinion on a turn the front model already answered. The dedup cannot do
-    this job: it compares claim bytes, and two models never phrase one claim identically, so a
-    re-extraction lands on a NEW predicate spelling and the chain arithmetic runs on the wrong
-    collective. An **empty** facts block covers its turn too: an empty list is the front
-    model's verdict that nothing was memorable, not the absence of one. A block that names no
-    episode, or that is not JSON at all, covers nothing -- a block that proves nothing about a
-    turn leaves that turn to the batch.
+- **Extraction, one ingress (GitHub #298)**: the front-line model annotates the turn **in the
+  answering turn itself** (`in_remember`), and that is the only lane that writes new facts
+  mid-conversation. The batched `extractor`, its gate and its flush are gone — a second party
+  reading the same turns a second time bought duplicates, not coverage. Two READERS stand behind
+  the ingress and neither is a second write path: the night reads what is already in the store,
+  and the close pass reads the session whole at its end, with the turns nobody annotated as its
+  priority list. That lane is here since 3.0.0 (`close-glue` + `closer`, the `in_close_pass`
+  ingress and the `close_report` exit,
+  [#300](https://github.com/mmeyerlein/meclaw/issues/300), ruling Q9 of 2026-08-21) — see
+  [The close pass](#the-close-pass-one-session-read-whole-gh-300) below.
+  * **The annotation is an OBLIGATION with two parts (GitHub #299).** Every turn is annotated:
+    `facts`, the delta of world state the turn carried, and `topic`, where the conversation
+    stands. A turn that carried nothing is annotated as carrying nothing — an absent call is a
+    fault, not a modest answer, because with one lane a turn nobody annotated is a turn nobody
+    extracts. The queue is what makes that readable: `pending` now means exactly one thing,
+    namely that no annotation ever arrived. Freshness is what the single lane buys back — a
+    fact is queryable in the same turn that carried it, instead of after the gate interval the
+    batch lane used to impose.
+  * **One discipline, and the hive SHIPS it (GitHub #53)**: the contract lives in the front
+    model's persona, outside this hive — so the hive ships it, in
+    [`inline-contract.md`](inline-contract.md), the way it ships `predicate-core.json`. A
+    vocabulary each extractor invents for itself is a vocabulary nothing can hold to account,
+    and an extraction discipline each persona invents for itself is the same thing one dimension
+    over. Measured without it: two history questions minted their own answers as facts on a
+    fresh predicate spelling, each with a `valid_until` taken from the question's date range —
+    closed on arrival, so the as-of leg could not see them while keyword and semantic still
+    could. The block a persona pastes states what to DO rather than a run of prohibitions, it is
+    carried on every single turn, and its drift lock is
+    `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs` — one direction now
+    that there is one lane, plus a length bound, because what is in that block is paid for once
+    per call.
+  * **One turn is annotated once, and the queue says WHAT happened to it (GitHub #52, #298,
+    #300)**: an annotation takes the queue rows of the turns it covered out of `pending` with a
+    status of its own, and the queue therefore carries **four** values. `pending` — no annotation
+    ever arrived, the one exception an operator looks for. `inline` — the front model annotated
+    the turn while it was answering it and the block carried content. `nothing` — it annotated
+    the turn and its answer was an honest empty one. `close` — the party that answered was the
+    close pass rather than the turn itself: either one of its `close_write` blocks covered the
+    turn, or its sweep settled a row of that session still sitting in `pending` when the pass
+    finished. None of the three settled values is a rejection; the value says which reader
+    handled the turn and how, which is what makes the per-turn contract measurable at all — the
+    close pass wins over the other two, because booking a whole-session read as `inline` would
+    lose exactly that distinction. The dedup cannot do this job: it compares claim bytes, and
+    two models never phrase one claim identically, so a re-extraction lands on a NEW predicate
+    spelling and the chain arithmetic runs on the wrong collective. A block that is not JSON at
+    all, or that cannot be bound to a turn, covers nothing and leaves its row `pending` for the
+    close pass — a considered silence and an unreadable block are not the same event.
 - **Canonical predicates (0.2.0 P1)**: a predicate is a KEY, not prose — English, `snake_case`,
-  the same key for the same relation whatever language the turn is in. Before it prompts, the
-  batched lane reads the `(subject, predicate)` axes this memory already carries — one bounded,
-  store-deduplicated read (`distinct`, `MEMORY_EXTRACT_VOCAB_ROWS`), because the hint asks which
-  axes EXIST, not how often they were asserted — and hands them
-  to the extractor together with the curated core vocabulary in
-  [`predicate-core.json`](predicate-core.json) (29 entries, each marked `single` or `multi`).
-  Reuse over minting is what makes the version chain fire at all. The counterpart rule is
-  **entity fidelity**: only the predicate is canonicalised — subjects, objects, values and
-  proper names are copied byte for byte, never translated and never spell-corrected, because a
-  name the model "fixes" is a fact destroyed. Pinned by
+  the same key for the same relation whatever language the turn is in. The curated core
+  vocabulary in [`predicate-core.json`](predicate-core.json) (29 entries, each marked `single` or
+  `multi`) travels to the annotating model **inside the shipped contract block**, byte for byte
+  and with its cardinality split; the axis hint the batched lane used to read out of the store
+  and render into its own prompt went away with that prompt (#298), because the party that mints
+  the facts now writes them from a persona this hive does not render. Reuse over minting is what
+  makes the version chain fire at all, and what the ingress can still do mechanically it does:
+  the written predicate is folded to its key form on arrival (lower case, `snake_case`, camel
+  case split), so three spellings of one relation are one axis. Synonyms are NOT merged there —
+  that needs the whole axis and belongs to the night. The counterpart rule is **entity
+  fidelity**: only the predicate is canonicalised — subjects, objects, values and proper names
+  are copied byte for byte, never translated and never spell-corrected, because a name the model
+  "fixes" is a fact destroyed. Pinned by
   `crates/meclaw-cells/tests/extract_canonicalization.rs` (deterministic) and by the scenarios
   C1 / C2 (model, `--with llm`).
-- **The extractor closes what it can SEE (statement identity W4, GitHub #13, ruling Q2 option
-  C)**: next to the axis hint the lane builds a **replacement window** — the OPEN statements of
-  the axes it touched most recently, each with its value, the instant it started and the id it
-  carries. A fact may then come back with `replaces: <id>`, and that becomes exactly the closure
-  the nightly judge writes: `expired_at`, `superseded_by`, `closure_source = extract:<batch_id>`,
-  one `update` on `facts`. The point is the north star of this memory — resolve the conflict IN
-  THE TURN — and the extractor is the only party present in it.
+- **The extracting model closes what it can SEE (statement identity W4, GitHub #13, ruling Q2
+  option C)**: a **replacement window** — the OPEN statements of the axes touched most recently,
+  each with its value, the instant it started and the id it carries — is shown to the model, and
+  a fact may then come back with `replaces: <id>`. That becomes exactly the closure the nightly
+  judge writes: `expired_at`, `superseded_by`, `closure_source`, one `update` on `facts`. The
+  point is the north star of this memory — resolve the conflict IN THE TURN — and the model that
+  reads the conversation is the only party present in it. **Since 3.0.0 the window's producer is
+  the CLOSE PASS** ([#300](https://github.com/mmeyerlein/meclaw/issues/300), ruling Q9 of
+  2026-08-21): the batch prompt that used to render it went with the batch lane (#298), and the
+  pass that reads a session whole is the one party that can see an axis whole. An ordinary
+  per-turn annotation carries no window at all — a `replaces` on it matches an empty window and
+  is discarded, which is the safe direction and the shipped behaviour of the inline lane.
   * **The window is the guard rail, and it is mechanical.** A `replaces` naming anything the
     window did not contain is discarded and logged; the window is parked in `scratch` under the
-    batch key and read back when the facts are written, so what is checked is what the model was
-    provably shown (ruling Q2 rail 3). `expired_at is_null` in the `where` carries over from W3:
-    an extractor closure never writes over a judged one. Budgets: `MEMORY_EXTRACT_WINDOW_AXES`
-    over all axes, one page per axis, and an axis longer than that page is **skipped, not
-    truncated** — a producer that sees six of seventy plans cannot tell it is a bucket.
-  * **The window is PAGED, and that is why the skip rule still holds (GH #68).** The leg opens
-    with a bounded recency page over the open facts (`MEMORY_EXTRACT_WINDOW_SCAN`) that picks the
-    candidate axes, and then reads those axes WHOLE (`MEMORY_EXTRACT_WINDOW_ROWS`, axis-major).
-    The skip rule is a count, so it can only be taken on a complete axis: a bucket seen through a
-    cut-off scan looks like a short axis, and a replacement on it deletes an answer that is true.
-    A page that comes back full has exactly one axis it cannot prove complete — its last — and
-    that one is dropped rather than counted.
-  * **The window shows the axes the TURNS are about (GH #67).** The paged read fetches a POOL of
-    `2 × MEMORY_EXTRACT_WINDOW_AXES` axes by recency, and the prompt phase — the only phase that
-    holds the turns — cuts it down to the offered budget by SUBJECT MATTER: the content words of
-    the batch against the values and the relation of each axis, most overlap first, recency as
-    the stable tie-break. Recency is a good guess about which axes matter and a bad one about
-    which axis a given turn is ABOUT, and that difference is the whole of GH #67: an update whose
-    sibling axis was not shown gets a private axis of its own. The window the prompt SHOWS is the
-    one that gets parked, so guard rail 3 stays exactly as wide as the rendered block.
+    round's own key and read back when the facts are written, so what is checked is what the
+    model was provably shown (ruling Q2 rail 3). `expired_at is_null` in the `where` carries over
+    from W3: a closure written on this lane never writes over a judged one.
+  * **Being shown is EDGE TRUTH, never a body claim.** Only a block that came through the close
+    lane may carry a `shown` array, and the ingress decides that from `context.close_pass` — a
+    key the hive's own port edge stamps — not from anything the payload says. A front model does
+    not get to declare what it was shown. An absent, unreadable or empty `shown` parks NOTHING: a
+    missing window means no closure rather than an unguarded one, and a window that said nothing
+    would be the second of those wearing the shape of the first.
+  * **One list, by construction.** `open_axes()` in `close-glue` builds the `facts` block of the
+    prompt AND the `shown` array of the write blocks out of the same rows, so "what was shown"
+    and "what may be closed" cannot drift apart — the only way two lists never disagree is that
+    there is only one of them. Its budget is `MEMORY_CLOSE_FACT_ROWS` over the open facts of the
+    session being closed; what the page left behind is counted and stated on `close_report`
+    (`truncated`) rather than guessed at.
   * **A replacement points FORWARDS in time (GH #71).** The window says which statements may be
-    closed and never said which of the two is newer, and the first live sample of three extractor
+    closed and never said which of the two is newer, and the first live sample of three such
     closures contained one inversion: a statement ended by a fact three days its senior, which
     cost the run its only wrong answer. So the apply phase compares before it writes — the
     statement being closed must not have been asserted after the fact replacing it — and a
     refused closure is not a refused extraction: the fact is minted exactly as before, both
-    statements stay open, and the pair is receipted in `scratch` under the batch key
+    statements stay open, and the pair is receipted in `scratch` under the round's key
     (`kind = extract-refusals`, with both values, both instants and the reason) so the night can
     still judge it. The comparison is this lane's own recency, `(valid_from, recorded_at, id)`,
     on the assertion still standing: two statements of ONE instant still replace one another,
-    because the row being closed was read out of the store before this batch's clock.
+    because the row being closed was read out of the store before this round's clock.
   * **Prompt rules** (the P1 discipline one dimension over): replace only when the new value
     updates the SAME matter, never on an axis that ENUMERATES (a second child, one more language,
     another plan), never the statement the fact merely repeats, and when in doubt leave
@@ -130,26 +145,29 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     that was true. A turn that PLANS, WANTS or HOPES something about a shown statement lands on
     that same subject and predicate with `fact_kind: foresight` and an empty `replaces`: an
     intention stands next to the fact it is about, it does not end it.
-  * **Receipt and revert.** The reasons of a batch are parked in `scratch` under the batch key —
-    the extraction lane's equivalent of the run receipt the night folds its closures into — which
-    is exactly what `closure_source` names, so a closed fact reads back to the turn that replaced
-    it and one batch reverts with one `where` (`update facts set closure_source = '' where
-    closure_source = 'extract:<batch_id>'`, plus the next re-derive). The extractor's reason is
-    structural rather than prose: the replacing value, the value replaced and the episode both
-    came from.
+  * **Receipt and revert.** The reasons of one extraction round are parked in `scratch` under
+    that round's own key — the extraction lane's equivalent of the run receipt the night folds
+    its closures into — which is exactly what `closure_source` names (`extract:<key>`), so a
+    closed fact reads back to the turn that replaced it and one round reverts with one `where`
+    (`update facts set closure_source = '' where closure_source = 'extract:<key>'`, plus the next
+    re-derive). The key used to be a batch's; since per-turn extraction (#298) it is the key the
+    annotation's own round trip minted, so the unit that reverts together is one annotation
+    rather than one gate interval. The model's reason is structural rather than prose: the
+    replacing value, the value replaced and the episode both came from.
   * **The night validates it** (guard rail 3, second half): the canonicalisation round's axis
     pages also carry statements a RECENT extract closure ended (`MEMORY_CANON_EXTRACT_LOOKBACK_DAYS`),
     and the judge may contradict one. A contradiction clears the attribution and the re-derive of
-    that same night withdraws the columns — the W3 revert, one producer over. Only the
-    extractor's closures are reviewable there: a round that could revoke a JUDGEMENT would make
+    that same night withdraws the columns — the W3 revert, one producer over. Only the closures
+    this lane wrote are reviewable there: a round that could revoke a JUDGEMENT would make
     "only close, never delete" revocable by the party that wrote it. **Direction needs no
     judgement (GH #71)**: a closure whose `expired_at` lies before the statement it ended was
     written the wrong way round, and the scan of the night takes it back itself — same revert,
     same receipt key in the run's books (`reopenings`), and the closure is not put in front of
     the judge at all, because the round does not buy an opinion about a row it just cleared.
-  Pinned by `crates/meclaw-cells/tests/w4_extract_replaces.rs` (free) and the scenarios C14
-  (free, the real window with the extractor's answer handed in, both gate halves) / C15
-  (`--with llm`, a real extractor on one replacement and one enumeration).
+  Pinned by `crates/meclaw-cells/tests/w4_extract_replaces.rs` (free) and by scenario C14
+  (free, the real window with the close pass's answer handed in, both gate halves). The paid
+  twin C15 went with the batch lane it drove (#298) — a live model on this lane is measured by
+  the conversation-guide harness now, not by a scenario of its own.
 - **A predicate names the subject matter, never the speech act (GH #67)**: `plans_to_beat`,
   `wants_to_move_to` and `hopes_to_visit` are not relations, they are sentences about relations
   this memory already has — and a value that lands on one of them is invisible to every question
@@ -168,14 +186,25 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     statements of an axis may still replace one another.
   * **The rule is prevention, not repair.** A `plans_to_*` key cannot be aliased into
     subject-matter form generically (the matter varies per statement, an alias is per predicate),
-    so the fix is the extractor prompt (`A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH
-    ACT`, with the named shapes it refuses), the window visibility above, and the guidance in
-    [`predicate-core.json`](predicate-core.json). No speech act is seeded and none ever will be;
-    the subject-matter examples there are deliberately seeded with NO cardinality, because a
-    seeded verdict outranks the night's own and an over-cap axis of a `multi` relation is
-    answered for good (GH #66).
-  Pinned by `crates/meclaw-cells/tests/f6_subject_matter_axis.rs` (free, 16) and the scenario C22
-  (free, end to end on a real colony).
+    so the fix is what the extracting model is TOLD (`A PREDICATE NAMES THE SUBJECT MATTER,
+    NEVER THE SPEECH ACT`, with the named shapes it refuses) plus the guidance in
+    [`predicate-core.json`](predicate-core.json). Per-turn extraction (GH #298) retired the
+    batch prompt that used to carry that telling, and with it the subject-matter window
+    selection; **the telling now sits in the shipped contract block**
+    ([`inline-contract.md`](inline-contract.md), GH #299), which is the only thing the annotating
+    model is handed — pinned there by
+    `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`. Next to it
+    [`predicate-core.json`](predicate-core.json) states the fate of the speech-act class and the
+    `fact_kind: foresight` each example lands on. No
+    speech act is seeded and none ever will be; the subject-matter
+    examples there are deliberately seeded with NO cardinality, because a seeded verdict
+    outranks the night's own and an over-cap axis of a `multi` relation is answered for good
+    (GH #66).
+  Pinned by `crates/meclaw-cells/tests/f6_subject_matter_axis.rs` (free, 8 — the marker from the
+  store column through the bundle to the nightly currency question, plus the seed file). Its
+  scenario C22 went with the batch lane (#298): the case's subject was the window SELECTION the
+  batch prompt did, and the living half of the issue — a predicate names the subject matter,
+  never the speech act — is the seed file and the test above.
 - **Predicate identity in the store (0.2.0 P2)**: `facts.predicate` is what was WRITTEN,
   `facts.canonical_predicate` is what it MEANS. The store owns the second one: it derives it on
   every write from the `predicate_aliases` table (`params.canonical` binding), backfills it once
@@ -323,13 +352,14 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 
 | Lane | Direction | The edge must carry |
 |---|---|---|
-| `in_episode` | in → `./memory` | one turn (or a closed session batch) to remember. `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
-| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "hop.recall_as_of", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
-| `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md). The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
-| `in_flush` | in → `./memory` | nothing; the door stamps `mem_phase: "flush"`. Add `flush_reclaim: "'1'"` on the hop to also recover batches whose chain died — that sweep is **lease-gated** (GH #72) and never takes back a claim younger than `MEMORY_BATCH_CLAIM_LEASE_MIN` |
+| `in_episode` | in → `./memory` | one turn to remember — **one message carries one turn and its own provenance**, which is why `speaker` is answerable at all: identity travels per message, so two turns of one session can name two different people (GH #272). `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
+| `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the block itself: the door stamps `store_origin`/`mem_phase` inside. The front model's persona carries the block form from [`inline-contract.md`](inline-contract.md), and the block has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
+| `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
 | `in_export` | in → `./memory` | nothing. The lane names the whole memory; the hive walks its own tables and answers with one part per table on `dump` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `dump` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
 | `in_import` | in → `./memory` | ONE part of such a document, as the body of the message; nothing on the hop and nothing in the context. Applying the same part twice leaves the same state. A part whose declared schema lost `audience_set` or `channel` is refused on `reject` with nothing written |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory` |
+| `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests `hop.dump_kind` evaluates to `false` under the `required_drains` probe and reads as no drain. `hop.dump_kind` tells the two payloads apart — `export_part` (one part of the document, `hop.export_part` of `hop.export_of`, `hop.export_final == '1'` on the last) and `import_receipt` (`hop.rows_written` for one applied part) |
 | `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation. The transfer lane adds `import_format`, `import_unknown_table`, `import_schema_drift`, `import_probe_failed`, `import_write_failed` and `export_read_failed`, and it reuses `missing_audience`/`missing_channel` for a document part that lost a provenance column on the way. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
@@ -337,16 +367,18 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
 something outside wired that port — which a sealed hive has no way of letting happen, so the
 declaration could never fire again and was removed with the seal rather than left as decoration.
-It is back in the vocabulary the seal left standing, and this hive declares seven entries:
+It is back in the vocabulary the seal left standing, and this hive declares nine entries:
 
 ```json
-{"accepts": "in_episode",  "emits": "reject", "because": "…"}
-{"accepts": "in_remember", "emits": "reject", "because": "…"}
-{"accepts": "in_query",    "emits": "reject", "because": "…"}
-{"accepts": "in_export",   "emits": "dump",   "because": "…"}
-{"accepts": "in_export",   "emits": "reject", "because": "…"}
-{"accepts": "in_import",   "emits": "dump",   "because": "…"}
-{"accepts": "in_import",   "emits": "reject", "because": "…"}
+{"accepts": "in_episode",    "emits": "reject",       "because": "…"}
+{"accepts": "in_remember",   "emits": "reject",       "because": "…"}
+{"accepts": "in_query",      "emits": "reject",       "because": "…"}
+{"accepts": "in_close_pass", "emits": "close_report", "because": "…"}
+{"accepts": "in_close_pass", "emits": "reject",       "because": "…"}
+{"accepts": "in_export",     "emits": "dump",         "because": "…"}
+{"accepts": "in_export",     "emits": "reject",       "because": "…"}
+{"accepts": "in_import",     "emits": "dump",         "because": "…"}
+{"accepts": "in_import",     "emits": "reject",       "because": "…"}
 ```
 
 Read as: *a caller that sends me `in_remember` must subscribe to `reject`.* A mutation that wires
@@ -401,6 +433,70 @@ for. Moving the derivation to the hive side is tracked in
 [#55](https://github.com/mmeyerlein/meclaw/issues/55); the keys, the reject rule and the tier-0
 notice are unaffected either way.
 
+## The close pass: one session, read whole (GH #300)
+
+Per-turn annotation is blind in one direction: the front model annotates the turn it has just
+answered and cannot know the turn after it. So a value the conversation only settled at the end, a
+correction three turns later and a claim the session itself retracted are all invisible to it. The
+close pass is the answer, and ruling Q9 (2026-08-21) decided its shape: **one strong-model call
+per closed session, reading the session whole**, not a cheap sweep and not a second continuous
+writer.
+
+Send a session to `in_close_pass` when it ends. Nothing travels in the body — the lane names a
+session and the hive reads its own turns. Inside, `close-glue` reads four sets out of its own
+store (the turns, the records those turns left standing, the topics still open and the
+`pending` rows nobody annotated), parks them, renders one prompt, and `closer` — the hive's
+`MODEL_CLOSER` slot — answers with a verdict. The verdict costs one extra store round trip on
+purpose: a `code` cell is stateless, and every one of the four points needs something only the
+READ phases saw, so the verdict parks itself next to those four sets and is read back with them.
+
+**Four points, and they are obligations** (they are the prompt's own words, and each is checked
+mechanically afterwards):
+
+1. Add only what is missing.
+2. Correct only by superseding the record you name.
+3. A sharpening points at a record and never replaces it.
+4. Do not restate what is already there — "nothing to add" is the expected answer for a
+   well-annotated session.
+
+Point 4 is checked **twice**: here against the session's own open records, and again at the
+ingress, whose `claim_hash` dedup drops a restatement whatever this pass believes about it. The
+turns marked `"annotated": false` are the priority list — the exception rows of
+[the queue](#idempotency) — and a pass that reaches its verdict sweeps them; a pass that does
+**not** reach one leaves them exactly where they were, because a turn nobody looked at must not
+be booked as looked at.
+
+Everything the pass writes goes out through the ordinary inline ingress — there is no second
+write path in this hive. What separates it from a front model's annotation is one context key the
+hive's own port edge stamps (`close_pass`), and that key buys exactly one privilege: the block may
+carry a `shown` window, so its `replaces` can be honoured — see the replacement window in the
+opening list above.
+
+What the pass did leaves on `close_report` with eight numbers on the hop (`added`, `sharpened`,
+`corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`). **Drain it**: the
+writes answer nobody, so without the report a caller cannot tell a pass that ran and changed
+nothing from a pass that never ran at all. A pass with no verdict — the call errored, the answer
+was not JSON, or the parked verdict was gone — leaves on `reject` with
+`hop.reject_reason == 'closer_failed'` and writes nothing.
+
+Nothing here forbids closing one session twice. A second close hands the model the same turns
+with the facts of the first already in the record set, so point 4 plus the ingress dedup make it
+cheap and harmless rather than duplicating — but it is a whole model call, and no guard exists.
+Left unguarded deliberately for this release; if a real topology produces double closes, a
+`close:<session_id>` marker in `scratch` is one op.
+
+### What a close pass costs (measured)
+
+**≈ 0.077 EUR per closed session**, on `anthropic/claude-opus-5` with
+`MEMORY_REASONING_CLOSE=medium`. That is a measurement, not an estimate: three full runs of the
+conversation-guide harness on 2026-08-23 (26 turns each, one close each) cost 0.0774 / 0.0768 /
+0.0766 EUR for their close call, priced from `scripts/prices-openrouter-2026-08-22.json`. Over
+those three runs the close call was **0.2308 EUR of 0.2899 EUR — about 80 % of everything the
+colony spent**, front model, tool loop and all. The cost class follows from the shape rather than
+from the model: one call, the whole session in the prompt, a strong model by ruling. Budget one
+such call per closed session and size `MEMORY_CLOSE_TURN_ROWS` / `MEMORY_CLOSE_FACT_ROWS` knowing
+that both bound what the prompt pays for.
+
 ## The audience gate — who may be told what (#244)
 
 Every durable row of this hive says **who was present when it was learned**, and the read path
@@ -441,8 +537,8 @@ and both of those are filtered. A row you cannot reach visibly, you do not see.
 |---|---|---|---|
 | `in_episode`, `in_remember` | `audience_set` | **yes** | JSON list of who was present. Missing, empty or not a list → `reject` |
 | `in_episode`, `in_remember` | `channel` | **yes** | the room. Missing → `reject` |
-| `in_episode` | `speaker` | no | who spoke, on a `user` turn |
-| `in_episode` | `agent_id` | no | which agent answered, on an `assistant` turn |
+| `in_episode` | `speaker` | no | who spoke, on a `user` turn. Absent, the `speaker` column stays **empty** — never the role, which lives in `sender` |
+| `in_episode` | `agent_id` | no | which agent answered, on an `assistant` turn. Read instead of `speaker` on that role, so a lane carrying a constant `speaker` does not attribute the agent's answers to a person; absent, it too stays empty rather than reaching for the `speaker` beside it |
 | `in_query` | `audience_now` | **yes** | JSON list of who is present right now |
 | `in_query` | `channel` | **yes** | where the question is being asked |
 | `in_query` | `channel_open_history` | no, default closed | true for `1`/`true`/`yes`/`on`; anything else, absence included, is closed |
@@ -669,7 +765,7 @@ result sets at once, so a part *is* what one read of one table answers.
 ```json
 {"format": "meclaw-memory-export/1", "hive_template": "memory-hive",
  "export_id": "…", "exported_at": "…",
- "table": "episodes", "part": 9, "of": 15, "final": false, "absent": false,
+ "table": "episodes", "part": 9, "of": 16, "final": false, "absent": false,
  "key": ["id"],
  "schema": {"id": "text", "session_id": "text", …, "audience_set": "text"},
  "rows": [ {…}, {…} ]}
@@ -691,18 +787,21 @@ absent one says *this hive is older than the declaration and never had the table
 
 ### What travels, and what deliberately does not
 
-Fifteen parts, in this order — and the order is load-bearing on the way in:
+Sixteen parts, in this order — and the order is load-bearing on the way in:
 
 ```
 predicate_aliases  subject_aliases  claim_aliases
 predicate_rejected_pairs  subject_rejected_pairs  claim_rejected_pairs
 predicate_cardinality
-entities  episodes  facts  entity_edges  beliefs  skills  embeddings
+entities  episodes  topics  facts  entity_edges  beliefs  skills  embeddings
 consolidation_log
 ```
 
 The six store-owned identity tables come first so that by the time a `facts` row is inserted,
-the alias tables its canonical columns derive from are already there.
+the alias tables its canonical columns derive from are already there. `topics` holds what a
+stretch of conversation was about — one row per thread, with the episode it opened on, the
+episode it closed on and an empty `closed_at` while it is still open — and travels after
+`episodes` because that is what its two episode references point at.
 
 Three exclusions, each a decision:
 
@@ -774,7 +873,7 @@ counts the identities that moved — zero on a target that already agreed.
 # 1. wire the lanes on the SOURCE hive (one mutation), drain `dump` into a collector
 #    { "from": "./memory", "to": "./transfer-drain", "condition": "hop.route == 'dump'" }
 # 2. send one message to the hive path with hop.route == 'in_export'
-# 3. 15 parts arrive on `dump`; the last carries hop.export_final == "1"
+# 3. 16 parts arrive on `dump`; the last carries hop.export_final == "1"
 #
 # 4a. INTO A RUNNING HIVE: feed each part, in order, to the target hive's `in_import`.
 #     Hive to hive, that is a single edge:
@@ -821,10 +920,11 @@ this lane is searchable the moment it lands — which is the exact obstacle
 
 ## Variables
 
-Everything carries a `:-default` **except** `OPENROUTER_API_KEY` and the three per-turn `MODEL_*`
-slots — those four must come from `.env` (see the negative fixture `memory_hive_env_missing`). A
-model name has no defensible default: picking one silently is how a memory lane ends up on a weak
-model without anybody deciding it (see the recommendation below).
+Everything carries a `:-default` **except** `OPENROUTER_API_KEY` and the three `MODEL_*` slots the
+hive buys inference on — `MODEL_CLOSER`, `MODEL_DREAMER`, `MODEL_DIALECTIC`. Those four must come
+from `.env` (see the negative fixture `memory_hive_env_missing`). A model name has no defensible
+default: picking one silently is how a memory lane ends up on a weak model without anybody
+deciding it (see the recommendation below).
 
 `MODEL_JUDGE` is the deliberate exception (0.2.0 P5). It carries a **top-tier placeholder**
 default, because the failure mode is the other way round there: an unset variable would make the
@@ -839,13 +939,11 @@ rollout, and set it to the strongest model you have (see below).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — (required) | api_key of `extractor`, `dreamer`, `judge` and `dialectic` |
-| `MODEL_EXTRACTOR` | — (required) | extraction model |
+| `OPENROUTER_API_KEY` | — (required) | api_key of `closer`, `dreamer`, `judge` and `dialectic` |
+| `MODEL_CLOSER` | — (required) | close-pass model (GH #300, ruling Q9 of 2026-08-21). **Put the strongest model you have here.** It is the one call that sees a whole session at once and it is the only party that can supply the replacement window, so a quiet fallback to a cheap model would not just measure less, it would revoke the ruling. Deliberately without a default for exactly that reason |
 | `MODEL_DREAMER` | — (required) | consolidation model (change narrative) |
 | `MODEL_JUDGE` | `anthropic/claude-opus-5` | identity judgement of the nightly canonicalisation round — **the strongest model of the hive belongs here** |
 | `MEMORY_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint of every llm cell |
-| `MEMORY_BATCH_TOKENS` | `128` | accumulated token estimate that opens the extraction gate. A recommended default, not a mandate (GH #51) |
-| `MEMORY_BATCH_MAX_AGE_MIN` | `2` | age of the oldest queued item that opens the gate anyway — the freshness ceiling of the batch lane (GH #51) |
 | `MEMORY_TIER0_TOKENS` | `1200` | token budget of the tier-0 bundle |
 | `MEMORY_TIER0_MAX_EPISODES` | `12` | item cap of the bundle's episode leg |
 | `MEMORY_TIER0_MAX_BELIEFS` | `20` | item cap of the bundle's belief leg, and the `limit` of the belief select behind it |
@@ -857,29 +955,24 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
 | `MEMORY_EMBED_API_KEY` | *(empty → falls back to `OPENROUTER_API_KEY`)* | bearer for the embedder |
 | `MODEL_DIALECTIC` | — (required) | tier-2 synthesis model |
-| `MEMORY_REASONING_EXTRACT` | `minimal` | `provider_extra.reasoning.effort` of the `extractor` cell — extraction is a shape-filling job, not a thinking one |
+| `MEMORY_REASONING_CLOSE` | `medium` | `provider_extra.reasoning.effort` of the `closer` cell. **Not `minimal`**: a strong model asked to sharpen a session it is seeing whole is not a shape-filling call |
 | `MEMORY_REASONING_DREAM` | `medium` | `provider_extra.reasoning.effort` of the `dreamer` cell (the nightly change narrative) |
 | `MEMORY_REASONING_DIALECTIC` | `medium` | `provider_extra.reasoning.effort` of the `dialectic` cell (the tier-2 answer with its gap statement) |
 | `MEMORY_REASONING_JUDGE` | `high` | `provider_extra.reasoning.effort` of the `judge` cell — the identity verdicts are written into the store and every later read consumes them, so this is the one lane where thinking is worth paying for |
 | `MEMORY_CANON_JUDGE` | `1` | `0` switches the nightly canonicalisation round's ASK off (no scan, no candidate feed, no model call). A judgement handed to the lane from outside is still applied — applying is arithmetic, asking is what costs. The free scenario classes run with `0`, except the two that measure the QUESTION (`C19`/`C20`): those ask for real with the endpoint pointed at a dead port |
 | `MEMORY_CANON_MAX_PREDICATES` | `60` | relation keys put to the judge per run, busiest first |
 | `MEMORY_CANON_MAX_PAIRS` | `12` | entity candidate pairs put to the judge per run, best score first |
-| `MEMORY_BATCH_MAX_ITEMS` | `64` | hard item cap of one claimed batch |
-| `MEMORY_BATCH_CLAIM_LEASE_MIN` | `5` | how long a claimed batch is HELD before a recovery sweep may hand its rows back (GH #72). Must exceed one full extraction cycle — the extractor's `message_timeout` is 180 s, so a lease below ~4 minutes reclaims live batches and pays for them twice |
-| `MEMORY_EXTRACT_ERROR_BUDGET` | `3` | consecutive provider errors one batch may cost before the lane **parks** it instead of re-sending (GH #143). Parked is terminal for the automatic lane: the rows keep their turns, carry status `error_parked` and a mark in `scratch`, and a recovery sweep does not take them back |
-| `MEMORY_EXTRACT_BACKOFF_SEC` | `60` | base of the backoff window after a failed extraction attempt (GH #143); it doubles per attempt, so 60 gives 60 s / 120 s / 240 s. Without it the flush cadence IS the retry cadence |
+| `MEMORY_CLOSE_TURN_ROWS` | `512` | page bound of the close pass's session read. Ordered NEWEST first on purpose — a session longer than one page loses its oldest turns rather than its last ones, and the later a turn is, the likelier it is the one that corrects an earlier. The page is re-ordered oldest-first before it reaches the prompt: the order of the READ decides what survives the bound, the order of the RENDERING is a different question |
+| `MEMORY_CLOSE_FACT_ROWS` | `256` | page bound of the close pass's fact read, one dimension over: a session has turns, and the facts those turns left standing are a different count entirely — a short session can carry a long history if its subject has been talked about before. This is also the budget of the replacement window, because the two are the same rows. What the bound left behind is reported on `close_report` as `truncated` |
 | `MEMORY_TIER1_LEG_LIMIT` | `20` | per-leg candidate cap of the tier-1 fan |
 | `MEMORY_TIER1_AXIS_LIMIT` | `200` | page bound of the AXIS reads — the hydration's chain select (`t1-hyd-axis`) **and** the window leg's generous pre-filter share it. Too small truncates a chain, and a candidate whose chain was cut is delivered **without its predecessors** — `history: []` on the record in `recall_diagnostic`, no `previously` key in the payload — rather than with a guessed chain |
-| `MEMORY_EXTRACT_WINDOW_AXES` | `8` | axes whose OPEN statements travel in the extraction prompt as the replacement window (statement identity W4). An axis with more open statements than one page is skipped rather than truncated. The PAGE fetches twice this many by recency; which of them the prompt SHOWS is decided by subject matter against the batch's own turns (GH #67), with recency as the stable tie-break |
-| `MEMORY_EXTRACT_VOCAB_ROWS` | `512` | cap of the axis-hint read (GH #68). Deduplicated by the store, so it counts AXES, not facts; ordering is subject-major, so the cap cuts whole subjects off the tail |
-| `MEMORY_EXTRACT_WINDOW_SCAN` | `512` | cap of the recency page that picks the window's candidate axes (GH #68). Counts open fact rows, newest assertion first |
-| `MEMORY_EXTRACT_WINDOW_ROWS` | `256` | cap of the window's own page, which reads those axes whole (GH #68). Axis-major, so a full page has exactly one unproven axis: the last, which is dropped |
 | `MEMORY_CANON_EXTRACT_LOOKBACK_DAYS` | `7` | how far back the nightly round reviews the closures the EXTRACTOR wrote (W4, ruling Q2 guard rail 3). Derived from `delta_to`, so a re-run reads the same window back; a closure older than this has been in front of a round already |
 | `MEMORY_CANON_MAX_AXES` | `8` | axes with more than one open statement put to the judge per run (the currency question of W3, and since W6 the rewording question on the same list). The whole budget, pages included: an axis too big for one page takes one of these slots rather than a slot of its own (GH #66) |
 | `MEMORY_CANON_MAX_PAGED_AXES` | `2` | how many of those slots a night may spend on axes it can only show one PAGE of (GH #66). Such an axis is never truncated blind: it is offered only after its relation was seeded or judged FUNCTIONAL, the page is the most recent statements, and what it leaves behind is stated in the run receipt |
 | `MEMORY_CANON_MAX_CARD` | `8` | relations whose CARDINALITY is put to the judge per run (statement identity W5). Only relations the seed list does not own and the store has not judged yet are offered, so the budget always reaches something the memory has not decided |
 | `MEMORY_CANON_CLOSED_ROWS` | `256` | page bound of the identity questions' own read of the CLOSED rows (GH #73), most recently ended first. Bounded on ROWS and never on a clock: `expired_at` says when a statement stopped being TRUE, not when the closure was written, so a cutoff derived from `delta_to` would drop exactly the closure written last night about a change dated last spring |
 | `MEMORY_CANON_MAX_CLOSED_AXES` | `12` | how many spellings out of that page reach the two identity questions (GH #73). ON TOP of `MEMORY_CANON_MAX_PREDICATES`, not out of it: a spelling a closure just proved belongs to another one is the best-founded question a night has, and the open vocabulary's budget was never sized for it |
+| `MEMORY_SCRATCH_TTL_DAYS` | `7` | retention window of the lane bookkeeping tables (`scratch`, `recall_scratch`), in days before the nightly run's own window end (GH #375). What is older is deleted by the night; nothing else is — no memory table, no provenance, no durable row. Deliberately generous: a parked row is only ever read back inside the run that wrote it (a recall lives seconds, an extraction a round trip, a close pass one model call), so a week is orders of magnitude past the longest-lived parking. A window short enough to fall inside a lane's own round trip **would** delete state a running pass is about to read — this is days, not minutes |
 | `MEMORY_DREAM_AXIS_LIMIT` | `5000` | page bound of the dream lane's axis select. A **full** page means the chain may be incomplete, so the materialisation SKIPS the derivation for that page instead of guessing supersession from half a chain |
 | `MEMORY_TIER1_TOPK` | `20` | how many fused candidates survive the RRF cut into the tier-1 bundle |
 | `MEMORY_TIER1_TOKENS` | `2000` | token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `MEMORY_TIER1_TOPK` stays the count cap |
@@ -901,9 +994,11 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_RRF_W_TEMPORAL_POINT` | `0.0` | weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
 | `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers |
 
-**Model recommendation (P15 R10): put the memory lane on a strong model.** The three `MODEL_*`
-slots are where extraction quality is decided, and every extraction defect found so far hangs on
-a weak local model: a small village name silently "corrected" into a spelling that does not
+**Model recommendation (P15 R10): put the memory lane on a strong model.** Since 3.0.0 the model
+that mints facts mid-conversation is the FRONT model, not one of this hive's slots (#298) — so
+the recommendation applies one address over as well, and the hive's own four slots are the night,
+the tier-2 answer, the identity judgement and the close pass. Every extraction defect found so far
+hangs on a weak model: a small village name silently "corrected" into a spelling that does not
 exist, English predicates (`was in`, `was with`) mixed into a German axis set, the same fact
 written to three predicate axes, and — the one that P15 made measurable — belief SUMMARY
 sentences instead of the change narrative the contract asks for. Evidenced 2026-08-10 against
@@ -914,8 +1009,15 @@ collection-sentence failure class is gone. `openai/gpt-5.6-sol`
 is the obvious judge-tier option for a case that needs one; P15 did not use it, and 0.2.0 P5 gave
 it a slot of its own (`MODEL_JUDGE`, ruling Q1): the identity judgement is written into the store
 as an alias and every later read consumes it, so it is the ONE place in the hive where the
-strongest available model is the right answer rather than an indulgence. Cost stays in
-cents — the lane runs once per batch and once per night, not per turn.
+strongest available model is the right answer rather than an indulgence. `MODEL_CLOSER` is the
+second (ruling Q9): it sees a whole session at once, and it is the only party that can hand this
+memory a replacement window.
+
+**Two of the four lanes are cheap and one is not.** The night runs once per member per day, the
+dialectic only on a tier-2 question, the judge once per night — all of them in cents. The close
+pass runs once per closed SESSION on a top-tier model and is measured at ≈ 0.077 EUR a time; on a
+26-turn conversation that was about 80 % of everything the colony spent. See
+[What a close pass costs](#what-a-close-pass-costs-measured).
 
 Numeric params (`query_timeout_ms`, `external_timeout_ms`, …) are **literals, never `${VAR}`** —
 substitution yields strings and the parsers want integers. Tunables reach the `code` cells
@@ -1370,6 +1472,34 @@ Three properties keep the number honest:
 
 Pinned by `crates/meclaw-cells/tests/f3_run_books.rs` (free) and the scenario `C5`.
 
+**And the same closing phase sweeps the lane scratch (GH #375).** Its op list is five entries
+long: the supersession the arithmetic already emitted, the belief upserts, the embedding
+backfill, **the sweep**, the books. `scratch` and `recall_scratch` are the parking places every
+glue lane carries state across a store round trip in, and until now nothing ever removed a row
+from either — the only `delete` in the whole hive stood on `predicate_cardinality`, which is a
+re-judgement and not lane state. Both grew monotonically with the traffic, and since `3.0.0` one
+closed **session** parks four rows plus the meeting that reads them back, so the growth was per
+conversation rather than per batch. The night is the sweeper because the night is the one lane
+with a clock, a window and a receipt.
+
+* **Two ops, both bounded**: `delete from scratch where created_at < cutoff` and the same on
+  `recall_scratch`, with `cutoff = delta_to − MEMORY_SCRATCH_TTL_DAYS` days. Nothing else is ever
+  named — no memory table, no provenance, no durable row. The No-Delete policy keeps standing
+  where it belongs, and these two tables are transient by their own definition.
+* **The cutoff comes from `delta_to`, never from the clock**, like every other value a dream run
+  writes — so a replayed window deletes the same rows. A window end this lane cannot parse sweeps
+  **nothing**: an empty cutoff would render as an empty `where`, and a delete without a `where` is
+  a table drop with extra steps.
+* **It cannot break the close pass's meeting**, which is the one read that looks like it might.
+  That read orders `created_at desc` and takes the FIRST row it sees per kind, so it consumes the
+  **newest** parking — the head of an ordering a cutoff only ever cuts the tail of. Everything
+  still in reach of a lane is younger than the cutoff by orders of magnitude.
+* **It runs where the run closes**, so a night that never reached its apply phase (a dreamer that
+  failed, a window already consolidated) sweeps nothing and the next night does it instead. The
+  window is generous enough that a skipped night costs a day of rows, not a lane.
+
+Pinned by `crates/meclaw-cells/tests/gh375_the_night_sweeps_the_scratch.rs` (free).
+
 **A night describes the questions it HAS (GitHub #69).** The round stays one call carrying every
 question the night asks -- the sections give each other context and splitting them would buy the
 same answers twice. What the night no longer does is describe a question whose data section is
@@ -1607,10 +1737,9 @@ What is deliberately **not** answerable:
 
 | Mechanism | Where |
 |---|---|
-| `claim_hash = sha256(episode_id\|subject\|predicate\|claim)[:16]`, filtered before insert | inline + batched extraction |
-| guarded `update … where {status:'pending'}` + `rows_affected > 0` | batch claim (exactly one winner) |
-| guarded `update … where {status:'claimed', claimed_at:{lt: now - lease}}` | the recovery sweep (#72). Idempotency is not the same as free: the `(episode_id, claim_hash)` dedup makes a re-extraction write nothing new, so the OLD sweep took back every claimed row and called that safe. It was safe for the data and expensive for everything else — a batch reclaimed while its extractor call is still in flight is extracted, and paid for, twice, which is where 5 859 batched items for 3 839 turns came from. The claim now carries the instant it was taken, so the sweep can tell a dead chain from a slow one |
-| guarded `update … set {status:'inline'} where {episode_id in …, status:'pending'}` | inline coverage (#52) -- a turn already extracted inline is never offered to a batch; a row a batch already claimed is left to the batch that owns it |
+| `claim_hash = sha256(episode_id\|subject\|predicate\|claim)[:16]`, filtered before insert | inline extraction |
+| guarded `update … set {status:'inline'\|'nothing'\|'close'} where {episode_id in …, status:'pending'}` | the coverage guard (#52, #298, #300) -- the annotation of a turn settles that turn's row, and the value names the reader: `inline` when the front model's block carried content, `nothing` when its verdict was an honest empty one, `close` when the annotation came from the close pass. Guarded on `pending`, so re-running the same annotation moves nothing a second time and a settled row keeps the verdict that settled it |
+| guarded `update … set {status:'close'} where {session_id, status:'pending'}` | the close pass's sweep (#300) -- the second writer of `status`, and the last one: when a pass finishes a session it settles the rows of that session nobody ever annotated. Both writers guard on `status:'pending'`, so whichever lands first wins and neither overwrites a settled row; the two are the ONLY writers besides the enqueue (no claim, no gate, no recovery sweep survived #298), which is what keeps `pending` readable as exactly one thing -- a turn nobody has answered for yet |
 | `select episodes where {session_id, sender:'user'} order by recorded_at desc limit 1` | the inline BIND -- the turn a block that names none is speaking for. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest user turn" is not |
 | guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` | each tier-1 gate of a recall fires exactly once per request. Tier 0 has no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
@@ -1639,7 +1768,7 @@ RUN=workshop/workspace/p2-run
 rm -rf $RUN && cp -r workshop/fixtures/positive/memory-hive-probe $RUN
 # FOUR variables have no default and must be present, or the instantiation rejects
 # env_var_missing (negative fixture memory_hive_env_missing pins exactly that).
-printf 'OPENROUTER_API_KEY=dummy\nMODEL_EXTRACTOR=dummy/extract\nMODEL_DREAMER=dummy/dream\nMODEL_DIALECTIC=dummy/dialectic\n' > $RUN/.env
+printf 'OPENROUTER_API_KEY=dummy\nMODEL_CLOSER=dummy/close\nMODEL_DREAMER=dummy/dream\nMODEL_DIALECTIC=dummy/dialectic\n' > $RUN/.env
 target/debug/meclaw --root $RUN --env $RUN/.env --templates templates \
   --daemon --api 127.0.0.1:7792 &
 
@@ -1661,12 +1790,15 @@ curl -s -X POST http://127.0.0.1:7792/colony/mutations -H 'Content-Type: applica
      "recall_window_to":"hop.recall_window_to"}}},
    {"from":"./anchor","to":"./memory","condition":"has(hop.route) && hop.route == \"inline\"",
     "modifier":{"set_hop":{"route":"'"'"'in_remember'"'"'"}}},
+   {"from":"./anchor","to":"./memory","condition":"has(hop.route) && hop.route == \"close\"",
+    "modifier":{"set_hop":{"route":"'"'"'in_remember'"'"'"},
+     "set_context":{"close_pass":"'"'"'1'"'"'"}}},
    {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"bundle\""},
    {"from":"./memory","to":"./capture","condition":"has(hop.route) && hop.route == \"reject\""}]}}'
-curl -s http://127.0.0.1:7792/colony/registry     # 10 hive cells active; cron Awake
+curl -s http://127.0.0.1:7792/colony/registry     # 13 hive cells active; cron Awake
 ```
 
-`store`, `extractor`, `dreamer` and `dialectic` show `active=true` + `NotYetSpawned` — that is
+`store`, `closer`, `dreamer` and `dialectic` show `active=true` + `NotYetSpawned` — that is
 the correct hot/cold PASS form for stateful cells, they wake on first delivery. Only the
 long-running `cron` must be `Awake`.
 
@@ -1688,8 +1820,8 @@ DB=workshop/workspace/p2-run/main/memory/store/cell.db
 DUMP() { python3 - "$DB" <<'PY'
 import json,sqlite3,sys
 c=sqlite3.connect("file:%s?mode=ro"%sys.argv[1],uri=True); c.row_factory=sqlite3.Row
-MEM=("episodes","facts","entities","entity_edges","beliefs","embeddings","emb_models",
-     "consolidation_log","skills")
+MEM=("episodes","facts","topics","entities","entity_edges","beliefs","embeddings",
+     "emb_models","consolidation_log","skills")
 print(json.dumps({t:sorted(json.dumps(dict(r),sort_keys=True) for r in c.execute('select * from "%s"'%t))
                   for t in MEM}, indent=1, sort_keys=True))
 PY
@@ -1707,6 +1839,14 @@ POST '{"target":"/anchor","body":{"messages":[{"origin":"user","type":"text","te
 # canonicalisation round: hand a judgement in instead of buying one (0.2.0 P5)
 POST '{"target":"/anchor","body":{"messages":[{"origin":"user","type":"text","text":"{\"probe\":\"judged\",\"run_id\":\"<uuid>\",\"to\":\"2026-08-12T03:00:00Z\",\"judgement\":{\"predicates\":[{\"alias\":\"Lieblingseditor\",\"canonical\":\"favorite_editor\"}],\"entities\":[{\"alias\":\"user:u1\",\"canonical\":\"user\"}],\"different\":[{\"dimension\":\"subject\",\"left\":\"site:alpha1\",\"right\":\"site:alpha2\"}]}}"}]}}'
 
+# close pass: hand the verdict in instead of buying one (W5, #300)
+# The port edge stamps close_pass='1', which is the ONE thing that lets `shown`
+# park the window every `replaces` is checked against -- edge truth, never a body
+# claim. Same validator and same apply phase as any annotation block.
+POST '{"target":"/anchor","headers":{"session_id":"s1"},"body":{"messages":[{"origin":"user","type":"text","text":"{\"probe\":\"close\",\"payload\":{\"facts\":[{\"episode_id\":\"<id>\",\"subject\":\"user:alex\",\"predicate\":\"diet\",\"claim\":\"isst seit Juli ketogen\",\"fact_kind\":\"world\",\"confidence\":90,\"replaces\":\"<fid>\"}],\"shown\":[{\"subject\":\"user:alex\",\"predicate\":\"diet\",\"statements\":[{\"id\":\"<fid>\",\"claim\":\"isst ketogen\",\"since\":\"<ts>\",\"last_asserted\":\"<ts>\"}]}]}}"}]}}'
+# the same block WITHOUT `shown`: the closure is dropped, the fact is still minted
+POST '{"target":"/anchor","headers":{"session_id":"s1"},"body":{"messages":[{"origin":"user","type":"text","text":"{\"probe\":\"inline\",\"payload\":{\"facts\":[{\"episode_id\":\"<id>\",\"subject\":\"user:alex\",\"predicate\":\"diet\",\"claim\":\"isst seit Juli ketogen\",\"fact_kind\":\"world\",\"confidence\":90,\"replaces\":\"<fid>\"}]}}"}]}}'
+
 # dream lane: same window twice -> identical memory state
 POST '{"target":"/anchor","body":{"messages":[{"origin":"user","type":"text","text":"{\"probe\":\"dream\",\"run_id\":\"<uuid>\",\"to\":\"2026-08-07T20:00:00.000000Z\"}"}]}}'
 POST '{"target":"/anchor","body":{"messages":[{"origin":"user","type":"text","text":"{\"probe\":\"verdict\",\"run_id\":\"<uuid>\",\"to\":\"2026-08-07T20:00:00.000000Z\",\"verdicts\":{\"supersede\":[{\"old_fact_id\":\"<fid>\"}],\"beliefs\":[{\"holder\":\"self\",\"statement\":\"...\",\"confidence\":75}]}}"}]}}'
@@ -1714,9 +1854,12 @@ DUMP > /tmp/dump1.json   # replay both, then DUMP > /tmp/dump2.json; diff must b
 ```
 
 `DUMP` covers **memory state**. The lane bookkeeping tables (`scratch`, `recall_scratch`,
-`pending_extraction`) are append-mostly by design — a replayed run stages its payload again —
-so they are explicitly *not* part of the replay claim. The claim is: **a replay changes no
-memory.**
+`pending_extraction`) are append-mostly *inside* their retention window — a replayed run stages
+its payload again — so they are explicitly *not* part of the replay claim. The claim is: **a
+replay changes no memory.** Since GH #375 the first two are also not append-*only*: the nightly
+run deletes what is older than `MEMORY_SCRATCH_TTL_DAYS`, which is lane state and never memory.
+`pending_extraction` is deliberately left alone — it is an exception list with a defined meaning
+per row, not lane scratch.
 
 ## P3 migration (store query layer)
 

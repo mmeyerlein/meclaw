@@ -20,7 +20,7 @@
 //! |---|---|---|
 //! | `collector/assemble` | `win` | wrote an EMPTY window leg into the round table; the turn then fires and the model answers with no conversation at all |
 //! | `memory-hive/recall` | `t1-kw-ep` | recorded the failed keyword leg as a leg with zero hits; the bundle then reads "memory knows nothing" (this is #308, one hive over) |
-//! | `memory-hive/extract-glue` | `vocab` | went on to prompt the extractor with an EMPTY known-predicate vocabulary |
+//! | `memory-hive/extract-glue` | `vocab` | went on to prompt the extractor with an EMPTY known-predicate vocabulary (the phase is retired with the batch lane, #298 — the pair below drives `known` instead, see `extract_known_context`) |
 //! | `memory-hive/dream-glue` | `scope` | booked the run `status: done, facts_in_window: 0`; the next night derives `delta_from` from that row, so the whole window is skipped forever |
 //!
 //! The fix is the shape `builder-librarian/retrieve` was hardened into for
@@ -271,20 +271,31 @@ fn recall_still_records_a_keyword_leg_that_came_back() {
 
 // ------------------------------------------------- memory-hive/extract-glue
 
-fn extract_vocab_context() -> serde_json::Value {
+/// The dedup leg's known-facts read, which is where this lane's guarded chain
+/// begins now.
+///
+/// It used to be the VOCABULARY read: the measured damage was a refused
+/// vocabulary read that walked on and prompted the extractor with an empty list
+/// of known predicates. Per-turn extraction (#298) retired that read together
+/// with the batch prompt, and the pair below moved to the first guarded read
+/// that survives it -- the known-facts set the dedup diff is taken against. The
+/// damage is the same one dimension over: read as an empty answer, a refused
+/// `known` read makes every fact of the block look new, and the duplicates it
+/// writes are indelible.
+fn extract_known_context() -> serde_json::Value {
     serde_json::json!({
-        "mem_phase": "vocab", "batch_id": "b1", "store_origin": "extract",
+        "mem_phase": "known", "batch_id": "b1", "store_origin": "extract",
         "session_id": "s1"
     })
 }
 
 #[test]
-fn extraction_does_not_prompt_the_model_on_a_refused_vocabulary_read() {
+fn extraction_does_not_read_a_refused_dedup_read_as_an_empty_known_set() {
     let script = script_of(EXTRACT_GLUE);
     let out = emit(
         &script,
         store_reply(
-            extract_vocab_context(),
+            extract_known_context(),
             "select",
             Some("query_timeout"),
             "query exceeded query_timeout_ms",
@@ -293,8 +304,7 @@ fn extraction_does_not_prompt_the_model_on_a_refused_vocabulary_read() {
     asserts_no_store_op(&out, "xstore", "memory-hive/extract-glue");
     assert!(
         !routes(&out).iter().any(|r| r == "extract"),
-        "memory-hive/extract-glue: it went on to call the extractor with an \
-         empty vocabulary: {}",
+        "memory-hive/extract-glue: it went on with an empty known-facts set: {}",
         spoken(&out)
     );
     assert_eq!(
@@ -311,15 +321,16 @@ fn extraction_does_not_prompt_the_model_on_a_refused_vocabulary_read() {
 }
 
 #[test]
-fn extraction_still_walks_on_from_a_vocabulary_that_came_back() {
+fn extraction_still_walks_on_from_a_dedup_read_that_came_back() {
     let script = script_of(EXTRACT_GLUE);
     let out = emit(
         &script,
-        store_reply(extract_vocab_context(), "select", None, "[]"),
+        store_reply(extract_known_context(), "select", None, "[]"),
     );
     assert!(
         routes(&out).iter().any(|r| r == "xstore"),
-        "memory-hive/extract-glue: a clean vocabulary read must still walk on: {}",
+        "memory-hive/extract-glue: a clean (empty) known-facts read must still \
+         walk on: {}",
         spoken(&out)
     );
 }

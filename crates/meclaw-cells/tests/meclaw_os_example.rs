@@ -10,10 +10,10 @@
 //!   HTTP turn -> door -> firewall screen -> talky keeper -> seam ->
 //!   brain(mock) -> split -> seam -> answer
 //!
-//! Seventeen cells, and NOBODY wrote a single one of them here: one comes from
-//! `door@1`, two from `firewall@1`, eleven from `talky`, two from
-//! `memory-drain`, one from `terminal@1`. What is checked in is two config
-//! files -- a colony default and a hive with an empty graph.
+//! Fifteen cells, and NOBODY wrote a single one of them here: one comes from
+//! `door@1`, two from `firewall@1`, eleven from `talky`, one from
+//! `terminal@1`. What is checked in is two config files -- a colony default and
+//! a hive with an empty graph.
 //!
 //! Then the second declaration, on the colony that is already up and answering:
 //! `grow-cogny.json` adds the thinking core, five more cells and three edges,
@@ -64,16 +64,15 @@ fn example_path(rel: &str) -> std::path::PathBuf {
 }
 
 /// The templates `grow.json` names, each next to the path this test really
-/// reads, in the order the declaration names them. All five are part of the
+/// reads, in the order the declaration names them. All four are part of the
 /// public distribution, so the file runs in the open clone exactly as it does
 /// here -- and the paths are spelled out rather than formatted, so the export's
 /// R2b check can read the names off them (GH #9: a runtime path a gate cannot
 /// see is the whole defect class).
-const GROWN_FROM: [(&str, &str); 5] = [
+const GROWN_FROM: [(&str, &str); 4] = [
     ("door", "templates/door"),
     ("firewall", "templates/firewall"),
     ("talky", "templates/talky"),
-    ("memory-drain", "templates/memory-drain"),
     ("terminal", "templates/terminal"),
 ];
 
@@ -91,13 +90,13 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
     ("dispatcher", "templates/dispatcher"),
 ];
 
-/// One cell from `door@1`, two from `firewall@1`, eleven from `talky`, two
-/// from `memory-drain`, one from `terminal@1`.
-const CELLS_AFTER_GROW: usize = 17;
+/// One cell from `door@1`, two from `firewall@1`, eleven from `talky`, one from
+/// `terminal@1`.
+const CELLS_AFTER_GROW: usize = 15;
 
 /// Plus five from `cogny`: the two brains -- the thinking lane and the
 /// lookup lane of 1.1.0 -- the two collector cells and the split.
-const CELLS_AFTER_COGNY: usize = 22;
+const CELLS_AFTER_COGNY: usize = 20;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -195,6 +194,41 @@ fn grow_json_only_names_templates_that_ship() {
 #[test]
 fn grow_cogny_json_only_names_templates_that_ship() {
     assert_declaration_ships("grow-cogny.json", &GROWN_FROM_COGNY);
+}
+
+/// GH #298, ruling Q11: `memory-drain` left the live stack.
+///
+/// This example never had a memory behind its episode edge -- the drain was a
+/// decomposer feeding a `terminal`. What replaces it is the talky's own
+/// per-turn route ending at that same sink: a lane that ends HERE is a decision
+/// this example has not made for you, which is what `terminal@1` is for. So no
+/// node grows from `memory-drain`, no edge names `./drain`, and the lane that
+/// carries what was just said is the collector's own `turn_write`.
+#[test]
+fn grow_json_ends_the_per_turn_route_at_the_terminal() {
+    let grow = read_json(&example_path("grow.json"));
+    let edges = grow["diff"]["add_edges"].as_array().expect("add_edges");
+    assert!(
+        !edges
+            .iter()
+            .any(|e| e["from"] == json!("./drain") || e["to"] == json!("./drain")),
+        "an edge still names ./drain -- the drain is back on the live path"
+    );
+
+    let turn_write = edges
+        .iter()
+        .find(|e| {
+            e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("hop.route == 'turn_write'"))
+        })
+        .expect("the per-turn route is not wired at all");
+    assert_eq!(turn_write["from"], json!("./talky"));
+    assert_eq!(
+        turn_write["to"],
+        json!("./sink"),
+        "the per-turn route ends somewhere other than the terminal"
+    );
 }
 
 // ════════════════════ 2. the two templates this example put into the library
@@ -494,8 +528,6 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
         "/talky/summarizer/prep",
         "/talky/summarizer/writer",
         "/talky/errors",
-        "/drain/drain",
-        "/drain/ledger",
         "/sink",
     ] {
         assert!(
@@ -503,10 +535,18 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
             "{expected} did not grow: {after:?}"
         );
     }
+    // GH #298, ruling Q11: the drain left the live stack, so neither of its two
+    // cells grows here any more.
+    for gone in ["/drain/drain", "/drain/ledger"] {
+        assert!(
+            !after.iter().any(|p| p == gone),
+            "{gone} still grows: the drain is back on the live path: {after:?}"
+        );
+    }
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus seventeen instantiated ones: {after:?}"
+        "zero checked-in cells plus fifteen instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -582,7 +622,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "seventeen plus the core's four, plus the test-only probe: {with_core:?}"
+        "fifteen plus the core's five, plus the test-only probe: {with_core:?}"
     );
 
     h.shutdown().await;

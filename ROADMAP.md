@@ -127,7 +127,7 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
   predates the substrate's `transfer` slot and now duplicates four things it does
   natively — a hand-maintained schema mirror, an idempotence probe, a provenance
   name-list and whole-part atomicity. What stays template-level is the walk over
-  the fifteen tables. Not urgent: the porter works, and this is the one component
+  the sixteen tables. Not urgent: the porter works, and this is the one component
   where a member's history is at stake, so it earns a slot of its own rather than
   a place at the end of a wave
 
@@ -174,6 +174,44 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.19.0 — the turn annotates itself, and the closed session is read once.**
+  Extraction moved off the batch lane and into the answering turn: the
+  front-line model annotates the turn it has just answered on `in_remember`, and
+  that is the only lane that mints facts mid-conversation. The annotation is an
+  **obligation** with two parts — `facts` as the delta of world state, `topic` as
+  the movement of the conversation (`start` / `continue` / `end`, writing the new
+  `topics` table) — so a turn that carried nothing is annotated as carrying
+  nothing rather than skipped, and `pending_extraction` becomes an exception list
+  where `pending` means exactly one thing: no annotation ever arrived
+  ([#298](https://github.com/mmeyerlein/meclaw/issues/298),
+  [#299](https://github.com/mmeyerlein/meclaw/issues/299),
+  [#52](https://github.com/mmeyerlein/meclaw/issues/52)). A fact is queryable in
+  the turn that carried it instead of after a gate interval. The blind spot of a
+  per-turn writer — it cannot know the turn after it — is covered by the **close
+  pass**: an ended session goes to `in_close_pass`, a strong model
+  (`MODEL_CLOSER`, required, no default) reads the session's turns, the records
+  they left standing, the open topics and the turns nobody annotated, and adds
+  only what is missing under a four-point contract; the verdict comes back
+  through the ordinary inline ingress and the `close_report` lane carries eight
+  numbers so a caller can tell a pass that changed nothing from a pass that never
+  ran. Measured, not estimated: ≈ **0.077 EUR per closed session**
+  ([#300](https://github.com/mmeyerlein/meclaw/issues/300)). The contract is
+  judged by running it — `workshop/evals/conversation-guide` drives a scripted
+  conversation through a real colony and scores **seven invariants** rather than
+  expected strings, under its own spend ceiling
+  ([#301](https://github.com/mmeyerlein/meclaw/issues/301)). Two faults found on
+  the way out: a hive that ingested its own recall answers as conversation
+  ([#282](https://github.com/mmeyerlein/meclaw/issues/282)), and a round whose
+  last brain iteration was a lone async tool call, which answered **nothing at
+  all** ([#372](https://github.com/mmeyerlein/meclaw/issues/372)). **Breaking:**
+  `collector@3.0.0`'s route `turn_write` hands out one message per turn instead
+  of one batch of the day, `memory-hive@3.0.0` loses the `in_flush` lane and the
+  `extractor` cell (twelve environment knobs with them), consult tools move from
+  `DISPATCHER_ASYNC_TOOLS` to `DISPATCHER_HANDOFF_TOOLS`, and the deprecated
+  top-level `{"scope": …}` body of `/colony/graph` is removed — a promise booked
+  for 0.18.0 and paid here ([#341](https://github.com/mmeyerlein/meclaw/issues/341)).
+  Every migration is named in [CHANGELOG.md](CHANGELOG.md); `colony.db` stays at
+  **v7**.
 - **v0.18.0 — a default, a slot, and one message instead of nine.** An out-edge
   may declare itself the fallback (`"default": true`). Routing runs in two
   phases and an edge carrying the key is consulted only after no regular

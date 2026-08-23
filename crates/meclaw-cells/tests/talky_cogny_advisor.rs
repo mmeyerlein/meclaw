@@ -307,8 +307,12 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     let root = td.path();
     std::fs::write(
         root.join(".env"),
+        // A consult is a HANDOFF, not merely async (GH #372): the advisor's
+        // answer comes back as its own turn, so the round the call leaves
+        // behind is over even when no sentence stood beside it. The handoff
+        // list declares the async class too -- the dispatcher unions the two.
         "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=3600000\n\
-         DISPATCHER_ASYNC_TOOLS=consult_cogny\n",
+         DISPATCHER_HANDOFF_TOOLS=consult_cogny\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config(silent_advisor));

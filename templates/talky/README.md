@@ -1,7 +1,7 @@
-# `talky@3.0.14`
+# `talky@4.0.0`
 
 A whole conversational agent as one template. Five units under one hive:
-[`session-keeper@2`](../session-keeper/), [`collector@2`](../collector/),
+[`session-keeper@2`](../session-keeper/), [`collector@3`](../collector/),
 [`dispatcher@1`](../dispatcher/) and [`summarizer@2`](../summarizer/) -- each carrying
 its template's own name -- plus an `llm` brain and one error collector. No new cell
 type, no Rust.
@@ -41,7 +41,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | path | type | from |
 |---|---|---|
 | `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2` **(sealed)** |
-| `collector/{assemble,window}` | `code`, `store` | `collector@2` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector@3` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2` **(sealed)** |
@@ -60,13 +60,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@2.1.2"}}
+{"cell": {"type": "ref", "template": "collector@3.0.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@2.1.2`, with
-`talky@3.0.14` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
+`talky@4.0.0` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -105,7 +105,7 @@ The rest, each optional and each still at the same address:
 | lane | direction | what travels |
 |---|---|---|
 | `tool` | out | a tool call for a cell you wired; `hop.tool_name` says which |
-| `turn_write` | out | the same batch after every stored turn, off unless the instance switches it on -- see "Per-turn episodes" |
+| `turn_write` | out | **one message per turn, never a batch** (GH #298): one `user`/`assistant` turn, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at`. On unless the instance switches it off -- see "Per-turn episodes" |
 | `recall` | out | a memory read this turn needs |
 | `in_tool` | in | one tool result coming back |
 | `in_advice` | in | an advisor's answer coming back |
@@ -268,41 +268,45 @@ the door edges' business, exactly as it is for the four essential lanes:
 | thread tool | `./talky` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` → `./talky` lane `in_thread_call` | GH #245 -- needed as soon as `context_window` is set, because the curator's stubs name this tool as their way back |
 | forced sweep | `./talky` lane `in_sweep` | an operator or a second schedule |
 | housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
-| per-turn write | `./talky` route `turn_write` out | only with `turn_write` set -- see below |
+| per-turn write | `./talky` route `turn_write` out | one message per turn into a memory hive's `in_episode` lane; on by default -- see below |
 | memory lookup | `./talky` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
-| inline extraction | `./talky` on `hop.tool_name == 'remember'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the write leg of the front model -- see "The memory tool `remember`" |
+| inline extraction | `./talky` on `hop.tool_name == 'remember'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the memory's write path for what a turn carried -- see "The memory tool `remember`" |
 
 ### Per-turn episodes (`turn_write`)
 
 The write port fires at the **close**. For a day archive that is right; for a memory it
 means nothing said today is retrievable until the night sweep has run, so a question
-about the last exchange is answered out of an empty store. Set `turn_write=1`
-and the collector hands the same batch out on route `turn_write` after every stored turn
-and every stored answer. No model call is involved: this is the collector's own table
-leaving one turn earlier.
+about the last exchange is answered out of an empty store. The `turn_write` lane closes
+that hole, and since GH #298 (ruling Q11) it is the **only** path from this conversation
+into an episodes table -- which is why it is on by default. No model call is involved:
+this is the collector's own table leaving one turn earlier.
+
+What leaves is **one message per turn**, never a batch: one `user`/`assistant` turn in
+`messages[]`, with `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and
+`hop.happened_at` beside it. That is the shape a memory hive's `in_episode` lane reads, so
+the route is wired straight at the hive -- no decomposer in between:
 
 ```json
-{"from": "./talky", "to": "./memory-drain",
+{"from": "./talky", "to": "./memory/keep",
  "condition": "has(hop.route) && hop.route == 'turn_write'",
- "modifier": {"set_hop": {"route": "'in_batch'"},
-              "set_context": {"session_id": "hop.session_id"}}},
-{"from": "./talky", "to": "./memory-drain",
- "condition": "has(hop.route) && hop.route == 'write'",
- "modifier": {"set_hop": {"route": "'in_batch'"},
-              "set_context": {"session_id": "hop.session_id"}}}
+ "modifier": {"set_hop": {"route": "'in_episode'"},
+              "set_context": {"session_id": "hop.session_id",
+                              "turn_id": "hop.turn_id",
+                              "happened_at": "hop.happened_at"}}}
 ```
 
-**Both edges into the same consumer, or not at all.** The two routes carry the same
-conversation in the same order; a consumer that recognises what it has already taken --
-`memory-drain` does, through its ledger -- writes only the difference and mints the
-same ids either way. Two *different* consumers would be two memories. And the write route
-keeps its own job: it is the safety net that catches the turns the per-turn lane lost,
-and the count gate over its batch is what proves none went missing.
+**The `write` route is not a second half of this.** It carries a closed session with its
+`rounds` slot, for whoever archives a day; wiring it into the same memory would be a
+second writer over turns this lane already wrote. The two documents are different on
+purpose (GH #298) -- and whoever consumes `write` for something else (a day archive, the
+summarizer inside this hive) is untouched, because `turn_write` is a route of its own
+precisely so that the close-only consumers stay close-only. Firing the summarizer per turn
+would put a provider call on a path that is model-free by design.
 
-Whoever consumes `write` for something else (a day archive, the summarizer inside this
-hive) is untouched: `turn_write` is a route of its own precisely so that the close-only
-consumers stay close-only -- firing the summarizer per turn would put a provider call on
-a path that is model-free by design.
+**Delivered twice is written once.** Idempotence lives in the collector's own `turns`
+table (`episode_written`), set by a guarded update that rides in the same emission as the
+episode it covers, and the `turn_id` is deterministic -- so a repeat is recognisable
+downstream as well.
 
 ## The internal wiring, edge by edge
 
@@ -361,8 +365,13 @@ core, N channel voices. It is reached like a tool and answers like an event, so 
 connection is two edges plus one knob.
 
 ```json
-"DISPATCHER_ASYNC_TOOLS": "consult_cogny"
+"DISPATCHER_HANDOFF_TOOLS": "consult_cogny"
 ```
+
+A consult is a **handoff**, not merely async: the advisor's answer comes back as its own
+turn on `in_advice`, so the round the call leaves behind is over even when the model sent
+no sentence beside it. Naming a tool in the handoff list declares it async as well -- the
+dispatcher unions the two ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).
 
 ```json
 {"from": "./talky", "to": "/front/cogny",
@@ -439,7 +448,8 @@ tools, and the cogny's ingress edge turns the choice into `context.consult_class
 
 The edge is the `consult_cogny` one with one key more; the return lane is shared, so
 nothing else is drawn twice. Both names go in the knob:
-`DISPATCHER_ASYNC_TOOLS=consult_cogny,ask_memory`. The wording of the two tool
+`DISPATCHER_HANDOFF_TOOLS=consult_cogny,ask_memory` -- both are handoffs, both answer as a
+later turn. The wording of the two tool
 descriptions is where the class boundary is sharpened -- `ask_memory` for "what do we
 know about X", `consult_cogny` for anything that has to be thought about or looked up
 outside. A misfiled errand costs a worse SENTENCE and never a wrong fact: both lanes hang
@@ -455,9 +465,27 @@ the durable memory the turn carried. That saves a second inference over the whol
 -- but the reason to do it is freshness, not tokens: a fact extracted at night cannot
 answer a question asked this afternoon.
 
+**It is the write path, not a write leg beside one.** Per-turn extraction
+([#298](https://github.com/mmeyerlein/meclaw/issues/298)) removed the batched extractor
+that used to read the same turns a second time, so what this tool does not emit, nothing
+emits mid-conversation: the night is the reader behind it, and the close pass at the end of
+the session is the second one -- that lane lands later in wave 5
+([#300](https://github.com/mmeyerlein/meclaw/issues/300)), and until it does a turn nobody
+annotated is read by nobody. That is why the call is an
+**obligation on every turn** rather than an opportunity on the interesting ones -- a turn
+nobody annotated is a turn nobody extracts, and the shipped contract block says so in its
+first line.
+
 ```json
-"DISPATCHER_ASYNC_TOOLS": "consult_cogny,ask_memory,remember"
+"DISPATCHER_HANDOFF_TOOLS": "consult_cogny,ask_memory",
+"DISPATCHER_ASYNC_TOOLS": "remember"
 ```
+
+**Two lists, and `remember` is in the plain one on purpose.** A consult hands the turn
+over; a memory write does not answer anything and never comes back, so the model still
+owes this turn a sentence. Moving `remember` into the handoff list brings back the silence
+[#372](https://github.com/mmeyerlein/meclaw/issues/372) fixed: a turn answered with a bare
+`remember` call and no text would end with nothing at all on the channel.
 
 ```json
 {"from": "./talky", "to": "/front/memory",
@@ -489,6 +517,22 @@ with the interim answer the dispatcher already sent to the channel while the wri
 still travelling. Left out of the knob, the round waits for a result that never comes and
 dies at its idle window instead.
 
+**And when the model sends the call with no sentence beside it, the round does not end
+there ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).** There is no interim
+answer in that case -- the dispatcher sends one only when there is text -- so the collector
+leaves the round open instead of filing it as fired: the acknowledgement completes the
+fan-in and the seam re-enters the brain for the iteration the model has not spent. The
+write keeps travelling its own lane meanwhile. Bounded by the collector's
+`params.max_iter` like any other round, so a model that only ever calls leaves on `answer`
+with `hop.round_capped=1` rather than looping. Measured before the fix: three of five full
+harness runs died silently on exactly this shape.
+
+**`remember` is deliberately *not* in `DISPATCHER_HANDOFF_TOOLS`.** That list is for async
+tools whose call ends the TURN because the answer comes from a later one -- an advisor's
+event (`consult_cogny`), an escalation. A memory write answers nothing and never comes
+back, so the model still owes this turn a sentence. Putting `remember` there brings the
+silence back.
+
 **The session travels by itself, and it is load-bearing.** The seam edge promotes
 `hop.session_id` into the context long before the answer exists, so the tool call arrives
 at the hive carrying the conversation it was written in. That is what the hive binds the
@@ -506,6 +550,8 @@ state (`brain/seed/system.jsonl` or a system update), never template:
   "parameters": {
     "type": "object",
     "properties": {
+      "nothing_new": {"type": "boolean",
+                      "description": "true when the turn carried no world state"},
       "facts": {"type": "array", "items": {
         "type": "object",
         "properties": {
@@ -516,9 +562,26 @@ state (`brain/seed/system.jsonl` or a system update), never template:
           "fact_kind": {"type": "string", "enum": ["world", "experience", "foresight"]},
           "valid_from": {"type": "string"},
           "confidence": {"type": "integer", "minimum": 0, "maximum": 100}},
-        "required": ["subject", "predicate", "claim", "fact_kind"]}}},
-    "required": ["facts"]}}}
+        "required": ["subject", "predicate", "claim", "fact_kind"]}},
+      "topic": {"type": "object",
+        "properties": {
+          "movement": {"type": "string", "enum": ["start", "continue", "end"]},
+          "name": {"type": "string"}},
+        "required": ["movement"]}},
+    "required": ["facts", "topic"]}}}
 ```
+
+**Both parts are required, and that is the schema half of the obligation
+([#299](https://github.com/mmeyerlein/meclaw/issues/299)).** `facts` is the delta of world
+state the turn carried, `topic` is where the conversation stands -- a topic is not a fact
+(it has no subject and no predicate), so it gets a part of its own rather than an axis
+about the conversation next to the axes about the world. A turn that carried nothing
+answers with an empty `facts` list, `movement: "continue"` and `nothing_new: true`; the
+hive books that turn as *annotated and empty* instead of leaving it in the queue as one
+nobody ever looked at. `nothing_new` is deliberately NOT required: the ingress reads it as
+a flag that is either true or absent, and a `false` demanded on every content call would
+be a field to get right on the turns where it means nothing. `name` is optional inside
+`topic` for the same shape reason -- a `continue` writes no row, so it needs none.
 
 **What is NOT in the schema is the point.** There is no `episode_id`, because the model
 cannot know one and an invented id would file the facts against the wrong turn. And there
@@ -531,8 +594,10 @@ enforces the same two rules again at its end, because it does not own the person
 **The description IS the contract**, and it is shipped:
 `templates/memory-hive/inline-contract.md`. Paste the fenced block from there into the
 tool description rather than writing a new one -- the file is the authority, a drift lock
-holds it against the batched extractor's own prompt, and a discipline each persona invents
-for itself is a discipline nothing can hold to account.
+(`crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
+what this lane can actually read, and a discipline each persona invents for itself is a
+discipline nothing can hold to account. The block is short on purpose: it is carried on
+every single turn, so its length is paid for once per call.
 
 **Order the instructions so the answer is written first.** The block belongs AFTER the
 answer, not beside it: a model that produces its structured field before its reasoning
@@ -540,10 +605,13 @@ answers from nothing, which is the one robust finding in the format-constraint
 literature. The shipped contract says so in its first line.
 
 **It needs per-turn episodes.** A block is bound to the turn it answered, and that turn
-has to BE in the memory when the call arrives. Set `turn_write=1` and wire the
-`turn_write` lane above; without it the hive has nothing to bind to, rejects every block,
-and the batched extractor keeps doing the work at night. That is the safe direction and it
-is also the whole reason wave 9 came first.
+has to BE in the memory when the call arrives. The knob is on by default since GH #298 --
+leave it on and wire the `turn_write` lane above; without that lane the hive has nothing to
+bind to, rejects every block,
+and the turns wait in the queue for the close pass at the end of the session. That is the
+safe direction -- one extraction later is a delay, a fact hung on the wrong turn is a
+defect, and only one of the two can be repaired -- and it is also the whole reason wave 9
+came first.
 
 ## Knobs
 
@@ -585,10 +653,11 @@ reference pattern.
 | `memory_call_tier` | param | `"1"` | collector -- tier of the `memory_recall` tool; empty = tool off |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `prune_after_ms` | param | `604800000` | collector -- age gate on the prune lane (7 d) |
-| `turn_write` | param | `""` | collector -- empty = off; set, the day leaves on route `turn_write` after every stored turn |
+| `turn_write` | param | `"1"` | collector -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
 | `context_window` | param | `0` | collector -- the curator's budget in tokens; `0` = curation off. A channel voice is the shape the curator was **not** built for; leave it off unless the window is genuinely large. The full curator table is in [`collector`](../collector/#knobs) |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round (`consult_cogny,ask_memory,remember`). The key is colony-global, so in practice ONE list carries every async name of the tree |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round (`remember`). The key is colony-global, so in practice ONE list carries every async name of the tree |
+| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny,ask_memory`). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` does not belong here (GH #372) |
 | `SUMMARIZER_RECENT_TURNS` | env | `12` | summarizer -- newest turns travelling verbatim |
 | `SUMMARIZER_PHASEOUT_CHARS` | env | `200` | summarizer -- per-turn cap on the phased-out turns |
 | `SUMMARIZER_TOOL_CHARS` | env | `200` | summarizer -- per-item cap on tool previews |
@@ -678,9 +747,11 @@ Two things to have ready before the mutation:
   behind the door reads it, and a real call on the lane crosses `talky`'s door and the
   collector's door and lands on the assembler.
 - `crates/meclaw-cells/tests/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
-  that carries this composite, the shipped `memory-drain` and the memory hive's real
-  write path: one turn, and the turn AND the answer are `episodes` rows before anything
-  closes; then the close batch runs into the same drain and moves no row.
+  that carries this composite and the memory hive's real write path, wired straight
+  at the hive's writer port with nothing in between (GH #298 removed the `memory-drain`
+  from this path): the turn AND the answer are `episodes` rows before anything closes,
+  a second turn adds exactly its own two and re-writes neither of the first two, and
+  the close that follows moves no row.
 - `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- the `remember` lane in a
   colony that carries this composite, the shipped `memory-drain` and the memory hive's
   real write AND extraction path: one turn whose single response carries the answer and

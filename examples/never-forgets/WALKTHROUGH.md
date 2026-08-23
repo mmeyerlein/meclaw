@@ -27,10 +27,13 @@ cp -r templates examples/never-forgets/templates
 ```
 
 That is the whole step, and it is worth knowing what it is *not* for. The
-collector's per-turn write is a **param**, and a param is set in the declaration:
-`grow.json` carries `"override_params": {"collector/assemble": {"turn_write":
-"1"}}` on the `talky` node, so nothing about this example needs an edited
-library. Since [#140](https://github.com/mmeyerlein/meclaw/issues/140) an
+collector's per-turn write is a **param**, and a param is named in the
+declaration: `grow.json` carries `"override_params": {"collector/assemble":
+{"turn_write": "1"}}` on the `talky` node, so nothing about this example needs an
+edited library. Since
+[#298](https://github.com/mmeyerlein/meclaw/issues/298) that value is also the
+shipped default, so the line names the knob this example lives on rather than
+switching it on. Since [#140](https://github.com/mmeyerlein/meclaw/issues/140) an
 `override_params` on a subtree template is addressed by the cell's path inside it
 (`collector/assemble` — the cell, not `collector`, which is the sub-unit's hive
 and would swallow the key).
@@ -41,10 +44,10 @@ directory, read once when the cell is first spawned, and there is no
 means writing into a template library you are allowed to write into. Point
 `--templates` at the copy and the shipped library stays untouched.
 
-`turn_write` is the freshness lane: every stored turn and every answer hands the
-conversation out again immediately. Without it the first row appears when the
-session closes — a hole of up to a day, and a question about the last exchange
-gets answered out of an empty store.
+`turn_write` is the freshness lane: every stored turn and every answer hands out
+what was said immediately, one message per turn. Without it the first row appears
+when the session closes — a hole of up to a day, and a question about the last
+exchange gets answered out of an empty store.
 
 ## Step 2 — give the brain the tool
 
@@ -142,20 +145,18 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
 ```
 
 ```
-18 cells:
-  /drain/drain               code      /talky/errors            code
-  /drain/ledger              store     /talky/session-keeper/close      code
-  /memory/episodes           store     /talky/session-keeper/night      timer
-  /memory/keep               code      /talky/session-keeper/sessions   store
-  /replay                    code      /talky/session-keeper/stamp      code
-  /sink                      code      /talky/dispatcher             code
-  /surface                   code      /talky/summarizer/prep   code
-  /talky/brain               llm       /talky/summarizer/writer llm
-  /talky/collector/assemble  code
-  /talky/collector/window    store
+16 cells:
+  /memory/episodes           store     /talky/errors            code
+  /memory/keep               code      /talky/session-keeper/close      code
+  /replay                    code      /talky/session-keeper/night      timer
+  /sink                      code      /talky/session-keeper/sessions   store
+  /surface                   code      /talky/session-keeper/stamp      code
+  /talky/brain               llm       /talky/dispatcher             code
+  /talky/collector/assemble  code      /talky/summarizer/prep   code
+  /talky/collector/window    store     /talky/summarizer/writer llm
 ```
 
-Three checked in, fifteen instantiated from templates by one POST. Verify the
+Three checked in, thirteen instantiated from templates by one POST. Verify the
 seed landed while you are here:
 
 ```bash
@@ -206,13 +207,19 @@ agent about January is to say it to the agent. That is wrong here, and the
 reason is a clock: a turn re-spoken through `/surface` gets stamped with today.
 `/replay` speaks the memory's episode port *directly* instead.
 
-**It arrives at the same port the live drain uses.** After every real turn, the
-drain hive `/drain` puts an episode on `/memory/keep` on route `in_episode` —
-which cell inside it does the work is the hive's business, not this lane's. The
+**It arrives at the same port the live turn uses.** After every real turn, the
+talky puts one episode per turn on `/memory/keep` on route `in_episode` — which
+cell inside the composite emitted it is the hive's business, not this lane's. The
 import lane puts an episode on `/memory/keep` on route `in_episode`. Same
 address, same shape, same lane name — and the memory behind it cannot tell them
 apart. Neither is a special case of the other. That indistinguishability is what
 makes a port a port rather than a function call with two callers.
+
+Until GH #298 (ruling Q11) the live half of that sentence had a `memory-drain`
+hive in it, which took the talky's batch and cut it into single turns. It is
+gone from this walkthrough, not moved: the collector emits one message per turn
+on `turn_write` itself, so the two producers are now literally the same shape and
+there is nothing left in between.
 
 **The event time rides in the headers, never on the turn.** Look at the `curl`
 again: `happened_at` sits in `headers`, next to `session_id`, while the turn
@@ -277,7 +284,10 @@ TID=01a00651-25d8-7873-935e-ed827c13d96a
 curl -s "http://127.0.0.1:7788/colony/trace?trace_id=$TID"
 ```
 
-Seventy-one hops. The spine of them, with the header keys that decide each turn:
+Dozens of hops. The recorded run had seventy-one, and that number is not
+re-copied here: GH #298 took the drain's park/probe/mark round trip out of the
+live path and a hop count is the least interesting thing in the listing. The
+spine of them, with the header keys that decide each turn:
 
 ```
 @external                   -> /surface                     {}
@@ -288,11 +298,10 @@ Seventy-one hops. The spine of them, with the header keys that decide each turn:
 /talky/session-keeper       -> /talky/collector             {route: in_turn}
 /talky/collector            -> /talky/collector/assemble    {route: in_turn}
 …                                                           (window bookkeeping)
-/talky/collector/assemble   -> /talky/collector             {route: turn_write, iter: 0}
-/talky/collector            -> /drain                       {route: in_batch, iter: 0}
-/drain                      -> /drain/drain                 {route: in_batch, iter: 0}
-/drain/drain                -> /drain                       {route: episode}
-/drain                      -> /memory/keep                 {route: in_episode}
+/talky/collector/assemble   -> /talky/collector             {route: turn_write, iter: 0,
+                                                             turn_id: <session>#0,
+                                                             turn_index: 0}
+/talky/collector            -> /memory/keep                 {route: in_episode}
 /memory/keep                -> /memory/episodes             {route: mstore}
 
 /talky/collector/assemble   -> /talky/collector             {route: brain, iter: 0}
@@ -323,11 +332,12 @@ Seventy-one hops. The spine of them, with the header keys that decide each turn:
 
 ### Read the hive hops before you read anything else
 
-`/talky/session-keeper`, `/talky/collector` and `/drain` are **hives**, not cells.
-Nothing runs in them -- no mailbox, no task, no `cell.db`. They are still hops in
-this listing, because the colony logs the message that *arrives* at a hive and
-logs the follow-up it forwards with the hive as the sender. So every pass through
-a hive is two rows, hive on both sides of the cell that did the work:
+`/talky/session-keeper`, `/talky/collector` and `/talky` itself are **hives**,
+not cells. Nothing runs in them -- no mailbox, no task, no `cell.db`. They are
+still hops in this listing, because the colony logs the message that *arrives* at
+a hive and logs the follow-up it forwards with the hive as the sender. So every
+pass through a hive is two rows, hive on both sides of the cell that did the
+work:
 
 ```
 /talky/collector -> /talky/collector/assemble -> /talky/collector
@@ -493,12 +503,12 @@ the storage or the recall path.
 ```bash
 kill %1
 rm -rf examples/never-forgets/seed/{colony.db*,log.jsonl,blobs,.staging,orphan-journal.jsonl,.env} \
-       examples/never-forgets/seed/main/{surface,talky,drain,sink} \
+       examples/never-forgets/seed/main/{surface,talky,sink} \
        examples/never-forgets/templates
 find examples/never-forgets/seed -name 'cell.db*' -delete
 ```
 
-The four instantiated node directories are the ones `grow.json` created; delete
+The three instantiated node directories are the ones `grow.json` created; delete
 them together with `colony.db` or the next boot will find cells the registry no
 longer knows and refuse the mutation with `resume_requires_stopped_cell`.
 

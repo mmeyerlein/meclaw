@@ -17,6 +17,18 @@
         "happened_at": "text",
         "recorded_at": "text"
       },
+      "topics": {
+        "id": "text",
+        "session_id": "text",
+        "channel": "text",
+        "audience_set": "text",
+        "name": "text",
+        "opened_episode_id": "text",
+        "closed_episode_id": "text",
+        "opened_at": "text",
+        "closed_at": "text",
+        "closure_source": "text"
+      },
       "facts": {
         "id": "text",
         "episode_id": "text",
@@ -250,7 +262,7 @@
       "{operation: reject_pair, table: facts, column: 'subject', left: 'robin', right: 'robyn'} -> upsert into subject_rejected_pairs: the GC judged them DIFFERENT, so the feed stops proposing them; the pair is unordered and the revert is a delete on that table",
       "revert: {operation: delete, table: predicate_aliases, where: {alias: '...'}} + canonicalize -> every row falls back onto its untouched original",
       "as-of query: {operation: select, table: facts, columns: [...], where: {valid_from: {lte: T}, valid_until: {or_null: {gt: T}}}} -> only the facts true at T",
-      "{operation: update, table: pending_extraction, set: {status: 'claimed', batch_id: 'b1', claimed_at: '2026-08-15T09:00:00.000000Z'}, where: {status: 'pending'}} -> hop.rows_affected > 0 means this worker owns the batch, and claimed_at is when it started owning it (GH #72: a recovery sweep reclaims a claim only after its lease has run out)",
+      "{operation: update, table: pending_extraction, set: {status: 'inline'}, where: {episode_id: {in: [...]}, status: 'pending'}} -> hop.rows_affected counts the turns this annotation settled. Four statuses live on that column since W5 (#298, #300): 'pending' (nobody has answered for the turn), 'inline' and 'nothing' (the front model annotated it, with content or with an honest empty answer), 'close' (the close pass answered for it, by covering block or by its end-of-session sweep). Every writer guards on status 'pending', so a settled row keeps the verdict that settled it. HISTORICAL: batch_id and claimed_at are leftovers of the batched extractor and its lease (GH #72, status 'claimed'); the columns stay because the schema is additive, but the enqueue only ever writes batch_id as an empty string, nothing reads either column, and there is no claim left for a recovery sweep to reclaim",
       "NULL means open: facts.expired_at NULL = live, facts.valid_until NULL = currently true, embeddings.blob NULL = not embedded yet (queued via status)",
       "scratch: the join-less store cannot return two result sets at once, so a lane that must diff set A against set B parks both under one key and reads them back in a single select"
     ]

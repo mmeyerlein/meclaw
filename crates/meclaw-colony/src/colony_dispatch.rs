@@ -869,15 +869,27 @@ fn json_type_name(v: &meclaw_core::serde_json::Value) -> &'static str {
 /// `/colony/*` read shares (`docs/meclaw-overview.md` § `/colony` als virtueller
 /// Endpunkt), and the shape the shipped `templates/canvy` probe sends.
 ///
-/// **Deprecated alias (GH #341, ruling K-1):** a top-level `body.scope` is still
-/// accepted for exactly one release and then goes. It is only consulted when the
-/// documented shape carries no scope, so the alias can never override it.
+/// **The deprecated alias is gone (GH #341, ruling K-1).** A top-level
+/// `body.scope` was accepted for exactly one release round; that round was
+/// 0.18.0. It is now a refused filter, not an ignored one — K-1's loudness rule
+/// applies to a filter that has been removed just as it applies to one that
+/// cannot be parsed: a caller must not mistake "your filter no longer applies"
+/// for "here is your answer". The check runs before the documented shape, so a
+/// body carrying both forms is refused too rather than silently dropping one.
 ///
 /// A filter that is present but unreadable (wrong JSON type) is an error, never
 /// a silent fall-back to the root scope. Absent means absent: no `query`, no
 /// `scope`, or either of them `null`, is the documented root default.
 pub fn parse_graph_scope(body: &meclaw_core::serde_json::Value) -> Result<Path, ReadQueryError> {
     use meclaw_core::serde_json::Value;
+    if body.get("scope").is_some_and(|v| !v.is_null()) {
+        return Err(ReadQueryError {
+            key: "scope".into(),
+            details: "top-level `scope` was removed in GH #341 — the read \
+                      envelope is {\"query\": {\"scope\": \"<path>\"}}"
+                .into(),
+        });
+    }
     match body.get("query") {
         Some(Value::Object(q)) => match q.get("scope") {
             Some(Value::String(s)) => return Ok(Path::new(s)),
@@ -891,7 +903,7 @@ pub fn parse_graph_scope(body: &meclaw_core::serde_json::Value) -> Result<Path, 
                 });
             }
             // No `scope` in the query object: the documented per-field default
-            // applies — fall through to the deprecated alias, then to root.
+            // applies — fall through to the root scope.
             _ => {}
         },
         Some(other) if !other.is_null() => {
@@ -906,25 +918,7 @@ pub fn parse_graph_scope(body: &meclaw_core::serde_json::Value) -> Result<Path, 
         }
         _ => {}
     }
-    match body.get("scope") {
-        Some(Value::String(s)) => {
-            tracing::warn!(
-                scope = %s,
-                "/colony/graph: top-level `scope` is deprecated (GH #341) — \
-                 send the documented query envelope instead; the alias goes in \
-                 the next release"
-            );
-            Ok(Path::new(s))
-        }
-        Some(other) if !other.is_null() => Err(ReadQueryError {
-            key: "scope".into(),
-            details: format!(
-                "deprecated top-level `scope` must be a path string, found {}",
-                json_type_name(other)
-            ),
-        }),
-        _ => Ok(Path::new("/")),
-    }
+    Ok(Path::new("/"))
 }
 
 /// Answer a `/colony/graph` read: parse the filter out of the request body, then

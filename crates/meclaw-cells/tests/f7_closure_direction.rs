@@ -30,6 +30,13 @@
 //! 2. the nightly review checks the same direction on the extractor closures it
 //!    audits, and takes an inverted one back with the revert W4 already owns.
 //!
+//! Both guards survive wave 5 (#298) unchanged, because both live behind the
+//! model call rather than in front of it: guard 1 is arithmetic in the apply
+//! phase over the `window` row it reads back, guard 2 is the nightly scan. What
+//! went with the batch lane is the PRODUCER of the window -- the vocabulary leg's
+//! page -- so the two cases that drove that page are re-pointed at the apply
+//! phase, where the pair of instants is read and where the direction is decided.
+//!
 //! Everything here runs the REAL `params.script_inline` of `extract-glue` and
 //! `dream-glue` against injected store replies, so no model is called and nothing
 //! costs anything. The free scenario C14 proves the extraction half end to end on
@@ -153,16 +160,6 @@ fn x_reply(phase: &str, operation: &str, rows: serde_json::Value) -> serde_json:
     })
 }
 
-/// One open fact row in the shape the window page projects it.
-fn fact_row(id: &str, claim: &str, from: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": id, "subject": "rachel", "canonical_subject": "rachel",
-        "predicate": "lives_in", "canonical_predicate": "lives_in",
-        "claim": claim, "canonical_claim": claim,
-        "valid_from": from, "recorded_at": from, "expired_at": null
-    })
-}
-
 /// Every `facts` op of one operation the apply phase emitted, in order.
 fn fact_ops(msgs: &[serde_json::Value], operation: &str) -> Vec<serde_json::Value> {
     msgs.iter()
@@ -212,68 +209,90 @@ const SUBURBS: &str = "2023-05-27T00:00:00Z";
 const CHICAGO: &str = "2023-05-24T00:00:00Z";
 
 #[test]
-fn the_window_says_when_each_statement_was_last_asserted() {
-    // The instant the guard reads. `since` is when the statement STARTED and it
-    // is what the prompt shows; the apply phase compares the assertion still
-    // standing, which is the row a closure names -- so the window carries both,
-    // the same pair the night's own axis page has carried since W3.
-    let rows = serde_json::json!([
-        fact_row("s1", "the suburbs", "2023-05-20T00:00:00Z"),
-        fact_row("s2", "the suburbs", SUBURBS)
-    ]);
-    let (msgs, _) = run(
-        &script_of(EXTRACT_CONFIG),
-        x_reply("window-page", "select", rows),
-    );
-    let pool = parked(&msgs, "window-pool").expect("the pool");
-    assert_eq!(
-        pool[0]["statements"],
-        serde_json::json!([statement(
+fn the_instant_the_guard_reads_is_the_last_assertion_and_not_the_first() {
+    // The instant the guard reads. `since` is when the statement STARTED, the
+    // apply phase compares the assertion still STANDING -- so the window row
+    // carries both, and it is the second of the pair that decides.
+    //
+    // Wave 5 (#298) re-pointed this case: the producer of the pair was the
+    // vocabulary leg's window page, which went with the batch lane. What is left
+    // to pin is the READ, and it is pinned by holding `since` still and moving
+    // only `last_asserted` -- the same statement, the same first assertion, the
+    // opposite outcome.
+    let older = "2023-05-01T00:00:00Z";
+    let (closed, _) = apply(
+        staged_fact("lives in Chicago", CHICAGO, "s2"),
+        &window_of(serde_json::json!([statement(
             "s2",
             "the suburbs",
-            "2023-05-20T00:00:00Z",
+            older,
+            older
+        )])),
+    );
+    assert_eq!(
+        fact_ops(&closed, "update").len(),
+        1,
+        "a statement last asserted before the new fact is ended by it: {closed:?}"
+    );
+    let (refused, _) = apply(
+        staged_fact("lives in Chicago", CHICAGO, "s2"),
+        &window_of(serde_json::json!([statement(
+            "s2",
+            "the suburbs",
+            older,
             SUBURBS
-        )]),
-        "one statement, named by its live assertion, dated by its first and by its last"
+        )])),
+    );
+    assert!(
+        fact_ops(&refused, "update").is_empty(),
+        "the same statement, re-asserted after the new fact, was closed anyway -- \
+         the guard read `since` instead of `last_asserted`: {refused:?}"
+    );
+    let receipt = parked(&refused, "extract-refusals").expect("the refusal row");
+    assert_eq!(
+        receipt[0]["held_until"], SUBURBS,
+        "and the receipt names the instant that decided it, not the one the \
+         statement started at"
     );
 }
 
 #[test]
-fn the_prompt_shows_the_instant_it_always_showed_and_not_the_new_one() {
-    // The guard is arithmetic in the apply phase and costs the prompt nothing.
-    // A second date on every line would be paid for by every batch of every
-    // colony, for a comparison no model is asked to make.
-    let rows = serde_json::json!([fact_row("s2", "the suburbs", SUBURBS)]);
-    let (msgs, _) = run(
-        &script_of(EXTRACT_CONFIG),
-        x_reply("window-page", "select", rows),
-    );
-    let pool = parked(&msgs, "window-pool").expect("the pool");
-    let batch = serde_json::json!([{"episode_id": "e9", "content": "I moved again."}]);
-    let rows = serde_json::json!([
-        {"key": BATCH, "kind": "batch", "payload": batch.to_string()},
-        {"key": BATCH, "kind": "vocab", "payload": "{}"},
-        {"key": BATCH, "kind": "window-pool", "payload": pool.to_string()}
-    ]);
-    let (msgs, _) = run(
-        &script_of(EXTRACT_CONFIG),
-        x_reply("prompt", "select", rows),
-    );
-    let prompt = msgs
-        .iter()
-        .find(|m| m["header"]["route"] == "extract")
-        .expect("the extractor call");
-    let text = prompt["system"]["instructions"]["text"]
-        .as_str()
-        .expect("instructions");
-    assert!(
-        text.contains("since 2023-05-27T00:00:00Z"),
-        "the rendered window lost the instant it has always shown: {text}"
-    );
-    assert!(
-        !text.contains("last_asserted"),
-        "the new field reached the prompt: {text}"
-    );
+fn the_second_instant_never_leaves_the_arithmetic_it_was_added_for() {
+    // The guard is arithmetic and costs the rest of the lane nothing. It was the
+    // batched prompt that had to be kept free of the second date -- a line every
+    // batch of every colony would have paid for, for a comparison no model is
+    // asked to make -- and with that prompt gone (#298) what is left to keep free
+    // is the WRITE path: `last_asserted` is read out of the window row and is
+    // named in no op the phase emits, applied case and refused case alike. The
+    // refusal receipt states the same instant under its own name, `held_until`,
+    // because a refusal has to be readable back to what decided it.
+    for (fact, window) in [
+        (
+            staged_fact("lives in Chicago", CHICAGO, "s2"),
+            window_of(serde_json::json!([statement(
+                "s2",
+                "the suburbs",
+                SUBURBS,
+                SUBURBS
+            )])),
+        ),
+        (
+            staged_fact("the suburbs", SUBURBS, "c1"),
+            window_of(serde_json::json!([statement(
+                "c1",
+                "lives in Chicago",
+                CHICAGO,
+                CHICAGO
+            )])),
+        ),
+    ] {
+        let (msgs, _) = apply(fact, &window);
+        let spoken = serde_json::to_string(&msgs).expect("serialise");
+        assert!(
+            !spoken.contains("last_asserted"),
+            "the field the guard reads was written back out: {spoken}"
+        );
+    }
 }
 
 #[test]

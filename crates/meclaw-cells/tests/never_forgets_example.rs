@@ -12,9 +12,9 @@
 //! drives the whole story:
 //!
 //!   1. THREE MONTHS GO IN, model-free. Prepared turns with staggered
-//!      `happened_at` enter over the import lane, cross `memory-drain` and
-//!      land in the episode table, each under the instant it was said. The
-//!      only clock this leg touches is `recorded_at`.
+//!      `happened_at` enter over the import lane, speak the episode port
+//!      directly and land in the episode table, each under the instant it was
+//!      said. The only clock this leg touches is `recorded_at`.
 //!   2. A QUESTION COMES IN TODAY. The brain (mock wire) answers it with a
 //!      `memory_recall` tool call carrying a window over mid-February. The
 //!      dispatcher routes it by name, the collector serves it on the recall
@@ -60,22 +60,21 @@ fn example_path(rel: &str) -> std::path::PathBuf {
 }
 
 /// The templates `grow.json` names, each next to the path this test really
-/// reads, in the order the declaration names them. All four are part of the
+/// reads, in the order the declaration names them. All three are part of the
 /// public distribution, so the file runs in the open clone exactly as it does
 /// here -- and the paths are spelled out rather than formatted, so the export's
 /// R2b check can read the names off them (GH #9: a runtime path a gate cannot
 /// see is the whole defect class).
-const GROWN_FROM: [(&str, &str); 4] = [
+const GROWN_FROM: [(&str, &str); 3] = [
     ("door", "templates/door"),
     ("talky", "templates/talky"),
-    ("memory-drain", "templates/memory-drain"),
     ("terminal", "templates/terminal"),
 ];
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
-/// marker is a scope, not a cell) and fifteen grown ones: one from `door@1`,
-/// eleven from `talky`, two from `memory-drain`, one from `terminal@1`.
-const CELLS_AFTER_GROW: usize = 18;
+/// marker is a scope, not a cell) and thirteen grown ones: one from `door@1`,
+/// eleven from `talky`, one from `terminal@1`.
+const CELLS_AFTER_GROW: usize = 16;
 
 /// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are
@@ -255,8 +254,9 @@ fn grow_json_only_names_templates_that_ship() {
     }
 }
 
-/// GH #220: the per-turn lane is set IN the declaration, not by forking the
-/// library.
+/// GH #220: the per-turn lane is named IN the declaration, not by forking the
+/// library -- and since GH #298 it is named there rather than switched on there,
+/// because the library ships it on.
 ///
 /// `turn_write` is what makes the memory fresh during a session instead of at
 /// the nightly close, and the example used to set it by copying the whole
@@ -287,13 +287,75 @@ fn grow_json_sets_the_per_turn_lane_at_instantiation() {
          reader can see, or this example is back to a freshness hole of up to a day"
     );
 
-    // The shipped default is empty, so the override is the whole difference.
+    // Since GH #298 the library ships the lane ON, so the override no longer
+    // MAKES the difference -- it declares, where the reader reads, which knob
+    // this example depends on. What it must never do is disagree with the
+    // shipped value: a `"0"` here would switch the example's own subject off.
     let shipped = read_json(&repo_path("templates/collector/assemble/config.json"));
     assert_eq!(
         shipped["params"]["turn_write"],
-        json!(""),
-        "the library now ships the lane on -- then the override is decoration and \
-         the README paragraph explaining it is wrong"
+        json!("1"),
+        "the library stopped shipping the per-turn lane on -- then this example \
+         depends on its override again and the README paragraph must say so"
+    );
+    assert_eq!(
+        talky["override_params"]["collector/assemble"]["turn_write"],
+        shipped["params"]["turn_write"],
+        "the declaration and the library disagree about the example's own lane"
+    );
+}
+
+/// GH #298, ruling Q11: `memory-drain` left the live stack.
+///
+/// The decomposer between the talky and the memory is gone from this
+/// declaration -- not bypassed, not renamed: no edge of the file names
+/// `./drain` any more, and the per-turn route speaks the episode port itself.
+/// Since GH #298 the collector emits ONE turn per message on `turn_write`, with
+/// `turn_id`/`turn_index`/`happened_at` on the hop, which is exactly the shape
+/// the port reads -- so a decomposer in between has nothing left to decompose.
+///
+/// The modifier is asserted against the IMPORT lane rather than spelled out: the
+/// whole subject of this example is that both producers reach the same port in
+/// the same shape, and two edges that promote different keys would be two ports
+/// wearing one name.
+#[test]
+fn grow_json_wires_the_per_turn_route_straight_at_the_memory() {
+    let grow = read_json(&example_path("grow.json"));
+    let edges = grow["diff"]["add_edges"].as_array().expect("add_edges");
+    assert!(
+        !edges
+            .iter()
+            .any(|e| e["from"] == json!("./drain") || e["to"] == json!("./drain")),
+        "an edge still names ./drain -- the drain is back on the live path"
+    );
+
+    let turn_write = edges
+        .iter()
+        .find(|e| {
+            e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("hop.route == 'turn_write'"))
+        })
+        .expect("the per-turn route is not wired at all");
+    assert_eq!(
+        turn_write["from"],
+        json!("./talky"),
+        "the per-turn route no longer leaves the talky"
+    );
+    assert_eq!(
+        turn_write["to"],
+        json!("./memory/keep"),
+        "the per-turn route ends somewhere other than the episode port"
+    );
+
+    let import = edges
+        .iter()
+        .find(|e| e["from"] == json!("./replay"))
+        .expect("the import lane is not wired");
+    assert_eq!(
+        turn_write["modifier"], import["modifier"],
+        "the live lane and the import lane no longer speak the port the same \
+         way -- one port with two shapes is two ports"
     );
 }
 
@@ -621,13 +683,19 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "/talky/collector/assemble",
         "/talky/dispatcher",
         "/talky/brain",
-        "/drain/drain",
-        "/drain/ledger",
         "/sink",
     ] {
         assert!(
             after.iter().any(|p| p == expected),
             "{expected} did not grow: {after:?}"
+        );
+    }
+    // GH #298, ruling Q11: the drain is not in the live stack any more, so it
+    // is not in the inventory either -- neither of its two cells grows here.
+    for gone in ["/drain/drain", "/drain/ledger"] {
+        assert!(
+            !after.iter().any(|p| p == gone),
+            "{gone} still grows: the drain is back on the live path: {after:?}"
         );
     }
     assert_eq!(after.len(), CELLS_AFTER_GROW, "{after:?}");

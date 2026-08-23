@@ -44,14 +44,14 @@ never-forgets/
 │       ├── keep/config.json       the port: write a turn, answer a window
 │       └── episodes/config.json   the table: one row per turn, two timestamps
 ├── past.jsonl                     nine turns across three months
-├── grow.json                      the declaration. four nodes, ten edges.
+├── grow.json                      the declaration. three nodes, eight edges.
 └── README.md
 ```
 
 Nothing that *talks* is in there. No door, no session keeper, no context
-collector, no tool dispatcher, no brain, no summarizer, no drain -- fifteen
-cells' worth of agent, none of it written here, all of it named in `grow.json`
-and instantiated at runtime out of [`templates/`](../../templates/).
+collector, no tool dispatcher, no brain, no summarizer -- thirteen cells' worth
+of agent, none of it written here, all of it named in `grow.json` and
+instantiated at runtime out of [`templates/`](../../templates/).
 
 What *is* written here is the one thing a template library cannot ship for you:
 **where your memory lives.** A library can hand you the shape of an agent; it
@@ -63,24 +63,34 @@ cannot decide which database your life goes into.
 |---|---|---|
 | `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
-| `/drain` | [`memory-drain`](../../templates/memory-drain/) | 2 cells. Turns a stored turn into an episode, idempotently. |
 | `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for the lanes this example does not decide. |
 
-Eighteen cells in the registry, three of them checked in -- the hive marker is a
+Sixteen cells in the registry, three of them checked in -- the hive marker is a
 scope, not a cell.
 
 ## The one shape worth reading: one port, two producers
 
 ```
-  live turn ──> /talky ──turn_write──> /drain ──episode──┐
+  live turn ──> /talky ────────────────────turn_write────┐
                                                          ├──> /memory/keep ──> /memory/episodes
   past turn ──> /replay ───────────────────────episode───┘      (the port)         (the table)
 ```
 
-The drain knows what was *just* said. The import lane knows what was said in
+The live lane knows what was *just* said. The import lane knows what was said in
 January. They arrive at the **same port**, in the same shape, and the memory
 behind it cannot tell them apart -- which is exactly the property that makes a
 port a port rather than a function call.
+
+**Retraction (GH #298, ruling Q11).** Until this version a `memory-drain` hive
+sat in the middle of the live half of that picture: the talky handed its day out
+as a batch, the drain cut it into single turns and kept a ledger so a second
+delivery wrote nothing. That is gone, and it is gone rather than moved. The
+collector now emits **one message per turn** on `turn_write`, with `hop.turn_id`,
+`hop.turn_index` and `hop.happened_at` beside it -- which is exactly what the
+episode port reads -- so there is nothing left in between to decompose. The
+import lane never used the drain in the first place: `seed/main/replay` has
+always spoken the episode port directly, one message per turn, and says so in its
+own comment. Now the live lane does the same thing.
 
 The difference between them is one field. A live turn carries no event time and
 the memory stamps its own clock; an imported turn carries the instant it
@@ -248,10 +258,14 @@ which reads `graph`, `ports`, `required_drains` and `contract` and would take
 this key without anyone consuming it.
 
 `turn_write` is the per-turn lane: every stored turn and every
-answer hands the conversation out again immediately, so the memory is fresh
-*during* the session instead of at the nightly close. Without it the first row
-appears when the session closes -- a freshness hole of up to a day, and a
-question about the last exchange gets answered out of an empty store.
+answer hands what was said out immediately, one message per turn, so the memory
+is fresh *during* the session instead of at the nightly close. Without it the
+first row appears when the session closes -- a freshness hole of up to a day, and
+a question about the last exchange gets answered out of an empty store. **Since
+[GH #298](https://github.com/mmeyerlein/meclaw/issues/298) the library ships that
+lane ON**, so the override above no longer *turns it on* -- it says out loud, in
+the declaration a reader reads, which knob this example depends on. Setting it to
+`"0"` is what would switch the lane off, and this example would lose its point.
 `memory_call_tier` needs no setting at all -- the shipped default is `"1"`.
 
 Grow it:
@@ -262,7 +276,7 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
      -d @examples/never-forgets/grow.json
 ```
 
-`http://127.0.0.1:7788/ui/registry` now shows eighteen cells.
+`http://127.0.0.1:7788/ui/registry` now shows sixteen cells.
 
 ## Load the past
 
@@ -307,7 +321,7 @@ curl "http://127.0.0.1:7788/ui/trace?trace_id=$TID"
 ```
 
 The spine of it, with the window and session bookkeeping and the concurrent
-turn-write leg into `/drain` left out -- the trace has those too:
+turn-write leg into `/memory/keep` left out -- the trace has those too:
 
 ```
 @external -> /surface -> /talky/session-keeper -> /talky/session-keeper/stamp ->
@@ -346,7 +360,7 @@ thing. That refusal is the reason the window is worth having.
 - **The consumer asks.** The model that read the question is the one that names
   the range. Nothing upstream had to guess it, and nothing downstream had to
   interpret it.
-- **A port takes any producer.** A live drain and a historical import write the
+- **A port takes any producer.** A live turn and a historical import write the
   same shape to the same address, and the memory is not aware there are two.
 - **Freshness is a lane, not a promise.** `turn_write` is the whole
   difference between "retrievable now" and "retrievable tomorrow".

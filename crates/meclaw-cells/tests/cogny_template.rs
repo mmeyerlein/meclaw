@@ -304,13 +304,18 @@ fn main_config() -> Value {
 
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, base_url: &str) {
     let root = td.path();
-    // `escalate_to_deep` is the core's OWN async tool: the fast lane's ticket
+    // `escalate_to_deep` is the core's OWN HANDOFF tool: the fast lane's ticket
     // out is answered on a lane of its own (a fresh turn on the deep lane), so
     // the fan-in must open no expectation for it -- otherwise the round it left
-    // behind sits open until the idle exit.
+    // behind sits open until the idle exit. A handoff is async by definition
+    // (the dispatcher unions the two lists), and it says the second half as
+    // well: the turn is over, even though the escalation carries no sentence of
+    // its own -- since GH #372 that second half is what keeps a bare async call
+    // WITHOUT a handoff mark (a fire-and-forget `remember`) from ending its
+    // round in silence.
     std::fs::write(
         root.join(".env"),
-        "OPENROUTER_API_KEY=test-key\nDISPATCHER_ASYNC_TOOLS=escalate_to_deep\n",
+        "OPENROUTER_API_KEY=test-key\nDISPATCHER_HANDOFF_TOOLS=escalate_to_deep\n",
     )
     .unwrap();
     write(root, "main/config.json", &main_config());

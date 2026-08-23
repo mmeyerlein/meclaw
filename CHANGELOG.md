@@ -11,6 +11,290 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-23
+
+### Fixed
+
+- **The hive no longer ingests its own recall answers as conversation**
+  ([#282](https://github.com/mmeyerlein/meclaw/issues/282)). Three producers on the collector's write path put text
+  into `episodes` that nobody in the room ever said, and all three are now
+  closed on the one write path that is left. **An interim sentence is not a
+  turn**: the answer a dispatcher speaks while an async call is still running is
+  marked `interim` in the window and is not written. **An advisor's answer is
+  not the user's**: a reply arriving on the consult lane carries its
+  `consult_id`, and a row that has one is never filed as a `user` turn.
+  **A close trace invents no speaker**: the close path used to attribute the
+  fold-up of a generation to whoever spoke last, and now attributes it to
+  nobody. Each of the three is pinned by its own case in
+  `gh282_only_what_somebody_said_is_drained`.
+
+- **Speaker granularity: identity travels per message, not per batch**
+  ([#272](https://github.com/mmeyerlein/meclaw/issues/272), ruling Q11 of 2026-08-21). The issue asked for a way to
+  say who spoke inside a batch of turns. It is **dissolved rather than built**:
+  with the batch gone from the live write path, one message carries one turn and
+  its own provenance, so two turns of one session can name two different people
+  without a mechanism of their own. `in_episode` states that in its contract and
+  `gh272_identity_travels_per_message` pins it.
+
+- **A round whose last brain iteration is a lone async tool call now still
+  answers** ([#372](https://github.com/mmeyerlein/meclaw/issues/372)). When a
+  model replied with nothing but an async call — `remember` with no sentence
+  beside it — the channel got **no answer at all**: no interim, no final, no
+  error, no dead letter. The dispatcher sends its interim answer only when text
+  stands beside the bundle, the collector filed the assistant row as *already
+  fired* (so no guard could win it and no `in_round_sweep` could find it open),
+  and `round_idle_ms` does not fire on a quiet channel. The colony stayed alive
+  and silent, and the turn was lost. Measured in three of five full harness runs
+  on 2026-08-23; the per-turn contract ([#298](https://github.com/mmeyerlein/meclaw/issues/298))
+  makes call-only iterations common.
+
+  Filing the round as over is now a **condition**, and exactly two things
+  satisfy it: the model spoke beside the bundle (that sentence is already on the
+  channel as the interim answer), or a **handoff** call took the turn with it.
+  Neither, and the round stays open: the synthetic acknowledgement completes the
+  fan-in, the regular guard fires, and the seam re-enters the brain for the
+  iteration the model never spent — bounded by `params.max_iter` like every
+  other round, which leaves on route `answer` with `hop.round_capped=1` when it
+  is spent. No new route and no fourth answer sort: a round still ends as a real
+  answer, `round_capped`, or `degraded`
+  ([#343](https://github.com/mmeyerlein/meclaw/issues/343)).
+
+### Added
+
+- **`topics`: where the conversation stands, written by the model that was in
+  it** ([#298](https://github.com/mmeyerlein/meclaw/issues/298), [#299](https://github.com/mmeyerlein/meclaw/issues/299)). The annotation a turn carries
+  now has **two** parts. `facts` is the delta of world state; `topic` is the
+  movement of the conversation — `start`, `continue` or `end` — and a `start` or
+  an `end` writes a row in the new `topics` table next to the facts. Only the
+  answering model can produce it: what a conversation is *about* is not
+  recoverable from the turns afterwards without paying for a second reading of
+  them. Nothing reads the table at recall time yet; the close pass is its
+  consumer, and whether the recall bundle should learn about topics is
+  [#281](https://github.com/mmeyerlein/meclaw/issues/281)'s question, deliberately not answered here.
+
+- **The close pass: one ended session, read whole, on a strong model**
+  ([#300](https://github.com/mmeyerlein/meclaw/issues/300), ruling Q9 of 2026-08-21). Per-turn annotation is blind in
+  one direction — the front model annotates the turn it has just answered and
+  cannot know the turn after it. `memory-hive@3.0.0` gains a lane for the other
+  direction: send a session to **`in_close_pass`** when it ends and the hive
+  reads its own turns, the records they left standing, the open topics and the
+  turns nobody annotated, puts all four to `MODEL_CLOSER` under a four-point
+  contract (*add only what is missing; correct only by superseding the record
+  you name; a sharpening points at a record and never replaces it; do not
+  restate what is already there*) and writes the verdict back through the
+  ordinary inline ingress. Two new cells, `close-glue` and `closer`; a new exit
+  lane **`close_report`** carrying eight numbers (`added`, `sharpened`,
+  `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`),
+  and it must be drained — the writes answer nobody, so without the report a
+  caller cannot tell a pass that ran and changed nothing from a pass that never
+  ran. New knobs: `MODEL_CLOSER` (**required, no default** — the ruling puts this
+  lane on a strong model and a silent fallback would revoke it),
+  `MEMORY_REASONING_CLOSE`, `MEMORY_CLOSE_TURN_ROWS`, `MEMORY_CLOSE_FACT_ROWS`.
+
+  **It also brings the replacement window back.** Since #298 removed the batch
+  prompt, nothing produced the list of open statements a `replaces` is checked
+  against, and every closure was being discarded. The close pass is the one
+  party that sees an axis whole, so it renders that list and parks it — and
+  being shown is **edge truth**: only a block that arrived through the close
+  lane may carry a `shown` array, decided from a context key the hive's own edge
+  stamps, never from anything the payload claims.
+
+  **Cost, measured rather than estimated:** ≈ **0.077 EUR per closed session**
+  on `anthropic/claude-opus-5` (three harness runs on 2026-08-23: 0.0774 /
+  0.0768 / 0.0766 EUR, priced from `scripts/prices-openrouter-2026-08-22.json`).
+  On a 26-turn conversation that was **about 80 % of everything the colony
+  spent**. Budget one such call per closed session.
+
+- **`episodes.episode_written`: the per-turn write is idempotent**
+  ([#282](https://github.com/mmeyerlein/meclaw/issues/282), [#298](https://github.com/mmeyerlein/meclaw/issues/298)). The collector's turn window carries a
+  column saying whether a row has already left as an episode, so a replay, a
+  retry or a second close writes no second episode. It replaces the drain's own
+  ledger rather than sitting beside it.
+
+- **The nightly run sweeps the lane scratch** ([#375](https://github.com/mmeyerlein/meclaw/issues/375)). Nothing ever
+  deleted from `memory-hive`'s two bookkeeping tables, so `scratch` and
+  `recall_scratch` grew with the traffic — and since the close pass parks four
+  rows plus a meeting per closed session, per conversation rather than per batch.
+  The closing phase of the nightly consolidation now deletes what is older than
+  `MEMORY_SCRATCH_TTL_DAYS` (default `7`) days before its own window end, in two
+  bounded `delete`s and nothing else: no memory table, no provenance, no durable
+  row. The cutoff is derived from the run's `delta_to` like every other value a
+  night writes, so a replayed window sweeps the same rows and a window end the
+  lane cannot parse sweeps none. Pinned by
+  `gh375_the_night_sweeps_the_scratch`.
+
+- **A conversation-guide harness: the per-turn contract is judged by running it**
+  ([#301](https://github.com/mmeyerlein/meclaw/issues/301), ruling Q10 of 2026-08-21). `workshop/evals/conversation-guide`
+  drives a scripted conversation through a **real** colony — front model, tool
+  loop, inline contract, close pass — and measures the result against **seven
+  invariants** rather than against expected strings. Invariant 2 is the
+  acceptance criterion #298 was re-based on by ruling Q9: **no claim exists
+  twice in two phrasings**, evaluated after the close pass so both writers answer
+  for it together. The run carries its own spend ceiling (`--budget-eur`,
+  default 10.00), reports spend per model **and per buying cell**, refuses an
+  unpriced model rather than guessing, and aborts with a *partial* verdict rather
+  than overspending — an invariant that was never evaluated is reported as such,
+  never as green. A counter-run against a deliberately wrong contract must fail,
+  naming the invariant it failed.
+
+- **The handoff tool class: `DISPATCHER_HANDOFF_TOOLS` and `hop.handoff_calls`**
+  ([#372](https://github.com/mmeyerlein/meclaw/issues/372)). Which of two things
+  an async call is — *fire-and-forget*, after which the model still owes this
+  turn an answer, or a *handoff*, after which the answer comes from a **later**
+  turn — is tool semantics, so it is declared, in the one cell that sees the
+  whole bundle. A tool named in `DISPATCHER_HANDOFF_TOOLS` is async as well (the
+  two lists are unioned, so one declaration does both jobs) and its
+  `tool_call_id`s ride out on `hop.handoff_calls` beside `hop.async_calls`; the
+  collector reads that marker and files the round as over even when no sentence
+  travelled with the call. Both keys always travel, empty included.
+
+  **Wiring:** an advisor consult (`consult_cogny`, `ask_memory`) and `cogny`'s
+  own `escalate_to_deep` belong in the new list — their answer arrives as its
+  own turn. A memory write (`remember`) does **not**: it answers nothing and
+  never comes back. The fan-in behaviour of either list is unchanged; what the
+  second one adds is the right to end a turn without a word. An instance that
+  meant a handoff and does not say so is the migration below.
+
+### Changed
+
+- **Extraction is per turn, through one ingress, written by the model that
+  answered** ([#298](https://github.com/mmeyerlein/meclaw/issues/298), the 2026-08-20 directive; rulings Q9/Q10/Q11 of
+  2026-08-21). The front-line model annotates the turn **in the answering turn
+  itself** on `in_remember`, and that is the only lane that mints facts
+  mid-conversation. A second party reading the same turns a second time bought
+  duplicates, not coverage. What replaces the batch is not a cheaper batch:
+  behind the single ingress stand two **readers** and no second writer — the
+  night, which reads what is already in the store, and the close pass, which
+  reads an ended session once.
+
+  A fact is now queryable in the same turn that carried it, instead of after the
+  gate interval the batch lane imposed.
+
+- **The annotation is an OBLIGATION, and it has two parts** ([#299](https://github.com/mmeyerlein/meclaw/issues/299)).
+  Every turn is annotated. A turn that carried nothing is annotated as carrying
+  nothing — `{"nothing_new": true, "facts": [], "topic": {"movement":
+  "continue"}}` — because with one lane a turn nobody annotated is a turn nobody
+  extracts, so an absent call is a fault and not a modest answer. The shipped
+  contract (`templates/memory-hive/inline-contract.md`) was rewritten from a run
+  of prohibitions into a statement of what to DO; its drift lock now has **one**
+  direction plus a length bound, because what is in that block is paid for once
+  per call.
+
+- **`pending_extraction` is an EXCEPTION list, not a work list**
+  ([#52](https://github.com/mmeyerlein/meclaw/issues/52), [#298](https://github.com/mmeyerlein/meclaw/issues/298)). An annotation settles the queue rows of
+  the turns it covered with a status of its own — `inline` where the block
+  carried content, `nothing` where its answer was an honest empty one. Both are
+  answers and neither is a rejection. With no claim, no gate and no recovery
+  sweep left to move a row, **`pending` now means exactly one thing**: no
+  annotation ever arrived. The close pass reads those rows first and sweeps the
+  ones belonging to the session it closes; a pass that reaches no verdict leaves
+  them untouched, because a turn nobody looked at must not be booked as looked
+  at.
+
+- **`memory-drain` is out of every live wiring** (ruling Q11 of 2026-08-21,
+  `plans/adr/0012-per-turn-extraction-and-what-is-left-of-the-drain.md`).
+  A live conversation writes its turns one message at a time straight at
+  `in_episode` and never passes through the drain. The template stays at
+  `2.0.4` and is **not** deprecated: nothing about its behaviour changed — it
+  lost its wiring, not a promise it made — and it keeps one honest job, an
+  import adapter for foreign history that genuinely arrives as a batch. The
+  shipped examples and seeds no longer wire it.
+
+- **`dispatcher@1.1.0` and the `collector/assemble` contract at `1.3.0`**
+  ([#372](https://github.com/mmeyerlein/meclaw/issues/372)). The handoff class
+  above is a new capability nobody was ever promised, so it moves the second
+  digit: `settings.handoff_tools` and `emits.hop.handoff_calls` on the
+  dispatcher's contract, `consumes.hop.handoff_calls` on the assembler's.
+  `collector`, `talky` and `cogny` absorb it inside their first-digit move above
+  rather than taking a number of their own.
+
+### Breaking
+
+- **`memory-hive@3.0.0`: the `in_flush` lane and the `extractor` cell are gone**
+  ([#298](https://github.com/mmeyerlein/meclaw/issues/298), ruling Q11 of 2026-08-21). A mutation that wires
+  `in_flush` is refused after this release, and the hive's cell list is thirteen
+  cells (`close-glue` and `closer` in, `extractor` out) instead of twelve. Twelve
+  environment knobs went with the lane and are read by nothing:
+  `MODEL_EXTRACTOR`, `MEMORY_REASONING_EXTRACT`, `MEMORY_BATCH_TOKENS`,
+  `MEMORY_BATCH_MAX_AGE_MIN`, `MEMORY_BATCH_MAX_ITEMS`,
+  `MEMORY_BATCH_CLAIM_LEASE_MIN`, `MEMORY_EXTRACT_ERROR_BUDGET`,
+  `MEMORY_EXTRACT_BACKOFF_SEC`, `MEMORY_EXTRACT_VOCAB_ROWS`,
+  `MEMORY_EXTRACT_WINDOW_AXES` / `_SCAN` / `_ROWS`. `MODEL_CLOSER` takes
+  `MODEL_EXTRACTOR`'s place in the set of variables that must be present at
+  instantiation.
+
+  **Uplift of a RUNNING hive — one mutation, and `MODEL_CLOSER` must be in the
+  environment before it runs:** `remove_nodes` the instance's `extractor`,
+  remove the three edges that addressed it (`. → ./extract-glue` on `in_flush`,
+  `./extract-glue → ./extractor`, `./extractor → ./extract-glue`) and the
+  `in_flush` port edge; `add_nodes` `close-glue` and `closer` and add the eight
+  edges of the close lane. One mutation, because an island without a crossing
+  edge is never woken. Never a filesystem delete — the No-Delete policy holds
+  here as everywhere.
+
+- **`collector@3.0.0`: route `turn_write` hands out one message per turn**
+  ([#298](https://github.com/mmeyerlein/meclaw/issues/298), ruling Q11 of 2026-08-21). It used to hand out one batch
+  of the day. **Every caller wired to the old shape breaks** — that is the
+  first-digit case, and calling it a repair to keep the number small would be
+  inflation in the other direction. `talky@4.0.0` and `cogny@4.0.0` move with it
+  because they re-export the route on their own contract.
+
+  **Uplift of a RUNNING talky:** replace the edge from the talky's `turn_write`
+  route into a `memory-drain` with a **direct** edge into the hive's
+  `in_episode` lane, promoting `session_id`, `turn_id` and `happened_at`; then
+  disconnect the drain node with `remove_nodes`. Never a filesystem delete.
+
+- **`memory-hive/extract-glue`: contract `2.0.0`** — the two dead
+  `contract.settings` declarations `extract_window_scan` and
+  `extract_window_rows` are removed. They lost their reader when the batch lane
+  went; a declaration nothing reads is still a declaration, so it leaves on the
+  first digit rather than quietly.
+
+- **Config migration: consult tools move from `DISPATCHER_ASYNC_TOOLS` to
+  `DISPATCHER_HANDOFF_TOOLS`** ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).
+  No API and no DSL changed, but a tree wired per the **pre-#372** READMEs
+  behaves differently and must be re-declared. Affected is every tool whose call
+  is meant to end the turn because a later one answers: `consult_cogny` and
+  `ask_memory` on the talky side, `escalate_to_deep` inside a `cogny`.
+
+  **What happens if the declaration is not moved:** such a call now leaves its
+  round open, exactly like a fire-and-forget write. On `cogny`'s fast lane —
+  whose seed prompt tells the model to call `escalate_to_deep` and *say nothing
+  else* — that costs one wasted fast-lane inference, and the escalation's own
+  turn defers behind the round it is supposed to replace, so **the answer comes
+  from the lookup lane instead of the thinking lane**. A misclassified errand was
+  meant to cost a worse formulation and never a wrong lane; leaving the knob
+  where it was breaks that.
+
+  **Migration:** move the consult tool names out of `DISPATCHER_ASYNC_TOOLS` and
+  into `DISPATCHER_HANDOFF_TOOLS` — one list entry, not two: the handoff list
+  declares the async class as well. `remember` stays where it is. The knobs are
+  colony-global `.env` keys, so in practice this is two lines instead of one:
+
+  ```
+  DISPATCHER_HANDOFF_TOOLS=consult_cogny,ask_memory,escalate_to_deep
+  DISPATCHER_ASYNC_TOOLS=remember
+  ```
+
+- **`/colony/graph`: the deprecated top-level `{"scope": …}` request body is
+  removed** ([#341](https://github.com/mmeyerlein/meclaw/issues/341)). It was
+  deprecated in 0.17.4 "for exactly one release round", and the round it was
+  booked for — 0.18.0 — shipped with the alias still in the tree. This entry
+  pays that promise. A request body carrying a top-level `scope` is now refused
+  the way any unreadable filter is refused: `{"graph": {"status": "error",
+  "error_code": "invalid_query", "details": "…"}}`, with no node list. It is
+  refused rather than ignored on purpose — a caller still sending the old shape
+  would otherwise receive the whole, unfiltered topology and read it as an
+  answer to a filter that no longer applies. A body carrying **both** forms is
+  refused too, for the same reason.
+
+  **Migration:** send the documented read envelope every `/colony/*` read
+  shares — `{"query": {"scope": "<path>"}}` — instead of a top-level `scope`.
+  Nothing shipped in this tree sends the old shape (`templates/canvy` has sent
+  the documented one since the deprecation), and the HTTP surface is untouched:
+  `GET /colony/graph?scope=<path>` is a URL query parameter, not a request body,
+  and keeps working unchanged.
+
 ## [0.18.0] — 2026-08-23
 
 ### Added

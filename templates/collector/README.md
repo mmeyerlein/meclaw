@@ -1,4 +1,4 @@
-# `collector@2.1.2`
+# `collector@3.0.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -104,8 +104,8 @@ Exits leave **from the hive path** on `hop.route`:
 | `brain` | the agent LLM | THE seam. Promote `hop.turn_id`, `hop.session_id` and `hop.iter` to context on this edge. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since wave 11 it also reports what the curator did: `hop.tokens_window`, `hop.tokens_projected`, `hop.tokens_estimated`, `hop.curate_mark`, `hop.curate_stage`, `hop.curate_elided`, `hop.curate_saved`. |
 | `answer` | the reply sink | the brain's final turn, after it is in the window -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no") |
 | `recall` | the memory hive's recall port | the per-turn leg (only when `memory_tier` is set) **and** every `memory_recall` call; promote `recall_query`, `memory_tier`, `memory_call_id`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter` |
-| `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds` |
-| `turn_write` | the SAME batch consumer, per turn | only with `turn_write` set: the day so far, after every stored turn and every stored answer -- the same document as `write`, without `rounds`. See "Per-turn episodes" below. |
+| `write` | wherever a closed session belongs | one batch per close: `messages[]` the whole conversation, the raw round rows in the top-level slot `rounds`. `messages[]` is what a PARTICIPANT said and nothing else (GH #282) -- interim answers, `advice` rows and any other role stay in the window; `origin` comes from an explicit `user`/`assistant` mapping, never from a fallback. See "Per-turn episodes" below. |
+| `turn_write` | a memory hive's episode lane | **one message per turn, never a batch** (GH #298): after every stored turn and every stored answer, every turn of the session that has not been written yet leaves as its own message -- one `user`/`assistant` turn in `messages[]`, `hop.turn_id` = `<session_id>#<index>`, `hop.turn_index` and `hop.happened_at` beside it. Filtered and attributed by the same rule as `write`, but **not the same document**: `write` is a closed day with its `rounds`, this is a turn. On by default. See "Per-turn episodes" below. |
 | `prune` | a log sink or the operator surface | one report per pruned session (`hop.session_id`, `hop.pruned_turns`, `hop.pruned_rounds`, `hop.prune_boundary`) -- or a single zero report when nothing was eligible -- or, since `collector@2.1.1`, a zero report marked `hop.degraded=1` because the store refused one of the prune chain's own reads or deletes |
 | `condense` | -- | **reserved, never emitted today.** The value is declared in the enum so the fold lane can be wired later without widening a published contract; nothing in this cell writes it. |
 | `cstore` | `window`, inside the hive | **interior, and it never crosses the hive path.** Every store round-trip of the state machine rides on it (`hop.phase` carries the state, `hop.turn_id` the turn). It is in the enum because the assembler emits it, and it is in no parent's wiring because the seal gives it nowhere to go. |
@@ -216,7 +216,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `memory_call_tier` | `"1"` | recall tier of the **memory tool** (GH #78). Configuration, never a model argument. Empty switches the tool off: a call is then answered with a typed error result instead of being asked into a void. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (`DISPATCHER_ASYNC_TOOLS`), and travels as `hop.async_calls`. |
 | `prune_after_ms` | `604800000` | age gate on the prune lane (seven days). A session is pruned only when its close batch left **and** that delivery is older than this. |
-| `turn_write` | `""` | empty = off, and nothing about the collector moves. Set, and every stored turn hands the day out again on route `turn_write`. Leave it off unless that route is wired: an unrouted emission per turn is a dead letter per turn. |
+| `turn_write` | `"1"` | **on by default since GH #298** -- it is the only path from a conversation into an episodes table, and a shipped "off" would be a shipped agent that remembers nothing. Every stored turn hands out one message per unwritten turn on route `turn_write`. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory *at all*, not that it reaches one later. Switch it off only where that route is unwired: an unrouted emission per turn is a dead letter per turn. |
 | `context_window` | `0` | **the curator's budget**, in tokens. `0` or empty = curation off and every byte of behaviour is the pre-wave-11 behaviour. See "The curator" below. |
 | `curate_soft` | `0.5` | the working mark, as a fraction of the budget: at or above it the curator elides in stages until the projection fits under it again. |
 | `curate_hard` | `0.75` | the emergency mark. It changes no behaviour of its own -- it is *reported* as `hop.curate_mark='hard'` and means the curator is out of stages. |
@@ -706,31 +706,108 @@ Discipline, unchanged in every direction:
 A closed session leaves on `write`. That is the right shape for whoever keeps the day --
 and the wrong *cadence* for a memory: until the session closes, nothing the user said is
 retrievable, and a question about the last exchange gets answered out of an empty store.
-The lane closes that hole without a single model call.
+The lane closes that hole without a single model call, and since GH #298 it is the **only**
+path from a conversation into an episodes table -- which is why it ships on.
 
-Switched on, two moments hand the day out again on route `turn_write`: the echo of the
-stored **turn** and the echo of the stored **answer**. What leaves is the same document
-the close lane produces -- the same table, the same order, the same role mapping -- minus
-the `rounds` slot, which only a close needs.
+Two moments ask: the echo of the stored **turn** and the echo of the stored **answer**.
+Each asks the session's turns back and hands out **one message per turn that has not been
+written yet** -- never a batch. That shape is not a preference: a memory hive's writer takes
+the *first* `user`/`assistant` text turn of a body and ignores the rest, so one turn per
+message is what the port accepts.
 
 ```
-in_turn  -> insert turns row -> (round check)  +  select turns of the session -> ROUTE turn_write
-in_answer -> insert turns row                  +  select turns of the session -> ROUTE turn_write
+in_turn   -> insert turns row -> (round check)  +  select turns of the session -> tw-scan
+in_answer -> insert turns row                   +  select turns of the session -> tw-scan
+
+tw-scan -> per unwritten turn:  ROUTE turn_write (one turn)
+                              + update turns set episode_written=1
+                                where {id, episode_written: {or_null: {eq: 0}}}
 ```
 
-**Wire it to the same consumer the `write` route feeds**, and to nothing else. Two
-properties depend on that and neither is decorative:
+Each message carries the full key set a port edge reads, empty included -- a missing hop key
+makes a CEL modifier fail and a failed modifier *skips* the edge:
 
-- The consumer sees the *same* conversation in the *same* order on both routes, so
-  whatever it derives per turn (an episode id, an index) it derives identically at close
-  time. A second consumer with its own numbering is a second memory, not a faster one.
-- The consumer's own idempotence -- not the collector's -- is what makes the repetition
-  free. The day is handed out *whole* every time; a consumer that recognises what it has
-  already taken writes only the difference. `memory-drain` is built exactly that way.
+| key | value |
+|---|---|
+| `hop.turn_id` | `<session_id>#<index>` -- deterministic, and the same formula a bulk import mints |
+| `hop.turn_index` | the index alone, as a string |
+| `hop.happened_at` | the row's `recorded_at`, so the writer's event time is the turn's and not the writer's clock |
+| `hop.session_id`, `hop.iter`, `hop.phase` | as on every emission of this cell |
 
-The close route keeps its consumers and its cadence. It becomes the **safety net**: a turn
-the per-turn lane lost (a restart, a lane switched on mid-session) is still in the close
-batch, and the count gate over that batch is what proves nothing went missing.
+The **index counts drainable turns, not rows**: an interim answer or an `advice` row (see
+below) is neither handed out nor counted, so the turn after it keeps the index it would have
+had without it. That is what makes the id an identity rather than a counter -- a session
+whose lane was switched on late mints exactly the ids the turn-by-turn run would have.
+
+**Idempotence is a column of this cell's own table, not a ledger in the consumer.**
+`turns.episode_written` (`int`) is set by a guarded
+`update ... where {id, episode_written: {or_null: {eq: 0}}}` that rides in the **same
+emission** as the episode it covers: what left and what says it left are one decision, never
+two. The scan deliberately does not take "the newest row" -- with two turns in flight the
+newest is the wrong one and the other is lost, which is the bug a high-water mark used to
+prevent.
+
+The guard reads `or_null` and not a plain `0` on purpose, and the reason is broader than a
+migration: **no insert this cell makes names the column.** It arrives by
+`ALTER TABLE ADD COLUMN`, SQLite fills no default, and neither the turn insert nor the
+answer insert writes it -- so *every* row reads `NULL` until this guard sets it, and `NULL`
+is not `0`. A guard comparing to `0` alone would match no row at all, and the scan would
+hand every turn out again on every occasion, for ever. `NULL` means *not written*, on the
+read side (`int(... or 0)`) and in the guard alike.
+
+**On an existing tree, the first scan after the upgrade re-delivers.** Every row the old
+lane already handed out reads "not written" -- nothing marked it -- and is handed out
+**once** more. Where a
+`memory-drain` sat behind this route, its own ledger answers that with a skip; where nothing
+does, the memory hive sees the same `turn_id` twice, and the deterministic id is what makes
+the repeat recognisable at all.
+
+**Not everything in the window is a turn of the conversation.** What leaves on `turn_write`
+-- and on `write`, from the same helper -- is what somebody said: a row whose `role` is
+`user` or `assistant` **and** whose `interim` column is `0` (GH #282). Three classes stay
+behind, one clause each:
+
+- an **interim** answer (`interim = 1`) -- the sentence of the advisor split that buys time
+  ("one moment, I'm thinking about that.", R-CG-3): an answer on the wire, so the model must
+  know it said it, but nothing anybody told anybody, and before the column existed it became
+  an episode once per deferred turn;
+- an **advice** row (`role = "advice"`) -- what the advisor came back with on `in_advice`:
+  the agent is about to speak about it in its own voice, so it belongs in the window, but
+  nobody in this conversation said it and it is itself a rendering of what the memory
+  already holds, so draining it feeds the memory its own answers;
+- **any other role** -- anything this cell writes into `turns` that is not one of the two
+  above: context for the model, never an episode.
+
+The same decision names the **attribution**: `origin` on both routes is read from an
+explicit `{"user": "user", "assistant": "assistant"}` mapping, applied after the filter has
+already refused everything else. There is no fallback, so there is no role either route can
+attribute to a speaker who did not speak -- the way `advice` used to reach the memory as
+`sender=user`. Nothing on this lane writes a *speaker* either: the episode inherits the
+`context` of the chain it belongs to, which is the turn's own chain, so per-turn identity
+travels without anybody asserting it in a body.
+
+Nothing invents a role **before** the filter either: the close lane parks its leg with the
+role the row carried, empty included. A default there put a roleless row past the filter as
+`user` while the per-turn lane, reading the raw rows, dropped it -- two lanes, two answers,
+over a row nobody writes today. Both now ask the one filter.
+
+The prompt window is deliberately not affected: `leg-window` is read by the seam and by no
+write path, so an advice turn still reads there as something said, still carries its
+`consult_id`, and a turn without a role is still shown as the other side of the
+conversation. Nothing downstream turns that reading into an episode.
+
+The column is added additively, so a running collector migrates itself (`ALTER TABLE ADD
+COLUMN`). Rows written before the change read `0`, which is the correct answer for every
+turn the old lane wrote **except** the interim ones -- those are indistinguishable after the
+fact and keep whatever they already reached.
+
+**Wire it at a memory hive's episode lane**, and wire the `write` route somewhere else or
+nowhere. Until GH #298 the advice here was the opposite -- both routes into the *same*
+consumer, because both carried the same day and the consumer's own ledger made the repeat
+free. That is retracted: `turn_write` carries a turn and `write` carries a closed day, the
+per-turn lane is the whole write path rather than a fast half of one, and a `write` edge
+into the same memory would be a second writer over turns already written. The close route
+keeps whatever else it feeds -- an archive, the summarizer -- at its own cadence.
 
 Uncapped by design, like the close lane: the knobs above bound a *context window*, and
 this is the durable record leaving. A byte cap here would silently renumber the day.
@@ -853,22 +930,48 @@ prune-r     -> update batched set pruned_at   phase prune-mark  report, NO delet
 An incomplete fan-in and a lost guard race emit **nothing** (empty multi-send, terminal by
 design) -- the same discipline as the store-backed tool loop this grew out of.
 
-## The async class and the return lane (GH #28, R-CG-3)
+## The async class and the return lane (GH #28, R-CG-3, GH #372)
 
 A tool that thinks does not fit inside a round. An advisor core answers in minutes; a
 fan-in that waited for it would be betting `round_idle_ms` against thinking
 time, and losing that bet writes "tool result lost" into the transcript. So the round
 does not wait at all:
 
-1. **The dispatcher classifies.** `DISPATCHER_ASYNC_TOOLS=consult_cogny` makes the
-   dispatcher name the affected `tool_call_id`s in `hop.async_calls` on the `calls` lane.
-   One declaration, in the one cell that sees the whole bundle.
+1. **The dispatcher classifies, on two lists.**
+   `DISPATCHER_HANDOFF_TOOLS=consult_cogny` makes the dispatcher name the affected
+   `tool_call_id`s in `hop.async_calls` **and** in `hop.handoff_calls` on the `calls` lane;
+   a tool on `DISPATCHER_ASYNC_TOOLS` alone (`remember`) is named on the first only. One
+   declaration per tool, in the one cell that sees the whole bundle. The second list is
+   what says the answer comes from a **later turn** rather than from this one -- step 2
+   reads it, and the classification itself is never this cell's.
 2. **The collector opens no expectation.** Each named id is answered on the spot with a
    plain `tool_result` under its own `tool_call_id` -- the assistant turn stays
-   well-formed for every provider -- and when *nothing else* was asked, the assistant row
-   is written `fired=1`. There is no open round: no guard to win, nothing for
-   `in_round_sweep` to find, no idle exit. The turn ends with the interim answer the
-   dispatcher already sent to the channel.
+   well-formed for every provider -- and when *nothing else* was asked **and the turn is
+   going to be answered anyway**, the assistant row is written `fired=1`. There is no open
+   round: no guard to win, nothing for `in_round_sweep` to find, no idle exit. The turn
+   ends with the interim answer the dispatcher already sent to the channel.
+
+   **"Answered anyway" is a condition, not an assumption ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).**
+   Exactly two things satisfy it, and the lane reads both off the message it was handed:
+
+   | | what says so | who answers the turn |
+   |---|---|---|
+   | the model spoke beside the bundle | a non-empty text turn in `messages[]` -- the same reading the dispatcher used when it sent the interim answer | the interim answer, already on the channel |
+   | a **handoff** call took the turn with it | `hop.handoff_calls` names it (`DISPATCHER_HANDOFF_TOOLS`) | a later turn: an advisor's event, an escalation re-entering the seam |
+
+   **Neither, and the round stays open.** A bare fire-and-forget call -- `remember` with no
+   sentence beside it -- used to be filed as fired, and the channel then got *nothing*: no
+   interim, no final, no error, and `round_idle_ms` does not fire on a quiet channel.
+   Measured in three of five full harness runs, and the per-turn contract (GH #298) makes
+   call-only iterations common. So the acknowledgement completes the fan-in, the regular
+   guard fires, and the seam re-enters the brain for the iteration the model has not spent.
+   Nothing new stops it -- `params.max_iter` bounds this round like any other, and a spent
+   budget leaves the same seam on route `answer` with `hop.round_capped=1`. **A round
+   always ends in an answer**: a real one, `round_capped`, or `degraded` (GH #343).
+
+   The classification itself is *not* this cell's: which of the two classes a tool belongs
+   to is tool semantics, and it is declared once, at the dispatcher, which is the only cell
+   that sees the whole bundle.
 3. **The answer comes back as an event.** Whatever the advisor produces -- a result, or a
    question back -- arrives on `in_advice` with `context.consult_id`. It runs the *turn*
    chain: written into the window under role `advice`, memory leg fired like on any turn,
@@ -939,10 +1042,17 @@ still tell an event from a user's word.
   every `memory_form`, `memory_chars` caps the result text, the pair is appended before the
   curator runs and is never a curation candidate, and a model's OWN `memory_recall` still
   answers under its original `tool_call_id` without a synthetic pair.
-- `crates/meclaw-cells/tests/w9a_per_turn_episodes.rs` -- the per-turn lane at script
-  level: the two occasions, the lane switched off by default, the day it hands out, and
-  the proof that the `turn_write` document and the `write` document are the same
-  conversation.
+- `crates/meclaw-cells/tests/w9a_per_turn_episodes.rs` -- the per-turn lane's CADENCE at
+  script level: the two occasions, the knob (on by default since GH #298, off in both
+  spellings), one message per turn in the order of the day, and the same day delivered
+  twice writing no second episode. Its header records what ruling Q11 retired: the close
+  drain's completeness claim and the byte-identical-replay claim, because the two routes
+  hand out different documents now.
+- `crates/meclaw-cells/tests/gh298_the_turn_writes_its_own_episode.rs` -- the SHAPE:
+  one message per unwritten turn, the deterministic `<session>#<index>` and its
+  `turn_index` and `happened_at`, every hop key present rather than absent, the guarded
+  `episode_written` mark in the same multi-send, a written day handing out nothing, and
+  the index that counts turns rather than rows.
 - `crates/meclaw-colony/tests/gh245_a_stub_names_a_lane_the_hive_admits.rs` -- the lane
   a curator stub names against the SHIPPED hive files: an edge stamping `in_thread_call`
   into the collector commits, an edge stamping `in_batch` is refused now that nothing

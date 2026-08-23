@@ -52,7 +52,7 @@ pub async fn read_live_graph(
 
     for scope in scopes {
         let msg = MessageBuilder::new(Path::new("/colony/graph"))
-            .body(Body::Inline(json!({ "scope": scope })))
+            .body(Body::Inline(json!({ "query": { "scope": scope } })))
             .reply_to(Path::new("/graphsink"))
             .build();
         h.send(msg).await;

@@ -5,53 +5,33 @@
 //! version chain never fires (5 percent chain-fire rate) and a knowledge update
 //! reads as two unrelated facts.
 //!
-//! Three guarantees are pinned here, all against the REAL `params.script_inline`
-//! of `extract-glue` (P5 pattern -- never a copy):
+//! Two guarantees are pinned here. Both used to be read out of the batched
+//! extractor's rendered prompt; per-turn extraction (GitHub #298) retired that
+//! prompt, and wave 5 task 9 re-pointed them at the surface that carries them
+//! now -- the SHIPPED contract block, `templates/memory-hive/inline-contract.md`.
+//! The party that mints the facts is the front model, and what it is handed is
+//! that block, not a prompt a cell writes.
 //!
-//! 1. The lane READS before it prompts: the predicates this memory already uses
-//!    are fetched from the store and handed to the extractor. The read sits on the
-//!    asynchronous extraction lane; the write hot path stays round-trip free.
-//! 2. The prompt carries the curated core list WITH its cardinality split, byte
+//! 1. The block carries the curated core list WITH its cardinality split, byte
 //!    for byte the one in `predicate-core.json` -- that file is the authority and
-//!    this is its drift lock (the script cannot import it at runtime).
-//! 3. The prompt carries the entity-fidelity rule: predicates are translated into
-//!    canonical English, subjects/objects/proper names never are.
+//!    this is its drift lock (a persona cannot import a JSON file at prompt time).
+//! 2. The block carries the entity-fidelity rule: predicates are translated into
+//!    canonical English, subjects, objects, values and proper names never are.
+//!
+//! A third guarantee died with the batch lane rather than moving: the lane used to
+//! READ the axes this memory already carried and render them into the prompt it
+//! built. There is no prompt left to render them into, so the vocabulary read and
+//! its four cases were deleted with the mechanism (wave 5 task 7) instead of being
+//! re-pointed at nothing.
+//!
+//! The shape half of the contract -- the obligation, both parts, the forms the
+//! ingress parses, the length bound -- is
+//! `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`. This
+//! file keeps the two P1 guarantees, which is where they were pinned before the
+//! surface moved.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
-
-const GLUE_CONFIG: &str = "../../templates/memory-hive/extract-glue/config.json";
 const CORE_LIST: &str = "../../templates/memory-hive/predicate-core.json";
-
-/// `${VAR:-default}` becomes the default, a bare `${VAR}` becomes the empty string --
-/// the same substitution the colony performs when it instantiates the template.
-fn resolve_vars(script: &str) -> String {
-    let mut out = String::with_capacity(script.len());
-    let mut rest = script;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start + 2..];
-        let end = tail
-            .find('}')
-            .expect("unterminated ${...} in script_inline");
-        if let Some((_, default)) = tail[..end].split_once(":-") {
-            out.push_str(default);
-        }
-        rest = &tail[end + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-fn glue_script() -> String {
-    let raw = std::fs::read_to_string(GLUE_CONFIG).expect("extract-glue config");
-    let v: serde_json::Value = serde_json::from_str(&raw).expect("config json");
-    resolve_vars(
-        v["params"]["script_inline"]
-            .as_str()
-            .expect("script_inline"),
-    )
-}
+const INLINE_CONTRACT: &str = "../../templates/memory-hive/inline-contract.md";
 
 fn core_list() -> serde_json::Value {
     let raw = std::fs::read_to_string(CORE_LIST).expect("predicate-core.json");
@@ -72,356 +52,104 @@ fn core_group(kind: &str) -> Vec<String> {
     out
 }
 
-/// Run a shipped script over a real stdin document, handing the script to
-/// python3 **on stdin** instead of in argv.
-///
-/// A single argv string is capped at 128 KiB (`MAX_ARG_STRLEN`) and the shipped
-/// scripts have grown to within a few KB of that line, so `python3 -c <whole
-/// script>` is a harness that breaks on size rather than on behaviour (GH #279,
-/// precedent 89a522e4). stdin carries the program, so the document rides inside
-/// it and is put under `sys.stdin` before the script runs. From there the script
-/// executes exactly as `python3 -c` ran it: same `__main__` globals, same
-/// stdout, same exit status.
-fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
-    let src = format!(
-        concat!(
-            "import sys, io\n",
-            "_script = {}\n",
-            "sys.stdin = io.StringIO({})\n",
-            "exec(compile(_script, 'cell', 'exec'), globals())\n"
-        ),
-        serde_json::to_string(script).unwrap(),
-        serde_json::to_string(stdin_doc).unwrap(),
-    );
-    let mut child = Command::new("python3")
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("python3");
-    // Dropped, not merely borrowed: python reads until EOF.
-    let mut sink = child.stdin.take().expect("stdin");
-    sink.write_all(src.as_bytes()).expect("write program");
-    drop(sink);
-    child.wait_with_output().expect("wait")
-}
-
-/// Run the real script with a real stdin document and return the emitted messages.
-fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    let out = run_script_on_stdin(
-        &glue_script(),
-        &meclaw_testing::code_stdin(&doc).to_string(),
-    );
-    assert!(
-        out.status.success(),
-        "extract-glue exited non-zero: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+/// The block a persona actually carries: the fenced `text` section of the shipped
+/// contract. Prose ABOUT a rule is not the rule, so both assertions below read the
+/// block and never the page around it.
+fn contract_block() -> String {
+    let raw = std::fs::read_to_string(INLINE_CONTRACT).unwrap_or_else(|e| {
         panic!(
-            "output is not a message array ({e}): {}",
-            String::from_utf8_lossy(&out.stdout)
+            "the hive ships no inline extraction contract ({INLINE_CONTRACT}): {e}. \
+             Since GitHub #298 it is the ONLY thing the extracting model is told."
         )
-    })
+    });
+    let (_, tail) = raw
+        .split_once("```text\n")
+        .expect("the contract file carries the persona block in a ```text fence");
+    let (block, _) = tail
+        .split_once("\n```")
+        .expect("the persona block's fence is closed");
+    block.to_string()
 }
 
-/// One store reply as the edge delivers it: `mem_phase`/`batch_id` in the context,
-/// `operation` in the hop, the projected rows as the first message's text.
-fn store_reply(phase: &str, operation: &str, rows: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "header": {
-            "context": {"store_origin": "extract", "mem_phase": phase, "batch_id": "b1"},
-            "hop": {"operation": operation, "rows_affected": 1}
-        },
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "r", "text": rows.to_string()}]
-    })
+/// Every run of whitespace collapsed to one space -- the block is wrapped to a
+/// column, and a rule that had to survive a re-wrap intact would be a rule nobody
+/// dares reformat.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn args_of(msg: &serde_json::Value) -> serde_json::Value {
-    let text = msg["messages"][0]["text"].as_str().expect("op text");
-    serde_json::from_str(text).expect("op args")
-}
-
-/// The op that parks one scratch kind. Since W4 (#13, ruling Q2 option C) the
-/// `vocab` phase emits TWO of them -- the axis hint this file is about and the
-/// replacement window, which is pinned in `w4_extract_replaces.rs` -- so the
-/// vocabulary assertions name their row instead of indexing into the emit list.
-fn parked_op(msgs: &[serde_json::Value], kind: &str) -> serde_json::Value {
-    msgs.iter()
-        .map(args_of)
-        .find(|a| a["table"] == "scratch" && a["row"]["kind"] == kind)
-        .unwrap_or_else(|| panic!("no scratch row of kind {kind} was parked"))
-}
-
-fn claimed_rows() -> serde_json::Value {
-    serde_json::json!([
-        {"id": "q1", "episode_id": "e1", "sender": "user",
-         "content": "Meine Lieblingsfarbe ist Blau.", "status": "claimed"}
-    ])
-}
-
-/// The full instructions text the extractor would receive for a batch that meets
-/// `vocab` as the memory's existing axes.
-fn instructions_for(vocab: serde_json::Value) -> String {
-    let items = serde_json::json!([
-        {"episode_id": "e1", "sender": "user", "content": "Meine Lieblingsfarbe ist Blau."}
-    ]);
-    let scratch = serde_json::json!([
-        {"key": "b1", "kind": "batch", "payload": items.to_string()},
-        {"key": "b1", "kind": "vocab", "payload": vocab.to_string()}
-    ]);
-    let msgs = emit(store_reply("prompt", "select", scratch));
-    assert_eq!(msgs.len(), 1, "the prompt phase emits exactly one message");
-    assert_eq!(msgs[0]["header"]["route"], "extract");
-    msgs[0]["system"]["instructions"]["text"]
-        .as_str()
-        .expect("instructions text")
-        .to_string()
-}
-
-/// The `  <kind>: a, b, c` line of the rendered core list.
-fn rendered_group(instructions: &str, kind: &str) -> Vec<String> {
-    let needle = format!("{kind}:");
-    let line = instructions
-        .lines()
-        .find(|l| l.trim_start().starts_with(&needle))
-        .unwrap_or_else(|| panic!("no '{kind}:' line in the instructions:\n{instructions}"));
-    let (_, tail) = line.split_once(':').expect("colon");
-    let mut out: Vec<String> = tail
-        .split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
+/// The predicates of one cardinality group, as the BLOCK lists them.
+///
+/// The list runs on past its own line, so it is read as a token run rather than
+/// as a line: everything after the group's colon that still looks like a
+/// predicate key, up to and including the token the next sentence is glued to.
+fn block_group(kind: &str) -> Vec<String> {
+    let flat = flat(&contract_block());
+    let marker = format!("{kind} (");
+    let at = flat
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the block names no {kind:?} group:\n{flat}"));
+    let (_, tail) = flat[at..]
+        .split_once("): ")
+        .unwrap_or_else(|| panic!("the {kind:?} group opens no list:\n{flat}"));
+    let mut out = Vec::new();
+    for token in tail.split(',') {
+        let token = token.trim();
+        let key: String = token
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            .collect();
+        if key.is_empty() {
+            break;
+        }
+        let ended = key.len() != token.len();
+        out.push(key);
+        if ended {
+            // The last predicate of the group carries the next sentence behind it.
+            break;
+        }
+    }
     out.sort();
     out
 }
 
 #[test]
-fn the_batch_is_parked_and_the_lane_asks_for_the_existing_predicates() {
-    // A code cell holds no state, so the batch has to survive the extra store
-    // round trips -- parked in `scratch` exactly like the dedup lane parks its
-    // payload (DEC-009). Without the park the vocabulary read would eat the batch.
-    let msgs = emit(store_reply("batch", "select", claimed_rows()));
-    assert_eq!(msgs.len(), 1, "one op, not a fan-out");
-    assert_eq!(msgs[0]["header"]["route"], "xstore");
-    assert_eq!(msgs[0]["header"]["phase"], "vocab-fetch");
-    let args = args_of(&msgs[0]);
-    assert_eq!(args["operation"], "insert");
-    assert_eq!(args["table"], "scratch");
-    assert_eq!(args["row"]["kind"], "batch");
-    assert_eq!(args["row"]["key"], "b1");
-    let parked: serde_json::Value =
-        serde_json::from_str(args["row"]["payload"].as_str().expect("payload")).expect("items");
-    assert_eq!(parked[0]["content"], "Meine Lieblingsfarbe ist Blau.");
-}
-
-#[test]
-fn the_vocabulary_is_read_from_the_facts_table() {
-    // Q1: the extractor receives the subject's existing predicates. The read is
-    // legal HERE and only here -- the extraction lane is asynchronous, the write
-    // hot path never grows a round trip.
-    //
-    // 0.2.0 P5: it reads the CANONICAL columns. The GC writes aliases at night;
-    // a vocabulary read on the written spellings would show the extractor the old
-    // ones the very next morning and it would keep minting them -- the nightly
-    // merge and the daily mint would work against each other. The written columns
-    // travel along as the fallback for rows from before the migration.
-    //
-    // GH #68: the hint has its own read since the vocabulary leg was paged, and it
-    // is the LAST of the leg's three -- so this asks for it where it is emitted,
-    // behind the window's page.
-    let msgs = emit(store_reply("window-page", "select", serde_json::json!([])));
-    let args = msgs
-        .iter()
-        .map(args_of)
-        .find(|a| a["operation"] == "select")
-        .expect("the axis hint is read");
-    assert_eq!(args["table"], "facts");
-    let cols: Vec<&str> = args["columns"]
-        .as_array()
-        .expect("columns")
-        .iter()
-        .map(|c| c.as_str().expect("column"))
-        .collect();
-    for needed in [
-        "canonical_subject",
-        "canonical_predicate",
-        "subject",
-        "predicate",
-    ] {
-        assert!(
-            cols.contains(&needed),
-            "the vocabulary leg needs {needed}, got {cols:?}"
-        );
-    }
-}
-
-#[test]
-fn the_vocabulary_is_grouped_per_subject_and_deduplicated() {
-    let rows = serde_json::json!([
-        {"subject": "user", "canonical_subject": "user",
-         "predicate": "favorite_color", "canonical_predicate": "favorite_color"},
-        {"subject": "user", "canonical_subject": "user",
-         "predicate": "favorite_color", "canonical_predicate": "favorite_color"},
-        {"subject": "user", "canonical_subject": "user",
-         "predicate": "lives_in", "canonical_predicate": "lives_in"},
-        {"subject": "cat:nala", "canonical_subject": "cat:nala",
-         "predicate": "has_pet", "canonical_predicate": "has_pet"},
-        {"subject": "", "canonical_subject": "", "predicate": "dropped",
-         "canonical_predicate": "dropped"}
-    ]);
-    let msgs = emit(store_reply("vocab", "select", rows));
-    let args = parked_op(&msgs, "vocab");
-    let vocab: serde_json::Value =
-        serde_json::from_str(args["row"]["payload"].as_str().expect("payload")).expect("vocab");
-    assert_eq!(
-        vocab["user"],
-        serde_json::json!(["favorite_color", "lives_in"]),
-        "one entry per axis, sorted -- a duplicate would spend prompt budget twice"
-    );
-    assert_eq!(vocab["cat:nala"], serde_json::json!(["has_pet"]));
-    assert!(
-        vocab.get("").is_none(),
-        "a row without a subject carries no axis"
-    );
-}
-
-#[test]
-fn the_vocabulary_shows_the_identity_the_gc_settled_on() {
-    // 0.2.0 P5, the point of the change: two rows written under two spellings of
-    // one relation and one entity, already merged by a nightly judgement. The
-    // extractor must be shown ONE axis under the settled names -- being shown the
-    // originals is how a merged axis drifts apart again the next morning.
-    let rows = serde_json::json!([
-        {"subject": "user:u1", "canonical_subject": "user",
-         "predicate": "Lieblingseditor", "canonical_predicate": "favorite_editor"},
-        {"subject": "user", "canonical_subject": "user",
-         "predicate": "favorite editor", "canonical_predicate": "favorite_editor"},
-        // a row from before the migration keeps its written axis rather than
-        // disappearing into an empty bucket (the fallback of axis_key/subject_key)
-        {"subject": "cat:nala", "predicate": "has_pet"}
-    ]);
-    let msgs = emit(store_reply("vocab", "select", rows));
-    let args = parked_op(&msgs, "vocab");
-    let vocab: serde_json::Value =
-        serde_json::from_str(args["row"]["payload"].as_str().expect("payload")).expect("vocab");
-    assert_eq!(vocab["user"], serde_json::json!(["favorite_editor"]));
-    assert!(
-        vocab.get("user:u1").is_none(),
-        "the merged spelling is not a second subject any more"
-    );
-    assert_eq!(vocab["cat:nala"], serde_json::json!(["has_pet"]));
-}
-
-#[test]
-fn the_prompt_carries_the_core_list_split_by_cardinality() {
+fn the_contract_carries_the_core_list_split_by_cardinality() {
     // The drift lock: `predicate-core.json` is the authority, the literal in the
-    // script is its copy. A script cannot import at runtime, so this comparison
-    // is the only thing that keeps the two from diverging silently -- and the
-    // cardinality split is what P2 derives the chain rules from (ruling Q4).
-    let text = instructions_for(serde_json::json!({}));
+    // shipped block is its copy. A persona cannot import at prompt time, so this
+    // comparison is the only thing that keeps the two from diverging silently --
+    // and the cardinality split is what P2 derives the chain rules from (ruling
+    // Q4): `single` replaces, `multi` enumerates, and a relation on the wrong side
+    // of that line either loses values or keeps dead ones.
     assert_eq!(
-        rendered_group(&text, "single"),
+        block_group("single"),
         core_group("single"),
-        "the prompt's single-valued group drifted from predicate-core.json"
+        "the contract's single-valued group drifted from predicate-core.json"
     );
     assert_eq!(
-        rendered_group(&text, "multi"),
+        block_group("multi"),
         core_group("multi"),
-        "the prompt's multivalued group drifted from predicate-core.json"
+        "the contract's multivalued group drifted from predicate-core.json"
     );
     assert!(
-        text.contains("snake_case"),
-        "the style rule itself has to be in the prompt, not only its examples"
+        contract_block().contains("snake_case"),
+        "the style rule itself has to be in the contract, not only its examples"
     );
 }
 
 #[test]
-fn the_prompt_names_the_axes_this_memory_already_uses() {
-    // The core list alone cannot canonicalise a predicate it does not contain.
-    // Reuse of what is already there is the other half of Q1, and the deliberately
-    // unlisted `brews_coffee_with` is the discriminator: it can only come from the
-    // store.
-    let text = instructions_for(serde_json::json!({
-        "user": ["brews_coffee_with", "favorite_color"]
-    }));
-    assert!(
-        text.contains("brews_coffee_with"),
-        "an existing axis of the subject is missing from the prompt:\n{text}"
-    );
-    assert!(
-        text.contains("user"),
-        "the axes are listed per subject, so the subject has to be named:\n{text}"
-    );
-}
-
-#[test]
-fn an_empty_memory_prompts_with_the_core_list_alone() {
-    // First mint: no axis exists yet, and the prompt must not claim otherwise.
-    let text = instructions_for(serde_json::json!({}));
-    assert!(text.contains("favorite_color"));
-    assert!(
-        !text.contains("brews_coffee_with"),
-        "nothing invented for an empty store"
-    );
-}
-
-#[test]
-fn the_prompt_forbids_translating_entities() {
+fn the_contract_forbids_translating_entities() {
     // Q2 entity-fidelity rule: the small closed class of relation patterns becomes
     // canonical English, everything a turn NAMES stays byte-faithful. A model that
-    // "corrects" an unfamiliar village into a familiar one destroys the fact.
-    let text = instructions_for(serde_json::json!({}));
-    let lower = text.to_lowercase();
-    for needle in ["never translate", "verbatim", "spell"] {
-        assert!(
-            lower.contains(needle),
-            "the entity-fidelity rule is missing {needle:?}:\n{text}"
-        );
-    }
-}
-
-#[test]
-fn the_batch_items_reach_the_extractor_unchanged() {
-    // The park-and-reread detour must not touch the payload: the extractor sees
-    // the same item list the old one-hop lane handed it.
-    let items = serde_json::json!([
-        {"episode_id": "e1", "sender": "user", "content": "I come from Elvese."}
-    ]);
-    let scratch = serde_json::json!([
-        {"key": "b1", "kind": "batch", "payload": items.to_string()},
-        {"key": "b1", "kind": "vocab", "payload": "{}"}
-    ]);
-    let msgs = emit(store_reply("prompt", "select", scratch));
-    let sent: serde_json::Value =
-        serde_json::from_str(msgs[0]["messages"][0]["text"].as_str().expect("items text"))
-            .expect("items");
-    assert_eq!(sent, items);
-    assert_eq!(msgs[0]["header"]["batch_id"], "b1");
-}
-
-#[test]
-fn an_incomplete_meeting_point_parks_instead_of_closing_the_batch() {
-    // The detour buys a failure mode the one-hop lane did not have: the parked
-    // batch could be missing from the meeting point. Closing there would mark
-    // turns 'done' that were never extracted although they are still on disk --
-    // so the lane parks, the rows stay 'claimed', and `flush_reclaim` recovers
-    // them. Same rule as the apply phase (DEC-009).
-    let scratch = serde_json::json!([{"key": "b1", "kind": "vocab", "payload": "{}"}]);
-    let msgs = emit(store_reply("prompt", "select", scratch));
+    // "corrects" an unfamiliar village into a familiar one destroys the fact, and
+    // no later pass can tell that it happened -- the corrected name is a perfectly
+    // plausible one.
+    let block = flat(&contract_block());
     assert!(
-        msgs.is_empty(),
-        "a batch that lost its items must not be closed and must not be prompted: {msgs:?}"
+        block.contains(
+            "ENTITIES ARE VERBATIM: names and values are copied byte for byte, \
+             never translated or corrected."
+        ),
+        "the entity-fidelity rule left the shipped contract:\n{block}"
     );
-}
-
-#[test]
-fn the_o6_discipline_survives_the_new_prompt() {
-    // P15 O-6 was bought with two red runs. The canonicalisation block is added to
-    // that prompt, never in place of it.
-    let text = instructions_for(serde_json::json!({}));
-    assert!(text.contains("WORLD STATE"));
-    assert!(text.contains("asked_about"));
-    assert!(text.contains("fact_kind"));
 }
