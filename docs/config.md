@@ -545,7 +545,7 @@ An instantiated cell is a **detached copy**: `template.json` is dropped at stagi
 **Two homes, one truth.**
 
 - **The source** is `cell.provenance` in the instance's `config.json`. It travels with the directory; a backup, a copy and an export carry it verbatim.
-- **The index** is the four `registry` columns `template`, `template_version`, `instantiated_at` and `template_chain` in `colony.db` (schema v6). The first three answer "which nodes came from `sink-tpl@1.0.0`?" with **one** SQL statement instead of a tree walk; the fourth carries the chain as JSON and answers the question the leaf stamp alone cannot: "which instances does a bump of an **inner** template touch?"
+- **The index** is the four `registry` columns `template`, `template_version`, `instantiated_at` and `template_chain` in `colony.db` (since schema v6). The first three answer "which nodes came from `sink-tpl@1.0.0`?" with **one** SQL statement instead of a tree walk; the fourth carries the chain as JSON and answers the question the leaf stamp alone cannot: "which instances does a bump of an **inner** template touch?"
 
 The index is filled in two places: at instantiation (the mutation knows the template) and **at every boot**, from the `config.json` that was read. The second one is the important one: a config-only copy brings no `colony.db`, so its index starts empty — and without the boot pass it would silently claim "no origin" while the files next to it say otherwise. A node without `cell.provenance` sends nothing and keeps `NULL`; origin is **recorded, never invented**.
 

@@ -174,6 +174,39 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.18.0 — a default, a slot, and one message instead of nine.** An out-edge
+  may declare itself the fallback (`"default": true`). Routing runs in two
+  phases and an edge carrying the key is consulted only after no regular
+  out-edge of the same sender fired, so what used to dead-letter as `no_route` —
+  or leave a hive as `hive_no_route` — has a declared consumer instead of a
+  hand-maintained negation of every other arm
+  ([#283](https://github.com/mmeyerlein/meclaw/issues/283)). `/colony/graph`
+  emits that phase on every edge and on both values, because the colony's own
+  boot probes rebuild an edge table out of that read and were judging a topology
+  the colony does not run
+  ([#367](https://github.com/mmeyerlein/meclaw/issues/367)). A hive port may be
+  a **slot** — an address that is allowed to stand empty, wired by a mutation
+  before anything is behind it, with `unbound: park | drop | error` saying what
+  happens to a message that arrives first (`park` is bounded by the new
+  `colony.json slot_park_max`, default 64, and refuses the newest arrival at the
+  bound) ([#285](https://github.com/mmeyerlein/meclaw/issues/285)). And the
+  `store` answers N operations in one message: N `tool_call` turns come back as
+  one reply with N `tool_result` turns in call order, the per-operation
+  metadata in the new top-level body slot `results[]`, and the number of failed
+  legs in the header key `bundle_errors` — the single read an edge needs to
+  route on failure without opening the body. At N == 1 nothing changes, byte for
+  byte ([#295](https://github.com/mmeyerlein/meclaw/issues/295)). The first
+  consumer is the shipped tier-0 recall: nine store round trips became one, and
+  the bundle it emits is byte-identical to the one the nine-hop chain produced,
+  recorded from the old chain before the change. **Breaking:** an edge that
+  names a hive lane must carry the `accepts[].context` keys that lane declares,
+  on the edge or reachable backwards from its `from`, or the mutation is refused
+  as `hive_contract` — documented as a requirement since #173 and enforced
+  nowhere until now; the migration is to fill the lane's declaration or to wire
+  the promotion on the edge, and the shipped stack instantiates unchanged
+  ([#291](https://github.com/mmeyerlein/meclaw/issues/291)). `colony.db`
+  migrates **v6 → v7**; every existing edge reads `is_default = 0` and every
+  existing topology does exactly what it did.
 - **v0.17.4 — a refusal stops arriving as a result.** A `store` error reply was
   read as an empty result set by the lanes that consume it, so a failed read
   looked like "nothing is there" and a failed write like a success; every lane
