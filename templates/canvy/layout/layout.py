@@ -1162,10 +1162,30 @@ def main():
             return []
 
         have = read_objects(body)
-        # A refusal is the BOOTSTRAP signal and the only one there is: a `web`
-        # cell whose `pages` table has no `/` answers `query` with `invalid_input`.
-        bootstrap = have is None
+        # The bootstrap question is "is this page MINE", not "did the query
+        # fail" (GH #402). Two ways it is not:
+        #
+        #   have is None       the display has no page at `/` at all -- a `web`
+        #                      cell whose `pages` table has no `/` answers
+        #                      `query` with `invalid_input`.
+        #   ROOT_ID not in have  there IS a page and somebody else's root is on
+        #                      it. `canvy/web` refs `web@1.0.0`, which SEEDS a
+        #                      demo at `/`, so this is the state every canvy
+        #                      instantiated from the shipped template starts in.
+        #
+        # Reading only the refusal made that second case invisible: the query
+        # succeeded, so the vocabulary was never defined, and every
+        # `object.create` in the bundle came back `unknown_component` while the
+        # deletes -- which need no component -- landed. The display ended up
+        # empty and serving 404, once per tick, forever.
+        #
+        # Both definitions and `page.set` are upserts in the `web` cell, so
+        # taking this branch twice costs one bundle and breaks nothing.
+        bootstrap = have is None or ROOT_ID not in have
         if bootstrap:
+            # Deliberately NOT the foreign objects: they are not this cell's to
+            # remove. `/` is re-pointed at our own root and the tree behind the
+            # old one is left standing -- another page may still route to it.
             have = {}
         want = build(snap, saved_positions(have))
         calls = patches(want, have, bootstrap)

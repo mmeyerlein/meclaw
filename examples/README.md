@@ -10,7 +10,7 @@ edges -- no example here adds a line of Rust.
 | [`swarm`](swarm/) | 7 | no | < 1 s | The tool loop as a shape: fan-out to tools, fan-in through a store, and a loopback edge that re-enters the `llm`. |
 | [`meclaw-os`](meclaw-os/) | 0 → 16 | to boot | < 1 s | The same class of agent, **not** written out: an EMPTY seed -- two config files, zero cells -- plus one declaration that instantiates the whole tree from the template library at runtime. |
 | [`organism`](organism/) | 0 → 55 | to boot | < 1 s | The same empty seed, one level up: **five** declarations grow the whole four-level stack -- a colony shell, an organisation, a person, one generation of that person's agent and a Telegram surface for it -- each level instantiated into the open container the level above ships for it. 287 edges, 48 of them written by hand. |
-| [`never-forgets`](never-forgets/) | 3 → 18 | to boot | < 1 s | Tell it something in January, ask it in March. Bi-temporal episodes, an import lane for a past you already have, and a model that names the time range it wants. |
+| [`never-forgets`](never-forgets/) | 3 → 17 | to boot | < 1 s | Tell it something in January, ask it in March. Bi-temporal episodes, an import lane for a past you already have, and a model that names the time range it wants. |
 | [`telegram-research`](telegram-research/) | 10 | no | < 1 s | A real multi-tool agent on a real surface, written out node by node. Needs a Telegram bot token as well as a provider key. |
 
 `a → b` means *a* cells are checked in and *b* are running once the example's `grow.json` has

@@ -11,6 +11,88 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-08-25
+
+### Fixed
+
+- **`canvy@2.0.1`: the canvas works over the display it is actually built on**
+  ([#402](https://github.com/mmeyerlein/meclaw/issues/402)). `canvy/web` is a
+  `ref` to `web@1.0.0`, and that template **seeds a demo page at `/`** — so the
+  `query` a fresh `canvy` sends succeeded, and the layout read success as "this
+  page is already mine". The bootstrap branch never ran, the `canvy-*`
+  components were never defined, and every `object.create` in the tick's bundle
+  came back `unknown_component` (412 of 418 legs on a 73-cell colony) while the
+  `object.delete` legs — which need no component — landed. Within a few ticks
+  the display's `objects` table was empty and `/` served `404`, once a minute,
+  forever. The condition is now **"is this page mine"** rather than "did the
+  query fail": a page whose object tree does not contain this cell's root is the
+  same situation as no page at all, and reaches the same bundle. Adoption is
+  non-destructive — `/` is re-pointed at canvy's own root and the tree behind
+  the old one is left standing, because another route may still reach it. Pinned
+  by three cases in `crates/meclaw-cells/tests/canvy2_pipeline.rs`, one of them
+  end to end against a `web` cell carrying the shipped seed — the state every
+  real instance starts in and no test had ever used.
+- **`canvy` MIGRATION.md: the retirement step warns before it can take a colony
+  down, and the way back stops promising what the substrate refuses**
+  ([#403](https://github.com/mmeyerlein/meclaw/issues/403)). canvy 1.x ships
+  `<hive>/probe -> /colony/graph`. Where the canvas is the only thing talking to
+  `/colony`, that is the **only boundary-crossing edge of the whole subtree**,
+  and § 5 removed it as a side effect of retiring `probe` — so the connectivity
+  recompute did what it documents and flipped the entire subtree to
+  `active = false`. The mutation commits cleanly and `/health` still answers
+  `status: ok`; a real instance went from 47 active cells to **0**. § 5 now
+  carries a pre-flight that counts the canvy-independent boundary-crossing edges
+  and tells the operator to draw a connectivity-only anchor from the **hive
+  path** first. § 6 retracts its unqualified undo: `<hive>/probe -> /colony/graph`
+  predates hive sealing and **cannot be re-drawn** (`hive_port_boundary`), so the
+  one edge whose removal does the damage is the one the way back never covered;
+  it also now says the retirement is one-shot against a running colony
+  (`stop_wiring_unavailable` after a reconnect). Both refusals are asserted to be
+  strings the substrate actually emits, not quoted from a report
+  (`crates/meclaw-cells/tests/canvy2_position_migration.rs`).
+
+- **`steward@2.0.11`: a colony grown from templates can start again**
+  ([#401](https://github.com/mmeyerlein/meclaw/issues/401)).
+  `templates/steward/clock` shipped a `params.schedules[0]` the `timer` cell type
+  rejects on all four counts the schema states: no `schedule_id`, `name` where
+  the parser reads `schedule_name`, and neither `emit_to` nor `emit_body`. Two
+  consequences, and the second one is the serious one. The control loop had never
+  ticked, because a schedule with the wrong name key produces no `hop.schedule_name`
+  and the hive's own edge conditions on it. And because instantiation does **not**
+  deserialize a cell's params, the mutation **committed** — so the colony ran
+  normally and refused to start at the *next* boot with `InvalidParams`, a long
+  way from the declaration that caused it. `meclaw-os@1.0.1` refs the steward, so
+  this reached every tree grown from the shell, `examples/organism` included.
+  The entry now has the shape `templates/access/clock` already shipped. Pinned by
+  `crates/meclaw-cells/tests/gh401_a_grown_steward_survives_a_reboot.rs`, which
+  grows the shipped declaration, shuts the colony down and boots the same
+  filesystem again — the only shape that could have caught this, since every
+  existing test stopped at the mutation. A second sweep,
+  `gh401_shipped_timer_schedules_deserialize.rs`, puts every shipped `timer` (7
+  of them) through the factory call the boot makes, so this was the last one
+  rather than the first of several.
+
+- **The shipped counts and hop chains describe the composite that ships**
+  ([#391](https://github.com/mmeyerlein/meclaw/issues/391)). The sidecar splitter
+  (#379) landed and three reader-facing documents kept describing `talky` as it
+  stood before it, including one example that carried three different cell counts
+  and agreed with itself in none of them. Re-measured in one pass rather than
+  re-worded: `never-forgets` registers **17** cells (the overview row said 18, its
+  own README said 16 twice), `talky` brings **12** of them over **16** internal
+  edges (the grow row said 11 and twelve), and the tool-round chain reads
+  `brain -> splitter -> dispatcher` in every walkthrough that renders it.
+  `templates/cogny` is untouched on purpose — that composite has no splitter, so
+  `brain -> dispatcher` is its real topology. The repaired numbers do not go in
+  bare: `crates/meclaw-cells/tests/gh391_talky_counts_match_the_shipped_tree.rs`
+  derives every count in `talky`'s README from the shipped tree and reads the
+  sentence that states it, so prose and tree cannot part again
+  (`docs/development-rules.md` § 2d); the example total names the pin it already
+  had (`CELLS_AFTER_GROW`). Three stale code comments went with them, all outside
+  the byte-frozen corridors: the `remove_nodes` comment that is the likely origin
+  of the promise #390 retracted, a connectivity counter-pin citing a declaration
+  that draws no edge any more, and a test helper for an edge that no longer
+  exists — removed and proven obsolete by a green run, not by inspection.
+
 ## [0.22.0] — 2026-08-25
 
 ### Added

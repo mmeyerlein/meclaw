@@ -54,9 +54,9 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.0.0   the shell
+/os                                 meclaw-os@1.0.1   the shell
 ├── access                            → access@2.0.5        the capability broker
-├── steward                           → steward@2.0.10      the control loop
+├── steward                           → steward@2.0.11      the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.0.0         a namespace and a boundary
         └── members                  (empty container)
@@ -101,7 +101,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.1"}],
           "add_edges": []}}
 ```
 

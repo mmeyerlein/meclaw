@@ -22,8 +22,8 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
   over ONE edge, and that edge carries the two things the loop needs: the iteration
   counter and `restore_ttl`. A tool round is a dozen routing hops; without the restoring
   edge the fifth round dies mid fan-in with nothing emitted towards the surface.
-- **A tool round that only needs its tools.** `brain -> dispatcher -> (your tools) ->
-  collector -> brain` is pre-wired except for the one lane that is genuinely
+- **A tool round that only needs its tools.** `brain -> splitter -> dispatcher -> (your
+  tools) -> collector -> brain` is pre-wired except for the one lane that is genuinely
   per-instance: which cell answers to `web_search`. Adding a tool is one edge pair, never
   a topology change.
 - **A close that hands the day on twice.** When a generation ends, the collector's batch
@@ -770,7 +770,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all eleven cells (plus four hive markers); the `timer` spawns
+The composite comes up with all twelve cells (plus four hive markers); the `timer` spawns
 as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

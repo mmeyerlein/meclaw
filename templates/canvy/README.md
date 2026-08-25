@@ -1,4 +1,4 @@
-# `canvy@2.0.0`
+# `canvy@2.0.1`
 
 One interactive canvas of the colony, served on a port of its own. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
@@ -52,10 +52,22 @@ that matters:
    survives exactly one edge and pass 2 is two edges away, so carrying it on the
    hop alone would lose it silently.
 2. the display answers → compute the layout and emit **one bundle** of
-   `object.*` calls. A refusal here is not a failure but the **bootstrap** case:
-   a display whose page has never been set answers `query` with `invalid_input`,
-   and the same bundle then defines the components, creates the root and sets
-   the page.
+   `object.*` calls. The question the answer settles is **"is this page mine"**,
+   and there are two ways it is not. A display whose page has never been set
+   answers `query` with `invalid_input`; a display whose `/` carries somebody
+   else's root answers successfully, with a tree that does not contain
+   `canvy`. Both are the **bootstrap** case, and the same bundle then defines
+   the components, creates the root and sets the page.
+
+   **Correction ([#402](https://github.com/mmeyerlein/meclaw/issues/402)):** this
+   said the refusal was the bootstrap signal and the only one there is. It was
+   not, and reading it that way made `canvy` unusable over its own substrate:
+   `canvy/web` is a `ref` to `web@1.0.0`, which **seeds a demo page at `/`**, so
+   the `query` succeeded, the branch never ran, the `canvy-*` components were
+   never defined, and every `object.create` in the bundle came back
+   `unknown_component` while the deletes landed. The bootstrap pass adopts a
+   foreign page and **deletes nothing** while doing it — those objects are not
+   this cell's to remove, and another route may still point at them.
 3. the display acknowledges the patch → emit **nothing**. A cell that cannot
    recognise the reply to its own write has no way to stop; in 1.x that mistake
    turned one tick into two into four and wedged the routing loop on a full
@@ -163,7 +175,7 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.0.0",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.0.1",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 

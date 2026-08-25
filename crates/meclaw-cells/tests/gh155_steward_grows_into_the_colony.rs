@@ -177,26 +177,6 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
     v
 }
 
-/// `grow-steward.json` is the THIRD declaration of the example and, like
-/// `grow-cogny.json` before it, it assumes the first one has run: its error
-/// drain points at `./sink`. This test grows only what that edge needs rather
-/// than the whole first wave, which would drag in a provider.
-async fn grow_the_drain(h: &ColonyHandle) {
-    let outcome = mutate(
-        h,
-        json!({
-            "scope": "/",
-            "ctx": {},
-            "diff": {"add_nodes": [{"name": "sink", "template": "terminal"}]}
-        }),
-    )
-    .await;
-    assert!(
-        committed(&outcome),
-        "the drain must exist first: {outcome:?}"
-    );
-}
-
 fn grow_declaration() -> Value {
     let raw = std::fs::read_to_string("../../examples/meclaw-os/grow-steward.json")
         .expect("the declaration ships with the example");
@@ -214,7 +194,6 @@ async fn the_steward_grows_as_an_ordinary_declaration() {
     };
     let td = tree();
     let h = boot(&td).await;
-    grow_the_drain(&h).await;
 
     let before = registry_paths(&h).await.len();
     let outcome = mutate(&h, grow_declaration()).await;
@@ -254,7 +233,6 @@ async fn the_steward_cannot_wire_its_own_mutation_lane() {
     };
     let td = tree();
     let h = boot(&td).await;
-    grow_the_drain(&h).await;
     mutate(&h, grow_declaration()).await;
 
     let outcome = mutate(
@@ -311,7 +289,6 @@ async fn the_old_swap_nodes_shape_is_refused_by_the_mutation_lane() {
     };
     let td = tree();
     let h = boot(&td).await;
-    grow_the_drain(&h).await;
 
     let outcome = mutate(
         &h,
@@ -344,7 +321,6 @@ async fn a_grown_steward_is_silent_until_a_goal_is_enabled() {
     };
     let td = tree();
     let h = boot(&td).await;
-    grow_the_drain(&h).await;
     mutate(&h, grow_declaration()).await;
 
     // Nothing arrives anywhere: no dead letters, and the charter's goals are

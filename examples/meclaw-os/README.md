@@ -143,8 +143,9 @@ bookkeeping folded away:
 /firewall/rules) -> /firewall ->
 /talky/session-keeper -> /talky/session-keeper/stamp -> (two round trips to
 /talky/session-keeper/sessions) -> /talky/session-keeper -> /talky/collector ->
-/talky/collector/assemble -> /talky/collector -> /talky/brain -> /talky/dispatcher ->
-/talky/collector -> /talky/collector/assemble -> /talky/collector -> /sink
+/talky/collector/assemble -> /talky/collector -> /talky/brain -> /talky/splitter ->
+/talky/dispatcher -> /talky/collector -> /talky/collector/assemble ->
+/talky/collector -> /sink
 ```
 
 **A hive is a hop in that chain, and it appears twice per transit.** `/talky/collector`
@@ -260,7 +261,7 @@ an `error` into a cell that swallows it.
 
 ## Step three: the colony that measures itself
 
-`grow-steward.json` adds the [`steward@2.0.10`](../../templates/steward/) — seven more cells that
+`grow-steward.json` adds the [`steward@2.0.11`](../../templates/steward/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -298,7 +299,7 @@ at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes b
 `key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
 
 Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
-`steward@2.0.10` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
+`steward@2.0.11` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
 any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
 other lane the hive offers, `error`, would be drawn at the hive for the same reason — but
 this declaration draws it nowhere (GH #284). A steward whose `error` ended in the sink would
@@ -313,7 +314,7 @@ you what it *would* have done before you let it do anything.
 
 ## Step four: the colony draws itself
 
-`grow-canvy.json` adds [`canvy@2.0.0`](../../templates/canvy/) — a timer, two `code` cells and a
+`grow-canvy.json` adds [`canvy@2.0.1`](../../templates/canvy/) — a timer, two `code` cells and a
 `web` cell that serves one interactive canvas of this colony on a port of its own:
 
 ```bash

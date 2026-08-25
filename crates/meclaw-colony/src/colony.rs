@@ -5047,7 +5047,13 @@ pub(crate) async fn handle_mutation(
     // SAME A5 machinery as `remove_edges`: clone the matched edges into
     // `removed_edges_saved` (rollback), push a `RemoveEdge` WriteOp to
     // `write_buffer`, and seed `p` into `involved` so `affected_scope` pulls in the
-    // node (and, for a hive, its whole subtree). The registry entry is NOT removed
+    // node. This used to add "and, for a hive, its whole subtree", which is the
+    // likely origin of the spec sentence GH #390 retracted: `remove_nodes`
+    // resolves `match.name` against the CELL registry only, a hive has no
+    // registry row, so a hive path never reaches this loop — it is `match_no_hit`
+    // and fails the whole mutation. `affected_scope` does widen to a subtree, but
+    // only for `remove_edges`, whose pattern runs against the edge table and does
+    // not care what kind of node an endpoint is. The registry entry is NOT removed
     // — the recompute-hook below flips it `active→false` and stops its task.
     for p in &removed_node_paths {
         let matched: Vec<crate::edge_table::Edge> = edges

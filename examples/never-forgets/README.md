@@ -62,11 +62,14 @@ cannot decide which database your life goes into.
 | node | from template | what it brings |
 |---|---|---|
 | `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
-| `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
+| `/talky` | [`talky`](../../templates/talky/) | 12 cells. Session keeper, context collector, tool dispatcher, sidecar splitter, summarizer and an `llm` brain, sixteen internal edges pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 
-Sixteen cells in the registry, three of them checked in -- the hive marker is a
-scope, not a cell.
+Seventeen cells in the registry, three of them checked in -- the hive marker is a
+scope, not a cell. That number is not counted by hand: it is
+`CELLS_AFTER_GROW` in `crates/meclaw-cells/tests/never_forgets_example.rs`,
+which boots this seed, applies this `grow.json` and asserts the registry it
+gets. Adding a cell to any of the three templates moves it there first.
 
 ## The one shape worth reading: one port, two producers
 
@@ -276,7 +279,7 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
      -d @examples/never-forgets/grow.json
 ```
 
-`http://127.0.0.1:7788/ui/registry` now shows sixteen cells.
+`http://127.0.0.1:7788/ui/registry` now shows seventeen cells.
 
 ## Load the past
 
@@ -326,12 +329,12 @@ turn-write leg into `/memory/keep` left out -- the trace has those too:
 ```
 @external -> /surface -> /talky/session-keeper -> /talky/session-keeper/stamp ->
 /talky/session-keeper -> /talky/collector -> /talky/collector/assemble ->
-/talky/collector -> /talky/brain -> /talky/dispatcher -> /talky/collector ->
-/talky/collector/assemble -> /talky/collector -> /memory/keep ->
-/memory/episodes -> /memory/keep -> /talky/collector ->
+/talky/collector -> /talky/brain -> /talky/splitter -> /talky/dispatcher ->
+/talky/collector -> /talky/collector/assemble -> /talky/collector ->
+/memory/keep -> /memory/episodes -> /memory/keep -> /talky/collector ->
 /talky/collector/assemble -> /talky/collector -> /talky/brain ->
-/talky/dispatcher -> /talky/collector -> /talky/collector/assemble ->
-/talky/collector -> /sink
+/talky/splitter -> /talky/dispatcher -> /talky/collector ->
+/talky/collector/assemble -> /talky/collector -> /sink
 ```
 
 Two inferences, one round trip through memory in between, and the second

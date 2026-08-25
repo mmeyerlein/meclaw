@@ -1,4 +1,4 @@
-# `meclaw-os@1.0.0`
+# `meclaw-os@1.0.1`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds two occupants, one empty
@@ -22,7 +22,7 @@ a shell that grew one would have stopped being a boundary and become a participa
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
 | `access` | a `ref` to `access@2.0.5` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
-| `steward` | a `ref` to `steward@2.0.10` — the control loop | one colony, one loop; it ships with every goal disabled |
+| `steward` | a `ref` to `steward@2.0.11` — the control loop | one colony, one loop; it ships with every goal disabled |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
 Both occupants are pinned to an **exact** version. A bare name resolves to the newest
@@ -199,7 +199,7 @@ already a requirement of this composite.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.0"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.1"}],
           "add_edges": []}}
 ```
 

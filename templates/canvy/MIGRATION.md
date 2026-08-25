@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.0.0`
+# Migrating a `canvy` instance from 1.x to `canvy@2.0.1`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -54,7 +54,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.0.0` beside the old hive
+## 1. Instantiate `canvy@2.0.1` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free port:
@@ -66,7 +66,7 @@ with the old one and the display a free port:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.0.0",
+        "template": "canvy@2.0.1",
         "override_params": {"web": {"port": 7811}}
       }
     ]
@@ -202,6 +202,51 @@ prior state, or the mutation is refused as `match_no_hit`:
 curl -s http://127.0.0.1:7777/colony/graph | jq '.edges[] | select(.from | test("canvy"))'
 ```
 
+### Pre-flight: does canvy own the only edge that keeps your tree awake?
+
+**Do this before the mutation below, not after.** canvy 1.x ships
+`<hive>/probe -> /colony/graph`. In a tree where the canvas is the only thing
+that talks to `/colony`, that edge is the **only boundary-crossing edge of the
+whole subtree** — and this step removes it as a side effect of removing
+`probe`.
+
+What follows is not a canvy behaviour, it is the substrate's, working exactly as
+`docs/meclaw-overview.md` § *Connectivity and activity* describes it: a subtree
+that loses its last boundary-crossing edge flips to `active = false` and every
+task below it ends. The LLM cells, the connectors, the timers, all of them. **The
+mutation commits cleanly and reports nothing unusual**, and `/health` keeps
+answering `status: ok` — a colony with no running cells is not an unhealthy
+process. This has been measured on a real instance: 47 active cells to **0**, on
+a mutation whose stated purpose was to retire a canvas
+([#403](https://github.com/mmeyerlein/meclaw/issues/403)).
+
+Count what would be left. Substitute your own member path for `/main`:
+
+```bash
+curl -s http://127.0.0.1:7777/colony/graph \
+  | jq '[.edges[] | select((.from | startswith("/main")) != (.to | startswith("/main")))
+                  | select((.from + .to) | test("canvy") | not)] | length'
+```
+
+**Zero means stop.** Draw an anchor edge first, in its own mutation, and only
+then run the retirement. It is a connectivity-only edge: it carries no traffic,
+because no cell ever emits the route it is conditioned on. It exists so the
+subtree has a boundary-crossing edge that does not belong to canvy.
+
+```json
+{
+  "scope": "/",
+  "diff": {"add_edges": [
+    {"from": "/main", "to": "/colony/graph",
+     "condition": "has(hop.route) && hop.route == '__never__'"}
+  ]}
+}
+```
+
+Note what that edge starts from: the **hive path**, not a cell inside it. That
+is not a stylistic choice — see step 6 — and it is the shape the substrate's own
+refusal message points at.
+
 Then, with the old hive at `/ops/canvy` and its cells named by their full paths:
 
 ```json
@@ -243,10 +288,45 @@ directories gone as well, that is a stopped-colony act with its own checklist �
 
 ## 6. The way back
 
-Nothing above is one-way while the old tree is still on disk:
+Nothing above is one-way while the old tree is still on disk — but the
+retirement is the one step whose undo has real limits, and both of them were
+found the hard way ([#403](https://github.com/mmeyerlein/meclaw/issues/403)).
 
-- **Undo the retirement**: `add_edges` with the same pairs, and the
-  connectivity pass makes the old cells active again.
+- **Undo the retirement**: `add_edges` with the same pairs, and the connectivity
+  pass makes the old cells active again — **with one exception, and it is the
+  edge that matters most.**
+
+  **Correction.** This used to promise the undo without qualification. That is
+  retracted: `<hive>/probe -> /colony/graph` **cannot be re-drawn**. It predates
+  hive sealing, so it exists in a running 1.x graph but the current substrate
+  refuses to create it:
+
+  ```
+  error_code: hive_port_boundary
+  add_edges[].from='./<member>/canvy/probe' resolves to an interior node of the
+  sealed hive '.../canvy', while the edge's other endpoint '/colony/graph' lies
+  outside it — that wires past the port. Declared ports of '.../canvy': none.
+  ```
+
+  So the one edge whose removal can deactivate your tree is the one the way back
+  does not cover. Use the hive-path anchor from the pre-flight in step 5 instead
+  — that is what restores activity, and on the measured instance it brought the
+  count back to its pre-mutation value immediately. The pre-flight is what keeps
+  you out of this situation; this paragraph is what gets you out of it.
+
+- **The retirement does not survive a reconnect within the same colony run.**
+  Once the old cells have been reconnected, a second attempt at step 5 is
+  refused outright:
+
+  ```
+  error_code: stop_wiring_unavailable
+  disconnect of Awake cell .../canvy/probe without live stop-wiring (interim guard)
+  ```
+
+  That is the guard behaving as designed — it is pinned by
+  `crates/meclaw-colony/tests/phase_13_5_lifecycle_3b_reconnect.rs` — not a
+  defect to work around. It does mean step 5 is **one-shot** against a running
+  colony: go back, and going forward again needs a restart first.
 - **Undo the migration**: the old `cell.db` still holds the `canvas` table, so
   the export can be re-run at any time. The new display's positions are just
   props; re-sending an older bundle overwrites them.

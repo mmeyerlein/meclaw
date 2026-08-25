@@ -21,7 +21,7 @@
         },
         {
           "route": "in_cycle",
-          "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from steward@2.0.10"
+          "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from steward@2.0.11"
         },
         {
           "route": "in_turn",
@@ -51,7 +51,7 @@
         },
         {
           "route": "mutate",
-          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.10"
+          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.11"
         },
         {
           "route": "answer",
@@ -63,7 +63,7 @@
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.10 and org@1.0.0"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.11 and org@1.0.0"
         },
         {
           "route": "write",

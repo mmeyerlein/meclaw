@@ -306,7 +306,8 @@ spine of them, with the header keys that decide each turn:
 
 /talky/collector/assemble   -> /talky/collector             {route: brain, iter: 0}
 /talky/collector            -> /talky/brain                 {route: brain, iter: 0}  <- inference 1
-/talky/brain                -> /talky/dispatcher            {finish_reason: tool_calls}
+/talky/brain                -> /talky/splitter              {finish_reason: tool_calls}
+/talky/splitter             -> /talky/dispatcher            {finish_reason: tool_calls}
 /talky/dispatcher           -> /talky/collector             {route: in_memory_call,
                                                              tool_name: memory_recall}
 /talky/collector            -> /talky/collector/assemble    {route: in_memory_call}
@@ -323,7 +324,8 @@ spine of them, with the header keys that decide each turn:
 
 /talky/collector/assemble   -> /talky/collector             {route: brain, iter: 1}
 /talky/collector            -> /talky/brain                 {route: brain, iter: 1}  <- inference 2
-/talky/brain                -> /talky/dispatcher            {finish_reason: stop}
+/talky/brain                -> /talky/splitter              {finish_reason: stop}
+/talky/splitter             -> /talky/dispatcher            {finish_reason: stop}
 /talky/dispatcher           -> /talky/collector             {route: in_answer}
 /talky/collector            -> /talky/collector/assemble    {route: in_answer}
 /talky/collector/assemble   -> /talky/collector             {route: answer, iter: 1}

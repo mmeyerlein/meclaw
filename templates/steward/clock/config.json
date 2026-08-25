@@ -5,8 +5,20 @@
   "params": {
     "schedules": [
       {
-        "name": "steward-cycle",
-        "cron": "${STEWARD_CYCLE_CRON:-0 0 */6 * * *}"
+        "schedule_id": "${uuid7:steward-cycle}",
+        "schedule_name": "steward-cycle",
+        "cron": "${STEWARD_CYCLE_CRON:-0 0 */6 * * *}",
+        "emit_to": "../meter",
+        "emit_body": {
+          "messages": [
+            {
+              "origin": "user",
+              "type": "text",
+              "text": "steward-cycle"
+            }
+          ]
+        },
+        "emit_headers": {}
       }
     ]
   },

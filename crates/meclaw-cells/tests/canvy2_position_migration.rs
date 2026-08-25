@@ -59,6 +59,24 @@ fn core_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Every `.rs` file under `dir`, so a claim about the substrate can be checked
+/// against the substrate instead of against a memory of it.
+fn walk_rs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in entries.filter_map(Result::ok) {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk_rs(&p));
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// The shipped export script, or `None` when this checkout does not carry it.
 ///
 /// R2b: a file that silently disappears makes these tests skip rather than
@@ -759,8 +777,67 @@ async fn a_row_for_a_cell_that_is_gone_is_one_refused_leg() {
 fn the_recipe_ships_beside_the_template() {
     let Some(canvy) = shipped_canvy() else { return };
     let doc = std::fs::read_to_string(canvy.join("MIGRATION.md")).expect("MIGRATION.md");
+
+    // The version the recipe tells an operator to instantiate is DERIVED from
+    // the template, never written twice. A recipe naming a version the library
+    // no longer ships does not resolve, and pinning the literal here would mean
+    // every third-digit repair is a test edit that proves nothing.
+    let shipped: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(canvy.join("template.json")).expect("template.json"),
+    )
+    .expect("template.json parses");
+    let target = format!("canvy@{}", shipped["version"].as_str().expect("a version"));
+    assert!(
+        doc.contains(&target),
+        "the recipe must instantiate the version the library ships ({target}) — \
+         a migration that names an older one sends the operator to a template \
+         that is not there"
+    );
+
+    // GH #403 (§ 2d drift lock). Step 5 can deactivate a whole subtree and the
+    // § 6 undo does not cover the edge that causes it. Both halves:
+    //
+    //   prose      — the recipe warns before the mutation and retracts the
+    //                unqualified undo, naming the refusal an operator will see;
+    //   mechanism  — those refusals are real `error_code` strings the substrate
+    //                emits, asserted against the source rather than quoted from
+    //                a report. A recipe that names a code the substrate cannot
+    //                produce sends the reader looking for the wrong thing.
+    for phrase in [
+        "Pre-flight",
+        "only boundary-crossing edge",
+        "Zero means stop",
+        "__never__",
+        "cannot be re-drawn",
+        "one-shot",
+    ] {
+        assert!(
+            doc.contains(phrase),
+            "the recipe must still carry {phrase:?} — step 5 can take a colony's \
+             activity to zero and step 6 does not cover the edge that does it \
+             (GH #403). A migration that drops the warning is the version that \
+             was measured at 47 active cells to 0."
+        );
+    }
+    let colony_src = core_root().join("crates/meclaw-colony/src");
+    for code in ["hive_port_boundary", "stop_wiring_unavailable"] {
+        assert!(
+            doc.contains(code),
+            "the recipe names the refusal an operator hits, not a paraphrase: \
+             {code} is missing"
+        );
+        let found = walk_rs(&colony_src)
+            .iter()
+            .any(|f| std::fs::read_to_string(f).is_ok_and(|s| s.contains(code)));
+        assert!(
+            found,
+            "the recipe promises the refusal `{code}`, and no source file under \
+             crates/meclaw-colony/src/ produces it — the prose outlived its \
+             mechanism, which is the whole failure mode § 2d exists for"
+        );
+    }
+
     for token in [
-        "canvy@2.0.0",
         "scripts/canvy_export_positions.py",
         "object.update",
         "bundle_errors",

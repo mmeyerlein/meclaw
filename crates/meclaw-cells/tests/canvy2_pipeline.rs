@@ -1,11 +1,13 @@
-//! W8 Task 13 (GH #383): the shipped `canvy@2.0.0` pipeline.
+//! W8 Task 13 (GH #383): the shipped `canvy` pipeline.
 //!
 //! What is pinned here is what the template PROMISES:
 //!
-//! 1. **The inventory and the version.** A file that silently disappears makes
-//!    these tests skip rather than pass (R2b), and `template.json` says 2.0.0 —
-//!    a removal-shaped change on every address the template offered, which is
-//!    the first digit (the `telegram-connector@2.0.0` precedent).
+//! 1. **The inventory and the major.** A file that silently disappears makes
+//!    these tests skip rather than pass (R2b), and `template.json` is on major
+//!    2 — a removal-shaped change on every address the template offered, which
+//!    is the first digit (the `telegram-connector@2.0.0` precedent). The exact
+//!    shipped version is gated by `gh235_readme_library_table`, so a repair
+//!    does not have to be edited into two places.
 //! 2. **The shipped bytes are the sources.** `layout/config.json` carries
 //!    `layout.py` with `canvy.js` and `canvy.css` spliced in, and
 //!    `probe/config.json` carries `probe.py`. `scripts/canvy_sync.py --check` is
@@ -21,9 +23,13 @@
 //! 5. **The round terminates.** The acknowledgement of a patch produces nothing.
 //!    A cell that cannot recognise the reply to its own write has no way to stop
 //!    (GH #161).
-//! 6. **It fills a real display.** The emitted bundle is put into an actual
-//!    `web` cell and the page is fetched over HTTP: one box per colony cell, one
-//!    line per edge, and the hook mounted on markup that carries `phx-hook`.
+//! 6. **It fills a real display — including the one a real instance gets.** The
+//!    emitted bundle is put into an actual `web` cell and the page is fetched
+//!    over HTTP: one box per colony cell, one line per edge, and the hook
+//!    mounted on markup that carries `phx-hook`. Once against an empty display
+//!    and once against one carrying `web@1.0.0`'s seeded demo, which is what
+//!    `canvy/web` actually is — the case that was missing, and the whole of
+//!    GH #402.
 //!
 //! Free of a provider by construction: this hive holds no model at all.
 
@@ -189,8 +195,9 @@ fn query_answer(objects: &[Value]) -> Value {
     })
 }
 
-/// A `web` cell REFUSAL of a `query`: the only signal there is that a display
-/// has never had its page set.
+/// A `web` cell REFUSAL of a `query`: what a display answers when it has never
+/// had its page set. One of the two bootstrap signals — the other is a
+/// successful answer carrying somebody else's root (GH #402).
 fn query_refusal() -> Value {
     json!({
         "messages": [{
@@ -259,8 +266,12 @@ fn the_template_ships_its_whole_inventory_at_two_zero() {
     let t = read_json(&root.join("template.json"));
     assert_eq!(t["name"], "canvy");
     assert_eq!(
-        t["version"], "2.0.0",
-        "a removal-shaped change on every address the template offered is the first digit"
+        t["version"].as_str().and_then(|v| v.split('.').next()),
+        Some("2"),
+        "a removal-shaped change on every address the template offered is the \
+         first digit — the major is what this test is about, and pinning the \
+         patch digit here would make every repair a test edit for no reading. \
+         The exact shipped version is gated by `gh235_readme_library_table`."
     );
     let cfg = read_json(&root.join("config.json"));
     assert_eq!(cfg["cell"]["type"], "hive");
@@ -578,6 +589,150 @@ fn an_empty_display_is_bootstrapped_by_the_same_pass() {
     }
 }
 
+/// A `query` that answers with SOMEBODY ELSE'S root is the bootstrap case too
+/// (GH #402).
+///
+/// `canvy/web` is a `ref` to `web@1.0.0`, and that template seeds a demo:
+/// `pages.jsonl` declares `("/", "root", "Vision")`. So the `query` a fresh
+/// `canvy` sends **succeeds**, and until this test the layout read success as
+/// "the display is already mine": the bootstrap branch never ran, the
+/// `canvy-*` components were never defined, and every `object.create` in the
+/// bundle came back `unknown_component` — 412 of 418 legs on a real colony,
+/// display serving 404 for good.
+///
+/// The honest condition is not "did the query fail" but "is this page mine".
+/// A page whose object tree does not contain this cell's root is the same
+/// situation as no page at all, and it is reached by exactly the same bundle.
+#[test]
+fn a_display_holding_a_foreign_page_is_bootstrapped_too() {
+    let Some(root) = shipped_canvy() else { return };
+    let ask = ask_pass(&root, fixture_graph());
+    let ctx = layout_context(ask["header"]["canvy_graph"].as_str().unwrap());
+
+    // The shipped `web@1.0.0` seed, in the shape `query` answers with: a page
+    // at `/` rooted at `root`, with the demo's own objects under it. Not one of
+    // them is a `canvy` object, and none of them is the id `canvy`.
+    let foreign = json!({
+        "messages": [{
+            "origin": "tool", "type": "tool_result", "id": "q",
+            "text": json!({
+                "route": "/", "root": "root",
+                "objects": [
+                    {"id": "root", "parent": null, "component": "stack",
+                     "ord": 0, "props": {"stylesheet": true}},
+                    {"id": "welcome", "parent": "root", "component": "text",
+                     "ord": 0, "props": {"body": "This display is served by its own cell."}},
+                ],
+            }).to_string(),
+        }]
+    });
+
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(foreign, json!({ "operation": "query" }), ctx),
+    );
+    assert_eq!(out.len(), 1, "one bundle: {out:#?}");
+    let calls = calls_of(&out[0]);
+
+    // The whole defect, in one assertion: without the definitions every create
+    // below is refused with `unknown_component`.
+    let defines: Vec<&str> = calls
+        .iter()
+        .filter(|c| c["op"] == "component.define")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        defines,
+        ["canvy-shell", "canvy-hive", "canvy-edge", "canvy-node"],
+        "a display whose `/` belongs to someone else still needs canvy's \
+         vocabulary defined before anything is written in it: {calls:#?}"
+    );
+
+    // It takes the page over, root first, exactly as on an empty display.
+    let root_at = calls
+        .iter()
+        .position(|c| c["op"] == "object.create" && c["id"] == "canvy")
+        .expect("the root is created");
+    let page_at = calls
+        .iter()
+        .position(|c| c["op"] == "page.set" && c["route"] == "/")
+        .expect("`/` is re-pointed at canvy's own root");
+    assert!(
+        page_at > root_at,
+        "the page is set after its root: {calls:#?}"
+    );
+
+    // And it does NOT delete what it did not draw. The demo's objects are not
+    // canvy's to remove: `/demo` still points at them, and a bundle that wipes
+    // the tree it is adopting is the destructive half of GH #402, not the fix.
+    let deleted: Vec<&str> = calls
+        .iter()
+        .filter(|c| c["op"] == "object.delete")
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        deleted.is_empty(),
+        "the bootstrap pass must delete nothing — these were somebody else's \
+         objects: {deleted:?}"
+    );
+
+    // The prose half of the § 2d drift lock. The mechanism above is the
+    // promise; this is the sentence on the public surface that states it, and
+    // a repair that moved one without the other is what GH #402 was.
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("the README ships");
+    let para = readme
+        .split("\n\n")
+        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|p| p.contains("emit **one bundle**"))
+        .expect("§ The three passes describes pass 2");
+    for phrase in ["is this page mine", "invalid_input", "somebody else's root"] {
+        assert!(
+            para.contains(phrase),
+            "pass 2's description must still name `{phrase}` — a README that \
+             says the refusal is the only bootstrap signal describes the bug, \
+             not the cell:\n  {para}"
+        );
+    }
+}
+
+/// Adopting a foreign page is idempotent: the tick after it patches like any
+/// other, because the display now answers `query` with canvy's own root.
+#[test]
+fn the_tick_after_an_adoption_is_an_ordinary_patch() {
+    let Some(root) = shipped_canvy() else { return };
+    let ask = ask_pass(&root, fixture_graph());
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+
+    let boot = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let objects = objects_from(&calls_of(&boot[0]));
+
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_answer(&objects),
+            json!({ "operation": "query" }),
+            layout_context(&hop),
+        ),
+    );
+    let calls = calls_of(&out[0]);
+    assert!(
+        !calls.iter().any(|c| c["op"] == "component.define"),
+        "a display that already holds canvy's root is not bootstrapped again — \
+         the definitions are idempotent, but re-sending them every minute would \
+         mean the condition never converged: {calls:#?}"
+    );
+}
+
 /// The second tick patches instead of creating, and the coordinates the display
 /// already holds are left exactly as they are.
 ///
@@ -707,8 +862,12 @@ struct Live {
     join: tokio::task::JoinHandle<()>,
 }
 
-/// A `web` cell with an empty database — exactly what an instance of
-/// `canvy@2.0.0` starts with, since a ref directory carries no seed.
+/// A `web` cell over `cell_dir`. With an empty directory the database starts
+/// empty; hand it a `seed/` and the cell seeds itself from it, which is what a
+/// real `canvy/web` gets — the ref brings `web@1.0.0`'s own demo seed with it.
+/// This comment used to claim the opposite ("a ref directory carries no seed"),
+/// and believing it is how GH #402 shipped: every test here started from a
+/// state no instance is ever in.
 async fn start(cell_dir: &std::path::Path) -> Live {
     let port = free_port();
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
@@ -881,6 +1040,127 @@ async fn the_pipeline_fills_a_real_display() {
     // is a page with no style at all.
     assert!(body.contains("<style>") && body.contains("<script>"));
     assert!(body.contains("SurfaceHooks"), "the hook is in the page");
+
+    live.join.abort();
+}
+
+/// GH #402 end to end, over the display a real instance actually gets.
+///
+/// The test above starts the `web` cell with an EMPTY database, and that is not
+/// what `canvy/web` is: it is a `ref` to `web@1.0.0`, whose `seed/` ships a demo
+/// — `pages.jsonl` declares `("/", "root", "Vision")` and seventeen objects
+/// under it. So every canvy ever instantiated from the shipped template met a
+/// display that already had a page, the `query` succeeded, the bootstrap branch
+/// did not run, and 412 of 418 legs came back `unknown_component`.
+///
+/// This test seeds the display the way the template does and then drives the
+/// real three passes over it: `query` goes into the live cell, its **actual**
+/// answer feeds pass 2, and the bundle that comes out is applied for real. The
+/// assertion is the one the report makes: every leg lands, and `/` serves the
+/// colony instead of 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_display_that_ships_a_demo_still_gets_the_picture() {
+    let Some(root) = shipped_canvy() else { return };
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let seed_src = core_root().join("templates/web/seed");
+    if !seed_src.join("pages.jsonl").exists() {
+        return;
+    }
+
+    // The display, born the way the ref makes it: with `web`'s own demo on it.
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    let seed_dst = cell_dir.join("seed");
+    std::fs::create_dir_all(&seed_dst).expect("dir");
+    for f in [
+        "pages.jsonl",
+        "objects.jsonl",
+        "components.jsonl",
+        "assets.jsonl",
+    ] {
+        let from = seed_src.join(f);
+        if from.exists() {
+            std::fs::copy(&from, seed_dst.join(f)).expect("copy seed");
+        }
+    }
+    let mut live = start(&cell_dir).await;
+
+    // It really is somebody else's page — the precondition, asserted rather
+    // than assumed, so a `web` that stopped seeding turns this into a skip-
+    // shaped failure instead of a silent pass.
+    let seeded = apply(&mut live, &[json!({"op": "query", "route": "/"})]).await;
+    let answer = seeded["messages"][0]["text"]
+        .as_str()
+        .expect("a query answer");
+    let doc: Value = meclaw_core::serde_json::from_str(answer).expect("json");
+    assert_eq!(
+        doc["root"], "root",
+        "this test is about a display that already carries a FOREIGN root; \
+         `templates/web/seed/pages.jsonl` no longer puts one there: {doc}"
+    );
+
+    // ── the three passes, over that display
+    let ask = ask_pass(&root, fixture_graph());
+    let ctx = layout_context(ask["header"]["canvy_graph"].as_str().unwrap());
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            json!({ "messages": [{"origin": "tool", "type": "tool_result",
+                                  "id": "q", "text": answer}] }),
+            json!({ "operation": "query" }),
+            ctx,
+        ),
+    );
+    let reply = apply(&mut live, &calls_of(&out[0])).await;
+    assert_eq!(
+        reply["header"]["bundle_errors"],
+        json!(0),
+        "every leg has to land on a seeded display too — 412 `unknown_component` \
+         refusals is what GH #402 measured here: {reply}"
+    );
+
+    // The page a browser gets is the colony, not a 404 and not the demo.
+    let page = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text");
+    assert!(
+        page.contains("phx-hook=\"Canvy\"") && page.contains("id=\"canvy\""),
+        "`/` still does not serve canvy's own root"
+    );
+    for cell in ["a/one", "a/two", "b/three", "b/four"] {
+        assert!(
+            page.contains(&format!("data-node=\"{cell}\"")),
+            "{cell} is not in the picture"
+        );
+    }
+
+    // And the demo it adopted the route from is still intact behind it: canvy
+    // took `/` over, it did not clear the database.
+    let conn = rusqlite::Connection::open(live.cell_dir.join("cell.db")).expect("open");
+    let welcome: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM objects WHERE id = 'welcome'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        welcome, 1,
+        "the bootstrap pass deleted an object it did not draw — `/demo` still \
+         routes into that tree, and a bundle that wipes what it is adopting is \
+         the destructive half of GH #402"
+    );
+    drop(conn);
 
     live.join.abort();
 }
