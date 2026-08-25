@@ -2885,7 +2885,22 @@ fn check_declared_requirements(
     }
 }
 
-/// GH #292 — refuse an `add_nodes` whose template declares a key the mutation
+/// Where the live tree is, for the per-node Resume derivation (GH #347 gap 2).
+///
+/// A Resume is classified against the filesystem, so the requirements check
+/// needs the same two coordinates the staging side resolves final paths from:
+/// the colony root and the mutation's logical scope. They travel together
+/// because they are only ever meaningful together — and as one parameter
+/// because the check's argument list is long enough already.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveTree<'a> {
+    /// The colony root directory (`{root}`), the tree the mutation runs against.
+    pub root: &'a std::path::Path,
+    /// The mutation's logical scope (`/`, `/sub`, …), as the payload spells it.
+    pub scope: &'a str,
+}
+
+/// GH #292 — refuse an instantiation whose template declares a key the mutation
 /// does not supply, BEFORE anything is staged.
 ///
 /// A template says what it needs (`requires.ctx` / `requires.env`, see
@@ -2914,17 +2929,36 @@ fn check_declared_requirements(
 ///   [`crate::mutation::subtree::parse_subtree`] reports for a broken ref — the
 ///   same errors staging would raise, only earlier.
 ///
-/// **A Resume is exempt.** `resumed_names` carries the `add_nodes[].name` of
-/// every entry the caller identified as a Reconnect/Resume (`colony.rs` Step
-/// 1a: the target directory exists). A Resume instantiates nothing — it stages
-/// nothing, substitutes no `${ctx.X}` and rewrites no `config.json` (overview
-/// Z.170-180, A1) — so it never consumes the declared keys, and requiring them
-/// would refuse a reconnect that was legal before the declaration existed. The
-/// requirement belongs to the instantiation, not to the address.
+/// **Both instantiating operations are read** (GH #347 gap 1): an `add_nodes`
+/// entry, and the INSTANTIATE form of a `swap_nodes[].with` — the one that
+/// carries a `template` and therefore performs the same copy-and-substitute.
+/// The existing-node form of `with` references a cell that is already there and
+/// stages nothing, so it owes nothing here.
 ///
-/// An entry without a `template` (an `adopt`, or a schema error the schema
-/// check names) and a `template` the registry does not hold are both skipped:
-/// neither is this check's finding.
+/// **A Resume is exempt — per NODE** (GH #347 gap 2). `resumed_names` carries
+/// the `add_nodes[].name` of every entry the caller identified as a
+/// Reconnect/Resume (`colony.rs` Step 1a: the target directory exists). A
+/// Resume instantiates nothing — it stages nothing, substitutes no `${ctx.X}`
+/// and rewrites no `config.json` (overview Z.170-180, A1) — so it never
+/// consumes the declared keys, and requiring them would refuse a reconnect that
+/// was legal before the declaration existed. The requirement belongs to the
+/// instantiation, not to the address. It applies to `add_nodes` only: a swap
+/// always stages.
+///
+/// For a COMPOSITE template that premise holds only for the nodes that are
+/// actually there. A subtree whose root exists but whose children do not is a
+/// MERGE resume: the merge path stages the missing children, substituting their
+/// `${ctx.X}` exactly like a fresh instantiation. So the exemption is decided
+/// per node, and by the SAME derivation the staging side uses —
+/// [`crate::mutation::subtree::classify_subtree_nodes`], the pure classifier
+/// `stage_subtree_merge` itself calls. [`LiveTree`] carries what that
+/// classifier needs to resolve each template node's final directory; it is the
+/// only reason this function touches the filesystem tree at all, and it only
+/// reads directory existence.
+///
+/// An entry without a `template` (an `adopt`, an existing-node swap, or a
+/// schema error the schema check names) and a `template` the registry does not
+/// hold are both skipped: neither is this check's finding.
 ///
 /// GH #293 — this is the thin `Result` face of [`addressed_requires`]: the
 /// FIRST violation the collecting core produces is, by construction, the one
@@ -2936,16 +2970,18 @@ pub fn validate_requires(
     ctx: &std::collections::HashMap<String, String>,
     env: &std::collections::HashMap<String, String>,
     resumed_names: &[String],
+    live: LiveTree<'_>,
 ) -> Result<(), MutationError> {
-    addressed_requires(diff, templates, ctx, env, resumed_names)
+    addressed_requires(diff, templates, ctx, env, resumed_names, live)
         .into_iter()
         .next()
         .map_or(Ok(()), |(error, _)| Err(error))
 }
 
 /// GH #293 — stage 3 ([`Stage::Requires`]) as a COLLECTING check: every
-/// `add_nodes` entry whose template declares a key the mutation does not
-/// supply, in one refusal.
+/// instantiating entry (`add_nodes`, and a `swap_nodes[].with` that names a
+/// template) whose template declares a key the mutation does not supply, in one
+/// refusal.
 ///
 /// **This changes no verdict** — see [`validate_requires`], which is now the
 /// first-error face of the same core.
@@ -2957,11 +2993,12 @@ pub fn collect_requires(
     ctx: &std::collections::HashMap<String, String>,
     env: &std::collections::HashMap<String, String>,
     resumed_names: &[String],
+    live: LiveTree<'_>,
     into: &mut crate::mutation::rejection::MutationRejection,
 ) {
     use crate::mutation::rejection::{Stage, Violation};
 
-    for (error, address) in addressed_requires(diff, templates, ctx, env, resumed_names) {
+    for (error, address) in addressed_requires(diff, templates, ctx, env, resumed_names, live) {
         into.push(Violation::from_error(Stage::Requires, &error, address));
     }
 }
@@ -2972,77 +3009,230 @@ pub fn collect_requires(
 /// One entry per unmet requirement — a template naming three keys the mutation
 /// supplies none of says all three, and the refusal is one round trip instead
 /// of three. Nothing short-circuits: a `parse_subtree` failure (which used to
-/// end the whole walk) is now one more entry, and the next `add_nodes` entry is
-/// read all the same. Only the malformed-declaration case stops within its own
-/// template — once the file does not parse there is nothing further to read out
-/// of it.
+/// end the whole walk) is now one more entry, and the next entry is read all
+/// the same. Only the malformed-declaration case stops within its own template
+/// — once the file does not parse there is nothing further to read out of it.
+///
+/// **Two instantiation paths, one walk** (GH #347 gap 1). Both operations that
+/// copy a template are read here: an `add_nodes` entry, and the INSTANTIATE
+/// form of a `swap_nodes[].with` (the one that carries a `template`). The swap
+/// performs the same copy-and-substitute, so it owes the same declared keys —
+/// until GH #347 it was accepted and broke later, during the staging
+/// substitution, as `ctx_key_missing`. The existing-node form of `with` (no
+/// `template`) references a cell that is already there, instantiates nothing
+/// and is therefore not this check's business.
+///
+/// `resumed_names` applies to `add_nodes` only: a swap always stages, so there
+/// is no address at which it could be a Reconnect. What a resumed entry still
+/// stages is decided per node by [`resume_staged_nodes`].
 fn addressed_requires(
     diff: &JsonValue,
     templates: &crate::templates::TemplatesRegistry,
     ctx: &std::collections::HashMap<String, String>,
     env: &std::collections::HashMap<String, String>,
     resumed_names: &[String],
+    live: LiveTree<'_>,
 ) -> Vec<(MutationError, Option<String>)> {
     let mut violations: Vec<(MutationError, Option<String>)> = Vec::new();
-    let Some(adds) = diff.get("add_nodes").and_then(|v| v.as_array()) else {
-        return violations;
-    };
-    for n in adds {
-        // Spelled as the diff spells it — `resumed_names` is filled from the
-        // same field of the same entry, so the two always agree.
-        if n.get("name")
-            .and_then(|v| v.as_str())
-            .is_some_and(|name| resumed_names.iter().any(|r| r == name))
-        {
-            continue;
+    if let Some(adds) = diff.get("add_nodes").and_then(|v| v.as_array()) {
+        for n in adds {
+            // Spelled as the diff spells it — `resumed_names` is filled from the
+            // same field of the same entry, so the two always agree.
+            let name = n.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            let staged = if resumed_names.iter().any(|r| r == name) {
+                resume_staged_nodes(n.get("template"), templates, live, name)
+            } else {
+                StagedNodes::All
+            };
+            if matches!(staged, StagedNodes::None) {
+                continue; // a true resume: nothing is staged, nothing is owed.
+            }
+            violations.extend(requires_for_reference(
+                n.get("template"),
+                templates,
+                ctx,
+                env,
+                &staged,
+            ));
         }
-        let Some(reference) = n
-            .get("template")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let Ok(entry) = templates.resolve(reference) else {
-            continue; // `template_missing` is the schema validator's finding.
-        };
-        let mut errors = Vec::new();
-        check_declared_requirements(reference, &entry.filesystem_path, ctx, env, &mut errors);
+    }
+    if let Some(swaps) = diff.get("swap_nodes").and_then(|v| v.as_array()) {
+        for n in swaps {
+            // Only the instantiate form names a template; the existing-node
+            // form carries a `name` alone and stages nothing.
+            violations.extend(requires_for_reference(
+                n.get("with").and_then(|w| w.get("template")),
+                templates,
+                ctx,
+                env,
+                &StagedNodes::All,
+            ));
+        }
+    }
+    violations
+}
 
-        // The refs: parse once, walk every distinct hop, read each one's own
-        // declaration. `parse_subtree` is what staging runs anyway, so a
-        // ref-free template costs one directory walk and nothing else.
-        match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
-            Err(error) => errors.push(error),
-            Ok(parsed) => {
-                let mut seen: Vec<(String, Option<String>)> = Vec::new();
-                for cell in &parsed.cells {
-                    for hop in &cell.ref_chain {
-                        if seen.contains(hop) {
-                            continue;
-                        }
-                        seen.push(hop.clone());
-                        let hop_ref = match &hop.1 {
-                            Some(version) => format!("{}@{}", hop.0, version),
-                            None => hop.0.clone(),
-                        };
-                        let Ok(hop_entry) = templates.resolve(&hop_ref) else {
-                            continue; // resolved once already during parsing.
-                        };
-                        check_declared_requirements(
-                            &hop_ref,
-                            &hop_entry.filesystem_path,
-                            ctx,
-                            env,
-                            &mut errors,
-                        );
+/// Which of a template's nodes this diff entry actually instantiates.
+///
+/// A fresh entry stages every node ([`Self::All`]); a resume over a fully
+/// existing tree stages none ([`Self::None`]); a MERGE resume over a partially
+/// existing composite stages exactly the nodes whose final directory is absent
+/// ([`Self::Only`], addressed by template rel-path — `""` is the subtree root).
+enum StagedNodes {
+    All,
+    Only(Vec<String>),
+    None,
+}
+
+impl StagedNodes {
+    /// Is the template node at `rel_path` one this entry instantiates?
+    fn stages(&self, rel_path: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(rels) => rels.iter().any(|r| r == rel_path),
+            Self::None => false,
+        }
+    }
+}
+
+/// What a Reconnect/Resume still stages, derived the way the staging side
+/// derives it (GH #347 gap 2).
+///
+/// The exemption used to be decided per diff ENTRY, on the existence of the
+/// entry's root directory alone. For a composite that is only half the truth:
+/// `stage.rs` dispatches a multi-cell template to
+/// [`crate::mutation::subtree::stage_subtree_merge`] BEFORE its single-cell
+/// existence-skip, and that merge stages every node whose final directory is
+/// absent — a missing node has no existing descendants, so the nodes it stages
+/// are exactly [`crate::mutation::subtree::SubtreePartition::missing`] plus
+/// `missing_hives`.
+///
+/// So this calls the very same classifier `stage_subtree_merge` calls —
+/// [`crate::mutation::subtree::classify_subtree_nodes`], which is pure and
+/// resolves each node's final path through `path_truth::resolve_cell_dir`, the
+/// shared `logical → fs` truth. One helper, one answer to "what is a resume":
+/// a second existence check here would be a second opinion, and the two would
+/// drift the first time either side learned something new.
+///
+/// A single-cell template classifies to one node at the entry's own path, which
+/// a resume found existing by definition → [`StagedNodes::None`], the old
+/// behaviour unchanged.
+///
+/// A template that does not resolve, or whose tree cannot be parsed, yields
+/// [`StagedNodes::None`] — the old exemption. Stage 2
+/// ([`collect_template_resolution`]) has already refused a broken reference
+/// before this stage runs, so declining to guess here can hide nothing; it only
+/// keeps a classification failure from inventing a requirement violation.
+fn resume_staged_nodes(
+    reference: Option<&JsonValue>,
+    templates: &crate::templates::TemplatesRegistry,
+    live: LiveTree<'_>,
+    name: &str,
+) -> StagedNodes {
+    let Some(reference) = reference.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        return StagedNodes::None; // an `adopt` — never a resume, never an instantiation.
+    };
+    let Ok(entry) = templates.resolve(reference) else {
+        return StagedNodes::None;
+    };
+    let Ok(partition) = crate::mutation::subtree::classify_subtree_nodes(
+        live.root,
+        live.scope,
+        name,
+        &entry.filesystem_path,
+        templates,
+    ) else {
+        return StagedNodes::None;
+    };
+    let staged: Vec<String> = partition
+        .missing
+        .iter()
+        .chain(partition.missing_hives.iter())
+        .map(|node| node.rel_path.clone())
+        .collect();
+    if staged.is_empty() {
+        StagedNodes::None
+    } else {
+        StagedNodes::Only(staged)
+    }
+}
+
+/// One template reference's unmet requirements — its own declaration plus, over
+/// its `ref`s, every referenced template's.
+///
+/// The shared body of the two instantiating operations (`add_nodes[].template`
+/// and the instantiate form of `swap_nodes[].with.template`), so that the two
+/// cannot grow a second opinion about what a template requires (GH #347).
+///
+/// `reference` is the raw JSON value of the `template` key, as the diff spells
+/// it; an absent, non-string or empty one is not an instantiation and yields
+/// nothing (an `adopt`, an existing-node swap, or a schema error the schema
+/// check names). A `template` the registry does not hold yields nothing either:
+/// `template_missing` is the schema validator's finding, not this check's.
+///
+/// `staged` says which of the template's nodes this operation instantiates
+/// (GH #347 gap 2). It filters the REF walk: a `ref` hop belongs to the node it
+/// hangs under, so a merge resume that leaves that node alone consumes none of
+/// the referenced template's keys and is not asked for them. The named
+/// template's OWN declaration is not attributable to a single node — it is the
+/// composite's, made once for the whole tree — so it is owed as soon as the
+/// operation stages anything at all. `StagedNodes::None` never reaches here:
+/// the caller drops such an entry whole.
+fn requires_for_reference(
+    reference: Option<&JsonValue>,
+    templates: &crate::templates::TemplatesRegistry,
+    ctx: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+    staged: &StagedNodes,
+) -> Vec<(MutationError, Option<String>)> {
+    let Some(reference) = reference.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(entry) = templates.resolve(reference) else {
+        return Vec::new(); // `template_missing` is the schema validator's finding.
+    };
+    let mut errors = Vec::new();
+    check_declared_requirements(reference, &entry.filesystem_path, ctx, env, &mut errors);
+
+    // The refs: parse once, walk every distinct hop of every node this
+    // operation stages, read each one's own declaration. `parse_subtree` is
+    // what staging runs anyway, so a ref-free template costs one directory walk
+    // and nothing else.
+    match crate::mutation::subtree::parse_subtree(&entry.filesystem_path, templates) {
+        Err(error) => errors.push(error),
+        Ok(parsed) => {
+            let mut seen: Vec<(String, Option<String>)> = Vec::new();
+            for cell in &parsed.cells {
+                if !staged.stages(&cell.rel_path) {
+                    continue;
+                }
+                for hop in &cell.ref_chain {
+                    if seen.contains(hop) {
+                        continue;
                     }
+                    seen.push(hop.clone());
+                    let hop_ref = match &hop.1 {
+                        Some(version) => format!("{}@{}", hop.0, version),
+                        None => hop.0.clone(),
+                    };
+                    let Ok(hop_entry) = templates.resolve(&hop_ref) else {
+                        continue; // resolved once already during parsing.
+                    };
+                    check_declared_requirements(
+                        &hop_ref,
+                        &hop_entry.filesystem_path,
+                        ctx,
+                        env,
+                        &mut errors,
+                    );
                 }
             }
         }
-        violations.extend(errors.into_iter().map(|e| (e, Some(reference.to_string()))));
     }
-    violations
+    errors
+        .into_iter()
+        .map(|e| (e, Some(reference.to_string())))
+        .collect()
 }
 
 #[cfg(test)]
@@ -5508,5 +5698,420 @@ mod tests {
         let names = vec!["here".to_string()];
         assert!(collect_naming_and_match(obj, &names, &[], "/", &[], &[]).is_empty());
         assert!(validate_naming_and_match(obj, &names, &[], "/", &[], &[]).is_ok());
+    }
+
+    // ── GH #347 gap 1: the `swap_nodes[].with` instantiate form ─────────────
+
+    /// Build a one-cell template whose `template.json` declares
+    /// `requires.ctx.model` and whose `config.json` actually substitutes it.
+    fn needy_template_registry(
+        tmp: &tempfile::TempDir,
+    ) -> (crate::templates::TemplatesRegistry, std::path::PathBuf) {
+        let tpl_dir = tmp.path().to_path_buf();
+        std::fs::write(
+            tpl_dir.join("template.json"),
+            r#"{"name":"needy","requires":{"ctx":{"model":{"type":"string","required":true,
+                 "because":"the model the brain infers with"}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tpl_dir.join("config.json"),
+            r#"{"cell":{"type":"echo_type"},"params":{"model":"${ctx.model}"}}"#,
+        )
+        .unwrap();
+        let templates = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "needy1".into(),
+                name: "needy".into(),
+                version: None,
+                filesystem_path: tpl_dir.clone(),
+            },
+        ]);
+        (templates, tpl_dir)
+    }
+
+    /// GH #347 gap 1 — the instantiate form of `swap_nodes[].with` copies a
+    /// template exactly like an `add_nodes` entry does, so the same declared
+    /// keys have to be on the table BEFORE anything is staged. Until this test
+    /// the `requires` walk read `add_nodes` only, and a swap into a template
+    /// declaring `ctx.model` was accepted and broke later, during the staging
+    /// substitution, as `ctx_key_missing` — after the copy.
+    #[test]
+    fn swap_into_template_with_unmet_requires_is_refused_before_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (templates, _tpl_dir) = needy_template_registry(&tmp);
+        let diff = json!({"swap_nodes": [
+            {"match": {"name": "old"}, "with": {"template": "needy", "name": "fresh"}}
+        ]});
+        let env = std::collections::HashMap::new();
+
+        // 1. `ctx` empty → refused, naming template, class, key and `because`.
+        let ctx = std::collections::HashMap::new();
+        // A swap never consults the live tree — it always stages, so `root`/`scope`
+        // are inert here; the template dir doubles as a stand-in root.
+        let err = validate_requires(
+            &diff,
+            &templates,
+            &ctx,
+            &env,
+            &[],
+            LiveTree {
+                root: tmp.path(),
+                scope: "/",
+            },
+        )
+        .expect_err("a swap into a template declaring ctx.model must be refused");
+        let MutationError::RequirementMissing(msg) = &err else {
+            panic!("expected RequirementMissing, got {err:?}");
+        };
+        for part in ["needy", "ctx", "model", "the model the brain infers with"] {
+            assert!(msg.contains(part), "refusal must name {part:?}: {msg}");
+        }
+
+        // 2. `ctx` supplies the key → the same swap passes.
+        let mut ctx = std::collections::HashMap::new();
+        ctx.insert("model".to_string(), "anthropic/claude".to_string());
+        let ok = validate_requires(
+            &diff,
+            &templates,
+            &ctx,
+            &env,
+            &[],
+            LiveTree {
+                root: tmp.path(),
+                scope: "/",
+            },
+        );
+        assert!(
+            ok.is_ok(),
+            "a swap that supplies the declared key must pass: {ok:?}"
+        );
+    }
+
+    /// The existing-node form of `swap_nodes[].with` (no `template`) references
+    /// a cell that is already there — it instantiates nothing and therefore
+    /// consumes no declared key. It must not be refused for one.
+    #[test]
+    fn swap_onto_an_existing_node_is_not_a_requirements_case() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (templates, _tpl_dir) = needy_template_registry(&tmp);
+        let diff = json!({"swap_nodes": [
+            {"match": {"name": "old"}, "with": {"name": "already_there"}}
+        ]});
+        let ctx = std::collections::HashMap::new();
+        let env = std::collections::HashMap::new();
+        assert!(
+            validate_requires(
+                &diff,
+                &templates,
+                &ctx,
+                &env,
+                &[],
+                LiveTree {
+                    root: tmp.path(),
+                    scope: "/"
+                }
+            )
+            .is_ok(),
+            "an existing-node swap stages nothing and requires nothing"
+        );
+    }
+
+    /// A swap always stages, so `resumed_names` — which exempts an `add_nodes`
+    /// Reconnect/Resume — must not reach across and exempt a swap that happens
+    /// to install the same name.
+    #[test]
+    fn resumed_names_do_not_exempt_a_swap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (templates, _tpl_dir) = needy_template_registry(&tmp);
+        let diff = json!({"swap_nodes": [
+            {"match": {"name": "old"}, "with": {"template": "needy", "name": "fresh"}}
+        ]});
+        let ctx = std::collections::HashMap::new();
+        let env = std::collections::HashMap::new();
+        let resumed = vec!["fresh".to_string(), "old".to_string()];
+        assert!(
+            validate_requires(
+                &diff,
+                &templates,
+                &ctx,
+                &env,
+                &resumed,
+                LiveTree {
+                    root: tmp.path(),
+                    scope: "/"
+                }
+            )
+            .is_err(),
+            "a swap stages regardless of any resume list"
+        );
+    }
+
+    // ── GH #347 gap 2: the resume exemption is per NODE, not per entry ──────
+
+    /// Write `body` to `path`, creating the parent directories.
+    fn write_file(path: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    const ECHO_CFG: &str = r#"{"cell":{"type":"echo_type"},"params":{"model":"${ctx.model}"},
+         "contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#;
+
+    /// Colony root + template registry for the merge-resume tests.
+    ///
+    /// The colony root holds exactly ONE top-level directory carrying a
+    /// `config.json` (`main`, the root cell), so `path_truth::resolve_cell_dir`
+    /// anchors logical `/m1` at `<colony>/main/m1`. The templates live in a
+    /// SIBLING directory on purpose — a template directory under the colony
+    /// root would be a second root-cell candidate and move that anchor.
+    ///
+    /// The template is a composite: a hive root plus one `child` cell. Its
+    /// `template.json` declares `requires.ctx.model`, and `child`'s
+    /// `config.json` is what actually substitutes it.
+    fn merge_resume_fixture(
+        tmp: &tempfile::TempDir,
+    ) -> (std::path::PathBuf, crate::templates::TemplatesRegistry) {
+        let colony = tmp.path().join("colony");
+        write_file(
+            &colony.join("main/config.json"),
+            r#"{"cell":{"type":"hive"}}"#,
+        );
+
+        let tpl = tmp.path().join("templates/needysub");
+        write_file(
+            &tpl.join("template.json"),
+            r#"{"name":"needysub","requires":{"ctx":{"model":{"type":"string",
+                 "required":true,"because":"the model the brain infers with"}}}}"#,
+        );
+        write_file(
+            &tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        );
+        write_file(&tpl.join("child/config.json"), ECHO_CFG);
+
+        let templates = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "needysub1".into(),
+                name: "needysub".into(),
+                version: None,
+                filesystem_path: tpl,
+            },
+        ]);
+        (colony, templates)
+    }
+
+    /// GH #347 gap 2 — an `add_nodes` at an existing path is a Resume, and a
+    /// Resume is exempt from the requirements check because it stages nothing.
+    /// For a COMPOSITE template whose root exists but whose children do not,
+    /// that premise is false: the merge path stages the missing children, and
+    /// their `${ctx.X}` is substituted like any fresh instantiation. Until this
+    /// test the exemption was decided per diff ENTRY — the whole entry was
+    /// skipped on the strength of its root directory — and the key missing for
+    /// the staged child surfaced late again, during the staging substitution,
+    /// as `ctx_key_missing`.
+    #[test]
+    fn merge_resume_requires_keys_for_the_children_it_stages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (colony, templates) = merge_resume_fixture(&tmp);
+        // Live tree: the subtree ROOT exists, its `child` does not.
+        write_file(
+            &colony.join("main/m1/config.json"),
+            r#"{"cell":{"type":"hive"}}"#,
+        );
+
+        let diff = json!({"add_nodes": [{"name": "m1", "template": "needysub"}]});
+        let resumed = vec!["m1".to_string()];
+        let env = std::collections::HashMap::new();
+
+        // 1. `ctx` empty → refused, naming template, class, key and `because`.
+        let ctx = std::collections::HashMap::new();
+        let err = validate_requires(
+            &diff,
+            &templates,
+            &ctx,
+            &env,
+            &resumed,
+            LiveTree {
+                root: &colony,
+                scope: "/",
+            },
+        )
+        .expect_err("the merge resume stages `child`, so ctx.model is owed");
+        let MutationError::RequirementMissing(msg) = &err else {
+            panic!("expected RequirementMissing, got {err:?}");
+        };
+        for part in [
+            "needysub",
+            "ctx",
+            "model",
+            "the model the brain infers with",
+        ] {
+            assert!(msg.contains(part), "refusal must name {part:?}: {msg}");
+        }
+
+        // 2. `ctx` supplies the key → the same merge resume passes.
+        let mut ctx = std::collections::HashMap::new();
+        ctx.insert("model".to_string(), "anthropic/claude".to_string());
+        let ok = validate_requires(
+            &diff,
+            &templates,
+            &ctx,
+            &env,
+            &resumed,
+            LiveTree {
+                root: &colony,
+                scope: "/",
+            },
+        );
+        assert!(
+            ok.is_ok(),
+            "a merge resume that supplies the declared key must pass: {ok:?}"
+        );
+    }
+
+    /// The counter-test: a resume over a FULLY existing subtree stages nothing
+    /// at all, so it consumes none of the declared keys and stays exempt. The
+    /// per-node exemption must not turn every resume into a requirements case.
+    #[test]
+    fn a_fully_existing_subtree_resume_stays_exempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (colony, templates) = merge_resume_fixture(&tmp);
+        // Live tree: root AND child present — a true resume.
+        write_file(
+            &colony.join("main/m1/config.json"),
+            r#"{"cell":{"type":"hive"}}"#,
+        );
+        write_file(
+            &colony.join("main/m1/child/config.json"),
+            r#"{"cell":{"type":"echo_type"}}"#,
+        );
+
+        let diff = json!({"add_nodes": [{"name": "m1", "template": "needysub"}]});
+        let resumed = vec!["m1".to_string()];
+        let ctx = std::collections::HashMap::new();
+        let env = std::collections::HashMap::new();
+        let ok = validate_requires(
+            &diff,
+            &templates,
+            &ctx,
+            &env,
+            &resumed,
+            LiveTree {
+                root: &colony,
+                scope: "/",
+            },
+        );
+        assert!(
+            ok.is_ok(),
+            "a resume that stages nothing owes nothing: {ok:?}"
+        );
+    }
+
+    /// Colony root + templates for the per-node `ref` test: a composite `outer`
+    /// that declares nothing itself, with a `kept` node behind a
+    /// `cell.type: "ref"` to a `leaf` template that declares `ctx.api_key`, and
+    /// a plain `fresh` sibling.
+    fn ref_resume_fixture(
+        tmp: &tempfile::TempDir,
+    ) -> (std::path::PathBuf, crate::templates::TemplatesRegistry) {
+        let colony = tmp.path().join("colony");
+        write_file(
+            &colony.join("main/config.json"),
+            r#"{"cell":{"type":"hive"}}"#,
+        );
+
+        let leaf = tmp.path().join("templates/leaf");
+        write_file(
+            &leaf.join("template.json"),
+            r#"{"name":"leaf","version":"1.0.0","requires":{"ctx":{"api_key":{"type":"string",
+                 "required":true,"because":"der Schluessel, mit dem das Blatt spricht"}}}}"#,
+        );
+        write_file(&leaf.join("config.json"), ECHO_CFG);
+
+        let outer = tmp.path().join("templates/outer");
+        write_file(&outer.join("template.json"), r#"{"name":"outer"}"#);
+        write_file(
+            &outer.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        );
+        write_file(
+            &outer.join("kept/config.json"),
+            r#"{"cell":{"type":"ref","template":"leaf@1.0.0"}}"#,
+        );
+        write_file(&outer.join("fresh/config.json"), ECHO_CFG);
+
+        let templates = crate::templates::TemplatesRegistry::from_entries(vec![
+            crate::templates::TemplateEntry {
+                template_id: "leaf1".into(),
+                name: "leaf".into(),
+                version: Some("1.0.0".into()),
+                filesystem_path: leaf,
+            },
+            crate::templates::TemplateEntry {
+                template_id: "outer1".into(),
+                name: "outer".into(),
+                version: None,
+                filesystem_path: outer,
+            },
+        ]);
+        (colony, templates)
+    }
+
+    /// Per NODE, not per subtree: the requirements a merge resume owes are the
+    /// ones of the nodes it stages, and a `ref` hop belongs to the node it
+    /// hangs under. `m1` keeps its `kept` node (present on disk) and grows
+    /// `fresh`, so `leaf`'s `ctx.api_key` is not consumed and not owed. `m2`
+    /// grows both, so it is.
+    #[test]
+    fn a_merge_resume_owes_only_the_refs_of_the_nodes_it_stages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (colony, templates) = ref_resume_fixture(&tmp);
+        let ctx = std::collections::HashMap::new();
+        let env = std::collections::HashMap::new();
+
+        // m1: root + `kept` on disk, only `fresh` missing.
+        for rel in ["main/m1/config.json", "main/m1/kept/config.json"] {
+            write_file(&colony.join(rel), r#"{"cell":{"type":"echo_type"}}"#);
+        }
+        let diff_m1 = json!({"add_nodes": [{"name": "m1", "template": "outer"}]});
+        let ok = validate_requires(
+            &diff_m1,
+            &templates,
+            &ctx,
+            &env,
+            &["m1".to_string()],
+            LiveTree {
+                root: &colony,
+                scope: "/",
+            },
+        );
+        assert!(
+            ok.is_ok(),
+            "the ref hangs under a node this resume leaves alone: {ok:?}"
+        );
+
+        // m2: only the root on disk — `kept` is staged, so its ref is owed.
+        write_file(
+            &colony.join("main/m2/config.json"),
+            r#"{"cell":{"type":"hive"}}"#,
+        );
+        let diff_m2 = json!({"add_nodes": [{"name": "m2", "template": "outer"}]});
+        let err = validate_requires(
+            &diff_m2,
+            &templates,
+            &ctx,
+            &env,
+            &["m2".to_string()],
+            LiveTree {
+                root: &colony,
+                scope: "/",
+            },
+        )
+        .expect_err("this resume stages `kept`, so leaf's ctx.api_key is owed");
+        let MutationError::RequirementMissing(msg) = &err else {
+            panic!("expected RequirementMissing, got {err:?}");
+        };
+        assert!(msg.contains("api_key"), "refusal must name the key: {msg}");
     }
 }

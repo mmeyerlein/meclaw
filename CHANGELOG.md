@@ -11,6 +11,97 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-08-25
+
+### Fixed
+
+- **An emission raised while the colony is still applying its own bootstrap is
+  held, not lost** ([#389](https://github.com/mmeyerlein/meclaw/issues/389)). A
+  `proxy`, `timer` or `mcp` cell emits from the moment its I/O task spawns — and
+  the colony spawns those cells *inside* the initial-apply window, between
+  `BeginInitialApply` and the commit of the `InitialApply` bundle, when the cells
+  are registered but the edge table is not yet in place. An emission landing in
+  that window was routed against a topology that did not exist yet and died
+  one-shot: `no_route` on a first boot, `unresolved_path` on a reboot, straight
+  into the dead-letter queue, with no retry and nothing in the emitting cell to
+  notice. The colony loop now **closes its outputs arm for the duration of the
+  window** (a `select!` guard raised at `BeginInitialApply` and dropped when the
+  bundle has committed). The emissions stay in the bounded channel — back-pressure
+  on the emitter, so a delay rather than a loss — order is preserved, and they
+  route once, afterwards, against the topology that now stands. The guard cannot
+  starve anything: inside the window the colony handles bootstrap traffic only
+  (`Register`, `SetNodeContract`, `InitialApply`) and delivers nothing.
+
+  The repair is in the substrate rather than in any one cell type, and it covers
+  **both boot paths** — a reboot hydrates its edges at boot start but still
+  registers its targets during the apply, so it had a residual window of its own.
+  § Startup algorithm states the guarantee in both languages. Pinned by
+  `colony::tests::emission_during_bootstrap_apply_window_survives_until_initial_apply`,
+  a deterministic pin that fails against the previous code; the flake it was found
+  through (`proxy_promotion_edge_e2e`) went from 9 of 30 green to 30 of 30 under
+  load. Carried with it, permanently: on a routing-half timeout the e2e helper
+  `recv_routed` now drains the **dead-letter queue into the panic message**, which
+  is the only place this defect was ever visible — the lost emission sat there as
+  `no_route` while every other signal the test had looked healthy.
+
+- **`requirement_missing` covers both instantiating operations, not just
+  `add_nodes`** ([#347](https://github.com/mmeyerlein/meclaw/issues/347), gap 1 of
+  two). The `requires` walk introduced with
+  [#292](https://github.com/mmeyerlein/meclaw/issues/292) read `add_nodes` only.
+  The instantiate form of `swap_nodes[].with` — the one that names a `template` —
+  performs the same copy with the same `${ctx.X}` substitution, and was waved
+  through: a missing key surfaced late, at staging, as `ctx_key_missing`, after
+  the copy. Both paths now run through one shared body, `requires_for_reference`
+  (resolve, own declaration, `ref`-chain walk), so they cannot form a second
+  opinion about what a template requires. The existing-node form of `with` (no
+  `template`) references a cell that is already there, stages nothing and owes
+  nothing here. `resumed_names` stays restricted to `add_nodes`: a swap always
+  stages, so there is no address at which it could be a reconnect.
+
+- **The resume exemption from `requirement_missing` is per node, not per diff
+  entry** ([#347](https://github.com/mmeyerlein/meclaw/issues/347), gap 2 — the
+  "known limit" the previous entry left standing). An `add_nodes` at an existing
+  path is a Reconnect/Resume and was exempted from the `requires` check on the
+  existence of the entry's **root** directory alone. For a composite that is half
+  the truth: if the root stands and children are missing, the merge path stages
+  exactly those children and substitutes their `${ctx.X}` like any fresh
+  instantiation — and a key missing there kept failing late, as `ctx_key_missing`
+  during substitution. Exempt are now exactly the nodes the merge skips, answered
+  by the same derivation the staging side asks
+  (`subtree::classify_subtree_nodes`): one helper, one answer, no second opinion
+  about what a resume is. The filter bites on the `ref` walk — a `ref` belongs to
+  the node it hangs under, so a resume is asked for a referenced template's keys
+  only when it actually creates that node — while the named template's own
+  declaration is made for the whole tree and is owed as soon as the entry stages
+  anything at all. A resume over a fully existing subtree stages nothing and stays
+  entirely exempt. Both halves are stated in the overview's `requirement_missing`
+  paragraph, in both languages.
+
+  **Stability surface.** Both repairs introduce **no new `error_code`** and retire
+  none; what moves is **when** an existing one fires. A mutation whose `requires`
+  are unmet is now refused **pre-staging** as `requirement_missing` in two cases
+  that previously died later — a `swap_nodes[].with` instantiation (formerly
+  `ctx_key_missing` at staging, or a stage-4 `Schema` verdict on a `with` that was
+  also malformed) and a merge resume over a partially existing composite (formerly
+  `ctx_key_missing` during substitution). A caller that matches on the string it
+  gets back sees the earlier, more precise code; a caller that only asks whether
+  the mutation was refused sees no change, and a mutation that was accepted before
+  is accepted now.
+
+### Documentation
+
+- **`llm`'s `provider` names the wire protocol, not the vendor**
+  ([#387](https://github.com/mmeyerlein/meclaw/issues/387), owner ruling of
+  2026-08-25). The only accepted value, `"openai"`, was described as a phase-8
+  vendor restriction — which reads as "this cell can only talk to OpenAI", while
+  what it always meant is the OpenAI-compatible HTTP API, the first protocol
+  implemented. The vendor is chosen by `base_url` (OpenRouter, vLLM, LiteLLM,
+  Ollama), which is exactly what every shipped `llm` cell does. No rename,
+  no change to the constraint and **no behaviour change** — `docs/cell-types.md`
+  (both languages) and the doc comments in `llm/params.rs` now say what was meant.
+  A second wire protocol is registered as a deferral in `docs/roadmap.md` with its
+  trigger named, so the open question behind #387 does not run dry.
+
 ## [0.20.0] — 2026-08-25
 
 ### Breaking

@@ -1481,6 +1481,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // as `slot_table` — colony state in the colony task, no lock — and the same
     // consequence stated once, in `ParkedSlots`: a shutdown discards it.
     let mut parked: ParkedSlots = ParkedSlots::new();
+    // GH #389: between BeginInitialApply and InitialApply the topology is under
+    // construction (cells registered, edges still missing). An eager I/O task
+    // (proxy/timer/mcp) emits from its spawn on, though — before the guard such
+    // an emission died as no_route (FirstBoot) resp. unresolved_path (Reboot),
+    // one-shot and final. While the flag stands, the loop does not poll the
+    // outputs channel: emissions stay buffered there (bounded, backpressure on
+    // the emitter — delay, not loss), order is preserved. Inside the window the
+    // colony only handles bootstrap traffic (Register/SetNodeContract/
+    // InitialApply), no deliveries — so the guard cannot starve anything.
+    let mut initial_apply_pending = false;
     // Issue #7: per-I/O-task progress marks, owned by this task alone. Key = the
     // cell's path, value = when its I/O sub-task last completed a successful
     // external round trip (`None` = announced, none yet). Written only by the
@@ -2171,6 +2181,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // Reboot: skip — edges/hive_scopes were hydrated at boot start.
                         // GH #285: the boot declaration is where most slots enter.
                         slot_table_dirty = true;
+                        // GH #389: the edge table stands — reopen the outputs arm.
+                        initial_apply_pending = false;
                         let _ = ack.send(());
                     }
                     ColonyMsg::BeginInitialApply { ack } => {
@@ -2196,6 +2208,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 .expect("writer thread dead");
                             marker_rx.await.expect("writer thread dead (marker ack)");
                         }
+                        // GH #389: close the outputs arm for the apply window —
+                        // on the reboot path too, the registration window exists
+                        // there as well.
+                        initial_apply_pending = true;
                         let _ = ack.send(());
                     }
                     ColonyMsg::RescanTemplates { templates_root, ack } => {
@@ -2307,7 +2323,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                 }
             }
-            Some(em) = outputs_rx.recv() => {
+            Some(em) = outputs_rx.recv(), if !initial_apply_pending => {
                 // TTL slice (2026-06-11): a source emission (parent_message_id ==
                 // None — the OriginSink shape of timer/proxy/mcp) gets its fresh
                 // TTL from colony.json `message_default_ttl` here. Envelope-Setter-
@@ -3681,12 +3697,26 @@ pub(crate) async fn handle_mutation(
         // exempt: a Reconnect instantiates nothing and consumes none of the
         // keys, so requiring them would refuse a reconnect that was legal
         // before.
+        //
+        // GH #347 gap 2: exempt per NODE, not per entry. A composite whose root
+        // exists but whose children do not is a MERGE resume — `stage.rs`
+        // dispatches it to `stage_subtree_merge`, which stages the missing
+        // children and substitutes their `${ctx.X}` like any fresh
+        // instantiation. `root`/`guard_scope` are handed down so the check can
+        // ask the SAME classifier the merge asks
+        // (`subtree::classify_subtree_nodes`) which nodes those are; a second
+        // existence check here would be a second opinion about what a resume
+        // is, and the two would drift.
         crate::mutation::validate::collect_requires(
             &diff_subst,
             &templates,
             &ctx,
             &env,
             &resume_entry_names,
+            crate::mutation::validate::LiveTree {
+                root,
+                scope: guard_scope,
+            },
             &mut rejection,
         );
         if !rejection.is_empty() {
@@ -8868,6 +8898,183 @@ mod tests {
             .await
             .expect("/b must have been routed to via output envelope");
         assert_eq!(tapped_b.as_str(), "/b");
+
+        let (s_ack_tx, s_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Shutdown { ack: s_ack_tx })
+            .await
+            .unwrap();
+        s_ack_rx.await.unwrap();
+        join.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn emission_during_bootstrap_apply_window_survives_until_initial_apply() {
+        // GH #389: an emission raised DURING the bootstrap-apply window (between
+        // `BeginInitialApply` and `InitialApply`) must not die as `no_route` — it
+        // is held until the edge table stands.
+        let (inbox_tx, inbox_rx) = mpsc::channel(8);
+        let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
+        let (tap_tx, mut tap_rx) = mpsc::channel(8);
+        let _td = tempfile::TempDir::new().unwrap();
+        let _db = crate::ColonyDb::open(&_td.path().join("c.db")).unwrap();
+        let join = tokio::spawn(colony_task(ColonyTaskConfig::new(
+            inbox_tx.clone(),
+            inbox_rx,
+            out_tx.clone(),
+            out_rx,
+            _db,
+            crate::CellFactoryRegistry::new(),
+            _td.path().to_path_buf(),
+            crate::ColonyConfig::default(),
+            None,
+            None,
+        )));
+
+        // Open the apply window, exactly like `apply_bootstrap_plan` does.
+        let (b_ack_tx, b_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::BeginInitialApply { ack: b_ack_tx })
+            .await
+            .unwrap();
+        b_ack_rx.await.unwrap();
+
+        // Register the emitter /proxy and the target /relay — the order the
+        // apply uses (cells first, edges only with the bundle at the end).
+        let (proxy_in_tx, proxy_in_rx) = mpsc::channel(8);
+        let proxy = EchoMockCell::new(Path::new("/proxy"));
+        let proxy_join = tokio::spawn(cell_task(
+            Path::new("/proxy"),
+            proxy_in_rx,
+            out_tx.clone(),
+            proxy,
+            None,
+            None,
+        ));
+
+        let (relay_in_tx, relay_in_rx) = mpsc::channel(8);
+        let relay = EchoMockCell::new(Path::new("/relay")).tap_to(tap_tx);
+        let relay_join = tokio::spawn(cell_task(
+            Path::new("/relay"),
+            relay_in_rx,
+            out_tx.clone(),
+            relay,
+            None,
+            None,
+        ));
+
+        let respawn_proxy: RespawnFn = Box::new(|| unreachable!());
+        let respawn_relay: RespawnFn = Box::new(|| unreachable!());
+        let (_peace_tx_proxy, peace_rx_proxy) = oneshot::channel::<()>();
+        let (_peace_tx_relay, peace_rx_relay) = oneshot::channel::<()>();
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Register {
+                path: Path::new("/proxy"),
+                sender: proxy_in_tx,
+                join: proxy_join,
+                peace_rx: peace_rx_proxy,
+                backstop_rx: dropped_backstop_rx(),
+                stop_tx: None,
+                death_ack_rx: None,
+                respawn: respawn_proxy,
+                wake: None,
+                restart_limit: None,
+                cell_id: Uuid::now_v7(),
+                cell_type: "test-mock".into(),
+                active: true,
+                ack: ack_tx,
+            })
+            .await
+            .unwrap();
+        ack_rx.await.unwrap();
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Register {
+                path: Path::new("/relay"),
+                sender: relay_in_tx,
+                join: relay_join,
+                peace_rx: peace_rx_relay,
+                backstop_rx: dropped_backstop_rx(),
+                stop_tx: None,
+                death_ack_rx: None,
+                respawn: respawn_relay,
+                wake: None,
+                restart_limit: None,
+                cell_id: Uuid::now_v7(),
+                cell_type: "test-mock".into(),
+                active: true,
+                ack: ack_tx,
+            })
+            .await
+            .unwrap();
+        ack_rx.await.unwrap();
+
+        // THE emission inside the window: source shape (no parent), exactly what
+        // an eager I/O task of a proxy cell puts into `out_tx` from its spawn on.
+        out_tx
+            .send(CellEmission {
+                sender_path: Path::new("/proxy"),
+                parent_message_id: None,
+                trace_id: Uuid::now_v7(),
+                input_ttl: 64,
+                input_headers: Headers::default(),
+                input_reply_to: None,
+                target: Path::new("/relay"),
+                content: meclaw_core::serde_json::json!({
+                    "messages": [{"origin": "user", "type": "text", "text": "boot window"}]
+                }),
+                direct_reply: false,
+            })
+            .await
+            .unwrap();
+
+        // Hold the window open artificially: before the fix the loop eats the
+        // emission here as `no_route` (no edge match). 100 ms is huge against the
+        // microseconds the parked loop needs to pull it.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // End of apply: the edge /proxy → /relay arrives with the bundle.
+        let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::InitialApply {
+                edges: vec![crate::bootstrap::PlannedEdge {
+                    id: Uuid::now_v7(),
+                    from: Path::new("/proxy"),
+                    to: Path::new("/relay"),
+                    condition: None,
+                    modifier: None,
+                    is_default: false,
+                }],
+                hive_scopes: vec![],
+                ack: ia_ack_tx,
+            })
+            .await
+            .unwrap();
+        ia_ack_rx.await.unwrap();
+
+        // Positive receipt: /relay receives the turn.
+        let tapped = tokio::time::timeout(std::time::Duration::from_secs(30), tap_rx.recv())
+            .await
+            .expect(
+                "GH #389: the boot-window emission must reach /relay once the edge table stands",
+            )
+            .unwrap();
+        assert_eq!(tapped.as_str(), "/relay");
+
+        // And the DLQ is empty (nothing died as `no_route` on the way).
+        let (dl_ack_tx, dl_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::DrainDeadLetters { ack: dl_ack_tx })
+            .await
+            .unwrap();
+        let dls = dl_ack_rx.await.unwrap();
+        assert!(
+            dls.is_empty(),
+            "boot-window emission dead-lettered: {dls:?}"
+        );
 
         let (s_ack_tx, s_ack_rx) = oneshot::channel();
         inbox_tx

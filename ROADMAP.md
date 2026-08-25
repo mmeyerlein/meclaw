@@ -177,6 +177,22 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.20.1 — an emission from the boot window is held, not lost.** A `proxy`,
+  `timer` or `mcp` cell emits from the moment its I/O task spawns, and the colony
+  spawns those cells inside its own initial-apply window — cells registered, edge
+  table not yet committed. An emission landing there was routed against a topology
+  that did not exist yet and died one-shot, as `no_route` on a first boot and
+  `unresolved_path` on a reboot, straight into the dead-letter queue with nothing
+  in the emitting cell to notice. The colony now closes its outputs arm for the
+  duration of the window: the emissions stay buffered, in order, and route once
+  the table stands ([#389](https://github.com/mmeyerlein/meclaw/issues/389)). Two
+  enforcement gaps on the `requirement_missing` surface close with it: the
+  `requires` check now covers the instantiate form of `swap_nodes[].with` as well
+  as `add_nodes`, and the resume exemption is decided **per node** instead of per
+  diff entry, so a merge resume over a partially existing composite owes the keys
+  of the children it actually stages
+  ([#347](https://github.com/mmeyerlein/meclaw/issues/347)). Both used to surface
+  late, during staging — after the copy; they are refused pre-staging now. No new `error_code`, no migration; `colony.db` stays at **v7**.
 - **v0.20.0 — identity comes off the edge, and the colony answers counts about
   its own books.** `affinity`'s `subscribe` used to read the subscriber's address
   and the disclosure audience out of the body — out of a document a model may

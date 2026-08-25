@@ -876,15 +876,26 @@ async fn await_update_taken(captured: &Captured) {
 /// separates them on sight: an acknowledged cursor with many idle polls behind
 /// it is a colony that had the update and did not route it, while a trace that
 /// stops moving is a box (or a lane) that stopped.
-async fn recv_routed(rx: &mut mpsc::Receiver<Message>, captured: &Captured, what: &str) -> Message {
+///
+/// A timeout also drains the colony's dead-letter queue into the message,
+/// because GH #389 found its proof exactly there: the lost emission was sitting
+/// in the DLQ as `no_route`, invisible to every other signal this test reads.
+async fn recv_routed(
+    rx: &mut mpsc::Receiver<Message>,
+    colony: &ColonyHandle,
+    captured: &Captured,
+    what: &str,
+) -> Message {
     match tokio::time::timeout(MARKER, rx.recv()).await {
         Ok(Some(msg)) => msg,
         Ok(None) => panic!("{what} — the capture channel closed"),
         Err(_) => {
+            let dls = colony.drain_dead_letters().await;
             let trace = mock_trace(captured).await;
             panic!(
                 "{what} — nothing arrived within 30s (failure marker, not a \
-                 semantic bound). The update was acknowledged, so the mock trace \
+                 semantic bound). dead letters at failure = {dls:#?}. \
+                 The update was acknowledged, so the mock trace \
                  tells a busy runner from a broken route; the mock saw {trace}"
             )
         }
@@ -941,6 +952,7 @@ async fn telegram_promotion_edge_carries_the_reply_back_to_the_right_chat() {
     // it here — a hop would already have decayed at the relay's own emission.
     let user_turn = recv_routed(
         &mut run.relay_rx,
+        &run.colony,
         &captured,
         "the update was acknowledged, so this is the ROUTING half: the relay must receive the user turn",
     )
@@ -1021,6 +1033,7 @@ async fn telegram_reply_leg_dies_as_missing_chat_id_without_the_promotion() {
     // modifier the address never leaves the hop, and the hop is gone by now.
     let user_turn = recv_routed(
         &mut run.relay_rx,
+        &run.colony,
         &captured,
         "the update was acknowledged, so this is the ROUTING half: the relay must receive the user turn",
     )

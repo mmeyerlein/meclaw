@@ -71,10 +71,16 @@ pub enum WireDialect {
 ///
 /// Required: `provider`, `model`, plus exactly one credential — `api_key`
 /// (for `auth: "api_key"`) or `auth_ref` (for `auth: "oauth_subscription"`).
-/// All other fields have defaults. Only `provider == "openai"` is supported.
+/// All other fields have defaults. `provider` names the WIRE PROTOCOL, and
+/// `"openai"` is the only one implemented so far (see the field doc).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmParams {
-    /// Provider id. Phase 8: must be `"openai"` (cell-types.md Z.92).
+    /// The wire protocol this cell speaks — NOT the vendor (maintainer ruling on
+    /// GH #387). `"openai"` is the OpenAI-compatible HTTP API and the first
+    /// and currently only implemented protocol; the vendor is chosen through
+    /// `base_url` (OpenAI itself, OpenRouter, vLLM, …). Further protocols get
+    /// added when a real consumer concretely needs one (`docs/roadmap.md`
+    /// carries the defer plus its trigger).
     pub provider: String,
     /// Model id (e.g. `"gpt-4o"`).
     pub model: String,
@@ -208,14 +214,17 @@ impl LlmParams {
     /// direct construction is `pub` only so tests/integration tests can
     /// drive the cell without the full Colony.
     ///
-    /// Validates `provider == "openai"` (Phase-8-Constraint, cell-types.md
-    /// Z.92). All other fields are validated structurally by serde. The
-    /// returned error message never echoes the `api_key` value
-    /// (Plan § 12-API_KEY).
+    /// Validates `provider == "openai"` — the only wire protocol implemented
+    /// so far (cell-types.md § `llm` params; maintainer ruling on GH #387). All
+    /// other fields are validated structurally by serde. The returned error
+    /// message never echoes the `api_key` value (Plan § 12-API_KEY).
     #[doc(hidden)]
     pub fn parse(raw: &serde_json::Value) -> Result<Self, String> {
         let p: Self =
             serde_json::from_value(raw.clone()).map_err(|e| format!("invalid LlmParams: {e}"))?;
+        // `provider` is the wire protocol, not the vendor: `"openai"` is the
+        // OpenAI-compatible HTTP API and so far the only protocol with a
+        // translate behind it. A vendor swap happens through `base_url`.
         if p.provider != "openai" {
             return Err(format!(
                 "provider must be 'openai' in phase 8, got '{}'",
@@ -366,7 +375,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
 ///
-/// `provider` (Phase-8 identity) and `api_key` (credential, secret-hygiene);
+/// `provider` (the wire protocol this cell was built around) and `api_key`
+/// (credential, secret-hygiene);
 /// P10 adds the whole auth dimension — `auth`/`auth_ref` are credential
 /// identity, and `wire_dialect`/`oauth_*` decide which endpoint a credential is
 /// presented to. Letting a message repoint any of them would let a params
