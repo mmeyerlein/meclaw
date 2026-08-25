@@ -1,0 +1,160 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "write_surface": "internal",
+    "schema": {
+      "entities": {
+        "entity_id": "text",
+        "kind": "text",
+        "display_name": "text",
+        "canonical_name": "text",
+        "owner_member": "text",
+        "aieos": "json",
+        "aieos_version": "text",
+        "mx": "json",
+        "status": "text",
+        "supersedes": "text",
+        "source": "text",
+        "confidence": "int",
+        "recorded_at": "text"
+      },
+      "relations": {
+        "id": "text",
+        "src": "text",
+        "dst": "text",
+        "kind": "text",
+        "weight": "int",
+        "valid_from": "text",
+        "valid_until": "text",
+        "source": "text",
+        "evidence": "json",
+        "status": "text",
+        "recorded_at": "text"
+      },
+      "trust": {
+        "id": "text",
+        "entity_id": "text",
+        "audience": "text",
+        "level": "text",
+        "decided_by": "text",
+        "decided_at": "text"
+      },
+      "disclosure": {
+        "id": "text",
+        "entity_id": "text",
+        "field_path": "text",
+        "audience": "text",
+        "mode": "text",
+        "decided_at": "text",
+        "audience_set": "json"
+      },
+      "subscribers": {
+        "id": "text",
+        "cell_path": "text",
+        "subject": "text",
+        "audience": "text",
+        "channel": "text",
+        "slots": "json",
+        "pack_hash": "text",
+        "status": "text",
+        "sent_at": "text"
+      },
+      "proposals": {
+        "id": "text",
+        "source_ref": "text",
+        "entity_ref": "text",
+        "field_path": "text",
+        "value": "json",
+        "status": "text",
+        "decided_by": "text",
+        "decided_at": "text",
+        "recorded_at": "text",
+        "supersedes": "text"
+      },
+      "audit": {
+        "id": "text",
+        "at": "text",
+        "actor": "text",
+        "action": "text",
+        "subject": "text",
+        "outcome": "text",
+        "reason_code": "text",
+        "detail": "json"
+      }
+    },
+    "canonical": {
+      "entities": [
+        {
+          "source": "display_name",
+          "target": "canonical_name",
+          "aliases": "entity_aliases",
+          "normalize": true,
+          "rejected": "entity_rejected_pairs"
+        }
+      ]
+    },
+    "fts": {
+      "entities": [
+        "canonical_name"
+      ]
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The domain itself: curated person and agent records as whole AIeOS documents (the `aieos` column), everything meclaw adds next to them in the `mx` namespace, and the four decision tables AIeOS has no vocabulary for -- relations, trust, disclosure and an append-only audit. `relations` is cut exactly on the traverse signature (src/dst/kind/weight), so 'who is X to Y over two hops' is ONE store op and not a script.",
+    "use_when": "Inside the affinity hive only. It is written by ./gate and read by ./brief and ./push; a fifth writer is a bug even where the substrate allows it (see the hive README, `Data sovereignty`).",
+    "not_in_scope": "No schema enforcement -- a store column is text/int/json and nothing else, so AIeOS conformance is ./gate's job and only ./gate's. No row-level visibility either: whoever holds an edge to this cell reads unfiltered, which is why the audience filter lives in ./brief and why the port discipline is the whole guarantee. No deletes are ever emitted against it by this template (correction = a new row plus `supersedes`), but the op exists -- No-Delete here is a promise of the template, not of the substrate."
+  }
+}

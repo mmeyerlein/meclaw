@@ -1,0 +1,143 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_request",
+          "context": [
+            "requester"
+          ],
+          "because": "ask whether this actor may do this thing on this resource; the edge that carries it MUST promote the caller to context.requester, or the answer is requester_unknown"
+        },
+        {
+          "route": "in_invoke",
+          "context": [
+            "requester"
+          ],
+          "because": "spend a grant: perform one operation the broker already said yes to; same promotion, because a grant belongs to somebody"
+        }
+      ],
+      "emits": [
+        {
+          "route": "grant",
+          "because": "the verdict on a request -- granted, denied with a reason_code, or pending; a handle and never a credential"
+        },
+        {
+          "route": "ack",
+          "because": "the outcome of spending a grant, ok or denied plus a reason_code"
+        },
+        {
+          "route": "connect",
+          "because": "the one call that leaves for the connector, addressed from the grant and from nothing else"
+        },
+        {
+          "route": "error",
+          "because": "a lane failed; which cell inside produced it is not the caller's business, and a parent that drains nothing loses every refusal"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_request'"
+        },
+        {
+          "from": ".",
+          "to": "./invoke",
+          "condition": "has(hop.route) && hop.route == 'in_invoke'"
+        },
+        {
+          "from": "./policy",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'astore'",
+          "modifier": {
+            "set_context": {
+              "access_origin": "'policy'",
+              "ac_phase": "hop.phase",
+              "ac_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./policy",
+          "condition": "context.access_origin == 'policy'"
+        },
+        {
+          "from": "./invoke",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'astore'",
+          "modifier": {
+            "set_context": {
+              "access_origin": "'invoke'",
+              "ac_phase": "hop.phase",
+              "ac_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./invoke",
+          "condition": "context.access_origin == 'invoke'"
+        },
+        {
+          "from": "./sweep",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'astore'",
+          "modifier": {
+            "set_context": {
+              "access_origin": "'sweep'",
+              "ac_phase": "hop.phase",
+              "ac_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./sweep",
+          "condition": "context.access_origin == 'sweep'"
+        },
+        {
+          "from": "./clock",
+          "to": "./sweep",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'access-sweep'",
+          "modifier": {
+            "set_context": {
+              "access_origin": "'sweep'",
+              "ac_phase": "''",
+              "ac_carry": "''"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'grant' || hop.route == 'error')"
+        },
+        {
+          "from": "./invoke",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'connect' || hop.route == 'error')"
+        },
+        {
+          "from": "./sweep",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the access hive: the capability broker behind its own path. THE HIVE IS THE ADDRESS -- `params.ports` is empty, so no edge reaches a cell in here and a caller names the hive plus a lane on hop.route. Twelve internal edges; the seven that are neither a door nor an exit exist for one reason -- a code cell has no cell.db, so the state of a multi-read lane rides in the hop keys these edges promote to context and comes back on the store's answer. The store round trip IS the cell's memory. NO edge reaches `./vault` (GH #307): no cell in here emits a route one could fire on, so a wired pair would only look like a channel; the credential leaves the vault as the injection at unlock and never as a message.",
+    "use_when": "Once per member or per org level that owns credentials. Instantiate with add_nodes and wire the lanes in the SAME mutation, at the HIVE path. Both inbound lanes MUST promote the caller to `context.requester`: a grant without an edge-borne requester is a grant issued to whoever asked loudest (R-AC-1).",
+    "not_in_scope": "No model of any kind -- every verdict in this hive is a comparison. No credential on the wire either: `./vault` holds them, and the ONE path a plaintext secret takes out of it is the injection at unlock, into a connector named in configuration. `cred_refs` stays the CATALOGUE of names. And no enforcement of its own monopoly: that exactly one edge reaches the connector is a fact about the topology a parent draws, not a rule the substrate applies (see README, `The honest limit`).",
+    "contract_in": "Two lanes, both at the hive path. in_request -- an access.request tool_call turn: may this actor do this. in_invoke -- an access.invoke tool_call turn: spend a grant. Older wirings named ./policy and ./invoke directly and declared them as `ports`; those are cell names, not lanes, and they moved the boundary one step instead of drawing it.",
+    "contract_out": "Four lanes, all out of the hive path. grant -- the verdict. ack -- the outcome of an invocation. connect -- the one call for the connector, addressed from the grant. error -- any lane failed, and the parent MUST drain it."
+  }
+}

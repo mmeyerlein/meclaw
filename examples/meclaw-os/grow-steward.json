@@ -10,12 +10,6 @@
         "template": "steward"
       }
     ],
-    "add_edges": [
-      {
-        "from": "./steward",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'error'"
-      }
-    ]
+    "add_edges": []
   }
 }

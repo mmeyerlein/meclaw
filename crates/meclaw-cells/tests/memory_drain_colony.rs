@@ -238,7 +238,8 @@ const ROOM: &str = "c-drain";
 ///
 /// The keys sit in the ingress `context` because that is where a real colony
 /// puts them -- the door of a channel generation declares the participant set
-/// once and the connector promotes the room (ADR-0002 E8, `channel@1`) -- and
+/// once and the connector promotes the room (ADR-0002 E8, and since GH #303 the
+/// `channels` level of `assistant@1.0.0` rather than a `channel` hive) -- and
 /// from there they are simply carried, hop by hop, all the way in.
 fn day(session: &str, turns: &[(&str, &str)]) -> Message {
     day_with_provenance(

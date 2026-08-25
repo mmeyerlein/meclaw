@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid, datetime\n\nUSAGE_ROWS = int(\"${ACCESS_USAGE_ROWS:-500}\")\nLIVE = (\"granted\", \"approved\", \"invoked\")\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(\n        \"%Y-%m-%dT%H:%M:%S.%fZ\")\n\n\ndef ago_ms(ms):\n    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(\n        milliseconds=ms)\n    return t.strftime(\"%Y-%m-%dT%H:%M:%S.%fZ\")\n\n\ndef emit(route, phase, carry, body=None, extra=None):\n    h = {\"route\": route, \"phase\": phase,\n         \"carry\": json.dumps(carry) if carry is not None else \"\",\n         \"grant_id\": \"\", \"channel\": \"\", \"address\": \"\", \"operation\": \"\"}\n    h.update(extra or {})\n    m = {\"header\": h}\n    m.update(body or {})\n    return m\n\n\ndef store(operation, phase, carry, **rest):\n    args = {\"operation\": operation}\n    args.update(rest)\n    return emit(\"astore\", phase, carry, {\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": uuid.uuid4().hex[:12], \"text\": json.dumps(args)}]})\n\n\ndef audit(actor, capability, outcome, reason_code, detail):\n    return store(\"insert\", \"written\", None, table=\"audit\", row={\n        \"id\": uuid.uuid4().hex, \"at\": now(), \"actor\": actor, \"action\": \"invoke\",\n        \"capability\": capability, \"outcome\": outcome,\n        \"reason_code\": reason_code, \"detail\": detail})\n\n\ndef ack(call_id, payload):\n    return emit(\"ack\", \"\", None,\n                {\"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                               \"id\": call_id, \"text\": json.dumps(payload)}]},\n                {\"grant_id\": str(payload.get(\"grant_id\") or \"\")})\n\n\ndef rows_of(d):\n    msgs = d.get(\"messages\") or []\n    if not msgs:\n        return []\n    try:\n        v = json.loads(msgs[-1].get(\"text\") or \"null\")\n    except Exception:\n        return []\n    return v if isinstance(v, list) else []\n\n\ndef as_obj(v):\n    if isinstance(v, dict):\n        return v\n    if isinstance(v, str) and v.strip():\n        try:\n            p = json.loads(v)\n        except Exception:\n            return {}\n        return p if isinstance(p, dict) else {}\n    return {}\n\n\ndef refuse(carry, reason, capability=\"\", with_usage=False):\n    \"\"\"One shape for every refusal: a usage row when there is a grant to charge\n    it to, an audit row always, and an answer that names the reason.\n\n    A denial is the more interesting half of this log. `invoke` is the cell that\n    stands between a model and a channel, so the question 'why did it not send'\n    has to be answerable from rows, not from a guess.\n    \"\"\"\n    out = []\n    grant_id = str(carry.get(\"grant_id\") or \"\")\n    if with_usage and grant_id:\n        out.append(store(\"insert\", \"written\", None, table=\"usage\", row={\n            \"id\": uuid.uuid4().hex, \"grant_id\": grant_id, \"at\": now(),\n            \"operation\": str(carry.get(\"operation\") or \"\"), \"outcome\": \"denied\"}))\n    out.append(audit(str(carry.get(\"requester\") or \"\"), capability, \"denied\",\n                     reason, {\"grant_id\": grant_id,\n                              \"operation\": str(carry.get(\"operation\") or \"\")}))\n    out.append(ack(str(carry.get(\"call_id\") or \"\"),\n                   {\"outcome\": \"denied\", \"reason_code\": reason,\n                    \"grant_id\": grant_id}))\n    return out\n\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\ncontext = header.get(\"context\") or {}\necho = \"operation\" in hop\nphase = str(context.get(\"ac_phase\") or \"\") if echo else \"in\"\ntry:\n    carry = json.loads(str(context.get(\"ac_carry\") or \"{}\")) or {}\nexcept Exception:\n    carry = {}\n\nif echo and str(hop.get(\"error_code\") or \"\"):\n    sys.stdout.write(json.dumps([emit(\n        \"error\", phase, None,\n        {\"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                       \"text\": \"access/invoke: store rejected op %s (%s)\"\n                               % (hop.get(\"operation\"), hop.get(\"error_code\"))}]})]))\n    sys.exit(0)\n\nif phase == \"written\":\n    sys.stdout.write(\"[]\")\n    sys.exit(0)\n\nif phase == \"in\":\n    msgs = d.get(\"messages\") or []\n    call = {}\n    for m in msgs:\n        if m.get(\"type\") == \"tool_call\":\n            call = m\n    if not call and msgs:\n        call = msgs[-1]\n    call_id = str(call.get(\"id\") or \"\")\n    raw = call.get(\"arguments\")\n    if not isinstance(raw, dict):\n        try:\n            raw = json.loads(call.get(\"text\") or \"{}\")\n        except Exception:\n            raw = None\n    # R-AC-1 again, and for the same reason: the caller of `invoke` is the edge's\n    # word, never the body's. A grant belongs to a requester, so a body that\n    # could name its own requester could spend somebody else's grant.\n    requester = str(context.get(\"requester\") or \"\")\n    base = {\"call_id\": call_id, \"requester\": requester}\n    if not requester:\n        sys.stdout.write(json.dumps(refuse(base, \"requester_unknown\")))\n        sys.exit(0)\n    if not isinstance(raw, dict):\n        sys.stdout.write(json.dumps(refuse(base, \"args_not_json\")))\n        sys.exit(0)\n    grant_id = str(raw.get(\"grant_id\") or \"\")\n    base[\"grant_id\"] = grant_id\n    base[\"operation\"] = str(raw.get(\"operation\") or \"\")\n    base[\"payload\"] = raw.get(\"payload\") if isinstance(raw.get(\"payload\"), dict) else {}\n    if not grant_id:\n        sys.stdout.write(json.dumps(refuse(base, \"grant_id_missing\")))\n        sys.exit(0)\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"grant\", base, table=\"grants\",\n        columns=[\"grant_id\", \"requester\", \"capability\", \"subject\", \"scope\",\n                 \"cred_ref\", \"expires_at\", \"constraints\"],\n        where={\"grant_id\": grant_id}, limit=1)]))\n    sys.exit(0)\n\nif phase == \"grant\":\n    rows = [r for r in rows_of(d) if isinstance(r, dict)]\n    if not rows:\n        sys.stdout.write(json.dumps(refuse(carry, \"grant_unknown\")))\n        sys.exit(0)\n    g = rows[0]\n    capability = str(g.get(\"capability\") or \"\")\n    if str(g.get(\"requester\") or \"\") != str(carry.get(\"requester\") or \"\"):\n        sys.stdout.write(json.dumps(\n            refuse(carry, \"requester_mismatch\", capability, True)))\n        sys.exit(0)\n    if now() >= str(g.get(\"expires_at\") or \"\"):\n        # The TTL bites HERE, not on the sweep. `sweep` writes the history; this\n        # comparison is what actually stops a send, so a colony whose timer\n        # never fires is late in its bookkeeping and not open in its door.\n        sys.stdout.write(json.dumps(\n            refuse(carry, \"grant_expired\", capability, True)))\n        sys.exit(0)\n    scope = as_obj(g.get(\"scope\"))\n    actions = scope.get(\"actions\") if isinstance(scope.get(\"actions\"), list) else []\n    if str(carry.get(\"operation\") or \"\") not in [str(a) for a in actions]:\n        sys.stdout.write(json.dumps(\n            refuse(carry, \"operation_not_in_scope\", capability, True)))\n        sys.exit(0)\n    carry[\"capability\"] = capability\n    carry[\"scope\"] = scope\n    carry[\"cred_ref\"] = str(g.get(\"cred_ref\") or \"\")\n    carry[\"constraints\"] = as_obj(g.get(\"constraints\"))\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"event\", carry, table=\"grant_events\",\n        columns=[\"event\", \"at\"], where={\"grant_id\": str(carry.get(\"grant_id\"))},\n        order_by=[{\"col\": \"at\", \"dir\": \"desc\"}], limit=1)]))\n    sys.exit(0)\n\nif phase == \"event\":\n    rows = [r for r in rows_of(d) if isinstance(r, dict)]\n    capability = str(carry.get(\"capability\") or \"\")\n    # The effective state of a grant is its NEWEST event -- one select, ordered\n    # desc, limited to one. Revocation is therefore instant and costs no update:\n    # a `revoked` row lands, and the next invoke reads it instead of `granted`.\n    event = str(rows[0].get(\"event\") or \"\") if rows else \"\"\n    if event not in LIVE:\n        reason = \"grant_%s\" % event if event else \"grant_state_unknown\"\n        sys.stdout.write(json.dumps(refuse(carry, reason, capability, True)))\n        sys.exit(0)\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"usage\", carry, table=\"usage\", columns=[\"at\", \"outcome\"],\n        where={\"grant_id\": str(carry.get(\"grant_id\")), \"outcome\": \"ok\"},\n        order_by=[{\"col\": \"at\", \"dir\": \"desc\"}], limit=USAGE_ROWS)]))\n    sys.exit(0)\n\nif phase != \"usage\":\n    sys.stdout.write(\"[]\")\n    sys.exit(0)\n\nrows = [r for r in rows_of(d) if isinstance(r, dict)]\ncapability = str(carry.get(\"capability\") or \"\")\nconstraints = carry.get(\"constraints\") if isinstance(carry.get(\"constraints\"), dict) else {}\n\n# Race-free without a lock: a store is a task, and a task works its mailbox one\n# message at a time. Two invokes against the same grant are two turns, never two\n# halves of one.\nmax_inv = int(constraints.get(\"max_invocations\") or 0)\nif max_inv > 0 and len(rows) >= max_inv:\n    sys.stdout.write(json.dumps(refuse(carry, \"quota_exceeded\", capability, True)))\n    sys.exit(0)\nrate = int(constraints.get(\"rate_per_min\") or 0)\nif rate > 0:\n    since = ago_ms(60000)\n    recent = len([r for r in rows if str(r.get(\"at\") or \"\") >= since])\n    if recent >= rate:\n        sys.stdout.write(json.dumps(refuse(carry, \"rate_exceeded\", capability, True)))\n        sys.exit(0)\n\nscope = carry.get(\"scope\") if isinstance(carry.get(\"scope\"), dict) else {}\n# ── R-AC-2 ────────────────────────────────────────────────────────────────────\n# The address comes from the GRANT, the content from the payload. `address` is\n# built from `grants.scope` and from nothing else; every payload key that names\n# an address coordinate is REMOVED rather than merged, so a legitimate grant\n# cannot be steered at a chat nobody granted. The removal is recorded, because a\n# model that keeps trying to address its own sends is a thing an operator wants\n# to see in a table.\naddress = {k: v for k, v in scope.items() if k != \"actions\"}\npayload = carry.get(\"payload\") if isinstance(carry.get(\"payload\"), dict) else {}\nstripped = sorted([k for k in payload if k in address])\ncontent = {k: v for k, v in payload.items() if k not in address}\n\ngrant_id = str(carry.get(\"grant_id\") or \"\")\noperation = str(carry.get(\"operation\") or \"\")\nrequester = str(carry.get(\"requester\") or \"\")\nstamp = now()\n\nout = [\n    emit(\"connect\", \"\", None,\n         {\"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                        \"text\": str(content.get(\"text\") or \"\")}],\n          \"payload\": content},\n         {\"grant_id\": grant_id, \"operation\": operation,\n          \"channel\": str(address.get(\"channel\") or \"\"),\n          \"address\": json.dumps(address, sort_keys=True)}),\n    store(\"insert\", \"written\", None, table=\"usage\", row={\n        \"id\": uuid.uuid4().hex, \"grant_id\": grant_id, \"at\": stamp,\n        \"operation\": operation, \"outcome\": \"ok\"}),\n    store(\"insert\", \"written\", None, table=\"grant_events\", row={\n        \"id\": uuid.uuid4().hex, \"grant_id\": grant_id, \"event\": \"invoked\",\n        \"at\": stamp, \"actor\": requester, \"reason_code\": \"\",\n        \"detail\": {\"operation\": operation}}),\n    audit(requester, capability, \"ok\", \"\",\n          {\"grant_id\": grant_id, \"operation\": operation,\n           \"address_keys\": sorted(address), \"payload_address_ignored\": stripped}),\n    ack(str(carry.get(\"call_id\") or \"\"),\n        {\"outcome\": \"ok\", \"grant_id\": grant_id, \"operation\": operation}),\n]\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 15000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "usage_rows": {
+        "type": "number",
+        "secret": false,
+        "default": 500,
+        "description": "ACCESS_USAGE_ROWS -- page bound of the quota read; a max_invocations above this bound cannot be enforced"
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "astore",
+            "connect",
+            "ack",
+            "error"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": true
+        },
+        "carry": {
+          "type": "string",
+          "required": true
+        },
+        "grant_id": {
+          "type": "string",
+          "required": true
+        },
+        "channel": {
+          "type": "string",
+          "required": true
+        },
+        "address": {
+          "type": "string",
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "context": {
+        "requester": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The execution half. It resolves a handle into a grant, checks it against four independent facts -- the requester owns it, it has not expired, the operation is in its scope, and its NEWEST grant_events row is still a live one -- then checks the constraints against `usage` and only then emits one connector message. The address of that message is read from the grant.",
+    "use_when": "Behind the `in_invoke` port, with exactly ONE edge leaving it on hop.route == 'connect' into the connector cell. That single edge is what the whole broker is worth (see README).",
+    "not_in_scope": "It resolves no address out of a payload (R-AC-2): a payload key that names an address coordinate is REMOVED and the removal is recorded. It holds no credential and names no token -- the connector is the only cell that ever sees a value. It never updates or deletes a grant; expiry and revocation are rows in grant_events, read newest-first.",
+    "emits_meaning": "route connect: the send. hop.address is the grant's scope as canonical JSON, hop.channel and hop.operation beside it, the body carrying the payload MINUS every address key. route ack: ok or denied plus a reason_code, correlated on the tool_call id. route astore: usage, grant_events and audit rows. route error: the store said no.",
+    "consumes_meaning": "context.requester is the caller, from the edge; a grant whose requester differs is refused with requester_mismatch. hop.operation marks a store echo.",
+    "examples": [
+      "{\"grant_id\":\"grant:…\",\"operation\":\"send_message\",\"payload\":{\"text\":\"on my way\"}} -> one connect message addressed from the grant, one usage row, one invoked event, one audit row, ack ok",
+      "the same call with \"chat_id\":\"999\" in the payload -> the send still goes to the GRANT's chat_id, the key never reaches the connector, and the audit detail lists it under payload_address_ignored",
+      "a grant whose newest event is revoked -> refused at once with grant_revoked, even though expires_at is still in the future",
+      "an operation the grant's scope.actions does not list -> operation_not_in_scope, one usage row with outcome denied"
+    ]
+  }
+}

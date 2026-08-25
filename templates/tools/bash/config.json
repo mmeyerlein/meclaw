@@ -1,0 +1,74 @@
+{
+  "cell": {
+    "type": "bash"
+  },
+  "params": {
+    "max_concurrency": 4,
+    "external_timeout_ms": 60000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "bash"
+          ],
+          "required": false
+        },
+        "exit_code": {
+          "type": "number",
+          "required": false
+        },
+        "had_stderr": {
+          "type": "boolean",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "One-shot shell execution (bash is one-shot only by ruling -- no persistent sessions; chain cwd via 'cd /x && cmd').",
+    "use_when": "The `bash` occupant of a tools hive, reached on hop.tool_name == 'bash'. Same cell as the coder pipeline's runner, with one difference that is the point: it ships sandboxed.",
+    "not_in_scope": "No session state. Sandboxing is NOT out of scope here and this is the one occupant that declares it: `trust: restricted`, `network: deny`, `filesystem.runtime: true` -- the shell may reach the runtime it needs to start and nothing else. That block is the measurement GH #286 took on the shipped instance, written down rather than inferred, and it is one of the four inputs to the sandbox union this template declares.",
+    "emits_meaning": "messages[]: one tool_result turn (stdout + sentinel-marked stderr). hop.exit_code always set -- non-zero is a normal result.",
+    "consumes_meaning": "messages[]: tool_call with raw args {command}.",
+    "examples": [
+      "{command: 'python3 -B fizz.py'} -> tool_result '1\\n2\\nfizz...', hop {exit_code: 0}"
+    ]
+  }
+}

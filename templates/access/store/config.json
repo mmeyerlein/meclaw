@@ -1,0 +1,127 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "policy": {
+        "rule_id": "text",
+        "requester": "text",
+        "capability": "text",
+        "subject": "text",
+        "scope_match": "json",
+        "verdict": "text",
+        "max_ttl_ms": "int",
+        "constraints": "json",
+        "cred_ref": "text",
+        "enabled": "int",
+        "priority": "int",
+        "note": "text"
+      },
+      "grants": {
+        "grant_id": "text",
+        "requester": "text",
+        "capability": "text",
+        "subject": "text",
+        "scope": "json",
+        "cred_ref": "text",
+        "purpose": "text",
+        "issued_at": "text",
+        "expires_at": "text",
+        "rule_id": "text",
+        "constraints": "json"
+      },
+      "grant_events": {
+        "id": "text",
+        "grant_id": "text",
+        "event": "text",
+        "at": "text",
+        "actor": "text",
+        "reason_code": "text",
+        "detail": "json"
+      },
+      "cred_refs": {
+        "ref": "text",
+        "connector": "text",
+        "env_var": "text",
+        "owner": "text",
+        "rotated_at": "text",
+        "status": "text"
+      },
+      "usage": {
+        "id": "text",
+        "grant_id": "text",
+        "at": "text",
+        "operation": "text",
+        "outcome": "text"
+      },
+      "audit": {
+        "id": "text",
+        "at": "text",
+        "actor": "text",
+        "action": "text",
+        "capability": "text",
+        "outcome": "text",
+        "reason_code": "text",
+        "detail": "json"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "transfer": "none",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The broker's whole state, as six tables: `policy` (the rules, as ROWS -- politics is changed with an insert, never with a deploy), `grants` (the handles, each carrying the address it was issued for), `grant_events` (append-only history whose NEWEST row is the effective state), `cred_refs` (where a secret lives and under which environment variable NAME -- never its value), `usage` (append-only consumption, which is what makes counts and rates real) and `audit` (every request, the refused ones first).",
+    "use_when": "Inside the access hive only. `grants`, `grant_events`, `usage` and `audit` are written by ./policy, ./invoke and ./sweep; a fourth writer is a bug even where the substrate allows it. `policy` and `cred_refs` are written by NOBODY in here -- the three code cells only select from them -- which is why `contract.write_surface` is declared (GH #260: a transfer import would write policy rows in bulk past every comparison) and `params.write_surface` deliberately is NOT: enabling a rule is the operator's gesture from outside the scope, and a cell-level seal would leave a fresh broker inert forever. See the hive README, `The honest limit`.",
+    "not_in_scope": "It holds NO secret, and it is not the cell that does: this one keeps the CATALOGUE (`cred_refs` is a table of NAMES), and a credential VALUE lives in `./vault` -- sealed at rest in the vault's own `cell.db`, and leaving it only as the injection at unlock into a connector named in `params.inject_map`, never per request and never back to whoever asked. An encrypted table HERE would be a second one, with a key that would come from the same .env it claims to improve on. No row-level visibility either -- whoever holds an edge into this cell reads unfiltered, which is why the port discipline is the guarantee."
+  }
+}

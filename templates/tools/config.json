@@ -1,0 +1,102 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "tool_call",
+          "context": [],
+          "because": "one call a brain decided to make. The body is the tool_call turn the dispatcher split out; `hop.tool_name` says which tool, and choosing the cell that serves it is this hive's business, not the caller's. Nothing else travels: no schema, no credential, no permission -- the schema lives in the calling brain's `system.tools`, the credential in the cell that needs it, and whether the call should have been made at all was decided before it got here"
+        }
+      ],
+      "emits": [
+        {
+          "route": "tool_result",
+          "because": "the answer of whichever tool ran, as one tool_result turn, on ONE lane whatever the tool was. A tool that failed answers here too -- a non-zero exit code, a 404, an empty result list are ordinary results and the round continues; only `hop.error_code` distinguishes the tool's own refusal, and the caller reads it off the message rather than off the route. A second outward lane would put the choice of tool back into the caller's edge table, which is exactly the coupling this hive exists to remove"
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "tool_call",
+        "emits": "tool_result",
+        "because": "a caller that hands this hive a call and does not take the result back has stopped its own tool round half way: the tool runs, costs whatever it costs, and answers into nothing while the brain waits for a turn that was produced and delivered nowhere. The two edges are one decision -- there is no topology in which sending a call and not subscribing to the result is the intended shape"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./bash",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'bash'"
+        },
+        {
+          "from": ".",
+          "to": "./web_fetch",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'web_fetch'"
+        },
+        {
+          "from": ".",
+          "to": "./web_search",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'web_search'"
+        },
+        {
+          "from": ".",
+          "to": "./unknown",
+          "default": true,
+          "condition": "has(hop.route) && hop.route == 'tool_call'"
+        },
+        {
+          "from": "./bash",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'bash'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./web_fetch",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'web_fetch'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./web_search",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'web_search'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./unknown",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'unknown'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "The tool surface of one assistant as one node -- what goes in and what comes out is a contract, so the whole implementation is one `swap_nodes` away from being something else.",
+    "use_when": "Instantiate once per assistant and draw ONE edge to the hive path, stamping `hop.route = 'tool_call'`, plus one back off it on `tool_result`. Adding, removing or replacing a tool is a change INSIDE this hive; the caller's edges do not move. `params.ports` is empty, so no edge from outside reaches a cell in here -- a caller names the hive and the lane.",
+    "not_in_scope": "No tool schemas -- they live in the calling brain's `system.tools`, because the model that has to choose is the one that has to be told what there is to choose from. No per-tool credentials: a cell that needs one binds it itself. And no judgement about which tool to call, or whether it should have been called at all -- that decision was made before the message arrived, and a hive that second-guessed it would be a second brain with no conversation in front of it.",
+    "contract_in": "One lane, at the hive path. tool_call -- run this call. Which cell serves it is this hive's business.",
+    "contract_out": "One lane, out of the hive path. tool_result -- what the tool answered, whatever the tool was."
+  }
+}

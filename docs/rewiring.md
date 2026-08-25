@@ -20,10 +20,12 @@ German version: `rewiring.md`.
    that is exactly right, and usually it is not.
 2. **Edges are the wiring, nodes are only addresses.** Moving a capability means
    moving edges — the cell is the cheap part.
-3. **`remove_nodes` does not delete.** It disconnects: every edge the node takes
-   part in goes, the registry entry, the directory and the `cell.db` stay. One
-   `add_nodes` on the same path brings it back, `cell.db` and all its rows
-   included.
+3. **`remove_nodes` does not delete.** It disconnects: every edge naming **this
+   exact path** at one end goes — the registry entry, the directory and the
+   `cell.db` stay. The way back is **`add_edges`**: draw the same edges again and
+   the connectivity recompute makes the node active once more, `cell.db` and all
+   its rows included. An `add_nodes` on the same path is a **resume** of the same
+   cell and commits — but it wires nothing, and activity is edge-derived.
 
 ---
 
@@ -381,3 +383,271 @@ well. In-doors are positive lists.
 Step 9 is not decoration. A boot that rejects one edge does not limp, it exits —
 so "the unit is active" does not answer the question. `/colony/graph` does: it is
 served by the colony itself and needs the topology to have loaded.
+
+---
+
+## Dissolving a channel level
+
+This is what it used to look like: one chat had a hive of its own.
+`channels/channel` held the connector inside a second hive wrapped around it, and
+next to it the slot the active talky generation sat in — six segments down to the
+proxy cell, for a plurality that never arrived. Since GH #303 the connector is
+**one** cell (`telegram-connector@2.0.0`), the `channel` level is retired, and the
+lanes it used to normalise belong to the level above it: `channels`.
+
+What follows is the conversion of a **running** tree — three mutations and one
+check. The repository ships the templates and this recipe; the run is the
+operator's.
+
+### Before and after
+
+| | address |
+|---|---|
+| before | `…/assistants/<agent>/channels/channel/telegram-connector/proxy` and `…/channels/channel/terminal` |
+| after | `…/assistants/<agent>/channels/<connector>` and `…/assistants/<agent>/channels/<talky>` |
+
+Four segments instead of six, and the two occupants stand next to each other
+instead of inside one another. Every lane that used to need two edges — one into
+the hive, one from there into the cell — is one edge afterwards.
+
+### 1. Put the two cells there
+
+Scope is `channels`, the hive that already exists.
+
+```json
+{
+  "scope": "/org/…/assistants/<agent>/channels",
+  "ctx": {"model": "<the brain's model, as a resolved literal>"},
+  "diff": {
+    "add_nodes": [
+      {"name": "telegram", "template": "telegram-connector@2.0.0",
+       "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
+      {"name": "talky", "template": "talky@4.2.0"}
+    ]
+  }
+}
+```
+
+`override_params` is **flat** here. On the old tree the key was
+`telegram-connector/proxy`, because the template was a subtree; a single-cell
+template has nothing to address (`meclaw-overview.en.md` § Mutation operations).
+Compare the old instance's remaining params field by field, as with any move —
+and **the token stays a `${VAR}`**. A recipe that names a value ships a secret.
+
+**This is a new generation, not a move.** A talky is a hive with descendants, and
+that is exactly what `move_nodes` refuses explicitly (§ Removing a cell for
+real). The new generation starts with an empty session memory, the old one stays
+disconnected and complete. If the break must not fall in the middle of a
+conversation, put the cut on a closed session.
+
+**And the token tolerates no second reader.** A second `getUpdates` consumer on
+the same token gets `409 Conflict`, and the two steal each other's updates. The
+window between step 1 and step 3 is therefore not the harmless one from
+§ "Template: move a capability from one hive to another": the three mutations run
+back to back, not spread over a coffee break, and not in the busy part of the
+day.
+
+### 2. Draw the edges
+
+Two kinds in one diff: the pair inside the level, and the lanes the dissolved
+hive used to carry outward.
+
+```jsonc
+{"scope": "/org/…/assistants/<agent>/channels",
+ "diff": {"add_edges": [
+   // the connector's out side -- ONE wire, sorted by two conditions
+   {"from": "./telegram", "to": ".",
+    "condition": "!has(hop.error_code)",
+    "modifier": {"set_hop": {"route": "'turn'"},
+                 "set_context": {"channel": "hop.chat_id",
+                                 "chat_id": "hop.chat_id",
+                                 "user_id": "hop.user_id"}}},
+   {"from": "./telegram", "to": ".",
+    "condition": "has(hop.error_code)",
+    "modifier": {"set_hop": {"route": "'error'"}}},
+
+   // the pair inside: the finished answer back into the chat
+   {"from": "./talky", "to": "./telegram",
+    "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.round_capped) && !has(hop.degraded)"},
+
+   // inbound: ONE edge each, where two used to stand
+   {"from": ".", "to": "./talky",
+    "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.channel) && context.channel == <chat-id>",
+    "modifier": {"set_context": {"channel_open_history": "'0'"}}},
+   {"from": ".", "to": "./telegram",
+    "condition": "has(hop.route) && hop.route == 'in_reply' && has(context.channel) && context.channel == <chat-id>"},
+   // in_tool | in_advice | in_bundle | in_memory_call | in_thread_call |
+   // in_sweep | in_prune | in_round_sweep: same shape, target ./talky
+   …
+
+   // outbound: the talky's lanes, unchanged but for the sender
+   {"from": "./talky", "to": ".", "condition": "has(hop.route) && hop.route == 'write'"},
+   // turn_write | extraction | recall | prune | tool | error: same shape
+   …
+
+   // a round that ran out of iterations, and a turn the store could not
+   // assemble, are not answers
+   {"from": "./talky", "to": ".",
+    "condition": "has(hop.route) && hop.route == 'answer' && (has(hop.round_capped) || has(hop.degraded))",
+    "modifier": {"set_hop": {"route": "'error'"}}}
+ ]}}
+```
+
+**Those two conditions are the whole replacement for the dissolved hive.** It
+normalised the connector's wire onto `turn` and `error`; the cell does not, it
+sends everything on one wire and the caller sorts it: `!has(hop.error_code)` is
+the turn, `has(hop.error_code)` is the failure. Draw the first edge and forget
+the second and you get a colony that goes quiet exactly where somebody is waiting
+for an answer — and with the hive gone there is no `required_drains` left to stop
+you. **The level that holds the connector owes the `error` drain.** The same goes
+for the pair the talky declares itself: `in_prune` is paired with `prune`, and a
+prune ingress without a plain `prune` drain makes every operator cut dead-letter
+its own answer.
+
+**The `context.channel` condition is new, and it carries the assignment.** The
+return from the shared firewall used to land in *the* hive that was the chat; now
+it lands on `channels`, and which of the cells below is meant is decided by the
+condition. With a single channel it may be left out; from the second one on it is
+the only thing telling them apart. **The comparison is typed the way the
+platform's chat id is**: numeric on Telegram, so without quotes, a string on
+Slack (`meclaw-overview.en.md` § Standard header convention).
+
+**The old edges are still standing here.** They go in step 3, and not all of them
+by the same route — what hangs on that is written out there.
+
+### 3. Disconnect the old hive
+
+**A hive cannot be addressed with `remove_nodes`.** This is the one place where
+the recipe does not look the way you would write it: `remove_nodes[].match.name`
+is resolved against the **cell registry**, and a hive has no row there — it lives
+in the hive scopes. A match on `./channel` is therefore `match_no_hit`, and since
+validation is all-or-nothing, the **whole** mutation fails on it. (`swap_nodes`
+asks both namespaces, `remove_nodes` does not; the spec promises more here than
+the code delivers — GH #390.)
+
+So: two operations in one diff. `remove_nodes` for the two real cells,
+`remove_edges` for the edges whose end is a hive.
+
+```json
+{
+  "scope": "/org/…/assistants/<agent>/channels",
+  "diff": {
+    "remove_nodes": [
+      {"match": {"name": "./channel/terminal"}},
+      {"match": {"name": "./channel/telegram-connector/proxy"}}
+    ],
+    "remove_edges": [
+      {"match": {"from": ".", "to": "./channel"}},
+      {"match": {"from": "./channel", "to": "."}},
+      {"match": {"from": "./channel", "to": "./channel/telegram-connector"}},
+      {"match": {"from": "./channel/telegram-connector", "to": "./channel"}}
+    ]
+  }
+}
+```
+
+**Which entry takes which edge** — the channel hive's thirteen and the wrapper
+hive's three, with `C` for the channel path, `T` for the statist, `W` for the
+wrapper hive and `P` for the `proxy` cell:
+
+| entry | takes | how many |
+|---|---|---|
+| `remove_nodes ./channel/terminal` | everything with `T` at one end: `C -> T` (three doors), `T -> C` (six lanes), `T -> W` (the answer) | 10 |
+| `remove_nodes ./channel/telegram-connector/proxy` | everything with `P` at one end: `W -> P`, `P -> W` (twice, `turn` and `error`) | 3 |
+| `remove_edges C -> W` | the `in_reply` door into the wrapper hive | 1 |
+| `remove_edges W -> C` | both of the wrapper hive's exits | 2 |
+| `remove_edges . -> ./channel` / `./channel -> .` | the lanes the instantiating mutation drew between `channels` and the hive | as many as there are |
+
+`remove_nodes` takes the edges naming **the matched path itself** at one end —
+and only those; that is why the `proxy` is on the list and not the hive above it.
+A multi-segment `match.name` is allowed here: it is the same namespace decision
+`add_nodes` asks. And if the slot no longer holds the `terminal` statist but a
+talky generation, **its** name goes in the first line; the generation stays wired
+on the inside, which is the whole point of preserving it.
+
+**A `remove_edges` pattern without a `condition` takes every edge between the
+named pair** — which is why the wrapper hive's two exits are one entry and not
+two. A missing `default` leaves the **routing phase** unconstrained alongside it,
+so the pattern hits regular and default edges alike. The other way round: **every pattern must hit at least
+one edge in the pre-state**, or the mutation is `match_no_hit`. So read
+`/colony/graph` first and write down only the pairs that are really there.
+
+**What the cascade really is.** A `remove_nodes` does cascade over the subtree —
+but in **connectivity**, not in the edge table: the recompute walks the whole
+subtree, flips every node below to `active = false` and stops its task. Read
+"cascade" as "every edge below it goes" and you leave edges standing that you
+believe are gone.
+
+**Disconnected, not deleted — and the two hives stay.** The two cells keep their
+directory, `cell_id` and `cell.db` (no-delete policy), and `channel` and
+`telegram-connector` are left behind as **empty scope markers**: no edges, no
+occupants, no traffic. There is no live operation for that; getting the
+directories themselves out is the colony-stopped list in § Removing a cell for
+real — and it is not required. The way back is `add_edges`: draw the old edges
+once more and the recompute makes the level active again. An `add_nodes` on the
+same path commits as a resume, but it wires nothing.
+
+**A rejected step leaves nothing behind.** Since GH #276 the colony registers
+only behind every check that can judge the diff itself, and the two rejects that
+can still fall after that roll back: the registry entry, the `colony.db` row and
+an already-spawned cell are gone again before the `422` reaches the caller. A
+failed step is therefore a **retry**, not a cleanup. It used to be both — the
+first observed case left thirteen cells standing, including a second `proxy`
+polling the same bot token as the one already running. Exactly the doubling step
+1 is afraid of.
+
+### 4. Checking it
+
+```bash
+curl -s http://<host>:<port>/colony/graph
+curl -s 'http://<host>:<port>/colony/dead_letters?limit=10'
+```
+
+**The address is the first check**, and it is read off four path segments: both
+occupants sit under `…/assistants/<agent>/channels/<name>` — `assistants`, the
+agent, `channels`, one single-segment name. A fifth segment means the mutation's
+scope sat too high and the cells landed inside the old hive.
+
+Then three questions to the same graph:
+
+- Does an edge still name the `channel` path **itself**, or does an edge cross
+  the old subtree's boundary — one end inside, the other outside? Either means
+  step 3 did not run, did not commit, or missed a path. **Edges with both ends
+  below `channels/channel` stay, and they should** — they hang off inactive nodes
+  and are the expected residue, not the finding. After step 3 no edge is left
+  inside the old subtree; if a generation is still parked there, it is wired on
+  the inside and stays that way.
+- Does `./telegram -> .` appear **twice**, once per condition? Once means the
+  drain is missing.
+- Does a lane appear **twice** because step 2 ran twice? A fan-out shows up in
+  operation only as duplicated answers.
+
+`/colony/graph` filters by scope, not by activity: the disconnected nodes and
+whatever is still wired inside a preserved generation stay visible in it — and
+which node is active is something the graph does not say anyway (§ Checking that
+it worked). Visibility is therefore not a failure; an edge crossing the boundary
+is one. The two empty hives, by contrast, do **not** show up there at all: the
+node list comes from the cell registry, where a hive has no row, and after step 3
+they carry no edges either. Their evidence is the directories, not the graph.
+
+Read dead letters by `created_at`, do not count them. And the answer that counts
+does not come from the graph: write one line into the chat and wait for it to be
+answered.
+
+### What you give up
+
+One thing, and it is the reason this is a decision rather than a tidy-up:
+**which generations belong to this channel stops being structural and becomes
+edge-derived.** The hive was the chat's identity — what lay inside it belonged to
+it, and that stood in the path. Afterwards it stands in the edges: this talky
+belongs to this chat because an edge with `context.channel == <chat-id>`
+addresses it, and the previous generation belongs to it because an edge once did.
+Reading a chat's history means reading edges and their conditions, not a
+directory.
+
+The generation swap itself stays what it was. `swap_nodes` swings **every
+external edge** of one implementation at once (`meclaw-overview.en.md`
+§ Mutation operations), and at the `channels` level this talky's edges are
+external — a swap there swings every lane at the same time, the old generation
+stays disconnected and complete, and the way back is the same swap in the other
+direction.

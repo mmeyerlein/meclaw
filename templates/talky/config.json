@@ -32,11 +32,11 @@
         },
         {
           "route": "in_memory_call",
-          "because": "a memory tool call the front model made, handed back in"
+          "because": "a memory tool call the front model made. Since talky@4.2.0 the composite routes this itself (GH #55): ./dispatcher -> ./collector on hop.tool_name == 'memory_recall'. The lane stays declared because it is still a real door -- a parent MAY hand a memory_recall call in from outside -- but no parent has to draw the self-loop any more"
         },
         {
           "route": "in_thread_call",
-          "because": "a thread_recall tool call the front model made, handed back in: the collector serves it out of this turn's own round table, and without the lane every stub its curator leaves is a dead end"
+          "because": "a thread_recall tool call the front model made: the collector serves it out of this turn's own round table, and without the lane every stub its curator leaves is a dead end. Since talky@4.2.0 the composite routes this itself too (GH #55, GH #245), on the same shape as the memory lane one row up"
         },
         {
           "route": "in_prune",
@@ -70,7 +70,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.0 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message, which is what lets the two reserved names -- memory_recall and thread_recall -- be claimed by ordinary edges into ./collector without a single term of exclusion on this one. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has six out-edges here (calls, result, answer and the two reserved names into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: eight senders (., ./session-keeper, ./collector, ./brain, ./splitter, ./dispatcher, ./summarizer, ./errors) over 27 edges, four of which reach `.` (./collector five times, ./splitter for extraction, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too"
         },
         {
           "route": "prune",
@@ -213,6 +213,26 @@
           }
         },
         {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_memory_call'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'thread_recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_thread_call'"
+            }
+          }
+        },
+        {
           "from": "./collector",
           "to": "./summarizer",
           "condition": "has(hop.route) && hop.route == 'write'",
@@ -260,6 +280,7 @@
         {
           "from": "./dispatcher",
           "to": ".",
+          "default": true,
           "condition": "has(hop.route) && hop.route == 'tool'"
         },
         {
@@ -273,6 +294,6 @@
   "description": {
     "purpose": "Scope marker of the talky composite: bundles the session keeper, the context collector, the brain, the tool dispatcher and the session summarizer behind ONE ingress, ONE reply exit, ONE write exit and ONE error drain. Everything the Egon rollout wired by hand -- the stamp, the seam, the dispatcher lanes, the loopback with restore_ttl, the close path, the handover -- is an internal edge here.",
     "use_when": "One per conversational agent. Instantiate it in the same mutation that wires the four ports plus the per-instance tool lanes; the composite is an island until an edge crosses into it.",
-    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no surface proxy, no drain cell. The brain's identity, instructions and tool schemas live in its own cell.db -- the composite carries the topology, never the persona."
+    "not_in_scope": "No tool cells (they are wired per instance on hop.tool_name), no memory hive, no surface proxy, no drain cell -- with ONE exception since 4.2.0, and it is a boundary rather than a gap: the two tools this composite IMPLEMENTS, memory_recall and thread_recall, are served by the collector inside it and routed by this template's own edges (GH #55). RETRACTED with the same bump: up to 4.1.1 this line read `The brain's identity, instructions and tool schemas live in its own cell.db -- the composite carries the topology, never the persona`. The schema half no longer holds. A tool the composite IMPLEMENTS is topology, and its schema ships with the composite; a tool the PARENT wires is the agent, and the composite carries neither its schema nor its lane. So the composite carries the schemas of those two tools and of no others. Identity, instructions and every per-agent tool stay the brain's own cell.db -- the composite still carries no persona."
   }
 }

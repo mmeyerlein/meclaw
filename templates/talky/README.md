@@ -1,4 +1,4 @@
-# `talky@4.1.1`
+# `talky@4.2.0`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.0`](../collector/),
@@ -7,7 +7,7 @@ its template's own name -- plus an `llm` brain and one error collector. No new c
 type, no Rust.
 
 **The Egon rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, summarizer on the close path -- twenty-three edges, each of
+dispatcher for the fan-out, summarizer on the close path -- twenty-seven edges, each of
 them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -66,7 +66,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`talky@4.1.1` above it in its provenance chain.
+`talky@4.2.0` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -216,23 +216,80 @@ same address -- and the `has()` guards are not decoration: an emission that carr
 with a log line per lane per message. A tool name nobody answers to dead-letters and
 stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
-**One tool is served inside the composite:** `memory_recall` (GH #78). It is wired like any
-other tool -- on the `tool` lane with `hop.tool_name == 'memory_recall'` -- except that the
-target is the composite itself, on the `in_memory_call` lane: `{"from": "./talky", "to":
-"./talky", "modifier": {"set_hop": {"route": "'in_memory_call'"}}}`. A loop at one address,
-and which cell inside answers it is none of the caller's business. Its schema and the second half of the wiring live in
+### The two tools the composite serves itself
+
+**Since `talky@4.2.0` the composite draws these edges, not the parent**
+([#55](https://github.com/mmeyerlein/meclaw/issues/55)). `memory_recall` (GH #78) and
+`thread_recall` ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) are not the
+per-agent choice above: the collector inside this hive **serves** both of them. It holds
+the recall port for the per-turn leg, so the memory tool is answered where the memory leg
+already lives; and it owns the round table a `thread_recall` stub points at, so the way
+back to an elided payload is a table lookup in the cell that elided it. Both are therefore
+routed internally, by two ordinary edges of this template's own `params.graph`:
+
+```json
+{"from": "./dispatcher", "to": "./collector",
+ "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+ "modifier": {"set_hop": {"route": "'in_memory_call'"}}}
+```
+
+… and the same shape one lane further for `hop.tool_name == 'thread_recall'` →
+`in_thread_call`. Nothing downstream changed: `collector@3.0.0` has accepted both lanes
+since `2.0.1`, and the door edge from `.` still routes them for a caller that hands such a
+call in from outside.
+
+**RETRACTED: the parent no longer draws the two self-loops.** Up to `talky@4.1.1` this page
+told every parent to wire each name as a loop at the composite's own address -- `{"from":
+"./talky", "to": "./talky", "modifier": {"set_hop": {"route": "'in_memory_call'"}}}` -- and
+the port table below carried a row for each. **That instruction is withdrawn.** A parent
+that still draws them delivers every such call **twice**, once by its own edge and once by
+the composite's, so remove them when you lift an instance to `4.2.0`. The `in_memory_call`
+and `in_thread_call` lanes stay declared and stay real doors: a parent MAY still hand such
+a call in, it simply no longer has to.
+
+**The tool exit stopped naming names.** `./dispatcher -> .` on `hop.route == 'tool'` is a
+**guarded default edge** since `4.2.0` ([#283](https://github.com/mmeyerlein/meclaw/issues/283),
+ruling Q1): it is consulted only when no ordinary edge out of `./dispatcher` fired for the
+message. The two edges above are ordinary, so a reserved name silences the exit for itself
+and no term of exclusion is written anywhere. A third reserved name would cost one ordinary
+edge and **no** change to the exit at all -- which is the whole difference between a default
+edge and the negation chain it replaces.
+
+**Two properties keep that honest, and both are measured against this tree rather than
+assumed.** The guard is not decoration: `./dispatcher` emits four sorts (`calls`, `result`,
+`answer`, `tool`) and default suppression is **sender-wide**, so an unguarded default would
+try to carry `calls`/`result`/`answer` outward whenever nothing ordinary happened to fire
+for them. And there is **no unconditional tee**: `./dispatcher` has six out-edges here and
+every ordinary one is conditioned on its own lane. If you add a tee of your own -- a logger,
+a tap, a mirror, at `./talky/dispatcher` -- condition it on its own routes, or it silences
+this default for every tool call and your tool cells go dark.
+
+**RETRACTED: the composite carries the schemas of the two tools it serves.** Up to
+`talky@4.1.1` this page said: *"The tool SCHEMAS are a different thing again: they live in
+the brain's `system.tools`, seeded (`brain/seed/system.jsonl`) or written by a system
+update. The composite carries neither -- identity, instructions and tools are the agent,
+not the topology."* The second half of that no longer holds, and the line runs elsewhere
+now: **a tool the composite implements is topology; a tool the parent wires is the agent.**
+So the composite carries the schemas of `memory_recall` and `thread_recall` -- schema and
+edge together, because a schema without the edge is a call into a void and an edge without
+the schema is a tool the model never learns it has -- and it carries **no others**.
+Identity, instructions and every per-agent tool stay the agent's, in the brain's own
+`cell.db`. The schema half of #55 ships in the brain's seed (`brain/seed/system.jsonl`);
+the `memory_recall` parameter block is documented in
 [`../collector/README.md`](../collector/README.md) § The memory tool.
 
-**A second one is served the same way since 3.0.1:** `thread_recall`
-([#245](https://github.com/mmeyerlein/meclaw/issues/245)), the way back to a tool payload the
-collector's curator elided out of the running turn. Same loop, one lane further:
-`hop.tool_name == 'thread_recall'` → `./talky` lane `in_thread_call`. Wire it whenever you set
-`context_window`, because from that moment the curator leaves stubs that name the tool by hand,
-and a stub whose tool no edge can reach stalls the round until `round_idle_ms` closes it.
-
-The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
-seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
-neither -- identity, instructions and tools are the agent, not the topology.
+**The seed takes on a FRESH birth only, and saying that is half the promise.**
+`brain/seed/system.jsonl` is loaded by `LlmCellFactory` at spawn and **only** when the
+brain's `cell.db` was created in that moment (`OpenStatus::Created`); a resume never
+re-seeds, because a template default that overwrote the accumulated identity at every
+restart would be worse than no seed at all (`docs/cell-types.md` § Seed,
+`crates/meclaw-cells/src/llm/seed.rs`). So an **existing** talky does **not** gain the two
+tool schemas from a template bump. It gains them one of two ways: a `system.tools` update
+message -- a body carrying `system` and no `messages[]`, which upserts the slot and
+triggers no inference -- or a fresh generation whose brain starts with a new `cell.db`.
+Bumping the template and expecting a running agent to change is the half-truth that
+produces "but it works in a new colony" bug reports; the edges of #55 travel with the
+mutation, the schemas do not.
 
 ### The sentence a memory-carrying persona has to contain
 
@@ -254,18 +311,31 @@ The same sentence is what keeps the boundary honest in the other direction: it n
 window as the model's own knowledge **and** the long-term store as the thing it must ask
 for, so a question about an earlier day still leaves through the lane it should.
 
-Eight more optional lanes, all of them the parent's decision -- and every one of them
-**at the composite's own address**. `talky` declares `params.ports: []`, so `./talky` is
-the only endpoint an edge from outside may name: `./collector`, `./session-keeper` and
-`./talky/dispatcher` are refused with `hive_port_boundary`, and the second of those
-spellings would not even be this template's frame. Which cell inside picks the lane up is
+Eight more lanes -- six of them the parent's decision, and two (the memory tool and the
+thread tool) drawn by the composite itself since `4.2.0`. Every one of them lives
+**at the composite's own address**. `talky` declares `params.ports: []`, so a **runtime
+mutation** may name no endpoint but `./talky`: an `add_edges` naming `./collector`,
+`./session-keeper` or `./talky/dispatcher` is refused with `hive_port_boundary`, and the
+last of those spellings would not even be this template's frame.
+
+**The seal guards the mutation path, not the boot.** Only the `add_edges` of a mutation
+diff is checked; the birth topology is deliberately out of scope (ruling 2026-08-15,
+`crates/meclaw-colony/src/mutation/port_boundary.rs`) -- whoever writes a parent's
+`params.graph` has the whole tree in front of them, and that is authorship, not a breach.
+So a parent template *can* wire a cell straight at `./talky/dispatcher` at boot, and one
+shipped test does exactly that. It has a consequence you have to carry: such an edge is an
+ordinary out-edge of that sender, so it counts in the sender-wide suppression below. Do not
+read the seal as a promise that nothing outside can ever reach a cell in here -- it is a
+promise about what a later mutation, possibly written by a model, may reach into.
+
+Which cell inside picks the lane up is
 the door edges' business, exactly as it is for the four essential lanes:
 
 | lane | endpoint | when |
 |---|---|---|
 | memory recall | `./talky` route `recall` out, lane `in_bundle` in | the per-turn leg only with `memory_tier` set; the same pair also serves the memory **tool** below |
-| memory tool | `./talky` on `hop.route == 'tool' && hop.tool_name == 'memory_recall'` → `./talky` lane `in_memory_call` | GH #78 -- one more tool edge, plus the recall pair above |
-| thread tool | `./talky` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` → `./talky` lane `in_thread_call` | GH #245 -- needed as soon as `context_window` is set, because the curator's stubs name this tool as their way back |
+| memory tool | **nothing to wire** -- the composite routes `hop.tool_name == 'memory_recall'` to its own `in_memory_call` lane | GH #78 / GH #55. Since `4.2.0` this row is a statement, not an instruction: draw the old self-loop and the call arrives twice. The recall pair above is still the parent's, because the answer comes from a memory hive |
+| thread tool | **nothing to wire** -- the composite routes `hop.tool_name == 'thread_recall'` to its own `in_thread_call` lane | GH #245 / GH #55. Since `4.2.0` likewise. It matters most as soon as `context_window` is set, because from then on the curator leaves stubs that name this tool as their way back -- and now they always reach it |
 | forced sweep | `./talky` lane `in_sweep` | an operator or a second schedule |
 | housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
 | per-turn write | `./talky` route `turn_write` out | one message per turn into a memory hive's `in_episode` lane; on by default -- see below |
@@ -310,39 +380,47 @@ downstream as well.
 
 ## The internal wiring, edge by edge
 
-Thirteen edges of round in this hive's `params.graph` -- plus the ten that ARE the
-boundary (three door edges from `.`, seven leaving towards it, and those are the lanes
-above) and the twenty the three sealed sub-units bring with them. Every one of the
-thirteen names a sub-unit **by its path**: three of the five nodes below are sealed hives,
-so the address is the hive and the lane in the third column is what the door behind it
-reads. Read it as the round it is:
+Sixteen edges of round in this hive's `params.graph` -- plus the eleven that ARE the
+boundary (three door edges from `.`, eight leaving towards it, and those are the lanes
+above) and the twenty the three sealed sub-units bring with them. Twenty-seven in this
+file, counted from it. Every one of the sixteen names a sub-unit **by its path**: three of
+the seven nodes below are sealed hives, so the address is the hive and the lane in the
+third column is what the door behind it reads. Read it as the round it is:
 
 ```
 session-keeper --(turn, session_id -> context)-->  collector   in_turn
 session-keeper --(close, session_id + channel + audience_set -> context)->  collector   in_close
 
 collector ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM
-brain --(stop | tool_calls)------> dispatcher
+brain --(stop | tool_calls)------> splitter      <- the sidecar cut, GH #379
+splitter --(stop | tool_calls)---> dispatcher
+splitter --(extraction)---------->  .            <- and out of the extraction port
 brain --(length)-----------------> collector    in_answer
 brain --(error | content_filter)-> errors
 session-keeper --(reject)--------> errors    <- the session store refused a step
 
-dispatcher --(calls)---> collector   in_calls    dispatcher --(tool)--> [your tools]
+dispatcher --(calls)---> collector   in_calls    dispatcher ==(tool, DEFAULT)==> [your tools]
 dispatcher --(result)--> collector   in_tool
 dispatcher --(answer)--> collector   in_answer
+dispatcher --(tool_name == memory_recall)--> collector  in_memory_call   <- served here
+dispatcher --(tool_name == thread_recall)--> collector  in_thread_call   <- served here
 
 collector --(write)----------> summarizer  in_batch   (AND out of the write port)
 summarizer --(summary)------> brain           <- system.handover, no provider call
 summarizer --(summary_error)-> errors
 
-[sealed]  session-keeper   collector   summarizer      [plain cells]  brain  dispatcher  errors
+[sealed]  session-keeper  collector  summarizer   [plain]  brain  splitter  dispatcher  errors
 ```
 
 **The twenty are not drawn here, and that is the point.** A sealed sub-unit takes its
 lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
 alone brings eleven edges, `collector` four, `summarizer` five -- and none of that is
-visible to, or wireable by, the hive above. What the thirteen edges above state is the
+visible to, or wireable by, the hive above. What the sixteen edges above state is the
 whole of talky's own topology.
+
+**The one `==` in the fan-out block is the default edge.** `dispatcher --(tool)--> [your
+tools]` is consulted only after the two `tool_name` edges below it have declined, which is
+what lets them be written as plain positive conditions with no exclusion anywhere.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter` (default 8), which
@@ -729,10 +807,13 @@ address.
   surface lives.
 - **Not a memory.** The recall leg is optional and the write batch leaves unfiltered.
   What a day is worth is the receiver's question.
-- **Not a persona.** Identity, instructions and tool schemas live in the brain's
-  `cell.db`, one writer per `system` path: the collector owns `messages[]` and
-  `system.memory`, the summarizer owns `system.handover`, an affinity cell (if any) owns
-  the rest. The topology owns none of it.
+- **Not a persona.** Identity and instructions live in the brain's `cell.db`, one writer
+  per `system` path: the collector owns `messages[]` and `system.memory`, the summarizer
+  owns `system.handover`, an affinity cell (if any) owns the rest. The topology owns none
+  of that. **Tool schemas are the one place this line moved** (`4.2.0`, GH #55): the two
+  tools the composite *implements* -- `memory_recall` and `thread_recall` -- ship with it,
+  schema and edge together, and no others do. A tool the parent wires is still entirely
+  the agent's, schema included.
 - **Not a drain.** `./errors` normalises and forwards; it does not swallow. An unwired
   error port dead-letters, loudly.
 - **Not one instance per day.** v1 runs the logical generation: same cells, new id.

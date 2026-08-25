@@ -1,0 +1,12 @@
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "os",
+        "template": "meclaw-os@1.0.0"
+      }
+    ],
+    "add_edges": []
+  }
+}

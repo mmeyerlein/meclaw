@@ -1,0 +1,122 @@
+{
+  "scope": "/os/orgs/acme/members/alex/assistants/scribe",
+  "ctx": {
+    "model": "${MODEL_BRAIN}"
+  },
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "channels/telegram-connector",
+        "template": "telegram-connector@2.0.0"
+      },
+      {
+        "name": "channels/talky",
+        "template": "talky@4.2.0"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./channels/telegram-connector",
+        "to": "./channels",
+        "condition": "!has(hop.error_code)",
+        "modifier": {
+          "set_hop": {
+            "route": "'turn'"
+          },
+          "set_context": {
+            "channel": "'telegram'",
+            "agent": "'scribe'",
+            "chat_id": "hop.chat_id",
+            "user_id": "hop.user_id",
+            "audience_set": "'[\"member:alex\",\"agent:scribe\"]'"
+          }
+        }
+      },
+      {
+        "from": "./channels/telegram-connector",
+        "to": "./channels",
+        "condition": "has(hop.error_code)",
+        "modifier": {
+          "set_hop": {
+            "route": "'error'"
+          }
+        }
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels/telegram-connector",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_turn'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_bundle'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_advice'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_sweep'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_prune'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_round_sweep'"
+      },
+      {
+        "from": "./channels",
+        "to": "./channels/talky",
+        "condition": "has(hop.route) && hop.route == 'in_tool'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'write'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'turn_write'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'extraction'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'recall'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'tool'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'prune'"
+      },
+      {
+        "from": "./channels/talky",
+        "to": "./channels",
+        "condition": "has(hop.route) && hop.route == 'error'"
+      }
+    ]
+  }
+}

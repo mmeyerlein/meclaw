@@ -1,0 +1,102 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, uuid, hashlib, datetime\n\nSUBSCRIBER_ROWS = int(\"${AFFINITY_SUBSCRIBER_ROWS:-200}\")\n\n\ndef now():\n    return datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%dT%H:%M:%SZ\")\n\n\ndef emit(route, phase, carry, extra, body=None):\n    h = {\"route\": route, \"phase\": phase, \"carry\": json.dumps(carry) if carry else \"\",\n         \"subscriber\": \"\", \"audience\": \"\", \"subject\": \"\", \"channel\": \"\",\n         \"audience_set\": \"\"}\n    h.update(extra or {})\n    m = {\"header\": h}\n    m.update(body or {})\n    return m\n\n\ndef store(operation, phase, carry, **rest):\n    args = {\"operation\": operation}\n    args.update(rest)\n    return emit(\"astore\", phase, carry, None, {\n        \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                      \"id\": uuid.uuid4().hex[:12], \"text\": json.dumps(args)}]})\n\n\ndef rows_of(d):\n    msgs = d.get(\"messages\") or []\n    if not msgs:\n        return []\n    try:\n        v = json.loads(msgs[-1].get(\"text\") or \"null\")\n    except Exception:\n        return []\n    return v if isinstance(v, list) else []\n\n\ndef as_json(v):\n    \"\"\"A `json` column arrives as the TEXT the store kept. Hashing that text\n    would make a whitespace difference look like a change, so it is parsed\n    first and hashed in canonical form.\"\"\"\n    if isinstance(v, str) and v.strip():\n        try:\n            return json.loads(v)\n        except Exception:\n            return v\n    return v\n\n\ndef pack_hash(sub, ent):\n    \"\"\"What the subscriber would receive, reduced to one hash.\n\n    Everything the rendered pack can depend on goes in -- the subject document,\n    the meclaw namespace, the slots asked for, the channel and the audience. Two\n    runs over unchanged data produce the same hash, which is the whole reason\n    this cell can stay silent.\n    \"\"\"\n    payload = json.dumps({\"subject\": sub.get(\"subject\"), \"audience\": sub.get(\"audience\"),\n                          \"channel\": sub.get(\"channel\"), \"slots\": as_json(sub.get(\"slots\")),\n                          \"aieos\": as_json(ent.get(\"aieos\")), \"mx\": as_json(ent.get(\"mx\")),\n                          \"recorded_at\": ent.get(\"recorded_at\")},\n                         sort_keys=True, separators=(\",\", \":\"))\n    return hashlib.sha256(payload.encode(\"utf-8\")).hexdigest()\n\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nheader = envelope.get(\"header\") or {}\nhop = header.get(\"hop\") or {}\ncontext = header.get(\"context\") or {}\necho = \"operation\" in hop\nphase = str(context.get(\"aff_phase\") or \"\") if echo else \"in\"\ntry:\n    carry = json.loads(str(context.get(\"aff_carry\") or \"{}\")) or {}\nexcept Exception:\n    carry = {}\n\nif echo and str(hop.get(\"error_code\") or \"\"):\n    sys.stdout.write(json.dumps([emit(\n        \"error\", phase, None, {},\n        {\"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                       \"text\": \"affinity/push: store rejected op %s (%s)\"\n                               % (hop.get(\"operation\"), hop.get(\"error_code\"))}]})]))\n    sys.exit(0)\n\nif phase == \"in\":\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"subs\", None, table=\"subscribers\",\n        columns=[\"id\", \"cell_path\", \"subject\", \"audience\", \"channel\", \"slots\",\n                 \"pack_hash\"],\n        limit=SUBSCRIBER_ROWS, where={\"status\": \"active\"})]))\n    sys.exit(0)\n\nif phase == \"subs\":\n    subs = [r for r in rows_of(d) if isinstance(r, dict)]\n    if not subs:\n        sys.stdout.write(\"[]\")\n        sys.exit(0)\n    subjects = sorted({str(s.get(\"subject\") or \"\") for s in subs if s.get(\"subject\")})\n    sys.stdout.write(json.dumps([store(\n        \"select\", \"entities\", {\"subs\": subs}, table=\"entities\",\n        columns=[\"entity_id\", \"aieos\", \"mx\", \"recorded_at\"],\n        limit=SUBSCRIBER_ROWS,\n        where={\"entity_id\": {\"in\": subjects}, \"status\": \"active\"})]))\n    sys.exit(0)\n\nif phase == \"entities\":\n    ents = {}\n    for r in rows_of(d):\n        if isinstance(r, dict):\n            ents[str(r.get(\"entity_id\") or \"\")] = r\n    out = []\n    changed = 0\n    for sub in carry.get(\"subs\") or []:\n        ent = ents.get(str(sub.get(\"subject\") or \"\"))\n        if ent is None:\n            continue\n        fresh = pack_hash(sub, ent)\n        # Idempotence, and the reason a five-minute tick costs nothing: the\n        # hash of an unchanged subject is the hash that is already stored.\n        if fresh == str(sub.get(\"pack_hash\") or \"\"):\n            continue\n        changed += 1\n        slots = as_json(sub.get(\"slots\"))\n        if not isinstance(slots, list):\n            slots = None\n        # The renderer is ./brief and only ./brief -- one audience filter, one\n        # place it can be wrong. push decides WHETHER, never WHAT.\n        out.append(emit(\"brief\", \"\", None,\n                        {\"subscriber\": str(sub.get(\"cell_path\") or \"\"),\n                         \"audience\": str(sub.get(\"audience\") or \"\"),\n                         \"subject\": str(sub.get(\"subject\") or \"\"),\n                         \"channel\": str(sub.get(\"channel\") or \"*\"),\n                         # The ROUND, declared (GH #306). A push is not a\n                         # conversation and has no room: it renders one\n                         # subscription, which was written for exactly one\n                         # audience, so the round IS that audience and nobody\n                         # else. Stated rather than defaulted, because ./brief\n                         # refuses a round nobody declared -- and it has to, or\n                         # every 1:1 release would be readable by any round.\n                         \"audience_set\": json.dumps(\n                             [str(sub.get(\"audience\") or \"\")])},\n                        {\"messages\": [{\"origin\": \"tool\", \"type\": \"tool_call\",\n                                       \"id\": uuid.uuid4().hex[:12],\n                                       \"text\": json.dumps({\n                                           \"subject\": sub.get(\"subject\"),\n                                           \"channel\": sub.get(\"channel\"),\n                                           \"slots\": slots})}]}))\n        out.append(store(\"update\", \"written\", None, table=\"subscribers\",\n                         set={\"pack_hash\": fresh, \"sent_at\": now()},\n                         where={\"id\": str(sub.get(\"id\") or \"\")}))\n    if changed:\n        out.append(store(\"insert\", \"written\", None, table=\"audit\", row={\n            \"id\": uuid.uuid4().hex, \"at\": now(), \"actor\": \"affinity/push\",\n            \"action\": \"push\", \"subject\": \"\", \"outcome\": \"ok\",\n            \"reason_code\": \"\", \"detail\": {\"subscribers\": changed}}))\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\nsys.stdout.write(\"[]\")\n",
+    "external_timeout_ms": 15000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "subscriber_rows": {
+        "type": "number",
+        "secret": false,
+        "default": 200,
+        "description": "AFFINITY_SUBSCRIBER_ROWS -- page bound of one push tick"
+      }
+    },
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "astore",
+            "brief",
+            "error"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "required": true
+        },
+        "carry": {
+          "type": "string",
+          "required": true
+        },
+        "subscriber": {
+          "type": "string",
+          "required": true
+        },
+        "audience": {
+          "type": "string",
+          "required": true
+        },
+        "audience_set": {
+          "type": "string",
+          "required": true
+        },
+        "subject": {
+          "type": "string",
+          "required": true
+        },
+        "channel": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "context": {
+        "aff_phase": {
+          "type": "string",
+          "required": false
+        },
+        "aff_carry": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Push-on-change. Every tick it reads the active subscriptions, reads the subjects they name in one bounded op, and hashes what each subscriber WOULD receive. A subscriber whose hash is unchanged is skipped in silence; one whose hash moved gets a re-brief through ./brief and its stored hash updated in the same round.",
+    "use_when": "Behind ./clock. One tick costs two store reads and nothing else when nothing changed, which is what makes a five-minute cadence affordable.",
+    "not_in_scope": "It renders no pack and applies no visibility rule -- ./brief does both, so the audience filter exists in exactly one place. It never invents a subscription either: subscriptions are written through ./gate like everything else.",
+    "emits_meaning": "route brief: one re-brief request per CHANGED subscriber, carrying the subscriber path so the parent's edge can find the llm cell it belongs to. route astore: the new pack_hash and one audit row for the tick. Nothing at all when nothing changed -- silence is the normal outcome.",
+    "consumes_meaning": "context.aff_phase selects the state, context.aff_carry holds the subscriptions between the two reads. A timer firing carries neither and is therefore the start of a tick.",
+    "examples": [
+      "tick, nothing changed -> two selects, zero messages out",
+      "a gate write moved one document -> exactly one re-brief, one subscribers update, one audit row",
+      "the same tick twice in a row -> the second is silent, because the hash written by the first is the hash it computes"
+    ]
+  }
+}

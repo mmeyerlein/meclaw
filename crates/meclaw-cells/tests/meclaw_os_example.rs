@@ -10,8 +10,8 @@
 //!   HTTP turn -> door -> firewall screen -> talky keeper -> seam ->
 //!   brain(mock) -> split -> seam -> answer
 //!
-//! Fifteen cells, and NOBODY wrote a single one of them here: one comes from
-//! `door@1`, two from `firewall@1`, eleven from `talky`, one from
+//! Sixteen cells, and NOBODY wrote a single one of them here: one comes from
+//! `door@1`, two from `firewall@1`, twelve from `talky`, one from
 //! `terminal@1`. What is checked in is two config files -- a colony default and
 //! a hive with an empty graph.
 //!
@@ -24,7 +24,9 @@
 //! single `code` cells with no wiring semantics of their own (unlike `retry`'s
 //! counter or `firewall`'s rules), they exist FOR this example, and their colony
 //! half would be a copy of the run below: the turn enters through the door and
-//! four lanes end in the terminal. What the E2E cannot show -- the door's
+//! two lanes end in the terminal -- the two that are genuinely undecided, since
+//! GH #284 took the `reject` and the `error` edge out of the declaration and
+//! left them to the dead-letter queue. What the E2E cannot show -- the door's
 //! channel fallback, the terminal's empty emission -- is pinned against the
 //! shipped `script_inline` directly, in the shape `retry_template.rs` uses.
 //!

@@ -54,19 +54,6 @@
         }
       },
       {
-        "from": "./firewall",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'reject'",
-        "modifier": {
-          "delete_context": [
-            "fw_body",
-            "fw_now",
-            "fw_phase",
-            "store_origin"
-          ]
-        }
-      },
-      {
         "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'answer'"
@@ -75,11 +62,6 @@
         "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'turn_write'"
-      },
-      {
-        "from": "./talky",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'error'"
       }
     ]
   }

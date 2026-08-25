@@ -1,0 +1,12 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "description": {
+    "purpose": "The address organisations are instantiated at, and nothing else. A real hive, deliberately EMPTY, deliberately OPEN and deliberately SILENT: no `params` block at all -- no ports, no contract, no edges.",
+    "use_when": "Never on its own -- it ships as part of `meclaw-os` and is instantiated with it. An operator uses it by naming it as the parent path of an `add_nodes` that grows an organisation.",
+    "not_in_scope": "No contract of its own (W7-R2). The transit lanes an organisation needs to reach and to leave are declared by the LEVEL, whose own edges satisfy the door and exit check from birth; a contract here would have doors that lead nowhere, because the container is empty by construction. It stays green only for as long as nobody addresses this hive -- and the first edge anyone draws to it would refuse EVERY mutation of the colony with `hive_contract` until the first organisation stands inside. A declaration that is only green because nobody looks is the same defect class as the slot this wave removed from all four levels. No ports either: the mutation that instantiates an organisation draws edges to that organisation, and a sealed hive refuses exactly those endpoints with `hive_port_boundary`.",
+    "contract_in": "None. The level that holds this container declares `in_turn` and routes it here.",
+    "contract_out": "None. The level declares `turn` and `error` and carries them back out."
+  }
+}

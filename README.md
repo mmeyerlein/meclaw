@@ -7,7 +7,7 @@
 **Loops? I don't care. The swarm builds its own. Or it doesn't. Its call.**
 
 [![ci](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/mmeyerlein/meclaw/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-5100%2B%20passing-brightgreen)](#)
+[![tests](https://img.shields.io/badge/tests-5200%2B%20passing-brightgreen)](#)
 [![rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![stars](https://img.shields.io/github/stars/mmeyerlein/meclaw?style=social)](#)
@@ -241,22 +241,25 @@ A tool-loop is `llm → dispatcher → tools → collector → llm`, with the lo
 ## The template library
 
 Both halves of that tool loop already exist as templates, and so does most of an agent.
-**19 of them ship in this repository**, every one pure DSL — directories, `config.json` files
+**25 of them ship in this repository**, every one pure DSL — directories, `config.json` files
 and edges, not a line of Rust and no plugin API. Instantiating one *copies* the subtree into
 your colony; from that moment the instance is yours and has no link back to the library.
 
 | | |
 |---|---|
-| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window |
+| the tool loop | `dispatcher` fans a brain's tool calls out, `collector` decides what comes back into the context window, `tools` is the whole tool surface as one node with one contract |
 | the conversation | `session-keeper` gives a conversation a beginning and an end, `summarizer` writes the handover |
-| the front door | `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `channel` (one room as one hive, its agent a swappable generation), `receptionist` (one agent per channel, built on demand) |
-| memory | `memory-hive` — twelve cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge` |
+| the front door | `door`, `telegram-connector` (a chat as one address), `firewall` (rules that are data, not code), `receptionist` (one agent per channel, built on demand) |
+| memory and identity | `memory-hive` — thirteen cells, an LLM-free write path and a nightly consolidation — plus `memory-drain` and `archive-bridge`, and `affinity` for the curated record of who is who |
 | whole agents | `cogny` is the agent core as one node; `talky` is the full composite, four sub-units pre-wired |
+| the organism | `meclaw-os`, `org`, `member`, `assistant` — four composition levels under one rule, *a level owns what its siblings must share*: the shell owns the broker (`access`) and the control loop, the organisation owns a namespace, the member owns the memory and the screen, the assistant owns the reasoning core and the tools |
 | the small ones | `retry`, `terminal` |
 
 The catalogue, with what each one is for and which ports to wire, is
 [`templates/README.md`](templates/README.md). `examples/meclaw-os` boots a seed with **zero
-cells in it** and grows a seventeen-cell agent out of that library with one declaration.
+cells in it** and grows a sixteen-cell agent out of that library with one declaration;
+`examples/organism` boots the same empty seed and grows the whole four-level stack —
+**55 cells** — out of five.
 
 ## It rewrites itself. That's the point.
 
@@ -268,9 +271,9 @@ That part shipped. The **builder-hive** — an `llm` plus `code` topology that t
 
 ## Where it's at
 
-meclaw is **v0.20.1**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.21.0**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **5100+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 

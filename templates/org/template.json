@@ -1,0 +1,28 @@
+{
+  "name": "org",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "An organisation as a namespace: a name, a boundary, and one open container its members are instantiated into. Nothing else. A level owns what its siblings must share, and the members of one organisation share a name and a boundary -- they do not share a memory, an identity, a broker or a firewall, because under GH #122 the memory belongs to the MEMBER and a group is an audience, not a holder. The level is therefore deliberately thin: its value is the namespace, not the contents, and it should not be padded to look substantial.",
+    "use_when": "One per organisation, instantiated into the shell's orgs container. Use it whenever two or more members should answer under one name and share nothing but that name -- a company, a household, a team, a customer. Instantiate it in the mutation that also wires its transit lanes: the four inbound lanes onto the hive path, and the seven outbound ones from the hive path to whoever asked. The hive is an island until an edge crosses into it.",
+    "not_in_scope": "No memory of its own, and this is a ruling rather than an omission: 'what does the group know about X' is a filter on the read, never a second store -- two stores would force the writer to decide which one a sentence belongs to before extraction has run, which is not a decision it can make. A group that owns an agent nobody owns personally is a MEMBER with its own name, instantiated from member@1.0.0 like any other. No identity, no broker, no firewall, no sink, no drain: each of those belongs either to a member below or to the shell above. No cells at all -- an org that grows a cell has stopped being a namespace.",
+    "examples": [
+      "PORTS - the hive path IS the address, and the level is deliberately OPEN (`params.ports` is absent, not empty): the mutation that instantiates a member into the container draws edges to that member, and a seal would refuse exactly those endpoints. Entry (four lanes, on hop.route, all onto the org's own path): 'in_turn' a turn for a member, 'in_recall' a question against a member's memory, 'in_brief' a read of a member's curated record, 'in_propose' a write against it. Exits (seven lanes, all leaving the hive path): 'answer', 'ack', 'reject', 'error', plus the three a member re-emits on behalf of its assistants -- 'write', 'turn_write', 'prune'. Nothing is translated on the way through -- a namespace carries hop and context untouched.",
+      "the whole of the level's behaviour, in eleven edges: four doors `.` -> `./members`, one per accepted lane, and seven exits `./members` -> `.`, one per emitted lane. There is nothing below the container to route to until a member is instantiated, and that mutation draws the member's own edges.",
+      "WHERE THE ELEVEN LANES COME FROM: they are the union of what the level's occupant accepts and emits at the version pinned in each `because` (member@1.0.0), minus the lanes a sibling inside the level consumes itself. Nothing is subtracted here, because the only thing inside an org is the container. If a member ever moves a lane, this level moves with it in the same commit -- `crates/meclaw-cells/tests/gh302_org_is_a_namespace.rs` reads both files and fails until it does. That is not hypothetical: `write`, `turn_write` and `prune` arrived here the day the member started re-emitting what its assistants raise and nothing at member level consumes.",
+      "the lane that is deliberately ABSENT is 'turn'. A member consumes its own turn internally (`./assistants` -> `./firewall`) and never emits one, so an org that declared it would carry an exit edge that can never fire -- an interface promising something no occupant produces.",
+      "instantiating an organisation: one add_nodes with template 'org@1.0.0', plus the transit edges. Nothing is registered as a cell by that mutation -- both directories are hive scopes, and a hive is a scope marker, not an actor.",
+      "adding a member afterwards: an add_nodes into <org>/members with template 'member@1.0.0', and in the SAME mutation the pass-through edges the member needs. The container is open precisely so that this mutation is legal.",
+      "the container's unbound behaviour is UNDECLARED, on purpose: the slot of GH #285 governs an address that does not exist, and this container does exist, so a slot declaration on this level could never fire. A message reaching an empty container takes the ordinary path. Read out of `unbound_slot_behaviour` in `crates/meclaw-colony/src/colony.rs`, which steps aside as soon as the target is a registered hive scope.",
+      "what would make this level fat, and is therefore refused: an org-level memory hive, an org-level identity, an org-wide firewall, a shared drain. Each of them belongs to a member or to the shell -- see the README."
+    ]
+  },
+  "tags": [
+    "org",
+    "namespace",
+    "composition",
+    "level",
+    "hive"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

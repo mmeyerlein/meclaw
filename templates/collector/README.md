@@ -680,6 +680,11 @@ for is decided where the brain's `system.tools` is written:
 }
 ```
 
+The block above is prose; the **canonical copy of that schema is shipped**, in
+`templates/talky/brain/seed/system.jsonl` ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) --
+a talky instantiated from the library carries it already, and anyone writing the schema into
+another brain's `system.tools` should copy the seeded bytes rather than retype this paragraph.
+
 The collector reads exactly those three argument names, passes the window through as the
 recall port's own keys, and takes the **tier** from `memory_call_tier`. A tier
 is a cost decision of the tree, not something a model gets to raise from inside a prompt.

@@ -1,0 +1,94 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000,
+    "schedules": [
+      {
+        "schedule_id": "${uuid7:affinity-push}",
+        "schedule_name": "affinity-push",
+        "cron": "${AFFINITY_PUSH_CRON:-0 */5 * * * *}",
+        "emit_to": "../push",
+        "emit_body": {
+          "messages": [
+            {
+              "origin": "user",
+              "type": "text",
+              "text": "affinity-push"
+            }
+          ]
+        },
+        "emit_headers": {}
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {
+      "cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 */5 * * * *",
+        "description": "6-field Quartz cron of the push tick (AFFINITY_PUSH_CRON). Cron runs in UTC."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        },
+        "iteration_n": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The tick of the push lane. It sends, it decides nothing: whether a subscriber hears anything is ./push's comparison, not this cell's schedule.",
+    "use_when": "Inside the affinity hive; change the cadence at runtime with add/modify/remove ops by schedule_id.",
+    "not_in_scope": "No catch-up. A missed firing is dropped, and costs nothing: the next tick compares the same hashes and reaches the same subscribers.",
+    "emits_meaning": "A plain trigger. The lane's state starts empty, which is exactly how ./push recognises the start of a tick.",
+    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op.",
+    "examples": [
+      "every five minutes -> ./push; nothing changed -> nothing leaves the hive"
+    ]
+  }
+}

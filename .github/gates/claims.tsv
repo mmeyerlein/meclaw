@@ -42,6 +42,10 @@ PIN-write-surface	docs/config.md	begrenzt die Writes, die das Substrat vor `hand
 PIN-neighbourhood-view	docs/config.md	Die deklarierende Cell bekommt beim Spawn einen read-only Handle	pinned	a_cell_sees_every_inbound_edge_and_only_those
 PIN-hive-port-boundary	docs/meclaw-overview.md	deklarierten Port vorbei ins Innere greift, wird mit `hive_port_boundary`	pinned	a_deep_endpoint_past_a_declared_port_rejects_and_changes_nothing
 PIN-remove-before-add	docs/meclaw-overview.md	**Wird vor `add_edges` angewandt**	pinned	one_mutation_replaces_an_edge_instead_of_deleting_it
+PIN-remove-nodes-cells-only-de	docs/meclaw-overview.md	Ein Hive-Pfad ist kein `remove_nodes`-Ziel	pinned	remove_nodes_refuses_a_hive_path_and_the_whole_mutation_with_it
+PIN-remove-nodes-cells-only-en	docs/meclaw-overview.en.md	A hive path is not a `remove_nodes` target	pinned	remove_nodes_refuses_a_hive_path_and_the_whole_mutation_with_it
+PIN-remove-nodes-exact-incidence-de	docs/meclaw-overview.md	eine Kante zwischen zwei **Nachfahren** des getroffenen Knotens überlebt	pinned	remove_nodes_leaves_an_edge_between_two_descendants_standing
+PIN-remove-nodes-exact-incidence-en	docs/meclaw-overview.en.md	an edge between two **descendants** of the matched node survives	pinned	remove_nodes_leaves_an_edge_between_two_descendants_standing
 PIN-blob-messages-pointer	docs/meclaw-overview.md	referenziert ein Body-Dokument; dessen `messages[]` wird an der Stelle des Pointers **inline gespliced**	pinned	a_bulk_pointer_is_expanded_before_the_cell_sees_the_body
 PIN-blob-system-leaf	docs/meclaw-overview.md	Das Substrat löst an der Delivery-Grenze die Pointer auf	pinned	a_system_leaf_pointer_is_expanded_before_the_cell_sees_the_body
 PIN-sandbox-default	docs/config.md	ein Default-Profil injiziert die Instanziierung nur bei `bash`, `code` und `harness`	pinned	a_template_sourced_code_cell_without_a_profile_gets_the_restricted_default
@@ -156,3 +160,29 @@ SNB-description-block-de	docs/config.md	Sechs Schlüssel — **builder-erzwungen
 SNB-description-block-en	docs/config.en.md	Six keys, **builder-enforced**, not substrate-enforced	specified-not-built	GH #254
 SOT-round-one-name	templates/memory-hive/README.md	no template may ever introduce a second name for it	pinned	the_sot_rule_for_identity_references_is_stated_where_it_is_read
 SOT-identity-never-looked-up	templates/memory-hive/writer/config.json	never LOOKS UP an identity	pinned	a_present_speaker_is_written_exactly_as_it_arrived
+#
+# --- W7: the tools hive, the dissolved channel, the four levels ---------
+# Added 2026-08-25 for the promises this wave made and pinned (GH #254, GH
+# #302, GH #286, GH #303, GH #284, GH #55, GH #283, GH #122). The spec trias
+# itself did NOT move in this wave -- measured, not assumed: `git diff` over
+# docs/{meclaw-overview,cell-types,config}{,.en}.md across the whole wave is
+# empty, and the only `channel` occurrences in the overview remain
+# `mpsc::channel`, the `chat_id` typing note and the rust-toolchain row. So
+# every promise below is documented where its reader stands -- the template
+# README that describes the shipped artefact -- and every row names the test
+# that would go red if the artefact stopped keeping it.
+#
+PIN-tools-one-door	templates/tools/README.md	`params.ports` is `[]`. The hive path is the only address	pinned	the_tools_hive_is_sealed_so_the_hive_path_is_the_only_address
+PIN-tools-one-call-one-tool	templates/tools/README.md	A known tool name fires one positive edge, and the default therefore **never runs**.	pinned	a_named_call_reaches_that_tool_and_the_default_stays_silent
+PIN-tools-sandbox-union	templates/tools/README.md	**`sandbox_union` -- the widest value of every axis, over every occupant.**	pinned	the_declared_union_is_the_one_the_occupants_compute
+PIN-tools-reentrancy	templates/tools/README.md	**`reentrancy` -- one entry per occupant	pinned	every_occupant_has_a_reentrancy_entry_and_every_entry_has_an_occupant
+PIN-channel-level-dissolved	templates/assistant/README.md	GH #303 dissolved a whole path level. What used to be	pinned	nothing_shipped_still_addresses_the_connector_inside_the_level
+PIN-assistant-wires-channels-once	templates/assistant/README.md	the eighteen edges that address it ship **once** (GH #303)	pinned	a_second_channel_adds_no_edge_between_the_channels_level_and_its_siblings
+PIN-container-declares-nothing	templates/assistant/README.md	`channels` ships with **no `params` block at all**	pinned	the_container_declares_neither_a_contract_nor_ports
+PIN-member-holds-the-memory	templates/member/README.md	**The memory belongs to the member, not to the agent.**	pinned	the_level_wires_the_screen_the_memory_and_the_record
+PIN-level-lane-union-derived	templates/member/README.md	nothing here describes a lane a holder lost	pinned	the_member_declares_the_lanes_that_cross_its_boundary
+PIN-talky-serves-its-own-tools	templates/talky/README.md	the collector inside this hive **serves** both of them	pinned	memory_recall_is_served_inside_and_never_leaves_on_the_tool_lane
+PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped naming names.**	pinned	an_ordinary_tool_call_still_leaves_on_the_tool_lane
+PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schemas of `memory_recall` and `thread_recall`	pinned	the_shipped_talky_declares_memory_recall_to_the_provider
+PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
+PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **five declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level

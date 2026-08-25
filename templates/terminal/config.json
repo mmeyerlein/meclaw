@@ -33,7 +33,7 @@
   },
   "description": {
     "purpose": "The terminal of a colony: everything that leaves a tree arrives here and stops, so the trace shows it and nothing dead-letters.",
-    "use_when": "As the placeholder for a decision not made yet -- where an answer goes, where a rejection is logged, where errors are alarmed, which memory a closed day belongs to.",
+    "use_when": "As the placeholder for a decision not made yet -- where an answer goes while nothing sends it back out, which memory a finished turn or a closed day belongs to. NOT for a reject or an error lane: those have two honest states, a consumer that acts or no edge at all, and a swallowing cell is neither (GH #284).",
     "not_in_scope": "No storage, no forwarding, no judgement -- it is a stop, not a component."
   }
 }

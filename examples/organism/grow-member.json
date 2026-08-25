@@ -1,0 +1,68 @@
+{
+  "scope": "/os/orgs/acme",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "members/alex",
+        "template": "member@1.0.0"
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./members",
+        "to": "./members/alex",
+        "condition": "has(hop.route) && hop.route == 'in_turn'"
+      },
+      {
+        "from": "./members",
+        "to": "./members/alex",
+        "condition": "has(hop.route) && hop.route == 'in_recall'"
+      },
+      {
+        "from": "./members",
+        "to": "./members/alex",
+        "condition": "has(hop.route) && hop.route == 'in_brief'"
+      },
+      {
+        "from": "./members",
+        "to": "./members/alex",
+        "condition": "has(hop.route) && hop.route == 'in_propose'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'answer'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'ack'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'reject'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'error'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'write'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'turn_write'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'prune'"
+      }
+    ]
+  }
+}

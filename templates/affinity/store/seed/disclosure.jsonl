@@ -1,0 +1,11 @@
+{"schema": {"audience": "text", "audience_set": "json", "decided_at": "text", "entity_id": "text", "field_path": "text", "id": "text", "mode": "text"}}
+{"audience": "member:alex", "audience_set": ["member:alex"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "*", "id": "disc:alex-owner", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "aieos.identity.names", "id": "disc:alex-aiden-names", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "aieos.linguistics.text_style", "id": "disc:alex-aiden-style", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "aieos.linguistics.idiolect", "id": "disc:alex-aiden-idiolect", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "aieos.interests.favorites", "id": "disc:alex-aiden-favorites", "mode": "summarize"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:alex", "field_path": "mx.relations", "id": "disc:alex-aiden-relations", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "aieos.identity.names", "id": "disc:aiden-self-names", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "aieos.motivations", "id": "disc:aiden-self-motivations", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:aiden", "field_path": "aieos.linguistics.text_style", "id": "disc:aiden-self-style", "mode": "share"}
+{"audience": "agent:aiden", "audience_set": ["agent:aiden"], "decided_at": "2026-01-01T00:00:00Z", "entity_id": "entity:robin", "field_path": "aieos.identity.names", "id": "disc:robin-aiden-names", "mode": "share"}

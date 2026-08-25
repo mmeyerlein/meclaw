@@ -1,62 +1,67 @@
 {
-  "cell": {
-    "type": "hive"
-  },
+  "cell": { "type": "proxy", "timeout": -1 },
   "params": {
-    "ports": [],
-    "contract": {
-      "accepts": [
-        {
-          "route": "in_reply",
-          "context": ["chat_id"],
-          "because": "one finished turn to say in the chat it came from; context.chat_id picks the chat, and without it the connector has no address"
-        }
-      ],
-      "emits": [
-        {
-          "route": "turn",
-          "because": "somebody wrote in the chat -- one user-origin turn, with the chat and the sender identity on the hop, for whatever screens or receives turns"
-        },
-        {
-          "route": "error",
-          "because": "the connector itself failed -- it could not read an inbound message or could not deliver an outbound one. Drain it: undrained, a chat that never got its answer looks like an agent that never answered"
-        }
-      ]
-    },
-    "required_drains": [
-      {
-        "accepts": "in_reply",
-        "emits": "error",
-        "because": "a reply this connector could not deliver leaves on the error lane and nowhere else. Undrained, the one failure a chat surface has -- the answer that never arrived -- is invisible at exactly the end where somebody is waiting for it"
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "emit_to": "..",
+    "long_poll_timeout_ms": 35000,
+    "long_poll_request_secs": 30,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "base_url": "https://api.telegram.org"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${TELEGRAM_BOT_TOKEN}",
+        "description": "Telegram bot token (BotFather)"
+      },
+      "long_poll_request_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "Telegram-side getUpdates long-poll wait in seconds"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around sendMessage"
       }
-    ],
-    "graph": {
-      "edges": [
-        {
-          "from": ".",
-          "to": "./proxy",
-          "condition": "has(hop.route) && hop.route == 'in_reply'"
-        },
-        {
-          "from": "./proxy",
-          "to": ".",
-          "condition": "!has(hop.error_code)",
-          "modifier": { "set_hop": { "route": "'turn'" } }
-        },
-        {
-          "from": "./proxy",
-          "to": ".",
-          "condition": "has(hop.error_code)",
-          "modifier": { "set_hop": { "route": "'error'" } }
-        }
-      ]
-    }
+    },
+    "emits": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      },
+      "hop": {
+        "platform": { "type": "string", "values": ["telegram"], "required": false },
+        "chat_id": { "type": "number", "required": false },
+        "user_id": { "type": "number", "required": false },
+        "message_id": { "type": "number", "required": false },
+        "error_code": { "type": "string", "required": false },
+        "msg_type": { "type": "string", "required": false }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      },
+      "context": {
+        "chat_id": { "type": "number", "required": true }
+      }
+    },
+    "capabilities": ["network:proxy", "db:own"]
   },
   "description": {
-    "purpose": "Scope marker of one chat connector: the credential-bearing proxy cell behind a sealed boundary. THE HIVE IS THE ADDRESS -- params.ports is empty, so no edge reaches the proxy and a caller names the hive plus a lane on hop.route.",
-    "use_when": "One per bot token. Instantiate with add_nodes and wire in_reply in / turn + error out at the HIVE path, in the same mutation.",
-    "not_in_scope": "No sender filter, no bot commands, no history, no persona.",
-    "contract_in": "in_reply -- the finished assistant turn, with the chat in context.chat_id.",
-    "contract_out": "turn -- one inbound chat message as a user turn. error -- the connector's own failure, which the parent MUST drain."
+    "purpose": "One Telegram chat as one cell. Inbound chat messages emerge as one user-origin turn each; a finished turn arriving from the topology is written back into the chat it came from. The cell is taken verbatim from bot-basic@2.0.0 -- only params.emit_to differs, and it points one level up (..), because every emission is routed by the edges of the level that holds this connector (the substrate applies apply_edges to a source emission too; emit_to is only the no-route address).",
+    "use_when": "Wherever a topology needs a Telegram surface in front of something ELSE. One instance per bot token. Wire the cell itself -- there is no hive and no lane name to hit: an emission carrying hop.error_code is the connector's own failure, one without it is an inbound turn.",
+    "not_in_scope": "Does not understand bot commands, does not keep chat history, does not transform messages beyond extracting text and identifiers. The connector no longer normalises its own output onto turn/error; the level that holds it does, and that level is channels (GH #303).",
+    "emits_meaning": "Two emission shapes, hence no required hop fields: (a) source emission -- one user-origin text turn per inbound Telegram message, hop carries chat_id/user_id/message_id/platform (promote chat_id to context on the out-edge, or it dies with the next cell emission); (b) inbound-error emission (missing_chat_id/missing_assistant_turn/send_failed/invalid_body) -- empty messages[], hop carries error_code + msg_type 'proxy_inbound_error', targeted at reply_to. Declaring chat_id/platform as required breaks shape (b) against the substrate emits validation.",
+    "consumes_meaning": "messages[]: the last assistant turn is sent to the chat. context.chat_id selects the target Telegram chat (promoted onto context by the out-edge of the level that holds this connector).",
+    "examples": [
+      "Inbound Telegram 'Hi' -> emit body { messages: [{ origin: 'user', type: 'text', text: 'Hi' }] }, hop { platform: 'telegram', chat_id: 12345, user_id: 67890 }"
+    ]
   }
 }

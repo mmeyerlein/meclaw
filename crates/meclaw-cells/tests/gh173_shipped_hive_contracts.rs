@@ -222,6 +222,57 @@ fn constant_route(src: &str) -> Option<&str> {
     (!inner.contains('\'')).then_some(inner)
 }
 
+/// Driver ruling **W7-R1** (GH #286, 2026-08-25) — the inward mirror of the
+/// GH #176 carve-out above: a door that narrows WITHIN a declared lane on a key
+/// the bare route probe cannot carry.
+///
+/// `probe(route)` builds a hop that holds `route` and nothing else. A door
+/// conditioned on `has(hop.tool_name) && hop.tool_name == 'bash'` can therefore
+/// never fire under it — not because the lane is undeclared, but because the
+/// probe is not the message the condition is about. The sweep below would read
+/// that as "opens on a lane no `accepts` entry names", which is a false
+/// positive: the lane IS declared (`tool_call`), and the condition only decides
+/// WHICH occupant serves it.
+///
+/// The emit side has had this exemption since GH #176 — `edge_states_lane`'s
+/// third verdict, *an expression that reads the message is not judged and
+/// counts*. The accepts side did not, and that asymmetry was the defect. This
+/// function closes it, and it is deliberately narrower than the emit-side one:
+/// a door with no condition, or one that reads only `hop.route`, is still put
+/// through the router unchanged.
+///
+/// **The gate gives up no check it could have made alone.** The substrate keeps
+/// judging these doors at mutation time, where the probe is not a bare route
+/// either: `hive_contract::door_exists` runs the same lane through the real
+/// `apply_edges` against the real edge table, defaults and all.
+///
+/// The case that forced it, and the proof that the exemption still bites — a
+/// door discriminating on `hop.route` itself is condemned as before — live in
+/// `crates/meclaw-cells/tests/gh286_one_call_reaches_exactly_one_tool.rs`,
+/// module `door_sweep`. **A change here belongs in both files:** integration
+/// tests compile into separate binaries, so that module is a reconstruction of
+/// this one rather than a caller of it.
+fn condition_reads_a_hop_key_the_probe_cannot_carry(
+    spec: &meclaw_colony::config::EdgeSpec,
+) -> bool {
+    let Some(src) = spec.condition.as_deref() else {
+        return false;
+    };
+    let mut rest = src;
+    while let Some(at) = rest.find("hop.") {
+        let after = &rest[at + "hop.".len()..];
+        let key: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !key.is_empty() && key != "route" {
+            return true;
+        }
+        rest = &after[key.len()..];
+    }
+    false
+}
+
 /// True iff SOME edge crossing the hive path outward names `route` on itself.
 fn an_exit_names_lane(hp: &HiveParams, route: &str) -> bool {
     hp.graph
@@ -278,7 +329,7 @@ fn every_lane_the_graph_opens_is_declared() {
                     .any(|d| {
                         d.target.as_str() == format!("{HIVE}/{}", spec.to.trim_start_matches("./"))
                     })
-            });
+            }) || condition_reads_a_hop_key_the_probe_cannot_carry(spec);
             assert!(
                 covered,
                 "{name}: the door {} -> {} opens on a lane no `accepts` entry names",

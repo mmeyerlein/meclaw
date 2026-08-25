@@ -1,0 +1,62 @@
+{
+  "name": "tools",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out. Today three occupants stand behind it -- a sandboxed one-shot shell, a GET-only HTTP client and a generic search wrapper -- and which of them serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving.",
+    "use_when": "One per assistant. Draw ONE edge to the hive path stamping `hop.route = 'tool_call'`, and one back off it on `tool_result` -- the pairing is declared in `params.required_drains` and a mutation that wires only the first is refused. `params.ports` is empty: the hive path is the only address, so no caller can grow an edge to a single tool and thereby pin the set.",
+    "not_in_scope": "No tool schemas -- they belong in the calling brain's `system.tools`, next to the model that has to choose. No per-tool credentials: a cell that needs one binds it itself, late, from the environment. No judgement about which tool to call or whether it should have been called -- that happened upstream, and a hive that re-decided it would be a second brain with no conversation in front of it. No memory tool either: a memory is a hive of the MEMBER (ADR-0002 E1) and reaching it is a lane of its own, not an occupant of this one.",
+    "examples": [
+      "a brain emits a tool_call bundle -> the dispatcher splits it -> one message per call reaches this hive on hop.route == 'tool_call' -> one tool_result comes back per call, whichever tool ran",
+      "adding a fourth tool is a change INSIDE this hive: one occupant directory, one edge in `params.graph`, no change to the caller -- which is the property the single contract buys",
+      "hop.tool_name == 'web_search' selects the search occupant; the two environment tokens it binds (SEARCH_ENDPOINT, SEARCH_API_KEY) are declared in `requires.env` and carry no value in this tree"
+    ]
+  },
+  "requires": {
+    "env": {
+      "SEARCH_ENDPOINT": {
+        "type": "string",
+        "required": false,
+        "because": "binds `params.endpoint` of the `web_search` occupant, which is written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}`. Declared and NOT required, and both halves are deliberate: the token is declared because a builder should learn this template's environment surface by reading it rather than by watching a tool answer nothing, and it is not required because the value has a default -- an instantiation that only wants the shell and the fetcher must not be refused for a search endpoint it will never call. Unset, the search occupant queries the loopback placeholder and returns whatever that is (nothing, on a machine without a search shim); it is not an error and nothing anywhere says so, which is exactly why the key is written down here"
+      },
+      "SEARCH_API_KEY": {
+        "type": "string",
+        "required": false,
+        "because": "binds `params.api_key` of the `web_search` occupant, written `${SEARCH_API_KEY:-}`. Not required, because the cell filters the empty string and queries the endpoint anonymously -- that is the occupant's own declared contract (`contract.settings.api_key`), and requiring the key here would contradict the cell it configures. Set it when the configured endpoint wants a bearer token. It carries no value in this tree and never should: the token is the name of a secret, not the secret"
+      }
+    }
+  },
+  "sandbox_union": {
+    "trust": "full",
+    "network": "allow",
+    "filesystem": "unrestricted",
+    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all: `web_fetch` and `web_search` carry none, which is the shipped truth rather than an omission -- egress IS what those two cells do, `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host. Either one of them alone therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. `bash` (`trust: restricted`, `network: deny`, `filesystem.runtime: true`) and `unknown` (the same block, the tightest in the hive) tighten nothing about the hive as a WHOLE: a union is not an average, and the two sandboxed occupants only bound what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over four `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file."
+  },
+  "reentrancy": {
+    "bash": {
+      "reentrant": true,
+      "because": "One-shot execution by ruling: no persistent session, no shell state and no working directory carried from one call to the next (a call that needs one writes `cd /x && cmd`). Two calls in flight are two processes that cannot observe each other, so a brain may fan a round out across this occupant. `params.max_concurrency: 4` caps how many run at once -- a queue, not a serialisation: the fifth call waits and still answers on its own `tool_result`."
+    },
+    "web_fetch": {
+      "reentrant": true,
+      "because": "A stateless request/response cell: one GET per call, nothing carried between calls, no cookie jar and no session. `params.max_concurrency: 4` caps the parallel fetches for the endpoint's sake, which delays a call but never reorders or merges one."
+    },
+    "web_search": {
+      "reentrant": true,
+      "because": "A stateless request/response cell against the configured endpoint: one query per call, no cursor and no pagination state to be confused by a second call. `params.max_concurrency: 8`, same reading as above."
+    },
+    "unknown": {
+      "reentrant": true,
+      "because": "It formats a string out of the hop it was handed and emits it. It reads nothing, writes nothing and executes nothing, so there is no state for a concurrent call to reach. Declared explicitly although it is not a tool: #286's hazard is a swap that quietly turns a parallel tool round sequential, and a declaration with a hole cannot catch that -- the occupant nobody declared is the one whose serialisation surprises the caller."
+    }
+  },
+  "tags": [
+    "tools",
+    "hive",
+    "bash",
+    "web_fetch",
+    "web_search",
+    "tool-loop"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

@@ -11,6 +11,256 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-25
+
+### Breaking
+
+- **`telegram-connector@2.0.0`: the connector is one cell, and its address is
+  the node** ([#303](https://github.com/mmeyerlein/meclaw/issues/303),
+  ADR-0002 § Nachtrag 2026-08-20). The template shipped as a sealed hive
+  (`params.ports: []`) whose only occupant was the credential-bearing `proxy`
+  cell. That hive grouped nothing: it existed to normalise the cell's two
+  emission shapes onto named lanes (`turn` for an inbound turn, `error` for the
+  connector's own failure) and to give a caller one address to wire. A level
+  that groups a single occupant is not a level — the normalisation belongs to
+  the level that HOLDS channels. So the wrapper is gone and the cell moved up:
+  `templates/telegram-connector/config.json` **is** the `proxy` cell, params and
+  contract byte-unchanged.
+
+  This is the first digit rather than the third, because a **documented address
+  is taken away** and template ports are public contract (README § Stability).
+  Neither rule in `docs/development-rules.md` § 4 covers a removal — a repair
+  moves the third digit, an addition the second.
+
+  **Migration**, two edges per instance:
+  - *Inbound.* An edge that named the hive path plus `hop.route == 'in_reply'`
+    now names the **cell** and needs no lane rewrite. `context.chat_id` still
+    selects the chat.
+  - *Outbound.* The lanes `turn` and `error` no longer exist. Every emission
+    leaves on **one** wire and the caller tells them apart by `hop.error_code`:
+    absent → one user-origin turn (`hop` carries
+    `chat_id`/`user_id`/`message_id`/`platform`); present → the connector's own
+    failure (`missing_chat_id`, `missing_assistant_turn`, `send_failed`,
+    `invalid_body`). The two shipped edge conditions are
+    `!has(hop.error_code)` and `has(hop.error_code)`.
+  - *`override_params`.* A second instance takes its own credential variable in
+    the **flat** form; a single-cell template has no sub-path to address, so a
+    key naming `telegram-connector/proxy` no longer resolves.
+
+  **What the collapse costs, stated rather than glossed over:** the hive paired
+  `in_reply → error` in `required_drains`, and that promise is gone with it —
+  wiring the inbound edge and *not* draining the failures is the one mistake
+  this template can no longer refuse on the caller's behalf. The pairing is owed
+  by the level that holds the connector, and this wave's `assistant@1.0.0`
+  declares it in lane form (`in_turn → error`, on the level itself — the
+  `channels` container inside it declares no contract at all, because a lane
+  declared on an empty container would owe a door to a cell that is not there
+  yet). Pinned by
+  `crates/meclaw-cells/tests/gh303_the_connector_is_one_cell.rs`.
+
+### Added
+
+- **The four composition levels ship as templates**
+  ([#302](https://github.com/mmeyerlein/meclaw/issues/302),
+  [#26](https://github.com/mmeyerlein/meclaw/issues/26)) — `meclaw-os@1.0.0`,
+  `org@1.0.0`, `member@1.0.0` and `assistant@1.0.0`, authored top-down under one
+  rule: **a level owns what its siblings must share** (ADR-0013,
+  `plans/adr/0013-a-level-owns-what-its-siblings-must-share.md`). Each is a
+  `ref` composite over templates that already shipped, plus its own topology,
+  plus one real, open, **empty container hive** the level beneath it is
+  instantiated into — `orgs`, `members`, `assistants`, `channels`. A container
+  carries neither `params.contract` nor `params.ports`: the lanes are declared by
+  the level, so an assistant with no channel yet is a legitimate intermediate
+  state instead of a colony that refuses every later mutation.
+
+  | template | what it owns | lanes in / out | edges | cells of its own |
+  |---|---|---:|---:|---:|
+  | `meclaw-os@1.0.0` | the capability broker (`access@2.0.5`) and the control loop (`steward@2.0.10`) | 7 / 9 | 19 | 0 |
+  | `org@1.0.0` | a name and a boundary, and nothing else | 4 / 7 | 11 | 0 |
+  | `member@1.0.0` | the memory (`memory-hive@3.0.1`), the curated record (`affinity@3.0.0`) and the screen (`firewall@2.0.4`) | 4 / 7 | 18 | 0 |
+  | `assistant@1.0.0` | the reasoning core (`cogny@4.0.2`) and the tool surface (`tools@1.0.0`) | 6 / 7 | 21 | 0 |
+
+  Two consequences worth naming. **The memory belongs to the member**
+  ([#122](https://github.com/mmeyerlein/meclaw/issues/122)), because two
+  assistants of one person must know the same person and must meet one attacker
+  with one rate window. And **a level that shares nothing is still a level** when
+  what it is worth is the namespace — that is `org`, which holds no cell at all.
+  Pinned by `gh302_meclaw_os_shell.rs`, `gh302_org_is_a_namespace.rs`,
+  `gh302_member_holds_the_memory.rs` and `gh302_assistant_wires_channels_once.rs`.
+
+- **`tools@1.0.0` — the tool surface of one assistant as ONE node with ONE
+  contract** ([#286](https://github.com/mmeyerlein/meclaw/issues/286),
+  [#283](https://github.com/mmeyerlein/meclaw/issues/283)): `tool_call` in,
+  `tool_result` out. Sealed (`params.ports: []`), so which tools exist is a
+  change INSIDE the hive and never a change to the caller's edges — replacing
+  three tool cells with one code-executing cell is a single `swap_nodes` and not
+  one edge of the caller moves. Four occupants: a sandboxed one-shot shell, a
+  GET-only fetcher, a search wrapper, and a fourth cell that turns an unknown
+  tool name into a **named refusal** instead of a dead letter. The distribution
+  happens inside: three positive per-tool edges plus **one guarded default**
+  (#283), never an exclusion chain. Two declarations make a swap honest rather
+  than quiet — the **union of every occupant's sandbox** and **reentrancy per
+  occupant** — so widening the blast radius has to be written down.
+
+- **`examples/organism` — the whole stack grows from templates**
+  ([#302](https://github.com/mmeyerlein/meclaw/issues/302)). The same empty seed
+  `examples/meclaw-os` uses — a `colony.json`, one empty root hive, **zero
+  cells** — plus five declarations, one per level. Out of that: **55 cells and
+  287 edges**, of which **48 edges were written by hand**. The registry records
+  the true origin at every level: a leaf carries its own template and version,
+  and `registry.template_chain` carries the outer levels, outermost first. A
+  second assistant is one instantiation with its own parameters; a second channel
+  is two instantiations into `channels`, still one mutation, with no intermediate
+  hive.
+
+- **`access@2.0.5` and `affinity@3.0.0` join the public template library**
+  ([#302](https://github.com/mmeyerlein/meclaw/issues/302), owner decision
+  2026-08-25). Not a change to either template — a consequence of the levels:
+  `meclaw-os` references `access` and `member` references `affinity` as `ref`s,
+  and a level whose `ref` resolves to nothing in the public tree is worse than an
+  absent level, because no gate catches it (`a_documented_template_reference_resolves`
+  skips a name the tree does not carry). Either a level travels whole or not at
+  all. Both ship inert: every seeded `access` policy row is disabled, and both
+  seed sets carry placeholder identifiers only — the template is here, the
+  instance is not.
+
+- **A shipped `talky` answers a time-range question without its owner
+  hand-writing a tool schema** ([#55](https://github.com/mmeyerlein/meclaw/issues/55)).
+  `templates/talky/brain/seed/system.jsonl` is new and carries exactly two lines,
+  the provider-native function objects for `memory_recall` and `thread_recall`.
+  The brain's **first** request already carries them in `tools[]`, and the
+  `window_from`/`window_to` the model answers with reach the `recall` port as
+  `context.recall_window_from` / `-_to`. Nothing was seeded beside them: no
+  identity, no instructions, no persona. The line is *tools the composite
+  implements itself* — a tool the parent wires is the agent's, not the
+  template's.
+
+### Removed
+
+- **`channel@1.0.3` is retired**
+  ([#303](https://github.com/mmeyerlein/meclaw/issues/303)). The level grouped
+  nothing: the plurality it was built for never arrived. It held one connector
+  and one generation slot, and no colony ever put a second occupant beside them
+  — so what looked like a level was a wrapper around a pair, which
+  ADR-0002 § Nachtrag 2026-08-20 rules is not a level. A level that groups a
+  single occupant is not a level, and the normalisation it performed belongs to
+  the level that holds channels.
+  `templates/channel/` is gone from the library and from
+  the export allow-list, together with its byte pin
+  (`crates/meclaw-cells/tests/channel_template.rs`, which guarded copies that no
+  longer exist).
+
+  **What moves where.** The lane normalisation the hive performed and its
+  `in_turn → error` drain pairing move up to `assistant@1.0.0`, which owns the
+  `channels` container and is where more than one channel actually meets.
+  Both of the level's occupants stay in the library as the building blocks they
+  always were: `terminal` is unaffected, and `telegram-connector` is unaffected
+  **by this retirement** — it has its own Breaking entry above, from the change
+  that landed one commit earlier.
+
+  **Migration.** A colony instantiated from `channel@1` is untouched — an
+  instance is a copy and has no link back to the library. What breaks is a *new*
+  mutation naming `"template": "channel@1.0.3"`, and a `override_params` key or
+  edge endpoint addressing `telegram-connector/proxy` inside it: build the
+  channel from `telegram-connector` plus a `talky` under a `channels` level
+  instead. Pinned by
+  `crates/meclaw-cells/tests/gh303_no_channel_level_survives.rs`.
+
+  The No-Delete policy is not in play here: it governs a colony `{root}` — the
+  instantiated tree a colony owns — not this repository's template library,
+  which is source and is versioned like source.
+
+- **No shipped topology routes a `reject` or an `error` into a swallowing sink**
+  ([#284](https://github.com/mmeyerlein/meclaw/issues/284), ruling Q2). Four
+  edges did: `firewall → sink` on `reject` and `talky → sink` on `error` in
+  `examples/meclaw-os/grow.json`, `steward → sink` on `error` in
+  `examples/meclaw-os/grow-steward.json`, and `talky → sink` on `error` in
+  `examples/never-forgets/grow.json` — the fourth found by the gate's own sweep
+  rather than by the plan. All four are **deleted**, not re-pointed: none of the
+  three senders declares a `required_drains` pairing that the sink edge
+  satisfied, so the emission is now `no_route` and localises itself in the
+  dead-letter queue. **The DLQ is the record** — a refusal lane has exactly two
+  honest states, a real consumer that does something with it, or nothing at all.
+  A cell that accepts a refusal and returns `[]` is the third, dishonest one.
+  Pinned by `crates/meclaw-cells/tests/gh284_no_shipped_topology_silences_a_reject.rs`,
+  a sweep over every `config.json` under `templates/` and every `*.json` under
+  `examples/`.
+
+### Changed
+
+- **The `remove_nodes` spec row said more than the substrate holds — retracted**
+  ([#390](https://github.com/mmeyerlein/meclaw/issues/390)). The mutation-operations
+  table promised "inkl. Subtree-Kaskade bei Hives" / "including subtree cascade at
+  hives". Neither half was true. A hive path is resolved against the **cell registry**
+  only (`swap_nodes` beside it asks the hive scopes too, `remove_nodes` does not), so a
+  hive has no registry row, the entry is `match_no_hit`, and all-or-nothing validation
+  fails the **whole** mutation — the well-formed entries beside it included. And edge
+  removal runs on **exact path equality**: an edge between two descendants of the
+  matched node survives, deliberately, so the disconnected unit stays whole and
+  re-connectable (the same intent `swap_nodes` states, #256). What does cascade over
+  the subtree is the connectivity recompute, which flips the nodes below to
+  `active = false` and stops their tasks. No substrate change — the row now says what
+  the code does, names what does not work, and points at `remove_edges` for edges with a
+  hive at one end (`docs/rewiring*.md` § Die alte Hive trennen carries the worked
+  recipe). Pinned by `remove_nodes_refuses_a_hive_path_and_the_whole_mutation_with_it`
+  and `remove_nodes_leaves_an_edge_between_two_descendants_standing`.
+
+- **`talky@4.2.0`: the composite serves its own two tools**
+  ([#55](https://github.com/mmeyerlein/meclaw/issues/55),
+  [#283](https://github.com/mmeyerlein/meclaw/issues/283)). A `talky`
+  instantiated from the library answers `memory_recall` and `thread_recall`
+  without a single edge from its parent. Two internal edges
+  `./dispatcher → ./collector` set the lanes `in_memory_call` and
+  `in_thread_call`, which `collector@3.0.0` has accepted since 2.0.1 and which
+  talky's own hive door has always routed — downstream nothing changes. Both
+  carry a lane guard on `hop.route == 'tool'`.
+
+  **Both READMEs retract, explicitly** (`docs/development-rules.md` § 3): the
+  wiring recipe for those two self-loops, and the promise that the composite
+  carries no tool schemas. The new line: *a tool the composite IMPLEMENTS is
+  topology; a tool the parent WIRES is the agent.*
+
+  **Migration, for an instance being lifted to 4.2.0.** A parent that still
+  draws the old `memory_recall` / `thread_recall` self-loop now delivers every
+  such call **twice** — the loop belongs deleted in the same step that lifts the
+  template. And the brain seed of #55 takes effect only at `OpenStatus::Created`:
+  an existing instance does **not** acquire the two tool schemas by bumping, it
+  acquires them by being instantiated fresh or by having them written into its
+  brain's system tree.
+
+- **`cogny@4.0.2`: the tool exit is a guarded default edge, not a negation
+  chain** ([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1) —
+  a repair, so the third digit. The exclusion condition
+  (`!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep'`) is **gone**
+  rather than shorter: the reserved name stays an ordinary edge and silences the
+  default for exactly itself, because suppression is per SENDER. `talky` takes
+  the same shape in its own 4.2.0 bump.
+
+  **This is not a null diff, and the difference is outward.** Inside the
+  composites nothing changes. But a parent that had wired a tool cell **directly**
+  to `<composite>/dispatcher` used to receive the call **twice** — once from the
+  positive edge and once from the chain edge, the second copy dying as `no_route`
+  — and under the guarded default it receives it **once**. A parent that counted
+  emissions, or that read its own dead-letter queue for those `no_route` rows,
+  sees the change.
+
+- **`terminal@1.0.1` retracts its own words**
+  ([#284](https://github.com/mmeyerlein/meclaw/issues/284)). `config.json` and
+  `template.json` offered the cell as the place "where a rejection is logged,
+  where errors are alarmed". It never did that: it writes `[]` and returns. The
+  README now carries the explicit retraction and the two honest states of a
+  refusal lane, and the `examples` prose in `template.json` that advertised the
+  retracted use is pulled with it — a bump that moves one of the two would ship
+  half a change. The cell's behaviour is unchanged; what it claims about itself
+  is not.
+
+- **`memory-drain@2.0.5`** — the one place its documentation still promised that
+  a colony "built from `channel@1.0.3`" already carries `context.audience_set`
+  and `context.channel` now names the `channels` level of `assistant@1.0.0`
+  instead (README and the hive's own `use_when`). A repair of an existing
+  promise, so the third digit; nothing about the adapter's behaviour, ports or
+  ledger changed.
+
 ## [0.20.1] — 2026-08-25
 
 ### Fixed

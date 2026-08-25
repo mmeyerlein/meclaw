@@ -44,7 +44,7 @@ never-forgets/
 │       ├── keep/config.json       the port: write a turn, answer a window
 │       └── episodes/config.json   the table: one row per turn, two timestamps
 ├── past.jsonl                     nine turns across three months
-├── grow.json                      the declaration. three nodes, eight edges.
+├── grow.json                      the declaration. three nodes, seven edges.
 └── README.md
 ```
 
@@ -63,7 +63,7 @@ cannot decide which database your life goes into.
 |---|---|---|
 | `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
-| `/sink` | [`terminal@1.0.0`](../../templates/terminal/) | 1 cell. The stop for the lanes this example does not decide. |
+| `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 
 Sixteen cells in the registry, three of them checked in -- the hive marker is a
 scope, not a cell.

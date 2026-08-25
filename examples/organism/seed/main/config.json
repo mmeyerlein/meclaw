@@ -1,0 +1,15 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "graph": {
+      "edges": []
+    }
+  },
+  "description": {
+    "purpose": "The seed hive of the organism: an empty graph and nothing else. Not one cell is checked in here -- the whole four-level stack arrives later, from the template library, through the five grow-*.json declarations next to this directory.",
+    "use_when": "As the --root of a colony that is grown rather than checked in.",
+    "not_in_scope": "No shell, no organisation, no member, no assistant, no channel: none of that is written here, all of it is instantiated."
+  }
+}

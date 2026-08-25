@@ -29,7 +29,7 @@
         },
         {
           "route": "tool",
-          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. `escalate_to_deep` is reserved and never leaves -- it is this composite's own lane between the two brains"
+          "because": "a tool call for a cell the parent wired; hop.tool_name says which one. `escalate_to_deep` is reserved and never leaves -- it is this composite's own lane between the two brains. Since cogny@4.0.2 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1) instead of the negation chain it shipped as: `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. The reserved name is now held by the ordinary edge that always claimed it, and an ordinary edge that fires silences the default for that message -- so the exclusion term `(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` is gone rather than merely shorter, and a SECOND reserved name costs one ordinary edge and no change here at all. Behaviour is unchanged for every message this composite can produce. The guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary fired for them. And the no-tee requirement holds at this tree: ./dispatcher has five out-edges (calls, result, answer and escalate_to_deep into ./collector, plus this one), each conditioned on its own lane, and there is NO unconditional tee -- one added later would silence this default for every tool call. The sender inventory of the whole composite, for the same reason: five senders (., ./collector, ./brain, ./brain_fast, ./dispatcher) over 17 edges, four of which reach `.` -- and the sender-wide rule counts an edge a PARENT draws from ./cogny/dispatcher too"
         },
         {
           "route": "recall",
@@ -162,7 +162,8 @@
         {
           "from": "./dispatcher",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'tool' && (!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')"
+          "default": true,
+          "condition": "has(hop.route) && hop.route == 'tool'"
         },
         {
           "from": "./collector",

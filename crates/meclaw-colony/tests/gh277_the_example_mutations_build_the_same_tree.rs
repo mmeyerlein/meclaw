@@ -487,6 +487,22 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// hive nor a child of it, and they are sanctioned: `/colony/ledger` is the
 /// second entry of `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, beside `/colony/graph`
 /// (GH #163).
+///
+/// Moved 160 -> 156 with GH #284: four declaration edges routed a `reject` or an
+/// `error` into a node grown from `terminal`, which accepts the refusal and
+/// drops it. All four were deleted rather than re-pointed — none was load-bearing
+/// (`firewall` and `steward` declare no `required_drains`, and `talky`'s only
+/// pairing is `in_prune -> prune`), so each emission becomes `no_route` and
+/// localises itself in the dead-letter queue. One each in
+/// `examples/meclaw-os/grow-steward.json` and `examples/never-forgets/grow.json`,
+/// two in `examples/meclaw-os/grow.json`.
+///
+/// Moved 156 -> 160 with GH #55: `talky@4.2.0` draws the two tool lanes it used
+/// to ask a parent for (`memory_recall` -> `in_memory_call`, `thread_recall` ->
+/// `in_thread_call`) as internal edges of its own graph. Two of the five
+/// declarations instantiate a `talky`, so the tree gains exactly four. No
+/// declaration changed: this is the composite carrying wiring a parent no longer
+/// has to draw, which is the whole of #55's edge half.
 const EDGES: usize = 160;
 
 /// Cells that were on disk before the first declaration — the three seeds' own

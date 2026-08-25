@@ -1,0 +1,4 @@
+{"schema": {"id": "text", "entity_id": "text", "audience": "text", "level": "text", "decided_by": "text", "decided_at": "text"}}
+{"audience": "agent:aiden", "decided_at": "2026-01-01T00:00:00Z", "decided_by": "member:alex", "entity_id": "entity:alex", "id": "trust:alex-aiden", "level": "trusted"}
+{"audience": "agent:aiden", "decided_at": "2026-01-01T00:00:00Z", "decided_by": "member:alex", "entity_id": "entity:robin", "id": "trust:robin-aiden", "level": "known"}
+{"audience": "member:alex", "decided_at": "2026-01-01T00:00:00Z", "decided_by": "member:alex", "entity_id": "entity:alex", "id": "trust:alex-owner", "level": "intimate"}

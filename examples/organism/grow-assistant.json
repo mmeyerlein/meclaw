@@ -1,0 +1,67 @@
+{
+  "scope": "/os/orgs/acme/members/alex",
+  "ctx": {
+    "model": "${MODEL_CORE}",
+    "model_fast": "${MODEL_CORE_FAST}"
+  },
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "assistants/scribe",
+        "template": "assistant@1.0.0",
+        "override_params": {
+          "cogny/brain": {
+            "temperature": "0.2"
+          }
+        }
+      }
+    ],
+    "add_edges": [
+      {
+        "from": "./assistants",
+        "to": "./assistants/scribe",
+        "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.agent) && context.agent == 'scribe'"
+      },
+      {
+        "from": "./assistants",
+        "to": "./assistants/scribe",
+        "condition": "has(hop.route) && hop.route == 'in_bundle' && has(context.agent) && context.agent == 'scribe'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'turn'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'recall'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'extraction'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'write'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'turn_write'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'prune'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'error'"
+      }
+    ]
+  }
+}

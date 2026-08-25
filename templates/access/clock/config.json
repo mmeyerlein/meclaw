@@ -1,0 +1,94 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000,
+    "schedules": [
+      {
+        "schedule_id": "${uuid7:access-sweep}",
+        "schedule_name": "access-sweep",
+        "cron": "${ACCESS_SWEEP_CRON:-0 */5 * * * *}",
+        "emit_to": "../sweep",
+        "emit_body": {
+          "messages": [
+            {
+              "origin": "user",
+              "type": "text",
+              "text": "access-sweep"
+            }
+          ]
+        },
+        "emit_headers": {}
+      }
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "settings": {
+      "cron": {
+        "type": "string",
+        "secret": false,
+        "default": "0 */5 * * * *",
+        "description": "6-field Quartz cron of the TTL sweep (ACCESS_SWEEP_CRON). Cron runs in UTC."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        },
+        "iteration_n": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The tick of the TTL sweep. It sends, it decides nothing.",
+    "use_when": "Inside the access hive; change the cadence at runtime with add/modify/remove ops by schedule_id.",
+    "not_in_scope": "No catch-up, and none needed: a missed firing costs nothing because the expiry that matters is the comparison ./invoke makes on every call, and the next tick sweeps the same rows.",
+    "emits_meaning": "A plain trigger. The lane's state starts empty, which is how ./sweep recognises the start of a tick.",
+    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op.",
+    "examples": [
+      "every five minutes -> ./sweep; nothing expired -> one select and silence"
+    ]
+  }
+}

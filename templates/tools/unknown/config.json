@@ -1,0 +1,82 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nname = str(hop.get(\"tool_name\") or \"\")\nasked = name if name else \"(none)\"\ntext = \"no tool named %s is wired into this hive\" % asked\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"tool_result\", \"operation\": \"unknown\",\n               \"error_code\": \"unknown_tool\", \"tool_name\": name,\n               \"tool_call_id\": str(hop.get(\"tool_call_id\") or \"\")},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                  \"id\": str(hop.get(\"tool_call_id\") or \"\"), \"text\": text}]}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "tool_result"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "unknown"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "unknown_tool"
+          ],
+          "required": true
+        },
+        "tool_name": {
+          "type": "string",
+          "required": true
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The target of this hive's guarded default edge: a call for a tool nobody wired comes back as ONE typed tool_result naming the tool that was asked for, on the same lane every other occupant answers on.",
+    "use_when": "Never wired by hand and never addressed by name. It is reached only when no positive tool edge fired -- an unknown `hop.tool_name`, or a `tool_call` carrying none at all -- and only because the default edge's own guard held.",
+    "not_in_scope": "Not a tool: no arguments are read, nothing is executed, nothing is fetched. No suggestion of a near-miss name either -- guessing what the model MEANT is the judgement this hive does not make. And it is not a drain: a cell that accepted the call and emitted nothing would be exactly the swallowing sink GH #284 removed from this repository.",
+    "emits_meaning": "route tool_result: the one outward lane of the hive, so the caller's single return edge takes this the way it takes every answer. hop.error_code is always `unknown_tool` and hop.tool_name is the name that was asked for -- verbatim, including the empty string when the call carried none. hop.operation says `unknown`, which is what this hive's return edge conditions on, the same way it conditions on `bash` / `web_fetch` / `web_search` for the three tools.",
+    "consumes_meaning": "messages[]: the tool_call turn as it arrived. It is not parsed -- what the call wanted is irrelevant once there is nothing to serve it.",
+    "examples": [
+      "hop.tool_name == 'nonesuch' -> tool_result 'no tool named nonesuch is wired into this hive', hop { error_code: 'unknown_tool', tool_name: 'nonesuch' }",
+      "a tool_call with no hop.tool_name at all -> the same refusal, tool_name empty -- the caller learns its dispatcher lost the name, instead of watching the round stall"
+    ]
+  }
+}

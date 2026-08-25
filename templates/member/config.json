@@ -1,0 +1,248 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_turn",
+          "because": "a turn that entered from outside this member -- an operator, a digest, a second person's agent -- on its way to the screen. It meets the firewall before it meets anything of this member's, which is the whole reason the firewall sits at this level: two channels of one person need ONE view of an attacker, and the rate window must not restart because a generation was replaced. The caller should promote `context.channel` (and `context.user_id` where this colony has per-user rules); the door edge promotes what it finds and falls back to the empty string, so an unpromoted channel costs one shared rate bucket rather than a vanished turn"
+        },
+        {
+          "route": "in_recall",
+          "because": "a question against this member's memory from outside the member. The lane is named for the asker's side of it -- the level turns it into the hive's own `in_query` at the door -- and the answer comes back on `bundle` through whatever edge the caller drew, or the question is refused on `reject`. What a caller sends with it is the recall shape `memory-hive` asks for (`hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`) plus the round it is asking in (`context.audience_set`, `context.channel`): a recall without an audience is not a recall with an empty one, and the hive refuses it rather than answering unfiltered"
+        },
+        {
+          "route": "in_brief",
+          "because": "a read against this member's curated record: who is this person, who are they to the asker, what may this audience be told. It is answered from `affinity`, the holder of identity and meaning, and never from the memory -- memory produces, affinity decides. The asker and the ROUND are edge truth: the door promotes `context.asker` and `context.audience_set`, and a request that declares no round is refused with `no_round` rather than read as the asker alone"
+        },
+        {
+          "route": "in_propose",
+          "because": "a write against that same record -- a correction, a trust or disclosure decision, a subscription. The writer is edge truth for the same reason the asker is: an audit row is only worth writing if its actor came from an edge rather than from body text, so the door promotes `context.actor` and, for a `subscribe`, `context.subscriber`"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "the brief `affinity` produced, for whoever asked. It leaves the member unchanged: this level is the holder of the record, not a second reader of it"
+        },
+        {
+          "route": "ack",
+          "because": "a proposed change to the record was accepted or rejected, with the reason code that says which. It leaves for the proposer"
+        },
+        {
+          "route": "reject",
+          "because": "a refusal from one of this member's holders: a turn the screen refused (`hop.reject_reason`, `hop.rule_id`), or a question, block or turn the memory would not take (`hop.reject_reason` names the case). It is wired out of this level and consumed by NOBODY inside, and that is the honest state (2) of GH #284: a screened-off turn with no consumer is `no_route` in the DLQ, recorded and self-localising. `memory-hive` declares `required_drains` for `in_query`, `in_remember` and `in_episode`, so this lane also has to leave the level -- an undrained refusal is the one failure that gate exists to prevent"
+        },
+        {
+          "route": "error",
+          "because": "a failure that was not a refusal, from a holder of this member OR from one of its assistants; which cell inside produced it is not the caller's business. The member is a boundary, not a consumer -- an error that crosses it is one the parent owes a drain. Two sources, one lane, one declaration: `./affinity -> .` and `./assistants -> .`, the second derived from the emits list of assistant@1.0.0"
+        },
+        {
+          "route": "write",
+          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `extraction` and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@1.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+        },
+        {
+          "route": "turn_write",
+          "because": "one finished turn an assistant offers for archiving, one message per turn. Same reasoning as `write` and the same non-consumption: the member's own episode path is `extraction` -> the memory hive's `in_remember`, so this lane crosses the boundary untouched and is the parent's to place or to drain. Derived from the emits list of assistant@1.0.0"
+        },
+        {
+          "route": "prune",
+          "because": "an assistant's housekeeping report, raised when something upstream fired its `in_prune` lane. This member owns no timer and fires nothing, so it neither produces this lane nor consumes it -- it only refuses to swallow it. Derived from the emits list of assistant@1.0.0"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./firewall",
+          "condition": "has(hop.route) && hop.route == 'in_turn'",
+          "modifier": {
+            "set_context": {
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./firewall",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./firewall",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'pass'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./firewall",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "store_origin"
+            ]
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_query'"
+            },
+            "set_context": {
+              "recall_query": "has(hop.recall_query) ? hop.recall_query : ''",
+              "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
+              "recall_as_of": "''",
+              "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'bundle'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_bundle'"
+            }
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'extraction'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_remember'"
+            },
+            "set_context": {
+              "session_id": "has(context.session_id) ? context.session_id : ''",
+              "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'in_recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_query'"
+            },
+            "set_context": {
+              "recall_query": "has(hop.recall_query) ? hop.recall_query : ''",
+              "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
+              "recall_as_of": "''",
+              "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'write'"
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn_write'"
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'prune'"
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": ".",
+          "to": "./affinity",
+          "condition": "has(hop.route) && hop.route == 'in_brief'",
+          "modifier": {
+            "set_context": {
+              "asker": "has(context.asker) && context.asker != '' ? context.asker : (has(hop.audience) ? hop.audience : '')",
+              "audience_set": "has(context.audience_set) && context.audience_set != '' ? context.audience_set : (has(hop.audience_set) ? hop.audience_set : '')"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./affinity",
+          "condition": "has(hop.route) && hop.route == 'in_propose'",
+          "modifier": {
+            "set_context": {
+              "actor": "has(context.actor) ? context.actor : ''",
+              "subscriber": "has(context.subscriber) ? context.subscriber : ''"
+            }
+          }
+        },
+        {
+          "from": "./affinity",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && hop.subscriber == ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'answer'"
+            }
+          }
+        },
+        {
+          "from": "./affinity",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ack'"
+        },
+        {
+          "from": "./affinity",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "One person, and the three things every assistant that person owns must share: the memory of what was said to them, the curated record of who they and their people are, and the screen every inbound turn passes. Three refs plus one open container the assistants are instantiated into. The level owns nothing else -- no brain, no channel, no tools, no sink.",
+    "use_when": "One per person (or per group that owns an agent nobody owns personally -- that group is a member with its own name). Instantiate it into an org's members container, and wire its four inbound lanes and its seven outbound ones in the same mutation -- both refusal lanes above all, because an undrained reject is the one failure memory-hive's required_drains exists to prevent. Assistants are instantiated into ./assistants afterwards, one at a time, and each of those mutations draws its own edges to the container.",
+    "not_in_scope": "No memory-drain: per-turn extraction (GH #298, ruling Q11) replaced it, and it does not belong in the assistant either. No terminal and no sink of any kind: a refusal here leaves the level and becomes no_route in the DLQ if nobody consumes it -- recorded and self-localising, which is state (2) of GH #284. No org-level anything: what a group knows about a person is a filter on the read, never a second store. No push edge into a subscribing brain -- a subscribe writes a row, never an edge, so the parent draws one edge per subscribing cell at instantiation (templates/affinity/README.md, 'Wiring out_push for a subscribing brain')."
+  }
+}

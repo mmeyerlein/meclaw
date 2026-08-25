@@ -118,11 +118,6 @@
         "from": "./talky",
         "to": "./sink",
         "condition": "has(hop.route) && hop.route == 'answer'"
-      },
-      {
-        "from": "./talky",
-        "to": "./sink",
-        "condition": "has(hop.route) && hop.route == 'error'"
       }
     ]
   }

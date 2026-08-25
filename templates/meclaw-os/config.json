@@ -1,0 +1,189 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_request",
+          "context": [
+            "requester"
+          ],
+          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.0.5"
+        },
+        {
+          "route": "in_invoke",
+          "context": [
+            "requester"
+          ],
+          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.0.5"
+        },
+        {
+          "route": "in_cycle",
+          "because": "run the control loop NOW rather than at its next tick -- a cost alert or a dead-letter spike is a reason not to wait for the clock, and the loop is one per colony, so the lane is the shell's. Derived from steward@2.0.10"
+        },
+        {
+          "route": "in_turn",
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.0.0"
+        },
+        {
+          "route": "in_recall",
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.0.0"
+        },
+        {
+          "route": "in_brief",
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.0.0"
+        },
+        {
+          "route": "in_propose",
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.0.0"
+        }
+      ],
+      "emits": [
+        {
+          "route": "grant",
+          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.0.5"
+        },
+        {
+          "route": "ack",
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.0.5 and org@1.0.0"
+        },
+        {
+          "route": "mutate",
+          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.10"
+        },
+        {
+          "route": "answer",
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.0.0"
+        },
+        {
+          "route": "reject",
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.0.0"
+        },
+        {
+          "route": "error",
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.10 and org@1.0.0"
+        },
+        {
+          "route": "write",
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.0.0"
+        },
+        {
+          "route": "turn_write",
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.0.0"
+        },
+        {
+          "route": "prune",
+          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.0.0"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'in_request'"
+        },
+        {
+          "from": ".",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'in_invoke'"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'grant'"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ack'"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": ".",
+          "to": "./steward",
+          "condition": "has(hop.route) && hop.route == 'in_cycle'"
+        },
+        {
+          "from": "./steward",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
+        },
+        {
+          "from": "./steward",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_turn'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_recall'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_brief'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_propose'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ack'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'write'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn_write'"
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'prune'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the colony shell: the outermost of the four composition levels, authored under one rule -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation in a colony shares is exactly two things, so exactly two stand here: the capability broker (`access`, a ref) and the control loop (`steward`, a ref). Beside them stands `orgs`, a real but empty container hive: the address an organisation is instantiated AT. Nineteen internal edges, all of them doors and exits -- the shell routes, decides nothing and holds no state.",
+    "use_when": "Once per colony, as the tree an operator grows everything else into. Instantiate it, then instantiate an organisation into `./orgs` with a mutation that draws that organisation's own edges in the SAME mutation. Both broker lanes MUST promote the caller to `context.requester` before the message reaches this level: a level forwards a requirement, it cannot satisfy one.",
+    "not_in_scope": "No second vault -- `access` carries its own interior one, and the standalone `vault` template attests its inbound edges against `params.broker`, so a copy at this level would boot locked and inert (ruling Q20). No sink: nothing here accepts a refusal and emits nothing, because the dead-letter queue is the record (ruling Q2). No `connect` lane outward -- the broker requires that lane to be the ONE edge reaching a connector cell, and that edge is drawn where the connector stands, four levels down. No contract on the container: the level declares the transit lanes and carries them with its own edges (W7-R2). And no memory, no model, no persona: a shell that grew one of those would own something its siblings do not share.",
+    "contract_in": "Seven lanes, all at the hive path, and every one of them the union rule's doing: a level declares what its occupants accept, minus what a sibling inside the level consumes itself. in_request and in_invoke reach the broker, both demanding a promoted `context.requester`. in_cycle reaches the control loop. in_turn, in_recall, in_brief and in_propose reach the `orgs` container and, once one is instantiated, the organisation inside it. Nothing addresses a cell inside this level by name -- the occupants are refs, and their interiors belong to their own templates.",
+    "contract_out": "Six lanes, all out of the hive path. grant is the broker's verdict, mutate the loop's decided params update, answer and reject what an organisation produced, ack an outcome that was decided -- and ack and error each have TWO senders and ONE declaration. `turn` is deliberately absent: a member consumes its own turn behind its screen, so an exit for it here could never fire. The colony that instantiates this shell MUST drain error and reject."
+  }
+}

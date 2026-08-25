@@ -1,4 +1,4 @@
-# `cogny@4.0.1`
+# `cogny@4.0.2`
 
 The agent core as one template. Four units under one hive:
 [`collector@3.0.0`](../collector/) and [`dispatcher@1.1.0`](../dispatcher/) -- each carrying its
@@ -6,7 +6,7 @@ template's own name -- plus **two** `llm` brains, `brain` on a thinking model an
 `brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@4.1.1`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky@4.2.0`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and the memory it reads is the member's central hive rather
@@ -72,7 +72,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`cogny@4.0.1` above it in its provenance chain.
+`cogny@4.0.2` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -174,10 +174,23 @@ tool cells and no map of them. Wiring a tool is one edge pair:
 the `calls`, `result` and `answer` emissions carry no `tool_name` at all and an unguarded
 comparison **errors** in CEL, which skips the edge with a log line per lane per message.
 
-`escalate_to_deep` never leaves. The exit edge carries
-`(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` so the reserved name stays
-the composite's own lane between the two brains, exactly as it was before the tool lane
-existed.
+`escalate_to_deep` never leaves, and since `4.0.2` the exit edge no longer says so
+([#283](https://github.com/mmeyerlein/meclaw/issues/283), ruling Q1). It is a **guarded
+default edge** now -- `{"from": "./dispatcher", "to": ".", "default": true, "condition":
+"has(hop.route) && hop.route == 'tool'"}` -- consulted only when no ordinary edge out of
+`./dispatcher` fired for the message. The reserved name's own ordinary edge into
+`./collector` is what silences it, so the exclusion term
+`(!has(hop.tool_name) || hop.tool_name != 'escalate_to_deep')` is **gone**, not shortened.
+Behaviour is unchanged for every message this composite can produce; what changed is the
+cost of the next reserved name, which is now one ordinary edge and no edit here at all.
+
+The guard on that default is not decoration: `./dispatcher` emits four sorts (`calls`,
+`result`, `answer`, `tool`) and default suppression is **sender-wide**, so an unguarded
+default would try to carry `calls`/`result`/`answer` outward whenever nothing ordinary
+fired for them. For the same reason there is **no unconditional tee** from `./dispatcher`
+here -- five out-edges, each conditioned on its own lane. A tee added later, at
+`./cogny/dispatcher`, would silence this default for every tool call and the parent's tool
+cells would go dark.
 
 **The memory leg is the second pair**, and it is the one R-CG-1 moved onto this collector:
 
@@ -212,11 +225,22 @@ the consultation died.
 | memory tool (`in_memory_call` back into the collector) | not declared; inside the composite it would be a loop at the hive path, as `talky` does it |
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
 | a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else" (the lookup lane made the llm slot two in 1.1.0); an `errors` cell is not among them, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
-| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- and the edge has to come with the same exclusion the tool exit already carries for `escalate_to_deep`, or the call fans out twice |
+| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is still a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- but since `4.0.2` it costs exactly **one ordinary edge** and no change to the tool exit: the default edge stays silent for any name an ordinary edge claims. That is the shape `talky@4.2.0` ships for both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) |
 
-The tool SCHEMAS are a different thing again: they live in the brain's `system.tools`,
-seeded (`brain/seed/system.jsonl`) or written by a system update. The composite carries
-neither -- identity, core instructions and tools are the agent, not the topology.
+The tool SCHEMAS are a different thing again: they live in the brains' `system.tools`,
+seeded (`brain/seed/system.jsonl`) or written by a system update. **This composite carries
+none of them**, and that claim still holds unchanged for `cogny` -- identity, core
+instructions and tools are the agent here, not the topology.
+
+**It reads differently next door, and the difference is deliberate.** `talky@4.2.0`
+retracted the same sentence for itself ([#55](https://github.com/mmeyerlein/meclaw/issues/55)):
+a tool the composite *implements* is topology and ships with it, schema and edge together;
+a tool the parent wires is the agent. By that line `cogny` has exactly one candidate --
+`escalate_to_deep`, which it does implement -- and it deliberately ships **no** schema for
+it: the escalation is a per-instance judgement (when is the fast lane not enough?), so its
+description belongs in the instance's own `system.tools`, next to the persona that has to
+exercise it. A talky's memory tool is the opposite case: the same question in every
+instance, answered by the same cell.
 
 ## The two lanes (GH #124)
 
@@ -305,7 +329,7 @@ dispatcher --(tool_name == escalate_to_deep)--> collector  in_turn, class := con
 .          --(in_tool|in_bundle)-> collector
 collector  --(answer)-----------> .                  THE EXITS
 collector  --(recall)-----------> .
-dispatcher --(tool, not escalate_to_deep)--> .
+dispatcher ==(tool, DEFAULT)==============> .
 brain      --(error|content_filter)--> .  route := 'error'
 brain_fast --(error|content_filter)--> .  route := 'error'
 ```
@@ -317,7 +341,10 @@ would run both brains on one errand and answer twice. The deep edge therefore ca
 makes an unwired class fall to the thinking lane instead of erroring the edge away.
 
 **`escalate_to_deep` is a reserved tool name inside this composite.** The edge above claims
-it; a per-instance tool of that name would be swallowed by the escalation lane.
+it; a per-instance tool of that name would be swallowed by the escalation lane. The `==` on
+the exit marks the **default** edge (`4.0.2`, [#283](https://github.com/mmeyerlein/meclaw/issues/283)):
+it is consulted only after every ordinary edge out of `dispatcher` has declined, which is
+precisely how the reserved name silences it without being named there.
 
 **The loopback bound is an edge literal, on purpose.** `int(hop.iter) < 12` is a safety
 belt, not the policy: the round is bounded by `max_iter`, which ends a runaway
@@ -356,7 +383,7 @@ once.
 | `curate_soft` / `curate_hard` | param | `0.5` / `0.75` | collector -- the working mark and the emergency mark, as fractions of the budget |
 | `keep_rounds` | param | `2` | collector -- newest tool iterations kept verbatim whatever the budget says |
 | `recoverability` | param | `""` | collector -- what may be elided, declared per tool NAME (`lookup:repeatable,write:env`). Undeclared = `unique` = never elided. **Declare the core's own tools here**, because the core is where the large results are |
-| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **This composite does not wire it** and a parent cannot: the edge is `./dispatcher -> ./collector` on `hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, which lives in this template's own `params.graph` and needs the same `escalate_to_deep`-style exclusion on the tool exit. Until it is drawn, the stubs the curator leaves have no way back -- so switching `context_window` on here means switching curation on without a recall path |
+| `thread_recall` | param | `"1"` | collector -- the `thread_recall` tool. **This composite does not wire it** and a parent cannot: the edge is `./dispatcher -> ./collector` on `hop.route == 'tool' && hop.tool_name == 'thread_recall'` with `set_hop {"route": "'in_thread_call'"}`, and it lives in this template's own `params.graph`. Since `4.0.2` that is the whole of it -- the tool exit is a guarded default edge and needs no exclusion added for a new reserved name. Until the edge is drawn, the stubs the curator leaves have no way back -- so switching `context_window` on here means switching curation on without a recall path |
 | `thread_recall_budget` | param | `0.2` | collector -- share of the budget one turn's recalls may spend; over it the call is refused, never truncated |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
 | `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- the core's OWN async tools. The `consult_cogny` / `ask_memory` declarations belong on the **talky** side. The key is colony-global, so in practice one list carries them all |
@@ -380,7 +407,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.0.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.0.2", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -506,7 +533,9 @@ knowledge ends.
 - **Not a persona.** Identity, core instructions and tool schemas live in the brains'
   `cell.db`, one writer per `system` path -- and there are two of them now, so a system
   update that reaches only one lane is the drift to watch for. The shipped `brevity` slot
-  is the single exception and it is deliberately not `instructions`.
+  is the single exception and it is deliberately not `instructions`. Unlike `talky@4.2.0`
+  this composite ships no tool schema of its own; the reason is above, under *What this
+  composite still does NOT declare*.
 - **Not a classifier.** Which lane an errand takes is decided outside this hive, on the
   ingress edge, from a tool name. Nothing in here inspects a question.
 - **Not an initiator.** In v1 the talky triggers and the core answers; cogny never opens a
