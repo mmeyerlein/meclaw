@@ -123,8 +123,18 @@ result lost" in the transcript. So the class is declared, once, here:
 
 ```
 DISPATCHER_HANDOFF_TOOLS=consult_cogny
-DISPATCHER_ASYNC_TOOLS=remember
+DISPATCHER_ASYNC_TOOLS=write_journal
 ```
+
+**`remember` used to be the example in that second line, and it is not one any more.**
+Per-turn memory extraction stopped being a tool call in `talky@4.1.0`: the model writes a
+fenced block into its own answer and a splitter cell cuts it out
+([#379](https://github.com/mmeyerlein/meclaw/issues/379)). The async class itself is
+unchanged and stays documented here -- it is what any fire-and-forget tool an instance
+wires needs -- but its one shipped user is gone, and the open substrate bug underneath it
+([#378](https://github.com/mmeyerlein/meclaw/issues/378): a completion mixing text with an
+asynchronous call strands its round) is now something a NEW async tool would walk into,
+not something the shipped tree walks into every turn.
 
 **Two lists, because "does not answer inside the round" and "does not answer this turn at
 all" are two facts.** A consult is a **handoff**: the advisor's answer comes back as its

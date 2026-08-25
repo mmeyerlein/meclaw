@@ -8,7 +8,10 @@
 //!   Lines 2+: `{"slot_path": "identity.soul", "value": {"text": "…"}}`
 //!
 //! `updated_at` is NOT carried by the file — the loader stamps it at seed time,
-//! exactly like the message path stamps a `system.*` update.
+//! exactly like the message path stamps a `system.*` update. That is local to
+//! this loader: THIS loader stamps it; the staging seeder does not — a JSONL row
+//! staged by `mutation/stage.rs` is written verbatim and must carry the column
+//! itself (see `docs/cell-types.md` § Seed).
 //!
 //! Plain-text leaves only: a seeded `{"text_id": …}` leaf is a loud
 //! configuration error. That pointer class is resolved at the delivery boundary

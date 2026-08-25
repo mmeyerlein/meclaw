@@ -18,6 +18,13 @@
         "effect": "json",
         "outcome": "text",
         "reason_code": "text"
+      },
+      "waits": {
+        "id": "text",
+        "at": "text",
+        "kind": "text",
+        "carry": "json",
+        "status": "text"
       }
     },
     "write_surface": "internal",
@@ -72,7 +79,7 @@
   },
   "description": {
     "purpose": "One append-only row per cycle: what was measured, what the judge decided, what it simulated, what was changed, how it would be undone, what the probe saw, what the effect turned out to be, and whether the change was kept or reverted.",
-    "use_when": "One per steward hive. It is also the loop's own memory: an applied cycle stays open until its measurement window has passed, and the next tick reads it back to decide keep or revert.",
+    "use_when": "One per steward hive. It is also the loop's own memory, twice over: an applied cycle stays open until its measurement window has passed, and an ask at /colony/ledger stays in `waits` until the colony answers it -- a reply from an endpoint carries no context of ours, so without the row there would be nothing to resume.",
     "not_in_scope": "No deletion and no update of the fields that record the past -- only `effect`, `outcome` and `status` are filled in later, which is the difference between completing a record and rewriting one. The recursive claim is only as good as these rows."
   }
 }

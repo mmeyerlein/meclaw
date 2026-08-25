@@ -513,6 +513,23 @@ pub enum ColonyMsg {
         /// Reply channel; dropped on Shutdown-drain.
         ack: oneshot::Sender<crate::api_dto::ReadTraceReply>,
     },
+    /// GH #267 (ruling Q14): aggregate read over one time window of
+    /// `colony.db` — counts and sums, never rows. Mirrors `ReadTrace`:
+    /// `spawn_blocking` + a fresh `SQLITE_OPEN_READ_ONLY` connection; the whole
+    /// logic lives in `colony_dispatch::handle_read_ledger`.
+    ///
+    /// **Honest warning**: stalls the colony inbox loop for the query duration.
+    /// Bounded by `query.scan_budget` (rows read per windowed sub-query), not
+    /// by a row limit — the reply carries no rows to limit. `mutation_log` has
+    /// no `created_at` index, so its window query is a scan and that budget is
+    /// the only bound on it. Off-loop reads are post-v0.1.0 (`docs/roadmap.md`).
+    ReadLedger {
+        /// The window and the counters to compute; every bound is clamped in
+        /// the dispatch helper, so the echoed query shows what was used.
+        query: crate::api_dto::LedgerQuery,
+        /// Reply channel; dropped on Shutdown-drain.
+        ack: oneshot::Sender<crate::api_dto::ReadLedgerReply>,
+    },
     /// P1 (message browser): paginated, filtered read over
     /// `colony.db::message_log`. Mirrors `ReadTrace` — `spawn_blocking` + a
     /// fresh `SQLITE_OPEN_READ_ONLY` connection; the entire logic lives in
@@ -1893,6 +1910,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 ColonyMsg::ReadTrace { ack, .. } => {
                                     drop(ack);
                                 }
+                                ColonyMsg::ReadLedger { ack, .. } => {
+                                    drop(ack);
+                                }
                                 ColonyMsg::ReadMessages { ack, .. } => {
                                     drop(ack);
                                 }
@@ -2189,6 +2209,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         let reply = crate::colony_dispatch::handle_read_trace(
                             &db_path, trace_id, path_prefix, correlation_id, only_error, since, limit,
                         ).await;
+                        let _ = ack.send(reply);
+                    }
+                    ColonyMsg::ReadLedger { query, ack } => {
+                        let db_path = colony_db.db_path().to_path_buf();
+                        let reply = crate::colony_dispatch::handle_read_ledger(&db_path, query).await;
                         let _ = ack.send(reply);
                     }
                     ColonyMsg::ReadMessages { filter, ack } => {

@@ -1182,9 +1182,10 @@ fn resolve_internal_edges(
         for spec in hive_edges(template, hive_rel) {
             let from = Path::resolve(&hive_abs, &spec.from);
             let to = Path::resolve(&hive_abs, &spec.to);
-            // GH #163: a template's own lane to the colony's read-only topology
-            // endpoint is in bounds — it addresses the authority, not a cell
-            // outside the subtree (see
+            // GH #163, GH #267: a template's own lane to one of the colony's
+            // two read-only endpoints — `/colony/graph` (topology) and
+            // `/colony/ledger` (counts) — is in bounds; it addresses the
+            // authority, not a cell outside the subtree (see
             // `crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`). Only as a
             // target: `from` is always a node of the subtree.
             let exempt_target = crate::mutation::is_mutation_drawable_virtual_target(to.as_str());

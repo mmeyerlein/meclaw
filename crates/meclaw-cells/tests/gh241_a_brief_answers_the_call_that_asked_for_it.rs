@@ -118,7 +118,9 @@ sys.stdout.write(json.dumps({
     "header": {"route": "brief", "audience": str(a.get("audience") or ""),
                # GH #306: the ROUND is edge truth too, and the door refuses a
                # request that declares none. This lane is a 1:1, so it says so.
-               "participants": json.dumps([str(a.get("audience") or "")])},
+               # GH #330: `audience_set` is its one name -- the door does not
+               # read the retired spelling any more.
+               "audience_set": json.dumps([str(a.get("audience") or "")])},
     "messages": [{"origin": "assistant", "type": "tool_call",
                   "id": str(a.get("call_id") or "call-241"),
                   "text": json.dumps(req)}]}))
@@ -137,7 +139,7 @@ fn asker_config() -> Value {
                 "hop": {
                     "route": {"type": "string", "values": ["brief"], "required": false},
                     "audience": {"type": "string", "required": false},
-                    "participants": {"type": "string", "required": false}
+                    "audience_set": {"type": "string", "required": false}
                 }
             },
             "consumes": {"body": {"messages": {"type": "array", "required": true}}},

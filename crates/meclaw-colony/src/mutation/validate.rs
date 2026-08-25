@@ -2180,9 +2180,10 @@ pub fn validate_scope_containment(
                 check(f)?;
             }
             if let Some(t) = e.get("to").and_then(|v| v.as_str()) {
-                // GH #163: the colony's read-only topology endpoint is the one
-                // absolute target that is in bounds at every scope — it is the
-                // authority's own endpoint, not a cell (see
+                // GH #163, GH #267: the colony's two read-only endpoints —
+                // `/colony/graph` (topology) and `/colony/ledger` (counts) —
+                // are the absolute targets that are in bounds at every scope;
+                // they are the authority's own endpoints, not cells (see
                 // `crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`).
                 if crate::mutation::is_mutation_drawable_virtual_target(t) {
                     continue;

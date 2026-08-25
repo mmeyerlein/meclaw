@@ -1,0 +1,70 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The fence the inline contract asks for, and the three movements the memory\n# hive's ingress reads. Both are ported 1:1 from the harness parser\n# (`workshop/evals/conversation-guide/run_guide.py`): the grammar that MEASURED\n# the sidecar and the grammar that CUTS it in production have to be one grammar,\n# or the adoption number stops speaking for the shipped lane.\nFENCE = \"```memory\"\nMOVEMENTS = (\"start\", \"continue\", \"end\")\n\n\ndef annotation_shape(doc):\n    \"\"\"Why a parsed block is not a well-formed annotation, or ''.\"\"\"\n    if not isinstance(doc, dict):\n        return \"not a JSON object\"\n    if not isinstance(doc.get(\"facts\"), list):\n        return \"no `facts` list\"\n    topic = doc.get(\"topic\")\n    if not isinstance(topic, dict):\n        return \"no `topic` object\"\n    if topic.get(\"movement\") not in MOVEMENTS:\n        return \"topic.movement is not one of start/continue/end\"\n    return \"\"\n\n\ndef find_annotation(text):\n    \"\"\"The sidecar an answer carries: `found`, `valid`, `raw`, `stripped`.\n\n    THREE outcomes, exactly as the harness grades them: a well-formed block\n    (found + valid), a block that is there but unreadable or the wrong shape\n    (found, not valid), and no block at all. NOTHING here repairs or\n    re-serialises what the model wrote -- a splitter that fixed a block would\n    hand the hive its own repair instead of the model's annotation. The only\n    tolerance is on the FENCE, because decorating the wrapper is the failure\n    mode format-restricted instructions actually show.\n    \"\"\"\n    raw, start, end = \"\", -1, -1\n    low = text.lower()\n    at = low.find(FENCE)\n    if at >= 0:\n        head = text.find(\"\\n\", at)\n        close = text.find(\"```\", head + 1) if head >= 0 else -1\n        if head >= 0 and close >= 0:\n            raw, start, end = text[head + 1:close], at, close + 3\n    if start < 0:\n        # A bare ```/```json fence whose body carries the payload counts as an\n        # attempt: the model produced it and missed the label.\n        for opener in (\"```json\", \"```\"):\n            probe = 0\n            while True:\n                at = low.find(opener, probe)\n                if at < 0:\n                    break\n                head = text.find(\"\\n\", at)\n                close = text.find(\"```\", head + 1) if head >= 0 else -1\n                if head < 0 or close < 0:\n                    break\n                body = text[head + 1:close]\n                if '\"facts\"' in body or '\"nothing_new\"' in body:\n                    raw, start, end = body, at, close + 3\n                    break\n                probe = close + 3\n            if start >= 0:\n                break\n    if start < 0:\n        # A naked object at the end of the answer, same reasoning. Scanned from\n        # the LAST opening brace backwards: an annotation nests (`topic` is an\n        # object), so the last brace in the text is the inner one and a lone\n        # rfind would never see a real payload here.\n        brace = text.rfind(\"{\")\n        while brace >= 0:\n            tail = text[brace:]\n            if '\"facts\"' in tail or '\"nothing_new\"' in tail:\n                raw, start, end = tail, brace, len(text)\n                break\n            brace = text.rfind(\"{\", 0, brace)\n    if start < 0:\n        return {\"found\": False, \"valid\": False, \"raw\": \"\", \"stripped\": text}\n    stripped = (text[:start] + text[end:]).strip()\n    try:\n        doc = json.loads(raw.strip())\n    except ValueError:\n        return {\"found\": True, \"valid\": False, \"raw\": raw, \"stripped\": stripped}\n    if annotation_shape(doc):\n        return {\"found\": True, \"valid\": False, \"raw\": raw, \"stripped\": stripped}\n    return {\"found\": True, \"valid\": True, \"raw\": raw, \"stripped\": stripped}\n\n\ndoc = json.load(sys.stdin)\nd = doc.get(\"body\") or {}\nenvelope = doc.get(\"envelope\") or {}\nh = envelope.get(\"header\") or {}\nhop = dict(h.get(\"hop\") or {})\nmsgs = d.get(\"messages\") or []\n\n\ndef emit_pass_through(extra=None):\n    \"\"\"Form 1: the turn travels on exactly as it arrived.\"\"\"\n    header = dict(hop)\n    if extra:\n        header.update(extra)\n    sys.stdout.write(json.dumps({\"header\": header, \"messages\": msgs}))\n\n\n# A round with tool calls belongs to the dispatcher, whole. The splitter only\n# ever touches a plain answer completion -- building the mixed form (text beside\n# an async call in one message) is exactly the shape that strands a round\n# (GH #378), and this is where we walk around it rather than into it.\nif any(isinstance(m, dict) and m.get(\"type\") == \"tool_call\" for m in msgs):\n    emit_pass_through()\n    sys.exit(0)\n\n# The LAST text turn that carries a block is the one that carries the sidecar:\n# a model that quoted a fence earlier in the same completion did not annotate\n# twice, it annotated at the end.\nfound_at, ann = -1, None\nfor i, m in enumerate(msgs):\n    if not isinstance(m, dict):\n        continue\n    text = m.get(\"text\")\n    if not isinstance(text, str) or not text:\n        continue\n    probe = find_annotation(text)\n    if probe[\"found\"]:\n        found_at, ann = i, probe\n\nif ann is None:\n    emit_pass_through()\n    sys.exit(0)\n\nif not ann[\"valid\"]:\n    # The block is there and unreadable. The ANSWER is not touched -- the fence\n    # stays in it rather than being half-cut -- and the flag says a block was\n    # seen, so the close pass can tell \"the model missed the form\" from \"the\n    # model never annotated\".\n    emit_pass_through({\"sidecar\": \"malformed\"})\n    sys.exit(0)\n\ncleaned = list(msgs)\nturn = dict(msgs[found_at])\nturn[\"text\"] = ann[\"stripped\"]\ncleaned[found_at] = turn\nsys.stdout.write(json.dumps([\n    {\"header\": {\"finish_reason\": \"stop\"}, \"messages\": cleaned},\n    {\"header\": {\"route\": \"extraction\"},\n     \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": ann[\"raw\"]}]},\n]))\n",
+    "external_timeout_ms": 60000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "extraction"
+          ],
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "tool_calls"
+          ],
+          "required": false
+        },
+        "sidecar": {
+          "type": "string",
+          "values": [
+            "malformed"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The seam that takes the extraction sidecar back out of an answer: a brain completion arrives on the answer path, and if its text carries a fenced `memory` block, TWO messages leave -- the answer with the block cut out, and the raw block on lane extraction, for the memory hive's in_remember door. Without the extraction prompt in the brain's instructions there is no block to find and this cell is a pure pass-through.",
+    "use_when": "Inside the talky composite, on the brain's answer path only -- between ./brain and ./dispatcher. The parent MUST wire the extraction lane out of the composite to a memory, or every annotation dead-letters while the answers keep going out fine, which is the failure nobody sees.",
+    "not_in_scope": "No repair, no re-serialisation, no judgement: a block that does not parse or is not annotation-shaped is left INSIDE the answer and only flagged -- what a malformed annotation means is the hive's decision, and a splitter that fixed one would hand the store its own repair instead of the model's. No tool-call round is ever touched: a completion carrying calls belongs to the dispatcher whole, because the mixed form -- text beside an async call in one message -- is the shape that strands a round (GH #378) and this cell exists to walk around it.",
+    "emits_meaning": "route extraction: the sidecar a turn's answer carried, in the inline contract's form, as the model wrote it -- one message per annotated turn, the raw block as the text of a single turn. On the answer half: finish_reason stop, and the same turns minus the fence. sidecar malformed on a pass-through: a block was there and could not be read; the answer is untouched and the close pass still owes the turn an extraction.",
+    "consumes_meaning": "the brain's completion on stop or tool_calls (messages plus the hop it arrived with). The fence grammar is a 1:1 port of the harness parser that measured the adoption of this form (```memory, plus a tolerance for a bare ```json fence or a naked trailing object carrying the payload): the grammar that measured it and the grammar that cuts it are one grammar.",
+    "examples": [
+      "answer + ```memory block -> two messages: prose to the dispatcher, block to the memory",
+      "answer with no block -> one message, byte-identical (a colony without the extraction prompt)",
+      "tool-call round -> one message, byte-identical, block or no block"
+    ]
+  }
+}

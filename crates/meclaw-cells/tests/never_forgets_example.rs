@@ -72,9 +72,10 @@ const GROWN_FROM: [(&str, &str); 3] = [
 ];
 
 /// Three checked-in cells (the import lane plus the memory's two -- the hive
-/// marker is a scope, not a cell) and thirteen grown ones: one from `door@1`,
-/// eleven from `talky`, one from `terminal@1`.
-const CELLS_AFTER_GROW: usize = 16;
+/// marker is a scope, not a cell) and fourteen grown ones: one from `door@1`,
+/// twelve from `talky` (the twelfth is the sidecar splitter, talky@4.1.0,
+/// GH #379), one from `terminal@1`.
+const CELLS_AFTER_GROW: usize = 17;
 
 /// GH #277: `talky` REFERENCES its four sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are
@@ -682,6 +683,7 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "/talky/session-keeper/stamp",
         "/talky/collector/assemble",
         "/talky/dispatcher",
+        "/talky/splitter",
         "/talky/brain",
         "/sink",
     ] {

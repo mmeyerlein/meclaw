@@ -259,6 +259,11 @@ fn write_talky_topology(root: &std::path::Path) {
     for leaf in [
         "session-keeper",
         "brain",
+        // The sidecar splitter of talky@4.1.0 (GH #379). It carries no lane this
+        // test drives -- it sits on the answer path -- but the shipped edge set
+        // names it, and an endpoint nothing stands at is a DanglingEndpoint that
+        // refuses the whole boot.
+        "splitter",
         "dispatcher",
         "summarizer",
         "errors",

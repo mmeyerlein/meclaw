@@ -25,8 +25,8 @@ agent, no memory, no screening and no persona -- every one of those arrives from
 at runtime, into a colony that is already up.
 
 Two of the four templates were extracted out of this folder to make that true: the
-[`door@1`](../../templates/door/) that names the ingress lane, and the
-[`terminal@1`](../../templates/terminal/) that every outbound lane ends in. They used to be
+[`door@1.0.1`](../../templates/door/) that names the ingress lane, and the
+[`terminal@1.0.0`](../../templates/terminal/) that every outbound lane ends in. They used to be
 "the two cells a library cannot ship". They turned out to be the two cells a library *should*
 ship -- generic, ten lines each, and needed by every tree.
 
@@ -36,10 +36,10 @@ ship -- generic, ten lines each, and needed by every tree.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
-| `/firewall` | [`firewall@1`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
+| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
+| `/firewall` | [`firewall@2.0.4`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer, and an `llm` brain, with all twelve internal edges pre-wired. |
-| `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for four lanes that have not been decided yet. |
+| `/sink` | [`terminal@1.0.0`](../../templates/terminal/) | 1 cell. The stop for four lanes that have not been decided yet. |
 
 ```
                         grow.json draws these six
@@ -241,7 +241,7 @@ and both counts (15, then 20). If the example rots, that test goes red first.
 
 ## Step three: the colony that measures itself
 
-`grow-steward.json` adds the [`steward@2`](../../templates/steward/) — seven more cells that
+`grow-steward.json` adds the [`steward@2.0.10`](../../templates/steward/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -279,7 +279,7 @@ at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes b
 `key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
 
 Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
-`steward@2` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
+`steward@2.0.10` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
 any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
 one edge the declaration *can* draw is the other lane, `error`, and it is drawn at the hive
 for the same reason.

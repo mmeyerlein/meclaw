@@ -122,20 +122,27 @@ sys.stdout.write(json.dumps({
     "header": {"route": "brief", "audience": str(a.get("audience") or ""),
                # GH #306: the ROUND is edge truth too, and the door refuses a
                # request that declares none. This lane is a 1:1, so it says so.
-               "participants": json.dumps([str(a.get("audience") or "")])},
+               # GH #330: it has one name, `audience_set`; the retired spelling
+               # is not read by the door any more.
+               "audience_set": json.dumps([str(a.get("audience") or "")])},
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "call-263",
                   "text": json.dumps({"subject": a.get("subject"),
                                       "channel": a.get("channel") or "*"})}]}))
 "#;
 
-/// The writing side of the write port, with the actor on the hop.
+/// The writing side of the write port, with the actor on the hop -- and, since
+/// GH #288, the subscriber address beside it. A subscription names the cell that
+/// will be handed somebody's briefs; that is a routing decision, so it is the
+/// wiring's to state and not the body's. A shipped producer stamps it from its
+/// own topology, which is what this stand-in does with the constant below.
 const WRITER: &str = r#"
 import sys, json
 d = json.load(sys.stdin)["body"]
 msgs = d.get("messages", [])
 raw = str(msgs[-1].get("text", "{}")) if msgs else "{}"
 sys.stdout.write(json.dumps({
-    "header": {"route": "propose", "actor": "member:alex"},
+    "header": {"route": "propose", "actor": "member:alex",
+               "subscriber": "/main/consumer"},
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "call-263-w",
                   "text": raw}]}))
 "#;
@@ -179,8 +186,15 @@ fn main_config() -> Value {
                       "set_context": {"asker": "hop.audience"}}},
         {"from": "./writer", "to": "./affinity",
          "condition": "has(hop.route) && hop.route == 'propose'",
+         // GH #288: the write lane declares `subscriber` beside `actor`, so
+         // this edge promotes both. The `has()` guard is not decoration -- an
+         // unresolvable `set_context` expression makes the modifier fail and
+         // the edge is SKIPPED, so a request without the key would vanish
+         // instead of being refused by the gate.
          "modifier": {"set_hop": {"route": "'in_propose'"},
-                      "set_context": {"actor": "hop.actor"}}},
+                      "set_context": {
+                          "actor": "hop.actor",
+                          "subscriber": "has(hop.subscriber) ? hop.subscriber : ''"}}},
         {"from": "./affinity", "to": "/sink",
          "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'ack' \
                        || hop.route == 'error')"}
@@ -193,6 +207,11 @@ const FAST_CRON: &str = "*/2 * * * * *";
 
 /// The subscribing cell's address. Nothing runs there in this colony: what the
 /// subscriber would do with the answer is measured below, against a mock.
+///
+/// `WRITER` spells the same path a second time, because a raw script string
+/// cannot interpolate a Rust const. The two must stay in step: since GH #288
+/// the address reaches the gate on the hop, and a mismatch would push at a path
+/// `recv_answer` never waits for.
 const SUBSCRIBER: &str = "/main/consumer";
 
 async fn boot(
@@ -213,7 +232,7 @@ async fn boot(
             ASKER,
             "brief",
             json!({"audience": {"type": "string", "required": false},
-                   "participants": {"type": "string", "required": false}}),
+                   "audience_set": {"type": "string", "required": false}}),
         ),
     );
     write(
@@ -222,7 +241,8 @@ async fn boot(
         &code_cell(
             WRITER,
             "propose",
-            json!({"actor": {"type": "string", "required": false}}),
+            json!({"actor": {"type": "string", "required": false},
+                   "subscriber": {"type": "string", "required": false}}),
         ),
     );
     copy_cells(root_template, &root.join("main/affinity"));
@@ -313,8 +333,10 @@ async fn both_lanes() -> Option<(Value, Value)> {
     let root = shipped_affinity()?;
     let (_td, h, mut rx) = boot(&root).await;
 
-    let op = json!({"op": "subscribe", "cell_path": SUBSCRIBER,
-                    "subject": "entity:alex", "audience": "agent:aiden",
+    // GH #288: the body says WHAT to subscribe to and on which channel; WHERE
+    // the pushes go and WHO they are cut for come off the edge, so naming
+    // either here would now be refused with `identity_from_body`.
+    let op = json!({"op": "subscribe", "subject": "entity:alex",
                     "channel": "telegram"});
     h.send(to(
         "/writer",

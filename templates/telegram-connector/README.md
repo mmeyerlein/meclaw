@@ -58,7 +58,7 @@ Three edges, all at the hive path, all in the mutation that instantiates it:
 one delivery. `chat_id` has to be in `context` before the turn reaches anything that will
 emit again, or the reply has no chat to go to and the proxy answers `missing_chat_id`.
 `channel` is the same identifier under the name every downstream template reads it by
-(`firewall@2` rate-limits per channel, `talky@4` mints one session per channel).
+(`firewall@2.0.4` rate-limits per channel, `talky@4.1.1` mints one session per channel).
 
 **Numbers on the hop need `int()`.** The proxy delivers JSON integers, CEL deserialises
 them as `uint`, and a bare `hop.user_id == 12345` is silently **false** -- no error, no

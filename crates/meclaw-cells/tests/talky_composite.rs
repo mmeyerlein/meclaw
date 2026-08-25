@@ -229,6 +229,11 @@ fn main_config() -> Value {
         // error drain
         {"from": "./talky/errors", "to": "/park",
          "condition": "has(hop.route) && hop.route == 'error'"},
+        // the extraction lane (GH #379): the sidecar the splitter cut out of an
+        // answer, on its way to whatever keeps this agent's memory. A real
+        // parent sets `in_remember` on it here; the drain stands in for the hive
+        {"from": "./talky", "to": "/park",
+         "condition": "has(hop.route) && hop.route == 'extraction'"},
         // tool lanes: OUTSIDE the composite, keyed on the name
         {"from": "./talky/dispatcher", "to": "./weather",
          "condition": "has(hop.tool_name) && hop.tool_name == 'weather'"},
@@ -445,6 +450,56 @@ async fn a_turn_runs_the_whole_composite_round() {
         second.contains("berlin: 21C"),
         "the tool result reached the brain: {second}"
     );
+
+    h.shutdown().await;
+}
+
+/// The sidecar seam (GH #379): a brain answer that carries a fenced `memory`
+/// block leaves the composite as TWO messages -- the prose on the reply exit
+/// with the block taken out, and the raw block on the `extraction` lane, which
+/// is the lane a parent wires into a memory hive's `in_remember` door.
+///
+/// This is the whole of what wave 5.7 changed about the topology, and it is
+/// asserted end to end rather than at the cell: the cut is only worth anything
+/// if the answer half still reaches the person through the dispatcher and the
+/// collector exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
+    let block = "{\"facts\": [{\"subject\": \"user\", \"predicate\": \"lives_in\", \
+                 \"claim\": \"Berlin\", \"fact_kind\": \"world\"}], \
+                 \"topic\": {\"movement\": \"start\", \"name\": \"where the user lives\"}}";
+    let answer_with_block = format!("Notiert, Berlin.\n\n```memory\n{block}\n```");
+    let mock = MockOpenAI::start(vec![canned_chat_completion(&answer_with_block, "stop")]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    h.send(turn("ich wohne in Berlin")).await;
+
+    let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
+    assert_eq!(hop_of(&answer, "route"), "answer");
+    assert_eq!(
+        answer_text(&answer),
+        "Notiert, Berlin.",
+        "the person is handed the prose and never the instrument: {:?}",
+        body_of(&answer)
+    );
+
+    let sidecar = recv_lane(&mut park_rx, "extraction")
+        .await
+        .expect("the sidecar left the composite on its own lane");
+    let carried: Value = meclaw_core::serde_json::from_str(
+        body_of(&sidecar)["messages"][0]["text"]
+            .as_str()
+            .expect("the sidecar rides as text"),
+    )
+    .expect("and it is the model's own JSON, not a re-serialisation");
+    assert_eq!(carried["facts"][0]["claim"], "Berlin");
+    assert_eq!(carried["topic"]["movement"], "start");
+
+    // One provider call: the annotation rode OUT with the answer, it did not
+    // cost a second round. That is the whole reason variant 2 beat the tool call.
+    assert_eq!(mock.recorded_requests().await.len(), 1);
 
     h.shutdown().await;
 }

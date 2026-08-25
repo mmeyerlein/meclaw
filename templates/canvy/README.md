@@ -100,10 +100,14 @@ knowing because they are what the hive's own two unusual edges rest on:
   Direct-Mode (`EgressPolicy::All`, stdout) is unchanged and still root-only:
   there the mark means nothing, and a dead end deep in the tree is a real dead
   end.
-- **`/colony/graph` is drawable by a mutation.** It is the one absolute endpoint
-  that is, because it is not a cell — it is the colony's read-only topology
-  endpoint, dispatched before any edge is consulted, and it is the *sanctioned*
-  way to learn topology, since § Database isolation forbids reading `colony.db`.
+- **`/colony/graph` is drawable by a mutation.** It is one of the absolute
+  endpoints that are, because it is not a cell — it is the colony's read-only
+  topology endpoint, dispatched before any edge is consulted, and it is the
+  *sanctioned* way to learn topology, since § Database isolation forbids reading
+  `colony.db`.
+  (`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` enumerates the drawable endpoints by
+  name; the read-only `/colony/ledger` joined it with
+  [#267](https://github.com/mmeyerlein/meclaw/issues/267).)
   Refusing the lane never protected anything; it only meant a canvas had to be
   born with it or somebody would go read the database instead.
   `/colony/mutations`, `/colony/trace` and `/colony/dead_letters` stay out of

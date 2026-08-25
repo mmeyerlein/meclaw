@@ -1,4 +1,4 @@
-# `steward@2.0.7`
+# `steward@2.0.10`
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -6,7 +6,7 @@ system can improve itself" from a claim into something you can check.
 | path | type | role |
 |---|---|---|
 | `charter` | `store` | goals, rules, thresholds, windows, budget caps -- as rows |
-| `meter` | `code` | the deterministic measurement, read out of the colony's own ledger |
+| `meter` | `code` | the deterministic measurement, asked of the colony's own ledger |
 | `judge` | `llm` | evaluate, simulate, decide |
 | `mutator` | `code` | re-checks the decision, then sends it to the named cell as a params update |
 | `probe` | `code` | the immediate health check |
@@ -18,13 +18,25 @@ system can improve itself" from a claim into something you can check.
 1. **Charter.** What it shall achieve, what it may do, under which conditions --
    plus everything a judge needs: thresholds, measurement windows, significance
    floors so noise never triggers action, and abort criteria. Rows, not code.
-2. **Measure.** `meter` queries the ledgers the substrate already keeps --
-   message log, token counts, dead letters -- read-only. No model runs in this
-   path and none can: a measurement a model produced is an opinion.
+2. **Measure.** `meter` **asks** the colony for counts over one window --
+   `/colony/ledger`, an ordinary message -- and gets **aggregates** back: sums
+   and counts over the message log, the token columns, the dead-letter queue,
+   grouped by model. No rows and no header contents; nothing in this hive opens
+   a database it does not own. The property that matters is unchanged: the
+   numbers are arithmetic over what already happened. No model runs in this
+   path and none can -- a measurement a model produced is an opinion.
 3. **Judge.** The one model in the hive evaluates the numbers against the rules,
    and may first **simulate**: the ledger is append-only, so the counterfactual
    is arithmetic rather than a rerun. *Had model X served yesterday's calls at
-   these token counts, the cost would have been Y.*
+   these token counts, the cost would have been Y.* Its charter — role, method,
+   radius, the revert-plan rule, the quality gate — and the single tool it may
+   answer with are **seeded** into its `system` tree
+   (`judge/seed/system.jsonl`), which is the only route a template has into it.
+   Until [#342](https://github.com/mmeyerlein/meclaw/issues/342) they sat in
+   `params` instead, where the `llm` cell has no such fields and dropped both in
+   silence: the charter that says *answer with exactly one tool_call to
+   `steward_change`* was addressed to a model that had been shown neither the
+   tool nor the charter.
 4. **Decide and update params.** The decided change leaves as an **ordinary
    params update** — body `{system:{}, params:{…}}`, `hop.target` naming the
    cell — which the target merges into its live params and answers with nothing
@@ -155,8 +167,9 @@ all, so a `mutation_log` answer would be a verdict on a mechanism the loop does
 not use, and it read `unhealthy` for every healthy cycle
 ([#338](https://github.com/mmeyerlein/meclaw/issues/338)). Because that ledger
 row can trail the probe by milliseconds -- the update and the probe order leave
-in one batch -- the read is retried a bounded number of times
-(`STEWARD_PROBE_LEDGER_TRIES`, 100 ms apart) before the update counts as missing.
+in one batch -- the question is **asked again** a bounded number of times
+(`STEWARD_PROBE_LEDGER_TRIES`, one round trip per try, 100 ms apart) before the
+update counts as missing.
 
 The probe fails **closed**, and that verdict is read before the three: a probe
 that cannot look at the ledger at all reports `unhealthy` with
@@ -212,6 +225,16 @@ endpoint, not to `/colony/*` as a class -- the read-only `/colony/graph` has
 been drawable by a mutation since
 [#163](https://github.com/mmeyerlein/meclaw/issues/163).
 
+`/colony/ledger` is the second endpoint in that class, and the steward's two
+edges on to it (`./meter` and `./probe`) are the reason this hive no longer
+opens `colony.db`
+([#267](https://github.com/mmeyerlein/meclaw/issues/267)). It is drawable by a
+mutation for the same reason `/colony/graph` is: it grants **counts rather than
+reach**. An edge on to it lets a cell ask how much happened in a window; it does
+not let it read a row, a header or another cell's state, and it moves nothing.
+The two of them are the whole list -- a `/colony/*` path is not sanctioned by
+being one, and the steward's own edge test asserts against the literal pair.
+
 ## Relationship to `llm-registry`
 
 **The registry is the book, the steward is the brain.** The registry stays a
@@ -227,17 +250,23 @@ to this hive.
 | variable | default | meaning |
 |---|---|---|
 | `STEWARD_CYCLE_CRON` | `0 0 */6 * * *` | the tick, UTC. A loop that ticks faster than its window can fill measures only noise |
-| `STEWARD_COLONY_DB` | `colony.db` | the colony's database, opened **read-only** |
-| `STEWARD_MAX_LEDGER_ROWS` | 200000 | page bound of the ledger read |
+| `STEWARD_MAX_LEDGER_ROWS` | 200000 | the `scan_budget` the meter **asks** `/colony/ledger` for: the hard bound on the rows each windowed sub-query may read. Since [#385](https://github.com/mmeyerlein/meclaw/issues/385) an answer that hit the bound is **discarded** -- the cycle is receipted as not measured rather than ruled on a part of the window -- so a budget smaller than the colony's traffic in one window means the meter never measures at all and the loop stands still. Generous is the safe direction |
 | `STEWARD_MAX_NUMERIC_STEP_PCT` | 50 | how far one cycle may move a numeric param |
 | `STEWARD_NUMERIC_PARAM_KEYS` | `temperature,max_tokens,external_timeout_ms,attachment_timeout_ms` | the numeric half of the radius, as a key set. The default is the `llm` cell's runtime-mutable numeric params; a key outside it is refused with `key_outside_radius_<key>` rather than receipted as applied |
 | `STEWARD_PROBE_WINDOW_SEC` | 120 | how far back the health check looks |
 | `STEWARD_PROBE_MAX_ERRORS` | 0 | errors tolerated in that window |
-| `STEWARD_PROBE_LEDGER_TRIES` | 3 | how often the health check re-reads the ledger, 100 ms apart, before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
+| `STEWARD_PROBE_LEDGER_TRIES` | 3 | how often the health check re-**asks** the ledger -- one round trip per try, 100 ms apart -- before it calls the cycle's params update missing. Closes the write-lag race against a row that is still being written |
 | `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-4` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
-| `STEWARD_JUDGE_PROVIDER` | `openrouter` | provider adapter of the judge |
+| `STEWARD_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `STEWARD_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `STEWARD_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
 | `OPENROUTER_API_KEY` | — (required) | the judge's key. Bound late, never stored in the tree |
+
+**Retracted:** `STEWARD_COLONY_DB` is gone
+([#267](https://github.com/mmeyerlein/meclaw/issues/267)). The meter and the
+probe no longer open `colony.db` -- nothing in this hive opens a database it
+does not own -- and the counts arrive over `/colony/ledger` instead. Setting it
+does nothing; a tree that still sets it is not broken, it is merely talking to
+a version that has passed.
 
 Prices live in the charter as a `price_per_mtok` rule
 (`model=in/out,model=in/out`), because a colony that has to reach the network to
@@ -263,3 +292,47 @@ know what it spent cannot measure itself while the network is what broke.
   What the steward knows is what it *sent*; what it measures afterwards is the
   colony's behaviour, which is the only evidence it needs and also the only one
   it has.
+- **An answer that never arrives leaves the cycle unverified.** Since the counts
+  are asked for rather than read, the probe has to wait for them -- and it
+  cannot hear its own silence: it has no `cell.db` and no timer, so a reply that
+  is simply never sent leaves the cycle sitting where it was. What bounds that
+  is only that the endpoint always answers *something*. There are **three** ways
+  an answer can fail to be one, and all three read as *could not look*, never as
+  *looked and saw nothing*: `unavailable` when the read itself failed,
+  `invalid_query` when a filter could not be read
+  ([#341](https://github.com/mmeyerlein/meclaw/issues/341)/[#359](https://github.com/mmeyerlein/meclaw/issues/359)),
+  and `scan_truncated` when a windowed sub-query hit its budget and the counts
+  beside it cover only a part of the window
+  ([#385](https://github.com/mmeyerlein/meclaw/issues/385)). Each of them is
+  fail-closed: the probe answers `unhealthy` / `probe_unavailable`, the meter
+  receipts `unmeasured`.
+- **A colony busier than the scan budget reverts everything.** Fail-closed has a
+  price, and this is where it is paid. If one window holds more ledger rows than
+  the budget (200000 at the ceiling), every answer comes back
+  `scan_truncated` -- so every probe reads `probe_unavailable`
+  (`scan_truncated: partial counts`), every change is reverted, and the meter
+  measures nothing at all, until the window is made shorter or the traffic
+  falls. The read is not free either: `/colony/ledger` **stalls the colony's
+  inbox loop for its duration**, and the `mutation_log` half of it is an
+  un-indexed table scan whose only bound is that same budget. A steward pointed
+  at a busy colony with a long window is asking the substrate to stop and count.
+- **A refusal cannot be attributed to a cycle.** An `invalid_query` refusal
+  carries no `query` echo at all, and the echo is the probe's entire memory --
+  it has no `cell.db` to hold an ask in. So for that one ask the verdict **and
+  the revert are lost**: nothing is written against the cycle, and nobody is
+  told which cycle it was. The direction stays safe (a lost verdict is never a
+  healthy one), and the trigger can only ever be a defect of the probe itself,
+  because the query is built entirely from values the probe already holds. But
+  a broken probe fails *quietly per cycle* rather than loudly once.
+- **"The params update was seen" is a count, not a row.** It now means *a
+  message of this cycle arrived under this path prefix inside the window*,
+  counted by the substrate. That is narrower than the old row-level test in one
+  way -- the `hop.route == "mutate"` fallback for rows without a cycle id is
+  gone, on the evidence that the mutator stamps one on every update it emits --
+  and wider in another, because `path_prefix` is a **prefix**: a target of
+  `/main/talky/brain` counts `/main/talky/brainstem`'s traffic too. It can
+  therefore mask a cell that went silent. It cannot invent a healthy verdict on
+  its own: errors and dead letters are counted independently of it. And the
+  re-read is now a re-**ask**: up to `STEWARD_PROBE_LEDGER_TRIES` round trips
+  100 ms apart, so a colony under load fails the check later than it used to,
+  never earlier.

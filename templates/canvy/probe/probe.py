@@ -103,10 +103,12 @@ def main():
     # The target is NOT set here and cannot be: a `code` cell's stdout is a body,
     # and where it goes is the edge's decision. The lane `./probe -> /colony/graph`
     # is declared by this hive's OWN config.json and travels with the template
-    # (GH #163). `/colony/graph` is the one absolute endpoint a mutation may draw:
-    # it is not a cell but the colony's read-only topology endpoint, and it is the
-    # sanctioned way to learn topology — § Database isolation forbids reading
+    # (GH #163). `/colony/graph` is one of the absolute endpoints a mutation may
+    # draw: it is not a cell but the colony's read-only topology endpoint, and it is
+    # the sanctioned way to learn topology — § Database isolation forbids reading
     # `colony.db`, so refusing the lane would only have pushed somebody there.
+    # `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` enumerates the drawable endpoints by
+    # name; the counts-never-content `/colony/ledger` joined it with GH #267.
     #
     # `reply_to` is not set here either, and also cannot be: the substrate stamps
     # every cell emission with the emitting cell's own path, so the colony's answer

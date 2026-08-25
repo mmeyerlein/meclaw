@@ -519,6 +519,244 @@ pub async fn handle_read_trace(
     crate::api_dto::ReadTraceReply { entries }
 }
 
+/// The bounds a ledger read is clamped into (GH #267, ruling Q14).
+const LEDGER_SCAN_BUDGET_MIN: usize = 1;
+/// Upper bound of `scan_budget` — the rows one windowed sub-query may read.
+const LEDGER_SCAN_BUDGET_MAX: usize = 200_000;
+/// Default `scan_budget` when the caller names none.
+const LEDGER_SCAN_BUDGET_DEFAULT: usize = 50_000;
+/// Maximum length of the echoed correlation `tag`, in characters.
+const LEDGER_TAG_MAX_CHARS: usize = 64;
+/// Maximum length of a `cycle_id` filter, in characters. Refused, not clamped.
+const LEDGER_CYCLE_ID_MAX_CHARS: usize = 64;
+
+/// GH #267 (ruling Q14, 2026-08-21): answer `/colony/ledger` — counts and sums
+/// over one time window of `colony.db`, never rows.
+///
+/// Mirrors [`handle_read_trace`] mechanically: `spawn_blocking` plus a fresh
+/// `SQLITE_OPEN_READ_ONLY` connection with the busy budget installed by hand
+/// (GH #98 — read-only opens never run the setup functions). It STALLS the
+/// colony inbox loop for its duration, bounded by `query.scan_budget`.
+///
+/// Every statement reads one **bounded** sub-query
+/// (`WHERE created_at >= ?since AND created_at < ?until LIMIT ?scan_budget`),
+/// and that bound is not decoration: `message_log` and `dead_letters` each have
+/// a `created_at` index (`persist/schema.rs`), **`mutation_log` does not** —
+/// its only index is `idx_mutlog_status`, so its window query is a table scan
+/// and the `LIMIT` is the only thing keeping it off the inbox loop.
+///
+/// Any `rusqlite::Error` becomes `unavailable` with all three count slots
+/// `None`: the caller must never be able to read a zero out of a read that did
+/// not happen. A filter that could not be *parsed* never reaches this function
+/// — that is the `invalid_query` refusal taken in the endpoint (GH #341/#359).
+pub async fn handle_read_ledger(
+    db_path: &std::path::Path,
+    query: crate::api_dto::LedgerQuery,
+) -> crate::api_dto::ReadLedgerReply {
+    // Clamps live here as well as in the parser: the inbox variant and the
+    // tests call the helper directly, and the echoed query must show the
+    // values that were actually used. Both applications are idempotent.
+    let mut query = query;
+    query.scan_budget = query
+        .scan_budget
+        .clamp(LEDGER_SCAN_BUDGET_MIN, LEDGER_SCAN_BUDGET_MAX);
+    if let Some(tag) = query.tag.take() {
+        query.tag = Some(tag.chars().take(LEDGER_TAG_MAX_CHARS).collect());
+    }
+
+    let db_path = db_path.to_path_buf();
+    let since = query.since;
+    let until = query.until;
+    let budget = query.scan_budget as i64;
+    let prefix_like = query.path_prefix.as_ref().map(|p| format!("{p}%"));
+    let cycle_id = query.cycle_id.clone();
+
+    type LedgerCounts = (
+        crate::api_dto::LedgerMessages,
+        crate::api_dto::LedgerCount,
+        crate::api_dto::LedgerMutations,
+        bool,
+    );
+    let join = tokio::task::spawn_blocking(move || -> rusqlite::Result<LedgerCounts> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        crate::persist::apply_busy_timeout(&conn)?;
+
+        // (1) window totals: how many hops, and how many of them failed.
+        let (total, errors) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN json_extract(headers, '$.hop.finish_reason') = 'error'
+                                      THEN 1 ELSE 0 END), 0)
+               FROM (SELECT headers FROM message_log
+                      WHERE created_at >= ?1 AND created_at < ?2
+                      LIMIT ?3)",
+            rusqlite::params![since, until, budget],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?;
+
+        // (2) per-model calls and token sums. The NULL group is excluded on
+        // purpose: a hop without `$.hop.model` is not a model, and grouping it
+        // would invent a key nobody can read.
+        let mut by_model = std::collections::BTreeMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT json_extract(headers, '$.hop.model') AS model,
+                        COUNT(*),
+                        COALESCE(SUM(json_extract(headers, '$.hop.tokens_prompt')), 0),
+                        COALESCE(SUM(json_extract(headers, '$.hop.tokens_completion')), 0)
+                   FROM (SELECT headers FROM message_log
+                          WHERE created_at >= ?1 AND created_at < ?2
+                          LIMIT ?3)
+                  WHERE json_extract(headers, '$.hop.model') IS NOT NULL
+                  GROUP BY model",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![since, until, budget], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    crate::api_dto::LedgerModel {
+                        calls: r.get::<_, i64>(1)? as u64,
+                        tokens_prompt: r.get::<_, i64>(2)?,
+                        tokens_completion: r.get::<_, i64>(3)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (model, agg) = row?;
+                by_model.insert(model, agg);
+            }
+        }
+
+        // (3) the prefix counter: traffic touching that cell in EITHER
+        // direction. A second counter beside `total`, never a filter over it.
+        let path_prefix_total = match prefix_like.as_ref() {
+            Some(like) => conn.query_row(
+                "SELECT COUNT(*)
+                   FROM (SELECT to_path, from_path FROM message_log
+                          WHERE created_at >= ?2 AND created_at < ?3
+                          LIMIT ?4)
+                  WHERE to_path LIKE ?1 OR from_path LIKE ?1",
+                rusqlite::params![like, since, until, budget],
+                |r| Ok(r.get::<_, i64>(0)? as u64),
+            )?,
+            None => 0,
+        };
+
+        // (4) the cycle counter: `to_path` ALONE — "the update reached that
+        // cell" and "that cell answered" are different facts, and only the
+        // first one is what a steward waiting on a params update asks about.
+        let path_prefix_cycle_total = match (prefix_like.as_ref(), cycle_id.as_ref()) {
+            (Some(like), Some(cid)) => conn.query_row(
+                "SELECT COUNT(*)
+                   FROM (SELECT to_path, headers FROM message_log
+                          WHERE created_at >= ?3 AND created_at < ?4
+                          LIMIT ?5)
+                  WHERE to_path LIKE ?1
+                    AND json_extract(headers, '$.hop.cycle_id') = ?2",
+                rusqlite::params![like, cid, since, until, budget],
+                |r| Ok(r.get::<_, i64>(0)? as u64),
+            )?,
+            _ => 0,
+        };
+
+        // (5) dead letters in the same window.
+        let dead_letter_total = conn.query_row(
+            "SELECT COUNT(*)
+               FROM (SELECT id FROM dead_letters
+                      WHERE created_at >= ?1 AND created_at < ?2
+                      LIMIT ?3)",
+            rusqlite::params![since, until, budget],
+            |r| Ok(r.get::<_, i64>(0)? as u64),
+        )?;
+
+        // (6) mutations, grouped by the `status` COLUMN — the same column the
+        // audit reads. Deriving the status from `committed_at IS NULL` would
+        // miss the productive rejection path, which writes its row through a
+        // different op with a different column picture.
+        let mut by_status: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT status, COUNT(*)
+                   FROM (SELECT status FROM mutation_log
+                          WHERE created_at >= ?1 AND created_at < ?2
+                          LIMIT ?3)
+                  GROUP BY status",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![since, until, budget], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                let (status, count) = row?;
+                by_status.insert(status, count);
+            }
+        }
+        let mutation_total: u64 = by_status.values().sum();
+
+        // Truncation is reported for EVERY window that hit the bound, not just
+        // the message one: all three share the same budget, and a partial DLQ
+        // count reads as good news just as much as a partial hop count does.
+        let budget_u64 = budget as u64;
+        let scan_truncated =
+            total >= budget_u64 || dead_letter_total >= budget_u64 || mutation_total >= budget_u64;
+
+        Ok((
+            crate::api_dto::LedgerMessages {
+                total,
+                errors,
+                path_prefix_total,
+                path_prefix_cycle_total,
+                by_model,
+            },
+            crate::api_dto::LedgerCount {
+                total: dead_letter_total,
+            },
+            crate::api_dto::LedgerMutations {
+                total: mutation_total,
+                by_status,
+            },
+            scan_truncated,
+        ))
+    })
+    .await;
+
+    match join {
+        Ok(Ok((messages, dead_letters, mutations, scan_truncated))) => {
+            crate::api_dto::ReadLedgerReply {
+                query,
+                messages: Some(messages),
+                dead_letters: Some(dead_letters),
+                mutations: Some(mutations),
+                scan_truncated,
+                unavailable: None,
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = ?e, "ReadLedger SQL failed");
+            crate::api_dto::ReadLedgerReply {
+                query,
+                messages: None,
+                dead_letters: None,
+                mutations: None,
+                scan_truncated: false,
+                unavailable: Some(e.to_string()),
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, "ReadLedger spawn_blocking failed");
+            crate::api_dto::ReadLedgerReply {
+                query,
+                messages: None,
+                dead_letters: None,
+                mutations: None,
+                scan_truncated: false,
+                unavailable: Some(e.to_string()),
+            }
+        }
+    }
+}
+
 /// Phase 12-B step-7.5: scope-prefix-filtered Nodes + Edges.
 /// Root-scope "/" matches everything; sub-scope "/a" matches exactly "/a"
 /// and "/a/..." but NOT "/abc".
@@ -850,6 +1088,108 @@ pub fn parse_read_query_trace_filters(
     })
 }
 
+/// Parse `body.query.{since,until,path_prefix,cycle_id,group_by,tag,scan_budget}`
+/// for `/colony/ledger` reads (GH #267, ruling Q14).
+///
+/// Built out of the same shared readers the other four reads use, so the ledger
+/// **inherits** the GH #341/#359 refusal semantics instead of restating them: a
+/// field that is present but wrong-typed is refused, never dropped. Only two
+/// checks are ledger-specific — the `group_by` vocabulary and the `cycle_id`
+/// length bound.
+///
+/// **Clamped, never refused** (clamped is not dropped): `scan_budget` into
+/// `1..=200_000`, `tag` to 64 characters, `until` defaulting to now, `since` to
+/// `now - 3600`.
+///
+/// **Refused**: a non-object `query`; a non-numeric, negative or fractional
+/// `since`/`until`/`scan_budget`; a non-string `path_prefix`/`group_by`/`tag`/
+/// `cycle_id`; a `group_by` other than `"model"`; a `cycle_id` longer than 64
+/// characters. All of them under the one documented `invalid_query` code — the
+/// ledger is the fifth read under that code, not a sixth vocabulary.
+pub fn parse_read_query_ledger_filters(
+    body: &meclaw_core::serde_json::Value,
+) -> Result<crate::api_dto::LedgerQuery, ReadQueryError> {
+    let q = read_query_object(body)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let read_non_negative = |field: &str| -> Result<Option<i64>, ReadQueryError> {
+        match read_opt_i64(q, field)? {
+            Some(v) if v < 0 => Err(ReadQueryError {
+                key: format!("query.{field}"),
+                details: format!("`query.{field}` must not be negative, found {v}"),
+            }),
+            other => Ok(other),
+        }
+    };
+
+    let until = read_non_negative("until")?.unwrap_or(now);
+    let since = read_non_negative("since")?.unwrap_or(now - 3600);
+
+    // An inverted or degenerate window is refused, not answered with zeroes.
+    // The counts of an empty window are the ONE place where "we did not look"
+    // and "we looked and saw nothing" read alike from the outside, and a caller
+    // that inverted its bounds by accident would take the second reading. The
+    // test runs on the RESOLVED window, because both bounds have defaults: a
+    // caller who sends neither gets `now - 3600 … now`, which is never empty.
+    if until <= since {
+        return Err(ReadQueryError {
+            key: "query.until".into(),
+            details: format!(
+                "empty window: until <= since (resolved: since {since}, until \
+                 {until}) — an inverted window would answer zero counts, which \
+                 is indistinguishable from a window in which nothing happened"
+            ),
+        });
+    }
+
+    let scan_budget = read_non_negative("scan_budget")?
+        .map(|v| (v as usize).clamp(LEDGER_SCAN_BUDGET_MIN, LEDGER_SCAN_BUDGET_MAX))
+        .unwrap_or(LEDGER_SCAN_BUDGET_DEFAULT);
+
+    let group_by = match read_opt_str(q, "group_by")? {
+        Some("model") => Some("model".to_string()),
+        Some(other) => {
+            return Err(ReadQueryError {
+                key: "query.group_by".into(),
+                details: format!(
+                    "`query.group_by` must be \"model\", found \"{other}\" — the \
+                     ledger groups by model and by nothing else"
+                ),
+            });
+        }
+        None => None,
+    };
+
+    let cycle_id = match read_opt_str(q, "cycle_id")? {
+        Some(c) if c.chars().count() > LEDGER_CYCLE_ID_MAX_CHARS => {
+            return Err(ReadQueryError {
+                key: "query.cycle_id".into(),
+                details: format!(
+                    "`query.cycle_id` must be at most {LEDGER_CYCLE_ID_MAX_CHARS} \
+                     characters, found {} — a filtering value is never truncated, \
+                     because a shortened one would answer a different question",
+                    c.chars().count()
+                ),
+            });
+        }
+        other => other.map(String::from),
+    };
+
+    Ok(crate::api_dto::LedgerQuery {
+        since,
+        until,
+        path_prefix: read_opt_str(q, "path_prefix")?.map(String::from),
+        cycle_id,
+        group_by,
+        tag: read_opt_str(q, "tag")?
+            .map(|t| t.chars().take(LEDGER_TAG_MAX_CHARS).collect::<String>()),
+        scan_budget,
+    })
+}
+
 /// Name the JSON type of a value for an error message.
 fn json_type_name(v: &meclaw_core::serde_json::Value) -> &'static str {
     use meclaw_core::serde_json::Value;
@@ -1065,7 +1405,8 @@ fn build_graph_reply(reply: &crate::api_dto::ReadGraphReply) -> meclaw_core::ser
 /// carries no result list: a reader must not be able to mistake a refused filter
 /// for an answer, and `reply["<slot>"].as_array()` is `None` on this shape.
 ///
-/// `slot` is the endpoint's own name: `graph`, `registry`, `templates`, `trace`.
+/// `slot` is the endpoint's own name: `graph`, `registry`, `templates`, `trace`,
+/// `ledger`.
 pub fn build_read_error_reply(slot: &str, err: &ReadQueryError) -> meclaw_core::serde_json::Value {
     meclaw_core::serde_json::json!({
         slot: {
@@ -1079,6 +1420,16 @@ pub fn build_read_error_reply(slot: &str, err: &ReadQueryError) -> meclaw_core::
 fn build_trace_reply(reply: &crate::api_dto::ReadTraceReply) -> meclaw_core::serde_json::Value {
     meclaw_core::serde_json::json!({
         "trace": meclaw_core::serde_json::to_value(&reply.entries).unwrap_or_default(),
+    })
+}
+
+/// GH #267: the `/colony/ledger` answer under its own top-level slot. Unlike
+/// its four siblings the slot holds an OBJECT, not a list — the ledger answers
+/// aggregates, so `reply["ledger"].as_array()` is `None` on both the answer and
+/// the refusal, and the two are told apart by the presence of `query`.
+fn build_ledger_reply(reply: &crate::api_dto::ReadLedgerReply) -> meclaw_core::serde_json::Value {
+    meclaw_core::serde_json::json!({
+        "ledger": meclaw_core::serde_json::to_value(reply).unwrap_or_default(),
     })
 }
 
@@ -1258,6 +1609,20 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                     build_trace_reply(&reply)
                 }
                 Err(e) => refuse_read("/colony/trace", "trace", &e),
+            };
+            emit_reply_or_done(reply_to, reply_body)
+        }
+        "/colony/ledger" => {
+            // GH #267 (ruling Q14): same class as `/colony/trace` and for the
+            // same reason — the read is async and needs the colony DB, so the
+            // refusal is taken here, before the query runs. A filter that
+            // cannot be read never reaches `handle_read_ledger` at all.
+            let reply_body = match parse_read_query_ledger_filters(&body) {
+                Ok(f) => {
+                    let reply = handle_read_ledger(db_path, f).await;
+                    build_ledger_reply(&reply)
+                }
+                Err(e) => refuse_read("/colony/ledger", "ledger", &e),
             };
             emit_reply_or_done(reply_to, reply_body)
         }

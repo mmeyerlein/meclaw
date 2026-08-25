@@ -99,6 +99,120 @@ pub struct ReadTraceReply {
     pub entries: Vec<MessageLogDto>,
 }
 
+/// The resolved question a `/colony/ledger` read answers (GH #267, ruling Q14).
+///
+/// Every field is the value the reader actually used, after the documented
+/// clamps: it is echoed back in [`ReadLedgerReply::query`] so a caller can see
+/// which question was answered rather than which one it asked.
+///
+/// Window semantics: `since` inclusive, `until` exclusive (`created_at >= since
+/// AND created_at < until`), both in Unix seconds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerQuery {
+    /// Window start, inclusive (Unix seconds). Defaults to `now - 3600`.
+    pub since: i64,
+    /// Window end, exclusive (Unix seconds). Defaults to `now`.
+    pub until: i64,
+    /// Cell path whose traffic the prefix/cycle counters ask about. `None`
+    /// leaves both counters at zero — they are counters, never filters.
+    pub path_prefix: Option<String>,
+    /// Correlation value of `$.hop.cycle_id`; scopes the arrival counter.
+    /// Never truncated — it filters, so shortening it would change the
+    /// question. An over-long one is refused at parse time instead.
+    pub cycle_id: Option<String>,
+    /// Requested grouping. Only `"model"` exists; anything else is refused at
+    /// parse time (`invalid_query`).
+    pub group_by: Option<String>,
+    /// Opaque caller correlation token, echoed verbatim. Truncated to 64
+    /// characters, never refused: it never touches the data, so shortening it
+    /// cannot change the answer, and an unbounded one is a growth hazard.
+    pub tag: Option<String>,
+    /// Hard bound on the rows each windowed sub-query may read. Clamped into
+    /// `1..=200_000`, default 50_000.
+    pub scan_budget: usize,
+}
+
+/// Reply for [`crate::ColonyMsg::ReadLedger`] (GH #267, ruling Q14).
+///
+/// Aggregates only — counts and sums, never rows and never header content.
+///
+/// **Two failure shapes, never confused.** `unavailable` means *the read could
+/// not happen*: the three count slots are then absent (not zero), while `query`
+/// is still there. A filter that could not be read is a different thing
+/// entirely — the ordinary `invalid_query` refusal taken at parse time, which
+/// carries no `query` at all (GH #341/#359).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadLedgerReply {
+    /// The resolved question, echoed including every applied clamp.
+    pub query: LedgerQuery,
+    /// Message-log aggregate for the window. `None` iff the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<LedgerMessages>,
+    /// Dead-letter count for the window. `None` iff the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letters: Option<LedgerCount>,
+    /// Mutation-log counts for the window. `None` iff the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutations: Option<LedgerMutations>,
+    /// `true` when a windowed sub-query hit `scan_budget` — the counts below
+    /// are then partial, and saying so is the whole point: a silently smaller
+    /// number reads as good news.
+    pub scan_truncated: bool,
+    /// Why the read could not happen. Mutually exclusive with the counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+/// Message-log aggregate of one `/colony/ledger` window.
+///
+/// `total`, `path_prefix_total` and `path_prefix_cycle_total` are three
+/// independent counters over the same window — asking about one cell never
+/// shrinks the others.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerMessages {
+    /// Rows in the window.
+    pub total: u64,
+    /// Rows whose `$.hop.finish_reason` is `"error"`.
+    pub errors: u64,
+    /// Rows touching `path_prefix` in either direction (`to_path` or
+    /// `from_path`). Zero when no `path_prefix` was asked for.
+    pub path_prefix_total: u64,
+    /// Rows of `cycle_id` **arriving** at `path_prefix` (`to_path` only): the
+    /// update reaching the cell, not the cell answering. Zero when either
+    /// filter is absent.
+    pub path_prefix_cycle_total: u64,
+    /// Per-model call counts and token sums, keyed by `$.hop.model`. Rows
+    /// without a model create no group.
+    pub by_model: std::collections::BTreeMap<String, LedgerModel>,
+}
+
+/// Per-model slice of a [`LedgerMessages`] aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerModel {
+    /// Hops naming this model.
+    pub calls: u64,
+    /// Sum of `$.hop.tokens_prompt` over those hops.
+    pub tokens_prompt: i64,
+    /// Sum of `$.hop.tokens_completion` over those hops.
+    pub tokens_completion: i64,
+}
+
+/// A single windowed count (the dead-letter slot of a ledger reply).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerCount {
+    /// Rows in the window.
+    pub total: u64,
+}
+
+/// Mutation-log counts of one `/colony/ledger` window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerMutations {
+    /// Rows in the window (the sum of `by_status`).
+    pub total: u64,
+    /// Rows per value of the `status` column.
+    pub by_status: std::collections::BTreeMap<String, u64>,
+}
+
 /// DTO mirror of [`crate::persist::writer::MessageLogRow`] for HTTP-marshal.
 ///
 /// The `headers_json` column is included raw; the HTTP-handler in Task 8 may

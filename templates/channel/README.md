@@ -54,7 +54,7 @@ occupies the slot* -- and the swap below moves those edges onto the generation v
 `hop.route`. `./telegram-connector` and `./terminal` are not addresses from outside; an
 edge naming one is refused with `hive_port_boundary`.
 
-The inbound lane names are `talky@4`'s own, unchanged. A facade that renames the lanes
+The inbound lane names are `talky@4.1.1`'s own, unchanged. A facade that renames the lanes
 behind it is a facade you have to learn twice.
 
 | lane | direction | what travels |
@@ -142,7 +142,7 @@ One mutation, scoped at the channel:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky", "template": "talky@4.0.0"}],
+   "add_nodes": [{"name": "talky", "template": "talky@4.1.1"}],
    "swap_nodes": [{"match": {"name": "terminal"}, "with": {"name": "talky"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -165,7 +165,7 @@ A participant joins or leaves, so the generation ends (E8). Same shape:
 ```json
 {"scope": "/main/channel",
  "diff": {
-   "add_nodes": [{"name": "talky-2", "template": "talky@4.0.0"}],
+   "add_nodes": [{"name": "talky-2", "template": "talky@4.1.1"}],
    "swap_nodes": [{"match": {"name": "talky"}, "with": {"name": "talky-2"}}]
  },
  "ctx": {"model": "openai/gpt-4o-mini"}}
@@ -214,7 +214,7 @@ leaf and has no inside to drag.
 
 #### Why not a self-loop: the memory tool
 
-`talky@4` serves its own `memory_recall` tool by sending to itself. Inside a channel,
+`talky@4.1.1` serves its own `memory_recall` tool by sending to itself. Inside a channel,
 wire that loop **through the hive path** instead -- out on `tool`, back in on
 `in_memory_call`:
 

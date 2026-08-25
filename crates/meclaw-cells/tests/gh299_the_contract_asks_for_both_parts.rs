@@ -32,14 +32,22 @@ use std::process::{Command, Stdio};
 const GLUE_CONFIG: &str = "../../templates/memory-hive/extract-glue/config.json";
 const INLINE_CONTRACT: &str = "../../templates/memory-hive/inline-contract.md";
 const CORE_LIST: &str = "../../templates/memory-hive/predicate-core.json";
+const SPLITTER_CONFIG: &str = "../../templates/talky/splitter/config.json";
 
 /// The block's length bound, in characters.
 ///
-/// A bound rather than a measurement: the rewrite left 1,573 characters and the
-/// wording will keep moving while the harness tunes it, so what is pinned is the
-/// ceiling under which that tuning has to stay. Every character in here is
-/// re-read by the provider on every turn of every conversation.
-const LENGTH_BOUND: usize = 1_600;
+/// A bound rather than a measurement: the wording will keep moving while the
+/// harness tunes it, so what is pinned is the ceiling under which that tuning
+/// has to stay. Every character in here is re-read by the provider on every
+/// turn of every conversation.
+///
+/// Raised once, deliberately, in W5.7 (GH #379): the block stopped asking for a
+/// tool call and started asking for a fenced sidecar, and a delivery the model
+/// has to BUILD costs more words than a tool it only has to call -- the
+/// paragraph explains the fence, and both shown forms are now fenced the way
+/// the answer must fence them. 1,573 characters became 1,878. (The plan
+/// estimated 1,700; it had costed the sentence and not the two fences.)
+const LENGTH_BOUND: usize = 1_900;
 
 /// `${VAR:-default}` becomes the default, a bare `${VAR}` becomes the empty string --
 /// the same substitution the colony performs when it instantiates the template.
@@ -59,6 +67,25 @@ fn resolve_vars(script: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The shipped splitter's script -- the OTHER end of the sentence the block
+/// states (GH #379). Read the same way as `glue_script`, so a template that
+/// moved is a panic with a path in it rather than a silent skip.
+fn splitter_script() -> String {
+    let raw = std::fs::read_to_string(SPLITTER_CONFIG).unwrap_or_else(|e| {
+        panic!(
+            "the talky composite ships no splitter ({SPLITTER_CONFIG}): {e}. The \
+             block below asks for a fenced sidecar; without the cell that cuts \
+             it, the fence travels to the person."
+        )
+    });
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("splitter config json");
+    resolve_vars(
+        v["params"]["script_inline"]
+            .as_str()
+            .expect("params.script_inline"),
+    )
 }
 
 fn glue_script() -> String {
@@ -130,15 +157,22 @@ fn inline_contract() -> String {
 /// The block a persona actually carries: the fenced `text` section of the file.
 /// Prose ABOUT a rule is not the rule, so the assertions below read the block and
 /// never the page around it.
+///
+/// The fence is FOUR backticks since W5.7 (GH #379): the block itself now shows
+/// two ```memory fences, and a three-backtick wrapper would close on the first
+/// of them -- every reader of this file would then pin a third of the contract
+/// and call it the whole. The three-backtick form is still accepted, so a
+/// counter-contract written the old way still reads.
 fn contract_block() -> String {
     let raw = inline_contract();
-    let (_, tail) = raw
-        .split_once("```text\n")
-        .expect("the contract file carries the persona block in a ```text fence");
-    let (block, _) = tail
-        .split_once("\n```")
-        .expect("the persona block's fence is closed");
-    block.to_string()
+    for (open, close) in [("````text\n", "\n````"), ("```text\n", "\n```")] {
+        if let Some((_, tail)) = raw.split_once(open)
+            && let Some((block, _)) = tail.split_once(close)
+        {
+            return block.to_string();
+        }
+    }
+    panic!("the contract file carries no closed ````text fence around the persona block");
 }
 
 /// Every run of whitespace collapsed to one space.
@@ -268,21 +302,78 @@ fn the_block_obliges_an_annotation_on_every_turn() {
     // anyway.
     let block = flat(&contract_block());
     assert!(
-        block.contains("Annotate EVERY turn"),
+        block.contains("ANNOTATE EVERY TURN"),
         "the block states the obligation, not a permission:\n{block}"
     );
+    // W5.7 (GH #379): the delivery is a fenced sidecar, not a tool call. Both
+    // halves are asserted -- what the model must DO, and that the retracted
+    // instruction is gone -- because a block carrying both would ask for two
+    // deliveries and get whichever the model prefers.
     assert!(
-        block.contains("call `remember`"),
-        "and names the call that discharges it:\n{block}"
+        block.contains("append a fenced block"),
+        "and names the act that discharges it:\n{block}"
     );
     assert!(
-        block.contains("AFTER your answer"),
+        block.contains("opens with ```memory"),
+        "with the marker the splitter looks for -- a block that only said \
+         `fenced` would be cut by nothing:\n{block}"
+    );
+    assert!(
+        !block.contains("call `remember`"),
+        "and the tool call is RETRACTED, not left standing beside it:\n{block}"
+    );
+    assert!(
+        block.contains("After your answer -- always after, never instead of it"),
         "in the order that makes the answer readable -- a model that emits its \
          structured field before its reasoning answers from nothing:\n{block}"
     );
     assert!(
-        block.contains("skipping the call is a fault"),
-        "and says what an absent call IS, or the obligation reads as a preference:\n{block}"
+        block.contains("leaving the block out is a fault"),
+        "and says what an absent annotation IS, or the obligation reads as a \
+         preference:\n{block}"
+    );
+}
+
+/// The sentence and the mechanism, in one assertion (development-rules § 2d).
+///
+/// The block tells a model to open its annotation with ```` ```memory ````. That
+/// is only true if the cell that cuts the sidecar out of the answer actually
+/// reads that marker -- so the form the block SHOWS is sent through the real
+/// `params.script_inline` of `templates/talky/splitter`, and has to come back as
+/// a cut with a valid sidecar. A rewording that moved the fence and left the
+/// splitter alone would fail here rather than in production.
+#[test]
+fn the_shown_fence_is_the_one_the_splitter_cuts() {
+    let block = contract_block();
+    let form = json_form(&block, "{\"nothing_new\"");
+    let answer = format!("Understood.\n\n```memory\n{form}\n```");
+    let doc = serde_json::json!({
+        "header": {"hop": {"finish_reason": "stop"}},
+        "messages": [{"origin": "assistant", "type": "text", "text": answer}]
+    });
+    let out = run_script_on_stdin(&splitter_script(), &meclaw_testing::code_stdin_bytes(&doc));
+    assert!(
+        out.status.success(),
+        "the splitter exited non-zero on the form the block shows: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let emitted: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "splitter stdout ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    let arr = emitted.as_array().unwrap_or_else(|| {
+        panic!(
+            "the fence the block shows was NOT cut -- the contract asks for a \
+             delivery the substrate does not take apart: {emitted}"
+        )
+    });
+    assert_eq!(arr.len(), 2, "{emitted}");
+    assert_eq!(arr[1]["header"]["route"], "extraction", "{emitted}");
+    assert_eq!(
+        arr[0]["messages"][0]["text"], "Understood.",
+        "and the answer reaches the person without it: {emitted}"
     );
 }
 

@@ -175,6 +175,16 @@
           "condition": "has(hop.route) && hop.route == 'error'"
         },
         {
+          "from": "./meter",
+          "to": "/colony/ledger",
+          "condition": "has(hop.route) && hop.route == 'ledger'"
+        },
+        {
+          "from": "./probe",
+          "to": "/colony/ledger",
+          "condition": "has(hop.route) && hop.route == 'ledger'"
+        },
+        {
           "from": "./probe",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'"

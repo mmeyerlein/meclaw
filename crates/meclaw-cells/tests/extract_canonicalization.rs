@@ -62,13 +62,18 @@ fn contract_block() -> String {
              Since GitHub #298 it is the ONLY thing the extracting model is told."
         )
     });
-    let (_, tail) = raw
-        .split_once("```text\n")
-        .expect("the contract file carries the persona block in a ```text fence");
-    let (block, _) = tail
-        .split_once("\n```")
-        .expect("the persona block's fence is closed");
-    block.to_string()
+    // FOUR backticks since W5.7 (GH #379): the block shows two ```memory fences
+    // of its own now, and a three-backtick wrapper would close on the first of
+    // them. The old form is still read, so a counter-contract does not have to
+    // move.
+    for (open, close) in [("````text\n", "\n````"), ("```text\n", "\n```")] {
+        if let Some((_, tail)) = raw.split_once(open)
+            && let Some((block, _)) = tail.split_once(close)
+        {
+            return block.to_string();
+        }
+    }
+    panic!("the contract file carries no closed ````text fence around the persona block");
 }
 
 /// Every run of whitespace collapsed to one space -- the block is wrapped to a

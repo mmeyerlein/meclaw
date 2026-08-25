@@ -238,12 +238,12 @@ Only internal errors (DB corruption, spawn error) trigger a cell crash + restart
 **Seed (`seed/system.jsonl`, GH #99)**: the static layer underneath the accumulated `system.*` state. It lets a template ship a default identity instead of starting the cell selfless and waiting for the first `system.*` update message — the agent is operational from boot on (degraded until it is briefed, never wrong). Same format as the `store` seed (overview § seed concept): line 1 is the schema header, lines 2+ are the rows.
 
 ```
-{"schema": {"slot_path": "text", "value": "json"}}
-{"slot_path": "identity", "value": {"text": "You are a research assistant."}}
-{"slot_path": "instructions.tone", "value": {"text": "Answer briefly."}}
+{"schema": {"slot_path": "text", "value": "json", "updated_at": "int"}}
+{"slot_path": "identity", "value": {"text": "You are a research assistant."}, "updated_at": 0}
+{"slot_path": "instructions.tone", "value": {"text": "Answer briefly."}, "updated_at": 0}
 ```
 
-- A row is **exactly one leaf**: `slot_path` is the dotted slot path, `value` the UBF leaf. The semantics are those of an ordinary `system.*` update (upsert per path); `updated_at` is stamped by the loader at seed time, the file does not carry it.
+- A row is **exactly one leaf**: `slot_path` is the dotted slot path, `value` the UBF leaf. The semantics are those of an ordinary `system.*` update (upsert per path); `updated_at` is carried by the row itself, and `0` is the customary birth value (the first real `system.*` update overwrites it anyway). Only the `llm` factory's loader stamps the seed time when the column is absent — the generic JSONL seeder of the mutation stage writes rows **verbatim**, where a missing column is a `NOT NULL` failure. A portable seed therefore carries `updated_at` in the schema header and on every row (GH #386).
 - **Plain-text leaves only.** A `{"text_id": …}` leaf in a seed is a **loud configuration error at spawn time** — the substrate resolves that pointer class at the delivery boundary (GH #86), which a leaf written directly into `cell.db` never passes. Rejected as well: a nested subtree as `value` (then the nesting belongs in the `slot_path`), an empty `slot_path`, a missing header.
 - The seed applies **only on `OpenStatus::Created`** of the `cell.db` — a re-open is never re-seeded, otherwise the template default would overwrite the grown identity on every restart (overview § seed concept).
 - The seed is parsed **before** the `cell.db` is created: a rejected seed leaves behind no empty `cell.db` that would make the repaired seed look like a "resume" and skip it forever. The same parse path hangs off `meclaw --validate` (validate-equals-spawn).

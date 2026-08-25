@@ -1,4 +1,4 @@
-# `memory-hive@3.0.0`
+# `memory-hive@3.0.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -502,7 +502,19 @@ that both bound what the prompt pays for.
 Every durable row of this hive says **who was present when it was learned**, and the read path
 answers only with rows the current round could have heard. The rule and its vocabulary are the
 ones `affinity` already uses (`member:<name>`, `agent:<name>`, `*` for universal); the two halves
-of one rule speak one language on purpose. The reasoning behind each decision is recorded on
+of one rule speak one language on purpose.
+
+**One name for the round, one minter for the names inside it** ([#330](https://github.com/mmeyerlein/meclaw/issues/330)).
+The round is `audience_set` everywhere -- on the hop, in the context, in the column -- and
+no template may ever introduce a second name for it: a second spelling is a second gate
+that can stand open while the first one reads shut, which is exactly how `affinity` spent
+a release reading a key nobody wrote. The references inside the set are `affinity`'s alone
+to mint and map; this hive stores the string it was handed **byte for byte** and never
+looks an identity up. A subset test over two vocabularies is not a test, it is a
+coincidence -- so translating a connector's own user id into that vocabulary happens once,
+on the talky edge (ADR-0002 E8), and nowhere else.
+
+The reasoning behind each decision is recorded on
 [GH #244](https://github.com/mmeyerlein/meclaw/issues/244) and, for the topology half — one talky
 per channel, generations that end when the participant set changes, and the memory hive belonging
 to a member rather than to an agent — on [GH #122](https://github.com/mmeyerlein/meclaw/issues/122).

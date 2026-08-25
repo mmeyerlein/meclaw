@@ -1,6 +1,18 @@
 # The inline extraction contract
 
-This file used to open by naming **two** extraction ingresses -- a batched extractor that
+This block used to ask for a **tool call**: *"AFTER your answer, call `remember` with both
+parts"*. **That instruction is retracted, not quietly reworded** (owner ruling 2026-08-24,
+GitHub #373; built in GitHub #379). It was measured across seven model families and it did not
+hold: in the best case 44 % of turns carried the call, in most cases far less, and a completion
+that mixed a sentence with an asynchronous call stranded its own round. The same rules delivered
+as a fenced block IN the answer were adopted on 12 of 12 turns by every one of five models, with
+zero malformed blocks. So the delivery changed and the rules did not: everything from
+`DELTA, NOT STATE` down is the byte-identical text the tool form carried. What takes the block
+back out of the answer is a cell, not a model -- `templates/talky/splitter`, between the brain
+and the dispatcher; without the block in the instructions it is a pure pass-through. The
+`remember` tool is gone from the shipped tool list.
+
+This file also used to open by naming **two** extraction ingresses -- a batched extractor that
 prompted itself out of `extract-glue`'s `build_instructions()`, and this inline one. **That
 sentence is retracted, not quietly rewritten:** per-turn extraction (GitHub #298) removed the
 batch lane entirely. `build_instructions()`, the `extractor` cell and the flush that fed them are
@@ -39,32 +51,39 @@ Three damages out of one missing rule:
 
 ## The contract
 
-Paste this block into the persona of any model that emits inline extraction -- as the
-`description` of its `remember` tool if it has one, otherwise into its instructions.
+Paste this block into the **instructions** of any model that emits inline extraction. There is
+no tool alternative any more: the annotation is something the model writes, so the place it is
+asked for is the place everything else it writes is asked for.
 
 It states an **obligation**, and that is the whole change of GitHub #299: every turn is
 annotated, and the annotation has two parts -- the *delta of world state* the turn carried and
 the *movement of the conversation*. A turn that carried nothing is annotated as carrying
-nothing; an absent call is a fault, not a modest answer, because a turn nobody annotated is now
+nothing; an absent block is a fault, not a modest answer, because a turn nobody annotated is now
 a turn nobody extracts.
 
-The block is deliberately short. It **was** the longest tool description the agent carried, it is
-carried on **every** turn, and length here is paid for per call -- so what is in it is what the
-ingress can actually read, and nothing else. The rewrite cut it by more than half
-(3,302 characters to 1,573), and the lock below keeps it under 1,600 so the sprawl cannot grow
-back unnoticed.
+The block is deliberately short. It is carried on **every** turn and length here is paid for per
+call -- so what is in it is what the ingress can actually read, and nothing else. GitHub #299 cut
+it by more than half (3,302 characters to 1,573); the flip to the sidecar bought some of that
+back (1,878), because a delivery the model has to build costs more words than a tool it only has
+to call. The lock below keeps it under 1,900 so the sprawl cannot grow back unnoticed.
 
-```text
-Annotate EVERY turn: AFTER your answer, call `remember` with both parts -- `facts`, this
-turn's delta of world state, and `topic`, where the conversation stands.
+````text
+ANNOTATE EVERY TURN. You have no tool for this: the annotation is part of what you write. After your answer -- always after, never instead of it -- append a fenced block that opens with ```memory, holds ONE JSON object and nothing else, and closes with ```. Write it on every turn, including the turns that changed nothing. It has both parts -- `facts`, this turn's delta of world state, and `topic`, where the conversation stands.
+
+```memory
 {"facts":[{"subject":"","predicate":"","claim":"",
 "fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],
 "topic":{"movement":"start|continue|end","name":""}}
+```
+
 experience = what happened between us, foresight = expected or planned.
 start opens a thread, end closes it by name, continue is ordinary.
 
-A turn that carried nothing is still ANNOTATED; skipping the call is a fault:
+A turn that carried nothing is still ANNOTATED; leaving the block out is a fault:
+
+```memory
 {"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}
+```
 
 DELTA, NOT STATE: what the memory handed you is already remembered; say what this turn
 CHANGED. Your own answer is not a fact, and a question asserts nothing about what it asks.
@@ -81,7 +100,7 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
 corrected.
-```
+````
 
 **What is not in the block, and why that is a shape decision rather than a fence.**
 `valid_until` is not an emitted field: a validity taken from the range a question asks about
@@ -108,8 +127,9 @@ required field that has to be got right on the turns where it means nothing.
 
 ## Two seams worth knowing
 
-**A block names no turn, and is BOUND rather than orphaned.** That is the tool form, and since
-`episode_id` left the schema it is the only one: an `episodes.id` is a uuid the writer mints, so
+**A block names no turn, and is BOUND rather than orphaned.** That was already true of the tool
+form and it did not change with the delivery; since `episode_id` left the schema it is the only
+form there is: an `episodes.id` is a uuid the writer mints, so
 a model answering a turn has never seen the id of the turn it is answering. The ingress resolves
 the turn itself -- the newest `user` episode of the session the call travelled in, which the
 per-turn write lane minted while the answer was being generated -- and takes that episode's row
@@ -148,8 +168,12 @@ decides what a statement *means* -- that is the close pass's work and the night'
 
 - Front-line personas that wire the `inline-extraction` port (see [README](README.md) § Ports).
   This file is the authority; a persona carries a copy of the block. The `talky` composite
-  documents the tool schema and both edges in
-  [`../talky/README.md`](../talky/README.md), section "The memory tool `remember`".
+  documents the seam and both edges in
+  [`../talky/README.md`](../talky/README.md), section "The extraction sidecar".
+- `templates/talky/splitter` -- the cell between the brain and the dispatcher that takes the
+  block back OUT of the answer, on lane `extraction`. Its fence grammar is the same one the
+  harness measured this wording with; without the block in the instructions it is a pure
+  pass-through, which is what lets a colony run this composite without any memory at all.
 - `extract-glue` -- **the only ingress.** It validates the block, canonicalises the predicates,
   dedups against what the turn already carries, writes the facts, writes the `topic` row next to
   them, and marks the queue row of the turn it covered with the status its answer earned
@@ -170,8 +194,13 @@ decides what a statement *means* -- that is the close pass's work and the night'
   while a malformed block does not.
 - `crates/meclaw-cells/tests/gh298_per_turn_annotation.rs` -- the second part of the
   annotation: the three movements, at most one topic op per block, and the name copied verbatim.
-- `crates/meclaw-cells/tests/w10b_inline_gate.rs` -- the tool form and the enforced rules
-  above, as the quality gate the inline lane needs and the invariance gate cannot
-  give it: predicate spread per axis, and facts closed on arrival.
+- `crates/meclaw-cells/tests/w10b_inline_gate.rs` -- the enforced rules above, as the quality
+  gate the inline lane needs and the invariance gate cannot give it: predicate spread per axis,
+  and facts closed on arrival. It still drives the ingress the way the tool form did, on purpose:
+  the DOOR did not change with the delivery, and a colony that still sends a `remember` hop is
+  still served.
+- `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs` -- the other end of the
+  sentence: the marker this block tells a model to open with is the marker the splitter looks
+  for.
 - `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- both of them in a running colony,
   including the half that matters most: a broken block costs the answer nothing.

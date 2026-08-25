@@ -146,31 +146,39 @@ would silently rewrite every number ever derived from it, and nobody would see
 the edit.
 
 **The current list is**
-[`scripts/prices-openrouter-2026-08-22.json`](../scripts/prices-openrouter-2026-08-22.json),
-retrieved on 2026-08-22. Point a colony you are measuring *today* at that one;
+[`scripts/prices-openrouter-2026-08-24.json`](../scripts/prices-openrouter-2026-08-24.json),
+retrieved on 2026-08-24. Point a colony you are measuring *today* at that one;
 the figures further down keep the 2026-08-15 list, because a number is only
-reproducible against the list it was computed from. Two things moved between the
-two:
+reproducible against the list it was computed from. What the two newer lists
+carry:
 
-| model | input, USD / 1M tokens | output, USD / 1M tokens | vs. 2026-08-15 |
+| model | input, USD / 1M tokens | output, USD / 1M tokens | since |
 |---|---|---|---|
-| `openai/gpt-5.6-luna` | 0.20 | 1.20 | doubled |
-| `anthropic/claude-opus-5` | 5.00 | 25.00 | unchanged |
-| `google/gemini-embedding-2` | 0.20 | — | new; the shipped generation since 2026-08-19 |
+| `openai/gpt-5.6-luna` | 0.20 | 1.20 | 2026-08-22 (doubled then; re-checked 2026-08-24, unchanged) |
+| `openai/gpt-5.6-sol` | 2.00 | 10.00 | 2026-08-24 (new row, GitHub #377) |
+| `anthropic/claude-opus-5` | 5.00 | 25.00 | unchanged since 2026-08-15 |
+| `google/gemini-embedding-2` | 0.20 | — | 2026-08-22; the shipped generation since 2026-08-19 |
 
-The `qwen/qwen3-embedding-8b` row is carried forward into the new list rather
+The `qwen/qwen3-embedding-8b` row is carried forward into each new list rather
 than dropped, so that a window spanning the 2026-08-19 switch prices both
 generations instead of pushing the older half into the `unknown` bucket. One
 thing the flat two-number format does not express: `openai/gpt-5.6-luna` bills
-prompts above 272,000 tokens at a higher tier (0.40 / 1.80), so a colony that
-routinely sends contexts that large is priced *low* by this report.
+prompts above 272,000 tokens at a higher tier (0.40 / 1.80) and
+`openai/gpt-5.6-sol` at (4.00 / 15.00), so a colony that routinely sends
+contexts that large is priced *low* by this report.
+
+`openai/gpt-5.6-sol` was added because a run that names it — as a judge, a
+closer, or a brain — is refused before it boots while the list does not know it
+(GitHub #377). The euro reference rate of the 2026-08-24 list is the one the
+2026-08-22 list carried; it names its own date inside the file, so a euro figure
+stays traceable to the day its rate was taken.
 
 ### 5. Running it
 
 ```sh
 python3 scripts/cost_report.py \
     --db     /path/to/your/colony.db \
-    --prices scripts/prices-openrouter-2026-08-22.json
+    --prices scripts/prices-openrouter-2026-08-24.json
 ```
 
 The database is opened read-only through the SQLite URI `file:<path>?mode=ro`,

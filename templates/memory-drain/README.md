@@ -178,7 +178,7 @@ later round, which is the one value that cannot be taken back once a row carries
 an unknown audience is an error, not an occasion to guess. Same for the room: if it is not
 known, it is not known.
 
-**Where they usually come from.** In a colony built from `channel@1` both are already in
+**Where they usually come from.** In a colony built from `channel@1.0.3` both are already in
 `context` before the turn ever reaches the talky: the ingress door of the generation
 declares `audience_set` (the participant set is a constant of a generation's lifetime,
 ADR-0002 E8) and the connector promotes the room to `context.channel`. Such a tree wires
@@ -262,7 +262,7 @@ off the live path.
   This used to catch every session a timer swept closed, because a sweep carries the
   *sweep's* context and not the conversation's. Since `session-keeper@2.0.1` it does not:
   the keeper records the round on the generation row when the conversation OPENS it and
-  reads it back off that row at the seal, so `talky@4.0.0`'s close edge has a room and a
+  reads it back off that row at the seal, so `talky@4.1.1`'s close edge has a room and a
   round to promote (GH #273). What remains refused is a generation whose ingress door
   never declared one — including every generation that was already open when that edge was
   wired, because provenance is written once and never rewritten (ADR-0002 E12).

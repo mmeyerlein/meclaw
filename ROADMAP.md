@@ -119,7 +119,10 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
   change what is retrieved or how often the model runs, and the gate for either
   is a benchmark run rather than a test. The 0.17.3 fusion measurement does not
   close any of this: it was retrieval-only and paired, and it says only that the
-  new relevance floors cost nothing.
+  new relevance floors cost nothing. **The run itself waits for a stable stack**
+  (decided 2026-08-23): the extraction and recall lanes are still moving
+  underneath the read path, and a paired end-to-end measurement only means
+  something once the thing it measures stops changing between runs.
 - [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
   producer since #78, but no shipped composite carries the tool that drives it,
   so time-range questions still run as point recalls
@@ -174,6 +177,47 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.20.0 — identity comes off the edge, and the colony answers counts about
+  its own books.** `affinity`'s `subscribe` used to read the subscriber's address
+  and the disclosure audience out of the body — out of a document a model may
+  have written — while the row it writes is what `./push` consults every tick to
+  decide *where* a pack goes. Both facts now come from the edge
+  (`context.subscriber`, `context.actor`), with three new documented
+  `error_code` strings and a refusal rather than a silent narrowing, so the audit
+  row cannot disagree with the request it audits
+  ([#288](https://github.com/mmeyerlein/meclaw/issues/288)). The push lane also
+  ships with the recipe that wires it — one edge per subscribing cell, the brief
+  edge carrying `hop.subscriber == ''`, and the persona named as a **projection**
+  rather than a copy ([#289](https://github.com/mmeyerlein/meclaw/issues/289)).
+  New in this release: **`/colony/ledger`**, a virtual endpoint on both doors
+  returning **aggregates over one time window** out of `message_log`,
+  `dead_letters` and `mutation_log` — totals, error counts, per-model calls and
+  token sums, dead-letter and mutation counts by status. Never rows and never
+  header contents: whoever needs to know *how much* moved may ask, *what* moved
+  stays out of the answer, and that class distinction is what earns it the second
+  slot in the mutation-drawable list beside `/colony/graph`
+  ([#267](https://github.com/mmeyerlein/meclaw/issues/267)). Its first customer
+  is the steward: `meter` and `probe` were the last two cells in the shipped
+  library that opened `colony.db` themselves, and they now **ask** instead, which
+  closes the database-isolation rule with no exception left
+  ([#160](https://github.com/mmeyerlein/meclaw/issues/160)). Three faults found
+  and paid on the way: the shipped judge was shown neither its tool nor its
+  charter, because `params.tools` and `params.system` are keys `LlmParams` does
+  not have and silently dropped
+  ([#342](https://github.com/mmeyerlein/meclaw/issues/342)); a `scan_truncated`
+  answer used to fail **open**, so partial counts read as counts
+  ([#385](https://github.com/mmeyerlein/meclaw/issues/385)); and the shipped
+  judge could not spawn at all unless a colony set one undocumented-looking knob
+  ([#387](https://github.com/mmeyerlein/meclaw/issues/387)). Per-turn extraction
+  moved from a tool call to a fenced ```` ```memory ```` block cut out of the
+  answer by a new `talky/splitter` cell — measured adoption went from a 44 %
+  best case across seven model families to 12 of 12 turns on all five models
+  tried ([#379](https://github.com/mmeyerlein/meclaw/issues/379)).
+  **Breaking:** `affinity@3.0.0` — the round has exactly one name,
+  `context.audience_set`; `participants` is retired, not aliased, and a caller
+  still promoting it is refused `no_round`
+  ([#330](https://github.com/mmeyerlein/meclaw/issues/330)). Every migration is
+  named in [CHANGELOG.md](CHANGELOG.md); `colony.db` stays at **v7**.
 - **v0.19.0 — the turn annotates itself, and the closed session is read once.**
   Extraction moved off the batch lane and into the answering turn: the
   front-line model annotates the turn it has just answered on `in_remember`, and

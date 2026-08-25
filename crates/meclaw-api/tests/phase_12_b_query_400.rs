@@ -104,3 +104,59 @@ async fn registry_invalid_limit_returns_400_bad_query() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ledger_unknown_group_by_returns_400_bad_query() {
+    // GH #267: the HTTP door must not be a wider door than the message door.
+    // `group_by` accepts exactly "model"; anything else is refused before the
+    // read runs, the same refusal the EDA endpoint takes at parse time —
+    // translated into this surface's own 400 shape.
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/colony/ledger?group_by=cell_type")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"], "bad_query");
+    assert!(
+        json["detail"].as_str().unwrap().contains("group_by"),
+        "detail names the field, got {json}"
+    );
+    // A refusal carries no answer: no counts, no echoed query.
+    assert!(json.get("ledger").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ledger_overlong_cycle_id_returns_400_bad_query() {
+    // A filtering value is never truncated — a shortened `cycle_id` would
+    // answer a different question, so 65 characters are refused, not clamped.
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+
+    let long = "c".repeat(65);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/colony/ledger?cycle_id={long}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"], "bad_query");
+    assert!(json["detail"].as_str().unwrap().contains("cycle_id"));
+}

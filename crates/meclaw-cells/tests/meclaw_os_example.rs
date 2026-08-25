@@ -90,13 +90,14 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
     ("dispatcher", "templates/dispatcher"),
 ];
 
-/// One cell from `door@1`, two from `firewall@1`, eleven from `talky`, one from
+/// One cell from `door@1`, two from `firewall@1`, twelve from `talky` (the
+/// twelfth is the sidecar `splitter`, `talky@4.1.0`, GH #379), one from
 /// `terminal@1`.
-const CELLS_AFTER_GROW: usize = 15;
+const CELLS_AFTER_GROW: usize = 16;
 
 /// Plus five from `cogny`: the two brains -- the thinking lane and the
 /// lookup lane of 1.1.0 -- the two collector cells and the split.
-const CELLS_AFTER_COGNY: usize = 20;
+const CELLS_AFTER_COGNY: usize = 21;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -546,7 +547,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "zero checked-in cells plus fifteen instantiated ones: {after:?}"
+        "zero checked-in cells plus sixteen instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -622,7 +623,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "fifteen plus the core's five, plus the test-only probe: {with_core:?}"
+        "sixteen plus the core's five, plus the test-only probe: {with_core:?}"
     );
 
     h.shutdown().await;

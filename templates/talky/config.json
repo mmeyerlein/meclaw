@@ -61,6 +61,10 @@
           "because": "ONE finished turn per message after every stored turn and every stored answer -- never a batch (GH #298, ruling Q11): one user/assistant turn in messages[], hop.turn_id '<session_id>#<index>', hop.turn_index and hop.happened_at beside it, which is the shape a memory hive's episode lane reads. An occasion may carry several messages, one per turn not yet written. On unless the instance switches the collector's turn_write knob off"
         },
         {
+          "route": "extraction",
+          "because": "the sidecar a turn's answer carried, in the inline contract form; route it to the memory hive's in_remember door. ONE message per annotated turn, the raw block the model wrote as the text of a single turn -- never repaired, never re-serialised. Since talky@4.1.0 this is how per-turn extraction travels: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route. It is a lane and not an obligation: without the extraction contract in the brain's instructions there is no block to cut and nothing ever travels here"
+        },
+        {
           "route": "recall",
           "because": "a memory read this turn needs"
         },
@@ -145,8 +149,18 @@
         },
         {
           "from": "./brain",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./splitter",
           "to": "./dispatcher",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./splitter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'extraction'"
         },
         {
           "from": "./brain",
@@ -162,7 +176,8 @@
           "from": "./session-keeper",
           "to": "./errors",
           "condition": "has(hop.route) && hop.route == 'reject'"
-        }, {
+        },
+        {
           "from": "./brain",
           "to": "./errors",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')"

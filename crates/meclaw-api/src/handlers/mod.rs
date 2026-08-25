@@ -8,12 +8,16 @@
 //! 5. Returns `(StatusCode::OK, Json({"<slot>": reply.entries}))`.
 //!
 //! Slot names per endpoint (spec l.410): `registry`, `dead_letters`, `templates`,
-//! `trace`, `graph`, `mutations`, `rescan`.
+//! `trace`, `graph`, `mutations`, `rescan`, `ledger`.
+//!
+//! `ledger` (GH #267) is the one whose slot holds an **object** rather than a
+//! list — it answers aggregates, so there are no `entries` to name.
 
 pub mod dead_letters;
 pub mod events;
 pub mod graph;
 pub mod health;
+pub mod ledger;
 pub mod message_log;
 pub mod messages;
 pub mod mutations;

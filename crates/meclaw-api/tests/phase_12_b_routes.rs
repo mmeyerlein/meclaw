@@ -321,3 +321,43 @@ async fn get_registry_returns_empty_with_slot() {
     let slot = json.get("registry").expect("response has 'registry' slot");
     assert_eq!(slot.as_array().unwrap().len(), 0);
 }
+
+/// GH #267 (ruling Q14): the HTTP twin of the `/colony/ledger` message
+/// endpoint. Both doors have to exist — an endpoint with only one of them is a
+/// spec violation, not a smaller surface (`docs/meclaw-overview.md` § `/colony`,
+/// "Symmetrie interne API ↔ externe API").
+///
+/// The window `?since=0` covers everything the freshly booted colony has, which
+/// is nothing: the point is that `messages.total` is **present** (a read that
+/// happened and counted zero), not that it is non-zero. A read that could not
+/// happen has no `messages` slot at all — that is the `unavailable` shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ledger_endpoint_answers_over_http() {
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/colony/ledger?since=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let slot = json.get("ledger").expect("response has 'ledger' slot");
+    // The aggregate slot holds an OBJECT, not a list (unlike its four siblings).
+    assert!(slot.as_array().is_none(), "ledger slot is not a list");
+    assert!(
+        slot["messages"]["total"].is_u64(),
+        "ledger carries messages.total, got {slot}"
+    );
+    // The echoed query shows which question was answered, not which was asked.
+    assert_eq!(slot["query"]["since"].as_i64(), Some(0));
+    assert_eq!(slot["scan_truncated"].as_bool(), Some(false));
+    assert!(slot.get("unavailable").is_none(), "the read happened");
+}

@@ -162,7 +162,7 @@ access/
   store/     store
 ```
 
-`access@2` ships with exactly this (`access@1` did too -- the property has been
+`access@2.0.5` ships with exactly this (`access@1` did too -- the property has been
 true of every version): the vault is an interior cell of the hive
 and deliberately **not** one of its ports, so the generic boundary refuses any
 edge into it from outside the scope. Its `params.inject_map` is empty on a fresh

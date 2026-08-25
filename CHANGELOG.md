@@ -11,6 +11,282 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-08-25
+
+### Breaking
+
+- **`affinity@3.0.0`: the round has one name, and it is `audience_set`**
+  ([#330](https://github.com/mmeyerlein/meclaw/issues/330), ruling Q12 of
+  2026-08-21). The hive read the round under an internal name of its own,
+  `context.participants`, while every round producer that ships writes
+  `context.audience_set` — `session-keeper`, `memory-drain`, and the
+  receptionist's ingress edge per ADR-0002 E8 — and nothing bridged the two.
+  The colony's spelling won: `participants` is **retired, not aliased**. The
+  door's four-candidate precedence chain collapses to two steps per fact
+  (`context.asker` → `hop.audience` → `''`; `context.audience_set` →
+  `hop.audience_set` → `''`), `brief` reads the canonical key, and the internal
+  `./push → ./brief` edge promotes it.
+
+  This is the second digit's neighbour and neither: no caller gains an ability,
+  but a **documented `contract.accepts[].context` key is removed** —
+  `accepts[0].context` is now `["asker", "audience_set"]` — and template ports
+  are public contract (README § Stability). So it is Breaking rather than a
+  repair. **Migration:** promote `context.audience_set`; a caller still
+  promoting `context.participants` is refused `no_round`. A colony wired the way
+  the rest of the library already spells it needs no change at all —
+  `receptionist` and `memory-drain` promote `audience_set` today, and #302's
+  member template now has exactly one name to promote.
+
+  **Blast radius, measured rather than asserted.** `grep -rn
+  "context.participants" templates/` returned **ten** hits before this commit:
+  six in `templates/affinity/README.md` (`:58`, `:67`, `:77`, `:147`, `:229`,
+  `:245`), two in `templates/affinity/template.json` (`:6`, `:9`) and two in
+  `templates/builder-librarian/store/seed/docs.jsonl` (`:371`, `:372`) — and the
+  last pair is the generated librarian corpus mirroring affinity's own
+  `template.json` verbatim, regenerated in this commit. The behavioural writers
+  and readers were already migrated one commit earlier; what remained was the
+  prose that still told a builder to send the dead key. So there is **no second
+  writer of the key** and the behavioural radius really is affinity-only — which
+  is a fact about this library, not a promise about a colony somebody wired by
+  hand.
+
+  **Same commit, same issue:** the affinity README now carries the
+  source-of-truth rule for the *values* inside a round. Affinity alone mints and
+  maps identity references (UUID-backed internally, so a rename is one mapping
+  edit and the history stays attached); on the wire the affinity-minted
+  vocabulary travels **byte-identically**, and `receptionist`, the memory hive
+  and `talky` only transport it. The memory hive's writer note ("it never LOOKS
+  UP an identity") is asserted behaviour rather than prose —
+  `a_present_speaker_is_written_exactly_as_it_arrived` — and both halves are
+  registered in the spec-claims registry.
+
+### Added
+
+- **`/colony/ledger`: the colony answers counts about its own books**
+  ([#267](https://github.com/mmeyerlein/meclaw/issues/267), ruling Q14 of
+  2026-08-21). A new virtual endpoint — message target and HTTP route alike —
+  returning **aggregates over one time window** out of `message_log`,
+  `dead_letters` and `mutation_log`: totals, error counts, per-model calls and
+  token sums, dead-letter and mutation counts by status. **Never rows and never
+  header contents**: whoever needs to know *how much* moved may ask, *what*
+  moved stays out of the answer. That class distinction is what earns it the
+  second slot in `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` beside `/colony/graph`
+  (`docs/meclaw-overview.md` § Flächen (`/surface`)), so a template can declare its
+  own lane to it, and it is what keeps `/colony/trace` and `/colony/messages`
+  out of that list.
+
+  Filters: `?since=` (inclusive, default `now - 3600`), `?until=` (exclusive,
+  default `now`), `?path_prefix=`, `?cycle_id=`, `?group_by=model`, `?tag=`,
+  `?scan_budget=` (default 50000, clamped into `1…200000`). It is the **fifth**
+  read under the GH #341/#359 refusal rule and introduces **no new
+  `error_code`**: an unreadable filter is refused as `invalid_query` (HTTP:
+  `400 bad_query`), `scan_budget` is clamped and `tag` truncated rather than
+  dropped, while `cycle_id` is refused rather than truncated because it filters.
+  `scan_truncated` says that one of the three windowed sub-queries exhausted its
+  budget — deliberately not which one.
+
+  The spec carries this in both languages (`docs/meclaw-overview.md` +
+  `.en.md`), including the **explicit retraction** of the sentence that said a
+  message query would have to be a design pass over the `store` rather than a
+  colony endpoint — that pass happened and went the other way for counts. This
+  is a **second-digit** change (a caller can do something never promised
+  before); the release carrying it is **0.20.0**, and the `Cargo.toml` bump
+  belongs to that release commit, not to this one.
+
+### Fixed
+
+- **`steward@2.0.10`: the shipped judge can spawn with its own default**
+  ([#387](https://github.com/mmeyerlein/meclaw/issues/387)). `judge/config.json`
+  defaulted `params.provider` to `${STEWARD_JUDGE_PROVIDER:-openrouter}`, and
+  `LlmParams::parse` accepts no adapter but `openai`. A colony that grew the
+  steward and set every documented setting **except** `STEWARD_JUDGE_PROVIDER`
+  therefore got a judge that refused to spawn — the one cell in the hive whose
+  absence stops the loop before it decides anything. The default flips to
+  `openai`; `base_url` is untouched and still points at OpenRouter, which is
+  exactly the pattern the seventeen other shipped `llm` cells use: `openai`
+  names the Chat-Completions **wire**, not the vendor. The README's settings
+  table said `openrouter` too and now says what ships. **What is not fixed**:
+  whether the substrate should accept other adapter names at all stays open on
+  #387 — this repairs the half that was shipped broken, not the question behind
+  it.
+
+- **An empty `/colony/ledger` window is refused instead of answered with zeroes**
+  ([#267](https://github.com/mmeyerlein/meclaw/issues/267)). A read whose
+  resolved window satisfies `until <= since` used to return counts of zero,
+  which is the one place where *"we did not look"* and *"we looked and saw
+  nothing"* read alike from the outside — a caller that swapped its two bounds
+  would have concluded its colony was quiet. `parse_read_query_ledger_filters`
+  now refuses at parse time under the existing `invalid_query` (no new
+  `error_code`), with the details `empty window: until <= since`. The test runs
+  on the **resolved** window, which is the only place it can run: both bounds
+  have defaults (`until` = now, `since` = now - 3600), so a caller who sends
+  neither still gets an answer, and both shipped steward scripts, which send
+  `since` only, are unaffected. Pinned by
+  `gh267_the_ledger_answers_aggregates.rs::an_empty_ledger_window_is_refused_rather_than_answered_with_zeroes`.
+
+- **`steward@2.0.9`: the judge is shown the tool its charter orders it to use**
+  ([#342](https://github.com/mmeyerlein/meclaw/issues/342)).
+  `templates/steward/judge/config.json` declared the judge's one tool as
+  `params.tools` and its whole charter as `params.system` — and `LlmParams` has
+  **neither** field. `LlmParams::parse` is a plain `serde_json::from_value`
+  without `deny_unknown_fields`, so both keys were dropped at spawn without a
+  word. (The same keys arriving later as a params-update message would be a loud
+  `invalid_input` against `KNOWN_PARAM_KEYS`; in `config.json` at birth they were
+  silence.) The charter's closing sentence — *"Answer with exactly one tool_call
+  to `steward_change`, and nothing else"* — was therefore addressed to a model
+  that had been shown neither the tool nor the charter, which makes the rule the
+  whole loop rests on unenforceable at the only place it could be enforced.
+
+  Both keys move into **`judge/seed/system.jsonl`**, the mechanism every other
+  tool-carrying brain in this library already uses and the only spawn-time route
+  into the persistent `system` tree: six charter rows moved verbatim, plus
+  `tools.steward_change` carrying the tool object as the JSON string
+  `extract_tools` parses. `params.system_order` (`role`, `method`, `radius`,
+  `revert_plan`, `quality`, `answer`) replaces them in the config, because the
+  charter is an ordered argument and the default would have delivered it
+  alphabetically, opening with its own closing instruction. `tools` is
+  deliberately **not** in that list — `concat_system_prompt` skips the subtree.
+  Pinned by `gh342_the_shipped_judge_tool_reaches_the_wire.rs`, which spawns the
+  **shipped** judge directory through the real `llm` factory and asserts on what
+  the provider recorded.
+
+- **`steward@2.0.8`: the control loop stops opening a database it does not own**
+  ([#267](https://github.com/mmeyerlein/meclaw/issues/267), ruling Q14 of
+  2026-08-21). `meter` and `probe` were the last two cells in the shipped
+  library to open `colony.db` themselves — read-only, with `sqlite3.connect`,
+  against § *Datenbank-Isolation*'s "no exception any more"
+  ([#160](https://github.com/mmeyerlein/meclaw/issues/160)). Both now **ask**
+  instead: two new edges `./meter -> /colony/ledger` and
+  `./probe -> /colony/ledger`, ordinary messages, aggregates back. The meter's
+  read became an ask-and-wait (the ask leaves a `waits` row in the hive's own
+  receipts and the answer finds it back by the `tag` it echoes); the probe has
+  no `cell.db` at all, so its whole memory is the echo
+  (`<cycle_id>#<attempt>`). No verdict string changed and neither did the
+  deterministic property — no model runs in this path and none can.
+
+  **One env knob is retired and two keep their names with new meanings.**
+  `STEWARD_COLONY_DB` is **gone**, with a retraction line under the README's
+  configuration table rather than a quiet deletion — nothing in this hive opens
+  a database any more, so there is nothing left to point it at.
+  `STEWARD_MAX_LEDGER_ROWS` (200000) is now the `scan_budget` the meter **asks**
+  for, and `STEWARD_PROBE_LEDGER_TRIES` (3) is now how often the probe
+  **re-asks** — one round trip per try, still 100 ms apart, still closing the
+  same write-lag race.
+
+  **Carried in the same entry, because it is a behaviour change:**
+  a `scan_truncated` answer is now **discarded**
+  ([#385](https://github.com/mmeyerlein/meclaw/issues/385)). It is the third
+  way an answer can fail to be one, beside `unavailable` and `invalid_query`,
+  and the only one that used to fail **open**: counts covering a part of the
+  window were read as counts. A part of a cost is not a small cost, so the
+  meter receipts `unmeasured` and the probe answers
+  `probe_unavailable` / `scan_truncated: partial counts` instead of ruling on
+  it. The price is named on the page: a colony with more in-window rows than
+  the budget reverts every change until the window shrinks, and the ledger read
+  stalls the colony inbox for its duration — `mutation_log`'s window query is an
+  un-indexed scan bounded only by that budget.
+
+  The hive's edge test gained the **only** carve-out it has: an endpoint may be
+  `.`, a child, or one of the literal pair `["/colony/graph", "/colony/ledger"]`
+  — a precedent being followed rather than set, since `templates/canvy` has
+  drawn `./probe -> /colony/graph` out of a sealed hive since
+  [#163](https://github.com/mmeyerlein/meclaw/issues/163). A foreign **cell**
+  path is still refused, and so is every other `/colony/*` endpoint.
+
+- **`affinity`'s `subscribe` takes both identity facts from the edge**
+  ([#288](https://github.com/mmeyerlein/meclaw/issues/288)). The `subscribe`
+  branch of `affinity/gate` read `cell_path` and `audience` out of the body —
+  out of a document a model may have written — while the row it writes is
+  exactly what `./push` reads every tick to decide **where** a pack goes: an
+  address, not a description. It now takes the subscriber's address from
+  `context.subscriber` and the disclosure audience from `context.actor`, and
+  keeps only `subject`, `channel` and `slots` from the body. Three new
+  documented `error_code` strings: `identity_from_body` (the body named
+  `cell_path` or `audience` at all — refused rather than silently narrowed, so
+  the audit row cannot disagree with the request it audits),
+  `subscriber_not_on_edge` and `actor_not_on_edge` (fail-closed, like `no_round`
+  on the read lane). The refusals are checked in that order, after
+  `subscription_target_empty`. **Migration:** the `in_propose` edge must promote
+  `context.subscriber` beside `context.actor`, and a caller that used to send
+  `cell_path`/`audience` drops both keys. `affinity@2.0.8`.
+
+### Changed
+
+- **Per-turn memory extraction is a fenced block in the answer, not a tool call**
+  ([#379](https://github.com/mmeyerlein/meclaw/issues/379); owner ruling
+  2026-08-24 on [#373](https://github.com/mmeyerlein/meclaw/issues/373)). The
+  shipped inline contract asked the model to `call remember` after its answer.
+  Measured across seven model families it did not hold — the best case carried
+  the call on 44 % of turns, most were far below — and a completion that mixed a
+  sentence with an asynchronous call stranded its own round
+  ([#378](https://github.com/mmeyerlein/meclaw/issues/378), open). The same
+  rules delivered as a ```` ```memory ```` block inside the answer were adopted on
+  12 of 12 turns by every one of five models, with zero malformed blocks. So the
+  delivery changed and the rules did not: everything from `DELTA, NOT STATE`
+  down is byte-identical. A new `code` cell, `talky/splitter`, sits between the
+  brain and the dispatcher and cuts the block back out into its own message on
+  the composite's new `extraction` lane; a round with tool calls, and an answer
+  with no block, pass byte-identically. **Without the contract in the brain's
+  instructions the splitter is a pure pass-through**, so a colony that does not
+  extract per turn sees no change at all. `talky@4.1.0`, `memory-hive@3.0.1`;
+  the `remember` tool is gone from the shipped tool list and the `dispatcher`
+  is untouched.
+
+  **Migration for an existing colony** — templates alone are never enough, the
+  edges live in `colony.db`, so this is a mutation, in this order:
+
+  1. `add_nodes` the `splitter` from `talky@4.1.0` into the composite.
+  2. Replace the `./brain -> ./dispatcher` edge with `./brain -> ./splitter`
+     and `./splitter -> ./dispatcher`, both on the unchanged condition
+     `has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')`.
+  3. Add `./splitter -> .` on `has(hop.route) && hop.route == 'extraction'`, and
+     the parent edge out of the composite:
+     `{"from": "./talky", "to": "<the memory hive>", "condition": "has(hop.route) && hop.route == 'extraction'", "modifier": {"set_hop": {"route": "'in_remember'"}}}`.
+  4. Swap the contract text in the brain's instructions (INSTANCE data —
+     `brain/cell.db` or the seed, never the template) for the new block in
+     `templates/memory-hive/inline-contract.md`, and drop the `remember` entry
+     from its `system.tools`.
+  5. Remove the old parent edge on `hop.tool_name == 'remember'`, and take
+     `remember` out of `DISPATCHER_ASYNC_TOOLS`.
+
+  The hive's `in_remember` door is **unchanged** and still accepts the old hop
+  shape, so a colony that stops at step 3 keeps writing — it just writes twice
+  until step 5.
+
+### Documentation
+
+- **`affinity`'s push lane ships with the recipe that wires it**
+  ([#289](https://github.com/mmeyerlein/meclaw/issues/289)). `out_push` was
+  complete and wired to nothing: the lane, the silence rule and the subscription
+  row were all documented, and nowhere did a document say how a parent draws the
+  two edges the lane needs. The instance defect the issue measured is exactly
+  what that gap produces — one unconditioned `hop.route == 'answer'` edge, on
+  which the push follows the tool lane and the subscriber's `llm` cell never sees
+  its slot update. `templates/affinity/README.md` now carries § *Wiring
+  `out_push` for a subscribing brain* (one edge per subscribing cell; the brief
+  edge **must** carry `hop.subscriber == ''`; a `subscribe` writes a row and
+  never an edge, because mutation authority is the colony's) and § *The persona
+  is a projection, not a copy* (the seed is the birth state, the record is
+  pushed after it — with `templates/bot-basic`'s per-turn literal named as the
+  N-transcriptions counter-example that ships today). `templates/talky` and
+  `templates/cogny` say the same thing where the brains live: `system_order`
+  begins with `identity`, that slot is the projection target, and a brain with
+  nobody pushing into it is not a broken brain — a missing `system_order` key is
+  simply skipped when the prompt is concatenated, and a composite that means to
+  bind the lane later declares a **slot** in its contract from birth
+  ([#285](https://github.com/mmeyerlein/meclaw/issues/285)) instead of parking a
+  placeholder. No
+  behaviour changed and no config moved — the discrimination itself is asserted
+  by `the_two_answer_lanes_are_told_apart_by_the_subscriber_key`. The
+  `template.json` `PORTS` slot carries the same recipe, and while it was being
+  written it also stopped offering `./push` as an endpoint inside the
+  `in_propose` clause: that sentence describes the cell that reads the
+  subscription row, not an address a parent may wire, and `gh311` reads a `PORTS`
+  slot as wiring instructions. Which brains subscribe to what by default stays a
+  composite decision
+  ([#302](https://github.com/mmeyerlein/meclaw/issues/302)). `affinity@2.0.9`,
+  `talky@4.1.1`, `cogny@4.0.1`.
+
 ## [0.19.0] — 2026-08-23
 
 ### Fixed

@@ -93,10 +93,15 @@ PIN-code-oversized-inline-sandbox-en	docs/cell-types.en.md	the substrate grants 
 PIN-bash-argv-cap-de	docs/cell-types.md	Ein `command` ab dieser Grenze wird deshalb vor dem Spawn abgelehnt	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
 PIN-bash-argv-cap-en	docs/cell-types.en.md	A `command` at or above that line is therefore refused before the spawn	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
 #
-PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen vier Reads wird ein Filter, der ankommt, nie stumm verworfen	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
-PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all four reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen fünf Reads wird ein Filter, der ankommt, nie stumm verworfen	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all five reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
 PIN-read-filter-broken-uuid-de	docs/meclaw-overview.md	`trace_id`/`correlation_id` keine gültige UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
 PIN-read-filter-broken-uuid-en	docs/meclaw-overview.en.md	`trace_id`/`correlation_id` not a valid UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
+#
+PIN-ledger-aggregates-de	docs/meclaw-overview.md	keine Rohzeilen und keine Header-Inhalte	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
+PIN-ledger-aggregates-en	docs/meclaw-overview.en.md	no raw rows and no header contents	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
+PIN-ledger-drawable-de	docs/meclaw-overview.md	Zählungen beantwortet und nie Inhalt	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
+PIN-ledger-drawable-en	docs/meclaw-overview.en.md	answers counts and never content	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
 PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
 PIN-graph-edge-default-en	docs/meclaw-overview.en.md	is there **always, on both values**	pinned	every_edge_object_names_its_phase
 #
@@ -104,6 +109,9 @@ PIN-slot-declaration-de	docs/cell-types.md	Eine Edge auf einen deklarierten Slot
 PIN-slot-declaration-en	docs/cell-types.en.md	An edge onto a declared slot is not an unresolvable endpoint	pinned	a_declared_slot_is_not_a_dangling_endpoint
 PIN-slot-unbound-behaviour-de	docs/cell-types.md	muss sagen, was mit einer Message geschieht, die sie erreicht, solange nichts dahinter gebunden ist	pinned	an_unbound_slot_drops_or_errors_as_its_hive_declared
 PIN-slot-unbound-behaviour-en	docs/cell-types.en.md	must say what happens to a message that reaches it while nothing is bound behind it	pinned	an_unbound_slot_drops_or_errors_as_its_hive_declared
+#
+PIN-llm-system-only-silence-de	docs/cell-types.md	ausschließlich `messages[]`. System-Updates (Pfade unter `system.*`) akkumulieren in `cell.db` ohne Provider-Call	pinned	a_pushed_brief_updates_the_slots_without_calling_a_provider
+PIN-llm-system-only-silence-en	docs/cell-types.en.md	exclusively `messages[]`. System updates (paths under `system.*`) accumulate in `cell.db` without a provider call	pinned	a_pushed_brief_updates_the_slots_without_calling_a_provider
 # --- built-unpinned -----------------------------------------------------
 # The substrate does it; nothing proves it. Each row is a candidate test --
 # the regressions waiting to happen (GH #254 bucket 2).
@@ -146,3 +154,5 @@ SNB-contract-tools-de	docs/config.md	Deklariert, welche Tools die Cell ihrem LLM
 SNB-contract-tools-en	docs/config.en.md	Declares which tools the cell offers to its LLM (or external consumers)	specified-not-built	GH #254
 SNB-description-block-de	docs/config.md	Sechs Schlüssel — **builder-erzwungen**, nicht substrat-hart	specified-not-built	GH #254
 SNB-description-block-en	docs/config.en.md	Six keys, **builder-enforced**, not substrate-enforced	specified-not-built	GH #254
+SOT-round-one-name	templates/memory-hive/README.md	no template may ever introduce a second name for it	pinned	the_sot_rule_for_identity_references_is_stated_where_it_is_read
+SOT-identity-never-looked-up	templates/memory-hive/writer/config.json	never LOOKS UP an identity	pinned	a_present_speaker_is_written_exactly_as_it_arrived

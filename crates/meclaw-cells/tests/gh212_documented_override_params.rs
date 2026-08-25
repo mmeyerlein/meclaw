@@ -36,6 +36,22 @@
 //! - `check_override_params` is the very function the mutation validator calls.
 //!   A recipe this file passes is a recipe a colony accepts, by construction.
 //!
+//! **The plan archive is out of scope (owner ruling 2026-08-23 R7).**
+//! `docs/superpowers/plans/` is not scanned. By the project's authority
+//! hierarchy a plan is historical and non-authoritative — it records what was
+//! true while its wave ran, the same reason `docs/archive/` was already carved
+//! out. Holding a frozen plan to today's templates and cells made every
+//! renumbering and every seal edit somebody else's archived plan: history
+//! falsification, not conformance. Those edits stand; from here the archive
+//! freezes. The one plan that must stay true is the one about to be driven,
+//! and it is kept true by the re-baseline step at the end of every wave (the
+//! wave meta-plan, private tree, § „Folgewelle re-baselinen"), not by a gate
+//! pulling the whole archive forward.
+//! The ruling was written for the template-reference gate
+//! (`a_documented_template_reference_resolves`) and extended to this one by
+//! controller ruling, because the reason it gives is about `plans/`, not about
+//! that gate.
+//!
 //! **What is scanned, and why that is not prose-parsing.** Only a literal
 //! `override_params: {…}` whose enclosing object also carries a literal
 //! `template: "<ref>"` — the recipe names its own template, so there is nothing
@@ -222,23 +238,37 @@ fn enclosing_template(text: &str, at: usize) -> Option<String> {
     Some(rest[..stop].to_string())
 }
 
+/// The archived wave plans — frozen history, never scanned (see the header).
+const FROZEN_SUBTREE: &str = "docs/superpowers/plans";
+
 /// Every shipped `.md` and `.json` under `templates/`, `examples/` and `docs/`.
 ///
 /// `builder-librarian`'s seed is excluded (a GENERATED corpus embedding other
 /// files verbatim — a finding there duplicates the finding in the source,
 /// reported against a file nobody edits by hand), and so is `docs/archive`,
-/// which is a record of what used to be true.
+/// which is a record of what used to be true. The wave-plan archive
+/// [`FROZEN_SUBTREE`] is excluded for that same second reason (R7 — see the
+/// header).
 fn shipped_docs() -> Vec<(String, String)> {
     let root = core_root();
+    let frozen = root.join(FROZEN_SUBTREE);
     let mut out = Vec::new();
     for base in ["templates", "examples", "docs"] {
-        collect_docs(&root, &root.join(base), &mut out);
+        collect_docs(&root, &frozen, &root.join(base), &mut out);
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
-fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+fn collect_docs(
+    root: &std::path::Path,
+    frozen: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) {
+    if dir == frozen {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -248,7 +278,7 @@ fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(St
         let name = entry.file_name().to_string_lossy().into_owned();
         if p.is_dir() {
             if name != "builder-librarian" && name != "archive" {
-                collect_docs(root, &p, out);
+                collect_docs(root, frozen, &p, out);
             }
             continue;
         }
@@ -346,6 +376,48 @@ fn every_documented_override_params_key_reaches_a_cell_that_reads_it() {
     assert!(
         resolved >= 2,
         "the scan placed almost no recipe against a template: {resolved}"
+    );
+}
+
+/// The archived wave plans are out of the sweep, and stay out.
+///
+/// See the header: `docs/superpowers/plans/` is historical by the authority
+/// hierarchy, and a gate that held a frozen plan to today's templates was
+/// rewriting history rather than checking it. The scan therefore has to come
+/// back from there empty-handed.
+///
+/// **Two trees, and only one of them has an archive.** The export carries
+/// `crates/` wholesale but pulls `docs/` through an explicit map that lists no
+/// `docs/superpowers/*`, so this file ships into a clone where the archive does
+/// not exist — and a missing directory is a subset, not a defect (the rule
+/// `shipped_docs` above already follows). The private tree is recognised by
+/// root `plans/`, the directory that never travels (the marker
+/// `gh80_shipped_conditions_are_guarded` uses, because a marker on an
+/// allow-list can be promoted and a forbidden prefix cannot).
+#[test]
+fn the_plan_archive_is_frozen_history() {
+    let root = core_root();
+    if !root.join("plans").is_dir() {
+        return; // public tree: no archive, nothing to leak
+    }
+    let archive = root.join(FROZEN_SUBTREE);
+    assert!(
+        archive.is_dir(),
+        "expected the wave-plan archive at {} — if it moved, this test has to \
+         follow it rather than pass by absence",
+        archive.display()
+    );
+    let prefix = format!("{FROZEN_SUBTREE}/");
+    let leaked: Vec<String> = shipped_docs()
+        .into_iter()
+        .map(|(f, _)| f)
+        .filter(|f| f.starts_with(&prefix))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the sweep still collects archived wave plans, so a frozen plan can be \
+         made to fail over a recipe that was current when it was written:\n  {}",
+        leaked.join("\n  ")
     );
 }
 

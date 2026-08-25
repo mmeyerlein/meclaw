@@ -415,3 +415,76 @@ fn two_turns_of_one_session_carry_two_different_speakers() {
     assert_eq!(rows[0]["happened_at"], json!("2026-08-23T09:00:00"));
     assert_eq!(rows[1]["happened_at"], json!("2026-08-23T09:00:01"));
 }
+
+// ═══════════════════════════════════════════ the SoT rule, written and asserted
+
+const HIVE_README: &str = "../../templates/memory-hive/README.md";
+
+/// GH #330 (Q12 half b, drift lock) -- the source-of-truth rule for identity
+/// references is stated where it is read, and the writer behaves that way.
+///
+/// The rule has two halves and this template is the transporting side of both:
+/// the round carries ONE name (`audience_set`, and no template may introduce a
+/// second), and the references inside it are `affinity`'s alone to mint -- this
+/// hive stores the string it was handed byte for byte and resolves nothing.
+///
+/// Both halves of a drift lock: the sentences are read out of the shipped
+/// documents, and the mechanism they describe is asserted beside them. A README
+/// that keeps the promise while the script starts mapping is red here, and so
+/// is a script that keeps behaving while the promise is edited away.
+#[test]
+fn the_sot_rule_for_identity_references_is_stated_where_it_is_read() {
+    // ── the prose, in the section the #244 lineage anchors
+    let readme =
+        std::fs::read_to_string(HIVE_README).unwrap_or_else(|e| panic!("{HIVE_README}: {e}"));
+    let gate_section = readme
+        .split("## The audience gate")
+        .nth(1)
+        .expect("§ The audience gate is where the rule and its vocabulary live");
+    let gate_section = gate_section
+        .split("\n## ")
+        .next()
+        .expect("a section ends at the next one of its own level");
+    for sentence in [
+        "no template may ever introduce a second name for it",
+        "byte for byte",
+        "looks an identity up",
+    ] {
+        assert!(
+            gate_section.contains(sentence),
+            "§ The audience gate no longer carries the SoT rule: {sentence:?} is \
+             gone. The rule is a contract promise (GH #330), not a paragraph -- \
+             move it deliberately or not at all"
+        );
+    }
+
+    // ── the writer's own scope note, the sentence the claims registry pins
+    let raw =
+        std::fs::read_to_string(WRITER_CONFIG).unwrap_or_else(|e| panic!("{WRITER_CONFIG}: {e}"));
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("writer config json");
+    let not_in_scope = cfg["description"]["not_in_scope"]
+        .as_str()
+        .expect("the writer declares a string `description.not_in_scope`");
+    assert!(
+        not_in_scope.contains("never LOOKS UP an identity"),
+        "the writer's scope note stopped saying that it resolves nothing:\n  {not_in_scope}"
+    );
+
+    // ── the mechanism: the reference reaches the column untouched
+    let script = script_of(WRITER_CONFIG, &[]);
+    assert!(
+        script.contains("speaker = str((ctx.get(\"speaker\") if origin == \"user\" else ctx.get(\"agent_id\")) or \"\")"),
+        "the writer's one identity line changed shape -- whatever replaced it, \
+         `a_present_speaker_is_written_exactly_as_it_arrived` is the assertion \
+         that has to move with it"
+    );
+    for lookup in ["select", "traverse", "affinity", ".replace(", ".lower()"] {
+        assert!(
+            !script.contains(&format!("speaker{lookup}"))
+                && !script.contains(&format!("{lookup}(speaker")),
+            "the writer looks the speaker up or rewrites it (`{lookup}`) -- \
+             affinity alone mints and maps an identity reference, and a second \
+             mapping authority is the defect this rule exists to prevent"
+        );
+    }
+}

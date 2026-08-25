@@ -4,8 +4,8 @@
 
 use crate::ColonyHandle;
 use crate::handlers::{
-    dead_letters, events, graph, health, message_log, messages, mutations, registry, templates,
-    trace,
+    dead_letters, events, graph, health, ledger, message_log, messages, mutations, registry,
+    templates, trace,
 };
 use crate::ui;
 use axum::Router;
@@ -126,6 +126,9 @@ pub fn build_router(
         .route("/colony/templates/rescan", post(templates::post_rescan))
         .route("/colony/events", get(events::get_events))
         .route("/colony/trace", get(trace::get_trace))
+        // GH #267: the ledger's second door. Counts and sums over one window —
+        // never rows, never header content.
+        .route("/colony/ledger", get(ledger::get_ledger))
         // P1 message browser — read-only surface over colony.db::message_log.
         .route("/colony/messages", get(message_log::get_message_log))
         .route("/colony/graph", get(graph::get_graph))

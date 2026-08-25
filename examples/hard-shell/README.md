@@ -40,8 +40,8 @@ and opening the inside of your network is something a human has to type.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
-| `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. Three lanes end here: fetched, denied, failed. |
+| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
+| `/sink` | [`terminal@1.0.0`](../../templates/terminal/) | 1 cell. Three lanes end here: fetched, denied, failed. |
 
 ```
   POST /messages

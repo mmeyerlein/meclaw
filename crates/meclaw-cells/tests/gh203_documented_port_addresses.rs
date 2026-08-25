@@ -67,6 +67,21 @@
 //! implied both are refused; the marker states, in the document itself, which
 //! one the machine catches and which one only a reader can.
 //!
+//! **The plan archive is out of scope (owner ruling 2026-08-23 R7).**
+//! `docs/superpowers/plans/` is not scanned. By the project's authority
+//! hierarchy a plan is historical and non-authoritative — it records what was
+//! true while its wave ran, which is the same reason `docs/archive/` was
+//! already carved out above. Holding a frozen plan to today's addresses made
+//! every rename edit somebody else's archived plan: history falsification, not
+//! conformance. Those edits stand; from here the archive freezes. The one plan
+//! that must stay true is the one about to be driven, and it is kept true by
+//! the re-baseline step at the end of every wave (the wave meta-plan, private
+//! tree, § „Folgewelle re-baselinen"), not by a gate pulling the whole archive
+//! forward. The ruling was written for the template-reference gate
+//! (`a_documented_template_reference_resolves`) and extended to this one by
+//! controller ruling, because the reason it gives is about `plans/`, not about
+//! that gate.
+//!
 //! Two more properties keep the marker from becoming a mode: it must sit
 //! directly above a fenced block (it exempts that block and nothing else), and
 //! `the_counter_example_marker_stays_a_carve_out` caps how many may exist at
@@ -365,13 +380,18 @@ fn is_endpoint_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'.' | b'/' | b'-' | b'_' | b'<' | b'>')
 }
 
+/// The archived wave plans — frozen history, never scanned (see the header).
+const FROZEN_SUBTREE: &str = "docs/superpowers/plans";
+
 /// Every shipped `.md` and `.json` under `templates/`, `examples/` and `docs/`.
 ///
 /// `builder-librarian`'s seed is excluded: it is a GENERATED corpus that embeds
 /// other files verbatim, so a finding there is a duplicate of the finding in the
 /// source, reported against a file nobody edits by hand. `docs/archive/` is
 /// excluded for the opposite reason: it is a record of a past state, and a past
-/// state is allowed to contain the addresses of its own day.
+/// state is allowed to contain the addresses of its own day. The wave-plan
+/// archive [`FROZEN_SUBTREE`] is excluded for that same second reason (R7 —
+/// see the header).
 ///
 /// **The sweep is by directory, never by filename, because the tree it runs in
 /// has two shapes.** In the working tree a document exists twice — `X.md`
@@ -383,15 +403,24 @@ fn is_endpoint_byte(c: u8) -> bool {
 /// subset, and a subset is not a defect.
 fn shipped_docs() -> Vec<(String, String)> {
     let root = core_root();
+    let frozen = root.join(FROZEN_SUBTREE);
     let mut out = Vec::new();
     for base in ["templates", "examples", "docs"] {
-        collect_docs(&root, &root.join(base), &mut out);
+        collect_docs(&root, &frozen, &root.join(base), &mut out);
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
-fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+fn collect_docs(
+    root: &std::path::Path,
+    frozen: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) {
+    if dir == frozen {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -401,7 +430,7 @@ fn collect_docs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(St
         let name = entry.file_name().to_string_lossy().into_owned();
         if p.is_dir() {
             if !matches!(name.as_str(), "builder-librarian" | "archive") {
-                collect_docs(root, &p, out);
+                collect_docs(root, frozen, &p, out);
             }
             continue;
         }
@@ -608,6 +637,49 @@ fn every_documented_edge_endpoint_is_one_the_boundary_admits() {
     assert!(
         in_docs >= 20,
         "the sweep read almost no endpoints in docs/: {in_docs}"
+    );
+}
+
+/// The archived wave plans are out of the sweep, and stay out.
+///
+/// See the header: `docs/superpowers/plans/` is historical by the authority
+/// hierarchy, and a gate that held a frozen plan to today's addresses was
+/// rewriting history rather than checking it. The scan therefore has to come
+/// back from there empty-handed.
+///
+/// **Two trees, and only one of them has an archive.** The export carries
+/// `crates/` wholesale but pulls `docs/` through an explicit map that lists no
+/// `docs/superpowers/*`, so this file ships into a clone where the archive does
+/// not exist. Demanding it there would be the very thing `shipped_docs` refuses
+/// to do above — "missing directories are skipped in silence … a subset is not
+/// a defect". The private tree is recognised by root `plans/`, the directory
+/// that never travels (the marker `gh80_shipped_conditions_are_guarded` uses,
+/// because a marker on an allow-list can be promoted and a forbidden prefix
+/// cannot).
+#[test]
+fn the_plan_archive_is_frozen_history() {
+    let root = core_root();
+    if !root.join("plans").is_dir() {
+        return; // public tree: no archive, nothing to leak
+    }
+    let archive = root.join(FROZEN_SUBTREE);
+    assert!(
+        archive.is_dir(),
+        "expected the wave-plan archive at {} — if it moved, this test has to \
+         follow it rather than pass by absence",
+        archive.display()
+    );
+    let prefix = format!("{FROZEN_SUBTREE}/");
+    let leaked: Vec<String> = shipped_docs()
+        .into_iter()
+        .map(|(f, _)| f)
+        .filter(|f| f.starts_with(&prefix))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the sweep still collects archived wave plans, so a frozen plan can be \
+         made to fail over an address that was current when it was written:\n  {}",
+        leaked.join("\n  ")
     );
 }
 

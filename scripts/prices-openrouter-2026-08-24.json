@@ -1,0 +1,68 @@
+{
+  "_comment": "Dated price snapshot for scripts/cost_report.py. Prices change; this file is the reason the number in docs/costs.md can be dated and re-checked. A newer list lands BESIDE the old ones, never on top of them -- overwriting a price file would silently rewrite every number ever derived from it. Copy it, edit it, pass your own with --prices.",
+  "source": "https://openrouter.ai/api/v1/models",
+  "retrieved": "2026-08-24",
+  "currency": "USD",
+  "unit": "USD per 1,000,000 tokens",
+  "models": {
+    "openai/gpt-5.6-luna": {
+      "input": 0.20,
+      "output": 1.20,
+      "_note": "openrouter id resolves to openai/gpt-5.6-luna-20260709. Re-checked on 2026-08-24: unchanged since the 2026-08-22 snapshot. Prompts above 272,000 tokens bill at a higher tier (0.40 / 1.80) that this flat two-number format does not express; a colony whose calls stay below that threshold is priced exactly, one above it is priced low."
+    },
+    "openai/gpt-5.6-sol": {
+      "input": 2.00,
+      "output": 10.00,
+      "_note": "NEW in this snapshot (GH #377). The top tier of the same family; the 2026-08-22 list knew four slugs and not this one, so a run naming it as its judge or closer was refused by the preflight before a colony booted. Retrieved 2026-08-24 from the models listing. Prompts above 272,000 tokens bill at a higher tier (4.00 / 15.00), the same shape the luna row carries and the same thing this flat format does not express."
+    },
+    "anthropic/claude-opus-5": {
+      "input": 5.00,
+      "output": 25.00,
+      "_note": "openrouter id resolves to anthropic/claude-opus-5-20260723. Re-checked on 2026-08-24: unchanged since the 2026-08-15 snapshot."
+    },
+    "anthropic/claude-sonnet-5": {
+      "input": 2.00,
+      "output": 10.00,
+      "_note": "NEW in this snapshot (GH #373, W5.6 wording matrix, Phase 1 mid-tier Anthropic chat model). The candidate slug from the task brief exists on OpenRouter and needed no substitution -- verified directly at https://openrouter.ai/anthropic/claude-sonnet-5, retrieved 2026-08-24."
+    },
+    "deepseek/deepseek-v4-pro": {
+      "input": 0.5262,
+      "output": 1.052,
+      "_note": "NEW in this snapshot (GH #373, W5.6 wording matrix, Phase 2 mid-tier DeepSeek chat model). Verified at https://openrouter.ai/deepseek/deepseek-v4-pro, retrieved 2026-08-24. A separately dated variant deepseek-v4-pro-0813 is priced higher (0.66 / 1.98) on the same listing page; this canonical undated slug is the one this snapshot prices."
+    },
+    "google/gemini-embedding-2": {
+      "input": 0.20,
+      "output": 0.0,
+      "_note": "embedding endpoint; no completion tokens are billed. NOT taken from the models listing -- https://openrouter.ai/api/v1/models answers with chat models only, and the embeddings endpoint carries no price list. This figure is MEASURED: one call on 2026-08-22, its billed amount divided by its 4 prompt tokens, and carried forward unchanged into this snapshot -- no new measurement was made on 2026-08-24. The shipped embedding generation since 2026-08-19."
+    },
+    "google/gemini-3.7-flash": {
+      "input": 0.375,
+      "output": 1.875,
+      "_note": "NEW in this snapshot (GH #373, W5.6 wording matrix, Phase 2 mid-tier Google chat model). This is a CHAT model, unrelated to the google/gemini-embedding-2 row above. Verified at https://openrouter.ai/google/gemini-3.7-flash, retrieved 2026-08-24."
+    },
+    "qwen/qwen3-embedding-8b": {
+      "input": 0.01,
+      "output": 0.0,
+      "_note": "retired on 2026-08-19, superseded by google/gemini-embedding-2. The row stays so that a window spanning the switch prices both generations instead of dropping the older half into the 'unknown' bucket. Measured on 2026-08-08, 5 tokens."
+    },
+    "qwen/qwen3.8-27b": {
+      "input": 0.35,
+      "output": 2.75,
+      "_note": "NEW in this snapshot (GH #373, W5.6 wording matrix, Phase 2 mid-tier Qwen chat model). This is a CHAT model, unrelated to the qwen/qwen3-embedding-8b row above. Verified at https://openrouter.ai/qwen/qwen3.8-27b, retrieved 2026-08-24."
+    }
+  },
+  "fallback_models": [
+    {
+      "from_path_suffix": "/embed",
+      "model": "google/gemini-embedding-2",
+      "_note": "An embed cell is a code cell calling an embedding endpoint. It reports tokens_prompt in its hop header but no model id -- the model lives in its own payload. Attribute it here, or its tokens land in the 'unknown' bucket and are excluded from the total. This rule names the CURRENT generation; a window recorded before 2026-08-19 belongs to the snapshot of its own day, which names the one before it."
+    }
+  ],
+  "fx": {
+    "EUR": {
+      "usd_per_unit": 1.1699,
+      "source": "ECB euro reference exchange rate",
+      "date": "2026-08-21"
+    }
+  }
+}

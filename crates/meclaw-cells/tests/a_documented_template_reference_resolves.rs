@@ -27,6 +27,19 @@
 //! two calls a mutation goes through. A check that compared version strings
 //! itself could agree with itself while disagreeing with the colony.
 //!
+//! **The plan archive is out of scope.** `docs/superpowers/plans/` is not
+//! scanned. By the project's authority hierarchy a plan is historical and
+//! non-authoritative — it records what was true while its wave ran. Holding a
+//! frozen plan to today's version numbers made every renumbering edit somebody
+//! else's archived plan, and the waves W1–W5 did exactly that: history
+//! falsification, not conformance (W5 receipt; owner ruling 2026-08-23 R7).
+//! Those edits stand — from here the archive freezes. The gate therefore
+//! covers `templates/`, `examples/` and living `docs/` prose only. The one
+//! plan that must stay true is the one about to be driven, and it is kept true
+//! by the re-baseline sweep at the end of every wave (the wave meta-plan,
+//! private tree, § „Folgewelle re-baselinen") — by a human-run pass over the
+//! next plan, not by a test pulling the whole archive forward.
+//!
 //! **Conservative by construction.** A reference whose NAME the tree does not
 //! carry is skipped rather than judged: the library ships in two sizes (this
 //! tree has every template, the published one a subset), so a document may name
@@ -76,24 +89,36 @@ fn collect(dir: &std::path::Path, name: &str, out: &mut Vec<std::path::PathBuf>)
     }
 }
 
-/// Every `.md` and `.json` under the three document roots.
+/// The archived wave plans — frozen history, never scanned (see the header).
+const FROZEN_SUBTREE: &str = "docs/superpowers/plans";
+
+/// Every `.md` and `.json` under the three document roots, minus the frozen
+/// plan archive.
 fn documents(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
+    let frozen = root.join(FROZEN_SUBTREE);
     for base in DOC_ROOTS {
-        collect_docs(&root.join(base), &mut out);
+        collect_docs(&root.join(base), &frozen, &mut out);
     }
     out.sort();
     out
 }
 
-fn collect_docs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+fn collect_docs(
+    dir: &std::path::Path,
+    frozen: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    if dir == frozen {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            collect_docs(&p, out);
+            collect_docs(&p, frozen, out);
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -128,6 +153,50 @@ fn template_references(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The archived wave plans are out of the sweep, and stay out.
+///
+/// See the header: `plans/` is historical by the project's authority
+/// hierarchy (its lowest level: historical, non-authoritative), and a gate
+/// that forced a frozen plan to name a current version was rewriting history,
+/// not checking it. The scan therefore has to come back from
+/// `docs/superpowers/plans/` empty-handed — an occurrence there is a record of
+/// what was true when the wave ran.
+///
+/// **Two trees, and only one of them has an archive.** The export carries
+/// `crates/` wholesale but pulls `docs/` through an explicit map that lists no
+/// `docs/superpowers/*`, so this file ships into a clone where the archive does
+/// not exist; demanding it there would make this gate red on a subset, and a
+/// subset is not a defect. The private tree is recognised the same way the
+/// floor below recognises it — by root `plans/`, the directory that never
+/// travels.
+#[test]
+fn the_plan_archive_is_frozen_history() {
+    let root = core_root();
+    if !root.join("plans").is_dir() {
+        return; // public tree: no archive, nothing to leak
+    }
+    let archive = root.join(FROZEN_SUBTREE);
+    assert!(
+        archive.is_dir(),
+        "expected the wave-plan archive at {} — if it moved, this test has to \
+         follow it rather than pass by absence",
+        archive.display()
+    );
+
+    let leaked: Vec<String> = documents(&root)
+        .into_iter()
+        .filter(|p| p.starts_with(&archive))
+        .map(|p| p.strip_prefix(&root).unwrap_or(&p).display().to_string())
+        .collect();
+
+    assert!(
+        leaked.is_empty(),
+        "the sweep still collects archived wave plans, so a frozen plan can be \
+         made to fail over a version that was current when it was written:\n  {}",
+        leaked.join("\n  ")
+    );
 }
 
 #[test]

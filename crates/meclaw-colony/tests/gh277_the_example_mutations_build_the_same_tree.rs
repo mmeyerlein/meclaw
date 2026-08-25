@@ -425,8 +425,10 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 11;
 /// counts the ACTORS the five declarations brought into being.
 ///
 /// Moved 46 -> 42 with GH #298 (ruling Q11): two `memory-drain` instances, two
-/// cells each (`drain`, `ledger`).
-const TEMPLATE_BORN_ROWS: usize = 42;
+/// cells each (`drain`, `ledger`). Moved 42 -> 44 with GH #379: `talky@4.1.0`
+/// grew the sidecar `splitter`, and two of the five declarations instantiate a
+/// `talky`.
+const TEMPLATE_BORN_ROWS: usize = 44;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -470,7 +472,22 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "dispatcher", "session-kee
 /// `never-forgets` (four declaration edges touching `./drain` out, one
 /// `./talky -> ./memory/keep` in) and -2 for `meclaw-os` (three out, one
 /// `./talky -> ./sink` in).
-const EDGES: usize = 154;
+///
+/// Moved 154 -> 158 with GH #379: `talky@4.1.0` puts the sidecar `splitter` on
+/// the answer path, which is +2 internal edges per instance (`brain ->
+/// splitter` replaces `brain -> dispatcher`, and `splitter -> dispatcher` plus
+/// `splitter -> .` are new), and two of the five declarations instantiate a
+/// `talky`.
+///
+/// Moved 158 -> 160 with GH #267: `steward@2.0.8` stops opening `colony.db` and
+/// asks `/colony/ledger` instead, which is +2 edges per instance
+/// (`./meter -> /colony/ledger` and `./probe -> /colony/ledger`). Exactly one of
+/// the five declarations grows a `steward` (`examples/meclaw-os`), so the tree
+/// gains two. They are the only edges in the tree whose endpoint is neither the
+/// hive nor a child of it, and they are sanctioned: `/colony/ledger` is the
+/// second entry of `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, beside `/colony/graph`
+/// (GH #163).
+const EDGES: usize = 160;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

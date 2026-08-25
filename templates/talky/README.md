@@ -1,8 +1,8 @@
-# `talky@4.0.0`
+# `talky@4.1.1`
 
 A whole conversational agent as one template. Five units under one hive:
-[`session-keeper@2`](../session-keeper/), [`collector@3`](../collector/),
-[`dispatcher@1`](../dispatcher/) and [`summarizer@2`](../summarizer/) -- each carrying
+[`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.0`](../collector/),
+[`dispatcher@1.1.0`](../dispatcher/) and [`summarizer@2.0.1`](../summarizer/) -- each carrying
 its template's own name -- plus an `llm` brain and one error collector. No new cell
 type, no Rust.
 
@@ -40,11 +40,11 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 
 | path | type | from |
 |---|---|---|
-| `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2` **(sealed)** |
-| `collector/{assemble,window}` | `code`, `store` | `collector@3` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
+| `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2.0.4` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.0` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher@1.1.0` (a single-cell template) |
 | `brain` | `llm` | this template |
-| `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2` **(sealed)** |
+| `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2.0.1` **(sealed)** |
 | `errors` | `code` | this template |
 
 **The braces are an inventory, not an address list.** The three sealed sub-units declare
@@ -66,7 +66,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`talky@4.0.0` above it in its provenance chain.
+`talky@4.1.1` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -270,7 +270,7 @@ the door edges' business, exactly as it is for the four essential lanes:
 | housekeeping | `./talky` lanes `in_prune`, `in_round_sweep` | a timer; the template never fires them itself |
 | per-turn write | `./talky` route `turn_write` out | one message per turn into a memory hive's `in_episode` lane; on by default -- see below |
 | memory lookup | `./talky` on `hop.tool_name == 'ask_memory'` -> the cogny's ingress | the fast errand lane (GH #124); same edge as `consult_cogny` plus `consult_class` |
-| inline extraction | `./talky` on `hop.tool_name == 'remember'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the memory's write path for what a turn carried -- see "The memory tool `remember`" |
+| inline extraction | `./talky` on `hop.route == 'extraction'` -> the memory hive's `in_remember` lane, **plus** its `reject` egress into the parent's own drain | the memory's write path for what a turn carried -- see "The extraction sidecar". Since `talky@4.1.0` the lane is a ROUTE, not a tool name: a parent still wired on `hop.tool_name == 'remember'` writes nothing |
 
 ### Per-turn episodes (`turn_write`)
 
@@ -457,7 +457,7 @@ off the same collector, the same window and the same memory bundle, and the fast
 escalate. The details, the escalation and the model slots live in
 [`../cogny/README.md`](../cogny/README.md), section "The two lanes".
 
-### The memory tool `remember` (inline extraction)
+### The extraction sidecar (inline extraction)
 
 The two lanes above ASK the memory. This one WRITES to it, and it is the only lane on
 which the brain does two jobs in one call: it answers, and in the same response it emits
@@ -465,37 +465,45 @@ the durable memory the turn carried. That saves a second inference over the whol
 -- but the reason to do it is freshness, not tokens: a fact extracted at night cannot
 answer a question asked this afternoon.
 
+**This used to be a TOOL, and that instruction is retracted rather than reworded**
+(owner ruling 2026-08-24 on [#373](https://github.com/mmeyerlein/meclaw/issues/373),
+built in [#379](https://github.com/mmeyerlein/meclaw/issues/379)). The block asked the
+model to `call remember` after its answer; measured across seven model families, the best
+case carried the call on 44 % of turns and most were far below that -- and a completion
+that mixed a sentence with an asynchronous call stranded its own round
+([#378](https://github.com/mmeyerlein/meclaw/issues/378), still open as a substrate item).
+The same rules delivered as a fenced block INSIDE the answer were adopted on 12 of 12
+turns by every one of five models, with zero malformed blocks. So since `talky@4.1.0` the
+model writes the annotation into its own text, and a cell takes it back out again.
+
+**The splitter, in one line.** `./splitter` sits between `./brain` and `./dispatcher` on
+the answer path. A completion whose text carries a ```` ```memory ```` block leaves it as
+TWO messages: the answer with the block cut out, on to the dispatcher exactly as before,
+and the raw block on lane `extraction`, out of the composite. Everything else passes
+untouched -- a round with tool calls belongs to the dispatcher whole, and **without the
+extraction prompt the splitter is a pure pass-through**. Its own `description` carries the
+rest; the grammar it cuts with is the one the harness measured the wording with.
+
 **It is the write path, not a write leg beside one.** Per-turn extraction
 ([#298](https://github.com/mmeyerlein/meclaw/issues/298)) removed the batched extractor
 that used to read the same turns a second time, so what this tool does not emit, nothing
 emits mid-conversation: the night is the reader behind it, and the close pass at the end of
 the session is the second one -- that lane lands later in wave 5
 ([#300](https://github.com/mmeyerlein/meclaw/issues/300)), and until it does a turn nobody
-annotated is read by nobody. That is why the call is an
+annotated is read by nobody. That is why the annotation is an
 **obligation on every turn** rather than an opportunity on the interesting ones -- a turn
 nobody annotated is a turn nobody extracts, and the shipped contract block says so in its
 first line.
 
 ```json
-"DISPATCHER_HANDOFF_TOOLS": "consult_cogny,ask_memory",
-"DISPATCHER_ASYNC_TOOLS": "remember"
-```
-
-**Two lists, and `remember` is in the plain one on purpose.** A consult hands the turn
-over; a memory write does not answer anything and never comes back, so the model still
-owes this turn a sentence. Moving `remember` into the handoff list brings back the silence
-[#372](https://github.com/mmeyerlein/meclaw/issues/372) fixed: a turn answered with a bare
-`remember` call and no text would end with nothing at all on the channel.
-
-```json
 {"from": "./talky", "to": "/front/memory",
- "condition": "has(hop.tool_name) && hop.tool_name == 'remember'",
+ "condition": "has(hop.route) && hop.route == 'extraction'",
  "modifier": {"set_hop": {"route": "'in_remember'"}}},
 {"from": "/front/memory", "to": "<drain or alarm>",
  "condition": "has(hop.route) && hop.route == 'reject'"}
 ```
 
-**Two edges, never one.** The first carries the call into the memory hive's `in_remember`
+**Two edges, never one.** The first carries the annotation into the memory hive's `in_remember`
 lane -- the hive seals its scope the same way this one does, so the address is the hive
 and the lane is what the door behind it reads; the door stamps `store_origin` and
 `mem_phase` itself, and what the lane does require of the caller (the block's provenance,
@@ -511,37 +519,34 @@ composite's seal and is not an address a parent may name (`hive_port_boundary`),
 Send it wherever the `error` port already goes -- the parent drains one place, which was
 the point of that port.
 
-**`remember` is an async tool, and that is what makes it free for the turn.** Named in
-`DISPATCHER_ASYNC_TOOLS`, the collector opens no fan-in expectation for it: the turn ends
-with the interim answer the dispatcher already sent to the channel while the write is
-still travelling. Left out of the knob, the round waits for a result that never comes and
-dies at its idle window instead.
-
-**And when the model sends the call with no sentence beside it, the round does not end
-there ([#372](https://github.com/mmeyerlein/meclaw/issues/372)).** There is no interim
-answer in that case -- the dispatcher sends one only when there is text -- so the collector
-leaves the round open instead of filing it as fired: the acknowledgement completes the
-fan-in and the seam re-enters the brain for the iteration the model has not spent. The
-write keeps travelling its own lane meanwhile. Bounded by the collector's
-`params.max_iter` like any other round, so a model that only ever calls leaves on `answer`
-with `hop.round_capped=1` rather than looping. Measured before the fix: three of five full
-harness runs died silently on exactly this shape.
-
-**`remember` is deliberately *not* in `DISPATCHER_HANDOFF_TOOLS`.** That list is for async
-tools whose call ends the TURN because the answer comes from a later one -- an advisor's
-event (`consult_cogny`), an escalation. A memory write answers nothing and never comes
-back, so the model still owes this turn a sentence. Putting `remember` there brings the
-silence back.
+**The annotation costs the turn nothing, and it never was the round's business.** It leaves
+on its own lane while the answer travels the dispatcher, so no fan-in expectation is opened
+and no idle window is waited out. This is the part the sidecar made simple rather than
+merely correct: there is no call to classify, no async list to remember to fill in, and no
+completion that carries a sentence beside an asynchronous call -- which was the shape that
+stranded rounds ([#378](https://github.com/mmeyerlein/meclaw/issues/378)).
 
 **The session travels by itself, and it is load-bearing.** The seam edge promotes
-`hop.session_id` into the context long before the answer exists, so the tool call arrives
+`hop.session_id` into the context long before the answer exists, so the annotation arrives
 at the hive carrying the conversation it was written in. That is what the hive binds the
 block to -- the front model names no episode, because an episode id is a uuid the hive
-mints and no model has ever seen one. A `remember` call that reaches the port without a
+mints and no model has ever seen one. An annotation that reaches the port without a
 session in its context is rejected, by design.
 
-**The schema, for the brain's `system.tools`.** Like every tool schema it is instance
-state (`brain/seed/system.jsonl` or a system update), never template:
+#### The retracted tool form (historical)
+
+Everything below this line describes how the lane worked until `talky@4.1.0`. It is kept
+because the measurement harness can still run that arm
+(`workshop/evals/conversation-guide/run_guide.py --annotation tool`) and because a colony
+that has not been rewired yet still looks like this. **Do not wire it into anything new.**
+The parent edge was `hop.tool_name == 'remember'` instead of `hop.route == 'extraction'`,
+and the brain carried a `remember` tool named in `DISPATCHER_ASYNC_TOOLS` (never in
+`DISPATCHER_HANDOFF_TOOLS`: a memory write answers nothing and never comes back, so the
+model still owed the turn a sentence, and putting it in the handoff list brought back the
+silence [#372](https://github.com/mmeyerlein/meclaw/issues/372) had fixed).
+
+**The schema it carried, for the brain's `system.tools`.** Like every tool schema it is
+instance state (`brain/seed/system.jsonl` or a system update), never template:
 
 ```json
 {"type": "function", "function": {
@@ -591,9 +596,10 @@ semantic, which is worse than a duplicate. Both were measured in a running colon
 field a schema does not offer is a field constrained decoding cannot produce; the hive
 enforces the same two rules again at its end, because it does not own the persona.
 
-**The description IS the contract**, and it is shipped:
+**The block IS the contract**, and it is shipped:
 `templates/memory-hive/inline-contract.md`. Paste the fenced block from there into the
-tool description rather than writing a new one -- the file is the authority, a drift lock
+brain's **instructions** rather than writing a new one -- it is not a tool description any
+more, and there is no tool alternative left. The file is the authority, a drift lock
 (`crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
 what this lane can actually read, and a discipline each persona invents for itself is a
 discipline nothing can hold to account. The block is short on purpose: it is carried on
@@ -656,8 +662,8 @@ reference pattern.
 | `turn_write` | param | `"1"` | collector -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
 | `context_window` | param | `0` | collector -- the curator's budget in tokens; `0` = curation off. A channel voice is the shape the curator was **not** built for; leave it off unless the window is genuinely large. The full curator table is in [`collector`](../collector/#knobs) |
 | `DISPATCHER_MAX_CALLS` | env | `16` | dispatcher -- per-answer call budget |
-| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round (`remember`). The key is colony-global, so in practice ONE list carries every async name of the tree |
-| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny,ask_memory`). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` does not belong here (GH #372) |
+| `DISPATCHER_ASYNC_TOOLS` | env | (empty) | dispatcher -- comma-separated tools that answer on their own lane instead of inside the round. The key is colony-global, so in practice ONE list carries every async name of the tree. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
+| `DISPATCHER_HANDOFF_TOOLS` | env | (empty) | dispatcher -- the tools whose call ends the TURN, because the answer comes back as a later one (`consult_cogny,ask_memory`). Declares async too -- the dispatcher unions the two lists, so one entry is enough and naming a tool in both is harmless, just redundant. `remember` did not belong here while it existed (GH #372) |
 | `SUMMARIZER_RECENT_TURNS` | env | `12` | summarizer -- newest turns travelling verbatim |
 | `SUMMARIZER_PHASEOUT_CHARS` | env | `200` | summarizer -- per-turn cap on the phased-out turns |
 | `SUMMARIZER_TOOL_CHARS` | env | `200` | summarizer -- per-item cap on tool previews |
@@ -698,6 +704,23 @@ Two things to have ready before the mutation:
 2. **The brain's identity**, either as `brain/seed/system.jsonl` (which only takes on a
    FRESH birth -- a `cell.db` that already exists means `Resumed` and an inert seed) or
    as a system update message. Neither is this template's business.
+
+**The `identity` slot is a projection target.** The brain's `system_order` begins with
+`identity` (`brain/config.json:13-18`), and that first slot is where a person -- the user,
+the agent itself -- is rendered into the prompt. An `affinity` hive may push
+into it: one edge per subscribing cell on `hop.route == 'answer' && hop.subscriber ==
+'<this brain>'`, and every change to the record reaches the brain as a `system.*` write and
+not as an inference (the recipe is in the `affinity` template's own README,
+§ Wiring `out_push` for a subscribing brain). Nothing here configures it, and nothing here
+needs to: the lane is the parent's business, exactly like the seed above. A brain with
+nobody pushing into `identity` is not a broken brain -- `system_order` names the key it
+would render first, and a `system` tree that does not carry the key is simply concatenated
+without it (`crates/meclaw-cells/src/llm/translate.rs:56-60`); nothing declares it unbound.
+Since
+[#285](https://github.com/mmeyerlein/meclaw/issues/285) a hive port may be declared as a
+slot (`{"name": "...", "slot": true, "unbound": "park"}`), so a composite that means to bind
+the lane later says so in its contract from birth instead of parking a placeholder at the
+address.
 
 ## What it is not
 
@@ -752,14 +775,24 @@ Two things to have ready before the mutation:
   from this path): the turn AND the answer are `episodes` rows before anything closes,
   a second turn adds exactly its own two and re-writes neither of the first two, and
   the close that follows moves no row.
-- `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- the `remember` lane in a
+- `crates/meclaw-cells/tests/w10b_remember_colony.rs` -- the extraction lane in a
   colony that carries this composite, the shipped `memory-drain` and the memory hive's
   real write AND extraction path: one turn whose single response carries the answer and
-  the tool call, the answer in the channel untouched, and the fact a candidate on the
-  episode of the turn it answered, under the drain's own `turn_id`. Plus the other half,
-  which is the one that makes inline extraction defensible at all: a block with a broken
-  payload leaves through `inline-reject`, writes nothing, covers no turn -- and the
-  channel got its sentence anyway.
+  the annotation, the answer reaching the channel WITHOUT the fence, and the fact a
+  candidate on the episode of the turn it answered, under the drain's own `turn_id`.
+  Plus the other half, which is the one that makes inline extraction defensible at all:
+  a block with a broken payload is not cut, writes nothing, covers no turn -- and the
+  channel got its sentence anyway. Since GH #379 that second half also pins the one
+  behaviour the flip changed: an unreadable block travels IN the answer rather than
+  through `inline-reject`, because a parser that could not read the block does not get
+  to edit the sentence around it.
+- `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs` -- the splitter's own
+  three output forms, run through the shipped `params.script_inline` itself: a cut, a
+  byte-identical pass-through (no block, and a tool-call round), and the flagged
+  pass-through a block nobody can read earns. `talky_composite.rs`'s
+  `an_annotated_answer_splits_into_the_reply_and_the_sidecar` is the same thing end to
+  end -- the prose reaches the reply exit fence-free and the raw block leaves on
+  `extraction`, for ONE provider call.
 - `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- a
   conversation ended the only way this template ever ends one, by a SWEEP, drained
   through the shipped `memory-drain` into the memory hive's real write path: the episode

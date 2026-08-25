@@ -75,8 +75,8 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
     meclaw_core::Path::resolve(&meclaw_core::Path::new(scope), name)
 }
 
-/// GH #163 — the one absolute endpoint a mutation may address from inside a
-/// subtree: the colony's own read-only topology endpoint.
+/// GH #163 — the absolute endpoints a mutation may address from inside a
+/// subtree: the colony's own read-only topology and ledger endpoints.
 ///
 /// Containment (`validate::validate_scope_containment`,
 /// `subtree::resolve_internal_edges`) exists so that a mutation cannot wire into
@@ -88,11 +88,19 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
 /// anything; it only meant a cell that needs the graph had to be born with the
 /// lane, or somebody would go read the database instead.
 ///
-/// Deliberately a single endpoint and not a `/colony/*` prefix: `/colony/mutations`
+/// Deliberately an enumerated list and not a `/colony/*` prefix: `/colony/mutations`
 /// is authority *transfer*, `/colony/trace` and `/colony/dead_letters` hand out
 /// other cells' message content. Widening this list is a decision with its own
 /// argument, not a convenience.
-pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] = &["/colony/graph"];
+///
+/// GH #267 — `/colony/ledger` carries that argument and is therefore the second
+/// entry: it answers **counts**, never rows and never header contents. That puts
+/// it in the same class as the topology endpoint — an aggregate view of the
+/// colony's own bookkeeping that reveals no cell's message content — and
+/// explicitly not in the class of `/colony/trace`, which hands out exactly that
+/// content. A cell that needs to know how much moved may ask; it still may not
+/// learn what moved.
+pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] = &["/colony/graph", "/colony/ledger"];
 
 /// Whether `endpoint` is an absolute virtual endpoint a mutation may draw an
 /// edge **to** (never `from` — a virtual endpoint emits nothing on its own).

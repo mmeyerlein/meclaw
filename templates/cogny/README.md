@@ -1,12 +1,12 @@
-# `cogny@4.0.0`
+# `cogny@4.0.1`
 
 The agent core as one template. Four units under one hive:
-[`collector@3`](../collector/) and [`dispatcher@1`](../dispatcher/) -- each carrying its
+[`collector@3.0.0`](../collector/) and [`dispatcher@1.1.0`](../dispatcher/) -- each carrying its
 template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
 `brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@4`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky@4.1.1`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and the memory it reads is the member's central hive rather
@@ -50,8 +50,8 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window}` | `code`, `store` | `collector@3` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1` (a single-cell template) |
+| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.0` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher@1.1.0` (a single-cell template) |
 | `brain` | `llm` | this template -- the thinking lane |
 | `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
 
@@ -72,7 +72,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`cogny@4.0.0` above it in its provenance chain.
+`cogny@4.0.1` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -380,7 +380,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.0.0", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.0.1", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -465,6 +465,24 @@ stateful cell. Two things to have ready before the mutation:
 2. **The core's identity**, either as `brain/seed/system.jsonl` (which only takes on a
    FRESH birth -- a `cell.db` that already exists means `Resumed` and an inert seed) or as
    a system update message. Neither is this template's business.
+
+**The `identity` slot is a projection target.** Both brains put `identity` first in
+`system_order` (`brain/config.json:14-18`, `brain_fast/config.json:14-19`), and that first
+slot is where a person -- the caller, the agent itself -- is rendered into the prompt. An
+`affinity` hive may push into it: one edge per subscribing cell on
+`hop.route == 'answer' && hop.subscriber == '<that brain>'`, and every change to the record
+reaches the brain as a `system.*` write and not as an inference (the recipe is in the
+`affinity` template's own README, § Wiring `out_push` for a subscribing
+brain). Nothing here configures it, and nothing here needs to: the lane is the parent's
+business, exactly like the seed above -- and two brains are two edges, because the
+subscriber key names an address and not a hive. A brain with nobody pushing into `identity`
+is not a broken brain -- `system_order` names the key it would render first, and a `system`
+tree that does not carry the key is simply concatenated without it
+(`crates/meclaw-cells/src/llm/translate.rs:56-60`); nothing declares it unbound. Since
+[#285](https://github.com/mmeyerlein/meclaw/issues/285) a hive port may be declared as a
+slot (`{"name": "...", "slot": true, "unbound": "park"}`), so a composite that means to bind
+the lane later says so in its contract from birth instead of parking a placeholder at the
+address.
 
 One line of the CALLER's identity is this template's business, though, because it decides
 how often this core is woken for nothing. The persona of the talky in front of it has to

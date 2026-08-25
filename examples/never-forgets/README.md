@@ -61,9 +61,9 @@ cannot decide which database your life goes into.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
+| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, summarizer and an `llm` brain, twelve internal edges pre-wired. |
-| `/sink` | [`terminal@1`](../../templates/terminal/) | 1 cell. The stop for the lanes this example does not decide. |
+| `/sink` | [`terminal@1.0.0`](../../templates/terminal/) | 1 cell. The stop for the lanes this example does not decide. |
 
 Sixteen cells in the registry, three of them checked in -- the hive marker is a
 scope, not a cell.

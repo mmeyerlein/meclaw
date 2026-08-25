@@ -10,9 +10,11 @@
 //!    leaves the subtree. Direct-Mode (`EgressPolicy::All`) is unchanged and
 //!    still root-only — the negative half of that is pinned in `colony.rs`'s own
 //!    unit tests, and the unmarked case is pinned below.
-//! 2. **Containment lets `/colony/graph` through, and nothing else.** A template
-//!    may declare its own lane to the colony's read-only topology endpoint; a
-//!    lane to `/colony/mutations` stays out of bounds.
+//! 2. **Containment lets exactly two colony endpoints through.** The exemption is
+//!    an enumerated list, not a `/colony/*` prefix: a template may declare its own
+//!    lane to `/colony/graph` (read-only topology) and to `/colony/ledger`
+//!    (counts, never content) — both drawable classes. Everything else, including
+//!    `/colony/mutations`, stays out of bounds.
 //! 3. **A stray directory never kills a boot.** A hive directory somebody placed
 //!    by hand is reported and skipped, not planned — planning its edges made
 //!    every endpoint dangle and turned a healthy colony into a restart loop.
@@ -181,8 +183,34 @@ fn a_template_may_declare_its_own_lane_to_the_colony_graph() {
     );
 }
 
-/// And the exemption is exactly one endpoint wide. `/colony/mutations` is
-/// authority transfer; a template that draws it is still rejected.
+/// GH #267 — the ledger endpoint is the second drawable one. It answers counts,
+/// never rows, so a template may declare its own lane to it at a nested scope,
+/// exactly like the topology endpoint above.
+#[test]
+fn a_template_may_declare_its_own_lane_to_the_colony_ledger() {
+    let td = tempfile::TempDir::new().unwrap();
+    template_with_absolute_lane(td.path(), "/colony/ledger");
+
+    let resolved = meclaw_colony::mutation::subtree::resolve_subtree(
+        td.path(),
+        "/org/acme/member",
+        "canvy",
+        &meclaw_colony::templates::TemplatesRegistry::default(),
+    )
+    .expect("a lane to /colony/ledger must be in bounds at any scope");
+    assert!(
+        resolved
+            .internal_edges
+            .iter()
+            .any(|(f, t)| f == "/org/acme/member/canvy/probe" && t == "/colony/ledger"),
+        "the resolved lane must survive containment, got {:?}",
+        resolved.internal_edges
+    );
+}
+
+/// And the exemption is an enumerated list, not a `/colony/*` prefix.
+/// `/colony/mutations` is authority transfer; a template that draws it is still
+/// rejected.
 #[test]
 fn a_template_may_not_declare_a_lane_to_the_mutation_endpoint() {
     let td = tempfile::TempDir::new().unwrap();
@@ -198,6 +226,30 @@ fn a_template_may_not_declare_a_lane_to_the_mutation_endpoint() {
     match err {
         meclaw_colony::mutation::MutationError::Schema(s) => assert!(
             s.contains("/colony/mutations") && s.contains("escapes subtree root"),
+            "unexpected reason: {s}"
+        ),
+        other => panic!("expected Schema(escapes subtree root), got {other:?}"),
+    }
+}
+
+/// Widening the list is exactly the moment its edge needs a test: `/colony/trace`
+/// hands out other cells' message content and did not move. A template that draws
+/// it is still rejected.
+#[test]
+fn a_template_may_not_declare_a_lane_to_the_trace_endpoint() {
+    let td = tempfile::TempDir::new().unwrap();
+    template_with_absolute_lane(td.path(), "/colony/trace");
+
+    let err = meclaw_colony::mutation::subtree::resolve_subtree(
+        td.path(),
+        "/org/acme/member",
+        "canvy",
+        &meclaw_colony::templates::TemplatesRegistry::default(),
+    )
+    .expect_err("/colony/trace must stay out of bounds for a mutation");
+    match err {
+        meclaw_colony::mutation::MutationError::Schema(s) => assert!(
+            s.contains("/colony/trace") && s.contains("escapes subtree root"),
             "unexpected reason: {s}"
         ),
         other => panic!("expected Schema(escapes subtree root), got {other:?}"),

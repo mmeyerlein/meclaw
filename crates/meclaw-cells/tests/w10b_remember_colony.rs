@@ -1,4 +1,9 @@
-//! meclaw-os W10b -- the `remember` tool in a running colony (wave 10, track B).
+//! meclaw-os W10b -- inline extraction in a running colony (wave 10, track B).
+//!
+//! Rebuilt in W5.7 (GitHub #379). The track used to drive a `remember` TOOL
+//! CALL; per-turn extraction is a fenced block inside the answer now, cut back
+//! out by `talky/splitter`. The two claims below did not change -- only the
+//! delivery did, which is the whole point of the flip.
 //!
 //! The script pins live in `w10b_inline_gate.rs`. This file asks the question
 //! the track is about, of a colony that carries the shipped `talky`, the
@@ -6,27 +11,37 @@
 //! path (`writer`, `store`, `extract-glue` -- the private templates, which is
 //! why this file stays private):
 //!
-//!   surface -> talky -> brain -> split --tool 'remember'--> memory/extract-glue
-//!                            \--route 'answer' (interim)--> the channel
+//!   surface -> talky -> brain -> splitter --route 'extraction'--> memory/extract-glue
+//!                                        \--> dispatcher --route 'answer'--> the channel
 //!                    -> route turn_write -> drain -> memory/writer -> episodes
 //!
 //! Two claims, and they are the whole track:
 //!
-//! 1. **A remembered turn becomes a fact candidate on the turn it answered.**
-//!    The block names no episode -- it cannot -- and the hive binds it to the
-//!    newest `user` episode of the session, the row the per-turn lane minted
-//!    under `turn_id = "<session_id>#<index>"`.
-//! 2. **Extraction never costs the answer.** A `remember` call with a broken
-//!    payload leaves through `inline-reject`, writes NOTHING, and the answer
-//!    reaches the channel exactly as it was written. That is guard 1 of the
-//!    inline design, and it is the only guarantee that makes putting an
-//!    extraction on the answering call defensible at all.
+//! 1. **An annotated turn becomes a fact candidate on the turn it answered, and
+//!    the person never sees the annotation.** The block names no episode -- it
+//!    cannot -- and the hive binds it to the newest `user` episode of the
+//!    session, the row the per-turn lane minted under
+//!    `turn_id = "<session_id>#<index>"`. The answer that reaches the channel
+//!    carries no fence.
+//! 2. **Extraction never costs the answer.** A block with a broken payload is
+//!    NOT cut: the splitter flags it and leaves the answer alone, nothing is
+//!    written, and the turn stays in the queue for the close pass. That is
+//!    guard 1 of the inline design, and it is the only guarantee that makes
+//!    putting an extraction on the answering call defensible at all.
+//!
+//!    It is also where the flip changed a visible behaviour, and the assertion
+//!    says so out loud: under the tool form a broken payload left through
+//!    `inline-reject` and the person's answer was untouched. Under the sidecar
+//!    the payload is INSIDE the answer, so leaving the answer untouched means
+//!    the fence travels with it. Half-cutting on a block nobody could read was
+//!    the worse of the two, and the close pass reads the turn either way. (Every
+//!    measured V2 run left the malformed bucket at zero.)
 //!
 //! **The barrier.** In production the ordering is free: the per-turn episode is
-//! a handful of in-process store hops while the answer carrying the `remember`
-//! call is a model generation, seconds away. Against a mock wire that answers in
-//! a millisecond the two chains are the same length, so this test makes the
-//! ordering explicit instead of hoping for it: a `gate` cell holds the tool call
+//! a handful of in-process store hops while the answer carrying the annotation
+//! is a model generation, seconds away. Against a mock wire that answers in a
+//! millisecond the two chains are the same length, so this test makes the
+//! ordering explicit instead of hoping for it: a `gate` cell holds the sidecar
 //! until the test has SEEN the episode. It is a test fixture and nothing else --
 //! the lane's behaviour when the episode is genuinely missing is the reject, and
 //! `w10b_inline_gate.rs` pins that directly.
@@ -45,7 +60,7 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
-use mock_openai::{MockOpenAI, canned_chat_completion, canned_content_and_tool_calls};
+use mock_openai::{MockOpenAI, canned_chat_completion};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -132,9 +147,9 @@ json.load(sys.stdin)
 sys.stdout.write(json.dumps([]))
 "#;
 
-/// THE BARRIER (see the module note). Holds the tool call until the test has
+/// THE BARRIER (see the module note). Holds the sidecar until the test has
 /// seen the episode it must bind to, then forwards it byte for byte -- header
-/// and body, so the port edge downstream sees exactly what the dispatcher
+/// and body, so the port edge downstream sees exactly what the splitter
 /// emitted. A test fixture, never a template.
 const GATE: &str = r#"
 import sys, json, os, time
@@ -264,11 +279,12 @@ fn main_config() -> Value {
         // rather than dead-lettered.
         {"from": "./drain", "to": "/reject",
          "condition": "has(hop.route) && hop.route == 'reject'"},
-        // WAVE 10b, edge 1 of 2: the async tool call into the inline ingress.
-        // In production this edge goes straight from `split`; here it takes the
+        // WAVE 10b, edge 1 of 2: the extraction sidecar into the inline ingress.
+        // Since talky@4.1.0 this is a ROUTE, not a tool name (GH #379). In
+        // production the edge goes straight to the memory; here it takes the
         // test barrier on the way (module note).
         {"from": "./talky", "to": "./gate",
-         "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'remember'"},
+         "condition": "has(hop.route) && hop.route == 'extraction'"},
         // The inline ingress mints facts directly, so the same round travels
         // with it (#244). Same audience as the write lane above: the block is
         // written INSIDE the turn those two exchanged.
@@ -298,8 +314,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     std::fs::write(
         root.join(".env"),
         format!(
-            "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\n\
-             DISPATCHER_ASYNC_TOOLS=remember\nW10B_MARKER={}\n",
+            // No DISPATCHER_ASYNC_TOOLS: the annotation is not a tool call any
+            // more, so there is nothing for the dispatcher to classify (#379).
+            "OPENROUTER_API_KEY=test-key\nKEEPER_IDLE_MS=0\nW10B_MARKER={}\n",
             marker.display()
         ),
     )
@@ -466,19 +483,17 @@ const EPISODES: &str = "SELECT id, turn_id, sender FROM episodes";
 const FACTS: &str = "SELECT episode_id, subject, predicate, claim, fact_kind, \
                      IFNULL(valid_until,'') FROM facts";
 
-/// Claim 1: one turn, one `remember` call, and the fact hangs on the episode of
-/// the turn it answered -- while the answer is already in the channel.
+/// The annotation the model writes into its own answer: the payload the tool
+/// call used to carry, in the fence the shipped contract asks for.
+const SIDECAR: &str = r#"{"facts":[{"subject":"user","predicate":"Favorite Editor","claim":"Helix","fact_kind":"world","confidence":90}],"topic":{"movement":"start","name":"editors"}}"#;
+
+/// Claim 1: one turn, one annotation, and the fact hangs on the episode of the
+/// turn it answered -- while the answer is already in the channel, without the
+/// block in it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_remembered_turn_is_a_fact_candidate_on_the_turn_it_answered() {
-    let mock = MockOpenAI::start(vec![canned_content_and_tool_calls(
-        "Noted -- Helix it is.",
-        vec![(
-            "call-r1",
-            "remember",
-            r#"{"facts":[{"subject":"user","predicate":"Favorite Editor","claim":"Helix","fact_kind":"world","confidence":90}]}"#,
-        )],
-    )])
-    .await;
+async fn an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered() {
+    let answer_text = format!("Noted -- Helix it is.\n\n```memory\n{SIDECAR}\n```");
+    let mock = MockOpenAI::start(vec![canned_chat_completion(&answer_text, "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();
     let marker = td.path().join("episode-seen");
     build_tree(&td, &mock.base_url, &marker);
@@ -487,11 +502,20 @@ async fn a_remembered_turn_is_a_fact_candidate_on_the_turn_it_answered() {
 
     h.send(turn("my favourite editor is Helix")).await;
 
-    // THE ANSWER IS FIRST AND UNTOUCHED. It travelled the dispatcher's interim
-    // lane, in the same response that carried the tool call -- no second
-    // inference, and the extraction is not on its way.
+    // THE ANSWER IS FIRST AND IT IS FENCE-FREE. It came out of the SAME
+    // completion that carried the annotation -- no second inference -- and the
+    // splitter took the instrument out before the dispatcher ever saw it.
     let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
-    assert_eq!(text_of(&answer), "Noted -- Helix it is.");
+    assert_eq!(
+        text_of(&answer),
+        "Noted -- Helix it is.",
+        "the person is handed the prose and never the block"
+    );
+    assert!(
+        !text_of(&answer).contains("```memory"),
+        "and the fence is not in it: {:?}",
+        text_of(&answer)
+    );
     let session = hop_of(&answer, "session_id");
     assert!(session.starts_with("c-10b-"), "session {session:?}");
 
@@ -549,15 +573,22 @@ async fn a_remembered_turn_is_a_fact_candidate_on_the_turn_it_answered() {
     h.shutdown().await;
 }
 
-/// Claim 2: extraction never costs the answer. A broken block leaves through
-/// `inline-reject`, writes nothing -- and the channel got its sentence anyway.
+/// Claim 2: extraction never costs the answer. A block nobody can read is not
+/// cut, writes nothing, covers no turn -- and the channel got its sentence.
+///
+/// The shape of the guarantee moved with the delivery and the assertions say so.
+/// Under the tool form the broken payload travelled its own lane and left
+/// through `inline-reject`. Under the sidecar it is INSIDE the answer, so
+/// "leave the answer alone" and "get the block out" are the same decision made
+/// two ways, and the splitter chooses the first: a parser that could not read
+/// the block does not get to edit the sentence around it. The person sees the
+/// fence; the memory writes nothing; the turn stays in the queue and the close
+/// pass reads it. Every measured V2 run left this bucket at zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_broken_remember_block_costs_the_answer_nothing() {
+async fn a_broken_annotation_costs_the_answer_nothing() {
+    let broken = "Got it.\n\n```memory\n{\"facts\": [ this is not json\n```";
     let mock = MockOpenAI::start(vec![
-        canned_content_and_tool_calls(
-            "Got it.",
-            vec![("call-r1", "remember", "{\"facts\": [ this is not json")],
-        ),
+        canned_chat_completion(broken, "stop"),
         canned_chat_completion("ignored", "stop"),
     ])
     .await;
@@ -569,10 +600,20 @@ async fn a_broken_remember_block_costs_the_answer_nothing() {
 
     h.send(turn("my favourite editor is Helix")).await;
 
-    // THE ANSWER, unchanged and unaffected -- it is on the channel before the
-    // extraction has even been routed.
+    // THE ANSWER ARRIVES -- that is the guarantee, and it holds. It carries the
+    // unreadable block, because the alternative was a parser that failed to read
+    // the block editing the sentence around it on a guess.
     let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
-    assert_eq!(text_of(&answer), "Got it.");
+    assert!(
+        text_of(&answer).starts_with("Got it."),
+        "the sentence reached the channel: {:?}",
+        text_of(&answer)
+    );
+    assert!(
+        text_of(&answer).contains("this is not json"),
+        "carrying the block it could not read, whole -- never half-cut: {:?}",
+        text_of(&answer)
+    );
 
     let episodes = await_rows(&db, EPISODES, 1);
     let user_turn = episodes
@@ -581,23 +622,10 @@ async fn a_broken_remember_block_costs_the_answer_nothing() {
         .expect("the user turn is an episode");
     std::fs::write(&marker, b"go").unwrap();
 
-    // THE REJECT LANE FIRES -- a positive receipt, not an absence. This is the
-    // edge the running colony was missing: without it the block would be an
-    // unrouted dead end and nobody would ever learn the memory was not written.
-    let reject = recv_bounded(&mut reject_rx)
-        .await
-        .expect("a broken block leaves through inline-reject");
-    assert_eq!(hop_of(&reject, "route"), "reject");
-    assert!(
-        text_of(&reject).contains("not JSON"),
-        "and it says why: {:?}",
-        text_of(&reject)
-    );
-
-    // NOTHING in the store: no fact, and the turn is still the batch lane's.
+    // NOTHING in the store: no fact, and the turn is still the close pass's.
     assert!(
         rows(&db, FACTS).is_empty(),
-        "a rejected block writes no fact"
+        "an unreadable block writes no fact"
     );
     let pending = rows(
         &db,
@@ -605,12 +633,21 @@ async fn a_broken_remember_block_costs_the_answer_nothing() {
     );
     assert!(
         pending.is_empty(),
-        "and covers no turn: the batch lane keeps {user_turn:?}"
+        "and covers no turn: the close pass keeps {user_turn:?}"
+    );
+
+    // THE REJECT LANE STAYS EMPTY, and that is the difference the flip made:
+    // the block never left the composite, so there is nothing for the hive to
+    // refuse. What carries the miss is `hop.sidecar == "malformed"` on the
+    // answer message, which `gh379_the_splitter_cuts_the_sidecar` pins directly.
+    assert!(
+        reject_rx.try_recv().is_err(),
+        "the hive was never asked, so it refused nothing"
     );
     assert_eq!(
         dlq_count(td.path()),
         0,
-        "the reject is drained, not dead-lettered"
+        "and nothing dead-letters on the way"
     );
     h.shutdown().await;
 }
