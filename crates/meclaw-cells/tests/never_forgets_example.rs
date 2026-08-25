@@ -554,7 +554,7 @@ fn past(t: &PastTurn) -> Message {
 fn turn(channel: &str, text: &str) -> Message {
     let mut ctx = meclaw_core::serde_json::Map::new();
     ctx.insert("channel".into(), json!(channel));
-    MessageBuilder::new(Path::new("/surface"))
+    MessageBuilder::new(Path::new("/door"))
         .body(Body::Inline(
             json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
         ))
@@ -679,7 +679,7 @@ async fn a_january_sentence_is_still_there_in_march_with_its_date() {
         "/replay",
         "/memory/keep",
         "/memory/episodes",
-        "/surface",
+        "/door",
         "/talky/session-keeper/stamp",
         "/talky/collector/assemble",
         "/talky/dispatcher",

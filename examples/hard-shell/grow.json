@@ -3,7 +3,7 @@
   "diff": {
     "add_nodes": [
       {
-        "name": "surface",
+        "name": "door",
         "template": "door"
       },
       {
@@ -13,7 +13,7 @@
     ],
     "add_edges": [
       {
-        "from": "./surface",
+        "from": "./door",
         "to": "./probe",
         "condition": "has(hop.route) && hop.route == 'turn'"
       },

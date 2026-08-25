@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 tracing = "0.1"
-meclaw-core = { path = "../meclaw-core", version = "0.22.1" }
+meclaw-core = { path = "../meclaw-core", version = "0.22.2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }

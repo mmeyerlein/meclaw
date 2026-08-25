@@ -37,7 +37,7 @@ ship -- generic, ten lines each, and needed by every tree.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
+| `/door` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
 | `/firewall` | [`firewall@2.0.4`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
 | `/talky` | [`talky`](../../templates/talky/) | 12 cells. Session keeper, context collector, tool dispatcher, answer splitter, summarizer, and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for two lanes that have not been decided yet. |
@@ -48,7 +48,7 @@ ship -- generic, ten lines each, and needed by every tree.
   POST /messages
         |
         v
-    /surface ──turn──> /firewall ──pass──> /talky/session-keeper
+    /door ──turn──> /firewall ──pass──> /talky/session-keeper
                                                     ⋮
                                               (the composite's own
                                                internal edges:
@@ -125,7 +125,7 @@ OpenRouter is only the default `base_url` the template carries.
 ```bash
 curl -s -X POST http://127.0.0.1:7777/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface", "headers": {"channel": "chat-1"},
+     -d '{"target": "/door", "headers": {"channel": "chat-1"},
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "Say hello in one short sentence."}]}}'
 ```
@@ -139,7 +139,7 @@ The hop chain, with the firewall's three store round trips and the collector's w
 bookkeeping folded away:
 
 ```
-@external -> /surface -> /firewall -> /firewall/screen -> (three round trips to
+@external -> /door -> /firewall -> /firewall/screen -> (three round trips to
 /firewall/rules) -> /firewall ->
 /talky/session-keeper -> /talky/session-keeper/stamp -> (two round trips to
 /talky/session-keeper/sessions) -> /talky/session-keeper -> /talky/collector ->

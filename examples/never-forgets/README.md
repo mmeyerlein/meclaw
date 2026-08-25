@@ -61,7 +61,7 @@ cannot decide which database your life goes into.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
+| `/door` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/talky` | [`talky`](../../templates/talky/) | 12 cells. Session keeper, context collector, tool dispatcher, sidecar splitter, summarizer and an `llm` brain, sixteen internal edges pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 
@@ -311,7 +311,7 @@ sqlite3 examples/never-forgets/seed/main/memory/episodes/cell.db \
 ```bash
 curl -s -X POST http://127.0.0.1:7788/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface", "headers": {"channel": "chat-1"},
+     -d '{"target": "/door", "headers": {"channel": "chat-1"},
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "What did the plumber say about the radiator in February?"}]}}'
 ```
@@ -327,7 +327,7 @@ The spine of it, with the window and session bookkeeping and the concurrent
 turn-write leg into `/memory/keep` left out -- the trace has those too:
 
 ```
-@external -> /surface -> /talky/session-keeper -> /talky/session-keeper/stamp ->
+@external -> /door -> /talky/session-keeper -> /talky/session-keeper/stamp ->
 /talky/session-keeper -> /talky/collector -> /talky/collector/assemble ->
 /talky/collector -> /talky/brain -> /talky/splitter -> /talky/dispatcher ->
 /talky/collector -> /talky/collector/assemble -> /talky/collector ->

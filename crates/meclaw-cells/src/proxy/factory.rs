@@ -48,6 +48,25 @@ type BuildFn = Box<dyn Fn() -> SpawnTuple + Send + Sync>;
 pub struct ProxyCellFactory;
 
 impl CellFactory for ProxyCellFactory {
+    /// This type's tables are fixed in its own Rust code, so a seed header --
+    /// which describes rows, not a schema -- can never describe them (GH #399,
+    /// same class as GH #398). Declaring this keeps the mutation staging seeder
+    /// out of the database entirely.
+    ///
+    /// It carries an obligation: a type that declares this must load its own
+    /// seed files, because nobody else will. `proxy` has no such loader and
+    /// wants none, so the default `validate_cell_dir` refuses a `seed/*.jsonl`
+    /// beside it by name instead of ignoring it in silence.
+    fn owns_schema(&self) -> bool {
+        true
+    }
+
+    /// The `cell.type` string, so the refusal above names what an operator
+    /// wrote in `config.json` rather than a Rust identifier.
+    fn type_name(&self) -> &'static str {
+        "proxy"
+    }
+
     /// Pre-spawn validation. Routes through the same parse path as `spawn_cell`
     /// (parser invariant per the `meclaw_colony::CellFactory` docs).
     ///

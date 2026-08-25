@@ -109,6 +109,16 @@ pub struct WebCell {
     /// handler half, always. An op that ever adds a file re-publishes on this
     /// sender and nothing else changes.
     pub(crate) assets_tx: watch::Sender<Arc<AssetMap>>,
+    /// The readiness seam (GH #395): `false` until `on_start` has published the
+    /// first page snapshot, and the listener answers `503 starting` rather than
+    /// `404` for as long as it is.
+    ///
+    /// Sent from the success arm only, deliberately. If the initial render
+    /// fails this display has nothing to serve and never will without a write,
+    /// and `503` is the truthful answer to that — a proxy and a health check can
+    /// both act on it, where a permanent `404` would report an empty display as
+    /// a working one.
+    pub(crate) ready_tx: watch::Sender<bool>,
     /// Diffs on their way to the listener, which owns the socket senders.
     ///
     /// Deliberately **not** the substrate's `reconfig` channel. That one has a
@@ -126,6 +136,7 @@ impl WebCell {
         io: WebIo,
         pages_tx: watch::Sender<Arc<PageMap>>,
         assets_tx: watch::Sender<Arc<AssetMap>>,
+        ready_tx: watch::Sender<bool>,
         push_tx: mpsc::Sender<WebReconfig>,
     ) -> Self {
         Self {
@@ -133,6 +144,7 @@ impl WebCell {
             io: Some(io),
             pages_tx,
             assets_tx,
+            ready_tx,
             push_tx,
         }
     }
@@ -317,6 +329,10 @@ impl LongRunningCell for WebCell {
             match map {
                 Ok(m) => {
                     let _ = self.pages_tx.send(Arc::new(m));
+                    // The window GH #395 is about closes here, and only here:
+                    // published first, then declared ready, so no request can
+                    // observe `ready` while the old empty snapshot is current.
+                    let _ = self.ready_tx.send(true);
                 }
                 Err(e) => tracing::error!(
                     path = %self.path,

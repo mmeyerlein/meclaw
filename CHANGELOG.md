@@ -11,6 +11,65 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-08-25
+
+### Fixed
+
+- **A seed nobody can load is refused by name, and five cell types stop being
+  seeded into corruption** ([#399](https://github.com/mmeyerlein/meclaw/issues/399)).
+  The issue was filed believing the affected types already declared
+  `owns_schema`; measured, `web` was the **only** one, so `harness`, `mcp`,
+  `proxy`, `subcolony`, `timer` and `vault` were still being seeded eagerly by
+  mutation staging — which builds a fixed table from a seed header that cannot
+  describe a schema (no primary key, no `NOT NULL`, no `CHECK`), leaving the
+  cell's own `CREATE TABLE IF NOT EXISTS` to find the wrong table standing.
+  That is #398 once per type, and it was reachable rather than theoretical
+  (`vault` worst: the seeder cannot emit BLOB at all). The six now declare
+  `owns_schema`, so staging stands down; and because declaring it obliges a type
+  to load its own seeds — which these six deliberately do not — a `seed/*.jsonl`
+  beside one of them is now a refusal in the plan phase naming the file and the
+  type, instead of a file nothing writes and nothing reads. `llm` is deliberately
+  **not** among them: its `system` table comes from the shared `setup_cell_db`
+  DDL the seeder applies first, so its rows land correctly keyed, which is why
+  `templates/talky/brain/seed/system.jsonl` works. Nothing in the tree changes
+  behaviour today — no seed sits beside any of the six — the hole is closed
+  before something falls into it. Pinned by
+  `crates/meclaw-cells/tests/gh399_a_seed_nobody_can_load_is_refused.rs`,
+  counter-pin included.
+
+- **A starting `web` cell says it is starting, instead of denying its own pages**
+  ([#395](https://github.com/mmeyerlein/meclaw/issues/395)). The two halves start
+  together: the I/O half binds the port and answers as soon as its task runs,
+  while the handler half builds the page map in `on_start`. The bind does not
+  wait for that publish, so there was a window — about one run in three when the
+  cell is installed into a running colony — in which the display answered `404`
+  for a page its own seed declares. That mattered because `404` from this cell is
+  a **statement about the `pages` table** (R-W8-3), and before the first publish
+  there is no page map to make one from: two different facts arrived as one
+  status code, which neither a caller nor the reverse proxy in front (R-W8-2)
+  could tell apart, so an early health check marked a healthy display broken. The
+  window now answers `503 starting`; a route that genuinely does not exist is
+  `404` again from the first publish on. Readiness is a channel of its own rather
+  than "is the page map empty", because a display with zero pages is a
+  legitimate state that must keep answering `404`. The A1' lifetime contract is
+  unchanged — the listener still binds first and still never returns voluntarily.
+  Pinned by `crates/meclaw-cells/tests/gh395_a_starting_display_says_so.rs`,
+  which holds the window open instead of racing it.
+
+### Changed
+
+- **The examples' front-door cell is called `door`, not `surface`**
+  ([#397](https://github.com/mmeyerlein/meclaw/issues/397)). It was always a
+  cell name and the collision with the `/surface/*` route prefix was harmless
+  while both existed. With the prefix retired in #383 and `cell.surface` now a
+  hard boot refusal, a reader meeting a cell called `/surface` has every reason
+  to think it is the removed thing. `door` is what the library calls this shape
+  (`templates/door`). Renamed in all three examples that grow one —
+  `hard-shell`, `meclaw-os` and `never-forgets` — rather than only the one the
+  issue scoped, because the same misleading name stood in each. Example prose,
+  walkthrough traces and the README worked example move with it; no template
+  port moves and no contract changes.
+
 ## [0.22.1] — 2026-08-25
 
 ### Fixed

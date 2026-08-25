@@ -148,6 +148,30 @@ pub struct WebIo {
     /// one `watch` — the reader side of which is an `Arc` clone per request
     /// either way.
     pub assets: watch::Receiver<Arc<AssetMap>>,
+    /// Has the handler half published its first snapshot yet? (GH #395)
+    ///
+    /// # Why this is not "is the page map empty"
+    ///
+    /// The two halves start together: the I/O half binds the port and begins
+    /// answering as soon as its task runs, while the handler half builds the
+    /// page map in `on_start`. Between the two there is a window in which the
+    /// display is reachable and answers `404` for a page its own seed declares
+    /// — small, self-closing, and observed about one run in three on an 8-core
+    /// box with the cell installed into a running colony.
+    ///
+    /// It matters because `404` from this cell is a **meaningful** answer: the
+    /// `pages` table is the only route source (R-W8-3), so `404` means "no such
+    /// route" — and for a moment after boot it also meant "not ready yet". Two
+    /// different facts arriving as one status code, which nothing on the wire
+    /// could tell apart; a reverse proxy in front (the deployment shape,
+    /// R-W8-2) could not either, so an early health check marked a healthy
+    /// display broken.
+    ///
+    /// An empty [`PageMap`] cannot carry that signal, because a display with
+    /// **zero pages is a legitimate state** and must go on answering `404`.
+    /// Hence a channel of its own, in the idiom the other two seams already
+    /// use.
+    pub ready: watch::Receiver<bool>,
     /// Who is joined, and to which page.
     pub viewers: Arc<ViewerRegistry>,
     /// Browser events, on their way to the handler — the only writer.
@@ -168,6 +192,7 @@ impl WebIo {
         cell_path: &str,
         pages: watch::Receiver<Arc<PageMap>>,
         assets: watch::Receiver<Arc<AssetMap>>,
+        ready: watch::Receiver<bool>,
         pushes: mpsc::Receiver<WebReconfig>,
     ) -> Self {
         Self {
@@ -176,6 +201,7 @@ impl WebIo {
             cell_path: Arc::from(cell_path),
             pages,
             assets,
+            ready,
             viewers: Arc::new(ViewerRegistry::default()),
             // Filled by `run_io`, which is where the events channel first
             // exists. The listener is not running before that, so no request
@@ -292,6 +318,12 @@ async fn get_client(axum::extract::Path(file): axum::extract::Path<String>) -> R
 /// database, no cell call — a wedged colony still serves its pages and its
 /// files.
 async fn get_path(State(io): State<WebIo>, uri: axum::http::Uri) -> Response {
+    // Before the first publish this display has nothing to say about any route,
+    // and saying `404` would be claiming it does (GH #395). The window closes on
+    // its own; a caller that waits gets the page.
+    if !*io.ready.borrow() {
+        return starting();
+    }
     let path = uri.path();
 
     let pages = io.pages.borrow().clone();
@@ -339,6 +371,18 @@ fn asset_response(asset: &Asset) -> Response {
 /// a probe could read the difference as a table of contents.
 fn miss() -> Response {
     (StatusCode::NOT_FOUND, "not found\n").into_response()
+}
+
+/// The answer while the handler half has not published yet (GH #395).
+///
+/// `503` and not `404`, because the two say different things and a proxy in
+/// front acts on the difference: `404` is "this route does not exist", which is
+/// a statement about the page map — and before the first publish there is no
+/// page map to make a statement from. It is also this cell's existing
+/// vocabulary for "reachable, cannot serve you" (see the handler-gone arm
+/// below).
+fn starting() -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, "starting\n").into_response()
 }
 
 /// `GET /live/websocket` — the LiveView transport.

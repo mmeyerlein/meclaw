@@ -6,7 +6,7 @@
   "diff": {
     "add_nodes": [
       {
-        "name": "surface",
+        "name": "door",
         "template": "door"
       },
       {
@@ -25,7 +25,7 @@
     ],
     "add_edges": [
       {
-        "from": "./surface",
+        "from": "./door",
         "to": "./talky",
         "condition": "has(hop.route) && hop.route == 'turn'",
         "modifier": {

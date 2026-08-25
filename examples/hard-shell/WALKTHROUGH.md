@@ -56,7 +56,7 @@ curl -s http://127.0.0.1:7799/colony/registry
 
 ```
 /probe     web_fetch   Awake
-/surface   code        Awake
+/door      code        Awake
 /sink      code        Awake
 ```
 
@@ -75,7 +75,7 @@ prompt-injected agent is told to fetch.
 ```bash
 curl -s -X POST http://127.0.0.1:7799/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface",
+     -d '{"target": "/door",
           "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
                                  "text": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"}]}}'
 ```
@@ -94,8 +94,8 @@ curl -s "http://127.0.0.1:7799/colony/trace?trace_id=$TID"
 Three hops, trimmed to the headers that matter:
 
 ```
-@external -> /surface   hop {}
-/surface  -> /probe     hop {"route":"turn","exit_code":0,"duration_ms":19}
+@external -> /door      hop {}
+/door     -> /probe     hop {"route":"turn","exit_code":0,"duration_ms":19}
 /probe    -> /sink      hop {"route":"denied","error_code":"target_blocked",
                              "finish_reason":"error","operation":"web_fetch",
                              "duration_ms":0}
@@ -181,7 +181,7 @@ for the edge. They are deliberately different channels.
 ```bash
 curl -s -X POST http://127.0.0.1:7799/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface",
+     -d '{"target": "/door",
           "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "ok1",
                                  "text": "{\"url\": \"https://example.com/\"}"}]}}'
 ```
@@ -287,7 +287,7 @@ for u in "http://2130706433/" "http://0177.0.0.1/" \
          "http://169.254.169.254./latest/meta-data/"; do
   curl -s -o /dev/null -X POST http://127.0.0.1:7799/messages \
        -H 'Content-Type: application/json' \
-       -d "{\"target\": \"/surface\", \"body\": {\"messages\": [{\"origin\": \"assistant\",
+       -d "{\"target\": \"/door\", \"body\": {\"messages\": [{\"origin\": \"assistant\",
             \"type\": \"tool_call\", \"id\": \"x\", \"text\": \"{\\\"url\\\": \\\"$u\\\"}\"}]}}"
 done
 ```
@@ -329,7 +329,7 @@ And the thing worth repeating at the end: none of the above is in
 ```bash
 kill %1
 rm -rf examples/hard-shell/seed/{colony.db*,log.jsonl,blobs,.staging,orphan-journal.jsonl} \
-       examples/hard-shell/seed/main/{surface,sink}
+       examples/hard-shell/seed/main/{door,sink}
 ```
 
 Everything a run creates is either gitignored or listed above; the seed goes

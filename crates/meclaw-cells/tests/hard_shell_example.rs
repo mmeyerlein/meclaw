@@ -248,7 +248,7 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
 /// What a model's tool call looks like once it has crossed the door: a
 /// `tool_call` turn whose text is the JSON arguments.
 fn fetch(url: &str) -> Message {
-    MessageBuilder::new(Path::new("/surface"))
+    MessageBuilder::new(Path::new("/door"))
         .body(Body::Inline(json!({"messages": [{
             "origin": "assistant", "type": "tool_call", "id": "c1",
             "text": json!({"url": url}).to_string()
@@ -303,9 +303,9 @@ async fn the_metadata_endpoint_is_refused_by_a_colony_that_was_told_nothing() {
     assert_eq!(
         after,
         vec![
+            "/door".to_string(),
             "/probe".to_string(),
-            "/sink".to_string(),
-            "/surface".to_string()
+            "/sink".to_string()
         ],
         "the tree is not the three cells the README draws"
     );

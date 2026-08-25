@@ -150,7 +150,7 @@ curl -s -X POST http://127.0.0.1:7788/colony/mutations \
   /memory/keep               code      /talky/session-keeper/close      code
   /replay                    code      /talky/session-keeper/night      timer
   /sink                      code      /talky/session-keeper/sessions   store
-  /surface                   code      /talky/session-keeper/stamp      code
+  /door                      code      /talky/session-keeper/stamp      code
   /talky/brain               llm       /talky/dispatcher             code
   /talky/collector/assemble  code      /talky/summarizer/prep   code
   /talky/collector/window    store     /talky/summarizer/writer llm
@@ -204,7 +204,7 @@ That is the whole month-ingest, and three things about it are worth naming.
 
 **It does not go through the conversation surface.** The obvious way to teach an
 agent about January is to say it to the agent. That is wrong here, and the
-reason is a clock: a turn re-spoken through `/surface` gets stamped with today.
+reason is a clock: a turn re-spoken through `/door` gets stamped with today.
 `/replay` speaks the memory's episode port *directly* instead.
 
 **It arrives at the same port the live turn uses.** After every real turn, the
@@ -265,7 +265,7 @@ into a third of a second, and no window over it could ever be right again.
 ```bash
 curl -s -X POST http://127.0.0.1:7788/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface", "headers": {"channel": "chat-1"},
+     -d '{"target": "/door", "headers": {"channel": "chat-1"},
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "What did the plumber say about the radiator in February?"}]}}'
 ```
@@ -290,8 +290,8 @@ live path and a hop count is the least interesting thing in the listing. The
 spine of them, with the header keys that decide each turn:
 
 ```
-@external                   -> /surface                     {}
-/surface                    -> /talky/session-keeper        {route: in_turn}
+@external                   -> /door                        {}
+/door                       -> /talky/session-keeper        {route: in_turn}
 /talky/session-keeper       -> /talky/session-keeper/stamp  {route: in_turn}
 …                                                           (session bookkeeping)
 /talky/session-keeper/stamp -> /talky/session-keeper        {route: turn}
@@ -411,7 +411,7 @@ different topic — the **same question, a month that never happened**:
 ```bash
 curl -s -X POST http://127.0.0.1:7788/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface", "headers": {"channel": "chat-2"},
+     -d '{"target": "/door", "headers": {"channel": "chat-2"},
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "What did the plumber say about the radiator in April?"}]}}'
 ```
@@ -505,7 +505,7 @@ the storage or the recall path.
 ```bash
 kill %1
 rm -rf examples/never-forgets/seed/{colony.db*,log.jsonl,blobs,.staging,orphan-journal.jsonl,.env} \
-       examples/never-forgets/seed/main/{surface,talky,sink} \
+       examples/never-forgets/seed/main/{door,talky,sink} \
        examples/never-forgets/templates
 find examples/never-forgets/seed -name 'cell.db*' -delete
 ```

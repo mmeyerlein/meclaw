@@ -27,6 +27,25 @@ use tokio::task::JoinHandle;
 pub struct TimerCellFactory;
 
 impl CellFactory for TimerCellFactory {
+    /// This type's tables are fixed in its own Rust code, so a seed header --
+    /// which describes rows, not a schema -- can never describe them (GH #399,
+    /// same class as GH #398). Declaring this keeps the mutation staging seeder
+    /// out of the database entirely.
+    ///
+    /// It carries an obligation: a type that declares this must load its own
+    /// seed files, because nobody else will. `timer` has no such loader and
+    /// wants none, so the default `validate_cell_dir` refuses a `seed/*.jsonl`
+    /// beside it by name instead of ignoring it in silence.
+    fn owns_schema(&self) -> bool {
+        true
+    }
+
+    /// The `cell.type` string, so the refusal above names what an operator
+    /// wrote in `config.json` rather than a Rust identifier.
+    fn type_name(&self) -> &'static str {
+        "timer"
+    }
+
     /// Pre-spawn validation. Routes through the same parse path as `spawn_cell`
     /// (parser invariant per the `meclaw_colony::CellFactory` docs).
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {

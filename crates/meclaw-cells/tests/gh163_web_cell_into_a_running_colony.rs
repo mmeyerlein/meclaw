@@ -175,13 +175,20 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
 /// 2. **Listening, but the page map is still empty.** The listener answers out
 ///    of a published snapshot, and the handler publishes it in `on_start`. The
 ///    bind does not wait for that publish, so there is a window in which the
-///    display is up and answers **404 for its own seeded page**. Rare, but real:
-///    this test caught it roughly one run in three (W8, GH #395).
+///    display is up and cannot yet speak for any route. This test caught it
+///    roughly one run in three (W8, GH #395).
 ///
-/// So a 404 is retried here rather than taken as the answer. That is safe for
-/// what this file asserts — every route it asks for is one the seed declares,
-/// so a *lasting* 404 is still a failure and still reported, just at the
-/// deadline instead of on the first try.
+/// **Window 2 used to answer `404`**, which is why this helper retried one.
+/// Since GH #395 it answers **`503 starting`** instead: `404` is a statement
+/// about the page map ("no such route") and before the first publish there is
+/// no page map to make it from. That is the whole point of the fix — the two
+/// facts are told apart on the wire — and it means a `404` seen here is now
+/// always the real thing.
+///
+/// The retry stays, and it stays deliberately: it waits out any non-success, so
+/// it covers the `503` window without naming it, and a *lasting* failure of
+/// either kind is still reported at the deadline with its real status. What
+/// changed is that this file no longer needs a `404` to be ambiguous.
 async fn get_with_retry(url: &str) -> reqwest::Response {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

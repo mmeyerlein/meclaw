@@ -40,14 +40,14 @@ and opening the inside of your network is something a human has to type.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/surface` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
+| `/door` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. Three lanes end here: fetched, denied, failed. |
 
 ```
   POST /messages
         |
         v
-    /surface ──turn──> /probe ──denied───> /sink
+    /door ──turn──> /probe ──denied───> /sink
                           │ ──fetched──────^
                           └──failed────────┘
 ```
@@ -92,7 +92,7 @@ address a prompt-injected agent is told to fetch.
 ```bash
 curl -s -X POST http://127.0.0.1:7799/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface",
+     -d '{"target": "/door",
           "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
                                  "text": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"}]}}'
 ```

@@ -468,7 +468,7 @@ async fn registry_paths(h: &ColonyHandle) -> Vec<String> {
 fn turn(channel: &str, text: &str) -> Message {
     let mut ctx = meclaw_core::serde_json::Map::new();
     ctx.insert("channel".into(), json!(channel));
-    MessageBuilder::new(Path::new("/surface"))
+    MessageBuilder::new(Path::new("/door"))
         .body(Body::Inline(
             json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
         ))
@@ -517,7 +517,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     // --- ... and the tree is an agent
     let after = registry_paths(&h).await;
     for expected in [
-        "/surface",
+        "/door",
         "/firewall/screen",
         "/firewall/rules",
         "/talky/session-keeper/stamp",

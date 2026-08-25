@@ -177,14 +177,77 @@ pub trait CellFactory: Send + Sync {
     /// invariant), and MUST NOT touch anything outside `cell_dir` or mutate
     /// state — the plan phase is side-effect free.
     ///
-    /// Default: `Ok(())` — most cell types have no on-disk assets.
+    /// Default: `Ok(())` for a type that is seeded for — and a **refusal** for a
+    /// type that owns its schema and therefore has no reader for a seed
+    /// (GH #399).
+    ///
+    /// # Why the refusal lives in the default rather than in each type
+    ///
+    /// [`Self::owns_schema`] already obliges a type declaring `true` to load its
+    /// own seed files, because the staging seeder stands down for exactly those
+    /// types. A type that declares it and does **not** override this hook is
+    /// therefore saying two things at once: "staging must not touch my
+    /// database", and "I have no code that reads a seed". Put a
+    /// `seed/anything.jsonl` beside such a cell and nothing writes it and
+    /// nothing reads it — the file is silently ignored, and an operator who
+    /// authored it waits for rows that will never appear. That is the same shape
+    /// of quiet GH #398 was about, one step further out.
+    ///
+    /// Expressing it as the default is what makes it impossible to forget: a
+    /// type that owns its schema AND loads its own seed overrides this hook to
+    /// check that seed (the `web` cell is the model), and in overriding it takes
+    /// the refusal off itself by the same act. A type that owns its schema and
+    /// writes no loader gets the refusal for free, without anyone remembering to
+    /// add it.
+    ///
+    /// Only `*.jsonl` counts. The seed vocabulary is JSONL, and refusing a
+    /// `NOTES.md` or an editor backup would be a boot failure over litter.
     fn validate_cell_dir(
         &self,
         params: &JsonValue,
         cell_dir: &std::path::Path,
     ) -> Result<(), String> {
-        let _ = (params, cell_dir);
-        Ok(())
+        let _ = params;
+        if !self.owns_schema() {
+            return Ok(());
+        }
+        let seed_dir = cell_dir.join("seed");
+        let Ok(entries) = std::fs::read_dir(&seed_dir) else {
+            return Ok(());
+        };
+        let mut found: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        if found.is_empty() {
+            return Ok(());
+        }
+        found.sort();
+        Err(format!(
+            "seed/{} cannot be loaded: a `{}` cell has its tables fixed in code, \
+             so the mutation staging seeder deliberately keeps out of its \
+             database (a seed header describes rows, not a schema) — and this \
+             cell type has no seed loader of its own, so nothing else would read \
+             the file either. Remove it, or seed this cell through the \
+             operations its type offers.",
+            found.join(", seed/"),
+            self.type_name(),
+        ))
+    }
+
+    /// The `cell.type` string this factory answers to.
+    ///
+    /// Used where a refusal has to name the type rather than describe it — the
+    /// default [`Self::validate_cell_dir`] is the first such place. Defaults to
+    /// the Rust type name, which is close enough to be useful and wrong enough
+    /// to be worth overriding.
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("cell")
     }
 
     /// Spawn-kind discriminator for registration paths that must know the kind

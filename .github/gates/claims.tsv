@@ -209,3 +209,11 @@ PIN-owns-schema-staging-de	docs/meclaw-overview.md	**Ein Cell-Type mit festem Sc
 PIN-owns-schema-staging-en	docs/meclaw-overview.en.md	**A cell type with a fixed schema is not seeded at staging at all**	pinned	a_display_instantiated_by_mutation_has_the_schema_its_factory_declares
 PIN-web-seed-loaded-by-the-cell-de	docs/cell-types.md	Der Seed wird **immer von der Zelle selbst** geladen	pinned	a_display_instantiated_by_mutation_accepts_a_page_set
 PIN-web-seed-loaded-by-the-cell-en	docs/cell-types.en.md	The seed is **always loaded by the cell itself**	pinned	a_display_instantiated_by_mutation_accepts_a_page_set
+PIN-web-starting-503-de	docs/cell-types.md	antwortet eine Anfrage mit `503`, nie mit `404`	pinned	before_the_first_publish_the_display_answers_503_not_404
+PIN-web-starting-503-en	docs/cell-types.en.md	a request is `503`, never `404`	pinned	before_the_first_publish_the_display_answers_503_not_404
+PIN-web-ready-then-404-de	docs/cell-types.md	ist wieder `404`, sobald der erste Snapshot veröffentlicht ist	pinned	after_the_first_publish_a_route_that_does_not_exist_is_404_again
+PIN-web-ready-then-404-en	docs/cell-types.en.md	goes back to `404` the moment the first snapshot is published	pinned	after_the_first_publish_a_route_that_does_not_exist_is_404_again
+PIN-seed-owns-schema-refused-de	docs/meclaw-overview.md	ist eine Verweigerung und kein stilles Nichts	pinned	a_seed_beside_a_type_that_cannot_load_it_is_refused_by_name
+PIN-seed-owns-schema-refused-en	docs/meclaw-overview.en.md	is a refusal, not a quiet nothing	pinned	a_seed_beside_a_type_that_cannot_load_it_is_refused_by_name
+PIN-seed-owns-schema-six-de	docs/meclaw-overview.md	deklarieren sie und haben bewusst **keinen** Loader	pinned	the_six_declare_that_they_own_their_schema
+PIN-seed-owns-schema-six-en	docs/meclaw-overview.en.md	declare it and deliberately have **no** loader	pinned	the_six_declare_that_they_own_their_schema

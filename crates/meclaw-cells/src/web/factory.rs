@@ -241,8 +241,11 @@ fn make_build(
         // 2. Build the I/O state and the cell (sync). The pages channel is the
         //    one seam between the two halves: the handler publishes rendered
         //    pages, the listener serves whatever was last published. It starts
-        //    empty, and `on_start` fills it before the first request can be
-        //    answered with anything but a 404.
+        //    empty and `on_start` fills it — but NOT before the first request
+        //    can arrive. This comment used to claim it did; GH #395 measured the
+        //    window at roughly one run in three, so the third channel below is
+        //    what makes the gap visible on the wire instead of indistinguishable
+        //    from a route that does not exist.
         let (pages_tx, pages_rx) = watch::channel(Arc::new(PageMap::new()));
         //    The files the cell serves travel the same seam and start empty for
         //    the same reason (GH #393); `on_start` publishes them once, since
@@ -252,12 +255,17 @@ fn make_build(
         // the sockets it owns. Separate from the substrate's reconfig channel,
         // whose closing is the shutdown signal.
         let (push_tx, push_rx) = mpsc::channel(64);
+        //    Readiness (GH #395): false until the handler publishes. The
+        //    listener answers `503 starting` while it is, so "not ready yet" and
+        //    "no such route" stop arriving as the same status code.
+        let (ready_tx, ready_rx) = watch::channel(false);
         let io = WebIo::new(
             parsed.bind.clone(),
             parsed.port,
             path_cap.as_str(),
             pages_rx,
             assets_rx,
+            ready_rx,
             push_rx,
         );
         let cell = WebCell::new(
@@ -265,6 +273,7 @@ fn make_build(
             io,
             pages_tx,
             assets_tx,
+            ready_tx,
             push_tx,
         );
         let db = DbConn::wrap(

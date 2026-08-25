@@ -84,14 +84,14 @@ $ curl -s -X POST http://127.0.0.1:7799/colony/mutations \
 {"mutation":{"id":"01a00656-d847-72e3-b652-2fc23becf2e8","outcome":"committed"}}
 
 $ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, cell_type}'
-{"path":"/surface","cell_type":"code"}
+{"path":"/door","cell_type":"code"}
 {"path":"/sink","cell_type":"code"}
 {"path":"/probe","cell_type":"web_fetch"}
 ```
 
-Three cells now, and nothing was redeployed. (`/surface` there is this example's name for
-its front door — a `door` cell. It is a cell path, not a URL prefix: nothing is served over
-HTTP under it. A page with a port of its own is the `web` cell, further down.)
+Three cells now, and nothing was redeployed. (`/door` there is a `door` cell — a cell path,
+not a URL prefix: nothing is served over HTTP under it. A page with a port of its own is the
+`web` cell, further down.)
 
 Point the colony at the address every
 prompt-injected agent gets told to fetch — `169.254.169.254`, where the cloud hands out
@@ -100,7 +100,7 @@ instance credentials:
 ```console
 $ curl -s -X POST http://127.0.0.1:7799/messages \
        -H 'Content-Type: application/json' \
-       -d '{"target": "/surface",
+       -d '{"target": "/door",
             "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
                                    "text": "{\"url\": \"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"}]}}' | jq -c .
 {"message_id":"01a00656-d885-7043-9d7b-550e08775200"}
@@ -119,11 +119,11 @@ someone wrote. This is the trace of the request above, straight out of the runni
 $ curl -s 'http://127.0.0.1:7799/colony/trace?limit=20' \
   | jq -r '.trace[] | "\(.from_path) -> \(.to_path)   ttl=\(.ttl)\n  hop:  \(.headers_json | fromjson | .hop | tostring)\n  body: \(.body_payload | fromjson | .messages[0] | .type + " | " + .text)\n"'
 
-@external -> /surface   ttl=63
+@external -> /door   ttl=63
   hop:  {}
   body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
 
-/surface -> /probe   ttl=62
+/door -> /probe   ttl=62
   hop:  {"chat_id":"default","duration_ms":17,"exit_code":0,"had_stderr":false,"route":"turn"}
   body: tool_call | {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
 
@@ -136,7 +136,7 @@ Read down the `hop` column, because that is where the logic lives:
 
 - **Hop 1** enters from `@external` — the HTTP ingress — with an empty hop. Nothing has
   decided anything yet.
-- **Hop 2** carries `route: "turn"`. The `/surface` cell put the turn on a *named lane*; the
+- **Hop 2** carries `route: "turn"`. The `/door` cell put the turn on a *named lane*; the
   edge to `/probe` fires on that name. The cell did not know `/probe` exists.
 - **Hop 3** is the interesting one. `error_code: "target_blocked"` is a **typed** refusal, and
   the edge that routed it matched on the code, not on the prose — so the deny gets a lane of
@@ -276,7 +276,7 @@ That part shipped. The **builder-hive** — an `llm` plus `code` topology that t
 
 ## Where it's at
 
-meclaw is **v0.22.1**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.22.2**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
 Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
