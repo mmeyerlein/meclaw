@@ -1,2 +1,19 @@
+# Pinned, deliberately (GH #406).
+#
+# This said `channel = "stable"`, and an unpinned channel makes the gate depend
+# on the calendar: `3a1f9858` passed clippy at 20:29Z on 2026-08-25 and the
+# byte-identical `crates/meclaw-core/` failed it at 21:48Z, because CI's stable
+# had moved to 1.98.0 (released 2026-08-20) and that release promotes
+# `result_large_err` to a lint `-D warnings` denies. Nothing about the code was
+# different between the two runs — only the day.
+#
+# It also made "green locally" mean nothing: development here runs 1.95.0, so
+# the two toolchains were never the same and CI was the first place a new lint
+# was ever seen — at the worst moment, in the middle of a release.
+#
+# So the version moves when somebody moves it, in a commit that says so and can
+# be reverted. Raising it is a small piece of deliberate work (see GH #406 for
+# what 1.98 currently wants), not something that happens to a release.
 [toolchain]
-channel = "stable"
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]

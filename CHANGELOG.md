@@ -15,6 +15,16 @@ Rust crates are internals and move without notice.
 
 ### Fixed
 
+- **The Rust toolchain is pinned** ([#406](https://github.com/mmeyerlein/meclaw/issues/406)).
+  `rust-toolchain.toml` said `channel = "stable"`, so the gate depended on the
+  calendar: clippy passed on `3a1f9858` at 20:29Z and failed on a `meclaw-core`
+  that was **byte-identical** at 21:48Z, because CI's stable had moved to 1.98.0
+  and that release denies `result_large_err`. It also meant a green local run
+  proved nothing — development runs 1.95.0, so CI was the first place any new
+  lint was ever seen, reliably mid-release. Now `1.95.0` with explicit
+  `clippy`/`rustfmt` components; raising it is deliberate work with its own
+  issue, and no product code was touched to get there.
+
 - **`canvy@2.0.1`: the canvas works over the display it is actually built on**
   ([#402](https://github.com/mmeyerlein/meclaw/issues/402)). `canvy/web` is a
   `ref` to `web@1.0.0`, and that template **seeds a demo page at `/`** — so the
