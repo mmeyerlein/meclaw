@@ -11,6 +11,140 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-25
+
+### Added
+
+- **A `web` cell type: a display owns its own listener**
+  ([#380](https://github.com/mmeyerlein/meclaw/issues/380), ADR-0014). Until now
+  a colony had exactly one HTTP surface and it belonged to the process, not the
+  tree: `--api` bound the one port, so a colony could not open a second display,
+  a display could not be created by mutation, and nothing in the topology said
+  where a surface was reachable. The new long-running cell type binds the port
+  named in its **own** `params` and holds its own `cell.db`. The type is
+  deliberately multiple — several instances per colony, each with its own port.
+  `port` is required (`0` is refused: nobody could be told in advance where the
+  display went) and `bind` defaults to loopback, because authentication and TLS
+  are external permanently (a reverse proxy in front) and a type that never
+  authenticates must not be reachable off-host by default. Both keys are
+  immutable: rebinding a running display would pull it out from under the proxy
+  pointed at it. Pinned by
+  `crates/meclaw-cells/tests/web_cell_serves.rs`.
+- **`meclaw-surface`: the LiveView serving machinery is its own crate**
+  ([#381](https://github.com/mmeyerlein/meclaw/issues/381)). It lived in
+  `meclaw-api` until a second consumer appeared, and a cell must not depend on
+  the HTTP API — that would be a layering cycle. The axum handler that binds it
+  to the API's router stayed behind. `/surface/*` behaves byte-identically; the
+  gh159 and gh163 families are the pin.
+- **`templates/web@1.0.0`: the display substrate as a one-cell template**
+  ([#382](https://github.com/mmeyerlein/meclaw/issues/382)). A `web` cell with a
+  port of its own, a `cell.db` of its own, and the Vision token stylesheet as a
+  seed row (`/vision.css`). It is the first shipped template that declares
+  `contract.ingress` at all (`context: ["session_id"]`) — the entry edge lifts
+  the id into the context with `set_context`, exactly as the proxy precedent
+  does. `port` and `bind` are immutable, so a second display is a second
+  instance with its own port via `override_params`, never a rebind of a running
+  one. Authentication and TLS stay external (a reverse proxy in front) and the
+  default bind is loopback.
+
+  It ships the Vision design language as seed data rather than as prose: the
+  token stylesheet, nine components (`stack`, `card`, `heading`, `text`,
+  `table`, `button`, `input`, `badge`, `ornament`) and a `/demo` page composed
+  of nothing but those nine. Two of the design language's rules are **enforced
+  by the cell instead of documented by the template** — a `content`-layer
+  component may not wear the glass material, and `object.create` refuses glass
+  directly inside glass. The first check runs at `component.define` *and* at
+  seed time, at one shared call site, because a rule that only guarded the
+  message path would be a rule every shipped template walks past.
+
+- **`canvy@2.0.0`: the first application of the `web` cell**
+  ([#383](https://github.com/mmeyerlein/meclaw/issues/383)). canvy draws
+  nothing any more. A timer takes a snapshot, a `probe` asks `/colony/graph`, a
+  `layout` cell turns the snapshot into display objects, and a `web` cell holds
+  them and serves the page on a port of its own. Node positions are `editable`
+  object props, so a drag is local CRUD plus a diff to every viewer rather than
+  a round trip through the topology, and the camera never leaves the browser at
+  all.
+
+### Breaking
+
+- **`--api` returns to its pre-surface scope; `cell.surface` is gone**
+  ([#383](https://github.com/mmeyerlein/meclaw/issues/383)). The API binary no
+  longer serves cells: the `/surface/*` route, its handler, `SurfaceState` and
+  the `meclaw_colony::surface` parser are removed, and the API's route table is
+  back to the set it had before the surface landed — pinned by
+  `crates/meclaw-api/tests/gh383_api_is_pre_surface.rs` so it cannot drift back.
+
+  `cell.surface` is therefore **not a key any more**. It is not renamed and not
+  relocated: the block it declared has no reader left, so it falls under the
+  closed `cell` key list and is a **hard boot refusal** naming the key and the
+  file, on every path that reads the block. Loud on purpose — a tree still
+  carrying it was being served by a route that no longer exists, and ignoring
+  it silently would boot a colony in which nobody answers.
+
+  **Migration.** A surface is a cell now. Instantiate a `web` cell
+  (`templates/web`), which owns its own port through `params.port` — no shared
+  prefix, and nothing declared in the `cell` block. For an existing 1.x canvas,
+  the recipe with its position export is `templates/canvy/MIGRATION.md`.
+
+- **`canvy` 0.3.2 → 2.0.0: every old address is gone**
+  ([#383](https://github.com/mmeyerlein/meclaw/issues/383)). The template was a
+  hive whose `render` cell drew SVG server-side and whose `store` cell held the
+  positions, served through `/surface/*` in the API binary. Both cells are
+  retired with their subject, the drawn page no longer leaves on `surface`, and
+  the picture is now assembled by the `web` cell the template instantiates. The
+  first digit rather than the second, because documented addresses are taken
+  away and template ports are public contract (README § Stability).
+
+  **Migration** is instantiation side by side, not an in-place edit: grow
+  canvy 2.0.0 with its own port, replay the saved positions as `object.*`
+  patches, and retire the old hive by disconnecting it (no-delete). The recipe
+  and the export script for the old positions ship with the template —
+  see `templates/canvy/MIGRATION.md`. Running it against a live colony stays an
+  operator-owned act (R-W8-9); this repository ships the recipe, never the run.
+
+### Fixed
+
+- **Mutation staging no longer builds another cell type's schema**
+  ([#398](https://github.com/mmeyerlein/meclaw/issues/398)). Instantiating a
+  template by mutation materialised each `seed/<table>.jsonl` into the new
+  cell's database at staging time, creating the tables from the seed file's
+  header. That header describes **rows** — column names and a coarse type — so
+  everything a schema means beyond that was lost: keys, `NOT NULL`, defaults,
+  indexes, column order. For the `store`, whose tables are declared per
+  instance, that was right. For a type whose tables are fixed in code it was
+  destructive: the cell's own `CREATE TABLE IF NOT EXISTS` found the
+  constraint-free tables standing and left them.
+
+  Measured on the shipped `web` cell: `pages` stood as
+  `("root" TEXT, "route" TEXT, "title" TEXT)`, so `page.set` — an upsert on
+  `route` — was **impossible for every display grown by mutation**, `ord` sorted
+  lexicographically, and `idx_objects_parent` did not exist. A cell instantiated
+  from the filesystem at boot was always correct, because the staging seeder
+  never ran there; that divergence was the defect.
+
+  A factory now declares `CellFactory::owns_schema`, and staging writes nothing
+  into such a cell's database — no tables, no rows, not even the file. The cell
+  builds its own schema and loads its own seed at first spawn, which both the
+  `store` and the `web` cell already did. **A display instantiated before this
+  fix does not heal itself**: instantiate it again (templates are copied,
+  instances belong to the operator).
+
+- **The `web` cell serves the `assets` table it ships**
+  ([#393](https://github.com/mmeyerlein/meclaw/issues/393)). The type shipped a
+  four-table schema whose `assets` table a seed file could fill and nothing
+  could read: the router answered pages and bundles, and every other path was a
+  404, so a seeded stylesheet was reachable by nobody and a client hook shipped
+  as an asset would not have existed at runtime. A GET now asks both surfaces
+  through **one** handler — pages first, assets second — so the `pages` table
+  stays the only route source and neither table can quietly become unreachable
+  behind the other's wildcard. The `Content-Type` comes from the row rather
+  than from the file name, and the read path goes through `ValueRef`, because
+  the seed loader stores every JSON string as TEXT even into a BLOB column: a
+  hand-written INSERT would have passed while the seeded case failed. Pinned by
+  `crates/meclaw-cells/tests/web_cell_assets.rs`, which seeds rather than
+  inserts for exactly that reason.
+
 ## [0.21.0] — 2026-08-25
 
 ### Breaking

@@ -882,68 +882,105 @@ Deliberately **no own subcommands** (`meclaw start`, `meclaw mutate`, etc.). ngi
 
 **Info-only flags are side-effect-free**: `--version` and `--help` print their information to stdout and exit with 0, without initializing the tracing subscriber, without filesystem writes (in particular no `log.jsonl` creation), without subprocess spawn. They act before the subscriber setup. Tests for the subscriber setup path happen via direct unit tests of the setup function, not via CLI subprocess calls.
 
-## Surfaces (`/surface`) — what a colony gives a browser
+## Display cells (`web`) — what a colony gives a browser
 
-**A surface is a cell that says it may be served over HTTP** (`cell.surface`, see
-`config.md` § `cell`). The cell path **is** the address:
+**A display is a cell of its own, with a port of its own.** It is of type `web`
+(`cell-types.md` § `web`), binds `params.port`, holds its own `cell.db` and owns
+its **whole** origin. A colony may have as many as it likes — the meclaw-os tree
+one, the website another — and each comes into being by mutation like any other
+cell.
+
+**That replaces the `/surface/` model, and retracts it** (GH #383). What stood
+here until then: a surface is a cell that declares via `cell.surface` that it may
+be served over HTTP, addressed at `GET /surface/<cell-path>` with its `@asset`
+and `@client` siblings on the same prefix. **No part of that statement still
+holds**: the route, the parser and the serving path in `--api` no longer exist,
+and `cell.surface` is today an unknown key and therefore a hard boot refusal
+(`config.md` § `cell`). The reason was not taste: one shared prefix meant **one**
+port for everything display-shaped, and a display's address was its cell's path
+in the tree — so rearranging the tree moved a URL a reverse proxy outside was
+pointing at. Migrating a 1.x canvas: `templates/canvy/MIGRATION.md`.
+
+Four things answer on a display's port, all origin-relative, and the order
+matters because the last one is a wildcard:
 
 ```
-GET  /surface/<cell-path>                      the dead render (HTML)
-GET  /surface/<cell-path>/live/websocket       the Phoenix socket (vsn 2.0.0)
-GET  /surface/<cell-path>/@asset/<file>        this surface's own files
-GET  /surface/@client/<file>                   the LiveView bundles, from the binary
+GET  /live/websocket       the Phoenix socket (vsn 2.0.0)
+GET  /@client/<file>       the LiveView bundles, from the binary
+GET  / and /<route>        a page out of the pages table
+GET  /<anything else>      a file out of the assets table
 ```
 
-That is the whole decision in one line: many surfaces are told apart by exactly
-what tells cells apart, so there is no second namespace to fall out of step with
-the tree — and a reverse proxy in front gets a complete access rule for the page,
-the surface's own files **and its transport** out of **one** prefix:
+A reverse proxy in front therefore gets not a prefix but a **port** — page, own
+files and transport in one access rule, without having to know a path inside the
+colony tree:
 
 ```nginx
-location /surface/org/acme/member/alice/canvy/ { ... }
+location / { proxy_pass http://127.0.0.1:7800; }
 ```
 
-Which is why every verb sits at the **end** rather than as a prefix: a prefix would
-route more easily and would break precisely that promise. Two names are reserved for
-it — `@…` is ours, `live` is the Phoenix client's (it appends exactly `"/websocket"`
-to whatever URL it is handed). A path segment starting with `@` or named `live` is
-not addressable, which keeps a cell named `state` reachable and stops a cell named
-`live` from shadowing a transport.
+Two names stay reserved: `@…` is ours, `live` is the Phoenix client's (it appends
+exactly `"/websocket"` to whatever URL it is handed). A route starting with `@` or
+named `live` is refused at `page.set` — otherwise a page could shadow the
+transport.
 
-**Opt-in, and 404 rather than 403.** "Reads are free from anywhere" holds **inside**
-a colony and must not be inherited across an HTTP boundary: the tree holds a
-`vault`, session windows and an affinity store. So a cell is reachable here only if
-it says so, the default is absence, and an undeclared cell answers 404 — a surface
-nobody declared should not confirm that it exists. The one exception to that
-indistinguishability is a **broken** declaration: that is reported loudly and by
-name, because it is the operator's own typo and hiding it costs them an afternoon.
+**The `pages` table is the only route source.** What a browser gets stands in the
+cell's database, not in a declaration in the `cell` block and not in a second
+namespace: a route is a name (`/`, `/a`, `/a/b`, segments of `[a-z0-9-]`), not a
+URL, and what no row names is a 404. A GET asks the page map first and the asset
+map second — in **one** handler, because two competing wildcard routes would let
+the router's matching order decide which table a path can reach at all. If both
+declare the same path, the page answers.
 
-**Who renders what.** The binary serves the dead render — the four things the
-vendored LiveView client needs (a csrf meta tag, one container with `data-phx-main` /
-`data-phx-session` / `data-phx-static` and an id, the script tags, the socket
-constructor) — and **no content at all**. That is protocol scaffolding, and therefore
-generic. The picture arrives in the join reply, from the cell. Two consequences, both
-intended: a page load costs **zero** cell calls and touches no database — a wedged
-colony keeps serving the page and the client then visibly fails to connect instead
-of showing a blank screen — and everything a surface draws is a template change
-rather than a release.
+**Auth and TLS are external, forever** (R-W8-2). This cell type does not
+authenticate and never will; a reverse proxy sits in front. That is why the
+default bind is **loopback**: a type that never authenticates must not be
+reachable off-host by default. "Reads are free from anywhere" holds **inside** a
+colony and must not be inherited across an HTTP boundary — the tree holds a
+`vault`, session windows and an affinity store. The old model bought that
+boundary with an opt-in per cell; the new one buys it by a display seeing nothing
+but its own database.
 
-**The return path.** A cell could not answer an HTTP client: a cell's reply travels
-the routing cascade, not back over HTTP. The way out existed (root-hive
-`HiveNoRoute` → egress channel) but was wired only in Direct-Mode. Since #159 the
-hand-off is a **policy**:
+**Who renders what.** What is served is a snapshot the cell's handler half
+published earlier: the route was rendered once and already sits in LiveView's
+packed form. A page load therefore costs **zero** cell calls and touches no
+database, and it does no diff work either — diffs exist only as a consequence of
+writes. A wedged colony keeps serving the page, and the client then visibly fails
+to connect instead of showing a blank screen. And everything a display draws is
+rows in its database — components are **data, not code** — so a new picture is a
+message to the cell rather than a release.
+
+**Two classes of browser event, and the declaration decides, not the name**
+(R-W8-5). An `object:set` on a prop the component declared `editable` is **local
+CRUD** on the cell's own `cell.db` plus a diff to every joined viewer — **no
+message is created**, and the event never leaves the cell. A drag on a node must
+not be a conversation with the router. Every other event is a **semantic source
+emission** on `hop.route = "event"`, in the same shape the `proxy` cell uses for
+an inbound platform turn; the header carries `event_name`, `session_id` and
+`page_route`. The cell interprets no event name of its own: what one means is
+decided by the out-edges. That is what keeps a display ignorant of the topology
+it hangs in. Working example: `templates/canvy`.
+
+**The return path — there is none any more.** A display answers its own browser:
+it owns the listener, so the answer never leaves the colony as a message at all.
+The question #159 had to answer has fallen away with it.
+
+**Retracted: `--api` takes `Marked`** (GH #383). What stood here: the hand-off to
+an HTTP client is a policy since #159, and `--api` picks `EgressPolicy::Marked`,
+because otherwise a cell could not answer an HTTP client. That second clause was
+the argument, and it no longer holds. `--api` opens **no second door** today: it
+serves the `/colony/*` endpoints and the operator web UI, and nothing else. What
+remains is the policy itself, as substrate machinery — it had one caller, not
+only one reason:
 
 | Policy | Meaning |
 |---|---|
-| `All` | Everything that dies at the root hive goes out. Direct-Mode: stdout **is** the only consumer there, so a dead end is an answer. |
-| `Marked(key)` | Only messages carrying that key in `context` go out; every other one lands **unchanged** in the dead-letter queue. |
+| `All` | Everything that dies at the root hive goes out. Direct-Mode: stdout **is** the only consumer there, so a dead end is an answer. Today the only wired case. |
+| `Marked(key)` | Only messages carrying that key in `context` go out; every other one lands **unchanged** in the dead-letter queue. Today without a caller in the shipped binary. |
 
-`--api` takes `Marked`. The reason is the DLQ: it is diagnostic infrastructure, and a
-door that silently swallowed every unroutable message would make every future "why
-did that message vanish" unanswerable. The marker lives in `context`, because that is
-edge authority — the HTTP layer stamps it at injection, it survives the cascade
-(`carry_context_with_hop`), and no cell can forge one. A marker in the body would let
-a model address a browser.
+The reason for the split was and remains the DLQ: it is diagnostic
+infrastructure, and a door that silently swallowed every unroutable message would
+make every future "why did that message vanish" unanswerable.
 
 **The door is not a place** (GH #163, ruling 2026-08-17). The policy decides not only
 *what* leaves but *where*: `All` stays at the root hive `/` — "every dead end is an
@@ -953,16 +990,17 @@ stamped by the injecting layer and unforgeable by a cell, so a marked message is
 **construction** the answer to a request the outside world is holding open, and there
 is no hive at which dead-lettering it is the better outcome (the caller runs into its
 own timeout, the DLQ collects answers nobody reads). While the door's *location* was
-load-bearing, a surface's answer lane had to be `-> /` — and **no** mutation may draw
-an edge that leaves its own subtree, so a surface could only be created at a colony's
-first boot. Since #163 the lane is `-> .` and a surface installs into a running colony
-by mutation.
+load-bearing, a display's answer lane had to be `-> /` — and **no** mutation may draw
+an edge that leaves its own subtree, so a display could only be created at a colony's
+first boot. Since #163 the lane is `-> .`, and the finding outlives the change of
+mechanism: a `web` cell is installed into a running colony by mutation and serves
+within the same boot.
 
 **The two absolute edges a mutation may draw** are `-> /colony/graph` (GH #163) and
 `-> /colony/ledger` (GH #267). They address no cell but the authority's own read-only
 endpoints — dispatched before any edge is consulted — and the graph is the *sanctioned*
 way to learn topology, because § Database isolation forbids reading `colony.db`.
-Refusing the lane protected nothing; it only meant a surface had to be born with it, or
+Refusing the lane protected nothing; it only meant a display had to be born with it, or
 somebody would read the database instead. The ledger joins the list because it
 **answers counts and never content** — sums over one time window, no raw row and no
 header — which is the class of the topology endpoint and explicitly not that of
@@ -970,9 +1008,12 @@ header — which is the class of the topology endpoint and explicitly not that o
 `/colony/dead_letters` (other cells' message content) stay out of bounds — widening
 that list is a decision with its own argument, not a convenience.
 
-**What the HTTP layer does not understand.** An event name. Name and value go to the
-cell verbatim; the moment this layer interpreted one, the binary would know what is
-being drawn. Working example: `templates/canvy`.
+**What the binary does not understand.** An event name. It used to travel verbatim
+through the HTTP layer to a cell; today the `web` cell reads it itself and decides
+solely from the component's `editable` declaration whether it stays local or leaves
+as an emission — what it *means* is decided by neither layer, but by the edge that
+picks it up. The reason has stayed the same: the moment a substrate layer
+interpreted an event name, the binary would know what is being drawn.
 
 ---
 
@@ -1899,11 +1940,12 @@ Format:
 - **Line 1**: schema declaration.
 - **Lines 2+**: records.
 - **On fresh `cell.db` creation** (`OpenStatus::Created`, see § Lifecycle): colony reads the seed, builds `cell.db` anew. On reopening an existing `cell.db` (`OpenStatus::Resumed`) it is **not** re-seeded, otherwise duplicate rows.
-- **Export** (GH #253, built): the seed loader was always **generic** — `mutation::stage::apply_seed_jsonl` calls itself that, takes a path and knows no cell type. Only the way back was missing, and it was missing for **all eight** cell types with a `cell.db` (`harness`, `llm`, `mcp`, `proxy`, `store`, `subcolony`, `timer`, `vault`). It is now the **inverse of the same mechanism**, not a second one: a message carrying the body slot `transfer` with `{"operation": "export", "table": "<t>"}` is answered by the **substrate** (`crates/meclaw-colony/src/db_transfer.rs`, called in `cell_task` **before** `handle()`), and the answer is a document `{format, table, key, schema, rows}`. Write its `schema` object as line 1 and one row per line after it and the result **is** a `seed/<table>.jsonl` the existing loader reads — the birth path and the transfer path speak one format. Without `table` the export answers with the inventory of content tables.
+- **Export** (GH #253, built): the seed loader was always **generic** — `mutation::stage::apply_seed_jsonl` calls itself that and takes a path; of the cell type the seeder wants exactly one bit since GH #398 (a type that owns its schema seeds itself). Only the way back was missing, and it was missing for **all eight** cell types with a `cell.db` (`harness`, `llm`, `mcp`, `proxy`, `store`, `subcolony`, `timer`, `vault`). It is now the **inverse of the same mechanism**, not a second one: a message carrying the body slot `transfer` with `{"operation": "export", "table": "<t>"}` is answered by the **substrate** (`crates/meclaw-colony/src/db_transfer.rs`, called in `cell_task` **before** `handle()`), and the answer is a document `{format, table, key, schema, rows}`. Write its `schema` object as line 1 and one row per line after it and the result **is** a `seed/<table>.jsonl` the existing loader reads — the birth path and the transfer path speak one format. Without `table` the export answers with the inventory of content tables.
 - **The export does NOT write the file itself, and that corrects the earlier wording** ("writes the current DB state as JSONL into `seed/`", file name a UUIDv7 or `YYYY-MM-DD_<counter>.jsonl`). Three reasons: (1) the loader reads only `seed/<table>.jsonl`, so the proposed file names would never have been read back — the elegance of "an export is the input of the next instantiation" existed on paper only; (2) a cell writing files into its own tree would have a second output channel no edge carries, no drain sees and the message log does not know — and that the no-delete policy could never clean up; (3) a file in the cell's own tree crosses no colony boundary, which is the actual need. Whoever wants the next instance born from an export writes the document to `<cell>/seed/<table>.jsonl` — one deliberate act on the template surface by the owner of the tree, not a side effect of a running cell.
 - **Import** (GH #253, built): the same body slot with `{"operation": "import", …}` takes such a document into a **running** cell — the half the seeder cannot reach (it runs during staging, into a freshly created `cell.db`). Three decisions: on a key collision **the target wins, always** (never an update, never an overwrite — provenance is not rewritten), **additive, never replacing** (no delete, no truncate-and-load), and a partial import is a **state, not a failure** (everything checkable is checked before the first write, the writes run in ONE transaction, and re-applying is idempotent — the repair is "send it again"). Details and `error_code`s: `cell-types.md` § Content transfer.
 - **Advantage**: no binary DB schema drift, grep-able, append-friendly.
 - **A seed builds the table without a key — the owning cell type puts it back** (GH #255). The mutation staging seeder creates every table from the header line alone (`CREATE TABLE IF NOT EXISTS`, no constraints), and it does so at **instantiation time**, before the cell has ever been awake. For the ordinary `params.schema` tables that costs nothing — there is no key there to lose. For a **store-owned** table of a `params.canonical` binding (`aliases`, `rejected`) it would cost everything: their ops are upserts on exactly that key. So the `store` *asserts* the key at spawn instead of assuming it: a table of that kind standing without it is rebuilt with it, every row comes along, duplicates collapse onto the key (the most recently `recorded_at` row wins) and a column the declared shape does not know is carried over. A template may therefore ship such a seed.
+- **A cell type with a fixed schema is not seeded at staging at all** (GH #398). The header line describes *rows*, not a schema: column names and a coarse type and nothing else — no key, no `NOT NULL`, no default, no index, no column order. For the `store` that follows, its tables being declared per instance. For a type whose tables are fixed **in code** it is a loss: the staging seeder gets there first, and the cell's own `CREATE TABLE IF NOT EXISTS` finds the constraint-free table standing and leaves it. Such a type says so through `CellFactory::owns_schema`, and then staging writes **nothing** into its database — no tables, no rows, not even the file. It creates its own tables and loads its own seed at first spawn (`OpenStatus::Created`) — exactly the path a cell instantiated from the filesystem at boot has always taken (the staging seeder never ran there; that divergence was the defect). Measured on the shipped `web` cell: its `pages` stood as `("root" TEXT, "route" TEXT, "title" TEXT)`, so `page.set` — an upsert on `route` — was impossible for **every** display grown by mutation, `ord` sorted lexicographically and `idx_objects_parent` was missing. A cell instantiated before the fix does **not** heal itself: instantiate it again (templates are copied, instances belong to the operator).
 - **A seed is NOT variable-substituted, and that is a boundary, not an oversight.** `${VAR}` in a seed row is written into `cell.db` **verbatim**, as those six characters plus a name. Bootstrap substitutes `config.json`; the seed loader (`seed::load_seed_if_present`, `crates/meclaw-cells/src/store/factory.rs`) does not, and nothing downstream resolves it either. The line is drawn where it is because `config.json` is a *declaration* the substrate reads at boot, while a seed is *data* the cell owns from its first spawn — resolving a variable into persisted rows would freeze one boot's environment into the database forever, invisibly, and a later `.env` change would silently disagree with what is stored. So: a value a seed row and a `config.json` both need (`memory-hive`'s embedding model id is the standing example) is coupled **by hand**, and the template README says so.
 
 ---

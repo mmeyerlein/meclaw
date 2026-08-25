@@ -32,7 +32,6 @@ pub mod persist;
 mod runtime;
 pub mod stateful_cell;
 pub mod stateless_cell;
-pub mod surface;
 pub mod templates;
 pub mod term_ack;
 pub mod watchdog;

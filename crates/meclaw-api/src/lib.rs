@@ -9,7 +9,6 @@
 
 pub mod handlers;
 pub mod router;
-pub mod surface;
 pub mod ui;
 
 pub use router::AppState;

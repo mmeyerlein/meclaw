@@ -8,8 +8,19 @@ repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-meclaw-core = { path = "../meclaw-core", version = "0.21.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.21.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.22.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.22.0" }
+# GH #380 / R-W8-4 (sanctioned with the W8 spec, 2026-08-24): the `web` cell
+# owns an HTTP + WebSocket listener, so a server library enters `meclaw-cells`
+# for the first time. R-W8-4 released the library choice for exactly this
+# element — "all Rust libraries that support this are released", scoped to the
+# display substrate — and axum is what the workspace already speaks, so this
+# adds no new crate to the tree, only a second consumer of one. `ws` only:
+# the cell serves a LiveView socket, it never parses a multipart body.
+axum = { version = "0.7", features = ["ws"] }
+# GH #381: the LiveView serving machinery, extracted so a cell can speak the
+# protocol without depending on the HTTP API.
+meclaw-surface = { path = "../meclaw-surface", version = "0.22.0" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

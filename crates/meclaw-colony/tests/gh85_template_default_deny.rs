@@ -68,6 +68,7 @@ fn stage_one(td: &TempDir, template: &str, config: &str) -> (JsonValue, JsonValu
         &registry,
         &HashMap::new(),
         &HashMap::new(),
+        &Default::default(),
     )
     .expect("staging");
     let node = staged.into_iter().next().expect("one staged node");

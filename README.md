@@ -89,7 +89,11 @@ $ curl -s http://127.0.0.1:7799/colony/registry | jq -c '.registry[] | {path, ce
 {"path":"/probe","cell_type":"web_fetch"}
 ```
 
-Three cells now, and nothing was redeployed. Point the colony at the address every
+Three cells now, and nothing was redeployed. (`/surface` there is this example's name for
+its front door — a `door` cell. It is a cell path, not a URL prefix: nothing is served over
+HTTP under it. A page with a port of its own is the `web` cell, further down.)
+
+Point the colony at the address every
 prompt-injected agent gets told to fetch — `169.254.169.254`, where the cloud hands out
 instance credentials:
 
@@ -235,6 +239,7 @@ That's the word. "Vocabulary." There isn't more to memorize.
 | `harness` | run an agent harness (Claude Code, say) as a supervised child process, one child per task |
 | `subcolony` | a whole child colony, addressed as if it were a single cell |
 | `vault` | a sealed secret store — `put`, `rotate`, `use`, `revoke`, and no `get`: the route surface has no operation that returns a secret |
+| `web` | a display on a port of its own — HTTP + WebSocket, an object tree and a component library in its own `cell.db`, server-rendered and materialised, so a page load costs no cell call. Auth is external, forever |
 
 A tool-loop is `llm → dispatcher → tools → collector → llm`, with the loopback condition sitting on one edge. You don't switch a loop on. You compose one. And once it exists as files, the swarm can rebuild it without asking you.
 
@@ -271,24 +276,31 @@ That part shipped. The **builder-hive** — an `llm` plus `code` topology that t
 
 ## Where it's at
 
-meclaw is **v0.21.0**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is **v0.22.0**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
-Real and tested today: the full actor substrate, all 14 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
+Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
 Not here yet: **composition, not federation.** A child colony is addressable as one cell, and that boundary is pinned by negative tests — a parent path into the child tree does not route, and a mutation scoped into the child creates nothing. Cross-colony routing is a deliberate non-goal, not a missing feature. One builder per scope. A few hardening items are tracked in the open. This is honest infrastructure, not a toy. It's also not something to run unsupervised in production yet. The `bash` cell has full shell access on purpose, so run untrusted topologies somewhere you don't mind a shell.
 
 ## Stability
 
-**What is the contract, and what is not.** Four surfaces are the public contract of this project:
+**What is the contract, and what is not.** Five surfaces are the public contract of this project:
 
 - the **HTTP API** — the `/colony/*` routes, `POST /messages`, their query parameters and status codes;
 - the **template DSL** — the `template.json` and `config.json` schemas, including the mutation diff format;
 - the **template ports** — the endpoints a template's README declares as its ingress and exit addresses;
+- the **`web` cell's own origin** — the route grammar a `page.set` accepts, the two reserved names
+  (`/live/websocket` and `/@client/*`), and the closed component-template syntax
+  ([`docs/cell-types.md`](docs/cell-types.md) § `web`). A display owns a port rather than a path
+  under the API, so this is a surface of its own rather than part of the first bullet. There is no
+  `/surface/*` prefix and no `cell.surface` key: both were removed in
+  [#383](https://github.com/mmeyerlein/meclaw/issues/383), and a tree still declaring the key is
+  refused at boot — the migration is [`templates/canvy/MIGRATION.md`](templates/canvy/MIGRATION.md);
 - the **documented `error_code` strings** — the dead-letter codes, the cell-type error enums, and
   the codes a `/colony` read reply carries (today just `invalid_query`, documented inline at the
   reads that raise it, [#363](https://github.com/mmeyerlein/meclaw/issues/363)).
 
-While meclaw is on `0.x`, changes to those four are **additive**: new fields, new codes, new
+While meclaw is on `0.x`, changes to those five are **additive**: new fields, new codes, new
 endpoints, new params. A change that breaks an existing topology is a **breaking change** and gets
 its own **Breaking** section in [CHANGELOG.md](CHANGELOG.md), naming what breaks and what to do
 about it. If it is not in that section, it was not meant to break you — file an issue.

@@ -33,6 +33,7 @@ Detailed spec of the built-in cell types. On conflict between this file and `mec
 | `harness` | agent harness (Claude Code) as a supervised child process | yes, stateful | long-running | P8 |
 | `subcolony` | child colony as one cell (opaque composition facade) | yes, long-running | atomic-emitting | P9 |
 | `vault` | sealed secret store — **no operation returns a secret** | yes, stateful | atomic-emitting | W15 |
+| `web` | port-owning display substrate (SSR + LiveView diffs) | yes, long-running | dual task | W8 |
 
 **`ref` deliberately has no row here.** A `cell.type: "ref"` is a **template-time** type: at instantiation it places another template at its position and is gone afterwards (GH #277; details in `config.md` § Special case template reference). Every column of this table — Actor?, Emission mode, Phase — describes a **runtime** property that a type without a runtime does not have; a row here would have to invent three answers that do not exist.
 
@@ -1062,3 +1063,88 @@ This is the **one** place where a cell looks at the topology, and it is a delibe
 **Honest limit:** a determined `code` cell in the same process can read the vault's memory while it is unlocked. The designed answer is **placement** (own process, own user) — a deployment property that changes no edge. An agent that develops the substrate itself is out of scope by definition; no vault holds against that, and claiming otherwise would be the more dangerous statement.
 
 **Emission mode**: stateful (lazy), atomic-emitting. One `tool_result` turn per message, plus the injections at unlock.
+
+## `web` — port-owning display substrate
+
+**The cell owns the listener.** Until W8 the one surface belonged to the CLI: `--api` bound the one port, and everything display-shaped competed for that one address. A colony could not open a second display, and a display could not be instantiated by mutation with a port of its own. The `web` cell type inverts that: every instance binds the port named in its **own** `params` and holds its **own** `cell.db`. The type is deliberately **multiple** — the meclaw-os tree one hive, the website another, each with its own `web` cell.
+
+**Why this does not break the "no ingress cell types" doctrine.** The substrate rejected ingress cell types once, and the argument stands: a cell must not implicitly know it hangs on an endpoint. The `web` type follows the sanctioned exception the `proxy` cell already is — a long-running cell that owns an external platform connection and mints ingress context at a **declared** entry edge. The platform here is HTTP-inbound instead of a chat API. Cells still know no topology: a `web` cell knows its port and its DB, and nothing else.
+
+**Authentication and TLS are external, forever** (R-W8-2). A reverse proxy (nginx/traefik/caddy) sits in front; this cell type grows no auth story, not now and not later. That is why the default bind is **loopback**: a type that never authenticates must not be reachable off-host by default. Setting `bind` to `0.0.0.0` is a decision, made by someone who meant to make it.
+
+**`port` and `bind` are immutable.** Both appear in the params overlay's `KNOWN_KEYS` **and** in its `IMMUTABLE_KEYS`: an update naming either is refused as `Immutable` (no partial apply), not as `Unknown`. The difference matters to whoever reads the error — "you may not move this" versus "there is no such key". The reason is operational: rebinding a running display would pull it out from under the reverse proxy pointed at it, which is an outage dressed up as a config change.
+
+**Dual task, and the I/O half never returns voluntarily.** The handler half and the I/O half share nothing: the handler owns the state and the `cell.db` and is the only writer, the I/O half owns the axum server and touches neither. They talk over two internal channels — which is exactly what keeps "one task per actor" true for a cell with a whole HTTP server hanging off it. The **A1′ lifetime contract** binds hard here: `run_io` runs for the entire lifetime of the cell and returns only when the cell as a whole tears down. So even a **failed bind** does not return — it reports the failure to the handler and parks until shutdown: a taken port is an operator's mistake to read in the journal, not a reason to tear down a cell and possibly a whole colony boot with it.
+
+**A page load costs no cell call.** What is served is protocol scaffolding: a csrf meta tag, the container the LiveView client joins on, the two script tags, the socket constructor. The picture arrives afterwards, in the join reply. So a colony that is wedged still serves the page, and the client then **visibly** fails to connect — a state a person can read, instead of a blank screen.
+
+**The cell serves under its own origin.** Its bundles live at `/@client/…` and its socket at `/live` — relative to the port this instance owns, with no shared prefix in front of them. There used to be one: the HTTP API served declared cells under `/surface/<cell-path>/`, and that path is retired (GH #383). The container id and the session token still come from `meclaw_surface::session`, the one piece of the old machinery that was never about the prefix.
+
+**Message contract** (tool-call form, bundle-capable): `object.create`, `object.update`, `object.move`, `object.delete`, `query`. One `tool_call` turn is a single op and answers with its metadata on the header; **two or more are a bundle** and are answered by ONE reply carrying one turn per op in call order, plus a `results[]` slot with the per-leg metadata (the store's GH #295 convention). What is counted is `tool_call` TURNS, not `messages`: an `llm` cell emits mixed `[tool_call, text]` bodies, and prose beside a call must not change how the call is answered.
+
+`bundle_errors` is stamped unconditionally, including as `0` — a zero says *checked and clean*, which a consumer must be able to tell apart from *nobody stamped it*. A bundle is explicitly **not a transaction**: a failed leg does not roll back its siblings. The header's own `error_code` keeps its hard meaning (the whole reply is a refusal) and never signals partial failure.
+
+**Components are defined at runtime.** `component.define {name, template, prop_schema, editable?, layer?}` creates one or replaces it. The template is parsed **at definition**, with the same parser the renderer uses (the one-parser rule): an unknown `{{…}}` is answered to whoever wrote it, at the moment they write it. A second, laxer parser here would let a component into the library that the renderer cannot draw. `layer` is `"navigation"` or `"content"`; `editable` names props a browser may write itself, and must name props the `prop_schema` also declares — an undeclared `editable` prop could never be written anyway.
+
+A redefinition re-renders **every** route. The cell does not track which objects use a component, and a page that quietly kept drawing the old template would be the worse outcome.
+
+**`page.set {route, root, title?}` — and the `pages` table is the only route source.** There is no `cell.surface` key any more (GH #383): it was removed together with the `/surface/*` path it declared, and a `cell` block that still carries it is a hard refusal naming key and file, on every read path (`config.md` § `cell`). **This retracts the earlier wording** that `cell.surface` "is ignored entirely" — that was true while the key still existed and this cell simply never read it; it is not true now, because a tree declaring it does not boot at all. Two grammars for one thing was the risk, and one of the two is gone rather than tolerated. It is settled twice over: there is also no code path in this cell that reads it.
+
+The route grammar is one plain segment chain: `/`, `/a` or `/a/b`, with segments of `[a-z0-9-]`. No `@` (that belongs to the cell's own files under `/@client/`), no `live` (that belongs to the transport — the phoenix client appends exactly `/websocket` to the socket URL, and a page there would shadow it), no trailing slash (or `/a` and `/a/` would be two names for one page). A route is a name, not a URL.
+
+**A GET asks both surfaces, and pages win.** Whatever is claimed neither by the transport (`/live/websocket`) nor by the cell's own bundles (`/@client/…`) reaches **one** handler: the materialised page map is asked first, the asset map second, and if both are silent it is the same 404 an unknown page gets — a display does not enumerate what it does not serve. One handler rather than two competing wildcard routes is the point: with two routes the router's matching order would decide which table a path can reach at all, and a whole table could quietly become unreachable; an ordered double lookup cannot do that. If both tables declare the identical path, the page answers — the `pages` table is the only route source, and an asset able to take over a declared route would make that sentence false. The `Content-Type` comes from the row, not from the file name: what a file is, is stated by whoever put it there, and not by a table of suffixes.
+
+**Assets are pure seed data today.** No op writes `assets`; the map is built from the DB once at start and published — the same construction as the page map, so that a GET for a file costs no database and no cell call either — and does not change for the life of the cell. The read path is deliberately tolerant: the seed loader stores every JSON string as TEXT, including into a BLOB column, so the cell reads through `ValueRef` and takes TEXT as readily as BLOB. Changing the schema of a table that has only just shipped would be the more expensive route to the same byte.
+
+**One diff per write.** Every applied op publishes the re-rendered page and then sends exactly one frame to the viewers of the affected route — not one at the end of the bundle. Send three writes, see three frames, and a viewer sees each step rather than only the last. The pages are published **first** and pushed second: a GET arriving between the write and the push already sees the new content — someone who reloads must never see less than someone who stayed connected.
+
+**`ord` is a sort key, not a list index.** An `object.move` does not renumber siblings, and two siblings may share an `ord` (the render breaks the tie by `id`, deterministically). The alternative — shifting everyone else up or down — would mean one caller's patch silently rewriting rows it never named, and inside a bundle the result would depend on the order the legs happened to run in. A caller who wants a particular arrangement states it; gaps (10, 20, 30) leave room to insert.
+
+**`object.delete` neither cascades nor re-parents.** Either would be this cell guessing what a caller meant about content it cannot see. Deleting leaf-first is unambiguous, and the refusal names the children that block it.
+
+**An undeclared prop is refused, not stored.** A template can only render what it names, so an undeclared prop is invisible, and accepting it silently would let a model believe it had set something. The refusal names the prop and lists what the component declares.
+
+**Two classes of browser event** (R-W8-5), and which class an event belongs to is decided by the component's declaration — not by the event's name.
+
+**Local.** An `object:set {id, prop, value}` on a prop the component declared `editable` is performed by the cell itself as CRUD on its own DB, followed by a diff to **all** joined viewers (the sender included). **Zero topology round trip**: no message is created. A drag on a node must not be a conversation with the router. A prop that is not declared `editable` is refused with `phx_reply {status:"error", response:{reason:"not_editable"}}` and **nothing** is written — the declaration is the authorisation: a browser may move what a component said may be moved, and nothing else.
+
+**Semantic.** Every other event (a button, a form, later a microphone frame) leaves the cell as an ordinary **source emission** on `hop.route = "event"` — the same shape the `proxy` cell uses for an inbound platform turn. The header carries `event_name`, `session_id` and `page_route`. The `session_id` is the nonce half of the page's LiveView token, and so is unique per page load.
+
+Promoting it into `context.session_id` is the **ingress edge's** job (`set_context`), not the cell's: a cell states what it knows, and an edge decides what that means for the graph. That is the proxy precedent, and it is what keeps this cell ignorant of the topology it hangs in. The emission's target is the cell's own path — the out-edges decide where it goes, and a display whose events nobody listens for dead-letters visibly instead of vanishing.
+
+**`error_code` strings** (closed): `invalid_input` (unreadable body, a missing or mistyped argument, an undeclared prop, a `delete` with children), `unknown_op` (an op this type does not have — the message lists the ones it does), `unknown_object` (no object with that `id`), `unknown_component` (no component of that name).
+
+**Storage** (own `cell.db`, fixed schema): `objects` (the object tree — `id`, `parent`, `component`, `ord`, `props` as JSON), `components` (the component library — `name`, `template`, `prop_schema`, `editable`, `layer`), `pages` (route → root object, plus a title) and `assets` (files the cell serves under its own origin). Plus an index on `objects(parent, ord)`, because every render walks a node's children in order.
+
+The object tree is the **single** source of what is displayed; `components` is the vocabulary it is written in. Components are **data, not code** — a model can define a new one at runtime by message, and the base set ships as seed rows.
+
+Unlike the `store`, this schema is **fixed** rather than declared per instance in `params`. A store is a typed box whose type its owner chooses; a display's tables are its contract with the renderer, and a cell that let an instance redefine them could not render a page it had not been configured for.
+
+**Seed** (`seed/<table>.jsonl`): the same convention as the `store` — one file per table, line 1 is the header `{"schema": {…}}` and must cover every column, the remaining lines are data rows, a missing file is a silent skip. Loaded **only** on `OpenStatus::Created`: a display that re-seeded on every wake would resurrect objects an operator had deleted. Two differences follow from the fixed schema: the set of legal file names is closed (a `seed/widgets.jsonl` is a **typo to report**, not a table to create), and the header is checked against the real columns, so a seed written for an older schema fails loudly instead of writing into columns that moved. Both are checked in the plan phase (`--validate`), not on first boot. The seed is **always loaded by the cell itself**, never by the mutation staging seeder: the schema is fixed here and a header line cannot describe it, so staging keeps out of this `cell.db` (`CellFactory::owns_schema`, GH #398 — before that it pre-built the four tables without keys, defaults and index, and `page.set` was impossible for every display instantiated by mutation).
+
+**Template syntax** (closed, public contract surface): a component template knows four forms and no fifth.
+
+| Form | Meaning |
+|---|---|
+| `{{prop}}` | the prop's value, HTML-escaped |
+| `{{&prop}}` | the value **raw** — only for a prop the component's `prop_schema` types as `"html"` |
+| `{{children}}` | the object's children, in `ord` order |
+| `{{#if prop}}…{{/if}}` | the enclosed text, if the prop is present, non-empty and not `false` |
+
+The list being closed is the point. Components are data — a model can define one at runtime — so a template language that grew by accident would be one a model discovered by accident, and every accidental form becomes a compatibility obligation the moment something renders with it. Anything else between braces is therefore refused **at definition time** (`component.define`), not at render time: a refusal while rendering would reach a person as a blank area on a page instead of as an answer to whoever wrote the component.
+
+**Escaping is the default, and the exception is declared.** Props are written by models and by browsers (`editable`), so they are untrusted for this purpose. `{{&prop}}` on a prop whose schema does not say `"html"` silently escapes — emitting markup that no schema ever promised was markup is the worse of the two failures.
+
+**Materialised means materialised.** A route is rendered once and the result kept; a GET answers from it without touching the database and without a cell call (R-W8-4a). The result is already in LiveView's packed form — statics plus **one slot per direct child of the page root** — so a GET does no diff work either (R-W8-4b). Diffs exist only as a consequence of writes. The shape is the static/dynamic one: **n** slots carry **n+1** statics — the text before the marker, n−1 empty separators, and the text after it. A root with no children (no `{{children}}`, or a marker with nothing to show) is exactly one static and no dynamic. That slot granularity is a deliberate v1 choice: a patch to any descendant re-renders the slot of its root-child ancestor and pushes only that. Finer would mean one slot per object and a much larger static table; coarser would mean the whole page on every keystroke.
+
+The object tree is depth-bounded while rendering (64). Nothing stops a patch from making an object its own ancestor, and a renderer that recursed into that would take the cell down with a stack overflow — a crash, not a diagnosis. The bound is reported instead, with the object named.
+
+**`params`**:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `port` | u16 | **required** | The port this instance owns. No default, because two instances sharing one would be a bind race rather than a configuration. `0` is refused with it: the OS would read it as "give me any", and nobody could be told in advance where the display went. **Immutable** |
+| `bind` | string | `"127.0.0.1"` | The address to bind. Loopback by default (R-W8-2). **Immutable** |
+| `external_timeout_ms` | u64 | `5000` | Operation timeout (rule 12) around I/O this cell itself initiates |
+
+**Emission mode**: long-running (dual task), **not lazy**. A display must be up when the colony is — a `web` cell that waited for its first message would answer a browser with a blank page until something else happened to talk to it.

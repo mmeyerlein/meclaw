@@ -13,8 +13,8 @@
       ],
       "emits": [
         {
-          "route": "surface",
-          "because": "the drawn page, for the browser that asked -- it leaves on the marked egress and never through a parent edge"
+          "route": "event",
+          "because": "something a person did in the browser that is not a move -- a move is written inside the display and never becomes a message at all. Nothing inside this hive consumes it, and that is the honest state (2) of GH #284: a browser event nobody wired for is `no_route` in the dead-letter queue, recorded and self-localising, rather than silently swallowed. A parent that wants one drains it"
         }
       ]
     },
@@ -24,31 +24,6 @@
           "from": ".",
           "to": "./probe",
           "condition": "has(hop.route) && hop.route == 'in_refresh'"
-        },
-        {
-          "from": "./render",
-          "to": "./store",
-          "condition": "has(hop.route) && hop.route == 'canvas'",
-          "modifier": {
-            "set_context": {
-              "canvy_origin": "'render'",
-              "canvy_event": "hop.event",
-              "canvy_moved_id": "hop.moved_id",
-              "canvy_moved_x": "hop.moved_x",
-              "canvy_moved_y": "hop.moved_y",
-              "canvy_moved_z": "hop.moved_z"
-            }
-          }
-        },
-        {
-          "from": "./store",
-          "to": "./render",
-          "condition": "context.canvy_origin == 'render'"
-        },
-        {
-          "from": "./render",
-          "to": ".",
-          "condition": "has(hop.route) && hop.route == 'surface'"
         },
         {
           "from": "./refresh",
@@ -61,32 +36,56 @@
         },
         {
           "from": "./probe",
-          "to": "./store",
-          "condition": "has(hop.route) && hop.route == 'snapshot'",
+          "to": "./layout",
+          "condition": "has(hop.route) && hop.route == 'snapshot'"
+        },
+        {
+          "from": "./layout",
+          "to": "./web",
+          "condition": "has(hop.route) && hop.route == 'read'",
           "modifier": {
             "set_context": {
-              "canvy_origin": "'probe'"
+              "canvy_origin": "'layout'",
+              "canvy_graph": "has(hop.canvy_graph) ? hop.canvy_graph : ''"
             }
           }
         },
         {
-          "from": "./store",
-          "to": "./probe",
-          "condition": "context.canvy_origin == 'probe'"
+          "from": "./layout",
+          "to": "./web",
+          "condition": "has(hop.route) && hop.route == 'patch'",
+          "modifier": {
+            "set_context": {
+              "canvy_origin": "'patch'"
+            },
+            "delete_context": [
+              "canvy_graph"
+            ]
+          }
+        },
+        {
+          "from": "./web",
+          "to": "./layout",
+          "condition": "context.canvy_origin == 'layout'"
+        },
+        {
+          "from": "./web",
+          "to": "./layout",
+          "condition": "context.canvy_origin == 'patch'"
+        },
+        {
+          "from": "./web",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'event'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "One interactive canvas served over HTTP under the render cell's own path, drawing whatever its store holds. The first thing it draws is the colony itself. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
-    "use_when": "An operator or a user should see and rearrange something the colony knows, in a browser, without an operator UI release for every new kind of object. Nothing has to point at it -- the way in is the HTTP route.",
-    "not_in_scope": "It draws nothing the store does not hold. The topology snapshot arrives on a timer through this hive's own `./probe -> /colony/graph` lane (GH #163: `/colony/graph` is one of the absolute endpoints a mutation may draw, because it is the colony's read-only topology endpoint and the sanctioned alternative to reading `colony.db`; the counts-never-content `/colony/ledger` joined it with GH #267). No realtime push (a viewer sees a change when it joins or interacts, not when another viewer moves a box). No object library beyond cells, hives and edges.",
-    "examples": [
-      "GET /surface/org/acme/member/alice/canvy/render -> the colony as boxes and lines, draggable",
-      "refresh (timer) -> probe -> /colony/graph -> probe -> store: one snapshot row",
-      "socket event node:moved -> render -> store -> render -> the browser"
-    ],
+    "purpose": "One interactive canvas of the colony, served on a port of its own. A timer takes a topology snapshot, a code cell turns it into objects, and a display cell holds them and serves the page. The first -- and so far only -- thing it draws is the colony itself. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
+    "use_when": "An operator or a user should see and rearrange something the colony knows, in a browser, without an operator UI release for every new kind of object. Nothing has to point at it -- the way in is the HTTP port the display owns, and a reverse proxy in front of it is the whole access story.",
+    "not_in_scope": "It draws nothing the topology snapshot does not hold, and it takes that snapshot on a timer through this hive's own lane to the colony's read-only graph endpoint (GH #163: that endpoint is one of the absolute endpoints a mutation may draw, because it is the sanctioned alternative to reading `colony.db`; the counts-never-content ledger endpoint joined it with GH #267). So the canvas is as fresh as that timer. No authentication and no TLS -- the display binds loopback by default and everything in front of it is somebody else's job (R-W8-2). No object library beyond cells, hives and edges. No stored camera: where a person is looking is theirs and stays in their browser.",
     "contract_in": "One lane, at the hive path. in_refresh -- take the topology snapshot now instead of at the next tick. Which cell does the asking is this hive's business.",
-    "contract_out": "One lane, out of the hive path. surface -- the drawn page, carried by the marked egress back to the browser that asked. A parent draws no edge for it."
+    "contract_out": "One lane, out of the hive path. event -- something a person did in the browser that this hive does not handle itself. Nothing inside consumes it, so a parent that has no use for it will see it dead-letter, which is the visible version of no consumer."
   }
 }

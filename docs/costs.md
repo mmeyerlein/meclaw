@@ -146,8 +146,13 @@ would silently rewrite every number ever derived from it, and nobody would see
 the edit.
 
 **The current list is**
-[`scripts/prices-openrouter-2026-08-24.json`](../scripts/prices-openrouter-2026-08-24.json),
-retrieved on 2026-08-24. Point a colony you are measuring *today* at that one;
+[`scripts/prices-openrouter-2026-08-25.json`](../scripts/prices-openrouter-2026-08-25.json),
+retrieved on 2026-08-25 for the W8 web-brain bench (GH #384). It is a strict
+**superset** of the 2026-08-24 list — every row of that one is carried forward,
+because a newer list with fewer rows would make an existing spend invisible
+rather than merely unpriced — plus the fast-tier bracket the bench measures.
+Two carried rows moved on the provider's side and say so in their own `_note`.
+Point a colony you are measuring *today* at that one;
 the figures further down keep the 2026-08-15 list, because a number is only
 reproducible against the list it was computed from. What the two newer lists
 carry:
@@ -178,7 +183,7 @@ stays traceable to the day its rate was taken.
 ```sh
 python3 scripts/cost_report.py \
     --db     /path/to/your/colony.db \
-    --prices scripts/prices-openrouter-2026-08-24.json
+    --prices scripts/prices-openrouter-2026-08-25.json
 ```
 
 The database is opened read-only through the SQLite URI `file:<path>?mode=ro`,

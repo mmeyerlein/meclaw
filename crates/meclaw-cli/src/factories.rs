@@ -18,7 +18,7 @@ use meclaw_cells::subcolony::SubcolonyCellFactory;
 use meclaw_cells::vault::VaultCellFactory;
 use meclaw_cells::{
     BashCellFactory, EditCellFactory, FileCellFactory, LlmCellFactory, McpCellFactory,
-    ProxyCellFactory, TimerCellFactory, WebFetchCellFactory, WebSearchCellFactory,
+    ProxyCellFactory, TimerCellFactory, WebCellFactory, WebFetchCellFactory, WebSearchCellFactory,
 };
 use meclaw_colony::CellFactoryRegistry;
 use std::sync::Arc;
@@ -64,6 +64,9 @@ pub fn built_in_factories() -> CellFactoryRegistry {
     // GH #151: the vault. A stateful cell type whose route surface has no read
     // on it — see `meclaw_cells::vault`.
     reg.insert("vault".to_string(), Arc::new(VaultCellFactory));
+    // GH #380: the display substrate. Long-running like proxy/timer/mcp, and
+    // deliberately multiple — each instance binds its own port.
+    reg.insert("web".to_string(), Arc::new(WebCellFactory));
     reg
 }
 
@@ -104,8 +107,8 @@ mod tests {
         }
         assert_eq!(
             reg.len(),
-            14,
-            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault"
+            15,
+            "8 Phase-9 + proxy/timer/mcp + harness + subcolony + vault + web"
         );
     }
 

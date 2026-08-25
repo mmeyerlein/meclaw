@@ -29,7 +29,6 @@ fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir
         api_colony_from(test_h),
         blob_store,
         meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
     );
     (app, td)
 }

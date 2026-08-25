@@ -87,6 +87,7 @@ fn stage_the_hive(td: &tempfile::TempDir, source: PathBuf) -> PathBuf {
         &registry,
         &env,
         &HashMap::new(),
+        &Default::default(),
     )
     .expect("staging the shipped memory-hive");
     // The hive is a subtree, so it arrives as a rename-root rather than as a

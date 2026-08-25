@@ -32,12 +32,7 @@ fn router_with_inbox() -> (
     });
     let (blob_store, blob_td) = common::test_blob_store();
     (
-        build_router(
-            colony,
-            blob_store,
-            meclaw_core::MESSAGE_DEFAULT_TTL,
-            meclaw_api::router::SurfaceState::disabled(),
-        ),
+        build_router(colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL),
         rx,
         blob_td,
     )

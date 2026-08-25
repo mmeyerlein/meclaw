@@ -21,12 +21,8 @@ fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
     (app, td)
 }
 
@@ -97,12 +93,8 @@ async fn ui_trace_500_when_colony_inbox_closed() {
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, _td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let trace_id = "01900000-0000-7000-8000-000000000000";
     let uri = format!("/ui/trace?trace_id={trace_id}");

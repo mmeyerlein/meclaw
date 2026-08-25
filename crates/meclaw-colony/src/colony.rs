@@ -4469,6 +4469,10 @@ pub(crate) async fn handle_mutation(
         &templates,
         &env,
         &ctx,
+        // GH #398: staging asks the registry whether an instantiated cell type
+        // owns the schema of its `cell.db`. A type that does is left to build
+        // and seed its own database at first spawn.
+        factories,
     ) {
         Ok(s) => s,
         Err(crate::mutation::MutationError::LiveTreeMutated(detail)) => {

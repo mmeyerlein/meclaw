@@ -202,6 +202,38 @@ pub trait CellFactory: Send + Sync {
         false
     }
 
+    /// Does this cell type own the SCHEMA of its `cell.db`? (GH #398)
+    ///
+    /// `false` (default) is the `store` shape: the tables are declared per
+    /// instance, so whoever creates one from a `seed/<table>.jsonl` header
+    /// creates the right one, and the mutation staging seeder
+    /// (`mutation::stage::seed_cell_db_if_present`) may materialise a template's
+    /// seed into the new cell's database at INSTANTIATION time, before the cell
+    /// has ever been awake.
+    ///
+    /// `true` says the opposite: the tables are fixed in this type's own code,
+    /// and a header line cannot describe them. A seed header carries column
+    /// names and a coarse type and nothing else a schema means — no primary key,
+    /// no `NOT NULL`, no default, no index, no column order. A type that
+    /// declares `true` therefore keeps the staging seeder out of its database
+    /// entirely: it creates its own tables and loads its own
+    /// `seed/<table>.jsonl` at first spawn (`OpenStatus::Created`), which is the
+    /// same path a cell instantiated from the filesystem at boot has always
+    /// taken.
+    ///
+    /// The cost of getting this wrong was measured on the shipped `web` cell:
+    /// staging built its `pages` table as `("root" TEXT, "route" TEXT, "title"
+    /// TEXT)`, the cell's own `CREATE TABLE IF NOT EXISTS` found it standing and
+    /// left it, and `page.set` — an upsert on `route` — was refused by SQLite
+    /// for every display that had ever been grown by mutation.
+    ///
+    /// **Declaring `true` obliges the type to load its own seed files.** Nobody
+    /// else will: the staging seeder is the only other reader, and it stands
+    /// down for exactly the types that declare this.
+    fn owns_schema(&self) -> bool {
+        false
+    }
+
     /// Spawn the cell task. Re-parses params defensively (shares parse path
     /// with `validate_params`). Returns `SpawnedCellKind` with a `RespawnFn`
     /// that has already captured the *parsed* params — restart is unfallible.

@@ -177,6 +177,34 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.22.0 — a display is a cell, and it owns its port.** Until now a colony had
+  exactly one HTTP surface and it belonged to the process rather than to the tree:
+  `--api` bound the one port, a display could not be created by mutation, and
+  nothing in the topology said where a surface was reachable. The new `web` cell
+  type binds the port named in its own `params`, holds an object tree and a
+  component library in its own `cell.db`, renders server-side into a materialised
+  tree, and pushes exactly one diff per applied write to whoever is looking.
+  Components are rows, so a model can define one at runtime. `templates/web@1.0.0`
+  ships the Vision design language as seed data — a token stylesheet, nine
+  components and a demo page — with two of its rules enforced by the cell rather
+  than documented by the template. canvy is re-cut as the first application and
+  draws nothing itself any more; a drag is local CRUD plus a diff, never a round
+  trip through the topology. `/surface/*` and `cell.surface` are gone with the
+  serving path they belonged to. The wave found and fixed three defects of its own
+  along the way, the largest being a staging path that built an instantiated
+  cell's tables from a seed header and silently dropped every key, default and
+  index.
+
+- **v0.21.0 — the four composition levels, and a connector that is one cell.**
+  `meclaw-os`, `org`, `member` and `assistant` ship as templates: a level owns
+  what its siblings must share, so the eighteen edges of a generation's tool
+  surface ship once instead of once per channel. `telegram-connector@2.0.0` is
+  the `proxy` cell itself — the hive that grouped a single occupant is gone, and
+  a level that holds channels does the lane normalisation it used to do.
+  `channel@1.0.3` is withdrawn. The `tools` hive gives an assistant's whole tool
+  surface one address with one contract, so swapping three tool cells for one
+  code-executing cell moves no edge of the caller.
+
 - **v0.20.1 — an emission from the boot window is held, not lost.** A `proxy`,
   `timer` or `mcp` cell emits from the moment its I/O task spawns, and the colony
   spawns those cells inside its own initial-apply window — cells registered, edge
@@ -405,7 +433,9 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 - **v0.12.0 — a surface installs into a colony that is already running.** One
   mutation, no restart. Two rules moved for it: the egress door is no longer a
   place, and `/colony/graph` is drawable by a mutation. Database isolation lost
-  its last exception in the same release.
+  its last exception in the same release. (Both rules stand; only the thing being
+  installed changed — since [#383](https://github.com/mmeyerlein/meclaw/issues/383)
+  it is a `web` cell.)
 - **v0.11.1 — a hive's height is its own flow depth.** The flow layer was
   computed across the whole colony and applied inside one hive, so two cells in
   the same hive could sit 395 empty rows apart. Measured on a live colony:
@@ -413,7 +443,11 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 - **v0.11.0 — a colony serves surfaces over HTTP.** A cell may declare
   `cell.surface` and is then served under its own cell path — page, transport
   and assets under one URL prefix, so a single nginx location block authorises
-  all three.
+  all three. **Retired in
+  [#383](https://github.com/mmeyerlein/meclaw/issues/383):** `/surface/*` and the
+  `cell.surface` key are both gone, and a tree still declaring the key is refused
+  at boot. A display is a `web` cell with a port of its own now; the migration is
+  [`templates/canvy/MIGRATION.md`](templates/canvy/MIGRATION.md).
 - **v0.10.7 — a liveness check that perturbs what it measures is not one.**
   The 0.10.6 repair of a flaky test was worse than the flake; the Monday cron
   caught it within hours. The assertion is removed, not replaced.

@@ -820,35 +820,16 @@ pub async fn run_with_hooks_tuned(
         colony_cfg = colony_cfg.with_egress(egress_tx);
     }
 
-    // GH #159 — in --api mode the colony also needs a way out, because a surface is
-    // rendered by a cell and the rendered HTML has to reach the browser that asked
-    // for it. Same channel shape as the stdio bridge, different policy: only what
-    // the HTTP layer marked leaves this way, and every other root-hive dead end
-    // keeps dead-lettering exactly as it did. A door handed `All` here would
-    // silently swallow correct dead letters, and the DLQ is how "why did that
-    // message vanish" is ever answered.
+    // GH #383 — `--api` opens no second door any more. GH #159 gave this branch a
+    // marked egress channel and a `Dispatcher`, because a surface was rendered by a
+    // cell and the HTML had to travel back through the HTTP layer that asked for it.
+    // A display is a `web` cell now: it owns its own listener, so its answer never
+    // leaves the colony as a message at all, and `--api` is back to serving the
+    // operator UI and the colony endpoints. `EgressPolicy::Marked` stays in the
+    // substrate — this was its only caller, not its only reason.
     //
-    // Direct-Mode already owns the door (`with_egress`, above), so the two modes
-    // are mutually exclusive by construction rather than by a check.
-    let surfaces = if cli.api.is_some() && !is_direct_mode {
-        let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1024);
-        colony_cfg = colony_cfg.with_marked_egress(tx, meclaw_api::surface::render::EGRESS_MARK);
-        // With the blob store, because a surface answer is a whole page and the
-        // substrate offloads any body past `blob_inline_max_bytes` — a canvas of a
-        // fifty-cell colony is already over it.
-        let (dispatcher, _dispatcher_join) = meclaw_api::surface::render::Dispatcher::with_blobs(
-            inbox_tx.clone(),
-            rx,
-            colony_config.message_default_ttl,
-            Some(blob_store.clone()),
-        );
-        Some(meclaw_api::router::SurfaceState {
-            colony_root: std::sync::Arc::new(root_path.clone()),
-            dispatcher,
-        })
-    } else {
-        None
-    };
+    // Direct-Mode's own door (`with_egress`, above) is untouched: it is the stdio
+    // bridge's way out and always was a different policy (`All`, root only).
 
     let colony_join = tokio::spawn(meclaw_colony::colony_task(colony_cfg));
 
@@ -1158,16 +1139,7 @@ pub async fn run_with_hooks_tuned(
         });
         // Phase-12-X T18: the same blob store (instantiated above) goes to the
         // router for the multipart path of POST /messages.
-        // GH #159: `surfaces` is Some in exactly this branch (it is built from
-        // `cli.api`), so the fallback is unreachable — and it is a disabled state
-        // rather than an unwrap, because a surface route that 404s beats a binary
-        // that panics on a code path nobody can reach.
-        let router = meclaw_api::router::build_router(
-            colony,
-            blob_store,
-            message_default_ttl,
-            surfaces.unwrap_or_else(meclaw_api::router::SurfaceState::disabled),
-        );
+        let router = meclaw_api::router::build_router(colony, blob_store, message_default_ttl);
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         let local_addr = listener.local_addr()?;

@@ -160,16 +160,14 @@ pub struct CellHeader {
     /// `docs/config.md` § `cell` → `provenance`.
     #[serde(default)]
     pub provenance: Option<NodeProvenance>,
-    /// GH #159: this cell may be served as a surface over HTTP.
-    ///
-    /// In the `cell` block rather than in `params` because this block is what the
-    /// colony reads to decide how it runs a cell, and serving it is the colony's
-    /// job. One field, every cell type, one parser — [`crate::surface::parse_decl`].
-    ///
-    /// Absent by default, which is what every `config.json` written before this
-    /// field existed means. See `docs/meclaw-overview.md` § surfaces.
-    #[serde(default)]
-    pub surface: Option<crate::surface::SurfaceDecl>,
+    // GH #383: `surface` stood here (GH #159) and is gone. It was declared so
+    // the closed key list would admit it and was read by nobody on this path —
+    // so removing the field is the whole removal: `cell.surface` now falls to
+    // `deny_unknown_fields` above and is a hard boot refusal naming the key and
+    // the file, on every read path. Breaking, on purpose and loudly: a tree that
+    // still carries it was served by a route that no longer exists, and a silent
+    // ignore would let it boot into a colony where nothing answers.
+    // Migration: `templates/canvy/MIGRATION.md`.
 }
 
 /// GH #62: the template identity an instantiated node carries with it.

@@ -1,325 +1,231 @@
-# canvy — a canvas the colony serves itself
+# `canvy@2.0.0`
 
-One interactive page, served over HTTP under a cell path, drawn entirely
-server-side by a `code` cell. The browser owns exactly one thing: the drag.
+One interactive canvas of the colony, served on a port of its own. A timer takes
+a topology snapshot, a `code` cell turns it into display objects, and a `web`
+cell holds those objects and serves the page. The browser owns two things and
+neither of them is the picture: the drag, and where you are looking.
+
+The first — and so far only — thing it draws is the colony itself.
 
 ```
-GET /surface/<path to canvy/render>          the page
-GET /surface/<path to canvy/render>/live/websocket   the transport
-GET /surface/<path to canvy/render>/@asset/surface.js   this hive's own JS
-GET /surface/@client/phoenix_live_view.min.js           the binary's bundles
+refresh (timer)  ->  probe (code)  ->  layout (code)  ->  web (display)
+     every minute        the colony's       objects,          the page,
+                         graph endpoint     not markup        on its own port
 ```
 
-Everything a canvas needs sits under **one** prefix, which is the point:
+## What changed in 2.0.0, and why the first digit moved
 
-```nginx
-location /surface/org/acme/member/alice/canvy/ { ... }
-```
+1.x drew HTML. A `code` cell produced the whole SVG on every request, a `store`
+cell held the positions, and the page was served by the HTTP API under
+`/surface/<cell path>`. All three are gone:
 
-is a complete access rule for that canvas — page, assets and transport — and it
-needs to know nothing about MeClaw.
+| 1.x | 2.0.0 |
+|---|---|
+| `render` (code) emitted markup | `layout` (code) emits **objects** |
+| `store` held positions and the snapshot | the display's own object tree holds both |
+| served by `--api` under `/surface/…` | served by the `web` cell on **its own port** |
+| a drag was two `code` cell calls (~34 ms) | a drag is a **local write** inside the display |
+| the camera was written back to the store | the camera never leaves the browser |
 
-## The four cells
+That is a removal-shaped change on every address the template offered, which is
+the first digit (the `telegram-connector@2.0.0` precedent). An instance of 1.x is
+not upgraded in place — it is instantiated fresh beside the old one, its saved
+positions replayed as object patches, and the old hive retired by disconnect.
+Running that is an operator's act and this repository only ships the recipe.
 
-`client/` is the fifth row of the table and is **not** a cell: it is an asset
-directory inside `render/`, with no `config.json` and no endpoint.
+## The pipeline, pass by pass
 
-| | what it is | what it must never do |
+**`refresh`** is a `timer` with one schedule and no opinions.
+`${CANVY_REFRESH_CRON:-0 * * * * *}` — a 6-field Quartz expression, planned in
+**UTC** like every `timer` in the library. Default: second 0 of every minute.
+
+**`probe`** asks the colony's read-only graph endpoint and hands the answer on,
+unread. Two passes: a tick becomes a read, a reply becomes a snapshot. It is
+deliberately not part of anybody's request path — see *Why the topology is a
+snapshot* below.
+
+**`layout`** is the whole picture. Three passes, and the third one is the one
+that matters:
+
+1. a snapshot arrives → emit one `query` over the page, with the graph riding
+   along on the hop, which the hive's own edge promotes into `context`. `hop`
+   survives exactly one edge and pass 2 is two edges away, so carrying it on the
+   hop alone would lose it silently.
+2. the display answers → compute the layout and emit **one bundle** of
+   `object.*` calls. A refusal here is not a failure but the **bootstrap** case:
+   a display whose page has never been set answers `query` with `invalid_input`,
+   and the same bundle then defines the components, creates the root and sets
+   the page.
+3. the display acknowledges the patch → emit **nothing**. A cell that cannot
+   recognise the reply to its own write has no way to stop; in 1.x that mistake
+   turned one tick into two into four and wedged the routing loop on a full
+   mailbox inside twenty seconds ([#161](https://github.com/mmeyerlein/meclaw/issues/161)).
+
+**`web`** is a reference to [`web@1.0.0`](../web/) with one default overridden:
+the port. It holds four tables — objects, components, pages, assets — renders
+its pages once into a materialised tree, and serves them from that. **A page
+load therefore costs no cell call at all**: a colony that is wedged still serves
+its picture, and the browser then visibly fails to *connect*, which is a state a
+person can read.
+
+## The picture is data, not code
+
+Four components, defined by message on the bootstrap pass and stored as rows:
+
+| Component | What it draws | `editable` |
 |---|---|---|
-| `render` | the surface: layout + every tag | read a database, compute an edge path |
-| `store` | positions, viewport, topology snapshot | be addressed from outside the hive |
-| `refresh` | a timer, every minute by default (`CANVY_REFRESH_CRON`) | know what a topology is |
-| `probe` | asks `/colony/graph`, writes the snapshot | sit in a browser's request path |
-| `render/client/` | this hive's own JS and CSS — files, not a cell | live in the binary |
+| `canvy-shell` | the frame: the SVG, the arrow markers, the detail panel, the legend — and the browser half of canvy in a `<style>` and a `<script>` | — |
+| `canvy-hive` | one dashed, tinted rectangle per hive, one tint per depth | — |
+| `canvy-edge` | one line per edge, plus the fat invisible twin a mouse can hit | — |
+| `canvy-node` | one box per cell, coloured by cell type | `x`, `y` |
 
-## The boundary
+A new kind of thing on the canvas is therefore one more component and one more
+patch — a template edit, never a release. The binary that serves it knows none
+of this.
 
-The hive seals itself with **`ports: []`**: the hive path is the only address,
-and no edge reaches a cell in here — not the store, and not the render cell
-either. What a caller asks for rides on `hop.route`:
+**`canvy-node` declares `editable: ["x","y"]`, and that declaration is the whole
+authorisation model.** The display checks it against the **component**, never
+against the message: a browser says what it wants changed, and the component
+says what may be. A prop that is not on the list is refused with `not_editable`
+and nothing is written.
 
-| lane | direction | carries |
+## A drag costs no message
+
+Pointer down, move, up. On release the browser sends `object:set` twice — once
+for `x`, once for `y` — and that event is the display's **local** lane: the
+write lands in the cell's own database and is diffed to every open browser
+without a single message entering the colony router. Dragging a node is not a
+conversation with anybody.
+
+Dragging a **hive** is the same gesture repeated over its members. There is no
+group row and nothing to measure a group against: 1.x stored a *shift* per hive
+because its positions lived in a table the flow layout re-derived on every
+render, and a point measured against a layout that every arriving cell changes
+does not survive the colony growing — twelve of nineteen hand-placed frames in a
+real colony walked off ([#170](https://github.com/mmeyerlein/meclaw/issues/170)).
+Here the members' own `x`/`y` **are** the record, so moving the group is moving
+the members, and every frame follows from where they end up.
+
+The frames themselves are derived and never stored, on both sides: the client
+recomputes them from the same constants the layout cell used — read off the
+markup rather than kept as a second copy — so a cell dragged out of a hive grows
+that hive, and every hive above it, while the cursor is still down.
+
+**And a position, once set, is kept.** On every tick the layout reads back what
+the display already holds and leaves those coordinates alone; only a cell the
+display has never seen is given a computed spot, which is then settled out of
+the way of everything that was placed by hand.
+
+## The camera is yours
+
+Pan and zoom are local state. Nothing is sent and nothing is stored — 1.x wrote
+the camera back on a 400 ms debounce, which spent a store round trip on a
+gesture that means nothing to anybody else. A fresh load starts from the
+picture's own `viewBox`, which frames the whole drawing before any script runs,
+so the canvas is legible even if the client never loads at all.
+
+## The browser half is a file, and it is tested
+
+`layout/canvy.js` and `layout/canvy.css` are files a person reads, greps and
+diffs. They reach the browser as two raw props of the root object, spliced into
+the layout cell's `script_inline` by `scripts/canvy_sync.py`; a test fails if
+the copies ever drift.
+
+`layout/canvy.test.js` runs under plain `node` and is invoked from
+`crates/meclaw-cells/tests/canvy2_client_geometry.rs`. That is not a
+convenience. Every client-side defect this canvas has ever had was invisible to
+the server-side tests — the hook was never mounted, and when it did run its edge
+call threw — so **the client path is never proven over the websocket alone**.
+
+## Wiring one
+
+The hive is the address. `params.ports` is empty, so no edge reaches a cell
+inside it; a caller names the hive and a lane on `hop.route`.
+
+| Lane | Direction | Meaning |
 |---|---|---|
-| `in_refresh` | in | take the topology snapshot **now**, instead of at the next tick |
-| `surface` | out | the drawn page, on the marked egress, back to the browser that asked |
+| `in_refresh` | in | take the topology snapshot now, instead of at the next tick |
+| `event` | out | something a person did in the browser that this hive does not handle itself |
 
-Which cell serves a lane is this hive's business and is stated exactly once, on
-the hive's own door edge. `canvy@0.2` declared `ports: ["render", "refresh"]`,
-which are the names of two cells in here — a caller had to know the inside in
-order to address it. Both addresses are retired; an edge that used to name
-`./canvy/refresh` becomes `./canvy` with
-`modifier.set_hop.route: "'in_refresh'"`.
+Nothing has to point at canvy at all: the way in is the HTTP port the display
+owns. `in_refresh` exists for the case where a mutation has just landed and
+waiting a minute is silly.
 
-The HTTP layer is not an edge and so not covered by the seal — what keeps it
-honest is the **route**, which can only ever address a cell that declared
-`cell.surface`, and the store does not.
+Nothing inside consumes `event`, and that is deliberate — a browser event nobody
+wired for dead-letters as `no_route`, recorded and self-localising, which is
+state (2) of [#284](https://github.com/mmeyerlein/meclaw/issues/284) rather than
+a silence.
 
-## Two round trips, and the numbers
+### The port
 
-A **page load** costs **zero** cell calls: the dead render is protocol
-scaffolding from the binary, and the picture arrives in the join reply. A colony
-that is wedged still serves the page, and the client then visibly fails to
-connect.
-
-A **join** and a **drop** each cost **two** `code` cell calls, ≈34 ms — pass 1
-asks the store, pass 2 renders and (on a drop) writes. A `code` cell invocation is
-~16 ms of interpreter start, measured (`plans/p13-collector-measurement.md`). A
-second viewer of an unchanged canvas costs **zero**: the binary caches the last
-render per surface and replaces it the moment a newer one arrives.
-
-A **drag** costs nothing. The server sees the start and the end of a drag and
-never the movement in between.
-
-## Installing it
-
-### By mutation, into a colony that is already running
+The display's port is the one knob an instance almost always sets. The template
+ships `7810`; a second canvas in the same colony needs a different one, because
+two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"scope": "/org/acme/member/alice",
- "ctx": {},
- "diff": {"add_nodes": [{"name": "canvy", "template": "canvy@0.3.2"}]}}
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.0.0",
+                "override_params": {"web": {"port": 7900}}}]}
 ```
 
-That is the whole installation. No restart, no lane to grant, no edge for the
-parent to draw: the page answers over HTTP as soon as the mutation commits.
+The port is **immutable once the cell exists**: a params update naming it is
+refused, loudly and without partial apply, because rebinding a live display
+would move it out from under whatever reverse proxy is pointed at it.
 
-Nothing needs to point at it either — the only way in is the HTTP route and the
-only way out is the colony's egress door. A hive nothing points at is normally a
-defect; here it is the design.
+### Auth and TLS are somebody else's job, permanently
 
-Two rules had to move before that sentence was true
-([#163](https://github.com/mmeyerlein/meclaw/issues/163)), and both are worth
-knowing because they are what the hive's own two unusual edges rest on:
+The display binds `127.0.0.1` by default and grows no authentication story ever
+(R-W8-2). Put a reverse proxy in front of it and one location block is the whole
+access rule for one canvas — which is also why two canvases are two hives on two
+ports rather than two paths on one.
 
-- **The egress door is not a place.** It used to open only at the root hive, so
-  the lane carrying an answer back had to be `-> /` — and no mutation may draw an
-  edge that leaves its own subtree. Now the *marker* decides: with
-  `EgressPolicy::Marked` a message that carries the mark leaves from whichever
-  hive it ran out of graph at, and only the HTTP layer can mint the mark (a cell
-  cannot write `context`). So the lane is `./render -> .` and stays at home.
-  Direct-Mode (`EgressPolicy::All`, stdout) is unchanged and still root-only:
-  there the mark means nothing, and a dead end deep in the tree is a real dead
-  end.
-- **`/colony/graph` is drawable by a mutation.** It is one of the absolute
-  endpoints that are, because it is not a cell — it is the colony's read-only
-  topology endpoint, dispatched before any edge is consulted, and it is the
-  *sanctioned* way to learn topology, since § Database isolation forbids reading
-  `colony.db`.
-  (`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` enumerates the drawable endpoints by
-  name; the read-only `/colony/ledger` joined it with
-  [#267](https://github.com/mmeyerlein/meclaw/issues/267).)
-  Refusing the lane never protected anything; it only meant a canvas had to be
-  born with it or somebody would go read the database instead.
-  `/colony/mutations`, `/colony/trace` and `/colony/dead_letters` stay out of
-  bounds (authority transfer, and other cells' message content).
-
-### By bootstrap
-
-The same tree in a colony's bootstrap directory needs nothing added to the
-parent's `config.json` either — the hive carries both lanes itself:
+### The one absolute lane
 
 ```json
 {"from": "./probe", "to": "/colony/graph",
  "condition": "has(hop.route) && hop.route == 'ask_colony'"}
 ```
 
+The hive carries this lane itself, in its own `config.json`, because an absolute
+endpoint is out of scope for any mutation — bootstrap-only, the same shape and
+the same reason as the receptionist's mutation lane
+([#163](https://github.com/mmeyerlein/meclaw/issues/163)).
+
 **The condition is not optional, and leaving it off does not merely route too
 much.** An edge matches every emission of the cell it starts at, and the probe
-emits two store writes for every snapshot it takes. Granted unconditionally, the
-lane sends those writes to `/colony/graph` as well; each one comes back as a graph
-answer, each answer produces two more writes, and the growth is exponential. What
-that looks like from the outside is a colony that stops routing after about twenty
+emits on two different lanes. Granted unconditionally, the lane would send the
+snapshot to the graph endpoint as well; each one comes back as a graph answer,
+each answer produces another snapshot, and the growth is exponential. What that
+looks like from the outside is a colony that stops routing after about twenty
 seconds with an **empty** dead-letter queue and nothing in the message log — the
 routing loop is blocked on a full mailbox, so there is no record of what it was
-carrying. That was [#161](https://github.com/mmeyerlein/meclaw/issues/161), and it
-cost most of a day to find, which is why the condition is in the snippet and why a
-test reads this file to make sure it stays there.
+carrying. That was
+[#161](https://github.com/mmeyerlein/meclaw/issues/161), and it cost most of a
+day to find.
 
 ## Why the topology is a snapshot and not a live read
 
 Two rules meet here.
 
 **No cell reads a database it does not own** (`docs/meclaw-overview.md`
-§ Datenbank-Isolation) — not even reading, so the graph comes from
-`/colony/graph`, by message, out of the colony's in-memory registry.
+§ Database isolation) — not even reading, so the graph comes from the colony's
+read-only graph endpoint, by message, out of its in-memory registry. That
+endpoint is one of the absolute endpoints a mutation may draw, precisely because
+it is the sanctioned alternative to reading `colony.db`;
+`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` enumerates them, and the
+counts-never-content ledger endpoint joined it with
+[#267](https://github.com/mmeyerlein/meclaw/issues/267). The mutation, trace and
+dead-letter endpoints stay out of bounds — authority transfer, and other cells'
+message content.
 
 **A `/colony/*` reply arrives on a fresh envelope**: new trace, no
-`parent_message_id`, no `correlation_id`, no `context`. So that leg cannot be part
-of a browser's request — the answer would come back carrying nothing that says
-which browser asked. `templates/builder-hive` hits the same wall and works around
-it with an on-disk in-flight pointer, which is only sound because a lease
-guarantees one request at a time; with several browsers it is not.
+`parent_message_id`, no `correlation_id`, no `context`. So that leg could never
+be part of a browser's request — the answer would come back carrying nothing
+that says which browser asked. `templates/builder-hive` hits the same wall and
+works around it with an on-disk in-flight pointer, which is only sound because a
+lease guarantees one request at a time; with several browsers it is not.
 
-So the snapshot is taken where **nothing is waiting**. A colony's graph changes on
-mutation, not on mouse movement, which makes a minute an honest interval rather
-than a compromise.
-
-**And it is a knob.** `refresh` carries one schedule whose cron is
-`${CANVY_REFRESH_CRON:-0 * * * * *}` — a 6-field Quartz expression, planned in
-**UTC** like every `timer` in the library. The default is "second 0 of every
-minute"; a colony whose graph barely moves can set it to `0 */5 * * * *` and pay
-a fifth as much, and one that never mutates can stop the tick entirely and drive
-the snapshot from the `in_refresh` lane instead.
-
-## The store's one table
-
-Four kinds are written into one `canvas` table, discriminated by `kind`, and the
-renderer reads a fifth it no longer writes:
-
-| `kind` | carries |
-|---|---|
-| `node` | `id`, `x`, `y` — where one box sits |
-| `hive_shift` | `id`, `x`, `y` — how far a GROUP was pushed by hand (GH #170) |
-| `camera` | `x`, `y`, `z` — the viewport, zoom as integer per-mille |
-| `graph` | `doc` — the whole `/colony/graph` answer |
-| `hive` | `id`, `x`, `y` — the **legacy** shape of `hive_shift`: a point in the flow layout's space. Read and converted on the way in, never written again |
-
-One table because a store message carries exactly **one** operation: three tables
-would be three round trips on an interactive path, and a `kind` column costs
-nothing. Zoom is per-mille because a store column is `text`, `int` or `json` —
-there is no float, and a thousandth is finer than a mouse wheel can express.
-
-A position is **deleted and rewritten**, never appended. The no-delete promise
-protects what was said and what was learned; where a rectangle sits is neither.
-
-## Editing the scripts
-
-`render.py` and `probe.py` are the source. `config.json` carries a copy of each in
-`script_inline`, because a `code` cell's `script_path` is handed to the interpreter
-with no working directory of its own — a relative path would resolve against the
-daemon's cwd, and an absolute path baked into a template is the exported-tree
-defect class of GH #20. After editing a `.py`:
-
-```bash
-python3 scripts/canvy_sync.py
-```
-
-`crates/meclaw-cells/tests/canvy_template.rs` fails if the two ever drift.
-
-## The arrangement, and what the client owns
-
-The default layout is two levels. Inside a hive: rows by flow depth, so a request
-sits above the thing it asks. Between hives: **packed into rows**, left to right,
-wrapping when the run gets too long for the shape of a screen. There is no fixed
-pixel width: the wrap limit is derived per block from `TARGET_RATIO = 2.0` (about
-twice as wide as tall) and only considered at all past `WRAP_MIN_W = 1100`, so a
-short chain stays one readable stripe. The first version stacked the hives in one
-column, which on a 14-hive colony produced a 3672-pixel-tall strip two boxes wide
-— deterministic, correct, and unusable. An arrangement in one column carries one
-bit of information where a screen offers two dimensions.
-
-The `<svg>` carries a **`viewBox` covering the whole drawing**, so the browser fits
-the entire arrangement into the frame before any JavaScript runs. Zoom and pan ride
-on top of that as the camera transform on `g.viewport`; the camera the store holds
-is applied server-side, so a saved view survives a reload without the client.
-
-Three things are the client's and only the client's, all of them in
-`client/surface.js`, mounted through `phx-hook="Canvy"`:
-
-| | |
-|---|---|
-| **every edge path** | the server sends endpoints and a lane, never a `d` — one routing algorithm, one language |
-| **the drag** | a cell, or a whole hive; between pointerdown and pointerup; on release it says "the user let go at 700,240" and the server answers with where the box *is* |
-| **pan and zoom** | drag the empty canvas, wheel to zoom around the cursor |
-
-**`id` and `phx-hook` on the canvas element are load-bearing.** A LiveView hook
-mounts only on an element carrying both. Without them the client never runs, and
-what reaches the browser is a picture with no lines that cannot be moved — which is
-exactly what every join served until 2026-08-17, with all the server-side tests
-green. They were green because they all asserted about the markup and none about
-the seam between the markup and the client. Two tests now cover it: one reads the
-hook name out of `surface.js` and looks for it in the rendered markup, and one
-mounts the hook against a hand-built DOM.
-
-### Moving a group
-
-Grab a hive anywhere inside its frame — the empty space is the handle — and the
-frame, its label and every cell in it move together. On release the client sends
-**one** event carrying the group's new box origin, and the server writes **one**
-row for it, whatever the hive's size. Twenty cells do not become forty store round
-trips on an interactive path.
-
-What is stored is the shift itself — how far the hand pushed the group, measured
-against nothing. Neither rectangle it could be measured against survives a colony
-that lives: its own frame is derived from the members, so it moves whenever one of
-them moves; its corner in the automatic layout moves whenever any cell ANYWHERE
-arrives, because that layout is a function of the whole node set. The second one
-shipped, and instantiating six cells in a hand-arranged colony walked 12 of its 19
-frames off (GH #170). A shift cannot be reinterpreted by a colony growing.
-
-The rectangle stays derived from where the members ended up, which is what lets a
-cell dragged out of a crowd GROW its hive instead of being stranded outside a stale
-frame. The precedence reads one way and only one way:
-
-    a cell somebody placed by hand  >  the offset of its hive  >  the automatic layout
-
-so moving a hive never silently undoes a hand-placed cell inside it. A row in the
-older shape — the box origin rather than the shift — is read once through the
-layout it was written against and rewritten, so an arrangement made before GH #170
-comes back exactly as it was left.
-
-A hive's frame is the frame around its **whole subtree**, so dragging one takes
-every cell and every nested frame below it. Ancestors are deliberately left alone
-during the drag: their frames are derived, and the server's answer grows them — a
-parent that stretched on the client would be guessing.
-
-### Rows that name nothing
-
-A position outlives the thing it describes. Remove a cell and its row stays; rename
-a hive and the row keeps the old name. The picture is unharmed — a row naming
-nothing is skipped — but the table drifts away from the registry, and a count over
-it stops meaning anything.
-
-The legend says how many such rows there are and offers a **sweep**. It is a press
-and not a housekeeping pass on purpose: **the colony has no rename**. A mutation
-says `remove_nodes` and `add_nodes`, so a renamed hive is a name that vanished and
-a different name that appeared, and nothing in the table can tell that from a
-removal. On the 53-cell colony this was written against, all four hive rows naming
-nothing were renames — `talky/keeper` → `talky/session-keeper`, `archive` →
-`day-archive`, and two more — so a render that swept on its own initiative would
-have deleted four hand-placed group positions and nothing else. The snapshot
-arrives on a timer as well, so "absent from the picture" also reads as "the tick
-has not run since this cell arrived".
-
-The operator who removed the cell is the only one who knows which happened, so the
-deletion is their gesture. A press with nothing to shed writes nothing (GH #184).
-
-### Hive in hive
-
-Every ancestor of every cell is a hive and gets a frame, whether or not it holds a
-cell of its own: `/org/acme/member/al/assistants/egon/talky/session-keeper` draws seven
-nested frames. The layout is recursive and the same shape at every depth — a hive's
-own cells on top as rows by flow depth, its child hives packed into shelves below —
-so a parent packs its children by their size without knowing anything about their
-insides.
-
-The frames are **derived**, one per hive path, from every cell beneath it. An
-ancestor is padded more than its descendants (`NEST_PAD` per level), which is what
-makes a parent's frame *strictly* contain a child's rather than share an edge with
-it: two boxes that touch read as two boxes bumping into each other.
-
-Each depth gets its own faint tint (`depth-1` … `depth-10` in `surface.css`, matched
-to `HIVE_DEPTH_TINTS` in `render.py` and checked by a test that reads both files).
-They stack, because hives are emitted parent-first, so four nested frames read as
-four layers. A colony reaches depth eight in practice, which is why the palette does
-not stop at three.
-
-## Editing the picture
-
-`render.py` owns every tag. `client/surface.js` owns how a line is routed, how a
-drag feels and where the camera is. Neither is in the binary, so a canvas that
-should look different costs a template edit and not a release — which is the whole
-reason this is a hive and not a route.
-
-The client has its own suite, and `cargo test` runs it:
-
-```bash
-node templates/canvy/render/client/surface.test.js
-```
-
-It started as 19 property tests for the edge routing, because the routing was the
-part that was visibly wrong — lines ran under the cells they connected. It grew a
-section that mounts the hook, because the second time this view was reported broken
-the geometry was fine and the hook was the problem: it was never attached, and the
-one expression it evaluated to fill in a path threw. A test file that only exists
-is a comment, so a Rust test runs this one now.
+So the snapshot is taken where **nothing is waiting**. A colony's graph changes
+on mutation, not on mouse movement, which makes a minute an honest interval
+rather than a compromise. In 2.0.0 there is not even a request path for it to be
+part of: the display serves from a materialised tree, so nothing a browser does
+reaches a `code` cell at all.

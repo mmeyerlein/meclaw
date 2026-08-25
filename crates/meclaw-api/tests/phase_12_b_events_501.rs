@@ -16,12 +16,8 @@ async fn get_colony_events_returns_501_not_implemented() {
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, _blob_td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let resp = app
         .oneshot(

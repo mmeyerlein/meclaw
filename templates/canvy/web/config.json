@@ -1,0 +1,11 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "web@1.0.0"
+  },
+  "override_params": {
+    "": {
+      "port": 7810
+    }
+  }
+}

@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-api"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1543,9 +1543,10 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cells"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "argon2",
+ "axum",
  "chacha20poly1305",
  "chrono",
  "croner",
@@ -1555,6 +1556,7 @@ dependencies = [
  "libc",
  "meclaw-colony",
  "meclaw-core",
+ "meclaw-surface",
  "meclaw-testing",
  "reqwest",
  "rusqlite",
@@ -1570,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-cli"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1593,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-colony"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "cel",
  "meclaw-core",
@@ -1610,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "meclaw-core"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -1620,8 +1622,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "meclaw-surface"
+version = "0.22.0"
+dependencies = [
+ "axum",
+ "meclaw-colony",
+ "meclaw-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "meclaw-testing"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "futures-util",
  "meclaw-colony",

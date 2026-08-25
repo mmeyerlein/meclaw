@@ -17,7 +17,7 @@ use std::sync::Arc;
 ///
 /// ```ignore
 /// let (blob_store, _blob_td) = common::test_blob_store();
-/// let app = build_router(api_colony, blob_store, meclaw_api::router::SurfaceState::disabled());
+/// let app = build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 /// ```
 pub fn test_blob_store() -> (Arc<DiskBlobStore>, tempfile::TempDir) {
     let td = tempfile::TempDir::new().expect("create blob TempDir");

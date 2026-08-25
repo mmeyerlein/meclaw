@@ -145,6 +145,7 @@ fn instantiation_keeps_env_forms_literal_on_params_and_settings_defaults() {
         &registry,
         &env_with_secrets(),
         &ctx,
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(staged.len(), 1);
@@ -209,6 +210,7 @@ fn instantiation_runtime_view_resolves_what_the_disk_view_withholds() {
         &registry,
         &env_with_secrets(),
         &ctx,
+        &Default::default(),
     )
     .unwrap();
 
@@ -245,6 +247,7 @@ fn unresolvable_env_var_still_rejects_the_instantiation() {
         &registry,
         &HashMap::new(),
         &HashMap::new(),
+        &Default::default(),
     )
     .unwrap_err();
     assert_eq!(err.error_code(), "env_var_missing");
@@ -286,6 +289,7 @@ fn override_params_from_the_diff_stay_tokens_on_disk() {
         &registry,
         &env,
         &HashMap::new(),
+        &Default::default(),
     )
     .unwrap();
 
@@ -342,6 +346,7 @@ fn subtree_rebirth_keeps_every_node_free_of_secrets() {
         &registry,
         &env_with_secrets(),
         &ctx,
+        &Default::default(),
     )
     .unwrap();
     assert!(

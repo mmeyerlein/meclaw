@@ -1,0 +1,18 @@
+{"schema": {"id": "text", "parent": "text", "component": "text", "ord": "int", "props": "json"}}
+{"id": "root", "parent": null, "component": "stack", "ord": 0, "props": {"stylesheet": true}}
+{"id": "welcome", "parent": "root", "component": "text", "ord": 0, "props": {"body": "This display is served by its own cell, on its own port. Send it object.create to put something here, or open /demo to see the component set."}}
+{"id": "demo", "parent": null, "component": "stack", "ord": 0, "props": {"stylesheet": true}}
+{"id": "demo-page", "parent": "demo", "component": "stack", "ord": 0, "props": {}}
+{"id": "demo-heading", "parent": "demo-page", "component": "heading", "ord": 10, "props": {"text": "Vision", "lead": true}}
+{"id": "demo-intro", "parent": "demo-page", "component": "text", "ord": 20, "props": {"body": "Nine components and one token sheet. Everything on this page is a row in this cell's own database.", "secondary": true}}
+{"id": "demo-card", "parent": "demo-page", "component": "card", "ord": 30, "props": {"title": "Controls"}}
+{"id": "demo-card-text", "parent": "demo-card", "component": "text", "ord": 10, "props": {"body": "A card is glass, so it declares the navigation layer. Everything inside it is content, and it sits on the card's own inner fill rather than directly on the material."}}
+{"id": "demo-card-row", "parent": "demo-card", "component": "stack", "ord": 20, "props": {"row": true}}
+{"id": "demo-badge", "parent": "demo-card-row", "component": "badge", "ord": 10, "props": {"label": "navigation layer"}}
+{"id": "demo-button", "parent": "demo-card-row", "component": "button", "ord": 20, "props": {"label": "Send an event", "event": "demo:hello"}}
+{"id": "demo-input", "parent": "demo-card", "component": "input", "ord": 30, "props": {"value": "editable in place", "placeholder": "Type here", "id": "demo-input"}}
+{"id": "demo-table-card", "parent": "demo-page", "component": "card", "ord": 40, "props": {"title": "The material"}}
+{"id": "demo-table", "parent": "demo-table-card", "component": "table", "ord": 10, "props": {"caption": "Three tokens the glass classes spend", "head": "<tr><th>token</th><th>what it is</th></tr>", "rows": "<tr><td>--glass-filter</td><td>blur, saturation and a brightness clamp</td></tr><tr><td>--r-inner</td><td>the concentric radius, derived from the outer one</td></tr><tr><td>--shadow-spatial</td><td>a contact shadow plus a cast shadow</td></tr>"}}
+{"id": "demo-dock", "parent": "demo-page", "component": "ornament", "ord": 50, "props": {}}
+{"id": "demo-dock-badge", "parent": "demo-dock", "component": "badge", "ord": 10, "props": {"label": "/demo"}}
+{"id": "demo-dock-button", "parent": "demo-dock", "component": "button", "ord": 20, "props": {"label": "Home", "event": "demo:home"}}

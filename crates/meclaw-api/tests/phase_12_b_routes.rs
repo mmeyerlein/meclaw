@@ -5,7 +5,7 @@
 //!    (multi_thread, worker_threads=4 — implicit via #[tokio::test(...)]).
 //! 2. `meclaw_api::ColonyHandle` wraps `test_h.inbox_tx.clone()` plus a stub
 //!    `templates_root` (PathBuf::new() — no rescan driver here).
-//! 3. `build_router(api_colony, meclaw_api::router::SurfaceState::disabled())` builds the full router; the test fires a
+//! 3. `build_router(api_colony, blob_store, ttl)` builds the full router; the test fires a
 //!    `oneshot::Request` via `tower::ServiceExt::oneshot` and asserts the status
 //!    plus the JSON slot name.
 
@@ -36,7 +36,6 @@ fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir
         api_colony_from(test_h),
         blob_store,
         meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
     );
     (app, td)
 }
@@ -201,12 +200,8 @@ async fn post_templates_rescan_returns_ok_slot() {
         templates_root,
     });
     let (blob_store, _blob_td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let resp = app
         .oneshot(

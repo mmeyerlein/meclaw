@@ -34,6 +34,12 @@ use std::collections::HashMap;
 /// case (root absent) is a single rename-root and reproduces today's fresh-subtree
 /// rename. A missing child renaming into its existing parent works (parent on
 /// disk, child's own final dir absent).
+///
+/// GH #398: `factories` is the colony's cell-type registry. Staging asks it one
+/// question per instantiated cell — does this type own the schema of its
+/// `cell.db` ([`crate::CellFactory::owns_schema`])? A type that does builds and
+/// seeds its own database at first spawn, and staging writes nothing into it.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_mutation(
     root: &std::path::Path,
     mutation_id: &str,
@@ -42,6 +48,7 @@ pub fn apply_mutation(
     templates: &crate::templates::TemplatesRegistry,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<(Vec<StagedDir>, Vec<StagedSubtreeMerge>), MutationError> {
     let (staged, subtrees) = build_staging_tree_from_templates(
         root,
@@ -51,6 +58,7 @@ pub fn apply_mutation(
         templates,
         env,
         ctx,
+        factories,
     )?;
     // A5b 2b (Phase-16 W1b): use the overwrite-superset rename. For a normal
     // add_nodes / swap-with the final path does NOT exist → identical to the old
@@ -150,6 +158,7 @@ mod tests {
             &templates,
             &Default::default(),
             &Default::default(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -171,6 +180,7 @@ mod tests {
             "/",
             &diff,
             &TemplatesRegistry::default(),
+            &Default::default(),
             &Default::default(),
             &Default::default(),
         )

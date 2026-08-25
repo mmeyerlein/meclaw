@@ -46,7 +46,8 @@ use meclaw_core::serde_json::Value;
 /// asserted as an upper bound: see `the_versionless_set_stays_inside_its_list`.
 const VERSIONLESS: &[&str] = &[
     "bot-basic",
-    "canvy",
+    // `canvy` left this set with 2.0.0 (W8, GH #383): its README H1 names the
+    // version now, so the sweep judges it like any other shipped template.
     "coder-pipeline",
     "daily-digest",
     "egon",

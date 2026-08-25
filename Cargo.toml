@@ -5,13 +5,14 @@ members = [
     "crates/meclaw-colony",
     "crates/meclaw-cells",
     "crates/meclaw-api",
+    "crates/meclaw-surface",
     "crates/meclaw-testing",
     "crates/meclaw-cli",
     "crates/meclaw",
 ]
 
 [workspace.package]
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 publish = true
 rust-version = "1.85"

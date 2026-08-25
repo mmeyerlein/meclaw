@@ -1,0 +1,50 @@
+{
+  "cell": { "type": "web", "timeout": -1 },
+  "params": {
+    "port": 7800,
+    "bind": "127.0.0.1",
+    "external_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "ingress": { "context": ["session_id"] },
+    "multi_send_capable": true,
+    "consumes": {
+      "body": {
+        "messages": { "type": "array", "required": true }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": { "type": "array", "required": true },
+        "results": { "type": "array", "required": false },
+        "event": { "type": "object", "required": false }
+      },
+      "hop": {
+        "route": { "type": "string", "values": ["event"], "required": false },
+        "event_name": { "type": "string", "required": false },
+        "session_id": { "type": "string", "required": false },
+        "page_route": { "type": "string", "required": false },
+        "operation": { "type": "string", "required": false },
+        "rows_affected": { "type": "number", "required": false },
+        "duration_ms": { "type": "number", "required": false },
+        "bundle_errors": { "type": "number", "required": false },
+        "finish_reason": { "type": "string", "required": false },
+        "error_code": { "type": "string", "required": false }
+      }
+    },
+    "capabilities": ["db:own"]
+  },
+  "description": {
+    "purpose": "The display cell: it binds params.port, holds the object tree and the component library in its own cell.db, renders server-side into a materialised LiveView tree and pushes exactly one diff per applied write to whoever is looking at the affected page.",
+    "use_when": "One instance per display. The port is required and owned -- give a second instance its own via override_params. The default bind is loopback because this cell type never authenticates and never will (R-W8-2).",
+    "not_in_scope": "No auth, no TLS, no routing of its own (the pages table is the only route source; there is no cell.surface key any more -- it was removed with the /surface/* path it declared, and a tree still carrying one is refused at boot by name), no application logic. It renders what it was sent and reports what a person did.",
+    "emits_meaning": "Three emission shapes, hence no required hop key: (a) a tool_result reply per op -- hop carries operation, rows_affected, duration_ms and error_code when the op was refused; (b) a bundle reply for two or more tool_call turns -- hop.operation is 'bundle', rows_affected is the sum, and bundle_errors is stamped unconditionally, 0 included, while the body carries a results[] slot with one metadata entry per leg in call order; (c) a semantic browser event as a SOURCE emission on hop.route 'event' -- header event_name, session_id (the page load's own id) and page_route, body carrying the event slot beside the turn. Promoting session_id into context.session_id is the entry edge's set_context job, exactly as with the proxy cell.",
+    "consumes_meaning": "messages[]: tool_call turns carrying the ops. One turn is a single operation, two or more are a bundle -- tool_call TURNS are counted, so prose beside a call does not change how the call is answered.",
+    "examples": [
+      "object.create {parent: 'root', component: 'text', props: {body: 'hello'}} -> one tool_result, one diff to every viewer of the page that contains 'root'",
+      "a button press in the browser -> a source emission with hop {route: 'event', event_name: 'action', session_id, page_route: '/'}"
+    ]
+  }
+}

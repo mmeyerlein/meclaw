@@ -20,12 +20,8 @@ fn app_from(test_h: &meclaw_testing::ColonyHandle) -> (Router, tempfile::TempDir
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
     (app, td)
 }
 
@@ -161,12 +157,8 @@ async fn colony_messages_resolves_blob_only_when_asked() {
     let blob_store = Arc::new(
         meclaw_colony::blob::DiskBlobStore::new(td.path().join("blobs")).expect("blob store"),
     );
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let long_text = "x".repeat(4096);
     let body_json = serde_json::json!({

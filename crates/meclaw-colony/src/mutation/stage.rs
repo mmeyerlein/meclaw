@@ -120,6 +120,13 @@ pub(crate) fn unix_now() -> i64 {
 /// of the single-cell path. Single-cell templates keep their existing behaviour
 /// verbatim. The subtree-reject (`reject_if_subtree_template`) is therefore gone
 /// from THIS function — subtrees are now first-class on the add_nodes path.
+///
+/// GH #398: `factories` is the colony's cell-type registry, and staging consults
+/// it for exactly one question — does this cell type own the schema of its
+/// `cell.db` ([`crate::CellFactory::owns_schema`])? A type that does is left to
+/// build and seed its own database at first spawn; see
+/// [`seed_cell_db_if_present`]. An empty registry keeps the pre-#398 behaviour.
+#[allow(clippy::too_many_arguments)]
 pub fn build_staging_tree_from_templates(
     root: &std::path::Path,
     mutation_id: &str,
@@ -128,6 +135,7 @@ pub fn build_staging_tree_from_templates(
     templates: &TemplatesRegistry,
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<
     (
         Vec<StagedDir>,
@@ -247,6 +255,7 @@ pub fn build_staging_tree_from_templates(
                 // key that names no cell, so an entry here always lands.
                 &crate::mutation::subtree::SubtreeOverrides::from_add_node(n),
                 templates,
+                factories,
             )?;
             subtrees.push(staged_subtree);
             continue;
@@ -283,7 +292,7 @@ pub fn build_staging_tree_from_templates(
             mailbox_size,
             header_view,
         ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance))?;
-        seed_cell_db_if_present(&staging_path)?;
+        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,
@@ -393,7 +402,7 @@ pub fn build_staging_tree_from_templates(
             &override_node,
             Some(&provenance),
         )?;
-        seed_cell_db_if_present(&staging_path)?;
+        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,
@@ -775,9 +784,42 @@ fn default_sandbox_block() -> JsonValue {
 /// `OpenStatus::Resumed` at spawn-time → skips its own `load_seed_if_present`
 /// → no double-seed. store's `apply_schema_ddl` is idempotent (CREATE TABLE IF
 /// NOT EXISTS) → no DDL conflict.
-pub(crate) fn seed_cell_db_if_present(staging_path: &std::path::Path) -> Result<(), MutationError> {
+///
+/// **A cell type that owns its schema is skipped entirely** (GH #398). This
+/// seeder builds each table from the seed file's header line alone, and a header
+/// carries column names and a coarse type — no key, no `NOT NULL`, no default,
+/// no index, no column order. For the `store` that loses nothing, because a
+/// store's tables genuinely ARE declared per instance. For a type whose tables
+/// are fixed in its own code it loses the schema: this runs at instantiation
+/// time, so the cell's own `CREATE TABLE IF NOT EXISTS` finds the constraint-free
+/// tables already standing and leaves them. Such a type says so through
+/// [`crate::CellFactory::owns_schema`], and then nothing is written here — no
+/// tables, no rows, not even the file. It creates its own tables and loads its
+/// own seed at first spawn (`OpenStatus::Created`), which is what a cell
+/// instantiated from the filesystem at boot has always done: the boot path never
+/// ran this seeder, and closing that divergence is the whole point.
+///
+/// `cell_type` is the instance's resolved `cell.type` (what
+/// [`patch_and_substitute_config`] returned); `factories` is the colony's
+/// registry, which is where the declaration lives. An empty registry means "no
+/// declaration reachable" and therefore the pre-#398 behaviour — that is the
+/// honest default here, because a type nobody registered will never spawn.
+pub(crate) fn seed_cell_db_if_present(
+    staging_path: &std::path::Path,
+    cell_type: &str,
+    factories: &crate::CellFactoryRegistry,
+) -> Result<(), MutationError> {
     let seed_dir = staging_path.join("seed");
     if !seed_dir.is_dir() {
+        return Ok(());
+    }
+    if factories.get(cell_type).is_some_and(|f| f.owns_schema()) {
+        tracing::debug!(
+            cell_type = cell_type,
+            staging_path = %staging_path.display(),
+            "staging leaves the seed to the cell type: it owns its schema, and a seed header \
+             cannot describe one (GH #398)"
+        );
         return Ok(());
     }
     let cell_db_path = staging_path.join("cell.db");
@@ -988,6 +1030,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1040,6 +1083,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1077,6 +1121,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1118,6 +1163,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1158,6 +1204,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1197,6 +1244,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1233,6 +1281,7 @@ mod tests {
             &registry,
             &env,
             &ctx,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1272,6 +1321,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap_err();
         assert!(
@@ -1313,6 +1363,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         let cell_db = staged[0].staging_path.join("cell.db");
@@ -1374,6 +1425,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
 
@@ -1461,6 +1513,7 @@ mod tests {
             &registry,
             &HashMap::new(),
             &HashMap::new(),
+            &Default::default(),
         )
         .unwrap();
         assert!(

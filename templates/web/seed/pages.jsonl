@@ -1,0 +1,3 @@
+{"schema": {"route": "text", "root": "text", "title": "text"}}
+{"route": "/", "root": "root", "title": "Vision"}
+{"route": "/demo", "root": "demo", "title": "Vision - the component set"}

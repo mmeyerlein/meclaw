@@ -17,10 +17,11 @@ meclaw-os/
 │   └── main/config.json       type: "hive", and its graph is EMPTY
 ├── grow.json                  the declaration. four nodes, four edges.
 ├── grow-cogny.json            step two: the thinking core. one node, three edges.
-└── grow-steward.json          step three: the control loop. one node, no edge.
+├── grow-steward.json          step three: the control loop. one node, no edge.
+└── grow-canvy.json            step four: the colony's own picture. one node, no edge.
 ```
 
-That is **three files**, and none of them is a cell. There is no door in here, no terminal, no
+That is **four files**, and none of them is a cell. There is no door in here, no terminal, no
 agent, no memory, no screening and no persona -- every one of those arrives from `templates/`,
 at runtime, into a colony that is already up.
 
@@ -309,3 +310,40 @@ exists here", and every connection it could have is a decision left to whoever g
 So the steward you grow here measures, judges and receipts, and changes nothing. That is a
 legitimate way to run it — a good one for the first weeks, in fact, because the receipts tell
 you what it *would* have done before you let it do anything.
+
+## Step four: the colony draws itself
+
+`grow-canvy.json` adds [`canvy@2.0.0`](../../templates/canvy/) — a timer, two `code` cells and a
+`web` cell that serves one interactive canvas of this colony on a port of its own:
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/colony/mutations \
+     -H 'Content-Type: application/json' \
+     -d @examples/meclaw-os/grow-canvy.json
+```
+
+Then open `http://127.0.0.1:7811/` and drag the boxes around. Every cell the three steps above
+grew is in there, in its hive, with its edges — and where you put a box is where it stays,
+because a position is a prop of an object inside the display and the layout cell reads back
+what the display already holds before it writes.
+
+**One node, no edge, and a port override.** The node is no edge's business: the way in is the
+HTTP port the display owns, which is also the whole access story — put a reverse proxy in front
+of it, because the display binds loopback and grows no authentication ever. The override is
+there because the port is the one knob an instance almost always sets:
+
+```json
+"override_params": {"web": {"port": 7811}}
+```
+
+The template's own default is `7810`; this example takes `7811` so that a canvas you already
+run elsewhere on the default keeps it. A port is settled at instantiation and immutable
+afterwards — two displays sharing one is a bind race rather than a configuration.
+
+The `event` lane out of the hive is **not** wired here, for the reason the rest of this example
+gives: something a person does in the browser that this colony has no consumer for
+dead-letters as `no_route` and localises itself, which is state (2) of GH #284 rather than a
+silence. Nothing inside canvy consumes it either.
+
+Upgrading an older canvas rather than growing a fresh one is a different exercise, and it has
+its own recipe: [`templates/canvy/MIGRATION.md`](../../templates/canvy/MIGRATION.md).

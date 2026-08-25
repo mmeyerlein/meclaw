@@ -46,3 +46,6 @@ adr	status	anchor_home	target
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_container_declares_no_contract_because_the_level_wires_it
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	test:the_member_declares_the_lanes_that_cross_its_boundary
 0013-a-level-owns-what-its-siblings-must-share.md	accepted	self	file:templates/member/README.md#a level owns what its siblings must share
+0014-the-web-cell-owns-its-listener.md	accepted	self	test:a_web_cell_serves_its_shell_on_its_own_port
+0014-the-web-cell-owns-its-listener.md	accepted	self	test:two_web_cells_serve_two_ports_independently
+0014-the-web-cell-owns-its-listener.md	accepted	self	test:registry_wires_proxy_timer_mcp_factories

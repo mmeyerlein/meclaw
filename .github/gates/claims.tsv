@@ -186,3 +186,26 @@ PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped na
 PIN-talky-ships-its-tool-schemas	templates/talky/README.md	So the composite carries the schemas of `memory_recall` and `thread_recall`	pinned	the_shipped_talky_declares_memory_recall_to_the_provider
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
 PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **five declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
+PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other
+PIN-web-asset-route-en	docs/cell-types.en.md	the materialised page map is asked first, the asset map second	pinned	a_page_and_an_asset_do_not_shadow_each_other
+PIN-web-asset-content-type-de	docs/cell-types.md	Der `Content-Type` stammt aus der Zeile, nicht aus dem Dateinamen	pinned	a_seeded_asset_is_served_with_its_row_content_type_and_body
+PIN-web-asset-content-type-en	docs/cell-types.en.md	The `Content-Type` comes from the row, not from the file name	pinned	a_seeded_asset_is_served_with_its_row_content_type_and_body
+PIN-web-glass-navigation-only	templates/web/README.md	**Glass is a navigation-layer material.**	pinned	a_content_layer_component_may_not_wear_the_glass_material
+PIN-web-no-glass-on-glass	templates/web/README.md	**Glass never sits on glass.**	pinned	glass_on_glass_is_refused_at_object_create
+PIN-web-glass-rule-at-seed-time	templates/web/README.md	The first rule is checked at `component.define` **and** at seed time	pinned	a_seeded_content_layer_component_wearing_glass_fails_the_static_seed_check
+PIN-canvy-migration-not-in-place	templates/canvy/MIGRATION.md	A 1.x instance is not upgraded in place	pinned	the_exported_bundle_round_trips_into_a_web_cell
+PIN-canvy-migration-drops-are-named	templates/canvy/MIGRATION.md	The dropped rows are **reported**, not skipped quietly	pinned	the_export_carries_the_node_rows_and_names_what_it_drops
+PIN-canvy-migration-leg-not-transaction	templates/canvy/MIGRATION.md	a failed leg does not roll back its siblings	pinned	a_row_for_a_cell_that_is_gone_is_one_refused_leg
+PIN-surface-key-removed-de	docs/config.md	`cell.surface` ist ein unbekannter Schlüssel und damit eine harte Verweigerung	pinned	the_surface_prefix_answers_nothing
+PIN-surface-key-removed-en	docs/config.en.md	`cell.surface` is an unknown key	pinned	the_surface_prefix_answers_nothing
+PIN-api-is-pre-surface	docs/config.en.md	unknown key and therefore a hard refusal	pinned	the_route_table_is_the_pre_surface_set
+PIN-web-pages-only-router-de	docs/meclaw-overview.md	**Die `pages`-Tabelle ist die einzige Routenquelle.**	pinned	the_reserved_routes_cannot_be_shadowed
+PIN-web-pages-only-router-en	docs/meclaw-overview.en.md	**The `pages` table is the only route source.**	pinned	the_reserved_routes_cannot_be_shadowed
+PIN-web-materialised-get-de	docs/meclaw-overview.md	**Wer was rendert.**	pinned	a_page_set_by_message_is_served_at_its_route
+PIN-web-materialised-get-en	docs/meclaw-overview.en.md	**Who renders what.**	pinned	a_page_set_by_message_is_served_at_its_route
+PIN-web-two-event-classes-de	docs/meclaw-overview.md	**Zwei Klassen von Browser-Ereignissen, und die Deklaration entscheidet, nicht	pinned	the_two_event_classes_do_not_mix
+PIN-web-two-event-classes-en	docs/meclaw-overview.en.md	**Two classes of browser event, and the declaration decides, not the name**	pinned	the_two_event_classes_do_not_mix
+PIN-owns-schema-staging-de	docs/meclaw-overview.md	**Ein Cell-Type mit festem Schema wird beim Staging gar nicht geseedet**	pinned	a_display_instantiated_by_mutation_has_the_schema_its_factory_declares
+PIN-owns-schema-staging-en	docs/meclaw-overview.en.md	**A cell type with a fixed schema is not seeded at staging at all**	pinned	a_display_instantiated_by_mutation_has_the_schema_its_factory_declares
+PIN-web-seed-loaded-by-the-cell-de	docs/cell-types.md	Der Seed wird **immer von der Zelle selbst** geladen	pinned	a_display_instantiated_by_mutation_accepts_a_page_set
+PIN-web-seed-loaded-by-the-cell-en	docs/cell-types.en.md	The seed is **always loaded by the cell itself**	pinned	a_display_instantiated_by_mutation_accepts_a_page_set

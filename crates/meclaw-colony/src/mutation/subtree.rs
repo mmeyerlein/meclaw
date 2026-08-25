@@ -1314,6 +1314,11 @@ pub struct StagedSubtree {
 /// `cell.type: "ref"` sub-unit resolves against — the referenced template's
 /// content takes the ref's position (GH #277).
 ///
+/// `factories` answers one question per staged cell: does its type own the
+/// schema of its `cell.db` ([`crate::CellFactory::owns_schema`])? A type that
+/// does is left to build and seed its own database at first spawn — see
+/// [`crate::mutation::stage::seed_cell_db_if_present`] (GH #398).
+///
 /// # Errors
 /// Returns [`MutationError::Schema`] if the template cannot be parsed, copied,
 /// patched or seeded, or if any resolved edge endpoint escapes the subtree root;
@@ -1331,6 +1336,7 @@ pub fn stage_subtree(
     provenance: Option<&crate::config::NodeProvenance>,
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<StagedSubtree, MutationError> {
     // 1. Parse the template tree (reuse T3).
     let template = parse_subtree(template_root, templates)?;
@@ -1387,8 +1393,9 @@ pub fn stage_subtree(
             &node_override,
             node_provenance.as_ref(),
         )?;
-        // Seed inner store cells where a `seed/` dir is present.
-        crate::mutation::stage::seed_cell_db_if_present(&cell_staging)?;
+        // Seed inner cells where a `seed/` dir is present — unless the cell type
+        // owns its schema, in which case it seeds itself at first spawn (GH #398).
+        crate::mutation::stage::seed_cell_db_if_present(&cell_staging, &cell_type, factories)?;
 
         if hive_set.contains(node.rel_path.as_str()) {
             hive_scopes.push(abs);
@@ -1714,6 +1721,10 @@ impl SubtreeOverrides {
 /// rel-path is a path of the EXPANDED tree, so the copy has to walk the same
 /// refs the parse did.
 ///
+/// `factories` travels the same way and for the same reason as in
+/// [`stage_subtree`]: a cell type that owns its schema seeds itself at first
+/// spawn instead of being seeded here (GH #398).
+///
 /// # Errors
 /// Returns [`MutationError::Schema`] if the template cannot be parsed, copied,
 /// patched or seeded, or if any resolved edge endpoint escapes the subtree root;
@@ -1731,6 +1742,7 @@ pub fn stage_subtree_merge(
     provenance: Option<&crate::config::NodeProvenance>,
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<StagedSubtreeMerge, MutationError> {
     let template = parse_subtree(template_root, templates)?;
     let partition = classify_subtree_nodes(root, scope, name, template_root, templates)?;
@@ -1757,6 +1769,7 @@ pub fn stage_subtree_merge(
             provenance,
             overrides,
             templates,
+            factories,
         )?);
     }
 
@@ -1776,9 +1789,10 @@ pub fn stage_subtree_merge(
 ///
 /// Copies `template_root/<root_rel>` into `.staging/<mid>/<root_rel>/`, then for
 /// EVERY template cell at or below `root_rel`: patches its `config.json` with a
-/// fresh UUID-v7 `cell.id` + full substitution, seeds an inner store `cell.db`
-/// if present, and classifies it into spawnable cells vs. hive scope markers —
-/// identical per-cell semantics to [`stage_subtree`].
+/// fresh UUID-v7 `cell.id` + full substitution, seeds an inner `cell.db` if a
+/// seed is present and the cell type does not own its schema (GH #398), and
+/// classifies it into spawnable cells vs. hive scope markers — identical
+/// per-cell semantics to [`stage_subtree`].
 #[allow(clippy::too_many_arguments)]
 fn stage_rename_root(
     root: &std::path::Path,
@@ -1795,6 +1809,7 @@ fn stage_rename_root(
     provenance: Option<&crate::config::NodeProvenance>,
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<StagedRenameRoot, MutationError> {
     // Copy the rename-root's template sub-path into staging (drops template.json).
     // GH #277: `root_rel` is a rel-path of the EXPANDED tree, so it may only
@@ -1852,7 +1867,7 @@ fn stage_rename_root(
             &node_override,
             node_provenance.as_ref(),
         )?;
-        crate::mutation::stage::seed_cell_db_if_present(&cell_staging)?;
+        crate::mutation::stage::seed_cell_db_if_present(&cell_staging, &cell_type, factories)?;
 
         if hive_set.contains(node.rel_path.as_str()) {
             hive_scopes.push(abs);
@@ -2255,6 +2270,7 @@ mod tests {
             Some(&prov),
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -2315,6 +2331,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -2375,6 +2392,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -2428,6 +2446,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -2489,6 +2508,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect_err("escaping edge must be rejected");
         assert!(
@@ -2530,6 +2550,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -2955,6 +2976,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("merge-staging should succeed");
 
@@ -3027,6 +3049,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("merge should succeed");
 
@@ -3113,6 +3136,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
+            &Default::default(),
         )
         .expect("merge should succeed");
 
@@ -3310,6 +3334,7 @@ mod tests {
             Some(&prov),
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("stage_subtree should succeed");
 
@@ -3786,6 +3811,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("staging a ref template must succeed");
 
@@ -3857,6 +3883,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("merge-staging through a ref must succeed");
 
@@ -3921,6 +3948,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("stage_subtree");
 
@@ -3979,6 +4007,7 @@ mod tests {
             None,
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("stage_subtree");
 
@@ -4062,6 +4091,7 @@ mod tests {
             None,
             &overrides,
             &inner_registry(&inner),
+            &Default::default(),
         )
         .expect("stage_subtree");
 

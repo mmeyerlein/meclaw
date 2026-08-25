@@ -1,0 +1,17 @@
+{
+  "scope": "/",
+  "diff": {
+    "add_nodes": [
+      {
+        "name": "canvy",
+        "template": "canvy@2.0.0",
+        "override_params": {
+          "web": {
+            "port": 7811
+          }
+        }
+      }
+    ],
+    "add_edges": []
+  }
+}

@@ -4,10 +4,14 @@
 //! ## Why this is not a cell-type feature
 //!
 //! The seed loader already works for every cell type and always has.
-//! `mutation::stage::seed_cell_db_if_present` takes a **path**, knows no cell
-//! type, walks every `seed/*.jsonl`, derives the table name from the file stem
-//! and hands each file to `apply_seed_jsonl` — *"Generic JSONL-Seed-Loader"*, in
-//! its own words. So the way **in** was never per-type; only the way **out**
+//! `mutation::stage::seed_cell_db_if_present` walks every `seed/*.jsonl`,
+//! derives the table name from the file stem and hands each file to
+//! `apply_seed_jsonl` — *"Generic JSONL-Seed-Loader"*, in its own words. It asks
+//! the cell type exactly one question, and only since GH #398: a type that owns
+//! its schema (`CellFactory::owns_schema`) creates and seeds its own database at
+//! first spawn, because a seed header cannot describe a fixed schema. For every
+//! other type the loader is what it always was. So the way **in** was never
+//! per-type; only the way **out**
 //! was missing, and it was missing for all eight types that carry a `cell.db`
 //! (`harness`, `llm`, `mcp`, `proxy`, `store`, `subcolony`, `timer`,
 //! `vault`).
@@ -942,7 +946,7 @@ mod tests {
         let born = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(born.path().join("seed")).unwrap();
         std::fs::write(born.path().join("seed/notes.jsonl"), jsonl).unwrap();
-        crate::mutation::stage::seed_cell_db_if_present(born.path())
+        crate::mutation::stage::seed_cell_db_if_present(born.path(), "store", &Default::default())
             .expect("the existing seed loader must read an exported document");
 
         let reborn = rusqlite::Connection::open(born.path().join("cell.db")).unwrap();

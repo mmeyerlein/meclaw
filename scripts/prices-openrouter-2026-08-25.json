@@ -1,0 +1,110 @@
+{
+  "_comment": "Dated price snapshot for scripts/cost_report.py. Prices change; this file is the reason the number in docs/costs.md can be dated and re-checked. A newer list lands BESIDE the old ones, never on top of them -- overwriting a price file would silently rewrite every number ever derived from it. Copy it, edit it, pass your own with --prices. This snapshot ADDS the W8 web-brain fast-tier bracket (GH #384) and carries every row of the 2026-08-22/24 snapshots forward, because workshop/evals/web-brain/run_bench.py prices itself against the NEWEST list by glob -- a newest list that had dropped rows would make an old cell's spend invisible to the budget brake rather than merely unpriced.",
+  "source": "https://openrouter.ai/api/v1/models",
+  "retrieved": "2026-08-25",
+  "currency": "USD",
+  "unit": "USD per 1,000,000 tokens",
+  "_pinned_provider_note": "The eight bracket rows below are priced at the PINNED endpoint, not at the models listing's headline figure, and where several fast hosts are named they are priced at the most expensive of them -- per field. https://openrouter.ai/api/v1/models answers with the cheapest endpoint a slug has, which for an open-weight model is a bulk host nobody in this bracket is measuring: openai/gpt-oss-120b lists at 0.037 / 0.17 (DeepInfra) and bills 0.15 / 0.60 on Groq and 0.35 / 0.75 on Cerebras. Pricing the bracket off the listing would have under-counted a pinned run by up to ten times, and an under-counting ledger is exactly the failure --budget-eur exists to prevent. Over-counting is the safe direction and is the one taken. Per-endpoint figures are from https://openrouter.ai/api/v1/models/<author>/<slug>/endpoints, retrieved 2026-08-25; `provider.only` takes the endpoint's `tag`, which is quoted in each note.",
+  "models": {
+    "openai/gpt-oss-120b": {
+      "input": 0.35,
+      "output": 0.95,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). THE fast-tier reference: the only slug in the listing served by all three speed hosts -- Groq (tag `groq`, 0.15 / 0.60), Cerebras (tag `cerebras/fp16`, 0.35 / 0.75) and SambaNova (tag `sambanova`, 0.14 / 0.95). It is therefore also the one row that can answer 'is this a model effect or a host effect', by measuring the same slug three times with three pins. Priced at the per-field maximum across those three (Cerebras input, SambaNova output) so the ceiling cannot under-count whichever pin the run uses. Endpoints retrieved 2026-08-25."
+    },
+    "openai/gpt-oss-20b": {
+      "input": 0.075,
+      "output": 0.30,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). The small sibling of the row above, on Groq (tag `groq`, 0.075 / 0.30 -- the exact figures used here). It is in the bracket to answer whether a display needs the 120b at all: if 20b emits a valid board, it is the cheapest correct picture on offer by a wide margin. Groq is its only speed-host endpoint; the others (CoreWeave, DeepInfra, Together, Fireworks) are bulk hosts and are not pinned here. Endpoints retrieved 2026-08-25."
+    },
+    "google/gemma-4-31b-it": {
+      "input": 0.99,
+      "output": 1.49,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). The second of exactly two slugs Cerebras serves (tag `cerebras/fp16`, 0.99 / 1.49 -- the figures used here); SambaNova serves it too (tag `sambanova`, 0.38 / 1.15). It is the bracket's non-OpenAI-weights control: without it, every Cerebras data point would come from one model family. Note it is the most expensive fast-tier row and the listing headline is 0.10 / 0.34 -- the seven-fold gap between bulk and fast hosting for the same weights is precisely why this file prices the pin. Endpoints retrieved 2026-08-25."
+    },
+    "qwen/qwen3-32b": {
+      "input": 0.29,
+      "output": 0.59,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). Dense 32B on Groq (tag `groq`, 0.29 / 0.59 -- the figures used here), and the bracket's only dense non-MoE mid-size model: the arms differ in how much structure the model has to hold in its head, and a dense model failing where an MoE of similar cost succeeds would be a finding about the format race, not about the host. Groq is its only speed-host endpoint. Endpoints retrieved 2026-08-25."
+    },
+    "meta-llama/llama-4-scout": {
+      "input": 0.11,
+      "output": 0.34,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). Groq (tag `groq`, 0.11 / 0.34 -- the figures used here). Cheapest MoE on a speed host, and it carries one caveat the run has to respect: the Groq endpoint caps `max_completion_tokens` at 8192, the lowest in the bracket. That is ample for a three-card status board and would not be for a larger display, so a result from this row does not generalise upward. Endpoints retrieved 2026-08-25."
+    },
+    "meta-llama/llama-3.3-70b-instruct": {
+      "input": 0.59,
+      "output": 0.90,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). Served by Groq (tag `groq`, 0.59 / 0.79) and SambaNova (tag `sambanova-turbo`, 0.45 / 0.90); priced at the per-field maximum of the two. The bracket's older-generation anchor -- if a 2024-vintage 70B still produces a valid board fast enough, the format is doing the work; if only the newest models manage it, the format is expensive. SambaNova's turbo endpoint caps completions at 3072 tokens, the tightest in the bracket. Endpoints retrieved 2026-08-25."
+    },
+    "minimax/minimax-m2.7": {
+      "input": 0.60,
+      "output": 2.40,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). Groq (tag `groq`, 0.60 / 1.80) and SambaNova (tag `sambanova`, 0.60 / 2.40); priced at the per-field maximum. The one RECENT large MoE a speed host serves, so it is the bracket's upper bound on 'fast and capable at once'. It is also its most output-expensive row, which matters because the ops-json arm emits several times the tokens the fragment arm does -- if a format race is ever won on price rather than on latency, this row is where it shows. Endpoints retrieved 2026-08-25."
+    },
+    "meta-llama/llama-3.1-8b-instruct": {
+      "input": 0.05,
+      "output": 0.08,
+      "_note": "NEW in this snapshot (GH #384, W8 web-brain bracket). Groq (tag `groq`, 0.05 / 0.08 -- the figures used here). The floor: the fastest and cheapest thing in the bracket, and almost certainly not smart enough for the ops arm. It is here as a scale marker, not as a candidate -- a TTFT table with no lower bound gives the reader no way to tell a fast model from a fast network, and an 8B that fails validity while posting the best TTFT is the clearest possible statement that TTFT alone decides nothing. Endpoints retrieved 2026-08-25."
+    },
+    "openai/gpt-5.6-luna": {
+      "input": 0.20,
+      "output": 1.20,
+      "_note": "openrouter id resolves to openai/gpt-5.6-luna-20260709. Re-checked on 2026-08-25 against the models listing: unchanged since the 2026-08-22 snapshot. ALSO the first of the W8 bracket's two slow references (GH #384): no speed host serves it (endpoints are OpenAI, Azure and Bedrock -- pin `openai`), and it is the colony's own shipped brain, so it is the number every other row is implicitly compared against. Prompts above 272,000 tokens bill at a higher tier (0.40 / 1.80) that this flat two-number format does not express; a colony whose calls stay below that threshold is priced exactly, one above it is priced low."
+    },
+    "anthropic/claude-sonnet-5": {
+      "input": 2.00,
+      "output": 10.00,
+      "_note": "Carried from the 2026-08-24 snapshot (GH #373); re-checked 2026-08-25 against the models listing, unchanged. ALSO the second of the W8 bracket's slow references (GH #384): the upper contrast, a frontier chat model on first-party hosting only (pin `anthropic`). It is expected to be the slowest row in the table and the most likely to be valid on the first try -- which is the trade the whole bench exists to price. At 10.00 output it is also the row that can eat the ceiling: repeats against it are the first thing to cut if --budget-eur bites."
+    },
+    "openai/gpt-5.6-sol": {
+      "input": 2.00,
+      "output": 10.00,
+      "_note": "Carried from the 2026-08-24 snapshot (GH #377); re-checked 2026-08-25 against the models listing, unchanged. The top tier of the luna family. NOT part of the W8 bracket -- it is here because this file is the newest list and a row dropped from the newest list stops being priced for every other consumer. Prompts above 272,000 tokens bill at a higher tier (4.00 / 15.00), the same shape the luna row carries and the same thing this flat format does not express."
+    },
+    "anthropic/claude-opus-5": {
+      "input": 5.00,
+      "output": 25.00,
+      "_note": "openrouter id resolves to anthropic/claude-opus-5-20260723. Re-checked on 2026-08-25 against the models listing: unchanged since the 2026-08-15 snapshot. Not part of the W8 bracket; carried so the newest list stays a superset."
+    },
+    "deepseek/deepseek-v4-pro": {
+      "input": 0.572808,
+      "output": 1.145616,
+      "_note": "CHANGED on 2026-08-25. The 2026-08-24 snapshot recorded 0.5262 / 1.052; the models listing now answers 0.572808 / 1.145616, which is StreamLake's endpoint -- and no endpoint sits at yesterday's figure any more, so this is a real move and not a listing artefact. The cheapest endpoints today are StreamLake (0.572808 / 1.145616) and Baidu (0.5746 / 1.1492); Fireworks, Together and BaseTen all serve it at 1.74 / 3.48, so a run that pins one of those is under-priced by this row by a factor of three -- pin-aware pricing (see _pinned_provider_note) applies to this slug too the moment anybody pins it. The separately dated variant deepseek-v4-pro-0813 is priced higher (1.122 / 3.366) on the same listing. Not part of the W8 bracket."
+    },
+    "google/gemini-3.7-flash": {
+      "input": 0.375,
+      "output": 1.875,
+      "_note": "Carried from the 2026-08-24 snapshot (GH #373); re-checked 2026-08-25 against the models listing, unchanged. A CHAT model, unrelated to the google/gemini-embedding-2 row below. Not part of the W8 bracket."
+    },
+    "qwen/qwen3.8-27b": {
+      "input": 0.425,
+      "output": 2.55,
+      "_note": "CHANGED on 2026-08-25. The 2026-08-24 snapshot recorded 0.35 / 2.75; the models listing now answers 0.425 / 2.55. Both figures are real and neither is wrong: 0.35 / 2.75 is Chutes' endpoint and 0.425 / 2.55 is Alibaba's, the first-party one the listing headlines today. This snapshot takes the listing figure, because `source` at the top of this file names the listing and a row that quietly followed a third-party endpoint would not be reproducible from it. A CHAT model, unrelated to the qwen/qwen3-embedding-8b row below. Not part of the W8 bracket."
+    },
+    "google/gemini-embedding-2": {
+      "input": 0.20,
+      "output": 0.0,
+      "_note": "embedding endpoint; no completion tokens are billed. NOT taken from the models listing -- https://openrouter.ai/api/v1/models answers with chat models only, and the embeddings endpoint carries no price list. This figure is MEASURED: one call on 2026-08-22, its billed amount divided by its 4 prompt tokens, and carried forward unchanged into this snapshot -- no new measurement was made on 2026-08-24 or 2026-08-25. The shipped embedding generation since 2026-08-19."
+    },
+    "qwen/qwen3-embedding-8b": {
+      "input": 0.01,
+      "output": 0.0,
+      "_note": "retired on 2026-08-19, superseded by google/gemini-embedding-2. The row stays so that a window spanning the switch prices both generations instead of dropping the older half into the 'unknown' bucket. Measured on 2026-08-08, 5 tokens."
+    }
+  },
+  "fallback_models": [
+    {
+      "from_path_suffix": "/embed",
+      "model": "google/gemini-embedding-2",
+      "_note": "An embed cell is a code cell calling an embedding endpoint. It reports tokens_prompt in its hop header but no model id -- the model lives in its own payload. Attribute it here, or its tokens land in the 'unknown' bucket and are excluded from the total. This rule names the CURRENT generation; a window recorded before 2026-08-19 belongs to the snapshot of its own day, which names the one before it."
+    }
+  ],
+  "fx": {
+    "EUR": {
+      "usd_per_unit": 1.1699,
+      "source": "ECB euro reference exchange rate",
+      "date": "2026-08-21",
+      "_note": "Carried unchanged from the 2026-08-24 snapshot; no new ECB rate was fetched for this one. It converts the ledger's USD into the euros --budget-eur is expressed in, so a stale rate moves the ceiling by whatever the euro has moved -- fractions of a percent over four days, and in the safe direction only by luck. Refresh it before a run that expects to spend near the cap."
+    }
+  }
+}

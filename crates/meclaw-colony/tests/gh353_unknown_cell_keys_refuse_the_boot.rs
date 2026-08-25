@@ -18,8 +18,10 @@
 //!       names the KEY and the FILE.
 //!   (c) regression guard — a `cell` block carrying the FULL documented key
 //!       list still boots (`id`, `type`, `timeout`, `restart_limit`,
-//!       `idle_timeout_ms`, `mailbox_size`, `message_timeout`, `provenance`,
-//!       `surface`).
+//!       `idle_timeout_ms`, `mailbox_size`, `message_timeout`, `provenance`).
+//!       `surface` was on this list until W8 (GH #383) and is deliberately off
+//!       it now: the key is gone with the serving path it declared, so it is an
+//!       unknown key like any other and case (a) is what covers it.
 //!   (d) a `cell.type: "ref"` marker (`type` + `template`, GH #277) still
 //!       parses — `template` is a declared, legal key of the block.
 //!   (e) fix round 1 — the mutation barrier covers SUBTREE templates too: a
@@ -240,8 +242,7 @@ async fn the_full_documented_cell_key_list_still_boots() {
               "mailbox_size":16,
               "message_timeout":30000,
               "provenance":{"template":"echo","template_version":"1.0.0",
-                            "instantiated_at":1755000000},
-              "surface":{}
+                            "instantiated_at":1755000000}
             },
             "params":{"emitted_target":"/dev/null"},
             "contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,

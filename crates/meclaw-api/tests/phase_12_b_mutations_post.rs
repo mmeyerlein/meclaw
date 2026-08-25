@@ -57,12 +57,8 @@ async fn post_valid_mutation_returns_200_with_committed_slot() {
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, _blob_td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     // `override_params.emitted_target` is mandatory for EchoCell (otherwise spawn
     // reject); GH #294 additionally requires the template to DECLARE the param,
@@ -112,12 +108,8 @@ async fn post_invalid_mutation_returns_422_with_rejected_detail() {
         templates_root: std::path::PathBuf::new(),
     });
     let (blob_store, _blob_td) = common::test_blob_store();
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let body_json = serde_json::json!({
         "scope": "/",

@@ -20,12 +20,8 @@ async fn post_messages_multipart_uploads_to_blob_and_returns_attachments() {
         templates_root: std::path::PathBuf::new(),
     });
     let blob_store = Arc::new(meclaw_colony::blob::DiskBlobStore::new(&blob_root).unwrap());
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     // Hand-rolled multipart body — small enough to keep this test self-contained
     // without pulling reqwest's multipart builder into the request side.
@@ -103,12 +99,8 @@ async fn post_messages_json_path_unchanged_by_multipart_branch() {
         templates_root: std::path::PathBuf::new(),
     });
     let blob_store = Arc::new(meclaw_colony::blob::DiskBlobStore::new(blob_td.path()).unwrap());
-    let app = meclaw_api::router::build_router(
-        api_colony,
-        blob_store,
-        meclaw_core::MESSAGE_DEFAULT_TTL,
-        meclaw_api::router::SurfaceState::disabled(),
-    );
+    let app =
+        meclaw_api::router::build_router(api_colony, blob_store, meclaw_core::MESSAGE_DEFAULT_TTL);
 
     let body_json = serde_json::json!({
         "target": "/echo/cell",
