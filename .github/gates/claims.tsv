@@ -120,14 +120,14 @@ PIN-llm-system-only-silence-en	docs/cell-types.en.md	exclusively `messages[]`. S
 # The substrate does it; nothing proves it. Each row is a candidate test --
 # the regressions waiting to happen (GH #254 bucket 2).
 #
-BU-dlq-error-codes-de	docs/meclaw-overview.md	**Kanonische `error_code`-Strings**	built-unpinned	GH #254
-BU-dlq-error-codes-en	docs/meclaw-overview.en.md	**Canonical `error_code` strings**: every dead-letter reason	built-unpinned	GH #254
-BU-mutation-error-enum-de	docs/meclaw-overview.md	`error_code` ist Enum: `schema` | `match_no_hit`	built-unpinned	GH #254
-BU-mutation-error-enum-en	docs/meclaw-overview.en.md	`error_code` is an enum: `schema` | `match_no_hit`	built-unpinned	GH #254
-BU-timer-cron-utc-de	docs/cell-types.md	Cron-Ausdrücke werden in **UTC** ausgewertet	built-unpinned	GH #254
-BU-timer-cron-utc-en	docs/cell-types.en.md	cron expressions are evaluated in **UTC**	built-unpinned	GH #254
-BU-max-concurrency-cap	docs/meclaw-overview.md	ist `max_concurrency` ein harter Cap auf tatsächlich gleichzeitig laufende `handle()`-Calls	built-unpinned	GH #254
-BU-attachment-reader	docs/meclaw-overview.md	Ohne Deklaration gibt es keinen Handle	built-unpinned	GH #254
+PIN-dlq-error-codes-de	docs/meclaw-overview.md	**Kanonische `error_code`-Strings**	pinned	every_reason_maps_to_a_canonical_code_and_back
+PIN-dlq-error-codes-en	docs/meclaw-overview.en.md	**Canonical `error_code` strings**: every dead-letter reason	pinned	every_reason_maps_to_a_canonical_code_and_back
+PIN-mutation-error-enum-de	docs/meclaw-overview.md	`error_code` ist Enum: `schema` | `match_no_hit`	pinned	the_error_code_enum_is_exactly_what_the_spec_lists
+PIN-mutation-error-enum-en	docs/meclaw-overview.en.md	`error_code` is an enum: `schema` | `match_no_hit`	pinned	the_error_code_enum_is_exactly_what_the_spec_lists
+PIN-timer-cron-utc-de	docs/cell-types.md	Cron-Ausdrücke werden in **UTC** ausgewertet	pinned	cron_next_occurrence_is_anchored_in_utc
+PIN-timer-cron-utc-en	docs/cell-types.en.md	cron expressions are evaluated in **UTC**	pinned	cron_next_occurrence_is_anchored_in_utc
+PIN-max-concurrency-cap	docs/meclaw-overview.md	ist `max_concurrency` ein harter Cap auf tatsächlich gleichzeitig laufende `handle()`-Calls	pinned	n_messages_amplify_to_max_concurrency_workers_and_all_run
+PIN-attachment-reader	docs/meclaw-overview.md	Ohne Deklaration gibt es keinen Handle	pinned	undeclared_consumption_yields_no_handle
 #
 # --- specified-not-built ------------------------------------------------
 # Described, not built. Each anchor line carries the visible marker in both
@@ -217,3 +217,9 @@ PIN-seed-owns-schema-refused-de	docs/meclaw-overview.md	ist eine Verweigerung un
 PIN-seed-owns-schema-refused-en	docs/meclaw-overview.en.md	is a refusal, not a quiet nothing	pinned	a_seed_beside_a_type_that_cannot_load_it_is_refused_by_name
 PIN-seed-owns-schema-six-de	docs/meclaw-overview.md	deklarieren sie und haben bewusst **keinen** Loader	pinned	the_six_declare_that_they_own_their_schema
 PIN-seed-owns-schema-six-en	docs/meclaw-overview.en.md	declare it and deliberately have **no** loader	pinned	the_six_declare_that_they_own_their_schema
+PIN-mutation-invalid-params-de	docs/meclaw-overview.md	- `invalid_params` (GH #404) — der `params`-Block einer zu instanziierenden Zelle	pinned	a_declaration_the_boot_would_refuse_is_refused_at_the_mutation
+PIN-mutation-invalid-params-en	docs/meclaw-overview.en.md	- `invalid_params` (GH #404): the `params` block of a cell about to be instantiated does	pinned	a_declaration_the_boot_would_refuse_is_refused_at_the_mutation
+PIN-web-bundle-destructive-de	docs/cell-types.md	**Was das fuer ein Bundle heisst, das aufraeumt und neu baut** (GH #405)	pinned	a_bundle_whose_creates_are_all_refused_still_applies_its_deletes
+PIN-web-bundle-destructive-en	docs/cell-types.en.md	**What that means for a bundle that clears and rebuilds** (GH #405)	pinned	a_bundle_whose_creates_are_all_refused_still_applies_its_deletes
+PIN-web-bundle-two-sends-de	docs/cell-types.md	ein zerstoerendes Bundle wird als ZWEI geschickt	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree
+PIN-web-bundle-two-sends-en	docs/cell-types.en.md	a destructive bundle is sent as TWO	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree

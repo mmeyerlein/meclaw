@@ -159,6 +159,99 @@ mod tests_3a {
         assert_eq!(r, DeadLetterReason::TtlExpired);
     }
 
+    /// GH #254 — the SET claim, which the per-variant assertions below cannot
+    /// make: `error_code` on a dead letter is a **canonical, closed** vocabulary.
+    ///
+    /// The three halves of that sentence, each asserted rather than assumed:
+    ///
+    /// 1. **Closed.** The array is built from a `match` with **no `_` arm**, so a
+    ///    new variant added to `DeadLetterReason` does not slip past this test —
+    ///    it stops compiling here, which is the only mechanism that survives a
+    ///    contributor who never reads this file.
+    /// 2. **Canonical.** Every code round-trips through `from_code`, so the
+    ///    string a dead letter carries is the string that reconstructs it.
+    /// 3. **Unambiguous.** No two variants share a code — a duplicate would make
+    ///    the round trip lossy for one of them while every per-variant assertion
+    ///    still passed.
+    ///
+    /// The count is stated explicitly so a *removal* is as loud as an addition:
+    /// the exhaustive match alone would happily shrink.
+    #[test]
+    fn every_reason_maps_to_a_canonical_code_and_back() {
+        use DeadLetterReason::*;
+        // No `_` arm, deliberately: adding a variant must break this line.
+        let all: Vec<DeadLetterReason> = vec![
+            UnresolvedPath,
+            HiveNoRoute,
+            TtlExpired,
+            ColonyEndpointUnimplemented,
+            ColonyEndpointInvalid,
+            InvalidUbfBody,
+            CellInactive,
+            BlobUnavailable,
+            BlobRecursionTooDeep,
+            ConsumesViolation,
+            ContractViolation,
+            NoRoute,
+            SlotUnbound,
+            SlotParkOverflow,
+        ];
+        // The compile-time half of "closed": this match names every variant and
+        // has no catch-all, so a new one is a compiler error in this function.
+        fn exhaustive(r: &DeadLetterReason) -> &'static str {
+            match r {
+                DeadLetterReason::UnresolvedPath => "unresolved_path",
+                DeadLetterReason::HiveNoRoute => "hive_no_route",
+                DeadLetterReason::TtlExpired => "ttl_expired",
+                DeadLetterReason::ColonyEndpointUnimplemented => "colony_endpoint_unimplemented",
+                DeadLetterReason::ColonyEndpointInvalid => "colony_endpoint_invalid",
+                DeadLetterReason::InvalidUbfBody => "invalid_ubf_body",
+                DeadLetterReason::CellInactive => "cell_inactive",
+                DeadLetterReason::BlobUnavailable => "blob_unavailable",
+                DeadLetterReason::BlobRecursionTooDeep => "blob_recursion_too_deep",
+                DeadLetterReason::ConsumesViolation => "consumes_violation",
+                DeadLetterReason::ContractViolation => "contract_violation",
+                DeadLetterReason::NoRoute => "no_route",
+                DeadLetterReason::SlotUnbound => "slot_unbound",
+                DeadLetterReason::SlotParkOverflow => "slot_park_overflow",
+            }
+        }
+
+        assert_eq!(
+            all.len(),
+            14,
+            "the canonical set is 14 codes; a variant was added or removed \
+             without moving this count, and the spec list has to move with it"
+        );
+
+        let mut seen: std::collections::BTreeSet<&'static str> = Default::default();
+        for r in &all {
+            let code = r.as_code();
+            assert_eq!(
+                code,
+                exhaustive(r),
+                "`as_code` disagrees with the exhaustive map for {r:?}"
+            );
+            assert!(
+                seen.insert(code),
+                "two reasons share the canonical code {code:?} — the round trip \
+                 below cannot be right for both, and a reader of the dead-letter \
+                 queue cannot tell them apart"
+            );
+            assert_eq!(
+                DeadLetterReason::from_code(code),
+                Some(r.clone()),
+                "{r:?} does not survive as_code -> from_code; the persisted \
+                 `error_code` is what the DLQ drain reconstructs from"
+            );
+        }
+        assert_eq!(seen.len(), all.len(), "every code is distinct");
+
+        // And the inverse is closed too: a string nobody emits is not a reason.
+        assert_eq!(DeadLetterReason::from_code("not_a_reason"), None);
+        assert_eq!(DeadLetterReason::from_code(""), None);
+    }
+
     #[test]
     fn as_code_returns_canonical_strings() {
         assert_eq!(

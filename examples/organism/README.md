@@ -54,15 +54,15 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.0.1   the shell
+/os                                 meclaw-os@1.0.2   the shell
 ├── access                            → access@2.0.5        the capability broker
 ├── steward                           → steward@2.0.11      the control loop
 └── orgs                              (empty container)
-    └── acme                       org@1.0.0         a namespace and a boundary
+    └── acme                       org@1.0.1         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.0.0      one person
+            └── alex               member@1.0.1      one person
                 ├── affinity          → affinity@3.0.0      identity and meaning
-                ├── firewall          → firewall@2.0.4      the screen
+                ├── firewall          → firewall@2.0.5      the screen
                 ├── memory-hive       → memory-hive@3.0.1   what was said to them
                 └── assistants        (empty container)
                     └── scribe    assistant@1.0.1   one generation of an agent
@@ -101,7 +101,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.2"}],
           "add_edges": []}}
 ```
 
@@ -119,7 +119,7 @@ on anything inside it.
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.0"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.1"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

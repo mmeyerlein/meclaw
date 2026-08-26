@@ -190,7 +190,7 @@ pub fn build_staging_tree_from_templates(
                 message_timeout,
                 mailbox_size,
                 header_view,
-            ) = patch_and_substitute_config(&staging_path, env, ctx, n, None)?;
+            ) = patch_and_substitute_config(&staging_path, env, ctx, n, None, factories)?;
             let absolute_path = super::resolve_scoped_path(scope, name);
             out.push(StagedDir {
                 staging_path,
@@ -291,7 +291,7 @@ pub fn build_staging_tree_from_templates(
             message_timeout,
             mailbox_size,
             header_view,
-        ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance))?;
+        ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance), factories)?;
         seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
@@ -401,6 +401,7 @@ pub fn build_staging_tree_from_templates(
             ctx,
             &override_node,
             Some(&provenance),
+            factories,
         )?;
         seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
@@ -567,6 +568,7 @@ pub(crate) fn patch_and_substitute_config(
     ctx: &HashMap<String, String>,
     add_node: &JsonValue,
     provenance: Option<&crate::config::NodeProvenance>,
+    factories: &crate::CellFactoryRegistry,
 ) -> Result<
     (
         String,
@@ -673,6 +675,34 @@ pub(crate) fn patch_and_substitute_config(
                     .as_object_mut()
             })
             .map(|p| p.insert("sandbox".into(), block));
+    }
+    // GH #404 -- the boot-parity cut for `params`. `plan_bootstrap` calls
+    // `CellFactory::validate_params` for every cell it plans; instantiation did
+    // not, so the two paths that put a cell into a colony disagreed about what
+    // a valid cell is. A template defect committed cleanly, the cell never did
+    // its job, and the colony refused to start at the NEXT process start — in
+    // front of whoever restarted it rather than whoever grew it (GH #401).
+    //
+    // The input is the runtime view WITH the default-deny sandbox block already
+    // filled in, which is byte-for-byte what the boot reads back off the disk
+    // this function is about to write. Asking the same question of the same
+    // value is the whole point: a mutation that commits must produce a tree
+    // that boots.
+    //
+    // A cell type with no factory is left to the `unknown_cell_type` check that
+    // already runs in `validate_post_state_with_templates_scoped` — this site
+    // refuses params, not types, and a hive marker has no factory at all.
+    //
+    // Pre-destructive, like the contract-presence check below it: the
+    // `.staging` dir is discarded and the live tree is byte-identical
+    // afterwards.
+    if let Some(factory) = factories.get(&cell_type)
+        && let Err(reason) = factory.validate_params(&params)
+    {
+        return Err(MutationError::InvalidParams(format!(
+            "{}: {reason}",
+            cfg_path.display()
+        )));
     }
     // Extract the contract block from the post-substitution config (T23) and
     // compile it via the shared `compile_contract_view` helper (paket-7 B4).

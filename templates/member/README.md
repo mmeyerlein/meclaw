@@ -1,4 +1,4 @@
-# `member@1.0.0`
+# `member@1.0.1`
 
 One person, as a level. Three holders and one open container:
 
@@ -6,7 +6,7 @@ One person, as a level. Three holders and one open container:
 |---|---|
 | [`affinity@3.0.0`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
 | [`memory-hive@3.0.1`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
-| [`firewall@2.0.4`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
+| [`firewall@2.0.5`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 
 The fourth thing a channel needs — the channel itself — is the
 [`talky`](../talky/README.md)'s, and a talky lives inside an assistant, one level
@@ -158,7 +158,7 @@ a level that gets wired into is for. No hive in this template carries a `ports`
 key.
 
 **What transits it**, derived from the contract of `assistant@1.0.1` and from
-what this member sends back down (`firewall@2.0.4`, `memory-hive@3.0.1`):
+what this member sends back down (`firewall@2.0.5`, `memory-hive@3.0.1`):
 
 - **in** — `in_turn` (the screened turn), `in_bundle` (the memory's answer).
   Both are produced by a sibling of the container, not by a caller outside the

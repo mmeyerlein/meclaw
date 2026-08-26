@@ -26,7 +26,7 @@ agent, no memory, no screening and no persona -- every one of those arrives from
 at runtime, into a colony that is already up.
 
 Two of the four templates were extracted out of this folder to make that true: the
-[`door@1.0.1`](../../templates/door/) that names the ingress lane, and the
+[`door@1.0.2`](../../templates/door/) that names the ingress lane, and the
 [`terminal@1.0.1`](../../templates/terminal/) that every undecided lane ends in. They used to be
 "the two cells a library cannot ship". They turned out to be the two cells a library *should*
 ship -- generic, ten lines each, and needed by every tree.
@@ -37,8 +37,8 @@ ship -- generic, ten lines each, and needed by every tree.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/door` | [`door@1.0.1`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
-| `/firewall` | [`firewall@2.0.4`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
+| `/door` | [`door@1.0.2`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane, carrying the channel identity. |
+| `/firewall` | [`firewall@2.0.5`](../../templates/firewall/) | 2 cells. Size cap, sender rules, rate limit -- every verdict a comparison or a clock, never a model. |
 | `/talky` | [`talky`](../../templates/talky/) | 12 cells. Session keeper, context collector, tool dispatcher, answer splitter, summarizer, and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.1`](../../templates/terminal/) | 1 cell. The stop for two lanes that have not been decided yet. |
 

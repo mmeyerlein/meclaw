@@ -234,16 +234,35 @@ async fn committed_mutation_leaves_single_committed_row_no_reject() {
 /// `INSERT OR IGNORE` reject path must not conflate them into a duplicate row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn apply_stage_spawn_failure_logs_failed_not_rejected() {
-    let h = ColonyHandle::new_with_echo();
-    setup_template(&h, "echo", "echo", "{}").await;
+    // GH #404 changed how this spot is reached, not what it asserts. The
+    // provocation used to be an `echo` node without its `emitted_target`: the
+    // mutation lane did not deserialize the params it wrote, so a params defect
+    // passed validation and died at the spawn step. The boot-parity guard
+    // refuses that during staging now, as `invalid_params`, pre-destructively —
+    // which is the whole point of #404 and would make this test assert the
+    // wrong class if it kept the old provocation.
+    //
+    // The apply-stage failure itself is still real: a spawn can fail for
+    // reasons no parse can see. `SpawnRefusesCellFactory` is a test factory
+    // that diverges from the parser invariant deliberately (validates
+    // everything, spawns nothing), which is the only honest way to stand in
+    // that spot now that no shipped factory may.
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let h = ColonyHandle::new_with_factories_at(
+        &td,
+        vec![(
+            "spawn_refuses".to_string(),
+            std::sync::Arc::new(meclaw_testing::SpawnRefusesCellFactory)
+                as std::sync::Arc<dyn meclaw_colony::CellFactory>,
+        )],
+    );
+    setup_template(&h, "norefuse", "spawn_refuses", "{}").await;
 
-    // echo template loaded, but no `emitted_target` override → passes validation,
-    // fails at the spawn step (Apply stage).
     let outcome = send_mutation(
         &h,
         meclaw_core::serde_json::json!({
             "scope": "/",
-            "diff": { "add_nodes": [{"name": "noecho", "template": "echo"}] }
+            "diff": { "add_nodes": [{"name": "norefuse", "template": "norefuse"}] }
         }),
         None,
         Uuid::now_v7(),

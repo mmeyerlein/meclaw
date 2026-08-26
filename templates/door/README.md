@@ -1,4 +1,4 @@
-# `door@1.0.1`
+# `door@1.0.2`
 
 The first cell of a colony, as one `code` cell. It exists because of a small, hard
 fact about the substrate: the HTTP ingress puts the request headers into the message's
@@ -33,7 +33,7 @@ That is the whole template. Ten lines of Python, one emission, no state.
 | the template root | `code` | the lane naming and the channel promotion. No state, no `cell.db`. |
 
 Single-cell template (the `_cell-types` shape): instantiate it under any name --
-`surface` is the usual one -- and the instance IS the cell.
+`door` is the usual one -- and the instance IS the cell.
 
 ## Ports and wiring
 
@@ -41,7 +41,7 @@ Entry is `POST /messages` targeted at the instance. Exactly one lane leaves it:
 
 ```json
 [
-  { "from": "./surface", "to": "./firewall",
+  { "from": "./door", "to": "./firewall",
     "condition": "has(hop.route) && hop.route == 'turn'",
     "modifier": {"set_hop": {"route": "'in_turn'"},
                  "set_context": {"channel": "hop.chat_id"}} }
@@ -61,7 +61,7 @@ context travels. A tree that reads `hop.chat_id` three cells later reads nothing
 ```bash
 curl -s -X POST http://127.0.0.1:7777/messages \
      -H 'Content-Type: application/json' \
-     -d '{"target": "/surface", "headers": {"channel": "chat-1"},
+     -d '{"target": "/door", "headers": {"channel": "chat-1"},
           "body": {"messages": [{"origin": "user", "type": "text",
                                  "text": "Say hello in one short sentence."}]}}'
 ```

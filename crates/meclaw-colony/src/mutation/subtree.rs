@@ -1392,6 +1392,7 @@ pub fn stage_subtree(
             ctx,
             &node_override,
             node_provenance.as_ref(),
+            factories,
         )?;
         // Seed inner cells where a `seed/` dir is present — unless the cell type
         // owns its schema, in which case it seeds itself at first spawn (GH #398).
@@ -1866,6 +1867,7 @@ fn stage_rename_root(
             ctx,
             &node_override,
             node_provenance.as_ref(),
+            factories,
         )?;
         crate::mutation::stage::seed_cell_db_if_present(&cell_staging, &cell_type, factories)?;
 

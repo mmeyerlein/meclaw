@@ -12,3 +12,5 @@ pub mod multi_update;
 pub use multi_update::MultiUpdateMockCellFactory;
 pub mod persist;
 pub use persist::PersistCellFactory;
+pub mod spawn_refuses;
+pub use spawn_refuses::{SPAWN_REFUSAL, SpawnRefusesCellFactory};

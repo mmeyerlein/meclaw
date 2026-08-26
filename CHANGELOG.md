@@ -11,6 +11,102 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.4] — 2026-08-26
+
+### Added
+
+- **The spec-claims registry has no unpinned bucket left**
+  ([#254](https://github.com/mmeyerlein/meclaw/issues/254)). The audit's second
+  bucket — behaviour the code has and nothing proves — is down from eight rows to
+  **zero**. Two were already covered and only unregistered (`max_concurrency` as a
+  hard cap, and the `AttachmentReader` that does not exist without its
+  declaration). Three needed a test that nobody had written, and each of the
+  three is a **set** claim that per-item assertions cannot make: the dead-letter
+  `error_code` vocabulary is closed, canonical and unambiguous (round-tripped
+  through `from_code`, built from an exhaustive `match` with no `_` arm, so a new
+  variant fails to compile rather than slipping past); the mutation `error_code`
+  enum is exactly the 22 tokens the spec lists, across all three producers, with
+  `subtree_resume_unsupported` named as reserved rather than quietly missing; and
+  cron expressions are evaluated in **UTC** — pinned with a wall-clock hour in
+  January *and* July, because the interval expressions every existing timer test
+  uses are timezone-invariant and the one test that looked like the pin was
+  exercising the third-party parser, not the timer.
+
+### Changed
+
+- **`door` and `firewall` stopped teaching `./surface` in their own recipes**
+  ([#407](https://github.com/mmeyerlein/meclaw/issues/407)). GH #397 renamed the
+  front-door cell from `surface` to `door` in all three shipped examples, and
+  left the two template surfaces that wire it: `templates/door/README.md` — the
+  odd one, since `door` is the name that same template gave the shape — its
+  `curl` example, `templates/door/template.json`, and
+  `templates/firewall/README.md`. All four now say `door`, and so does the
+  template's own naming advice ("instantiate it under any name — `door` is the
+  usual one").
+
+  `door@1.0.2`, `firewall@2.0.5`. The § 4a sweep that follows a bump is what
+  makes this its own change rather than a tail on the rename, and it ran the
+  whole chain: `templates/member/firewall/config.json` carries a **versioned
+  `ref` pin** on the firewall, so `member@1.0.1` — and the derivation gates then
+  named each further step out loud, `org@1.0.1` and `meclaw-os@1.0.2`
+  (`every_transit_lane_says_it_is_a_boundary_and_names_where_it_came_from` reads
+  the occupant's version off the tree and is red until the level agrees). Four
+  cross-references in *other* templates' prose are deliberately left standing —
+  they are nobody's pin and the cascade would not end — and are filed as
+  [#408](https://github.com/mmeyerlein/meclaw/issues/408).
+
+### Fixed
+
+- **A mutation no longer grows a cell the boot refuses**
+  ([#404](https://github.com/mmeyerlein/meclaw/issues/404)). `add_nodes`
+  validated a dozen things about the node it was about to write and never asked
+  the one question the boot asks of every cell: does this `params` block
+  deserialize for the cell type it names? So the two paths that put a cell into
+  a colony disagreed — instantiation accepted what `plan_bootstrap` refuses. The
+  timing was the defect: the mutation returned `committed`, the colony kept
+  running with a cell that could never do its job, and the failure surfaced at
+  the **next** process start, in front of whoever restarted it rather than
+  whoever grew it (GH #401 was one instance; `examples/organism` ran until it
+  was restarted and then would not start). Instantiation now calls
+  `CellFactory::validate_params` at staging, on the same runtime view of the
+  params the boot reads back off the disk, and refuses pre-destructively.
+
+  **New `error_code`: `invalid_params`** — the documented mutation enum is 23
+  tokens wide instead of 22. Additive, as the contract promises: the message
+  names the staged `config.json` and carries the factory's own reason verbatim,
+  which is what the boot would have printed. A cell type without a registered
+  factory still produces `unknown_cell_type`, not this. The guard works
+  **forward**: a tree that already carries such a defect is not repaired by it,
+  and a boot that refuses there is still the right answer.
+
+  Two decisions taken with it. `validate_params` is now required to stay a pure
+  parse — it runs on the colony task, the single writer — and
+  `CellFactory::validate_cell_dir` is deliberately **not** called at staging: it
+  reads the filesystem, and it is an assertion about a finished cell directory,
+  which during staging has not been seeded yet.
+
+### Documented
+
+- **What a destructive `web` bundle costs, said where it happens**
+  ([#405](https://github.com/mmeyerlein/meclaw/issues/405)). A bundle whose
+  `object.create` legs are all refused still applies its `object.delete` legs —
+  not a regression, but the ruled semantics ("a bundle is not a transaction",
+  GH #295 for the `store`, inherited by the `web` cell) meeting an awkward
+  shape: a delete needs no component and a create looks one up, so
+  `unknown_component` is structurally a filter that removes exactly the
+  constructive legs and lets the destructive ones through. A patch that wrote
+  nothing still destroyed what was there.
+
+  **Ruled: option 3 of the issue.** A bundle stays a sequence of independent
+  ops — no stop at the first refusal, no ordering by leg class the caller
+  cannot see in its own bundle — and `docs/cell-types` now says so in both
+  languages, together with the recipe: a destructive bundle is sent as **two**,
+  the `create`/`update` legs first, their `bundle_errors` read, and the deletes
+  sent only if it is zero. A bundle-level `atomic` / `stop_on_error` flag
+  (option 4) is deliberately **not** built: it is an extension of the public
+  bundle format and wants its own ruling. Nothing in the substrate changed, no
+  template version moved.
+
 ## [0.22.3] — 2026-08-26
 
 ### Fixed

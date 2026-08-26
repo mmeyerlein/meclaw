@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "members/alex",
-        "template": "member@1.0.0"
+        "template": "member@1.0.1"
       }
     ],
     "add_edges": [

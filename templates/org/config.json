@@ -7,49 +7,49 @@
       "accepts": [
         {
           "route": "in_turn",
-          "because": "a turn on its way to one of this organisation's members, where it meets that member's screen before anything of the member's own. The level is a boundary and a namespace, not a participant: it reads nothing, decides nothing and holds nothing, so the turn arrives at the member exactly as the caller sent it, context and all. Derived from the accepts list of member@1.0.0"
+          "because": "a turn on its way to one of this organisation's members, where it meets that member's screen before anything of the member's own. The level is a boundary and a namespace, not a participant: it reads nothing, decides nothing and holds nothing, so the turn arrives at the member exactly as the caller sent it, context and all. Derived from the accepts list of member@1.0.1"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, from outside that member's organisation. The namespace does not know what a recall is and must not: it carries the hop and context keys the member's own door reads (hop.recall_query, hop.memory_tier, the window pair, context.audience_set, context.channel) across the boundary untouched. Derived from the accepts list of member@1.0.0"
+          "because": "a question against a member's memory, from outside that member's organisation. The namespace does not know what a recall is and must not: it carries the hop and context keys the member's own door reads (hop.recall_query, hop.memory_tier, the window pair, context.audience_set, context.channel) across the boundary untouched. Derived from the accepts list of member@1.0.1"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker, what may this audience be told. It crosses the namespace on its way in; the level is a boundary, and identity is decided one level down by that member's affinity, never here. Derived from the accepts list of member@1.0.0"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker, what may this audience be told. It crosses the namespace on its way in; the level is a boundary, and identity is decided one level down by that member's affinity, never here. Derived from the accepts list of member@1.0.1"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. A namespace neither authorises nor records it -- the actor is edge truth at the member's own door, and this boundary only lets the proposal reach it. Derived from the accepts list of member@1.0.0"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. A namespace neither authorises nor records it -- the actor is edge truth at the member's own door, and this boundary only lets the proposal reach it. Derived from the accepts list of member@1.0.1"
         }
       ],
       "emits": [
         {
           "route": "answer",
-          "because": "the brief a member's affinity produced, on its way back out through the boundary. It leaves exactly as the member produced it: a namespace does not rewrite what crosses it and does not keep a copy -- what a member knows belongs to the member (GH #122, the three-holders ruling). Derived from the emits list of member@1.0.0"
+          "because": "the brief a member's affinity produced, on its way back out through the boundary. It leaves exactly as the member produced it: a namespace does not rewrite what crosses it and does not keep a copy -- what a member knows belongs to the member (GH #122, the three-holders ruling). Derived from the emits list of member@1.0.1"
         },
         {
           "route": "ack",
-          "because": "a proposed change to a member's record was accepted or refused, with the reason code that says which, on its way back to the proposer. The boundary carries the verdict and forms none of its own. Derived from the emits list of member@1.0.0"
+          "because": "a proposed change to a member's record was accepted or refused, with the reason code that says which, on its way back to the proposer. The boundary carries the verdict and forms none of its own. Derived from the emits list of member@1.0.1"
         },
         {
           "route": "reject",
-          "because": "a refusal from one of a member's holders -- a screened-off turn, or a question the memory would not take. It must leave the namespace for the same reason it must leave the member: a level that consumed it would be a holder, and a silently swallowed refusal is exactly what GH #284 took out of this tree. Undrained above, it becomes no_route in the DLQ, which is recorded and self-localising. Derived from the emits list of member@1.0.0"
+          "because": "a refusal from one of a member's holders -- a screened-off turn, or a question the memory would not take. It must leave the namespace for the same reason it must leave the member: a level that consumed it would be a holder, and a silently swallowed refusal is exactly what GH #284 took out of this tree. Undrained above, it becomes no_route in the DLQ, which is recorded and self-localising. Derived from the emits list of member@1.0.1"
         },
         {
           "route": "error",
-          "because": "a member failed at something that was not a refusal; which holder inside produced it is not the caller's business and even less the namespace's. The boundary is not a consumer: an error that crosses a namespace is one the parent owes a drain. Derived from the emits list of member@1.0.0"
+          "because": "a member failed at something that was not a refusal; which holder inside produced it is not the caller's business and even less the namespace's. The boundary is not a consumer: an error that crosses a namespace is one the parent owes a drain. Derived from the emits list of member@1.0.1"
         },
         {
           "route": "write",
-          "because": "an assistant's batched conversation write, on its way out through the namespace. The boundary neither reads it nor keeps a copy -- what a member's assistant said belongs to that member (GH #122, the three-holders ruling), and an org that stored it would be a holder rather than a namespace. Derived from the emits list of member@1.0.0"
+          "because": "an assistant's batched conversation write, on its way out through the namespace. The boundary neither reads it nor keeps a copy -- what a member's assistant said belongs to that member (GH #122, the three-holders ruling), and an org that stored it would be a holder rather than a namespace. Derived from the emits list of member@1.0.1"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn a member's assistant offers for archiving, one message per turn, crossing the namespace untouched. Same reason as `write`: a group is an audience, not a holder, so the boundary carries the turn and never files it. Derived from the emits list of member@1.0.0"
+          "because": "one finished turn a member's assistant offers for archiving, one message per turn, crossing the namespace untouched. Same reason as `write`: a group is an audience, not a holder, so the boundary carries the turn and never files it. Derived from the emits list of member@1.0.1"
         },
         {
           "route": "prune",
-          "because": "a housekeeping report from a member's assistant, raised when something above fired the prune lane. The namespace owns no timer and no schedule; it is a boundary, and it lets the report out instead of swallowing it. Derived from the emits list of member@1.0.0"
+          "because": "a housekeeping report from a member's assistant, raised when something above fired the prune lane. The namespace owns no timer and no schedule; it is a boundary, and it lets the report out instead of swallowing it. Derived from the emits list of member@1.0.1"
         }
       ]
     },
@@ -117,6 +117,6 @@
     "purpose": "Scope marker of an organisation: a name, a boundary, and one open container its members are instantiated into. It carries no cell of any kind -- an org that grows a cell has stopped being a namespace. Its eleven edges are the whole of its behaviour: four doors down into ./members and seven exits back out, one per lane of the contract.",
     "use_when": "One per organisation, instantiated into the shell's orgs container. Instantiate it in the mutation that also wires its transit lanes; the hive is an island until an edge crosses into it. Members are instantiated into ./members afterwards, one at a time, and each of those mutations draws its own edges.",
     "not_in_scope": "No memory: a group is an audience, not a holder, and 'what does the group know about X' is a filter on the read, never a second store (GH #122). No identity, no broker, no firewall, no drain, no sink -- every one of those is either a member's own or the shell's. No cells at all, and no routing below ./members: until a member is instantiated there is nothing down there to route to.",
-    "contract_derivation": "The eleven lanes are the union of what member@1.0.0 accepts and emits, minus the lanes a sibling inside this level consumes itself. Nothing is subtracted: the only thing inside an org is the container, so there is no sibling to consume anything. Note in particular that 'turn' is NOT here -- a member consumes its own turn internally (./assistants -> ./firewall) and never emits one. The last three emits -- write, turn_write, prune -- are what a member re-emits on behalf of its assistants and nothing at member level consumes; they arrived here when the member started carrying them, because the derivation is read off the neighbour's file rather than kept by hand."
+    "contract_derivation": "The eleven lanes are the union of what member@1.0.1 accepts and emits, minus the lanes a sibling inside this level consumes itself. Nothing is subtracted: the only thing inside an org is the container, so there is no sibling to consume anything. Note in particular that 'turn' is NOT here -- a member consumes its own turn internally (./assistants -> ./firewall) and never emits one. The last three emits -- write, turn_write, prune -- are what a member re-emits on behalf of its assistants and nothing at member level consumes; they arrived here when the member started carrying them, because the derivation is read off the neighbour's file rather than kept by hand."
   }
 }

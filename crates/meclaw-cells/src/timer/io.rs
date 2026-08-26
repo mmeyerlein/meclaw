@@ -174,3 +174,80 @@ fn compute_next_occurrence(
     }
     best
 }
+
+#[cfg(test)]
+mod tests_utc {
+    use super::*;
+
+    /// GH #254 — `docs/cell-types.md`: **cron expressions are evaluated in UTC.**
+    ///
+    /// This was the one claim of the eight with nothing behind it. What looked
+    /// like its pin (`cron_parse_smoke`) builds its own `CronParser` and its own
+    /// `Utc` and never touches timer code at all, so it would stay green if this
+    /// module were switched to a local clock tomorrow — it pins the third-party
+    /// library, not the promise. Every other timer test runs `*/1` or `*/5`,
+    /// which are timezone-invariant by construction and therefore cannot tell
+    /// the two apart either.
+    ///
+    /// So the assertion has to use an expression whose answer DIFFERS between
+    /// UTC and a local zone: a wall-clock hour. `0 0 9 * * *` next-after
+    /// midnight UTC is 09:00 UTC and nothing else; under `Europe/Berlin` the
+    /// same instant would resolve to 07:00 UTC.
+    ///
+    /// **No `TZ` environment manipulation.** Setting an env var is `unsafe` in
+    /// Rust 2024 and this test shares its process with every other test in the
+    /// binary — a mutation would leak sideways. Injecting a fixed `now` proves
+    /// the same thing without touching global state, because
+    /// `compute_next_occurrence` takes the instant as a parameter.
+    fn one(expr: &str) -> Vec<ActiveSchedule> {
+        vec![ActiveSchedule {
+            schedule_id: Uuid::now_v7(),
+            kind: ScheduleKind::Cron(expr.to_string()),
+        }]
+    }
+
+    fn next_after(expr: &str, now: &str) -> DateTime<Utc> {
+        let parser = CronParser::builder().seconds(Seconds::Required).build();
+        let now: DateTime<Utc> = now.parse().expect("a fixed UTC instant");
+        let (_, t) = compute_next_occurrence(&one(expr), &parser, now)
+            .expect("a daily cron always has a next occurrence");
+        t
+    }
+
+    #[test]
+    fn cron_next_occurrence_is_anchored_in_utc() {
+        // Winter and summer, deliberately as a PAIR. One of them alone proves
+        // nothing: a zone with no DST could pass it by luck, and `Europe/Berlin`
+        // is UTC+1 in January and UTC+2 in July — so a local-clock
+        // implementation must get at least one of these two wrong, whatever
+        // zone the machine is in.
+        assert_eq!(
+            next_after("0 0 9 * * *", "2026-01-15T00:00:00Z").to_rfc3339(),
+            "2026-01-15T09:00:00+00:00",
+            "a 09:00 cron must resolve to 09:00 UTC in winter, not to a local \
+             wall clock"
+        );
+        assert_eq!(
+            next_after("0 0 9 * * *", "2026-07-15T00:00:00Z").to_rfc3339(),
+            "2026-07-15T09:00:00+00:00",
+            "and to the same 09:00 UTC in summer — a local-clock evaluation \
+             would shift this one against the winter case above, which is the \
+             whole point of testing both"
+        );
+    }
+
+    /// The counter-check: the interval expressions every other timer test uses
+    /// cannot distinguish UTC from anything else, which is why they never
+    /// covered this claim.
+    #[test]
+    fn an_interval_expression_is_timezone_invariant_and_pins_nothing_here() {
+        let a = next_after("*/5 * * * * *", "2026-01-15T00:00:00Z");
+        assert_eq!(
+            a.to_rfc3339(),
+            "2026-01-15T00:00:05+00:00",
+            "an every-5-seconds cron lands 5 seconds later in EVERY zone — a \
+             test built on it stays green under a local clock, which is how \
+             this claim went unpinned"
+        );
+    }
+}

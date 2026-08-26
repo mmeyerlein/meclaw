@@ -1,13 +1,13 @@
 {
   "name": "door",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": {
     "purpose": "The first cell of a colony, as one code cell: it takes what the HTTP ingress delivers -- request headers in `context`, and a hop that is empty unless the poster seeded one (GH #175) -- and puts the turn on a named lane, carrying the channel identity with it. Without it the first edge of a tree has no condition to match whenever the poster did not name a lane, and above the first cell there is no edge that could name one for it.",
-    "use_when": "Once per colony, as the target of POST /messages. Instantiate it under any name -- `surface` is the usual one -- and wire one edge out of it onto the screening or intake that follows.",
+    "use_when": "Once per colony, as the target of POST /messages. Instantiate it under any name -- `door` is the usual one -- and wire one edge out of it onto the screening or intake that follows.",
     "not_in_scope": "No screening, no rate limit, no session, no persona, no answer. It knows one thing (where the outside world knocks) and says one thing (a turn arrived, on this channel). The reverse direction belongs to the terminal template.",
     "examples": [
       "PORTS - Entry: POST /messages with `{\"headers\": {\"channel\": \"...\"}}` and a body of turns. Exit: route 'turn', hop.chat_id = the channel, body byte-identical.",
-      "with a firewall behind it: { \"from\": \"./surface\", \"to\": \"./firewall\", \"condition\": \"has(hop.route) && hop.route == 'turn'\", \"modifier\": {\"set_hop\": {\"route\": \"'in_turn'\"}, \"set_context\": {\"channel\": \"hop.chat_id\"}} }",
+      "with a firewall behind it: { \"from\": \"./door\", \"to\": \"./firewall\", \"condition\": \"has(hop.route) && hop.route == 'turn'\", \"modifier\": {\"set_hop\": {\"route\": \"'in_turn'\"}, \"set_context\": {\"channel\": \"hop.chat_id\"}} }",
       "a colony without a channel notion: a request with no `channel` header arrives as chat_id 'default' -- one lane, one session, no special case in the wiring"
     ]
   },

@@ -159,6 +159,17 @@ pub enum SpawnedCellKind {
 pub trait CellFactory: Send + Sync {
     /// Pre-spawn validation. Used by the bootstrap plan-phase to surface
     /// per-cell-type param errors before any cell is spawned.
+    ///
+    /// **It must stay a pure parse** (GH #404). Since the boot-parity cut this
+    /// is also called from the mutation staging path
+    /// (`mutation::stage::patch_and_substitute_config`), which runs **on the
+    /// colony task** — the single writer (`AGENTS.md` § Authority model). Every
+    /// implementation today is pure parsing, and that is now an obligation
+    /// rather than an observation: an implementation that reached for the
+    /// network or the filesystem in here would put that latency on the actor
+    /// that routes every message in the colony. On-disk assets have their own
+    /// hook, [`CellFactory::validate_cell_dir`], which is deliberately NOT
+    /// called during staging.
     fn validate_params(&self, params: &JsonValue) -> Result<(), String>;
 
     /// Pre-spawn validation of the cell's ON-DISK assets (issue #56).
@@ -202,6 +213,19 @@ pub trait CellFactory: Send + Sync {
     ///
     /// Only `*.jsonl` counts. The seed vocabulary is JSONL, and refusing a
     /// `NOTES.md` or an editor backup would be a boot failure over litter.
+    ///
+    /// **Deliberately NOT called during mutation staging** (GH #404, decided
+    /// together with the `params` cut rather than twice). Two reasons, and
+    /// either alone would be enough. It reads the filesystem, and the staging
+    /// path runs on the colony task, which [`CellFactory::validate_params`] is
+    /// now required to keep free of I/O — putting a `read_dir` there would take
+    /// back with one hand what the other just promised. And it is an assertion
+    /// about a *finished* cell directory: during staging the seed has not been
+    /// applied yet (`seed_cell_db_if_present` runs after this point), so the
+    /// same tree would be judged in a shape it is never in at boot. The
+    /// asymmetry with `validate_params` is therefore intentional and not the
+    /// same gap: params are a value the mutation itself computes, assets are a
+    /// state of the tree it is still building.
     fn validate_cell_dir(
         &self,
         params: &JsonValue,

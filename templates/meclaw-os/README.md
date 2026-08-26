@@ -1,4 +1,4 @@
-# `meclaw-os@1.0.1`
+# `meclaw-os@1.0.2`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds two occupants, one empty
@@ -199,7 +199,7 @@ already a requirement of this composite.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.2"}],
           "add_edges": []}}
 ```
 
@@ -212,7 +212,7 @@ Then one organisation at a time, into the container, each with its transit edges
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.0"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.1"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

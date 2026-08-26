@@ -18,6 +18,7 @@ pub mod wait;
 pub use code_wire::{code_stdin, code_stdin_bytes};
 pub use colony_handle::{ColonyHandle, spawn_colony_task_at};
 pub use factories::EmitOnceMockCellFactory;
+pub use factories::{SPAWN_REFUSAL, SpawnRefusesCellFactory};
 pub use message_builder::MessageBuilder;
 pub use mocks::EmitOnceMockCell;
 pub use test_root::TestRoot;

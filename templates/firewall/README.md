@@ -1,4 +1,4 @@
-# `firewall@2.0.4`
+# `firewall@2.0.5`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -128,7 +128,7 @@ They are substituted into the script at instantiation (a `code` cell never sees 
 
 ```json
 [
-  { "from": "./surface", "to": "./firewall",
+  { "from": "./door", "to": "./firewall",
     "modifier": {"set_hop": {"route": "'in_turn'"},
                  "set_context": {"channel": "hop.chat_id", "user_id": "hop.user_id"}} },
 

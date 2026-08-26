@@ -165,6 +165,24 @@ pub enum MutationError {
     /// staging (the `.staging` dir is discarded, live tree untouched). Carries
     /// the offending config's staging path plus the presence-check reason.
     ContractIncomplete(String),
+    /// GH #404: the `params` block a staged cell would carry does not
+    /// deserialize for the cell type it names — the same question
+    /// `CellFactory::validate_params` answers for every cell at boot
+    /// (`plan_bootstrap`), asked at the moment the params are written instead
+    /// of six hours later.
+    ///
+    /// Before this variant existed, the two paths that put a cell into a colony
+    /// disagreed: instantiation accepted what the boot refuses, so a template
+    /// defect committed cleanly, the cell never did its job, and the colony
+    /// refused to start at the next deploy, crash or host reboot — in front of
+    /// whoever restarted it rather than whoever grew it (GH #401 was one
+    /// instance of the class).
+    ///
+    /// Raised pre-destructively during staging, like [`Self::ContractIncomplete`]
+    /// beside it: the `.staging` dir is discarded and the live tree is
+    /// unchanged. Carries the staged config path plus the factory's own reason,
+    /// verbatim — the refusal says what the boot would have said.
+    InvalidParams(String),
     /// GH #133: an `add_edges` endpoint reaches INTO a hive that declared its
     /// ports (`params.ports`, opt-in) while the edge's other endpoint lies
     /// OUTSIDE that hive — a deep endpoint past the port, which would bypass
@@ -218,6 +236,7 @@ impl MutationError {
             Self::ResumeRequiresStoppedCell(_) => "resume_requires_stopped_cell",
             Self::ResumeTypeMismatch(_) => "resume_type_mismatch",
             Self::ContractIncomplete(_) => "contract_incomplete",
+            Self::InvalidParams(_) => "invalid_params",
             Self::HivePortBoundary(_) => "hive_port_boundary",
             Self::RequiredDrainMissing(_) => "required_drain_missing",
             Self::HiveContract(_) => "hive_contract",
@@ -256,6 +275,7 @@ impl MutationError {
             | Self::ResumeRequiresStoppedCell(s)
             | Self::ResumeTypeMismatch(s)
             | Self::ContractIncomplete(s)
+            | Self::InvalidParams(s)
             | Self::HivePortBoundary(s)
             | Self::RequiredDrainMissing(s)
             | Self::HiveContract(s)
@@ -305,6 +325,112 @@ pub enum MutationOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #254 — the SET claim behind the per-variant assertions below: the
+    /// spec says `error_code` **is an enum**, and this pins the whole of it.
+    ///
+    /// Three producers together make up that enum, which is exactly why no
+    /// single existing test could carry the row:
+    ///
+    /// * `MutationError::error_code` — the validation refusals;
+    /// * two constants in `colony.rs` — `term_timeout` and
+    ///   `stop_wiring_unavailable` come from the lifecycle path, not from a
+    ///   `MutationError`, and are pinned individually there;
+    /// * `subtree_resume_unsupported` — **reserved**: listed in the spec, with
+    ///   no producer in the tree. It is named here so the gap is a recorded
+    ///   decision rather than a hole somebody rediscovers.
+    ///
+    /// The `match` in [`MutationError::error_code`] has no `_` arm, so a new
+    /// variant already fails to compile there; what this adds is the other
+    /// direction — a token in the spec list that nothing produces, or a code
+    /// produced that the spec never promised.
+    #[test]
+    fn the_error_code_enum_is_exactly_what_the_spec_lists() {
+        // Every variant, constructed. No `_` arm exists in `error_code`, so this
+        // list going stale shows up as a missing token below rather than never.
+        let produced: Vec<&'static str> = vec![
+            MutationError::Schema("x".into()).error_code(),
+            MutationError::MatchNoHit("x".into()).error_code(),
+            MutationError::NamingCollision("x".into()).error_code(),
+            MutationError::Cycle("x".into()).error_code(),
+            MutationError::EdgeSchema("x".into()).error_code(),
+            MutationError::TemplateMissing("x".into()).error_code(),
+            MutationError::TemplateRefCycle("x".into()).error_code(),
+            MutationError::EnvVarMissing("x".into()).error_code(),
+            MutationError::UnsupportedSubstitution("x".into()).error_code(),
+            MutationError::CtxKeyMissing("x".into()).error_code(),
+            MutationError::RequirementMissing("x".into()).error_code(),
+            MutationError::ScopeOutOfBounds {
+                path: Path::new("/b"),
+            }
+            .error_code(),
+            MutationError::UnknownCellType("x".into()).error_code(),
+            MutationError::ResumeRequiresStoppedCell("x".into()).error_code(),
+            MutationError::ResumeTypeMismatch("x".into()).error_code(),
+            MutationError::ContractIncomplete("x".into()).error_code(),
+            MutationError::InvalidParams("x".into()).error_code(),
+            MutationError::HivePortBoundary("x".into()).error_code(),
+            MutationError::RequiredDrainMissing("x".into()).error_code(),
+            MutationError::HiveContract("x".into()).error_code(),
+            // Deliberately folded onto `schema`: a strict-fail signal, never an
+            // over-the-wire reject code (see the comment at `error_code`).
+            MutationError::LiveTreeMutated("x".into()).error_code(),
+        ];
+
+        // The two the lifecycle path emits, pinned individually in `colony.rs`.
+        let lifecycle = ["term_timeout", "stop_wiring_unavailable"];
+        // Listed by the spec, produced by nothing. Named, not silently missing.
+        let reserved = ["subtree_resume_unsupported"];
+
+        let mut have: std::collections::BTreeSet<&str> = produced.iter().copied().collect();
+        have.extend(lifecycle);
+        have.extend(reserved);
+
+        let spec: std::collections::BTreeSet<&str> = [
+            "schema",
+            "match_no_hit",
+            "naming_collision",
+            "cycle",
+            "edge_schema",
+            "template_missing",
+            "env_var_missing",
+            "unsupported_substitution",
+            "ctx_key_missing",
+            "scope_out_of_bounds",
+            "unknown_cell_type",
+            "stop_wiring_unavailable",
+            "term_timeout",
+            "resume_requires_stopped_cell",
+            "subtree_resume_unsupported",
+            "resume_type_mismatch",
+            "contract_incomplete",
+            "invalid_params",
+            "hive_port_boundary",
+            "hive_contract",
+            "required_drain_missing",
+            "template_ref_cycle",
+            "requirement_missing",
+        ]
+        .into_iter()
+        .collect();
+
+        let missing: Vec<_> = spec.difference(&have).collect();
+        assert!(
+            missing.is_empty(),
+            "the spec promises error codes nothing in the tree produces: \
+             {missing:?} -- either build them or retract them from \
+             `docs/meclaw-overview.md` § Validation (a promise without a \
+             producer is the GH #254 class)"
+        );
+        let extra: Vec<_> = have.difference(&spec).collect();
+        assert!(
+            extra.is_empty(),
+            "the tree produces error codes the spec does not list: {extra:?} -- \
+             `error_code` is documented as an ENUM, so a caller matching on it \
+             would meet a token the contract never named"
+        );
+        assert_eq!(spec.len(), 23, "the documented enum is 23 tokens wide");
+    }
 
     #[test]
     fn error_code_maps_each_variant_to_spec_token() {
