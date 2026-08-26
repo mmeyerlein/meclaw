@@ -867,24 +867,40 @@
           // pinned where it happened to stand. The label is small, unambiguous
           // and always on top of its own frame; the fill pans the camera.
           //
-          // "On the label" is decided by looking THROUGH the paint order: on an
-          // arranged colony, frames overlap (GH #416) and a later sibling's
-          // fill covers an earlier hive's label — hit-testing the top element
-          // alone made those hives ungrabbable. So every element under the
-          // pointer is considered, and the first hive LABEL in the stack wins.
-          let hg = null;
-          if (document.elementsFromPoint) {
-            for (const under of document.elementsFromPoint(ev.clientX, ev.clientY)) {
-              if (under.tagName === "text" && under.closest) {
-                const owner = under.closest("[data-hive]");
-                if (owner) { hg = owner; break; }
+          // "On the handle" is decided geometrically, not by SVG hit-testing:
+          // a label on a zoomed-out picture is a few pixels tall and SVG text
+          // only hits on its painted glyphs, so demanding the exact glyph made
+          // the gesture a lottery. A hive is grabbed at its LABEL's bounding
+          // box (padded) or along its frame's BORDER; when handles of nested
+          // hives coincide, the deepest hive wins. The fill still pans.
+          let hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          if (hg && !(hg.querySelector && hg.querySelector("text") === ev.target)) {
+            hg = null;
+          }
+          if (!hg && ev.clientX !== undefined) {
+            const PAD = 6, BORDER = 5;
+            let best = null;
+            el.querySelectorAll("[data-hive]").forEach(function (g) {
+              const t = g.querySelector && g.querySelector("text");
+              const r = g.querySelector && g.querySelector("rect");
+              const depth = (g.getAttribute("data-hive") || "").split("/").length;
+              let hit = false;
+              if (t && t.getBoundingClientRect) {
+                const b = t.getBoundingClientRect();
+                hit = ev.clientX >= b.left - PAD && ev.clientX <= b.right + PAD &&
+                      ev.clientY >= b.top - PAD && ev.clientY <= b.bottom + PAD;
               }
-              if (under.closest && under.closest("[data-node]")) break;
-            }
-          } else {
-            const hg0 = ev.target.closest ? ev.target.closest("[data-hive]") : null;
-            hg = hg0 && hg0.querySelector && hg0.querySelector("text") === ev.target
-              ? hg0 : null;
+              if (!hit && r && r.getBoundingClientRect) {
+                const b = r.getBoundingClientRect();
+                const inOuter = ev.clientX >= b.left - BORDER && ev.clientX <= b.right + BORDER &&
+                                ev.clientY >= b.top - BORDER && ev.clientY <= b.bottom + BORDER;
+                const inInner = ev.clientX >= b.left + BORDER && ev.clientX <= b.right - BORDER &&
+                                ev.clientY >= b.top + BORDER && ev.clientY <= b.bottom - BORDER;
+                hit = inOuter && !inInner;
+              }
+              if (hit && (!best || depth >= best.depth)) best = {g: g, depth: depth};
+            });
+            hg = best && best.g;
           }
           if (hg) {
             const id = hg.getAttribute("data-hive");

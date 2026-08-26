@@ -228,6 +228,22 @@ impl WebCell {
         // shutdown and is not worth a line in the journal.
         let _ = self.pages_tx.send(map.clone());
 
+        // The root-object case: structural, but no slot to name — the whole
+        // page changed. Every route gets its packed tree, or the viewers keep
+        // a picture the database has left behind.
+        if touched.structural && touched.slots.is_empty() {
+            for (route, page) in map.iter() {
+                let _ = self
+                    .push_tx
+                    .send(WebReconfig::Push {
+                        route: route.clone(),
+                        diff: page.packed_tree(),
+                    })
+                    .await;
+            }
+            return;
+        }
+
         for (route, slot_id) in &touched.slots {
             let Some(page) = map.get(route) else { continue };
             let diff = if touched.structural {
@@ -645,7 +661,14 @@ impl LongRunningCell for WebCell {
                 // One diff per write, immediately — not one at the end of the
                 // bundle. A caller that sent three writes sees three frames, and
                 // a viewer sees each step rather than the last one only.
-                if !outcome.is_error() && !touched.slots.is_empty() {
+                //
+                // `structural` with an empty slot list is the ROOT-object case:
+                // `touched_by` cannot name a slot because the whole page is the
+                // slot. Skipping it meant an `object.update` on the root never
+                // published — the write sat in the database while the served
+                // page and every viewer kept the old render indefinitely (the
+                // steady-state tick emits nothing, so nothing ever caught up).
+                if !outcome.is_error() && (!touched.slots.is_empty() || touched.structural) {
                     self.publish_and_push(db, &touched).await;
                 }
 

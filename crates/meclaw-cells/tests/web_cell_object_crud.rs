@@ -453,3 +453,56 @@ async fn an_undeclared_prop_is_refused_rather_than_stored() {
 
     live.join.abort();
 }
+
+/// An `object.update` on the ROOT publishes and pushes (GH #414 family).
+///
+/// `touched_by` cannot name a slot for the root — the whole page is the slot —
+/// and returns `structural` with an empty slot list. The bundle path used to
+/// publish only for non-empty slot lists, so a root update sat in the database
+/// while the served page and every joined viewer kept the old render
+/// indefinitely (the steady-state tick emits nothing, so nothing caught up).
+/// Found live: a `client_js` refresh that never reached one single tab.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_root_update_republishes_the_page_and_pushes_every_viewer() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let mut live = start(&cell_dir).await;
+    let mut ws = join(live.port).await;
+
+    let _ = call(
+        &mut live,
+        &[(
+            "r1",
+            json!({"op": "object.update", "id": "root", "props": {}}),
+        )],
+    )
+    .await;
+
+    // The viewer hears about it: one push, carrying the packed tree (statics
+    // included — the whole page is the slot, so the whole page travels).
+    let frame = next_frame(&mut ws, Duration::from_secs(5))
+        .await
+        .expect("a root update reaches the joined viewer");
+    assert_eq!(frame[3], json!("diff"), "{frame}");
+    assert!(
+        frame[4].get("s").is_some(),
+        "the root's diff is the packed tree, statics and all: {frame}"
+    );
+
+    // And a fresh GET serves the re-materialised page rather than a snapshot
+    // from before the write.
+    let body = reqwest::get(format!("http://127.0.0.1:{}/", live.port))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text");
+    assert!(
+        body.contains("<main>"),
+        "the page still renders after a root republish: {body:.200}"
+    );
+
+    live.join.abort();
+}

@@ -1,4 +1,4 @@
-# `canvy@2.1.4`
+# `canvy@2.1.5`
 
 One interactive canvas of the colony, served on a port of its own. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
@@ -175,7 +175,7 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.4",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.5",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 
