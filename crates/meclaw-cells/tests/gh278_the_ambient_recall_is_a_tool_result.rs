@@ -139,12 +139,20 @@ fn lane_doc(route: &str, ctx_extra: &[(&str, &str)], body: serde_json::Value) ->
 /// A store reply as the hive's own edge delivers it back: the step in context,
 /// the operation and the guard signal on the hop.
 fn reply_doc(phase: &str, rows_affected: i64, payload: serde_json::Value) -> serde_json::Value {
+    // GH #419: the assembly's fan-in is ONE bundle -- the leg parks and the
+    // round table is read back in the same message, and the trailing select is
+    // what elects. So the reply carries its rows under the read-back's
+    // `tool_call_id`; what these cases measure is the assembled prompt, not the
+    // message boundary around the decision.
     serde_json::json!({
         "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0",
                                "col_phase": phase, "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": rows_affected}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "x",
-                      "text": payload.to_string()}]
+                   "hop": {"operation": "bundle", "rows_affected": rows_affected,
+                           "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-collect-read",
+                      "text": payload.to_string()}],
+        "results": [{"tool_call_id": "c-collect-read", "operation": "select",
+                     "rows_affected": rows_affected, "duration_ms": 0}]
     })
 }
 
@@ -230,9 +238,17 @@ fn assemble(over: &[(&str, &str)], payload: serde_json::Value) -> serde_json::Va
         leg_window_row(serde_json::json!([{"role": "user", "text": QUERY}])),
         leg_memory_row(payload)
     ]);
-    let out = emit_with(over, reply_doc("fire", 2, rows));
-    assert_eq!(out.len(), 1, "ONE seam: {out:?}");
-    out.into_iter().next().expect("the seam message")
+    let out = emit_with(over, reply_doc("collect", 2, rows));
+    // GH #419: the seam leaves WITH the mark that records the round as answered.
+    // The guarded update that used to set it one hop in FRONT of the seam is
+    // gone -- the read-back elects now -- but the record it wrote is not, because
+    // a leg that lands after the turn has left would otherwise assemble it twice.
+    let seams: Vec<serde_json::Value> = out
+        .into_iter()
+        .filter(|m| m["header"]["route"] == "brain" || m["header"]["route"] == "answer")
+        .collect();
+    assert_eq!(seams.len(), 1, "ONE seam: {seams:?}");
+    seams.into_iter().next().expect("the seam message")
 }
 
 /// The last two entries of the assembled `messages[]`.
@@ -423,7 +439,7 @@ fn the_revocation_stays_on_the_node_the_collector_owns() {
                                            "consult_id": "c1"}])),
         leg_memory_row(bundle_body(AS_OF, QUERY, READABLE))
     ]);
-    let out = emit_with(&[("memory_tier", "0")], reply_doc("fire", 2, rows));
+    let out = emit_with(&[("memory_tier", "0")], reply_doc("collect", 2, rows));
     let sys = &out[0]["system"];
     assert!(sys.get("$replace").is_none(), "{}", out[0]);
     assert_eq!(
@@ -587,7 +603,7 @@ fn the_recall_diagnostic_never_reaches_the_assembled_prompt() {
         {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
          "turn": leg["row"]["turn"]}
     ]);
-    let msg = emit_with(&[("memory_tier", "0")], reply_doc("fire", 2, rows))
+    let msg = emit_with(&[("memory_tier", "0")], reply_doc("collect", 2, rows))
         .into_iter()
         .next()
         .expect("the seam message");

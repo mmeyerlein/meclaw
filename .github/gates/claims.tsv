@@ -229,3 +229,17 @@ PIN-web-rebind-move-then-write-de	docs/cell-types.md	**Die Reihenfolge ist versc
 PIN-web-rebind-move-then-write-en	docs/cell-types.en.md	**The order is move, then write.**	pinned	a_bind_nothing_can_resolve_leaves_the_old_listener_serving
 PIN-web-rebind-boot-failure-de	docs/cell-types.md	**Ein fehlgeschlagener Bind ist per Nachricht heilbar.**	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message
 PIN-web-rebind-boot-failure-en	docs/cell-types.en.md	**A failed bind is curable by message.**	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message
+PIN-code-warm-semantics-de	docs/cell-types.md	Ein Warm-Runner ändert Latenz, nie Semantik	pinned	warm_answers_the_same_bytes_as_cold
+PIN-code-warm-semantics-en	docs/cell-types.en.md	A warm runner changes latency, never semantics	pinned	warm_answers_the_same_bytes_as_cold
+PIN-code-resident-serial-de	docs/cell-types.md	genau ein** Kind, strikt serieller FIFO	pinned	twenty_messages_come_back_in_the_order_they_went_in
+PIN-code-resident-serial-en	docs/cell-types.en.md	exactly one** child, strictly serial FIFO	pinned	twenty_messages_come_back_in_the_order_they_went_in
+#
+# --- Perf/Struktur-Welle 2026-08-26, Lane 1: der Roundtrip-Haushalt ------
+# Added 2026-08-26 (GH #418, GH #419). Beide Zusagen sind ZAHLEN, und eine Zahl
+# ist die einzige Assertion, aus der ein Roundtrip-Budget gemacht werden kann:
+# der Pin zaehlt die Store-Nachrichten einer ganzen Kette, statt eine Form zu
+# behaupten. Die Substrat-Eigenschaft, auf der die guard-freie Wahl steht, ist
+# separat gepinnt (gh418_a_bundle_sees_its_own_writes.rs) -- ein Pin, kein Fix.
+T1B-six-store-messages	templates/memory-hive/README.md	A tier-1 recall costs the store **six messages**	pinned	a_tier1_recall_costs_six_store_messages
+T1B-no-guard-rows	templates/memory-hive/README.md	nothing on the tier-1 read path writes or reads `fired` any more	pinned	the_read_back_is_the_last_call_of_its_bundle
+CLB-one-message-election	templates/collector/README.md	exactly one reads a complete set	pinned	of_two_parking_bundles_exactly_one_reads_the_complete_set

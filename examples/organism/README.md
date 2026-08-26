@@ -54,8 +54,8 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.0.3   the shell
-├── access                            → access@2.0.5        the capability broker
+/os                                 meclaw-os@1.0.4   the shell
+├── access                            → access@2.1.0        the capability broker
 ├── steward                           → steward@2.0.11      the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.0.2         a namespace and a boundary
@@ -70,7 +70,7 @@ principle of GH #26: a tree is grown, not checked in.
                         ├── tools     → tools@1.0.0         the tool surface
                         └── channels  (empty container)
                             ├── telegram-connector   telegram-connector@2.0.0
-                            └── talky                talky@4.2.1
+                            └── talky                talky@4.2.2
 ```
 
 Six `add_nodes` entries name six templates, and **thirteen** distinct templates end up stamped
@@ -101,7 +101,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.4"}],
           "add_edges": []}}
 ```
 
@@ -272,6 +272,6 @@ nothing until an operator turns on exactly what they mean.
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.0.5` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.1.0` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.

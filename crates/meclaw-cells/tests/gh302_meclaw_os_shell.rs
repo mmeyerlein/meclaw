@@ -43,7 +43,7 @@
 //! 6. **No swallowing sink** (#284, ruling Q2): nothing in here resolves to
 //!    `terminal`, and every refusal lane leaves the shell instead of ending in
 //!    it.
-//! 7. **No second vault** (#302 ruling Q20): `access@2.0.5` carries its own
+//! 7. **No second vault** (#302 ruling Q20): `access@2.1.0` carries its own
 //!    interior `vault`, and the standalone `vault` template attests its inbound
 //!    edges against `params.broker` — with no broker at this level it would boot
 //!    locked and inert.

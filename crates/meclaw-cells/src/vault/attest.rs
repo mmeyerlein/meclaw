@@ -37,6 +37,11 @@ pub enum Attestation {
     /// Someone is wired to the vault who is not in the contract. Carries the
     /// offending paths, for the audit row and the operator's eyes.
     Unexpected(Vec<String>),
+    /// The broker named in `params.broker` has no edge INTO the vault. Since
+    /// GH #421 the topology is what stands in for a signature: a vault that
+    /// cannot be reached by the one sender it answers has no authenticity
+    /// source, and a key in it would be a key nobody could legitimately spend.
+    BrokerUnwired(String),
     /// The topology could not be read at all. Fail closed: an unverifiable
     /// neighbourhood is treated exactly like a wrong one.
     Unverifiable(String),
@@ -48,6 +53,7 @@ impl Attestation {
         match self {
             Self::Matches => "attested".into(),
             Self::Unexpected(paths) => format!("unexpected_neighbors: {}", paths.join(", ")),
+            Self::BrokerUnwired(b) => format!("broker_unwired: {b}"),
             Self::Unverifiable(e) => format!("unverifiable: {e}"),
         }
     }
@@ -62,9 +68,22 @@ impl Attestation {
 /// legitimately granted request. The capability that produces `inbound` returns
 /// nothing else for exactly that reason.
 ///
-/// An empty `inbound` attests: nothing is wired to the vault, so nothing
-/// unexpected is either.
-pub fn attest_neighbours(inbound: &[String], expected: &[String]) -> Attestation {
+/// An empty `inbound` used to attest — nothing was wired to the vault, so
+/// nothing unexpected was either. **Since GH #421 it does not.** The sealed
+/// delivery made the topology stand in for a signature: the vault answers
+/// exactly one sender, and that is the whole of what says a request is
+/// authentic. A vault whose broker has no edge into it therefore has no
+/// authenticity source at all, and it is precisely then that it must not take
+/// the key — an unreachable vault holding an open key is the shape this cell
+/// type exists to prevent, not a harmless special case.
+///
+/// The missing road is checked before the unexpected neighbour, deliberately:
+/// both findings are correct when both apply, and the missing edge is the one
+/// an operator can act on.
+pub fn attest_neighbours(inbound: &[String], expected: &[String], broker: &str) -> Attestation {
+    if !inbound.iter().any(|from| from == broker) {
+        return Attestation::BrokerUnwired(broker.to_string());
+    }
     let mut unexpected: Vec<String> = inbound
         .iter()
         .filter(|from| !expected.iter().any(|e| e == *from))
@@ -92,7 +111,8 @@ mod tests {
         assert_eq!(
             attest_neighbours(
                 &paths(&["/main/access/broker"]),
-                &paths(&["/main/access/broker"])
+                &paths(&["/main/access/broker"]),
+                "/main/access/broker"
             ),
             Attestation::Matches
         );
@@ -105,7 +125,8 @@ mod tests {
         assert_eq!(
             attest_neighbours(
                 &paths(&["/main/access/broker", "/main/egon/brain"]),
-                &paths(&["/main/access/broker"])
+                &paths(&["/main/access/broker"]),
+                "/main/access/broker"
             ),
             Attestation::Unexpected(vec!["/main/egon/brain".into()])
         );
@@ -120,17 +141,37 @@ mod tests {
         assert_eq!(
             attest_neighbours(
                 &paths(&["/main/access/broker"]),
-                &paths(&["/main/access/broker", "/main/access/connector"])
+                &paths(&["/main/access/broker", "/main/access/connector"]),
+                "/main/access/broker"
             ),
             Attestation::Matches
         );
     }
 
+    /// GH #421 / R3: the topology IS the authenticity now. A vault whose broker
+    /// is not wired in has no source of authenticity at all, and taking the key
+    /// under that condition is the thing this whole cell type exists to avoid.
+    /// This replaces `a_vault_with_no_inbound_edges_attests`, which was correct
+    /// only for as long as no edge reached the vault (GH #307).
     #[test]
-    fn a_vault_with_no_inbound_edges_attests() {
+    fn a_vault_whose_broker_is_not_wired_in_does_not_attest() {
         assert_eq!(
-            attest_neighbours(&[], &paths(&["/main/access/broker"])),
-            Attestation::Matches
+            attest_neighbours(&[], &paths(&["/main/access/invoke"]), "/main/access/invoke"),
+            Attestation::BrokerUnwired("/main/access/invoke".into())
+        );
+    }
+
+    #[test]
+    fn an_unwired_broker_is_reported_before_an_unexpected_neighbour() {
+        // Both are wrong; the missing road is the more useful sentence for an
+        // operator, because it is the one they can fix by drawing an edge.
+        assert_eq!(
+            attest_neighbours(
+                &paths(&["/main/egon/brain"]),
+                &paths(&["/main/access/invoke"]),
+                "/main/access/invoke"
+            ),
+            Attestation::BrokerUnwired("/main/access/invoke".into())
         );
     }
 
@@ -138,8 +179,9 @@ mod tests {
     fn several_unexpected_neighbours_are_sorted_and_deduplicated() {
         assert_eq!(
             attest_neighbours(
-                &paths(&["/z/late", "/a/early", "/z/late"]),
-                &paths(&["/main/access/broker"])
+                &paths(&["/z/late", "/a/early", "/z/late", "/main/access/broker"]),
+                &paths(&["/main/access/broker"]),
+                "/main/access/broker"
             ),
             Attestation::Unexpected(vec!["/a/early".into(), "/z/late".into()])
         );

@@ -1,4 +1,4 @@
-# `memory-hive@3.0.1`
+# `memory-hive@3.0.3`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1141,8 +1141,46 @@ token budget and emits the bundle.
 Nothing about **what** the bundle says moved with it: the audience gate, the per-leg caps, the
 `supersession_unknown` marker and the fixed leg priority (beliefs → open foresight → recent
 episodes) are the same code they were, and a tier-0 round now writes **no `recall_scratch` row
-at all**. Tier 1 is untouched — its legs really do read each other (the fusion needs all six
-before it can rank), so it keeps its scratch fan-in and its three guard rows.
+at all**.
+
+### And six for tier 1 (GH #418)
+
+A tier-1 recall costs the store **six messages**. Until 3.0.1 it cost 47 — measured, not
+estimated, out of the `message_log` of a scenario colony — of which twenty were the bookkeeping
+of a fan-in: an insert per leg, a select to ask whether they had all landed, a guarded update to
+elect the one hop allowed to carry on, and a select to read back what had just been written.
+
+The chain, in the order it happens:
+
+| # | Phase | The ops of that ONE message | What the answer carries |
+|---|---|---|---|
+| S1 | `t1-fan` | `search episodes` · `search facts` · `select facts` (as-of) · `select emb_models` · *(tier 2:* `select beliefs`*)* | every leg that needs no query vector, at once; beside it (**not** a store message) the `embed` request |
+| S2 | `t1-park` | `insert recall_scratch 'legs'` · `select recall_scratch` | parks the four legs, the raw counts, the model, the anchors and the axis map — **and** asks in the same message whether the vector has landed |
+| Sq | `t1-qvec-park` | `insert recall_scratch 'qvec'` · `select recall_scratch` | the other half of the same question |
+| S3 | `t1-join` | `select entities` (anchors) · `similar embeddings` | both are free from the rendezvous on; the vector comes from `'qvec'`, the anchors and the `model_id` from `'legs'` |
+| S4 | `t1-legs` | `insert 'sem'` · `traverse entity_edges` · `select facts` (the semantic companion) · `select recall_scratch` | the walk, the audience of the semantic leg's owning facts and everything parked, in ONE answer — **the fusion runs here, in code** |
+| S5 | `t1-emit` | `insert 'fused'` · `select facts` (hydration) · `select episodes` (hydration) · `select facts` (the axis page) · `select predicate_cardinality` · `select recall_scratch` | hydration, axis expansion and the judged verdicts at once — **the reply to this renders and emits, and asks nothing more** |
+
+**Why there is no gate any more.** The `store` is a **stateful** cell (`docs/cell-types.md`,
+concurrency note): one task, one connection, one message at a time. A bundle is ONE message, and
+its ops run in call order over that one connection — so a `select` at the END of a bundle sees
+the `insert`s in front of it, and **of two hops that park concurrently exactly one reads a
+complete set**. That is precisely what `update … set fired=1 where fired=0` plus its
+`rows_affected` used to buy, and it costs no message of its own. Pinned in
+`crates/meclaw-cells/tests/gh418_a_bundle_sees_its_own_writes.rs`; the count is pinned in
+`gh418_tier1_is_one_bundle_per_step.rs::a_tier1_recall_costs_six_store_messages`.
+
+**What `recall_scratch` still is on the tier-1 path.** The **wait for the embedder** — the
+rendezvous between the parked `legs` row and the parked `qvec` row — plus two carrier rows
+(`sem`, `fused`) between two hops, and, at tier 2 only, the rendered bundle (`rendered`) that a
+provider failure downgrades to. **Four rows, where there were twenty.** No row on that path
+carries a `fired` flag that anything reads any more.
+
+What does **not** get smaller, and why: `entities` → `traverse` is a real data dependency (the
+anchor names come out of the select), and `similar` → the semantic companion is another (the
+owner ids come out of the ranking). Both are therefore laid **pairwise across two bundles**
+rather than one behind the other in four messages: S3 carries the first half of both chains, S4
+the second. That is the whole saving at that point, and it is behaviour-neutral.
 
 **A refused leg is still terminal** ([#343](https://github.com/mmeyerlein/meclaw/issues/343)). A
 bundle is explicitly not a transaction, so one leg can fail while its siblings carry rows — and
@@ -1704,12 +1742,15 @@ it would be additive, and until one exists a rotation is identified by `model_id
 `gap_missing: true` in the body and `hop.gap_missing='1'`. A provider error downgrades to the
 tier-1 candidates with `hop.tier_downgraded='1'` — never silence.
 
-**Three gates, three guard rows.** The semantic join, the main fan-in and the hydration fan-in
-all use the P2 collector protocol (`insert → select → guarded update → select → fire`), each on
-its OWN guard row (`qvec`, `kw-ep`, `fused`) so they cannot steal each other's `fired` flag.
+**No gates, no guard rows** (GH #418). There were three — the semantic join, the main fan-in and
+the hydration fan-in, each running the P2 collector protocol
+(`insert → select → guarded update → select → fire`) on its own guard row (`qvec`, `kw-ep`,
+`fused`). All three are gone, and so are the rows: the trailing `select` of a bundle elects the
+same hop for free, because the `store` runs a bundle's ops in order over its one connection.
+Explicitly withdrawn: **nothing on the tier-1 read path writes or reads `fired` any more.**
 
-Cost: a tier-1 recall is ~31 store round trips (P15 added the axis select). Deliberate — the
-join-less store answers one result set per message, and determinism beats hop-thrift here.
+Cost: a tier-1 recall is **six** store round trips — see
+[And six for tier 1](#and-six-for-tier-1-gh-418).
 
 ## Temporal questions — what is answerable, and what is not
 
@@ -1753,7 +1794,7 @@ What is deliberately **not** answerable:
 | guarded `update … set {status:'inline'\|'nothing'\|'close'} where {episode_id in …, status:'pending'}` | the coverage guard (#52, #298, #300) -- the annotation of a turn settles that turn's row, and the value names the reader: `inline` when the front model's block carried content, `nothing` when its verdict was an honest empty one, `close` when the annotation came from the close pass. Guarded on `pending`, so re-running the same annotation moves nothing a second time and a settled row keeps the verdict that settled it |
 | guarded `update … set {status:'close'} where {session_id, status:'pending'}` | the close pass's sweep (#300) -- the second writer of `status`, and the last one: when a pass finishes a session it settles the rows of that session nobody ever annotated. Both writers guard on `status:'pending'`, so whichever lands first wins and neither overwrites a settled row; the two are the ONLY writers besides the enqueue (no claim, no gate, no recovery sweep survived #298), which is what keeps `pending` readable as exactly one thing -- a turn nobody has answered for yet |
 | `select episodes where {session_id, sender:'user'} order by recorded_at desc limit 1` | the inline BIND -- the turn a block that names none is speaking for. `sender` is what makes it deterministic: the answer's own episode is written by the same per-turn lane, concurrently, so "newest episode" would be a race and "newest user turn" is not |
-| guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` | each tier-1 gate of a recall fires exactly once per request. Tier 0 has no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
+| the trailing `select recall_scratch` of a parking bundle | the exactly-once election of the tier-1 read path. Of two hops that park concurrently exactly ONE reads a complete set, because the `store` is stateful and a bundle is one message — and a leg that arrives TWICE is a duplicate, not a complete set, so it parks (loudly, on stderr) instead of emitting a second time. **Explicit withdrawal (GH #418):** the guarded `update recall_scratch set fired=1 where {request_id, leg, fired:0}` this row used to describe no longer exists, and no read path writes or reads `fired`. Tier 0 has had no gate to guard since 2.3.4 — see [One round trip for tier 0](#one-round-trip-for-tier-0-gh-295) |
 | window guard on `(delta_from, delta_to)` and on `run_id` | dream lane, stage 2 |
 | `set_alias` upserts on the alias, `reject_pair` upserts on the ordered pair, `canonicalize` reports only the rows that MOVED | canonicalisation round — re-judging a pair writes no second row, and a second run over unchanged data reports 0 |
 | every dream write derives its timestamp from `delta_to`, belief ids from `sha256(holder\|statement)` | dream lane, stage 3 — replay is byte-identical |

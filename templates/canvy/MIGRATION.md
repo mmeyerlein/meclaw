@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.1.7`
+# Migrating a `canvy` instance from 1.x to `canvy@2.1.9`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -23,7 +23,7 @@ afterwards.
 
 | 1.x row | 2.0.0 | Why |
 |---|---|---|
-| `node` | **carried** — becomes the `x`/`y` of the cell's `canvy-node` object | the one thing a person made by hand |
+| `node` | **carried** — becomes the `x`/`y` of the cell's `canvy-node` object, plus the `pinned` marker that says a hand put it there ([#415](https://github.com/mmeyerlein/meclaw/issues/415)) | the one thing a person made by hand |
 | `hive_shift` | **dropped** | a frame is derived from the cells it holds; moving a hive is moving its members, so there is no row to move ([#170](https://github.com/mmeyerlein/meclaw/issues/170)) |
 | `camera` | **dropped** | pan and zoom are local browser state and are neither sent nor stored |
 | the topology snapshot | **dropped** | the display's own object tree holds the picture; the next tick refills it |
@@ -58,7 +58,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.1.7` beside the old hive
+## 1. Instantiate `canvy@2.1.9` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free port:
@@ -70,7 +70,7 @@ with the old one and the display a free port:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.1.7",
+        "template": "canvy@2.1.9",
         "override_params": {"web": {"port": 7811}}
       }
     ]

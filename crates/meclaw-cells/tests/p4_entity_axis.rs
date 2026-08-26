@@ -218,8 +218,14 @@ fn the_axis_selects_filter_on_the_canonical_subject() {
             !script.contains("\"subject\": {\"in\": subjects}"),
             "{name}: an axis select still filters on the written subject"
         );
+        // WHERE the list is built moved with #418 -- from the hydration page to
+        // the axis map the legs parked, so that the axis select can ride in the
+        // same bundle as the hydration instead of one hop behind it. WHAT it is
+        // built from did not move: `subject_key` is the canonical identity, and
+        // nothing else may reach that filter.
         assert!(
-            script.contains("subjects = sorted({subject_key(r) for r in rows if subject_key(r)})"),
+            script.contains("[subject_key(r), axis_key(r)]")
+                || script.contains("subject_key(r) for r in rows if subject_key(r)"),
             "{name}: the subject list is not built from the canonical identity"
         );
     }

@@ -682,22 +682,60 @@ const RECALL: &str = "q1";
 const CHANNEL: &str = "c-w5";
 const AUDIENCE: &str = r#"["member:user","agent:assistant"]"#;
 
-/// One store reply on the recall lane, as the edge delivers it.
-fn recall_reply(phase: &str, operation: &str, rows: serde_json::Value) -> serde_json::Value {
+fn recall_emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
+    emit_of(&recall_script(), doc)
+}
+
+/// The reply that reaches the FUSION: the `t1-legs` bundle, whose read-back
+/// carries the parked `legs` row and whose other calls carry the walk and the
+/// semantic companion.
+///
+/// Since GH #418 the fusion runs inside that reply, out of the row the fan
+/// parked -- there is no fusion phase to address any more.
+fn fusion_reply(store_legs: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "header": {
-            "context": {"store_origin": "recall", "mem_phase": phase, "recall_id": RECALL,
-                        "recall_query": "collects", "memory_tier": "1",
-                        "recall_as_of": "2026-08-01T00:00:00Z",
+            "context": {"store_origin": "recall", "mem_phase": "t1-legs",
+                        "recall_id": RECALL, "recall_query": "collects",
+                        "memory_tier": "1", "recall_as_of": "2026-08-01T00:00:00Z",
                         "audience_now": AUDIENCE, "channel": CHANNEL},
-            "hop": {"operation": operation, "rows_affected": 1}
+            "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}
         },
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "r", "text": rows.to_string()}]
+        "messages": [
+            {"origin": "tool", "type": "tool_result", "id": "r-legs-graph",
+             "text": serde_json::json!({"paths": []}).to_string()},
+            {"origin": "tool", "type": "tool_result", "id": "r-legs-read",
+             "text": serde_json::json!([
+                 scratch_row("legs", store_legs),
+                 scratch_row("sem", serde_json::json!([])),
+             ]).to_string()},
+        ],
+        "results": [
+            {"tool_call_id": "r-legs-graph", "operation": "traverse",
+             "rows_affected": 1, "duration_ms": 0},
+            {"tool_call_id": "r-legs-read", "operation": "select",
+             "rows_affected": 2, "duration_ms": 0},
+        ]
     })
 }
 
-fn recall_emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
-    emit_of(&recall_script(), doc)
+/// Every `tool_call` a message carries, in call order (#295) — `args_of` reads
+/// the first of them, which is the whole message for a single-op emission and
+/// the first leg of a bundle.
+fn calls_of(msg: &serde_json::Value) -> Vec<serde_json::Value> {
+    msg["messages"]
+        .as_array()
+        .expect("messages array")
+        .iter()
+        .filter(|t| t["type"] == "tool_call")
+        .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("op args"))
+        .collect()
+}
+
+/// One `recall_scratch` row as the store answers it.
+fn scratch_row(leg: &str, payload: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"request_id": RECALL, "leg": leg,
+                       "payload": payload.to_string(), "fired": 0})
 }
 
 #[test]
@@ -707,22 +745,25 @@ fn the_hydration_asks_for_the_judged_verdicts() {
     // fan-in that already waits for the axis page waits for one more row. A
     // serial select here would cost a hop on the lane that runs while somebody
     // is waiting for an answer.
-    let msgs = recall_emit(recall_reply(
-        "t1-hyd-fact",
-        "select",
-        // The row carries the round it was learned in. The hydration's residual
-        // guard filters a second time on purpose (contract ruling R8), so a
-        // fixture from before the gate reaches nothing -- the fixture is
-        // brought forward, the guard stays. Same round as the question above,
-        // which is what makes the row visible by the subset rule.
-        serde_json::json!([{"id": "a", "subject": "user", "canonical_subject": "user",
-                            "predicate": "collects", "canonical_predicate": "collects",
-                            "claim": "collects vinyl",
-                            "channel": CHANNEL, "audience_set": AUDIENCE}]),
-    ));
+    // #418: the verdict select is a CALL of the hydration bundle, fired together
+    // with the axis page rather than a hop behind it. What the case measures is
+    // unchanged -- that it is asked at all, and asked only for the relations of
+    // this bundle. It is driven from the FUSION now, because that is where the
+    // bundle is built: the axis keys come from the legs, which is exactly what
+    // takes the round trip away.
+    let msgs = recall_emit(fusion_reply(serde_json::json!({
+        "kw-fact": [{"kind": "fact", "id": "a"}],
+        "kw-ep": [], "temporal": [], "beliefs": [], "anchors": [],
+        // The axis map the fan parked: the canonical keys of the fact the
+        // keyword leg nominated. This is what the verdict select is built from
+        // since #418 -- deriving it here instead of from the hydration page is
+        // exactly what takes the round trip away.
+        "axis": {"a": ["user", "collects"]},
+        "model": {"model_id": "m", "dim": 1024}
+    })));
     let card = msgs
         .iter()
-        .map(args_of)
+        .flat_map(calls_of)
         .find(|a| a["table"] == "predicate_cardinality")
         .expect("the hydration does not read the judged verdicts");
     assert_eq!(card["operation"], "select");
@@ -738,16 +779,29 @@ fn the_hydration_asks_for_the_judged_verdicts() {
 fn a_bundle_without_a_fact_hit_still_fans_in() {
     // The empty branch is where a fan-in dies: a gate waiting for a leg nobody
     // parks parks forever, and the request answers nothing at all.
-    let msgs = recall_emit(recall_reply("t1-hyd-fact", "select", serde_json::json!([])));
-    let legs: Vec<serde_json::Value> = msgs
+    let msgs = recall_emit(fusion_reply(serde_json::json!({
+        "kw-ep": [], "kw-fact": [], "temporal": [], "beliefs": [], "anchors": [],
+        "axis": {}, "model": {"model_id": "m", "dim": 1024}
+    })));
+    // #418: what "still fans in" means is now that the round ADVANCES -- the hop
+    // emits its next message with the read-back last, so the phase behind it
+    // reads a complete set instead of waiting for a leg nobody parks. The empty
+    // substitute inserts are gone with the fan-in that needed them: a leg that
+    // was never asked for is simply not in the bundle, and `bundle_rows` reads
+    // that as the empty list those inserts stood for. With nothing to hydrate
+    // there is no axis to ask for either, so the message is the park and the
+    // read-back alone.
+    assert_eq!(msgs.len(), 1, "the empty branch must still emit: {msgs:#?}");
+    let ids: Vec<&str> = msgs[0]["messages"]
+        .as_array()
+        .expect("messages")
         .iter()
-        .map(args_of)
-        .filter(|a| a["table"] == "recall_scratch" && a["operation"] == "insert")
-        .map(|a| a["row"]["leg"].clone())
+        .map(|t| t["id"].as_str().expect("id"))
         .collect();
-    assert!(
-        legs.contains(&serde_json::json!("card")),
-        "the cardinality leg has to be parked empty, not left out: {legs:?}"
+    assert_eq!(
+        ids,
+        ["r-hyd-fused", "r-hyd-read"],
+        "an empty ranking parks the fused row and reads back, nothing else: {ids:?}"
     );
 }
 

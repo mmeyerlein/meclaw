@@ -163,7 +163,7 @@ fn asserts_no_store_op(msgs: &[serde_json::Value], store_route: &str, lane: &str
 
 fn assemble_window_context() -> serde_json::Value {
     serde_json::json!({
-        "col_phase": "win", "session_id": "s1", "turn_id": "t1", "iter": "0"
+        "col_phase": "turn-open", "session_id": "s1", "turn_id": "t1", "iter": "0"
     })
 }
 
@@ -206,10 +206,25 @@ fn the_collector_still_assembles_a_window_that_came_back() {
         "deferred": 0, "consult_id": ""
     }])
     .to_string();
-    let out = emit(
-        &script,
-        store_reply(assemble_window_context(), "select", None, &rows),
-    );
+    // GH #419: the window is a CALL of the ONE message a turn opens with, so a
+    // clean read comes back as a bundle. What the case measures is unchanged --
+    // a read that WORKED opens the fan-in.
+    let reply = serde_json::json!({
+        "header": {"context": {"col_phase": "turn-open", "session_id": "s1",
+                               "turn_id": "t1", "iter": "0",
+                               "store_origin": "collector"},
+                   "hop": {"operation": "bundle", "rows_affected": 1,
+                           "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-open-round",
+                      "text": "[]"},
+                     {"origin": "tool", "type": "tool_result", "id": "c-open-win",
+                      "text": rows}],
+        "results": [{"tool_call_id": "c-open-round", "operation": "select",
+                     "rows_affected": 0, "duration_ms": 0},
+                    {"tool_call_id": "c-open-win", "operation": "select",
+                     "rows_affected": 1, "duration_ms": 0}]
+    });
+    let out = emit(&script, reply);
     assert!(
         phases(&out).iter().any(|p| p == "collect"),
         "collector/assemble: a clean window read must still open the fan-in: {}",
@@ -221,7 +236,9 @@ fn the_collector_still_assembles_a_window_that_came_back() {
 
 fn recall_keyword_context() -> serde_json::Value {
     serde_json::json!({
-        "mem_phase": "t1-kw-ep", "recall_id": "r1", "memory_tier": "1",
+        // #418: the legs that need no query vector are ONE message and one
+        // reply, so the phase a leg answers under is the fan's.
+        "mem_phase": "t1-fan", "recall_id": "r1", "memory_tier": "1",
         "recall_query": "radiator valve",
         "audience_now": r#"["member:user","agent:assistant"]"#,
         "channel": "c-343"
@@ -258,10 +275,17 @@ fn recall_does_not_read_a_refused_keyword_leg_as_a_leg_with_no_hits() {
 #[test]
 fn recall_still_records_a_keyword_leg_that_came_back() {
     let script = script_of(RECALL);
-    let out = emit(
-        &script,
-        store_reply(recall_keyword_context(), "search", None, "[]"),
-    );
+    // #418: a clean fan comes back as a BUNDLE -- the keyword leg is one of its
+    // calls, and an empty page is still an answer the round has to record.
+    let reply = serde_json::json!({
+        "header": {"context": recall_keyword_context(),
+                   "hop": {"operation": "bundle", "rows_affected": 0, "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result",
+                      "id": "r-fan-kw-ep", "text": "[]"}],
+        "results": [{"tool_call_id": "r-fan-kw-ep", "operation": "search",
+                     "rows_affected": 0, "duration_ms": 0}]
+    });
+    let out = emit(&script, reply);
     assert!(
         routes(&out).iter().any(|r| r == "rstore"),
         "memory-hive/recall: a clean (empty) leg must still be recorded: {}",

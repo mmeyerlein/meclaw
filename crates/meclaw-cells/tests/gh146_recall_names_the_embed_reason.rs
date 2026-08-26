@@ -91,14 +91,41 @@ fn run_script_on_stdin(script: &str, stdin_doc: &str) -> std::process::Output {
 /// request id, `hop` whatever the store reported, and `text` is the incoming
 /// message payload.
 fn run_phase(phase: &str, hop: Value, text: String) -> Run {
-    let stdin = json!({
+    run_stdin(json!({
         "envelope": {"header": {"context": {"mem_phase": phase, "recall_id": "rid-1",
                                             "memory_tier": "1", "recall_query": "what do I eat"},
                                 "hop": hop}},
-        "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "in", "text": text}]},
+        "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "in",
+                               "text": text}]},
         "params": {},
-    })
-    .to_string();
+    }))
+}
+
+/// The rendezvous, as the store answers it.
+///
+/// Since GH #418 the five legs that need no query vector park as ONE row and
+/// the query vector parks as the other; both halves read the parking place back
+/// in their own bundle, and whichever is second carries on. So the reply is a
+/// BUNDLE whose trailing `r-t1-park-read` turn carries the parked rows. What the
+/// two tests below measure is untouched: the warn line the fan writes when it is
+/// short a leg, and the reason inside it.
+fn run_rendezvous(rows: Value) -> Run {
+    run_stdin(json!({
+        "envelope": {"header": {"context": {"mem_phase": "t1-park", "recall_id": "rid-1",
+                                            "memory_tier": "1",
+                                            "recall_query": "what do I eat"},
+                                "hop": {"operation": "bundle", "rows_affected": 1,
+                                        "bundle_errors": 0}}},
+        "body": {"messages": [{"origin": "tool", "type": "tool_result",
+                               "id": "r-t1-park-read", "text": rows.to_string()}],
+                 "results": [{"tool_call_id": "r-t1-park-read", "operation": "select",
+                              "rows_affected": 1, "duration_ms": 0}]},
+        "params": {},
+    }))
+}
+
+fn run_stdin(doc: Value) -> Run {
+    let stdin = doc.to_string();
 
     let out = run_script_on_stdin(&recall_script(), &stdin);
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -114,7 +141,14 @@ fn run_phase(phase: &str, hop: Value, text: String) -> Run {
 
 /// The scratch payload the emitted insert would write.
 fn inserted_payload(run: &Run) -> Value {
-    assert_eq!(run.msgs.len(), 1, "one store op per hop: {:?}", run.msgs);
+    // #418: the hop parks its half and reads the join back in ONE message, so
+    // the insert is the FIRST CALL of that message rather than the message.
+    assert_eq!(
+        run.msgs.len(),
+        1,
+        "one store message per hop: {:?}",
+        run.msgs
+    );
     let args: Value = serde_json::from_str(run.msgs[0]["messages"][0]["text"].as_str().unwrap())
         .expect("store args json");
     assert_eq!(args["operation"], "insert");
@@ -161,17 +195,14 @@ fn a_healthy_query_vector_carries_no_reason() {
 #[test]
 fn the_warn_line_at_the_fan_names_that_reason() {
     let rows = json!([
-        {"request_id": "rid-1", "leg": "model", "fired": 1,
-         "payload": json!({"model_id": "qwen/qwen3-embedding-8b", "dim": 1024}).to_string()},
+        {"request_id": "rid-1", "leg": "legs", "fired": 0,
+         "payload": json!({"model": {"model_id": "qwen/qwen3-embedding-8b", "dim": 1024},
+                           "anchors": []}).to_string()},
         {"request_id": "rid-1", "leg": "qvec", "fired": 1,
          "payload": json!({"vector": null, "degraded": true,
                            "error": "endpoint returned HTTP 500 (after 2 attempt(s))"}).to_string()},
     ]);
-    let run = run_phase(
-        "t1-semfire",
-        json!({"operation": "select"}),
-        rows.to_string(),
-    );
+    let run = run_rendezvous(rows);
 
     assert!(
         run.stderr
@@ -192,16 +223,13 @@ fn the_warn_line_at_the_fan_names_that_reason() {
 #[test]
 fn without_a_reason_the_line_falls_back_instead_of_falling_silent() {
     let rows = json!([
-        {"request_id": "rid-1", "leg": "model", "fired": 1,
-         "payload": json!({"model_id": "qwen/qwen3-embedding-8b", "dim": 1024}).to_string()},
+        {"request_id": "rid-1", "leg": "legs", "fired": 0,
+         "payload": json!({"model": {"model_id": "qwen/qwen3-embedding-8b", "dim": 1024},
+                           "anchors": []}).to_string()},
         {"request_id": "rid-1", "leg": "qvec", "fired": 1,
          "payload": json!({"vector": null, "degraded": true}).to_string()},
     ]);
-    let run = run_phase(
-        "t1-semfire",
-        json!({"operation": "select"}),
-        rows.to_string(),
-    );
+    let run = run_rendezvous(rows);
 
     assert!(
         run.stderr

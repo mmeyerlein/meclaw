@@ -1,4 +1,4 @@
-# `meclaw-os@1.0.3`
+# `meclaw-os@1.0.4`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds two occupants, one empty
@@ -21,7 +21,7 @@ a shell that grew one would have stopped being a boundary and become a participa
 
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
-| `access` | a `ref` to `access@2.0.5` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
+| `access` | a `ref` to `access@2.1.0` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
 | `steward` | a `ref` to `steward@2.0.11` — the control loop | one colony, one loop; it ships with every goal disabled |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
@@ -141,7 +141,7 @@ but the level's promise is already true and already checkable on the day it ship
 ## What is deliberately not here
 
 **No second vault.** GH #302's original sketch listed `vault` beside `access` at this level.
-It is not here, and that is a ruling (Q20), not an omission: `access@2.0.5` already carries
+It is not here, and that is a ruling (Q20), not an omission: `access@2.1.0` already carries
 its own interior `vault`, reachable from nowhere outside, and the standalone `vault`
 template attests its inbound edges against `params.broker` and `params.sealed_neighbors`.
 With no broker at this level, a second one would boot locked and inert — a credential store
@@ -199,7 +199,7 @@ already a requirement of this composite.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.4"}],
           "add_edges": []}}
 ```
 

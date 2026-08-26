@@ -169,12 +169,6 @@ fn hop(m: &Value, key: &str) -> String {
     m["header"][key].as_str().unwrap_or_default().to_string()
 }
 
-/// The store args of an emission that goes to a store cell.
-fn args(m: &Value) -> Value {
-    let text = m["messages"][0]["text"].as_str().expect("tool_call text");
-    meclaw_core::serde_json::from_str(text).expect("store args are json")
-}
-
 fn phase_msgs<'a>(out: &'a [Value], phase: &str) -> Vec<&'a Value> {
     out.iter().filter(|m| hop(m, "phase") == phase).collect()
 }
@@ -187,8 +181,25 @@ fn episodes(out: &[Value]) -> Vec<&Value> {
 }
 
 /// The guarded marks of an emission, in the order they leave.
-fn marks(out: &[Value]) -> Vec<&Value> {
+///
+/// GH #419: N marks of one scan travel as ONE message with N calls (a single
+/// mark still travels as a single op -- a bundle is two or more `tool_call`
+/// turns). The guard stays per ROW, so this reads the CALLS: what a mark
+/// guards did not change, only how many messages the scan spends on them.
+fn marks(out: &[Value]) -> Vec<Value> {
     phase_msgs(out, "tw-mark")
+        .iter()
+        .flat_map(|m| {
+            m["messages"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    meclaw_core::serde_json::from_str::<Value>(t["text"].as_str()?).ok()
+                })
+        })
+        .collect()
 }
 
 /// One row of the collector's `turns` table, as the store hands it back.
@@ -214,6 +225,47 @@ fn select_reply(phase: &str, rows: Value) -> Value {
 
 /// The reply a store cell sends back after an insert: the occasion on which the
 /// scan is asked for at all.
+/// The calls one emission carries, in call order.
+fn calls_of(m: &Value) -> Vec<Value> {
+    m["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|t| meclaw_core::serde_json::from_str::<Value>(t["text"].as_str()?).ok())
+        .collect()
+}
+
+/// The day read of the turn-opening bundle, if it is in there.
+///
+/// GH #419: the per-turn scan is a CALL of the ONE message a turn opens with,
+/// not a message behind it. Whether it is asked at all is still the knob's
+/// decision, and that is what these cases measure.
+fn day_call_of(out: &[Value]) -> Vec<Value> {
+    out.iter()
+        .filter(|m| hop(m, "phase") == "turn-open")
+        .flat_map(calls_of)
+        .filter(|a| {
+            a["table"] == "turns"
+                && a["operation"] == "select"
+                && a["columns"]
+                    .as_array()
+                    .map(|c| c.iter().any(|x| x == "episode_written"))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// The turn as it arrives at the door -- the occasion the opening bundle is
+/// built from.
+fn inbound_turn() -> Value {
+    json!({
+        "header": {"hop": {"route": "in_turn"},
+                   "context": {"session_id": "s1", "turn_id": "t1"}},
+        "messages": [{"origin": "user", "type": "text", "text": "my editor is helix"}]
+    })
+}
+
 fn insert_echo(phase: &str) -> Value {
     json!({
         "header": {
@@ -303,12 +355,13 @@ fn each_episode_carries_its_own_guarded_mark() {
     assert_eq!(m.len(), 3, "one mark per episode -- {out:?}");
     assert_eq!(
         out.len(),
-        6,
-        "and both halves are ONE multi-send -- {out:?}"
+        4,
+        "and both halves are ONE multi-send: three episodes and the ONE \
+         message that marks all three -- {out:?}"
     );
 
-    for (i, mark) in m.iter().enumerate() {
-        let a = args(mark);
+    for (i, a) in m.iter().enumerate() {
+        let a = a.clone();
         assert_eq!(a["operation"], "update");
         assert_eq!(a["table"], "turns");
         assert_eq!(a["set"], json!({"episode_written": 1}));
@@ -407,7 +460,7 @@ fn an_interim_and_an_advice_row_are_neither_emitted_nor_counted() {
     assert_eq!(
         marks(&out)
             .iter()
-            .map(|m| args(m)["where"]["id"].clone())
+            .map(|a| a["where"]["id"].clone())
             .collect::<Vec<_>>(),
         vec![json!("0"), json!("3")],
         "{out:?}"
@@ -440,9 +493,9 @@ fn every_episode_is_attributed_to_the_role_of_its_own_row() {
 #[test]
 fn both_spellings_of_off_keep_the_lane_silent() {
     for off in ["", "0"] {
-        let out = collector_with(&[("turn_write", off)], insert_echo("turn-w"));
+        let out = collector_with(&[("turn_write", off)], inbound_turn());
         assert!(
-            phase_msgs(&out, "tw-scan").is_empty(),
+            day_call_of(&out).is_empty(),
             "turn_write={off:?} must not scan -- {out:?}"
         );
         assert_eq!(
@@ -462,20 +515,23 @@ fn both_spellings_of_off_keep_the_lane_silent() {
 /// shipped "off" is a shipped agent that remembers nothing.
 #[test]
 fn the_shipped_default_writes_episodes() {
-    for occasion in ["turn-w", "ans-w"] {
-        let shipped = collector(insert_echo(occasion));
-        assert_eq!(
-            phase_msgs(&shipped, "tw-scan").len(),
-            1,
-            "the shipped params scan on {occasion} -- {shipped:?}"
-        );
-        let bare = collector_without_the_knob(insert_echo(occasion));
-        assert_eq!(
-            phase_msgs(&bare, "tw-scan").len(),
-            1,
-            "and so does a params object that never mentions the knob -- {bare:?}"
-        );
-    }
+    // The turn's own occasion: the scan rides in the opening bundle (#419).
+    assert_eq!(
+        day_call_of(&collector(inbound_turn())).len(),
+        1,
+        "the shipped params scan"
+    );
+    assert_eq!(
+        day_call_of(&collector_without_the_knob(inbound_turn())).len(),
+        1,
+        "and so does a params object that never mentions the knob"
+    );
+    // The answer's occasion is unchanged: the answer is written on its own, so
+    // its scan arrives on its own.
+    let shipped = collector(insert_echo("ans-w"));
+    assert_eq!(phase_msgs(&shipped, "tw-scan").len(), 1, "{shipped:?}");
+    let bare = collector_without_the_knob(insert_echo("ans-w"));
+    assert_eq!(phase_msgs(&bare, "tw-scan").len(), 1, "{bare:?}");
 }
 
 /// The scan asks for the columns it decides on. A column that is not selected
@@ -483,10 +539,10 @@ fn the_shipped_default_writes_episodes() {
 /// their evidence as absent.
 #[test]
 fn the_scan_selects_the_evidence_it_decides_on() {
-    let out = collector(insert_echo("turn-w"));
-    let scan = phase_msgs(&out, "tw-scan");
+    let out = collector(inbound_turn());
+    let scan = day_call_of(&out);
     assert_eq!(scan.len(), 1, "{out:?}");
-    let a = args(scan[0]);
+    let a = scan[0].clone();
     assert_eq!(a["operation"], "select");
     assert_eq!(a["table"], "turns");
     assert_eq!(a["where"], json!({"session_id": "s1"}));

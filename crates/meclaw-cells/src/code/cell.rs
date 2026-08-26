@@ -32,6 +32,23 @@ pub struct CodeCell {
     /// so no credential ever sits in this struct. Empty object by default —
     /// the production path fills it via [`CodeCell::with_stdin_params`].
     pub stdin_params: Value,
+    /// The runner this cell was built with. `pub(crate)` rather than `pub`
+    /// because a pool handle is crate-internal plumbing, not part of the cell's
+    /// published shape.
+    pub(crate) runner: RunnerHandle,
+}
+
+/// How a `CodeCell` actually runs its script.
+///
+/// `Cold` is not a fallback and not a degraded mode: it is the same code path
+/// the cell had before the runner modes existed, reached by a value that says
+/// so. The pooled variant is what `warm` and `resident` attach.
+pub(crate) enum RunnerHandle {
+    /// One fresh process per message.
+    Cold,
+    /// A pool of resident children (`warm`: `size` of them, fresh namespace per
+    /// message; `resident`: exactly one, persistent namespace).
+    Pooled(crate::code::pool::PoolHandle),
 }
 
 impl CodeCell {
@@ -50,6 +67,7 @@ impl CodeCell {
             emits,
             validate_emits,
             stdin_params: Value::Object(Map::new()),
+            runner: RunnerHandle::Cold,
         }
     }
 
@@ -64,6 +82,149 @@ impl CodeCell {
     pub fn with_stdin_params(mut self, raw_params: &Value) -> Self {
         self.stdin_params = wire::filter_params_for_stdin(raw_params);
         self
+    }
+
+    /// Attach the warm/resident pool the params ask for.
+    ///
+    /// A `cold` params returns the cell UNCHANGED, so the default path is not
+    /// merely equivalent to the pre-lane one -- it is the same code. Must be
+    /// called inside a tokio runtime (it spawns the broker); the production
+    /// caller is `CodeCellFactory`, and a cell built by `new()` alone stays
+    /// cold no matter what its params say.
+    #[doc(hidden)]
+    #[must_use]
+    pub(crate) fn with_runner_pool(mut self, params: &CodeParams, size: usize) -> Self {
+        if let Some(cfg) = crate::code::child::config_for(params) {
+            self.runner = RunnerHandle::Pooled(crate::code::pool::spawn_pool(cfg, size));
+        }
+        self
+    }
+
+    /// The cold runner: one fresh process per message.
+    ///
+    /// Byte-for-byte the pre-lane path — moved out of `handle()` so the warm
+    /// branch can sit BESIDE it instead of inside it. Emits its own error bodies
+    /// and answers `None` when it did; `Some(out)` feeds the shared tail
+    /// (headers, contract check, emission) that both runners share.
+    ///
+    /// `cell_path` is `msg.target`: the orphan journal labels the child with the
+    /// cell's own address, and that label is part of the pre-lane behaviour, so
+    /// it travels as a parameter rather than being reinvented here.
+    async fn run_cold(
+        &self,
+        stdin_json: String,
+        timeout: std::time::Duration,
+        sink: &OutputSink,
+        reply_target: &Path,
+        cell_path: &Path,
+        started: std::time::Instant,
+    ) -> Option<KillingTimeoutOutput> {
+        // GH #349: an inline script above the platform's per-argv-string cap
+        // (Linux: MAX_ARG_STRLEN = 32 * PAGE_SIZE) cannot be handed to the
+        // runner in `argv` at all — `spawn()` answers `Argument list too
+        // long`. stdin is not free either: it carries the DOCUMENT, which
+        // the script reads. So the script goes to a per-spawn temp file and
+        // the runner is pointed at it, the same `<runner> <path>` form
+        // `script_path` already uses. Scripts under the cap keep the argv
+        // path unchanged. The guard unlinks the file when it drops — bound
+        // for the whole run so the file outlives the child.
+        let materialised = match &self.params.script {
+            Script::Inline(code) => {
+                match crate::code::script_file::materialise_if_oversized(code, timeout).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        emit_spawn_error(
+                            sink,
+                            reply_target,
+                            format!("inline script could not be materialised: {e}"),
+                        )
+                        .await;
+                        return None;
+                    }
+                }
+            }
+            Script::Path(_) => None,
+        };
+        let script_file_path = materialised.as_ref().map(|m| m.path());
+
+        let (cmd, args) = build_command(&self.params, script_file_path);
+        let mut command = tokio::process::Command::new(&cmd);
+        command
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // S4 (GH #35): the sandbox is installed on the command, not around
+        // it. A profile that cannot be applied fails HERE, before a child
+        // exists — a `restricted` cell never falls back to unsandboxed.
+        //
+        // GH #85: the returned scope owns the child's cgroup and must stay
+        // alive until the child is reaped, so it is bound rather than
+        // dropped on the spot.
+        //
+        // GH #349: when the script was materialised, the profile gets one
+        // extra read grant — the script file itself. `cell-types.md` §
+        // `code` promises a `script_inline` needs no declaration of its own,
+        // and the runner has to be able to open the program it is told to
+        // run. Nothing else is widened, and nothing of this reaches
+        // `config.json`.
+        let effective_profile = match (&self.params.sandbox, script_file_path) {
+            (Some(profile), Some(path)) => Some(profile.with_readable_file(path)),
+            _ => None,
+        };
+        let profile_in_force = effective_profile.as_ref().or(self.params.sandbox.as_ref());
+        let _sandbox_scope = match profile_in_force {
+            None => crate::sandbox::SandboxScope::empty(),
+            Some(profile) => match crate::sandbox::apply(profile, &mut command) {
+                Ok(scope) => scope,
+                Err(e) => {
+                    emit_spawn_error(sink, reply_target, format!("sandbox not applied: {e}")).await;
+                    return None;
+                }
+            },
+        };
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                emit_spawn_error(sink, reply_target, e.to_string()).await;
+                return None;
+            }
+        };
+
+        // GH #116: same crash-durable record as `bash` — see the note at
+        // that spawn site. Taken before the pipes are moved out, because
+        // `Child::id()` is only meaningful while the child is unreaped.
+        let _journal_note = crate::orphan_journal::note_spawn(child.id(), None, cell_path.as_str());
+
+        // Concurrent stdin write: avoids a pipe deadlock with large
+        // stdin/stdout — the stdin pipe buffer fills up and the script waits
+        // on the stdout reader, which only starts in with_killing_timeout.
+        let stdin_opt = child.stdin.take();
+        let stdin_bytes = stdin_json.into_bytes();
+        let _write_task = tokio::spawn(async move {
+            if let Some(mut s) = stdin_opt {
+                use tokio::io::AsyncWriteExt;
+                // Swallow rationale (documented POC boundary): a broken
+                // pipe (script exits before consuming stdin) is already the
+                // observable signal via the script's exit code / stdout
+                // parse (surfaces as `invalid_json`/`script_failed`), so the
+                // write error needs no separate diagnostic here.
+                let _ = s.write_all(&stdin_bytes).await;
+                // Dropping closes the pipe → the script sees EOF.
+            }
+        });
+
+        match with_killing_timeout(child, timeout).await {
+            Ok(o) => Some(o),
+            Err(KillingTimeoutErr::Elapsed) => {
+                emit_script_timeout(sink, reply_target, started).await;
+                None
+            }
+            Err(KillingTimeoutErr::Io(e)) => {
+                emit_spawn_error(sink, reply_target, e.to_string()).await;
+                None
+            }
+        }
     }
 }
 
@@ -300,114 +461,35 @@ impl StatelessCell for CodeCell {
             let timeout =
                 std::time::Duration::from_millis(self.params.external_timeout_ms.unwrap_or(60_000));
 
-            // GH #349: an inline script above the platform's per-argv-string cap
-            // (Linux: MAX_ARG_STRLEN = 32 * PAGE_SIZE) cannot be handed to the
-            // runner in `argv` at all — `spawn()` answers `Argument list too
-            // long`. stdin is not free either: it carries the DOCUMENT, which
-            // the script reads. So the script goes to a per-spawn temp file and
-            // the runner is pointed at it, the same `<runner> <path>` form
-            // `script_path` already uses. Scripts under the cap keep the argv
-            // path unchanged. The guard unlinks the file when it drops — bound
-            // for the whole handler so the file outlives the child.
-            let materialised = match &self.params.script {
-                Script::Inline(code) => {
-                    match crate::code::script_file::materialise_if_oversized(code, timeout).await {
-                        Ok(m) => m,
-                        Err(e) => {
-                            emit_spawn_error(
-                                sink,
-                                &reply_target,
-                                format!("inline script could not be materialised: {e}"),
-                            )
-                            .await;
-                            return;
+            let out = match &self.runner {
+                RunnerHandle::Cold => {
+                    self.run_cold(
+                        stdin_json,
+                        timeout,
+                        sink,
+                        &reply_target,
+                        &msg.target,
+                        started,
+                    )
+                    .await
+                }
+                RunnerHandle::Pooled(pool) => {
+                    // Every branch below lands on an error path the cold runner
+                    // already owns; the warm runner adds no `error_code`.
+                    match pool.run(stdin_json, timeout).await {
+                        crate::code::pool::JobOutcome::Ran(out) => Some(out),
+                        crate::code::pool::JobOutcome::Timeout => {
+                            emit_script_timeout(sink, &reply_target, started).await;
+                            None
+                        }
+                        crate::code::pool::JobOutcome::Io(e) => {
+                            emit_spawn_error(sink, &reply_target, e).await;
+                            None
                         }
                     }
                 }
-                Script::Path(_) => None,
             };
-            let script_file_path = materialised.as_ref().map(|m| m.path());
-
-            let (cmd, args) = build_command(&self.params, script_file_path);
-            let mut command = tokio::process::Command::new(&cmd);
-            command
-                .args(&args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            // S4 (GH #35): the sandbox is installed on the command, not around
-            // it. A profile that cannot be applied fails HERE, before a child
-            // exists — a `restricted` cell never falls back to unsandboxed.
-            //
-            // GH #85: the returned scope owns the child's cgroup and must stay
-            // alive until the child is reaped, so it is bound rather than
-            // dropped on the spot.
-            //
-            // GH #349: when the script was materialised, the profile gets one
-            // extra read grant — the script file itself. `cell-types.md` §
-            // `code` promises a `script_inline` needs no declaration of its own,
-            // and the runner has to be able to open the program it is told to
-            // run. Nothing else is widened, and nothing of this reaches
-            // `config.json`.
-            let effective_profile = match (&self.params.sandbox, script_file_path) {
-                (Some(profile), Some(path)) => Some(profile.with_readable_file(path)),
-                _ => None,
-            };
-            let profile_in_force = effective_profile.as_ref().or(self.params.sandbox.as_ref());
-            let _sandbox_scope = match profile_in_force {
-                None => crate::sandbox::SandboxScope::empty(),
-                Some(profile) => match crate::sandbox::apply(profile, &mut command) {
-                    Ok(scope) => scope,
-                    Err(e) => {
-                        emit_spawn_error(sink, &reply_target, format!("sandbox not applied: {e}"))
-                            .await;
-                        return;
-                    }
-                },
-            };
-            let mut child = match command.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    emit_spawn_error(sink, &reply_target, e.to_string()).await;
-                    return;
-                }
-            };
-
-            // GH #116: same crash-durable record as `bash` — see the note at
-            // that spawn site. Taken before the pipes are moved out, because
-            // `Child::id()` is only meaningful while the child is unreaped.
-            let _journal_note =
-                crate::orphan_journal::note_spawn(child.id(), None, msg.target.as_str());
-
-            // Concurrent stdin write: avoids a pipe deadlock with large
-            // stdin/stdout — the stdin pipe buffer fills up and the script waits
-            // on the stdout reader, which only starts in with_killing_timeout.
-            let stdin_opt = child.stdin.take();
-            let stdin_bytes = stdin_json.into_bytes();
-            let _write_task = tokio::spawn(async move {
-                if let Some(mut s) = stdin_opt {
-                    use tokio::io::AsyncWriteExt;
-                    // Swallow rationale (documented POC boundary): a broken
-                    // pipe (script exits before consuming stdin) is already the
-                    // observable signal via the script's exit code / stdout
-                    // parse (surfaces as `invalid_json`/`script_failed`), so the
-                    // write error needs no separate diagnostic here.
-                    let _ = s.write_all(&stdin_bytes).await;
-                    // Dropping closes the pipe → the script sees EOF.
-                }
-            });
-
-            let out = match with_killing_timeout(child, timeout).await {
-                Ok(o) => o,
-                Err(KillingTimeoutErr::Elapsed) => {
-                    emit_script_timeout(sink, &reply_target, started).await;
-                    return;
-                }
-                Err(KillingTimeoutErr::Io(e)) => {
-                    emit_spawn_error(sink, &reply_target, e.to_string()).await;
-                    return;
-                }
-            };
+            let Some(out) = out else { return };
 
             let duration_ms = started.elapsed().as_millis() as i64;
             let had_stderr = !out.stderr.is_empty();
@@ -500,7 +582,7 @@ impl StatelessCell for CodeCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::code::{CodeParams, Script};
+    use crate::code::{CodeParams, RunnerMode, Script};
     use meclaw_colony::StatelessCell;
     use meclaw_core::serde_json::json;
     use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
@@ -526,6 +608,7 @@ mod tests {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         }
     }
 
@@ -550,6 +633,18 @@ mod tests {
         // Kept prefix stays under the cap and is valid UTF-8 (it is a &str).
         let kept = out.split('…').next().unwrap();
         assert!(kept.len() <= STDERR_LOG_MAX_BYTES);
+    }
+
+    /// The runner a cell gets when nobody says otherwise. `cold` is not merely
+    /// the documented default — it is the default of the VALUE, so a cell built
+    /// by any path other than the factory cannot silently become warm.
+    #[test]
+    fn a_freshly_built_cell_runs_cold() {
+        let cell = CodeCell::new(sample_params(), false, None, false);
+        assert!(
+            matches!(cell.runner, RunnerHandle::Cold),
+            "CodeCell::new must not attach a pool"
+        );
     }
 
     #[test]
@@ -600,6 +695,7 @@ mod tests {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         };
         CodeCell::new(params, multi_send, Some(compiled), validate)
     }
@@ -626,6 +722,82 @@ mod tests {
             outs.push(em);
         }
         outs
+    }
+
+    /// Build a cell in `mode` around `script`, pool included when the mode asks
+    /// for one.
+    fn cell_in_mode(script: &str, mode: RunnerMode, multi: bool) -> CodeCell {
+        let params = CodeParams {
+            runner: "python3".into(),
+            script: Script::Inline(script.into()),
+            external_timeout_ms: Some(10_000),
+            max_concurrency: None,
+            sandbox: None,
+            runner_mode: mode,
+        };
+        let size = params.effective_max_concurrency();
+        CodeCell::new(params.clone(), multi, None, false).with_runner_pool(&params, size)
+    }
+
+    /// THE claim of this lane: a warm runner changes latency, never semantics.
+    /// Same script, same message, same bytes out -- headers included, except
+    /// `duration_ms`, which is a measurement and is meant to differ.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn warm_answers_the_same_bytes_as_cold() {
+        const SCRIPTS: [(&str, bool); 4] = [
+            // a plain body
+            (
+                r#"import sys,json; sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","text":"ok"}]}))"#,
+                false,
+            ),
+            // stderr on a successful run (header.had_stderr, content not injected)
+            (
+                r#"import sys,json; sys.stderr.write("noise"); sys.stdout.write(json.dumps({"messages":[]}))"#,
+                false,
+            ),
+            // a non-zero exit (script_failed with the bash sentinel form)
+            (r#"import sys; sys.stderr.write("bad"); sys.exit(2)"#, false),
+            // stdout that is not the wire shape (invalid_json)
+            (r#"import sys; sys.stdout.write("not json")"#, false),
+        ];
+        for (script, multi) in SCRIPTS {
+            let cold = run_handle_collect(&cell_in_mode(script, RunnerMode::Cold, multi)).await;
+            let warm = run_handle_collect(&cell_in_mode(script, RunnerMode::Warm, multi)).await;
+            assert_eq!(
+                cold.len(),
+                warm.len(),
+                "emission count differs for {script}"
+            );
+            for (c, w) in cold.iter().zip(warm.iter()) {
+                let mut c = c.content.clone();
+                let mut w = w.content.clone();
+                for v in [&mut c, &mut w] {
+                    if let Some(h) = v.get_mut("header").and_then(|h| h.as_object_mut()) {
+                        h.remove("duration_ms");
+                    }
+                }
+                assert_eq!(c, w, "warm changed the answer for {script}");
+            }
+        }
+    }
+
+    /// A `code` cell whose runner never starts answers `io_error`, the code the
+    /// cold path already uses for a failed spawn -- not a new one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pool_that_cannot_spawn_answers_io_error() {
+        let params = CodeParams {
+            runner: "python3".into(),
+            script: Script::Inline("pass".into()),
+            external_timeout_ms: Some(5_000),
+            max_concurrency: None,
+            sandbox: None,
+            runner_mode: RunnerMode::Warm,
+        };
+        let mut broken = params.clone();
+        broken.runner = "definitely-not-a-runner-xyz".into();
+        let cell = CodeCell::new(params, false, None, false).with_runner_pool(&broken, 1);
+        let out = run_handle(&cell).await;
+        assert_eq!(out.header_error_code(), Some("io_error"));
     }
 
     /// Accessor helpers for an emission's header fields.
@@ -750,6 +922,7 @@ mod tests {
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
                 sandbox: None,
+                runner_mode: RunnerMode::Cold,
             },
             true,
             None,
@@ -780,6 +953,7 @@ mod tests {
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
                 sandbox: None,
+                runner_mode: RunnerMode::Cold,
             },
             false,
             None,
@@ -811,6 +985,7 @@ mod tests {
                 external_timeout_ms: Some(10_000),
                 max_concurrency: None,
                 sandbox: None,
+                runner_mode: RunnerMode::Cold,
             },
             false,
             None,

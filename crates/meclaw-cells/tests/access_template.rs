@@ -297,6 +297,9 @@ fn main_config() -> Value {
 /// sweeping. The TTL test overrides it.
 const QUIET_CRON: &str = "0 0 4 * * *";
 
+/// The vault passphrase these tests arm on disk (GH #421).
+const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
+
 fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path, cron: &str) {
     let root = td.path();
     std::fs::write(root.join(".env"), format!("ACCESS_SWEEP_CRON={cron}\n")).unwrap();
@@ -497,6 +500,103 @@ fn request(who: &str, chat: &str, ttl_ms: i64) -> Value {
     json!({"who": who, "capability": "chat.send", "subject": "member:example",
            "resource": {"channel": "example-chat", "chat_id": chat},
            "purpose": "answer the incoming message", "ttl_ms": ttl_ms})
+}
+
+/// GH #421: the policy rule that lets a cell spend a grant for a CREDENTIAL.
+///
+/// Deliberately a separate rule rather than a parameter on `allow_rule`: this
+/// one names no channel coordinate at all, so `scope_match` carries only the
+/// action and nothing has to be matched against the request's resource. What it
+/// does carry is `cred_ref` — which credential the grant is for. That is R-AC-2
+/// applied to the vault: the NAME lives in the grant, so a payload cannot ask
+/// for a secret it was not granted.
+fn credential_rule(rule_id: &str, requester: &str, cred_ref: &str) -> Value {
+    json!({"operation": "insert", "table": "policy", "row": {
+        "rule_id": rule_id, "requester": requester, "capability": "credential.read",
+        "subject": "member:example",
+        "scope_match": {"actions": ["vault.deliver"]},
+        "verdict": "allow", "max_ttl_ms": 900000,
+        "constraints": {"max_invocations": 20},
+        "cred_ref": cred_ref,
+        "enabled": 1, "priority": 100, "note": "test rule"}})
+}
+
+/// Ask once for a credential grant and return its handle.
+async fn credential_grant_for(
+    h: &ColonyHandle,
+    rx: &mut mpsc::Receiver<Message>,
+    who: &str,
+) -> String {
+    h.send(send_json(
+        "/requester",
+        &json!({"who": who, "capability": "credential.read",
+                "subject": "member:example", "resource": {},
+                "purpose": "authenticate to the provider", "ttl_ms": 900_000}),
+    ))
+    .await;
+    let m = recv_route(rx, "grant").await;
+    let payload = turn_json(&m);
+    assert_eq!(
+        payload["status"].as_str(),
+        Some("granted"),
+        "expected a credential grant: {payload}"
+    );
+    payload["grant_id"].as_str().unwrap_or_default().to_string()
+}
+
+/// Fill the vault the way `meclaw --vault-add` does: straight into its own
+/// `cell.db`, with no colony running, so a credential never becomes a message.
+/// This is not a shortcut around the test — it is the production filling path,
+/// and using anything else here would put the secret into the very log the
+/// GH #421 pins are about.
+fn seed_vault_secret(td: &tempfile::TempDir, name: &str, value: &str, passphrase: &str) {
+    use meclaw_cells::vault::crypto::MasterKey;
+    use meclaw_cells::vault::store as vs;
+    let dir = td.path().join("main/access/vault");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = meclaw_colony::persist::open_or_create_cell_db(&dir.join("cell.db")).unwrap();
+    vs::apply_ddl(&conn).unwrap();
+    let salt = vs::salt_or_create(&conn).unwrap();
+    let key = MasterKey::derive(passphrase.as_bytes(), &salt).unwrap();
+    let (nonce, ct) = key.seal(value.as_bytes()).unwrap();
+    vs::put(&conn, name, &nonce, &ct, &vs::now_iso()).unwrap();
+}
+
+/// The vault's own audit trail, read off its `cell.db` after a shutdown.
+///
+/// The vault is inside a sealed hive, so nothing outside can query it — and
+/// GH #427 means it can never be unlocked either. What it CAN still prove is
+/// that the broker's message arrived and what name it carried, which is the
+/// half these template tests are about: the operation is audited before it is
+/// executed, refusals included.
+fn vault_audit(td: &tempfile::TempDir) -> Vec<(String, String, Option<String>, String)> {
+    let c =
+        rusqlite::Connection::open(td.path().join("main/access/vault/cell.db")).expect("cell.db");
+    let mut st = c
+        .prepare("SELECT op, actor, name, outcome FROM vault_audit ORDER BY id")
+        .expect("vault_audit");
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .expect("query")
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// `key_source: "plainfile"` — the passphrase comes off disk, so the unlock
+/// message carries none. That matters: a passphrase in the message log would be
+/// a second finding these tests are not about, and the honest way to avoid it
+/// is the deployment form that exists for exactly this.
+fn arm_plainfile_key(td: &tempfile::TempDir, passphrase: &str) {
+    let keyfile = td.path().join("vault.key");
+    std::fs::write(&keyfile, passphrase).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&keyfile, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    patch(td.path(), "main/access/vault/config.json", |v| {
+        v["params"]["key_source"] = json!("plainfile");
+        v["params"]["key_file"] = json!(keyfile.to_string_lossy());
+    });
 }
 
 /// Ask once and return the granted handle, failing loudly on any other verdict.
@@ -903,6 +1003,141 @@ async fn the_address_comes_from_the_grant_and_never_from_the_payload() {
     .await;
     assert_eq!(usage.as_array().map(|a| a.len()), Some(1), "usage: {usage}");
     assert_eq!(usage[0]["outcome"].as_str(), Some("ok"));
+
+    h.shutdown().await;
+}
+
+/// GH #421 / R3: a credential is spent like anything else — same four checks,
+/// same constraints — and only the terminal action differs. The NAME of the
+/// secret comes from `grants.cred_ref`, which is R-AC-2 applied to the vault:
+/// a payload cannot name a credential it was not granted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_credential_spend_reaches_the_vault_with_the_name_from_the_grant() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    let (h, mut rx) = boot(&td).await;
+
+    probe(
+        &h,
+        &mut rx,
+        credential_rule("r-cred", "agent:brain", "cred:openrouter:primary"),
+    )
+    .await;
+    let grant = credential_grant_for(&h, &mut rx, "agent:brain").await;
+
+    h.send(send_json(
+        "/spender",
+        &json!({"who": "agent:brain", "grant_id": grant,
+                "operation": "vault.deliver",
+                "payload": {"recipient_key": "aa".repeat(32)}}),
+    ))
+    .await;
+
+    // `avault` is a HIVE-INTERNAL lane, so nothing outside sees the message
+    // itself. What proves it arrived, and with which name, is the vault's own
+    // audit row -- written before the operation is executed, so it is there
+    // whether the vault could serve the request or not.
+    let ack = recv_route(&mut rx, "ack").await;
+    assert_eq!(
+        turn_json(&ack)["grant_id"],
+        grant,
+        "the round trip came back on the ack lane: {ack:?}"
+    );
+    h.shutdown().await;
+
+    let rows = vault_audit(&td);
+    let deliver: Vec<_> = rows.iter().filter(|r| r.0 == "deliver").collect();
+    assert_eq!(
+        deliver.len(),
+        1,
+        "exactly one delivery was asked for: {rows:?}"
+    );
+    assert_eq!(
+        deliver[0].1, "broker",
+        "and it was the BROKER edge that carried it -- any other sender would \
+         have been refused before the operation was even looked at: {rows:?}"
+    );
+    assert_eq!(
+        deliver[0].2.as_deref(),
+        Some("cred:openrouter:primary"),
+        "the NAME came from the grant, not from the payload -- the payload named \
+         no credential at all: {rows:?}"
+    );
+}
+
+/// The other half of the road: whatever the vault answers comes back into
+/// `./invoke` and leaves the hive on the ack lane -- the outcome of a spend,
+/// which is what that lane means. No new hive lane is invented for it.
+///
+/// A vault inside a sealed hive can never be unlocked (GH #427: the user
+/// channel is a source message, a source message cannot reach a cell inside a
+/// sealed hive, and everything that can reach one is an edge, which is never
+/// the user channel). So what this test drives is the REFUSAL path, and that is
+/// worth pinning on its own: a vault that says no is a denied spend, booked and
+/// answered like every other denial, with the vault's own code carried through.
+/// The happy path -- a sealed box that opens to the seeded secret -- is pinned
+/// in `gh421_no_plaintext_on_the_wire.rs`, on a topology whose vault can be
+/// unlocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_vault_refusal_comes_back_on_the_ack_lane_and_is_booked_as_a_denial() {
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    seed_vault_secret(
+        &td,
+        "cred:openrouter:primary",
+        "SUPER-SECRET-TOKEN",
+        VAULT_PASSPHRASE,
+    );
+    arm_plainfile_key(&td, VAULT_PASSPHRASE);
+    let (h, mut rx) = boot(&td).await;
+
+    probe(
+        &h,
+        &mut rx,
+        credential_rule("r-cred", "agent:brain", "cred:openrouter:primary"),
+    )
+    .await;
+    let grant = credential_grant_for(&h, &mut rx, "agent:brain").await;
+
+    let me = meclaw_cells::sealed::RecipientKeypair::generate().expect("keypair");
+    h.send(send_json(
+        "/spender",
+        &json!({"who": "agent:brain", "grant_id": grant,
+                "operation": "vault.deliver",
+                "payload": {"recipient_key": me.public_hex()}}),
+    ))
+    .await;
+
+    let ack = recv_route(&mut rx, "ack").await;
+    let payload = turn_json(&ack);
+    assert_eq!(payload["outcome"], "denied", "{payload}");
+    assert_eq!(
+        payload["reason_code"], "vault_locked",
+        "the vault's own code is carried through, not re-labelled and not \
+         doubled up: {payload}"
+    );
+    assert!(
+        body_of(&ack).get("sealed").is_none(),
+        "a refusal carries no box: {ack:?}"
+    );
+
+    // A refused spend is still a booked spend.
+    let usage = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "usage",
+               "columns": ["grant_id", "operation", "outcome"],
+               "where": {"grant_id": grant}}),
+    )
+    .await;
+    assert_eq!(usage[0]["operation"], "vault.deliver");
+    assert_eq!(usage[0]["outcome"], "denied");
 
     h.shutdown().await;
 }

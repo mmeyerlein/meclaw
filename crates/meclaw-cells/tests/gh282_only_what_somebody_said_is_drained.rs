@@ -239,15 +239,39 @@ fn turn_row(id: &str, role: &str, content: &str, interim: i64) -> Value {
 
 /// The store's reply to a select, under the phase the request carried out.
 fn select_reply(phase: &str, turn: &str, rows: Value) -> Value {
+    // GH #419: the phases that used to be a fan-in are ONE bundle -- the leg
+    // parks and the table is read back in the same message. So a fixture for one
+    // of them puts its rows under the read-back's `tool_call_id`; every other
+    // phase keeps the single-op shape it always had.
+    let cid = match phase {
+        "collect" => "c-collect-read",
+        "round-check" => "c-round-check-read",
+        "close-fire" => "c-close-read",
+        _ => "c-sel",
+    };
+    if cid == "c-sel" {
+        return json!({
+            "header": {
+                "hop": {"operation": "select",
+                        "rows_affected": rows.as_array().map_or(0, Vec::len)},
+                "context": {"session_id": "s1", "turn_id": turn,
+                            "col_phase": phase, "store_origin": "collector"}
+            },
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "c-sel",
+                          "text": rows.to_string()}]
+        });
+    }
     json!({
         "header": {
-            "hop": {"operation": "select",
+            "hop": {"operation": "bundle", "bundle_errors": 0,
                     "rows_affected": rows.as_array().map_or(0, Vec::len)},
             "context": {"session_id": "s1", "turn_id": turn,
                         "col_phase": phase, "store_origin": "collector"}
         },
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "c-sel",
-                      "text": rows.to_string()}]
+        "messages": [{"origin": "tool", "type": "tool_result", "id": cid,
+                      "text": rows.to_string()}],
+        "results": [{"tool_call_id": cid, "operation": "select", "duration_ms": 0,
+                     "rows_affected": rows.as_array().map_or(0, Vec::len)}]
     })
 }
 
@@ -532,11 +556,19 @@ fn leg_window_row(turns: Value) -> Value {
 /// The fix must not blind the prompt.
 #[test]
 fn the_prompt_window_still_shows_the_advice_turn_and_its_consult_id() {
-    let rows = json!([leg_window_row(json!([
-        {"role": "user", "text": "what do you remember about me", "consult_id": ""},
-        {"role": "advice", "text": ADVICE, "consult_id": "c-42"},
-    ]))]);
-    let out = collector_with(&[("memory_tier", "0")], select_reply("fire", "t1", rows));
+    // Both declared legs, because the assembly waits for both: with a memory
+    // tier configured, a window-only slate is an incomplete round and terminal.
+    // Before GH #419 this fixture reached the rendering phase directly, past the
+    // gate; now the rendering IS the reply the completeness was read out of.
+    let rows = json!([
+        leg_window_row(json!([
+            {"role": "user", "text": "what do you remember about me", "consult_id": ""},
+            {"role": "advice", "text": ADVICE, "consult_id": "c-42"},
+        ])),
+        {"turn_id": "t1", "iter": 0, "role": "leg-memory", "fired": 0,
+         "turn": json!({"system": {}, "messages": []}).to_string()}
+    ]);
+    let out = collector_with(&[("memory_tier", "0")], select_reply("collect", "t1", rows));
     let seam = out
         .iter()
         .find(|m| hop(m, "route") == "brain" || hop(m, "route") == "answer")

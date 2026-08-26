@@ -87,6 +87,24 @@
           "condition": "context.access_origin == 'invoke'"
         },
         {
+          "from": "./invoke",
+          "to": "./vault",
+          "condition": "has(hop.route) && hop.route == 'avault'",
+          "modifier": {
+            "set_context": {
+              "access_origin": "'invoke'",
+              "access_lane": "'vault'",
+              "ac_phase": "hop.phase",
+              "ac_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./vault",
+          "to": "./invoke",
+          "condition": "context.access_origin == 'invoke' && context.access_lane == 'vault'"
+        },
+        {
           "from": "./sweep",
           "to": "./store",
           "condition": "has(hop.route) && hop.route == 'astore'",
@@ -134,9 +152,9 @@
     }
   },
   "description": {
-    "purpose": "Scope marker of the access hive: the capability broker behind its own path. THE HIVE IS THE ADDRESS -- `params.ports` is empty, so no edge reaches a cell in here and a caller names the hive plus a lane on hop.route. Twelve internal edges; the seven that are neither a door nor an exit exist for one reason -- a code cell has no cell.db, so the state of a multi-read lane rides in the hop keys these edges promote to context and comes back on the store's answer. The store round trip IS the cell's memory. NO edge reaches `./vault` (GH #307): no cell in here emits a route one could fire on, so a wired pair would only look like a channel; the credential leaves the vault as the injection at unlock and never as a message.",
+    "purpose": "Scope marker of the access hive: the capability broker behind its own path. THE HIVE IS THE ADDRESS -- `params.ports` is empty, so no edge reaches a cell in here and a caller names the hive plus a lane on hop.route. Fourteen internal edges; the seven that are neither a door nor an exit exist for one reason -- a code cell has no cell.db, so the state of a multi-read lane rides in the hop keys these edges promote to context and comes back on the store's answer. The store round trip IS the cell's memory. TWO edges reach `./vault` (GH #421, reversing GH #307): `./invoke` asks on the `avault` lane and the answer comes back on the promoted context, exactly like the store round trip. What travels back is a SEALED BOX addressed to an ephemeral key the requester minted -- never a plaintext credential.",
     "use_when": "Once per member or per org level that owns credentials. Instantiate with add_nodes and wire the lanes in the SAME mutation, at the HIVE path. Both inbound lanes MUST promote the caller to `context.requester`: a grant without an edge-borne requester is a grant issued to whoever asked loudest (R-AC-1).",
-    "not_in_scope": "No model of any kind -- every verdict in this hive is a comparison. No credential on the wire either: `./vault` holds them, and the ONE path a plaintext secret takes out of it is the injection at unlock, into a connector named in configuration. `cred_refs` stays the CATALOGUE of names. And no enforcement of its own monopoly: that exactly one edge reaches the connector is a fact about the topology a parent draws, not a rule the substrate applies (see README, `The honest limit`).",
+    "not_in_scope": "No model of any kind -- every verdict in this hive is a comparison. No PLAINTEXT credential on the wire either: `./vault` holds them, and what leaves it is a ciphertext under a key only the requester holds for that one call (GH #421). `cred_refs` stays the CATALOGUE of names, and it is the catalogue the grant reads its `cred_ref` out of. And no enforcement of its own monopoly: that exactly one edge reaches the connector is a fact about the topology a parent draws, not a rule the substrate applies (see README, `The honest limit`).",
     "contract_in": "Two lanes, both at the hive path. in_request -- an access.request tool_call turn: may this actor do this. in_invoke -- an access.invoke tool_call turn: spend a grant. Older wirings named ./policy and ./invoke directly and declared them as `ports`; those are cell names, not lanes, and they moved the boundary one step instead of drawing it.",
     "contract_out": "Four lanes, all out of the hive path. grant -- the verdict. ack -- the outcome of an invocation. connect -- the one call for the connector, addressed from the grant. error -- any lane failed, and the parent MUST drain it."
   }

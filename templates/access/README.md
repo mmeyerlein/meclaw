@@ -1,4 +1,4 @@
-# `access@2.0.5`
+# `access@2.1.0`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -14,11 +14,11 @@ Six cells:
 | `invoke` | `code` | grant check, address resolution, and the one edge into the connector |
 | `sweep` | `code` | TTL bookkeeping: writes the `expired` events |
 | `clock` | `timer` | the sweep tick (6-field Quartz cron, **UTC**) |
-| `vault` | `vault` | the credential VALUES, sealed at rest. Interior and unaddressable from outside; `params.broker` names `./invoke` as the only cell it would answer, and no edge in this hive reaches it at all (GH #307) |
+| `vault` | `vault` | the credential VALUES, sealed at rest. Interior and unaddressable from outside; `params.broker` names `./invoke` as the only cell it answers, and two edges reach it (GH #421) -- what comes back is a sealed box, never a plaintext |
 
-## The three messages
+## The four messages
 
-All three in the `tool_call` form, so an agent's dispatcher speaks them without a bridge
+All four in the `tool_call` form, so an agent's dispatcher speaks them without a bridge
 cell.
 
 **1. `access.request`** -- the agent asks:
@@ -69,6 +69,48 @@ row is a live one (`granted` / `approved` / `invoked` rather than `revoked` / `e
 and the constraints hold against `usage` (`max_invocations`, `rate_per_min`). Only then does
 one message leave for the connector.
 
+## 4. `access.invoke` with `operation: vault.deliver`
+
+A credential VALUE can also be the thing that is spent. The request is an ordinary
+`access.invoke` -- same lane, same grant, same four checks -- and it names an operation the
+grant's `scope.actions` has to contain like any other:
+
+```json
+{"grant_id": "grant:…", "operation": "vault.deliver",
+ "payload": {"recipient_key": "<64 hex chars, the requester's ephemeral X25519 public key>"}}
+```
+
+The answer is an ordinary `ack`:
+
+```json
+{"outcome": "ok", "grant_id": "grant:…", "operation": "vault.deliver"}
+```
+
+with one additional body slot beside it, which is where the credential actually rides:
+
+```json
+{"sealed": {"epk": "…", "nonce": "…", "ciphertext": "…"}}
+```
+
+**Which** credential is delivered stands in `grants.cred_ref` and **never** in the payload.
+That is R-AC-2 applied to the vault: an address comes from the grant, and a secret's name is
+an address. A payload that could name a secret would let one legitimate grant drain the whole
+vault; the payload carries `recipient_key` and nothing else.
+
+The crypto is short. The requester mints a fresh X25519 pair **per request** and sends the
+public half as 64 hex characters. The vault mints its own ephemeral half **per answer**,
+performs the X25519 agreement, derives the box key from it with HMAC-SHA256, and seals the
+value with XChaCha20-Poly1305. There is no vault long-term key, so there is nothing an
+attacker could later obtain that would open a box captured today.
+
+A delivery is a **spend**. It writes the same `usage`, `grant_events` and `audit` rows as any
+other invocation and it counts against `max_invocations` and `rate_per_min` exactly like one.
+A refusal from the vault is booked and answered like every other refusal, with the vault's own
+code passed through (`reason_code: "vault_locked"`, for instance).
+
+Inside the hive, `./invoke` is the only cell the vault will answer a `deliver` for: the
+operation is broker-only, and `params.broker` is what names the broker.
+
 ## The two invariants
 
 These are not guidelines. They are the reason this hive is an authority rather than a
@@ -103,21 +145,31 @@ rule never mentioned is not part of the grant, and therefore not part of any add
 ## Cells and lanes
 
 ```
-access/                       hive  -- scope marker, sealed; twelve edges in params.graph
+access/                       hive  -- scope marker, sealed; fourteen edges in params.graph
   store/                      store -- six tables
     seed/{policy,cred_refs}.jsonl
   policy/                     code  -- request -> allow | deny | require_approval
   invoke/                     code  -- grant check -> address from grant -> connector
   sweep/                      code  -- TTL: writes expired events
   clock/                      timer -- the tick
+  vault/                      vault -- the credential values; sealed delivery to ./invoke
 ```
 
 A `code` cell has no `cell.db`, so a lane that needs several reads keeps its state on the
 wire: each cell emits its phase and its carry on the **hop**, the internal edge promotes
 both to **context** (`ac_phase` / `ac_carry`), and the store's answer brings them back. The
-store round trip *is* the cell's memory. Of the twelve edges in `params.graph`, seven are
-interior: six store round trips (three cells, each with a leg out and a leg back) plus the
-clock tick into `sweep`. The other five are the hive's own door -- two in, three out.
+store round trip *is* the cell's memory. Of the fourteen edges in `params.graph`, nine are
+interior: six store round trips (three cells, each with a leg out and a leg back), the clock
+tick into `sweep`, and the vault round trip (GH #421) -- `./invoke -> ./vault` on the `avault`
+lane and `./vault -> ./invoke` back. The other five are the hive's own door -- two in, three
+out.
+
+The vault pair is the store mechanism one context key further along: the outbound edge
+promotes `access_origin: 'invoke'`, `access_lane: 'vault'`, `ac_phase` and `ac_carry` into the
+context, and the return edge conditions on
+`context.access_origin == 'invoke' && context.access_lane == 'vault'`. This reverses GH #307,
+and this time there is a real emitter behind it -- `2.0.0` wired a pair that waited for a
+route no cell ever produced, `2.1.0` wires a lane a cell actually drives.
 
 ### Lanes
 
@@ -130,9 +182,15 @@ lane is stated once, on this hive's own door edge, and nowhere else.
 | `in_request` | in | `access.request` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
 | `in_invoke` | in | `access.invoke` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
 | `grant` | out | the verdict, with `hop.verdict` and `hop.grant_id` beside it |
-| `ack` | out | `ok` or `denied` plus a `reason_code` |
+| `ack` | out | `ok` or `denied` plus a `reason_code`; a sealed credential leaves here too, recognisable by `hop.operation == "vault.deliver"` and the extra `sealed` body slot |
 | `connect` | out | `hop.address` is the grant's scope as canonical JSON, `hop.channel` and `hop.operation` beside it, the body carries the payload minus every address key |
 | `error` | out | a lane failed -- the parent **MUST** wire it |
+
+`avault` is **not** in this table, and that is the point: it is a hive-INTERNAL lane between
+`./invoke` and `./vault`, invisible from outside the scope. Sealed delivery added **no** hive
+lane -- the box rides the existing `ack`, because an `ack` *is* the result of a spend and a
+delivery is a spend. So the hive contract is lane-identical to `2.0.5`, and a caller wired
+against that version keeps working unchanged.
 
 So a caller's wiring names the hive twice and an interior never:
 
@@ -231,18 +289,35 @@ its bookkeeping -- it is not open on its door.
 The hive ships a `vault` cell, and it is where a credential VALUE rests: XChaCha20-Poly1305
 per secret, argon2id from a passphrase whose source is named by `params.key_source`
 (`auto` | `prompt` | `systemd-cred` | `plainfile`) and never by material in a config. The
-route surface of the type has no `get` -- `put`, `rotate`, `use`, `revoke`, `status`,
-`unlock`, `lock`, and nothing else -- so a fully compromised model on the far side of an
-edge can ask the vault to USE a secret and cannot ask to see one. A woken vault is always
-locked; the key lives in the task and dies with it. `params.inject_map` names which
-credential is handed to which connector at unlock, and it is empty on a fresh instance,
-because a vault that shipped with delivery addresses would deliver to somebody else's.
+route surface of the type has no `get` -- `put`, `rotate`, `use`, `deliver`, `revoke`,
+`status`, `unlock`, `lock`, and nothing else -- so a fully compromised model on the far side
+of an edge can ask the vault to USE a secret and cannot ask to see one in the clear. A woken
+vault is always locked; the key lives in the task and dies with it.
+
+**A value leaves the vault sealed, or it does not leave.** `deliver` (GH #421) is the one
+route that hands a credential out, and what it hands out is a box: the requester's ephemeral
+X25519 public key goes in, `{"epk", "nonce", "ciphertext"}` comes back, and the plaintext
+exists nowhere on the wire and nowhere in the `message_log`. The vault's own half of the
+agreement is minted per answer and discarded with it, so there is no long-term key whose
+compromise would open yesterday's box.
+
+`params.inject_map` -- the older path, a plaintext push to a connector cell at unlock time --
+is therefore **deprecated**. It writes a clear credential into the `message_log`, which is
+precisely what sealed delivery exists to prevent. It is not removed, because removing it
+would be breaking; it goes with the first release that bundles breaking changes. It remains
+empty on a fresh instance, because a vault that shipped with delivery addresses would deliver
+to somebody else's.
 
 `./vault` is **not** a port of this hive. `params.ports` is empty, so the generic boundary
-refuses any edge from outside the scope onto it; the only cell it would answer on the broker
+refuses any edge from outside the scope onto it; the only cell it answers on the broker
 channel is `./invoke`, which is what `params.broker` says. On top of that the vault verifies
 its own inbound edges against `broker` + `sealed_neighbors` before it accepts key material,
 and stays locked if the neighbourhood is not the one it expects.
+
+Since GH #421 that attestation is **stricter**: a vault whose broker edge is missing no longer
+attests at all and stays locked, with reason `broker_unwired`. The reasoning is the same one
+that lets the box go unsigned -- if the topology is what vouches for the sender, then the
+absence of that topology cannot be allowed to vouch for anything.
 
 Since GH #314 `vault/config.json` also declares `contract.transfer: "none"`. The route surface
 without a `get` was only half the promise while the `transfer` body slot sat above it: the
@@ -252,13 +327,16 @@ and an `export` needed no passphrase to be worth sending -- `vault_secrets` carr
 The declaration makes the cell exempt from the slot in both directions (`transfer_exempt`);
 `contract.write_surface` would not have covered it, because an export is a read.
 
-Since `access@2.0.1` the hive draws **no** edge to it at all (GH #307). `2.0.0` shipped a pair
--- `./invoke -> ./vault` on `hop.route == 'vault'` and the reply back -- and neither could ever
-fire: `invoke`'s script emits four literal routes (`astore`, `ack`, `error`, `connect`) and none
-of them is computed, so nothing in this hive ever produced the route the edge waits for. Dead
-wiring reads as a channel that carries something, so it is gone. `params.broker` therefore names
-the cell that *would* be answered rather than one that is, and the vault attests with an empty
-neighbourhood exactly as it attests with the expected one.
+The hive did draw **no** edge to it between `access@2.0.1` and `2.0.5` (GH #307), and the
+reason is worth keeping: `2.0.0` shipped a pair -- `./invoke -> ./vault` on
+`hop.route == 'vault'` and the reply back -- and neither could ever fire, because `invoke`'s
+script emitted four literal routes (`astore`, `ack`, `error`, `connect`) and none of them was
+computed. Nothing in this hive ever produced the route the edge waited for. Dead wiring reads
+as a channel that carries something, so it went.
+
+`2.1.0` draws the pair again, on the `avault` lane and with an emitter behind it (GH #421).
+`params.broker` therefore names a cell that **is** answered rather than one that would be, and
+the vault no longer attests with an empty neighbourhood.
 
 There is still **no** `secrets.db` in `./store`, and there is not meant to be one: an
 encrypted table there would be a second vault with a worse key story. A variable reference
@@ -337,13 +415,26 @@ anything. The half that can be closed without breaking that is closed; the other
 sentence in this README, which is the same soft sovereignty `affinity` names for its own
 residual.
 
-Three further limits, named rather than papered over:
+Five further limits, named rather than papered over:
 
 - **No encryption at rest** for `cell.db`, and no key rotation in the substrate.
 - **The `usage` page is bounded** (`ACCESS_USAGE_ROWS`, default 500). A `max_invocations`
   above that bound cannot be enforced.
 - **No grant context in an agent's system prompt.** That an agent knows it has to ask is
   prompt and tool design, not something this template can arrange.
+- **A sealed box does not prove WHO sealed it.** It proves that whoever did held the
+  requester's ephemeral public key, and nothing further. What carries authenticity here is the
+  topology -- the vault answers `params.broker` and no one else -- plus the policy the broker
+  enforced before the delivery was booked. That is a deliberate trade, not an omission: a
+  signature is addable later as a fourth field beside `epk`, `nonce` and `ciphertext`, without
+  breaking the wire form.
+- **A vault inside a sealed hive cannot be unlocked today**
+  ([#427](https://github.com/mmeyerlein/meclaw/issues/427), open). `unlock` is user-channel-only
+  in the vault's ACL, and a user-channel message is by definition a source message -- it carries
+  no `reply_to`. A source message reaches no hive-interior cell; the only thing that reaches one
+  is an edge, and an edge always carries `reply_to` and is therefore never the user channel. The
+  two rules are each sound and together they close the door. This is an open finding, not a
+  design goal.
 
 What the template *does* guarantee is that everything which passes through it is decided by
 a comparison, recorded in a row, and addressed from a grant.

@@ -282,6 +282,32 @@ for hit in ("a", "b", "c"):
     );
 }
 
+/// The store call written under `marker` — from its own `"operation"` up to the
+/// next one in the script.
+///
+/// A `tool_call_id` marker opens its call, so the args follow it; every other
+/// marker (a phase name behind `store_op(...)`, or a predicate inside the args)
+/// sits inside or behind them, so the args start at the `"operation"` in front.
+fn store_call<'a>(script: &'a str, marker: &str) -> &'a str {
+    let at = script
+        .find(marker)
+        .unwrap_or_else(|| panic!("no store call marked `{marker}`"));
+    let (head, tail) = script.split_at(at);
+    let start = if marker.starts_with("\"r-") {
+        at + tail
+            .find("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` opens no store call"))
+    } else {
+        head.rfind("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` closes no store call"))
+    };
+    let body = &script[start..];
+    match body[1..].find("\"operation\"") {
+        Some(n) => &body[..n + 1],
+        None => body,
+    }
+}
+
 #[test]
 fn every_axis_page_select_carries_the_session_column() {
     // The rule can only read what the select fetched, and a missing column would
@@ -294,10 +320,11 @@ fn every_axis_page_select_carries_the_session_column() {
         (
             recall_script(),
             "recall",
-            vec![
-                "AXIS_LIMIT}, \"t1-hyd-axis\"",
-                "AXIS_LIMIT}, \"t1-temporal\"",
-            ],
+            // #418: the axis page is a CALL of the hydration bundle, found by
+            // its `tool_call_id`; the window-mode temporal page shares its id
+            // with the point-mode one, so it is found by the predicate only IT
+            // carries. What both have to fetch is unchanged.
+            vec!["\"r-hyd-axis\"", "{\"lte\": window[1]}"],
         ),
         (
             dream_glue_script(),
@@ -306,13 +333,7 @@ fn every_axis_page_select_carries_the_session_column() {
         ),
     ] {
         for anchor in anchors {
-            let start = script
-                .find(anchor)
-                .unwrap_or_else(|| panic!("{name}: no axis page select at `{anchor}`"));
-            let head = &script[..start];
-            let select = &head[head
-                .rfind("\"operation\": \"select\"")
-                .unwrap_or_else(|| panic!("{name}: `{anchor}` is not fed by a select"))..];
+            let select = store_call(&script, anchor);
             assert!(
                 select.contains("\"session_id\""),
                 "{name}: the axis page at `{anchor}` does not fetch session_id"

@@ -219,8 +219,12 @@ NODE_TEMPLATE = (
     # answer (the graph endpoint does not report activity), which is why it dims
     # rather than hides: a cell instantiated a second ago and not yet wired looks
     # the same, and that is a state worth seeing too.
+    # `data-pinned` is the marker, in the markup, because the client has to
+    # know it: a drag writes it only when it CHANGES (so an ordinary drag on an
+    # already-pinned box still costs two events), and the detail panel offers
+    # "release to the layout" only for a box that is actually held.
     '<g class="node{{#if unwired}} unwired{{/if}}" data-node="{{path}}"'
-    ' data-oid="{{oid}}" transform="translate({{x}},{{y}})">'
+    ' data-oid="{{oid}}" data-pinned="{{pinned}}" transform="translate({{x}},{{y}})">'
     '<rect width="{{w}}" height="{{h}}" rx="6" fill="{{fill}}" stroke="{{stroke}}"/>'
     '<text class="nm" x="8" y="16">{{name}}</text>'
     '<text class="ty" x="8" y="30">{{type}}</text>'
@@ -301,12 +305,18 @@ def components():
                 "fill": "text",
                 "stroke": "text",
                 "unwired": "text",
+                "pinned": "text",
             },
-            # The one declaration that makes a drag possible at all. The `web`
-            # cell checks it against the COMPONENT, never against the message: a
-            # browser says what it wants changed, and the component says what may
-            # be.
-            "editable": ["x", "y"],
+            # The declaration that makes a drag possible at all -- and, since
+            # GH #415, the one that makes it REVERSIBLE. `pinned` is what says a
+            # hand placed this box; without it the coordinate had to mean both
+            # "where it is drawn" and "who put it there", and nothing could ever
+            # be handed back to the layout.
+            #
+            # The `web` cell checks it against the COMPONENT, never against the
+            # message: a browser says what it wants changed, and the component
+            # says what may be.
+            "editable": ["x", "y", "pinned"],
             "layer": "content",
         },
     ]
@@ -1200,9 +1210,33 @@ def build(snap, saved):
                 # A prop the `{{#if}}` has to read as absent when it is false, and
                 # the empty string is how this template language spells that.
                 "unwired": "1" if n["unwired"] else "",
+                # The marker travels with every patch, so a display can never
+                # hold a box whose pin state is a guess. `saved` already applied
+                # the legacy rule, which is what carries an arrangement made
+                # before the marker existed across the upgrade untouched.
+                "pinned": "1" if n["id"] in saved else "",
             },
         }
     return want
+
+
+def needs_vocabulary(have):
+    """True while a node object on the display predates the pin marker.
+
+    The components are defined at BOOTSTRAP only, and the display refuses a prop
+    its component does not declare (`invalid_input`, per object). So a patch that
+    started carrying `pinned` against an old schema would be refused for every
+    node and the picture would freeze where it stood. A display still holding a
+    node object without the key has the old schema by definition -- that is the
+    signal, and it needs no version flag to read.
+
+    `component.define` is an upsert in the `web` cell, so the repair costs one
+    bundle. After it every node carries the key and this answers False forever.
+    """
+    return any(
+        oid.startswith(NODE_PREFIX) and "pinned" not in props
+        for oid, props in have.items()
+    )
 
 
 def patches(want, have, bootstrap):
@@ -1258,9 +1292,16 @@ def patches(want, have, bootstrap):
         })
         calls.append({"op": "page.set", "route": "/", "root": ROOT_ID,
                       "title": "canvy"})
-    elif ROOT_ID in want and not unchanged(ROOT_ID, want[ROOT_ID]["props"]):
-        calls.append({"op": "object.update", "id": ROOT_ID,
-                      "props": want[ROOT_ID]["props"]})
+    else:
+        # A display older than the pin marker gets the vocabulary FIRST, in the
+        # same bundle: the legs of a bundle run in call order, so the redefine
+        # is in effect before the first object.update that uses the new prop.
+        if needs_vocabulary(have):
+            for c in components():
+                calls.append({"op": "component.define", **c})
+        if ROOT_ID in want and not unchanged(ROOT_ID, want[ROOT_ID]["props"]):
+            calls.append({"op": "object.update", "id": ROOT_ID,
+                          "props": want[ROOT_ID]["props"]})
 
     for oid in sorted(k for k in want if k != ROOT_ID):
         spec = want[oid]
@@ -1313,14 +1354,26 @@ def read_objects(body):
 
 
 def saved_positions(have):
-    """The positions the display already holds, in the layout's own space.
+    """The positions a HAND put there, in the layout's own space.
 
-    This is the entire persistence story of a drag: the browser wrote `x` and `y`
-    into the object, and the next tick reads them back and leaves them alone.
+    The MARKER is the record, not the coordinate. Every node object carries
+    `x`/`y` -- they are how the box is drawn -- so reading them as "somebody
+    placed this" meant every cell the layout had ever drawn was pinned to
+    whatever spot the flow happened to give it, and an accidental group drag
+    could not be undone at all (GH #415). `pinned` is what the browser writes
+    with a drag and clears on an un-pin, and only a truthy one keeps a cell.
+
+    A node object that does not carry the KEY AT ALL predates the marker and is
+    read as pinned: in the old reading every cell on such a display was, so this
+    is what makes an upgrade leave a hand-made arrangement exactly as it is.
+    `build` writes the marker for those in the same tick, after which the case
+    is gone for good.
     """
     saved = {}
     for oid, props in have.items():
         if not oid.startswith(NODE_PREFIX):
+            continue
+        if "pinned" in props and not props.get("pinned"):
             continue
         try:
             saved[oid[len(NODE_PREFIX):]] = (int(props.get("x")), int(props.get("y")))

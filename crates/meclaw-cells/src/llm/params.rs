@@ -88,6 +88,14 @@ pub struct LlmParams {
     /// absent for `auth: "oauth_subscription"` (no double credential).
     #[serde(default)]
     pub api_key: Option<String>,
+    /// R3 / GH #421: the grant this cell spends to be handed its bearer
+    /// credential, sealed, by the access hive. `None` (the default) is the
+    /// pre-Lane-3 behaviour byte for byte: the cell uses `api_key` and emits
+    /// nothing. WHICH credential arrives is not named here — it is read from
+    /// the grant's `cred_ref`, so a cell cannot ask for a secret it was not
+    /// granted (R-AC-2 applied to the vault).
+    #[serde(default)]
+    pub credential_grant_id: Option<String>,
     /// P10: how this cell authenticates. Default `api_key` — every pre-P10
     /// config keeps its exact behaviour.
     #[serde(default)]
@@ -345,6 +353,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "provider",
     "model",
     "api_key",
+    // R3 / GH #421: the sealed credential delivery.
+    "credential_grant_id",
     "base_url",
     "temperature",
     "max_tokens",
@@ -384,6 +394,11 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
 pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "provider",
     "api_key",
+    // R3 / GH #421: same class as `api_key`. A message that could repoint the
+    // grant could make this cell ask the vault for a DIFFERENT credential and
+    // then present it — the grant is what names the secret, so the grant is
+    // credential identity and belongs in this list, not in the mutable half.
+    "credential_grant_id",
     "auth",
     "auth_ref",
     "wire_dialect",
@@ -702,6 +717,29 @@ mod tests {
 
     fn api_key_raw() -> serde_json::Value {
         json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"})
+    }
+
+    #[test]
+    fn a_credential_grant_is_optional_and_immutable() {
+        let mut raw = api_key_raw();
+        raw["credential_grant_id"] = json!("grant:abc");
+        let p = LlmParams::parse(&raw).expect("parse");
+        assert_eq!(p.credential_grant_id.as_deref(), Some("grant:abc"));
+        assert!(
+            LlmParams::parse(&api_key_raw())
+                .unwrap()
+                .credential_grant_id
+                .is_none()
+        );
+
+        // A message that could repoint it could ask the vault for a different
+        // credential — same class as `api_key` itself.
+        let mut upd = serde_json::Map::new();
+        upd.insert("credential_grant_id".into(), json!("grant:somebody-elses"));
+        assert!(matches!(
+            p.apply_update(&upd),
+            Err(crate::params_overlay::ParamUpdateError::Immutable(_))
+        ));
     }
 
     fn oauth_raw() -> serde_json::Value {

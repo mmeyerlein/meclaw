@@ -1,7 +1,7 @@
-# `talky@4.2.1`
+# `talky@4.2.2`
 
 A whole conversational agent as one template. Five units under one hive:
-[`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.0`](../collector/),
+[`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.2`](../collector/),
 [`dispatcher@1.1.1`](../dispatcher/) and [`summarizer@2.0.1`](../summarizer/) -- each carrying
 its template's own name -- plus an `llm` brain and one error collector. No new cell
 type, no Rust.
@@ -41,7 +41,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | path | type | from |
 |---|---|---|
 | `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2.0.4` **(sealed)** |
-| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.0` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.2` **(sealed)** |
 | `dispatcher` | `code` | `dispatcher@1.1.1` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2.0.1` **(sealed)** |
@@ -60,13 +60,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@3.0.0"}}
+{"cell": {"type": "ref", "template": "collector@3.0.2"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`talky@4.2.1` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped `collector@3.0.2`, with
+`talky@4.2.2` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -218,7 +218,7 @@ stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
 ### The two tools the composite serves itself
 
-**Since `talky@4.2.1` the composite draws these edges, not the parent**
+**Since `talky@4.2.2` the composite draws these edges, not the parent**
 ([#55](https://github.com/mmeyerlein/meclaw/issues/55)). `memory_recall` (GH #78) and
 `thread_recall` ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) are not the
 per-agent choice above: the collector inside this hive **serves** both of them. It holds
@@ -234,7 +234,7 @@ routed internally, by two ordinary edges of this template's own `params.graph`:
 ```
 
 … and the same shape one lane further for `hop.tool_name == 'thread_recall'` →
-`in_thread_call`. Nothing downstream changed: `collector@3.0.0` has accepted both lanes
+`in_thread_call`. Nothing downstream changed: `collector@3.0.2` has accepted both lanes
 since `2.0.1`, and the door edge from `.` still routes them for a caller that hands such a
 call in from outside.
 

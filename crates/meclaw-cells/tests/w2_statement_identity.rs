@@ -185,6 +185,37 @@ print(statement_key({"claim":"a","canonical_claim":"A"}),
     }
 }
 
+/// The store call written under `marker` — from its own `"operation"` up to the
+/// next one in the script.
+///
+/// Both spellings a shipped script uses are covered: a bundle names the
+/// `tool_call_id` first and its args behind it (`("r-axis-page", {...})`), and a
+/// single-op `store_op({...}, "t1-temporal")` names the phase behind the args.
+fn store_call<'a>(script: &'a str, marker: &str) -> &'a str {
+    let at = script
+        .find(marker)
+        .unwrap_or_else(|| panic!("no store call marked `{marker}`"));
+    let (head, tail) = script.split_at(at);
+    // A `tool_call_id` marker opens its call, so the args follow it; every other
+    // marker (a phase name behind `store_op(...)`) closes one, so the args are
+    // in front of it. The direction is read off the marker rather than guessed
+    // from distances: a guess picks the neighbouring call whenever two stand
+    // close together.
+    let start = if marker.starts_with("\"r-") {
+        at + tail
+            .find("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` opens no store call"))
+    } else {
+        head.rfind("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` closes no store call"))
+    };
+    let body = &script[start..];
+    match body[1..].find("\"operation\"") {
+        Some(n) => &body[..n + 1],
+        None => body,
+    }
+}
+
 #[test]
 fn every_axis_page_select_carries_the_claim_identity() {
     // The statement rule can only read what the select fetched, and a missing
@@ -196,10 +227,10 @@ fn every_axis_page_select_carries_the_claim_identity() {
         (
             recall_script(),
             "recall",
-            vec![
-                "AXIS_LIMIT}, \"t1-hyd-axis\"",
-                "AXIS_LIMIT}, \"t1-temporal\"",
-            ],
+            // #418: the recall's axis page is a CALL of the hydration bundle
+            // now, named by its `tool_call_id` and read forward from it. The
+            // claim it has to fetch is unchanged.
+            vec!["\"r-hyd-axis\"", "{\"lte\": window[1]}"],
         ),
         (
             dream_glue_script(),
@@ -208,13 +239,7 @@ fn every_axis_page_select_carries_the_claim_identity() {
         ),
     ] {
         for anchor in anchors {
-            let start = script
-                .find(anchor)
-                .unwrap_or_else(|| panic!("{name}: no axis page select at `{anchor}`"));
-            let head = &script[..start];
-            let select = &head[head
-                .rfind("\"operation\": \"select\"")
-                .unwrap_or_else(|| panic!("{name}: `{anchor}` is not fed by a select"))..];
+            let select = store_call(&script, anchor);
             assert!(
                 select.contains("\"canonical_claim\""),
                 "{name}: the axis page at `{anchor}` does not fetch canonical_claim"

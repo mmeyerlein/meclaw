@@ -946,7 +946,12 @@ but its own database.
 published earlier: the route was rendered once and already sits in LiveView's
 packed form. A page load therefore costs **zero** cell calls and touches no
 database, and it does no diff work either — diffs exist only as a consequence of
-writes. A wedged colony keeps serving the page, and the client then visibly fails
+writes — with exactly one exception, and it
+carries no new information: a viewer whose channel was full when the fan-out
+reached it is offered its route's **whole** packed tree instead (GH #414), until
+it can take it. The last frame a viewer receives is therefore always the newest
+state, and never a diff onto a picture it never got.
+A wedged colony keeps serving the page, and the client then visibly fails
 to connect instead of showing a blank screen. And everything a display draws is
 rows in its database — components are **data, not code** — so a new picture is a
 message to the cell rather than a release.
@@ -2748,6 +2753,8 @@ The `error` token is machine-readable and stable; `detail` is **free text for a 
 | Test tmp directories (dev-deps, from phase 0) | `tempfile` |
 | File watcher | not in scope |
 | Process-group signals (from P8) | `libc` 0.2 — only `killpg`/`SIGTERM`/`SIGKILL`/`pid_t`, unix-only, one module (sanctioned 2026-08-08) |
+| Crypto (vault, from GH #151) | RustCrypto, one choice per job: `argon2` (argon2id, passphrase to key), `chacha20poly1305` (XChaCha20-Poly1305, AEAD at rest), `hmac` + `sha2` (HMAC-SHA256 — what `vault.use` does **with** a secret instead of handing it out), `getrandom` (nonces and salt), `subtle` (constant-time comparison). Sanctioned 2026-08-16 |
+| Key agreement (from GH #421) | `x25519-dalek` — the vault's sealed-box delivery (R3): the recipient names an ephemeral public key and the vault seals against it. Exactly one group, no curve choice at config level. The box key falls out of the row above via HMAC-SHA256; `hkdf` and `crypto_box` deliberately did **not** join. Sanctioned 2026-08-26 |
 
 ---
 

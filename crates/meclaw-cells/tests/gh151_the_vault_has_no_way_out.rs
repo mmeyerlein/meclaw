@@ -817,3 +817,67 @@ async fn an_injection_target_must_be_a_path_and_a_key() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression lock — the sanctioned extension (R3) may ADD, never move
+// ---------------------------------------------------------------------------
+
+/// GH #421: `deliver` joined the route surface by sanctioned ruling R3 (2026-08-26). That is an
+/// addition to a sealed cell type, so what was there before is pinned here by
+/// behaviour rather than by trust: each of the seven original operations keeps
+/// its caller, its answer shape and its error code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_seven_original_operations_behave_exactly_as_before() {
+    let (_root, mut cell, mut db) = sealed_vault().await;
+
+    // status on a locked vault
+    let s = result(&run(&mut cell, &mut db, call(None, json!({"op":"status"}))).await);
+    assert_eq!(s["locked"], true);
+    assert_eq!(s["key_id"], Value::Null);
+
+    // unlock, put, rotate, status, use, revoke, lock — in that order
+    assert_eq!(result(&unlock(&mut cell, &mut db).await)["locked"], false);
+    assert_eq!(
+        result(&put(&mut cell, &mut db, "tg", "SUPER-SECRET-TOKEN").await)["version"],
+        1
+    );
+    assert_eq!(
+        result(
+            &run(
+                &mut cell,
+                &mut db,
+                call(
+                    None,
+                    json!({"op":"rotate","name":"tg","secret":"SUPER-SECRET-TOKEN-2"})
+                )
+            )
+            .await
+        )["version"],
+        2
+    );
+    let used = result(
+        &run(
+            &mut cell,
+            &mut db,
+            call(
+                Some(BROKER),
+                json!({"op":"use","use":"sign","name":"tg","payload":"p","grant_id":"g"}),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(used["signature"].as_str().map(str::len), Some(64));
+    assert_eq!(
+        result(
+            &run(
+                &mut cell,
+                &mut db,
+                call(None, json!({"op":"revoke","name":"tg"}))
+            )
+            .await
+        )["revoked_versions"],
+        2
+    );
+    let after_lock = run(&mut cell, &mut db, call(None, json!({"op":"lock"}))).await;
+    assert_eq!(result(&after_lock)["locked"], true);
+}

@@ -711,7 +711,7 @@
 
   /// Fill the panel and dim what is not involved. `id` is a cell path or an edge
   /// id; anything else clears.
-  function select(el, id) {
+  function select(el, id, hook) {
     const detail = el.querySelector("#detail");
     if (!detail) return;
     const edges = edgesOf(el);
@@ -760,14 +760,33 @@
         esc(other(e)) + (e.cond ? ' <span class="chip">if</span>' : "") + "</div>").join("");
     };
     const ins = mine.filter(e => e.to === id), outs = mine.filter(e => e.from === id);
+    // The pin state, read off the markup the layout wrote (and off what a drag
+    // set a moment ago). A box that is not pinned has nothing to release, and
+    // offering the action anyway would be a button that does nothing.
+    const pinned = !!cellG.getAttribute("data-pinned");
+    const act = pinned
+      ? '<div class="act"><button class="unpin" data-unpin="' + esc(id) +
+        '">release to the layout</button></div>'
+      : '<div class="act"><span class="chip">placed by the layout</span></div>';
     detail.innerHTML =
       '<dl class="kv"><dt>cell</dt><dd>' + esc(id) + "</dd></dl>" +
       '<dl class="kv"><dt>type</dt><dd>' + esc(ty ? ty.textContent : "") + "</dd></dl>" +
       '<dl class="kv"><dt>in (' + ins.length + ")</dt><dd>" + row(ins, e => e.from) + "</dd></dl>" +
-      '<dl class="kv"><dt>out (' + outs.length + ")</dt><dd>" + row(outs, e => e.to) + "</dd></dl>";
+      '<dl class="kv"><dt>out (' + outs.length + ")</dt><dd>" + row(outs, e => e.to) + "</dd></dl>" +
+      act;
     detail.querySelectorAll(".rel").forEach(function (n) {
-      n.addEventListener("click", function () { select(el, n.getAttribute("data-rel")); });
+      n.addEventListener("click", function () { select(el, n.getAttribute("data-rel"), hook); });
     });
+    const release = detail.querySelector ? detail.querySelector(".unpin") : null;
+    if (release && hook) {
+      release.addEventListener("click", function () {
+        // Local first, then the write: the panel must not go on offering an
+        // action whose effect has already been sent.
+        cellG.setAttribute("data-pinned", "");
+        hook.setProp(cellG.getAttribute("data-oid"), "pinned", "");
+        select(el, id, hook);
+      });
+    }
   }
 
   const Canvy = {
@@ -816,7 +835,7 @@
       applyCamera(this.el, this.cam);
       applyFrames(this.el, this.geom);
       drawEdges(this.el);
-      if (this.sel) select(this.el, this.sel); else clearSelection(this.el);
+      if (this.sel) select(this.el, this.sel, this); else clearSelection(this.el);
     },
     destroyed() { this.unwire(); },
 
@@ -825,6 +844,19 @@
     setProp(oid, prop, value) {
       if (!oid) return;
       this.pushEvent("object:set", {id: oid, prop: prop, value: value});
+    },
+
+    /// Mark a box as hand-placed — once.
+    ///
+    /// The marker is what tells the layout to leave a box alone; the coordinates
+    /// cannot say it, because the layout writes coordinates for every box there
+    /// is (GH #415). Written only when it CHANGES, so an ordinary drag on an
+    /// already-arranged picture still costs exactly two events per box, and a
+    /// group drag of 59 members does not turn into 177 writes.
+    pin(g) {
+      if (!g || g.getAttribute("data-pinned")) return;
+      g.setAttribute("data-pinned", "1");
+      this.setProp(g.getAttribute("data-oid"), "pinned", "1");
     },
 
     wire() {
@@ -867,7 +899,7 @@
         } else {
           hook.sel = null;
         }
-        if (hook.sel) select(el, hook.sel); else clearSelection(el);
+        if (hook.sel) select(el, hook.sel, hook); else clearSelection(el);
       };
 
       this.onDown = function (ev) {
@@ -1021,6 +1053,7 @@
             done.members.forEach(function (m) {
               hook.setProp(m.oid, "x", m.at.x + dx);
               hook.setProp(m.oid, "y", m.at.y + dy);
+              hook.pin(m.g);
             });
             hook.dragged = true;        // the click that follows is the drag's tail
           }
@@ -1047,6 +1080,7 @@
         if (nx !== Math.round(done.origin.x) || ny !== Math.round(done.origin.y)) {
           hook.setProp(done.oid, "x", nx);
           hook.setProp(done.oid, "y", ny);
+          hook.pin(done.g);
           hook.dragged = true;          // so the click that follows does not select
         }
       };

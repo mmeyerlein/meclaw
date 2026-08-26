@@ -10,14 +10,14 @@
           "context": [
             "requester"
           ],
-          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.0.5"
+          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.1.0"
         },
         {
           "route": "in_invoke",
           "context": [
             "requester"
           ],
-          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.0.5"
+          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.1.0"
         },
         {
           "route": "in_cycle",
@@ -43,11 +43,11 @@
       "emits": [
         {
           "route": "grant",
-          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.0.5"
+          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.1.0"
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.0.5 and org@1.0.2"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.1.0 and org@1.0.2"
         },
         {
           "route": "mutate",
@@ -63,7 +63,7 @@
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.11 and org@1.0.2"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.1.0, steward@2.0.11 and org@1.0.2"
         },
         {
           "route": "write",

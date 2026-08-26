@@ -196,6 +196,46 @@ fn episodes(out: &[Value]) -> Vec<&Value> {
 
 /// The reply a store cell sends back after an insert: the operation on the
 /// hop, the phase in the context (the internal edge promoted it there).
+/// The calls one emission carries, in call order.
+fn calls_of(m: &Value) -> Vec<Value> {
+    m["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|t| meclaw_core::serde_json::from_str::<Value>(t["text"].as_str()?).ok())
+        .collect()
+}
+
+/// The day read of the turn-opening bundle, if it is in there.
+///
+/// GH #419: the per-turn scan is a CALL of the ONE message a turn opens with,
+/// not a message behind it. Whether it is asked at all is still the knob's
+/// decision, and that is what these cases measure.
+fn day_call_of(out: &[Value]) -> Vec<Value> {
+    out.iter()
+        .filter(|m| hop(m, "phase") == "turn-open")
+        .flat_map(calls_of)
+        .filter(|a| {
+            a["table"] == "turns"
+                && a["operation"] == "select"
+                && a["columns"]
+                    .as_array()
+                    .map(|c| c.iter().any(|x| x == "episode_written"))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// The turn as it arrives at the door.
+fn inbound_turn(session: &str) -> Value {
+    json!({
+        "header": {"hop": {"route": "in_turn"},
+                   "context": {"session_id": session, "turn_id": "t1"}},
+        "messages": [{"origin": "user", "type": "text", "text": "my editor is helix"}]
+    })
+}
+
 fn insert_echo(session: &str, phase: &str, turn: &str) -> Value {
     json!({
         "header": {
@@ -264,15 +304,15 @@ fn day_rows(session: &str, upto: usize, written: &HashSet<String>) -> Value {
 /// collector asks for the day it belongs to. No timer, no gate, no model.
 #[test]
 fn a_stored_turn_asks_for_the_whole_day_right_away() {
-    let out = collector(insert_echo("s1", "turn-w", "t1"));
-    let scans = phase_msgs(&out, "tw-scan");
+    let out = collector(inbound_turn("s1"));
+    let scans = day_call_of(&out);
     assert_eq!(
         scans.len(),
         1,
-        "one day select on top of the round check -- {out:?}"
+        "one day select beside the round check, in the same message -- {out:?}"
     );
 
-    let a = args(scans[0]);
+    let a = scans[0].clone();
     assert_eq!(a["operation"], "select");
     assert_eq!(a["table"], "turns");
     assert_eq!(
@@ -311,15 +351,15 @@ fn the_stored_answer_asks_for_the_whole_day_too() {
 #[test]
 fn the_per_turn_lane_is_on_unless_somebody_turns_it_off() {
     assert_eq!(
-        phase_msgs(&collector(insert_echo("s1", "turn-w", "t1")), "tw-scan").len(),
+        day_call_of(&collector(inbound_turn("s1"))).len(),
         1,
         "the shipped collector scans"
     );
 
     for off in ["", "0"] {
-        let turn = collector_with(&[("turn_write", off)], insert_echo("s1", "turn-w", "t1"));
+        let turn = collector_with(&[("turn_write", off)], inbound_turn("s1"));
         assert!(
-            phase_msgs(&turn, "tw-scan").is_empty(),
+            day_call_of(&turn).is_empty(),
             "turn_write={off:?}: no day select -- {turn:?}"
         );
         assert_eq!(

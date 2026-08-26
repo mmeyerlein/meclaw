@@ -173,17 +173,75 @@ fn leg_window(turns: serde_json::Value) -> serde_json::Value {
                        "recorded_at": "2026-08-15T00:00:00.000000Z"})
 }
 
-/// The slate coming back on `round-fire`: the assembly is about to leave for
+/// The slate coming back on `round-check`: the assembly is about to leave for
 /// the brain, and this is the last moment anything may be taken out of it.
+///
+/// GH #419: the result parks and the slate is read back in ONE message, so the
+/// slate arrives under the read-back's `tool_call_id` and the round fires out of
+/// that same reply. The curator runs where it always ran -- at the seam.
 fn fire_at(iter: i64, rows: serde_json::Value) -> serde_json::Value {
+    // A slate with an assistant row is a TOOL ROUND and fires out of the
+    // `round-check` bundle; a slate that is only a window is the first assembly
+    // of the turn and fires out of the `collect` bundle. Before GH #419 both
+    // arrived at a phase whose only job was to render (`fire` / `round-fire`),
+    // reached through a guarded update; now the render happens in the reply the
+    // read-back came back on, so the fixture names the bundle it belongs to.
+    let is_round = rows
+        .as_array()
+        .map(|rs| rs.iter().any(|r| r["role"] == "assistant"))
+        .unwrap_or(false);
+    let (phase, cid) = if is_round {
+        ("round-check", "c-round-check-read")
+    } else {
+        ("collect", "c-collect-read")
+    };
+    // A round fires out of its own read-back now, so the slate has to BE
+    // complete at `iter`. A fixture that names a later iteration than its own
+    // rounds -- which is how a case says "these rounds are the old ones the
+    // curator may spare or elide" -- gets the closing pair it implied, and it is
+    // deliberately tiny: nothing about the curation under test may hang on it.
+    let mut rows = rows;
+    if is_round
+        && !rows
+            .as_array()
+            .map(|rs| {
+                rs.iter()
+                    .any(|r| r["iter"] == iter && r["role"] == "assistant")
+            })
+            .unwrap_or(false)
+    {
+        let rs = rows.as_array_mut().expect("rows");
+        rs.push(assistant_row(
+            iter,
+            serde_json::json!([call_turn("_close", "read_file", "{}")]),
+        ));
+        rs.push(result_row(iter, "_close", "ok"));
+    }
     serde_json::json!({
         "header": {"context": {"session_id": "s1", "turn_id": "t1",
                                "iter": iter.to_string(),
-                               "col_phase": "round-fire", "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": 0}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "x",
-                      "text": rows.to_string()}]
+                               "col_phase": phase, "store_origin": "collector"},
+                   "hop": {"operation": "bundle", "rows_affected": 0,
+                           "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result",
+                      "id": cid, "text": rows.to_string()}],
+        "results": [{"tool_call_id": cid, "operation": "select",
+                     "rows_affected": 0, "duration_ms": 0}]
     })
+}
+
+/// How many messages this decision emitted, NOT counting the bookkeeping mark.
+///
+/// GH #419: a round that assembles emits the seam and, beside it, the `fired`
+/// mark that records the round as answered. The mark used to be a guarded update
+/// one hop in FRONT of the seam, and its `rows_affected` used to elect; now the
+/// read-back elects and the mark only records, so it travels with the emission
+/// instead of before it. Every "one message" claim below is about the message
+/// that DOES something, which is what it always was.
+fn emitted(out: &[serde_json::Value]) -> usize {
+    out.iter()
+        .filter(|m| m["header"]["phase"] != "collect-done" && m["header"]["phase"] != "round-done")
+        .count()
 }
 
 fn texts(msg: &serde_json::Value) -> Vec<String> {
@@ -339,8 +397,8 @@ fn the_curator_never_blocks_the_round() {
     // the turn to wait on, at any mark including `hard`.
     let plain = emit_with(&over(&base("", DECLARED)), fire_at(5, long_turn(6)));
     let curated = emit_with(&over(&base("50", DECLARED)), fire_at(5, long_turn(6)));
-    assert_eq!(plain.len(), 1);
-    assert_eq!(curated.len(), 1, "one emission, curated or not");
+    assert_eq!(emitted(&plain), 1);
+    assert_eq!(emitted(&curated), 1, "one seam, curated or not");
     assert_eq!(curated[0]["header"]["route"], plain[0]["header"]["route"]);
     assert_eq!(curated[0]["header"]["iter"], plain[0]["header"]["iter"]);
     assert_eq!(curated[0]["header"]["curate_mark"], "hard");
@@ -378,7 +436,7 @@ fn a_missing_usage_field_estimates_and_says_so_instead_of_parking() {
     // is computed inside the cell, so the absence costs an estimate and a flag
     // -- never a turn.
     let out = emit_with(&over(&base("4000", DECLARED)), fire_at(5, long_turn(6)));
-    assert_eq!(out.len(), 1, "the turn left; nothing parked");
+    assert_eq!(emitted(&out), 1, "the turn left; nothing parked");
     assert_eq!(out[0]["header"]["route"], "brain");
     assert_eq!(
         out[0]["header"]["tokens_estimated"], "1",

@@ -1,4 +1,4 @@
-# `canvy@2.1.7`
+# `canvy@2.1.9`
 
 One interactive canvas of the colony, served on a port of its own. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
@@ -123,10 +123,18 @@ recomputes them from the same constants the layout cell used — read off the
 markup rather than kept as a second copy — so a cell dragged out of a hive grows
 that hive, and every hive above it, while the cursor is still down.
 
+**Pinned is a marker, not a coordinate.** Every cell has `x`/`y` — that is how
+its box is drawn. What says a *hand* put it there is the `pinned` prop, which a
+drag sets and the detail panel's *release to the layout* clears
+([#415](https://github.com/mmeyerlein/meclaw/issues/415)). A display older than
+the marker is given it on the first tick and keeps its arrangement untouched
+while that happens.
+
 **And a position, once set, is kept.** On every tick the layout reads back what
-the display already holds and leaves those coordinates alone; only a cell the
-display has never seen is given a computed spot, which is then settled out of
-the way of everything that was placed by hand.
+the display holds and was marked as hand-placed, and leaves those coordinates
+alone; only a cell the display has never seen — or one handed back to the
+layout — is given a computed spot, which is then settled out of the way of
+everything that was placed by hand.
 
 ## The camera is yours
 
@@ -175,7 +183,7 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.7",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.9",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 

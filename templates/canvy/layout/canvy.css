@@ -127,6 +127,11 @@ html,body{ margin:0; height:100%; background:#fbfbfa; }
 .canvy .detail .rel:hover{ color:var(--accent); text-decoration:underline; }
 .canvy .detail .chip{ display:inline-block; padding:1px 7px; border-radius:99px;
   font-size:10px; border:1px solid var(--line); color:var(--muted); }
+/* The panel's one action. A button and not a link: it writes. */
+.canvy .detail .act{ margin-top:14px; }
+.canvy .detail .unpin{ font:inherit; color:var(--ink); background:transparent;
+  border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
+.canvy .detail .unpin:hover{ color:var(--accent); border-color:var(--accent); }
 @media (max-width:860px){ .canvy .detail{ display:none; } }
 
 /* Disconnected, and therefore possibly out of date.

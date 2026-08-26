@@ -85,14 +85,11 @@ async fn run_responses_lane(
     let body_text = match cell.params.auth {
         AuthMode::ApiKey => {
             // An empty api_key is no api_key (GH #271) — `None` here means the
-            // call goes out with no `Authorization` header at all. Same repair
-            // as `mcp` (#268) and `web_search` (#270): `parse` rejects a
-            // MISSING key, but `${LOCAL_LLM_API_KEY}` resolving to `""` is a
-            // deliberate keyless setup (an OpenAI-compatible server on
-            // localhost ignores the header), and against such an endpoint a
-            // bearer with nothing after it can be a flat rejection that reads
-            // as a broken provider.
-            let bearer = cell.params.api_key.as_deref().filter(|s| !s.is_empty());
+            // call goes out with no `Authorization` header at all. The
+            // precedence and the empty-is-absent rule both live in `bearer()`
+            // (GH #271, and since GH #421 the vault-delivered credential wins
+            // over the static one).
+            let bearer = cell.bearer();
             let mut headers = translate_responses::build_responses_headers(&cell.params, None);
             headers.extend(attribution);
             let (result, timings) = wire::call_responses_timed(
@@ -245,6 +242,14 @@ pub struct LlmCell {
     /// attachments and the slot travels past it untouched — the pre-GH-#87
     /// behaviour, byte for byte.
     attachments: Option<AttachmentReader>,
+    /// R3 / GH #421: the bearer credential the vault delivered. Sealed on the
+    /// wire, opened here, and held nowhere else — it is deliberately NOT part
+    /// of the params overlay, so it never reaches `cell.db` and never survives
+    /// a sleep. A woken cell asks again.
+    credential: Option<String>,
+    /// The ephemeral X25519 recipient key of the credential request in flight.
+    /// `Some` between emitting the request and opening the box.
+    pending_recipient: Option<crate::sealed::RecipientKeypair>,
 }
 
 impl LlmCell {
@@ -257,7 +262,93 @@ impl LlmCell {
             params,
             http,
             attachments: None,
+            credential: None,
+            pending_recipient: None,
         }
+    }
+
+    /// Ask the access hive for this cell's bearer credential.
+    ///
+    /// The message is an ordinary `access.invoke` spend — the broker runs the
+    /// same four grant checks it runs for anything else, and the credential's
+    /// NAME comes out of the grant, not out of this body. What this cell adds
+    /// is the recipient half of a fresh X25519 pair, which it keeps in RAM
+    /// until the sealed answer arrives.
+    ///
+    /// It emits to the reply target like every other emission: the cell knows
+    /// no topology, and the edge that carries `hop.route == "credential_request"`
+    /// decides where the request goes.
+    async fn ask_for_credential(
+        &mut self,
+        sink: &OutputSink,
+        target: &meclaw_core::Path,
+        grant_id: &str,
+    ) {
+        let pair = match crate::sealed::RecipientKeypair::generate() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "llm: no random source for a credential request");
+                return;
+            }
+        };
+        let args = meclaw_core::serde_json::json!({
+            "grant_id": grant_id,
+            "operation": "vault.deliver",
+            "payload": {"recipient_key": pair.public_hex()},
+        });
+        self.pending_recipient = Some(pair);
+        // A closed sink means the colony is going down; there is nothing useful
+        // to do about it here and nothing secret in this body.
+        let _ = sink
+            .push(meclaw_core::CellOutput {
+                target: target.clone(),
+                content: meclaw_core::serde_json::json!({
+                "header": {"route": "credential_request", "grant_id": grant_id},
+                "messages": [{"origin": "assistant", "type": "tool_call",
+                              "id": meclaw_core::Uuid::now_v7().simple().to_string(),
+                              "text": args.to_string()}],
+                }),
+            })
+            .await;
+    }
+
+    /// Refuse a credential delivery. Never echoes a value — there is none to
+    /// echo on any of these paths, and the message says so in words rather than
+    /// by luck.
+    async fn emit_credential_reject(
+        &self,
+        sink: &OutputSink,
+        target: meclaw_core::Path,
+        detail: &str,
+        started_at_unix_ms: i64,
+    ) {
+        output::emit_error(
+            sink,
+            target,
+            "invalid_input",
+            detail,
+            "auth",
+            vec![],
+            started_at_unix_ms,
+            0,
+            None,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    /// The credential this cell presents, in precedence order.
+    ///
+    /// The vault-delivered one wins over the static `params.api_key` so that a
+    /// migrating instance can keep its old key in the config while the sealed
+    /// path is switched on, and drop it afterwards. An empty string is not a
+    /// credential on either track (GH #271).
+    fn bearer(&self) -> Option<&str> {
+        self.credential
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.params.api_key.as_deref().filter(|s| !s.is_empty()))
     }
 
     /// GH #87: install the declared-consumer blob reader.
@@ -644,6 +735,64 @@ impl StatefulCell for LlmCell {
                 }
             }
 
+            // Step 1c (R3 / GH #421): the sealed credential slot. Handled here
+            // because it is the one body form that must never touch `cell.db`
+            // and never produce an emission — the answer to a delivery is
+            // silence, exactly like a params-only message.
+            if let Some(sealed_val) = content_obj.get("sealed") {
+                match crate::sealed::SealedBox::from_json(sealed_val) {
+                    Ok(boxed) => match self.pending_recipient.take() {
+                        Some(pair) => match pair.open(&boxed) {
+                            Ok(plain) => match String::from_utf8(plain) {
+                                Ok(value) => {
+                                    self.credential = Some(value);
+                                    tracing::info!(
+                                        "llm: bearer credential received sealed and opened in RAM"
+                                    );
+                                }
+                                Err(_) => {
+                                    self.emit_credential_reject(
+                                        sink,
+                                        reply_target,
+                                        "the delivered credential is not valid UTF-8",
+                                        started_at_unix_ms,
+                                    )
+                                    .await;
+                                }
+                            },
+                            Err(e) => {
+                                self.emit_credential_reject(
+                                    sink,
+                                    reply_target,
+                                    &format!("the sealed box did not open ({e})"),
+                                    started_at_unix_ms,
+                                )
+                                .await;
+                            }
+                        },
+                        None => {
+                            self.emit_credential_reject(
+                                sink,
+                                reply_target,
+                                "a sealed box arrived that this cell never asked for",
+                                started_at_unix_ms,
+                            )
+                            .await;
+                        }
+                    },
+                    Err(e) => {
+                        self.emit_credential_reject(
+                            sink,
+                            reply_target,
+                            &format!("malformed sealed slot ({e})"),
+                            started_at_unix_ms,
+                        )
+                        .await;
+                    }
+                }
+                return;
+            }
+
             let system = content_obj.get("system");
             let messages = content_obj.get("messages");
             if system.is_none() && messages.is_none() {
@@ -665,6 +814,45 @@ impl StatefulCell for LlmCell {
                     None,
                 )
                 .await;
+                return;
+            }
+
+            // Step 3 (pre): R3 / GH #421. A cell that spends a grant for its
+            // credential does not call a provider without one. It asks, says
+            // so, and the next message finds the credential in RAM. Placed here
+            // because it is the first point at which this is known to be a real
+            // inference message, and because it covers BOTH wire dialects with
+            // one guard rather than one per lane.
+            //
+            // Why not queue the message and answer it once the box arrives: the
+            // concurrency invariant is one task, one state, no lock — a queue
+            // with a timeout and a re-delivery would be a second state machine
+            // in a cell that has none. Refusing this one turn and serving the
+            // next is the honest shape for the first consumer.
+            if self.bearer().is_none()
+                && let Some(grant) = self
+                    .params
+                    .credential_grant_id
+                    .clone()
+                    .filter(|g| !g.is_empty())
+            {
+                self.ask_for_credential(sink, &reply_target, &grant).await;
+                output::emit_error(
+                    sink,
+                    reply_target,
+                    "credential_pending",
+                    "the bearer credential has been requested from the access hive; retry \
+                     once it arrived",
+                    "auth",
+                    vec![],
+                    started_at_unix_ms,
+                    0,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+                self.log_phases(&clock, "credential_pending");
                 return;
             }
 
@@ -1070,11 +1258,9 @@ impl StatefulCell for LlmCell {
             let (wire_result, wire_timings) = wire::call_openai_timed(
                 &self.http,
                 &url,
-                // `parse` guarantees `api_key` is PRESENT whenever this cell
-                // runs the api_key/chat-completions lane — but present may
-                // mean empty, and an empty credential is an absent one
-                // (GH #271, see `run_responses_lane` for the reasoning).
-                self.params.api_key.as_deref().filter(|s| !s.is_empty()),
+                // Precedence and the empty-is-absent rule both live in
+                // `bearer()` (GH #271, GH #421).
+                self.bearer(),
                 &attribution_headers,
                 &request_json,
                 timeout,
@@ -1179,6 +1365,20 @@ mod tests {
         LlmCell::new(params, http)
     }
 
+    #[test]
+    fn the_ram_credential_wins_over_the_static_key_and_an_empty_one_is_none() {
+        let mut cell = mk_cell();
+        assert_eq!(cell.bearer(), Some("sk-test"));
+        cell.credential = Some("sk-from-the-vault".to_string());
+        assert_eq!(cell.bearer(), Some("sk-from-the-vault"));
+        cell.credential = Some(String::new());
+        assert_eq!(
+            cell.bearer(),
+            Some("sk-test"),
+            "an empty credential is no credential"
+        );
+    }
+
     fn mk_sink() -> (OutputSink, mpsc::Receiver<meclaw_core::CellEmission>) {
         let (tx, rx) = mpsc::channel(8);
         let sink = OutputSink::new(
@@ -1223,6 +1423,214 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "system-only input MUST NOT emit (Q3 silence)"
+        );
+    }
+
+    /// A cell that spends a grant for its credential and has no static key.
+    fn credential_cell() -> LlmCell {
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+        });
+        LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        )
+    }
+
+    fn user_turn() -> meclaw_core::Message {
+        MessageBuilder::new(Path::new("/llm"))
+            .body(Body::Inline(
+                json!({"messages": [{"origin": "user", "type": "text", "text": "hello"}]}),
+            ))
+            .build()
+    }
+
+    /// R3 / GH #421: the box opens into RAM, and a delivery is answered with
+    /// silence — exactly like a params-only message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sealed_credential_is_opened_into_ram_and_answered_with_silence() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = credential_cell();
+        let (sink, mut rx) = mk_sink();
+
+        // The cell asks, which is what mints the recipient key.
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let public = cell
+            .pending_recipient
+            .as_ref()
+            .expect("a pair is in flight")
+            .public_hex();
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-DELIVERED").expect("seal");
+
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+
+        assert_eq!(cell.bearer(), Some("sk-or-v1-DELIVERED"));
+        assert!(
+            cell.pending_recipient.is_none(),
+            "the ephemeral key is spent"
+        );
+
+        drop(sink);
+        let mut after = Vec::new();
+        while let Some(em) = rx.recv().await {
+            after.push(em.content);
+        }
+        // Two emissions from the FIRST call; the sealed one answers with silence.
+        assert_eq!(
+            after.len(),
+            2,
+            "the sealed delivery must emit nothing: {after:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delivered_credential_never_reaches_cell_db() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = credential_cell();
+        let (sink, _rx) = mk_sink();
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let public = cell.pending_recipient.as_ref().expect("pair").public_hex();
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-DELIVERED").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+
+        // The whole database, dumped as text. A credential in RAM is a decision;
+        // a credential on disk would be an accident nobody would notice.
+        let dump: String = db
+            .call(|c| {
+                let mut s = c
+                    .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+                    .unwrap();
+                let tables: Vec<String> = s
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                drop(s);
+                let mut all = String::new();
+                for t in tables {
+                    let mut q = c.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+                    let cols = q.column_count();
+                    let mut rows = q.query([]).unwrap();
+                    while let Some(r) = rows.next().unwrap() {
+                        for i in 0..cols {
+                            all.push_str(
+                                &r.get::<_, rusqlite::types::Value>(i)
+                                    .map(|v| format!("{v:?}"))
+                                    .unwrap_or_default(),
+                            );
+                        }
+                    }
+                }
+                all
+            })
+            .await;
+        assert!(
+            !dump.contains("sk-or-v1-DELIVERED"),
+            "the credential was persisted"
+        );
+        assert!(!dump.contains("DELIVERED"), "{dump}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_box_nobody_asked_for_is_refused_and_changes_nothing() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut cell = credential_cell();
+        let (sink, mut rx) = mk_sink();
+
+        let stranger = crate::sealed::RecipientKeypair::generate().expect("keypair");
+        let sealed =
+            crate::sealed::seal_to(&stranger.public_hex(), b"sk-or-v1-PLANTED").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+
+        assert_eq!(cell.bearer(), None, "nothing was adopted");
+        let em = rx.try_recv().expect("a named refusal, not silence");
+        assert_eq!(em.content["header"]["error_code"], "invalid_input");
+    }
+
+    /// R3 / GH #421: a cell that declares a credential grant and holds no
+    /// credential asks for one instead of calling a provider without a key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cell_with_a_credential_grant_and_no_credential_asks_before_it_calls() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+        });
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .body(Body::Inline(
+                json!({"messages": [{"origin": "user", "type": "text", "text": "hello"}]}),
+            ))
+            .build();
+        cell.handle(msg, &sink, &mut db).await;
+        drop(sink);
+
+        let mut seen: Vec<meclaw_core::serde_json::Value> = Vec::new();
+        while let Some(em) = rx.recv().await {
+            seen.push(em.content);
+        }
+        let ask = seen
+            .iter()
+            .find(|c| c["header"]["route"] == "credential_request")
+            .expect("the cell asked for its credential");
+        let args: meclaw_core::serde_json::Value =
+            meclaw_core::serde_json::from_str(ask["messages"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(args["grant_id"], "grant:abc");
+        assert_eq!(args["operation"], "vault.deliver");
+        assert_eq!(
+            args["payload"]["recipient_key"].as_str().map(str::len),
+            Some(64),
+            "an X25519 public key is 32 bytes of hex"
+        );
+
+        assert!(
+            seen.iter()
+                .any(|c| c["header"]["error_code"] == "credential_pending"),
+            "and it said so instead of calling a provider without a key: {seen:?}"
+        );
+        assert!(
+            cell.pending_recipient.is_some(),
+            "the private half stays in RAM until the box arrives"
         );
     }
 

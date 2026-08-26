@@ -72,6 +72,25 @@ pub struct ViewerRegistry {
     inner: Mutex<HashMap<String, Viewer>>,
 }
 
+/// One viewer, as a fan-out addresses it.
+///
+/// The `id` is what makes a failed send attributable: a `Sender` is not a key,
+/// and the whole point of GH #414's second half is remembering **which** viewer
+/// lost a frame. The `route` travels with it because the resync sends that
+/// page's whole tree, and the map is keyed by route (see [`fan_out`]).
+pub struct Addressed {
+    /// The connection id the registry holds this viewer under.
+    pub id: String,
+    /// Where to send frames.
+    pub tx: mpsc::Sender<ViewerMsg>,
+    /// The client's join reference, needed to address a server-initiated push.
+    pub join_ref: meclaw_core::JsonValue,
+    /// The topic this viewer joined.
+    pub topic: String,
+    /// The route this viewer is looking at.
+    pub route: String,
+}
+
 impl ViewerRegistry {
     /// Register a viewer under its connection id.
     pub async fn insert(&self, id: String, viewer: Viewer) {
@@ -83,20 +102,29 @@ impl ViewerRegistry {
         self.inner.lock().await.remove(id);
     }
 
-    /// Every viewer currently looking at `route`, as `(sender, join_ref, topic)`.
+    /// Every viewer currently looking at `route`, ordered by id.
     ///
-    /// Returns clones so the caller can send without holding the lock.
-    pub async fn on_route(
-        &self,
-        route: &str,
-    ) -> Vec<(mpsc::Sender<ViewerMsg>, meclaw_core::JsonValue, String)> {
-        self.inner
+    /// Returns clones so the caller can send without holding the lock. The order
+    /// is stable rather than a `HashMap`'s: a fan-out that visits its viewers in
+    /// a different order every time is untestable at the seam that matters, and
+    /// nothing is bought by the arbitrary one.
+    pub async fn on_route(&self, route: &str) -> Vec<Addressed> {
+        let mut out: Vec<Addressed> = self
+            .inner
             .lock()
             .await
-            .values()
-            .filter(|v| v.route == route)
-            .map(|v| (v.tx.clone(), v.join_ref.clone(), v.topic.clone()))
-            .collect()
+            .iter()
+            .filter(|(_, v)| v.route == route)
+            .map(|(id, v)| Addressed {
+                id: id.clone(),
+                tx: v.tx.clone(),
+                join_ref: v.join_ref.clone(),
+                topic: v.topic.clone(),
+                route: v.route.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 
     /// Forget every viewer and hand back their senders (GH #410).
@@ -502,6 +530,9 @@ pub async fn run_io(
         .await
         .take()
         .expect("run_io takes the push receiver exactly once");
+    // Cloned once, before the loop: the resync needs the published pages, and
+    // `io` is moved into the router on every round and written on a rebind.
+    let pages = io.pages.clone();
 
     let mut listener = match bind_addr(&io.bind, io.port).await {
         Ok(l) => Some(l),
@@ -540,7 +571,7 @@ pub async fn run_io(
                 tokio::select! {
                     _ = &mut serve => Round::Done,
                     r = next_round(&mut reconfig_rx) => r,
-                    _ = fan_out(&mut pushes, &viewers) => Round::Done,
+                    _ = fan_out(&mut pushes, &viewers, &pages) => Round::Done,
                 }
             }
             // Nothing to serve on, and still not a reason to return. The diffs
@@ -549,7 +580,7 @@ pub async fn run_io(
             // and block the only writer of the `cell.db`.
             None => tokio::select! {
                 r = next_round(&mut reconfig_rx) => r,
-                _ = fan_out(&mut pushes, &viewers) => Round::Done,
+                _ = fan_out(&mut pushes, &viewers, &pages) => Round::Done,
             },
         };
 
@@ -632,30 +663,323 @@ async fn next_round(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) -> Round {
     }
 }
 
-/// Fan every `Push` the handler sends out to the viewers of its route.
-async fn fan_out(pushes: &mut mpsc::Receiver<WebReconfig>, viewers: &Arc<ViewerRegistry>) {
-    while let Some(push) = pushes.recv().await {
-        match push {
-            WebReconfig::Push { route, diff } => {
-                for (tx, join_ref, topic) in viewers.on_route(&route).await {
-                    // The tree rides BARE on the push lane (GH #413). The
-                    // `{"diff": ...}` wrapper is the *reply* shape; the client
-                    // hands a push payload straight to `Rendered.extract`, so a
-                    // wrapper becomes one junk slot and the re-render restores
-                    // the old markup — the drag's spring-back.
-                    let frame =
-                        meclaw_surface::frames::push(&join_ref, &topic, "diff", diff.clone());
-                    // A full or closed viewer channel means that browser is
-                    // gone or wedged; its connection task cleans up the registry
-                    // entry. One slow viewer must not hold up the others.
-                    let _ = tx.try_send(ViewerMsg::Frame(frame));
-                }
+/// The tree a viewer of `route` needs to be current again.
+fn whole_tree(
+    pages: &watch::Receiver<Arc<PageMap>>,
+    route: &str,
+) -> Option<meclaw_core::JsonValue> {
+    pages.borrow().get(route).map(|p| p.packed_tree())
+}
+
+/// Send one diff to every viewer of its route — and to a viewer that lost a
+/// frame, the whole tree instead (GH #414).
+///
+/// A `Full` channel means that browser is behind, and dropping the frame was
+/// always the right call for the others: one slow viewer must not hold up the
+/// rest. What was wrong was **forgetting** it. The mark says "this one is
+/// behind"; the next frame it can be given is the page's whole packed tree,
+/// which is correct from any starting point — a positional diff is not, because
+/// it patches a picture the viewer never received.
+async fn push_one(
+    push: WebReconfig,
+    viewers: &Arc<ViewerRegistry>,
+    pages: &watch::Receiver<Arc<PageMap>>,
+    dirty: &mut HashMap<String, Addressed>,
+) {
+    let WebReconfig::Push { route, diff } = push else {
+        // Rebinds travel on the substrate's reconfig channel, which is the only
+        // one the handler sends them on.
+        tracing::warn!("web: a rebind arrived on the push channel and was dropped");
+        return;
+    };
+    for a in viewers.on_route(&route).await {
+        let behind = dirty.contains_key(&a.id);
+        let payload = match behind.then(|| whole_tree(pages, &a.route)).flatten() {
+            Some(tree) => tree,
+            None => diff.clone(),
+        };
+        // The tree rides BARE on the push lane (GH #413). The `{"diff": ...}`
+        // wrapper is the *reply* shape; the client hands a push payload straight
+        // to `Rendered.extract`, so a wrapper becomes one junk slot.
+        let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", payload);
+        match a.tx.try_send(ViewerMsg::Frame(frame)) {
+            Ok(()) => {
+                dirty.remove(&a.id);
             }
-            // Rebinds travel on the substrate's reconfig channel, which is the
-            // only one the handler sends them on.
-            WebReconfig::Rebind { .. } => {
-                tracing::warn!("web: a rebind arrived on the push channel and was dropped")
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                dirty.insert(a.id.clone(), a);
+            }
+            // That browser is gone; its connection task cleans the registry up.
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                dirty.remove(&a.id);
             }
         }
+    }
+}
+
+/// How often a viewer that lost a frame is offered the whole tree again.
+///
+/// Short, because the window it closes is a person watching a picture that is
+/// already wrong; and only ever armed while somebody is actually marked, so an
+/// idle display ticks not at all.
+const RESYNC_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Offer every marked viewer its page's whole tree again.
+///
+/// The mark is kept only while the channel is merely **full** — a closed one
+/// belongs to a browser that is gone, and a page that has no tree (its route was
+/// removed) cannot be resynced at all, so that mark is dropped rather than
+/// retried forever.
+fn resync(pages: &watch::Receiver<Arc<PageMap>>, dirty: &mut HashMap<String, Addressed>) {
+    dirty.retain(|_, a| {
+        let Some(tree) = whole_tree(pages, &a.route) else {
+            return false;
+        };
+        let frame = meclaw_surface::frames::push(&a.join_ref, &a.topic, "diff", tree);
+        matches!(
+            a.tx.try_send(ViewerMsg::Frame(frame)),
+            Err(mpsc::error::TrySendError::Full(_))
+        )
+    });
+}
+
+/// Fan every `Push` the handler sends out to the viewers of its route, and never
+/// end on a dropped frame (GH #414).
+///
+/// Two arms, and the second only exists while somebody is marked: a burst that
+/// fills a viewer's channel is caught by the push path (the next frame that
+/// viewer can be given is the whole tree), and the LAST frame of a burst — the
+/// one with no successor — is caught by the retry. Without it a person who drops
+/// a node sees the picture snap back and stay there while the database is
+/// already correct.
+async fn fan_out(
+    pushes: &mut mpsc::Receiver<WebReconfig>,
+    viewers: &Arc<ViewerRegistry>,
+    pages: &watch::Receiver<Arc<PageMap>>,
+) {
+    let mut dirty: HashMap<String, Addressed> = HashMap::new();
+    loop {
+        if dirty.is_empty() {
+            match pushes.recv().await {
+                Some(push) => push_one(push, viewers, pages, &mut dirty).await,
+                None => return,
+            }
+        } else {
+            tokio::select! {
+                p = pushes.recv() => match p {
+                    Some(push) => push_one(push, viewers, pages, &mut dirty).await,
+                    None => return,
+                },
+                _ = tokio::time::sleep(RESYNC_RETRY) => resync(pages, &mut dirty),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::web::socket::Viewer;
+    use meclaw_core::serde_json::json;
+
+    /// One registered viewer, with a channel the test keeps the receiving end of.
+    fn viewer(route: &str, cap: usize) -> (Viewer, mpsc::Receiver<ViewerMsg>) {
+        let (tx, rx) = mpsc::channel::<ViewerMsg>(cap);
+        (
+            Viewer {
+                tx,
+                route: route.to_string(),
+                join_ref: json!("1"),
+                topic: "lv:c".to_string(),
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_fan_out_addresses_its_viewers_by_id_in_a_stable_order() {
+        let viewers = ViewerRegistry::default();
+        let (v2, _r2) = viewer("/", 4);
+        let (v1, _r1) = viewer("/", 4);
+        let (vx, _rx) = viewer("/other", 4);
+        viewers.insert("v2".to_string(), v2).await;
+        viewers.insert("v1".to_string(), v1).await;
+        viewers.insert("v3".to_string(), vx).await;
+
+        let addressed = viewers.on_route("/").await;
+        let ids: Vec<&str> = addressed.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["v1", "v2"],
+            "a fan-out names its viewers and visits them in a stable order"
+        );
+        assert!(
+            addressed.iter().all(|a| a.route == "/"),
+            "and each address carries the route it is joined to"
+        );
+    }
+
+    use crate::web::render::Materialized;
+
+    /// A page map with one route, so a resync has a tree to send.
+    fn page_map() -> Arc<PageMap> {
+        let mut m = PageMap::new();
+        m.insert(
+            "/".to_string(),
+            Materialized {
+                statics: vec!["<main>".to_string(), "</main>".to_string()],
+                slots: vec![("n1".to_string(), "<i>one</i>".to_string())],
+                title: "t".to_string(),
+            },
+        );
+        Arc::new(m)
+    }
+
+    /// The payload of a phoenix frame: the fifth element of the tuple.
+    fn payload(frame: &str) -> meclaw_core::JsonValue {
+        let v: meclaw_core::JsonValue =
+            meclaw_core::serde_json::from_str(frame).expect("a frame is JSON");
+        v[4].clone()
+    }
+
+    fn diff_push(slot: &str, html: &str) -> WebReconfig {
+        WebReconfig::Push {
+            route: "/".to_string(),
+            diff: json!({ slot: html }),
+        }
+    }
+
+    /// The whole of GH #414's second half: a viewer whose channel was full does
+    /// NOT silently keep a picture the database has left behind. The next frame
+    /// it can be sent is the whole tree, never the diff it would have had.
+    #[tokio::test]
+    async fn a_viewer_that_lost_a_frame_gets_the_tree_and_not_the_next_diff() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        // Capacity one, so the second push cannot fit: the burst that fills a
+        // 64-slot channel on a live display is the same event, larger.
+        let (v, mut rx) = viewer("/", 1);
+        viewers.insert("v1".to_string(), v).await;
+        let mut dirty: HashMap<String, Addressed> = HashMap::new();
+
+        push_one(diff_push("0", "<i>a</i>"), &viewers, &pages_rx, &mut dirty).await;
+        assert!(dirty.is_empty(), "the first frame fits");
+
+        push_one(diff_push("0", "<i>b</i>"), &viewers, &pages_rx, &mut dirty).await;
+        assert!(
+            dirty.contains_key("v1"),
+            "a dropped frame must be remembered, not forgotten"
+        );
+
+        // The browser reads its backlog: the slot is free again.
+        let ViewerMsg::Frame(first) = rx.recv().await.expect("the first frame") else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(payload(&first), json!({"0": "<i>a</i>"}));
+
+        push_one(diff_push("0", "<i>c</i>"), &viewers, &pages_rx, &mut dirty).await;
+        let ViewerMsg::Frame(second) = rx.recv().await.expect("the second frame") else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(
+            payload(&second),
+            page_map().get("/").expect("route").packed_tree(),
+            "the frame after a drop is the WHOLE tree — a diff would patch a \
+             picture the viewer never received"
+        );
+        assert!(
+            dirty.is_empty(),
+            "and the mark is cleared once the tree is on its way"
+        );
+    }
+
+    /// The retry itself: a mark survives a full channel and is cleared the
+    /// moment the tree fits.
+    #[tokio::test]
+    async fn a_resync_holds_its_mark_until_the_tree_actually_fits() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let (v, mut rx) = viewer("/", 1);
+        let addressed = Addressed {
+            id: "v1".to_string(),
+            tx: v.tx.clone(),
+            join_ref: v.join_ref.clone(),
+            topic: v.topic.clone(),
+            route: v.route.clone(),
+        };
+        // The channel is full before the first attempt.
+        v.tx.try_send(ViewerMsg::Frame("busy".to_string()))
+            .expect("prefill");
+        let mut dirty = HashMap::from([("v1".to_string(), addressed)]);
+
+        resync(&pages_rx, &mut dirty);
+        assert!(
+            dirty.contains_key("v1"),
+            "a viewer that is still wedged keeps its mark — the alternative is \
+             ending on a dropped frame, which is the defect"
+        );
+
+        let _ = rx.recv().await.expect("the prefilled frame");
+        resync(&pages_rx, &mut dirty);
+        assert!(dirty.is_empty(), "and the mark goes when the tree is sent");
+        let ViewerMsg::Frame(f) = rx.recv().await.expect("the tree") else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(
+            payload(&f),
+            page_map().get("/").expect("route").packed_tree()
+        );
+    }
+
+    /// …and the loop actually runs it: one push, dropped, and NO further push.
+    /// The viewer still ends up current.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_last_frame_a_viewer_gets_is_the_newest_state() {
+        let (_pages_tx, pages_rx) = watch::channel(page_map());
+        let viewers = Arc::new(ViewerRegistry::default());
+        // `wedged` sorts before `witness`, and `on_route` visits in id order
+        // (Task 1) — so when the witness has its frame, the wedged one has
+        // already been tried and dropped. No sleep, no guess.
+        let (wedged, mut wedged_rx) = viewer("/", 1);
+        wedged
+            .tx
+            .try_send(ViewerMsg::Frame("busy".to_string()))
+            .expect("prefill");
+        let (witness, mut witness_rx) = viewer("/", 8);
+        viewers.insert("a-wedged".to_string(), wedged).await;
+        viewers.insert("b-witness".to_string(), witness).await;
+
+        let (push_tx, mut push_rx) = mpsc::channel::<WebReconfig>(8);
+        let viewers_for_task = viewers.clone();
+        let pages_for_task = pages_rx.clone();
+        let job = tokio::spawn(async move {
+            fan_out(&mut push_rx, &viewers_for_task, &pages_for_task).await;
+        });
+
+        push_tx
+            .send(diff_push("0", "<i>only</i>"))
+            .await
+            .expect("push");
+        let _ = witness_rx.recv().await.expect("the witness sees the diff");
+
+        // The browser catches up on its backlog. Nothing else is ever pushed.
+        let _ = wedged_rx.recv().await.expect("the prefilled frame");
+        // Failure-marker timeout, generous by convention: it only elapses when
+        // the property under test is broken.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(30), wedged_rx.recv())
+            .await
+            .expect("a viewer that lost a frame must not be left stale")
+            .expect("a frame");
+        let ViewerMsg::Frame(f) = got else {
+            panic!("a frame, not a close")
+        };
+        assert_eq!(
+            payload(&f),
+            page_map().get("/").expect("route").packed_tree(),
+            "with no further write, the retry is what makes the last frame the \
+             newest state"
+        );
+
+        drop(push_tx);
+        let _ = job.await;
     }
 }

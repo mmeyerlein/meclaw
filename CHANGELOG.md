@@ -11,7 +11,179 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-26
+
+### Added
+
+### Sealed-Box-Delivery: der Vault liefert aus, ohne etwas herzugeben (GH #421)
+
+`access` haelt ab jetzt alle Zugriffsschluessel, und die `.env` schrumpft in
+Richtung Vault-Passphrase. Die Auslieferung laeuft ueber normales Messaging und
+ist dabei **zwingend verschluesselt**: das `message_log` journalisiert jeden
+Body, also darf dort nie ein Klartext-Credential landen.
+
+- **`vault.deliver`** — die achte Operation. Der Empfaenger mintet **pro
+  Anfrage** ein ephemeres X25519-Paar und schickt den Public-Teil durch den
+  policy-gegateten Broker-Pfad; der Vault antwortet mit einer Sealed-Box
+  (X25519-Agreement, HMAC-SHA256 als KDF, XChaCha20-Poly1305 — dieselbe
+  Cipher-Familie wie at-rest). Der Vault mintet seine eigene ephemere Haelfte pro
+  Antwort: **einen Vault-Langzeit-Schluessel gibt es nicht**, und damit auch
+  nichts, womit man eine alte Box nachtraeglich oeffnen koennte.
+- **Die Box beweist nicht, wer sie versiegelt hat, und das ist Absicht.**
+  Authentizitaet ist die Topologie (der Vault beantwortet nur `params.broker`)
+  plus die Policy, die der Broker durchgesetzt hat. Eine Signatur ist spaeter
+  nachruestbar, ohne die Wire-Form zu brechen.
+- **Die Broker-Strasse ist wieder da** (`access@2.1.0`): zwei Kanten
+  `./invoke ↔ ./vault`, diesmal mit echtem Emitter — GH #307 hatte ein Paar
+  entfernt, das nichts befahren konnte. Ein Credential wird gespendet wie alles
+  andere: dieselben vier Grant-Pruefungen, dieselben Constraints, dieselben
+  `usage`/`grant_events`/`audit`-Zeilen. **Welches** Credential, steht im Grant
+  (`cred_ref`) — R-AC-2 auf den Vault angewandt. `avault` ist hive-INTERN; die
+  Box verlaesst den Hive auf der bestehenden `ack`-Lane, also aendert sich der
+  Lane-Contract der Hive nicht und `meclaw-os` muss nichts nachziehen.
+- **Die Attestation ist strenger** (`vault@1.1.0`): ein Vault, dessen Broker
+  nicht verdrahtet ist, bleibt verriegelt. Wenn die Topologie fuer die Signatur
+  einsteht, darf ihre Abwesenheit nicht attestieren.
+- **Erster Konsument: die `llm`-Zelle.** `params.credential_grant_id` (optional,
+  unveraenderlich) schaltet den Weg ein; der Credential lebt **nur im RAM**,
+  erreicht nie `cell.db` und ueberlebt keinen Schlaf. Ohne den Key verhaelt sich
+  die Zelle Byte fuer Byte wie vorher — `params.api_key` bleibt der Fallback,
+  eine Instanz stellt einzeln um. Neuer `error_code`: `credential_pending`.
+- **Gepinnt:** eine volle E2E-Runde (Anforderung, Auslieferung, Nutzung), deren
+  Beweis vom Mock-Provider selbst kommt (`Authorization: Bearer <secret>`),
+  danach `message_log` **und** das Blob-Verzeichnis nach dem Secret-Wert
+  durchsucht — plus ein Gegenbeweis-Test, der zeigt, dass diese Suche einen
+  Klartext auch wirklich faende.
+- **Deprecated:** `params.inject_map` (der Klartext-Push beim Unlock) — er legt
+  genau das ins `message_log`, was die Sealed-Delivery verhindert. Er bleibt
+  funktionsfaehig und entfaellt mit dem ersten Release, das Breaking Changes
+  buendelt (`docs/roadmap.md`).
+- **Neue Dependency:** `x25519-dalek` (sanktionierte Freigabe 2026-08-26, GH #421 D1). Sie ist die
+  einzige — AEAD, KDF und Zufallsquelle lagen schon im Baum.
+
+**Zwei Befunde, die dieser Strang gefunden und NICHT gefixt hat**, weil beide
+eine Entscheidung statt eines Patches sind: ein Vault innerhalb einer
+versiegelten Hive kann heute gar nicht entriegelt werden (GH #427 — der
+User-Channel ist eine Source-Message, und die erreicht keine hive-interne
+Zelle), und der `inject_map`-Push stirbt im Debug-Build als `InvalidUbfBody`
+in der Dead-Letter-Queue (GH #428).
+### Changed
+
+- **`talky/splitter` runs warm, `collector/assemble` runs resident**
+  ([#45](https://github.com/mmeyerlein/meclaw/issues/45),
+  [#420](https://github.com/mmeyerlein/meclaw/issues/420)). The splitter is a
+  small script called once per turn — pure interpreter start, so `warm`.
+  `assemble` is the first `resident` cell in the library: **exactly one** child,
+  strictly serial FIFO, `max_concurrency` forced to `1`. It was already serial
+  in effect (the `rows_affected == 1` guard against a double fire is that same
+  race closed at the store), and its `globals` namespace now survives the
+  message.
+
+  **The mode's price is paid, not assumed.** `resident` is the one mode that
+  does not rebuild the namespace, so a name left behind by message N is visible
+  to message N+1 — and `assemble` is a flat top-level script with ~50 names bound
+  only inside a branch. That is refuted rather than argued: the shipped script
+  runs the same twenty-message, lane-crossing stream twice, once with a fresh
+  namespace per message and once with a persistent one, and the emissions match
+  message for message
+  (`a_resident_assembler_answers_exactly_as_a_fresh_one_does`). The check has
+  teeth — an artificial leak injected into the same script makes it fail from
+  message 2 on. **RAM stays a cache of the durable store, never its truth.**
+
+- **`canvy/layout` runs on a warm runner**
+  ([#45](https://github.com/mmeyerlein/meclaw/issues/45)). `params.runner_mode:
+  "warm"`. The renderer is timer-driven and its cost is almost entirely
+  interpreter start, so it is the clearest case for the mode. It declares no
+  `max_concurrency`, so the pool takes the default of four — and since
+  [#429](https://github.com/mmeyerlein/meclaw/issues/429) a serial stream stays
+  on ONE of those children, so the default costs one interpreter rather than
+  four. Its sandbox is unchanged: a warm child gets exactly the profile a cold
+  one got (`trust: restricted`, `network: deny`, runtime filesystem). An
+  existing instance sees none of this until it is uplifted to `canvy@2.1.9`.
+
+- **`memory-hive/recall` runs on a warm runner**
+  ([#45](https://github.com/mmeyerlein/meclaw/issues/45)). `params.runner_mode:
+  "warm"` — the cell keeps one resident Python child, compiles its 156 kB script
+  once and executes the body per message in a **fresh `globals` namespace**. **A
+  warm runner changes latency, never semantics**: the namespace is rebuilt per
+  message, so nothing a run writes can reach the next one, and the answers are
+  the same bytes a cold run produced. Measured on the lane's own fixture, a
+  `code` hop falls from **23 ms p50 to under 1 ms** (debug build; every warm hop
+  of 2×199 floored to 0 ms). `recall` is also the script that crossed
+  `MAX_ARG_STRLEN` and forced the per-spawn temp file of
+  [#349](https://github.com/mmeyerlein/meclaw/issues/349) — on the warm path the
+  script travels on the child's first stdin line, so neither the limit nor the
+  temp file arises. An existing instance sees none of this until it is uplifted
+  to `memory-hive@3.0.3`.
+
+- **A tier-1 recall costs the store six messages, a turn costs the collector
+  three** ([#418](https://github.com/mmeyerlein/meclaw/issues/418),
+  [#419](https://github.com/mmeyerlein/meclaw/issues/419)). Both templates ran
+  the same protocol at every junction: fan out, park each answer as a row, ask
+  whether they had all landed, win a guarded update to be the one hop allowed
+  to carry on, read the rows back. That is four messages for a decision, and
+  the `store` makes it for free — it is a *stateful* cell, one task, one
+  connection, one message at a time, so a bundle's ops run in order and the
+  `select` at the end of one sees the `insert`s in front of it. Of two hops
+  parking concurrently, exactly one therefore reads a complete set. Measured on
+  a scenario colony's `message_log`: **47 → 6** store messages per tier-1
+  recall, chain wall time from two seconds to under one. `memory-hive@3.0.2`,
+  `collector@3.0.1`.
+
+  **Same answers, and that is the acceptance criterion, not a hope.** The free
+  scenario class writes a normalised snapshot of every bundle it is judged on
+  (`run_scenarios.py --dump-bundles`); the 69 files diff **byte-identical**
+  across the rebuild, at 37 green cases and 0 red. The round-trip budget itself
+  is a counted test
+  (`gh418_tier1_is_one_bundle_per_step.rs::a_tier1_recall_costs_six_store_messages`),
+  and the substrate property the whole thing stands on is pinned separately
+  (`gh418_a_bundle_sees_its_own_writes.rs`).
+
+  **Explicitly withdrawn, not silently true:** no tier-1 read path writes or
+  reads `recall_scratch.fired` any more, and the three guard rows (`qvec`,
+  `kw-ep`, `fused`) are gone with the three gates that used them. The
+  collector's `round.fired` column stays — the guarded update did *two* jobs,
+  and the second one (a leg that lands after the turn has left must not
+  assemble it twice) is still needed; it now travels beside the seam instead of
+  one hop in front of it. No lane, no `error_code`, no port and no bundle field
+  moved.
+
 ### Fixed
+
+- **A viewer never ends on a dropped frame**
+  ([#414](https://github.com/mmeyerlein/meclaw/issues/414)). A `web` cell's
+  fan-out `try_send`s each diff at each joined viewer and a full channel dropped
+  it and forgot — so a burst of editable writes could leave a browser rendering
+  an old state indefinitely while the database was already correct. The drop is
+  still the right call for the others (one slow viewer must not hold up the
+  rest), but it is now remembered: a marked viewer is offered its route's whole
+  packed tree instead of the next diff, and while anybody is marked a 50 ms
+  retry keeps offering it — so the last frame a viewer receives is always the
+  newest state, even when the dropped frame was the last of a burst.
+
+- **`canvy`: a cell can be handed back to the layout**
+  ([#415](https://github.com/mmeyerlein/meclaw/issues/415)). Being pinned used
+  to mean "has an `x`/`y`", which every box the layout ever drew has — so every
+  cell was pinned by construction and an accidental group drag could only be
+  undone by deleting the objects. The pin is now a marker of its own (`pinned`,
+  a declared editable prop): a drag sets it once, and the detail panel's
+  *release to the layout* clears it. A display older than the marker keeps its
+  arrangement — a node object without the key is read as pinned, which is what
+  the old reading said about all of them — and is given the new vocabulary in
+  the same bundle that first uses it. The 1.x position migration writes the
+  marker with the coordinates it replays. Ships as `canvy@2.1.8`.
+
+- **`canvy`: the overlap-free arrangement is a number, not an observation**
+  ([#416](https://github.com/mmeyerlein/meclaw/issues/416)). A committed,
+  wholly synthetic fixture — 59 cells over 19 hives, 28 of them arranged by the
+  same gesture the client performs — is now driven through the shipped layout on
+  every `cargo test`, and the non-nested hive-frame crossings are asserted. The
+  measured baseline on it is 5 crossings and 0 node overlaps: this arrangement
+  is pulled further apart than the colony the issue measured (where anchoring
+  and eviction reach 0), so the fixture is the sharper case. The flow redesign
+  the issue asks for (pinned clusters as occupied regions rather than a
+  correction afterwards) is registered in `docs/roadmap.md` with that number as
+  its trigger.
 
 - **A browser actually applies the `web` cell's live updates now**
   ([#413](https://github.com/mmeyerlein/meclaw/issues/413)). The broadcast

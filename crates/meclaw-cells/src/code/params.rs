@@ -16,6 +16,38 @@ pub enum Script {
     Inline(String),
 }
 
+/// Which runner a `code` cell uses. `cold` is the default and the pre-lane
+/// behaviour; the other two keep a Python child alive between messages.
+///
+/// The words are about the RUNNER, not about the Hot/Cold-Cell model in
+/// `docs/meclaw-overview.md` (which means awake/asleep and applies to stateful
+/// cells only). A `code` cell has no wake state at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunnerMode {
+    /// One fresh process per message. Default.
+    #[default]
+    Cold,
+    /// A pool of `max_concurrency` resident children. The script is compiled
+    /// once per child; every message runs the body in a FRESH globals dict, so
+    /// nothing can accumulate — warm is cold with the interpreter start removed.
+    Warm,
+    /// Exactly one child, strictly serial. The globals dict PERSISTS between
+    /// messages; RAM is a cache of the cell's durable store, never its truth.
+    Resident,
+}
+
+impl RunnerMode {
+    /// The wire spelling, for diagnostics and for `docs/cell-types.md`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RunnerMode::Cold => "cold",
+            RunnerMode::Warm => "warm",
+            RunnerMode::Resident => "resident",
+        }
+    }
+}
+
 /// Parsed `code` params.
 ///
 /// Phase 9: `runner` must be exactly `"python3"` (spec correction
@@ -36,6 +68,9 @@ pub struct CodeParams {
     /// Optional process sandbox for the script (S4, GH #35). `None` means the
     /// legacy unsandboxed behaviour: the script keeps the daemon's rights.
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
+    /// How long a runner process lives (R2). `cold` is the default and the
+    /// behaviour every `code` cell had before the modes existed.
+    pub runner_mode: RunnerMode,
 }
 
 impl CodeParams {
@@ -91,6 +126,25 @@ impl CodeParams {
         if max_concurrency == Some(0) {
             return Err("params.max_concurrency must be >= 1".into());
         }
+        let runner_mode = match obj.get("runner_mode").map(|v| v.as_str()) {
+            None => RunnerMode::Cold,
+            Some(Some("cold")) => RunnerMode::Cold,
+            Some(Some("warm")) => RunnerMode::Warm,
+            Some(Some("resident")) => RunnerMode::Resident,
+            Some(other) => {
+                let got =
+                    other.map_or_else(|| obj["runner_mode"].to_string(), |s| format!("{s:?}"));
+                return Err(format!(
+                    "params.runner_mode: one of \"cold\", \"warm\", \"resident\" (got {got})"
+                ));
+            }
+        };
+        // R2: resident is serial BY CONSTRUCTION, so a declaration that says
+        // otherwise is a contradiction, not a preference. Refused here, in the
+        // same place and the same shape as the `max_concurrency: 0` guard above.
+        if runner_mode == RunnerMode::Resident && matches!(max_concurrency, Some(n) if n != 1) {
+            return Err("params.max_concurrency must be 1 when runner_mode is \"resident\"".into());
+        }
         let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
         Ok(CodeParams {
             runner: runner.to_string(),
@@ -98,7 +152,21 @@ impl CodeParams {
             external_timeout_ms,
             max_concurrency,
             sandbox,
+            runner_mode,
         })
+    }
+
+    /// How many script executions may run at once — the value the factory hands
+    /// to the dispatcher's semaphore AND the pool's size.
+    ///
+    /// `resident` forces 1 even when nothing was declared: the mode's promise is
+    /// a single serial child, and a default of 4 would quietly break it.
+    #[must_use]
+    pub fn effective_max_concurrency(&self) -> usize {
+        match self.runner_mode {
+            RunnerMode::Resident => 1,
+            _ => self.max_concurrency.unwrap_or(4),
+        }
     }
 }
 
@@ -229,6 +297,71 @@ mod tests {
         assert_eq!(
             code_ms, web_fetch_ms,
             "refusal wording drifted from web_fetch"
+        );
+    }
+
+    #[test]
+    fn runner_mode_defaults_to_cold() {
+        let r = CodeParams::parse(&json!({"runner":"python3","script_inline":"pass"})).unwrap();
+        assert_eq!(
+            r.runner_mode,
+            RunnerMode::Cold,
+            "no declaration means the old path"
+        );
+        assert_eq!(
+            r.effective_max_concurrency(),
+            4,
+            "the pre-lane default stands"
+        );
+    }
+
+    #[test]
+    fn runner_mode_parses_warm_and_resident() {
+        let w = CodeParams::parse(
+            &json!({"runner":"python3","script_inline":"pass","runner_mode":"warm"}),
+        )
+        .unwrap();
+        assert_eq!(w.runner_mode, RunnerMode::Warm);
+        let r = CodeParams::parse(
+            &json!({"runner":"python3","script_inline":"pass","runner_mode":"resident"}),
+        )
+        .unwrap();
+        assert_eq!(r.runner_mode, RunnerMode::Resident);
+        assert_eq!(
+            r.effective_max_concurrency(),
+            1,
+            "resident is serial by construction"
+        );
+    }
+
+    #[test]
+    fn an_unknown_runner_mode_is_refused_loudly() {
+        let e = CodeParams::parse(
+            &json!({"runner":"python3","script_inline":"pass","runner_mode":"hot"}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            "params.runner_mode: one of \"cold\", \"warm\", \"resident\" (got \"hot\")"
+        );
+    }
+
+    #[test]
+    fn resident_refuses_a_max_concurrency_other_than_one() {
+        let e = CodeParams::parse(&json!({
+            "runner":"python3","script_inline":"pass","runner_mode":"resident","max_concurrency":2
+        }))
+        .unwrap_err();
+        assert_eq!(
+            e, "params.max_concurrency must be 1 when runner_mode is \"resident\"",
+            "a differing value is a spawn-time reject, like max_concurrency=0"
+        );
+        // The value that agrees with the mode is accepted, not merely tolerated.
+        assert!(
+            CodeParams::parse(&json!({
+                "runner":"python3","script_inline":"pass","runner_mode":"resident","max_concurrency":1
+            }))
+            .is_ok()
         );
     }
 }

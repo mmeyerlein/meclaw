@@ -202,24 +202,52 @@ print(render_candidate_line({
     );
 }
 
+/// The store call written under `marker` — from its own `"operation"` up to the
+/// next one in the script.
+///
+/// Both spellings a shipped script uses are covered: a bundle names the
+/// `tool_call_id` first and its args behind it (`("r-axis-page", {...})`), and a
+/// single-op `store_op({...}, "t1-temporal")` names the phase behind the args.
+/// So the search starts at the marker and, if the marker sits BEHIND the args,
+/// walks back to the `"operation"` that opened them.
+fn store_call<'a>(script: &'a str, marker: &str) -> &'a str {
+    let at = script
+        .find(marker)
+        .unwrap_or_else(|| panic!("no store call marked `{marker}`"));
+    let (head, tail) = script.split_at(at);
+    // A `tool_call_id` marker opens its call, so the args follow it; every other
+    // marker (a phase name behind `store_op(...)`) closes one, so the args are
+    // in front of it. The direction is read off the marker rather than guessed
+    // from distances: a guess picks the neighbouring call whenever two stand
+    // close together.
+    let start = if marker.starts_with("\"r-") {
+        at + tail
+            .find("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` opens no store call"))
+    } else {
+        head.rfind("\"operation\"")
+            .unwrap_or_else(|| panic!("`{marker}` closes no store call"))
+    };
+    let body = &script[start..];
+    match body[1..].find("\"operation\"") {
+        Some(n) => &body[..n + 1],
+        None => body,
+    }
+}
+
 #[test]
 fn every_select_behind_a_rendered_fact_carries_both_closure_columns() {
     // The marker reads what the store WROTE, so the columns have to travel:
     // the axis page feeds the projected candidate, the fact hydration feeds the
     // fallback candidate when the page carried no matching axis.
     let script = recall_script();
-    for anchor in [
-        "AXIS_LIMIT}, \"t1-hyd-axis\"",
-        "AXIS_LIMIT}, \"t1-temporal\"",
-        "}, \"t1-hyd-fact\"",
-    ] {
-        let start = script
-            .find(anchor)
-            .unwrap_or_else(|| panic!("no select at `{anchor}`"));
-        let head = &script[..start];
-        let select = &head[head
-            .rfind("\"operation\": \"select\"")
-            .unwrap_or_else(|| panic!("`{anchor}` is not fed by a select"))..];
+    // #418: a bundle spells the `tool_call_id` FIRST and its args behind it, so
+    // a call is found by its id and read forward. The window-mode temporal page
+    // shares its id with the point-mode one, so it is found by the predicate
+    // only IT carries -- what moved is where a select stands, not what it has to
+    // fetch.
+    for anchor in ["\"r-hyd-axis\"", "{\"lte\": window[1]}", "\"r-hyd-fact\""] {
+        let select = store_call(&script, anchor);
         for column in ["\"expired_at\"", "\"superseded_by\""] {
             assert!(
                 select.contains(column),

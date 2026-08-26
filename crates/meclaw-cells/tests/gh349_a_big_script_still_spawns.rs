@@ -25,7 +25,7 @@
 //!    needs no filesystem declaration of its own, and a materialised script
 //!    must not quietly break that promise.
 
-use meclaw_cells::code::{CodeCell, CodeParams, Script};
+use meclaw_cells::code::{CodeCell, CodeParams, RunnerMode, Script};
 use meclaw_cells::sandbox::SandboxProfile;
 use meclaw_colony::StatelessCell;
 use meclaw_core::serde_json::json;
@@ -90,6 +90,7 @@ fn params_for(script: String, sandbox: Option<SandboxProfile>) -> CodeParams {
         external_timeout_ms: Some(30_000),
         max_concurrency: None,
         sandbox,
+        runner_mode: RunnerMode::Cold,
     }
 }
 

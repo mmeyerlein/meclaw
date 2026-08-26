@@ -35,7 +35,7 @@
 //! spawned and resolved BEFORE any probe goes out. The sink receipt is the proof
 //! (positive signal: a message arrives ⟺ the emission passed the contract).
 
-use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::code::{CodeCellFactory, RunnerMode};
 use meclaw_colony::{CellFactory, ColonyMsg, MutationOutcome};
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
@@ -353,6 +353,7 @@ fn direct_code_cell(
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     };
     meclaw_cells::code::CodeCell::new(params, false, Some(compiled), validate)
 }

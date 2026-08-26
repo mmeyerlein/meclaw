@@ -277,9 +277,19 @@ fn both_tier1_legs_are_fanned_out_on_the_clean_query() {
     let ops = out.as_array().expect("a fan-out");
     let mut seen_match = 0;
     let mut seen_embed = 0;
-    for op in ops {
-        let text = op["messages"][0]["text"].as_str().unwrap();
-        let args: serde_json::Value = serde_json::from_str(text).unwrap();
+    // #418: the tier-1 fan is ONE message carrying N calls, and the embed ask is
+    // a second message beside it. So every CALL of every message is walked here,
+    // not every message -- what the guard has to hold is which text reaches the
+    // matcher, not how many envelopes carry it.
+    for op in ops.iter().flat_map(|m| {
+        m["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| serde_json::from_str::<serde_json::Value>(t["text"].as_str()?).ok())
+    }) {
+        let args = op;
         if let Some(m) = args["match"].as_str() {
             seen_match += 1;
             assert_eq!(

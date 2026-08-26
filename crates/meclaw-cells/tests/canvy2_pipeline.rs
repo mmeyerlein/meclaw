@@ -537,7 +537,11 @@ fn an_empty_display_is_bootstrapped_by_the_same_pass() {
         .iter()
         .find(|c| c["name"] == "canvy-node")
         .expect("canvy-node");
-    assert_eq!(node["editable"], json!(["x", "y"]));
+    // Three since GH #415: `pinned` is what says a HAND placed a box, and
+    // without it a coordinate had to mean both "where it is drawn" and "who put
+    // it there" — which made every box the layout ever drew pinned, with no way
+    // back.
+    assert_eq!(node["editable"], json!(["x", "y", "pinned"]));
 
     // Components, then the root, then the page: one bundle applied in call
     // order, so a fresh display and a running one take the same path.
@@ -764,6 +768,9 @@ fn a_position_the_display_already_holds_is_left_alone() {
         if o["id"] == "n/a/one" {
             o["props"]["x"] = json!(4321);
             o["props"]["y"] = json!(1234);
+            // A drag marks the box as hand-placed; the coordinate alone no
+            // longer says it (GH #415).
+            o["props"]["pinned"] = json!("1");
         }
     }
 
@@ -1318,7 +1325,16 @@ async fn a_drag_survives_the_next_tick() {
     .expect("join");
     let _ = ws.next().await.expect("open").expect("frame");
 
-    for (i, (prop, value)) in [("x", 4321), ("y", 1234)].into_iter().enumerate() {
+    // Three events, not two: since GH #415 a drag on an unpinned box also writes
+    // the marker that says a hand placed it.
+    for (i, (prop, value)) in [
+        ("x", json!(4321)),
+        ("y", json!(1234)),
+        ("pinned", json!("1")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         ws.send(WsMessage::Text(
             json!(["1", format!("{}", 9 + i), topic, "event",
                    {"event": "object:set",
@@ -1399,4 +1415,468 @@ async fn a_drag_survives_the_next_tick() {
     }
 
     live.join.abort();
+}
+
+/// The pin marker is the record, not the coordinate (GH #415).
+///
+/// Every node object carries `x`/`y` — they are how the box is drawn — so
+/// reading them as "a hand put this here" meant every cell the layout had ever
+/// placed was pinned to whatever spot the flow happened to give it, with no way
+/// back. Three cases, and they are the whole semantics:
+///
+///   `pinned` truthy    kept where it is
+///   `pinned` empty     handed back to the flow
+///   no `pinned` key    LEGACY: kept, because that is what the old reading said
+///                      about every cell on a display built before the marker
+#[test]
+fn only_a_marked_position_is_kept() {
+    let Some(root) = shipped_canvy() else { return };
+    let ask = ask_pass(&root, fixture_graph());
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+    let boot = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let mut objects = objects_from(&calls_of(&boot[0]));
+    for o in objects.iter_mut() {
+        match o["id"].as_str().unwrap_or("") {
+            "n/a/one" => {
+                o["props"]["x"] = json!(4321);
+                o["props"]["y"] = json!(1234);
+                o["props"]["pinned"] = json!("1");
+            }
+            "n/a/two" => {
+                o["props"]["x"] = json!(5555);
+                o["props"]["y"] = json!(5555);
+                o["props"]["pinned"] = json!("");
+            }
+            // Legacy: the key is absent entirely.
+            "n/b/three" => {
+                o["props"]["x"] = json!(6789);
+                o["props"]["y"] = json!(9876);
+                o["props"].as_object_mut().unwrap().remove("pinned");
+            }
+            _ => {}
+        }
+    }
+
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_answer(&objects),
+            json!({ "operation": "query" }),
+            layout_context(&hop),
+        ),
+    );
+    let calls = calls_of(&out[0]);
+    let moved = |id: &str| -> Option<Value> {
+        calls
+            .iter()
+            .find(|c| c["id"] == json!(id))
+            .map(|c| c["props"].clone())
+    };
+
+    assert!(
+        moved("n/a/one").is_none_or(|p| p["x"] == json!(4321)),
+        "a marked cell stays where the hand put it: {calls:#?}"
+    );
+    let released = moved("n/a/two").expect("an unmarked cell is laid out again");
+    assert_ne!(
+        released["x"],
+        json!(5555),
+        "a cell whose marker was cleared goes back to the flow: {released}"
+    );
+    assert!(
+        moved("n/b/three").is_none_or(|p| p["x"] == json!(6789)),
+        "a display that predates the marker keeps its arrangement: {calls:#?}"
+    );
+}
+
+/// The marker is a DECLARED, editable prop — the display checks writability
+/// against the component, never against the message, so an un-pin gesture that
+/// the component did not open would be refused `not_editable` (GH #415).
+#[test]
+fn a_node_declares_the_pin_marker_and_opens_it_to_a_browser() {
+    let Some(root) = shipped_canvy() else { return };
+    let ask = ask_pass(&root, fixture_graph());
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+    let boot = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let calls = calls_of(&boot[0]);
+
+    let node = calls
+        .iter()
+        .find(|c| c["op"] == "component.define" && c["name"] == "canvy-node")
+        .expect("the node component is defined at bootstrap");
+    assert_eq!(
+        node["prop_schema"]["pinned"],
+        json!("text"),
+        "the marker is declared: {node}"
+    );
+    assert_eq!(
+        node["editable"],
+        json!(["x", "y", "pinned"]),
+        "and opened to a browser, or an un-pin cannot be sent at all: {node}"
+    );
+    assert!(
+        node["template"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("data-pinned=\"{{pinned}}\""),
+        "the markup carries the marker, so the client can see what is pinned: {node}"
+    );
+
+    // A fresh colony has nothing hand-placed: every box says so explicitly.
+    for c in calls
+        .iter()
+        .filter(|c| c["op"] == "object.create" && c["component"] == json!("canvy-node"))
+    {
+        assert_eq!(
+            c["props"]["pinned"],
+            json!(""),
+            "a box the layout placed is not pinned: {c}"
+        );
+    }
+}
+
+/// A display built before the marker existed gets the new vocabulary in the
+/// same bundle that first uses it (GH #415).
+///
+/// The components are defined at bootstrap only, and the display refuses a prop
+/// its component does not declare — so a patch that started carrying `pinned`
+/// against an old schema would be refused per object and the picture would
+/// freeze. Redefining is an upsert, so this costs one bundle, once.
+#[test]
+fn a_display_that_predates_the_marker_is_given_the_new_vocabulary() {
+    let Some(root) = shipped_canvy() else { return };
+    let ask = ask_pass(&root, fixture_graph());
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+    let boot = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let mut objects = objects_from(&calls_of(&boot[0]));
+    // The old world: node objects with coordinates and no marker at all.
+    for o in objects.iter_mut() {
+        if o["id"].as_str().unwrap_or("").starts_with("n/") {
+            o["props"].as_object_mut().unwrap().remove("pinned");
+        }
+    }
+
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_answer(&objects),
+            json!({ "operation": "query" }),
+            layout_context(&hop),
+        ),
+    );
+    let calls = calls_of(&out[0]);
+    let defines: Vec<&Value> = calls
+        .iter()
+        .filter(|c| c["op"] == "component.define")
+        .collect();
+    assert_eq!(
+        defines.len(),
+        4,
+        "the whole vocabulary is redefined, not only the one component that \
+         changed — the four travel together: {calls:#?}"
+    );
+    assert_eq!(
+        calls[0]["op"],
+        json!("component.define"),
+        "and BEFORE the objects that use it, or the bundle refuses itself"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c["id"] == json!("n/a/one") && c["props"]["pinned"] == json!("1")),
+        "every cell of the old display was pinned in the old reading, and the \
+         marker says so now: {calls:#?}"
+    );
+
+    // Second round: every node carries the key, so the question is answered.
+    let mut settled = objects_from(&calls_of(&boot[0]));
+    for o in settled.iter_mut() {
+        if o["id"].as_str().unwrap_or("").starts_with("n/") {
+            o["props"]["pinned"] = json!("1");
+        }
+    }
+    let again = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_answer(&settled),
+            json!({ "operation": "query" }),
+            layout_context(&hop),
+        ),
+    );
+    let again_calls: Vec<Value> = again.first().map(calls_of).unwrap_or_default();
+    assert!(
+        !again_calls.iter().any(|c| c["op"] == "component.define"),
+        "the vocabulary is not redefined every tick: {again_calls:#?}"
+    );
+}
+
+// ────────────────────────────────────────── GH #416: an arranged colony
+
+/// The committed arrangement, or `None` where the fixture does not ship.
+fn arranged_fixture() -> Option<Value> {
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/canvy_arranged_colony.json");
+    p.exists().then(|| read_json(&p))
+}
+
+/// The `/colony/graph` answer the fixture describes.
+fn fixture_graph_doc(fx: &Value) -> Value {
+    json!({
+        "scope": fx["scope"],
+        "nodes": fx["nodes"].as_array().expect("nodes").iter()
+            .map(|n| json!({"path": n[0], "cell_type": n[1]}))
+            .collect::<Vec<_>>(),
+        "edges": fx["edges"].as_array().expect("edges").iter()
+            .map(|e| json!({"id": e[0], "from": e[1], "to": e[2]}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// The display as an arranged person left it: the shipped bootstrap bundle with
+/// the fixture's hand-placed coordinates written over it, marked as pinned.
+///
+/// Built through the shipped code rather than stored whole, so the fixture stays
+/// small and cannot drift away from the component set it is drawn with.
+fn arranged_objects(root: &std::path::Path, fx: &Value) -> (Vec<Value>, String) {
+    let ask = ask_pass(root, fixture_graph_doc(fx));
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+    let boot = run_shipped(
+        root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let mut objects = objects_from(&calls_of(&boot[0]));
+    let pinned = fx["pinned"].as_object().expect("pinned");
+    for o in objects.iter_mut() {
+        let Some(xy) = o["id"].as_str().and_then(|id| pinned.get(id)) else {
+            continue;
+        };
+        o["props"]["x"] = xy[0].clone();
+        o["props"]["y"] = xy[1].clone();
+        o["props"]["pinned"] = json!("1");
+    }
+    (objects, hop)
+}
+
+/// The fixture is an ARRANGEMENT and not merely a second copy of the flow.
+///
+/// Without this the zero in the next test would be free: a picture nobody moved
+/// does not overlap, because the flow itself does not. So the property is stated
+/// and measured — most of the pinned cells sit a long way from where the flow
+/// would have put them.
+#[test]
+fn the_fixture_is_an_arranged_colony() {
+    let Some(root) = shipped_canvy() else { return };
+    let Some(fx) = arranged_fixture() else { return };
+    assert_eq!(fx["nodes"].as_array().map(Vec::len), Some(59));
+    assert_eq!(fx["edges"].as_array().map(Vec::len), Some(58));
+    let pinned = fx["pinned"].as_object().expect("pinned");
+    assert_eq!(pinned.len(), 28, "28 of 59 boxes were placed by hand");
+
+    let ask = ask_pass(&root, fixture_graph_doc(&fx));
+    let hop = ask["header"]["canvy_graph"].as_str().unwrap().to_string();
+    let boot = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_refusal(),
+            json!({ "operation": "query", "error_code": "invalid_input" }),
+            layout_context(&hop),
+        ),
+    );
+    let flow: Vec<Value> = objects_from(&calls_of(&boot[0]));
+    let far = flow
+        .iter()
+        .filter(|o| {
+            let Some(xy) = o["id"].as_str().and_then(|id| pinned.get(id)) else {
+                return false;
+            };
+            let dx = (xy[0].as_i64().unwrap_or(0) - o["props"]["x"].as_i64().unwrap_or(0)).abs();
+            let dy = (xy[1].as_i64().unwrap_or(0) - o["props"]["y"].as_i64().unwrap_or(0)).abs();
+            dx >= 200 || dy >= 200
+        })
+        .count();
+    assert!(
+        far >= 20,
+        "the fixture has to be a HAND's picture, not the flow's: only {far} of \
+         {} pinned boxes sit more than 200px from their computed spot",
+        pinned.len()
+    );
+}
+
+/// Fold a patch bundle into the object set it describes.
+///
+/// `object.update` merges per key, exactly as the `web` cell does; a delete
+/// removes; a create appends. Enough to read the picture a tick produced without
+/// standing a display up for it.
+fn apply_calls(objects: &mut Vec<Value>, calls: &[Value]) {
+    for c in calls {
+        let id = c["id"].as_str().unwrap_or_default().to_string();
+        match c["op"].as_str().unwrap_or_default() {
+            "object.create" => objects.push(json!({
+                "id": id,
+                "parent": c.get("parent").cloned().unwrap_or(Value::Null),
+                "component": c["component"],
+                "ord": c.get("ord").cloned().unwrap_or(json!(0)),
+                "props": c["props"],
+            })),
+            "object.update" => {
+                if let Some(o) = objects.iter_mut().find(|o| o["id"] == json!(id))
+                    && let (Some(dst), Some(src)) =
+                        (o["props"].as_object_mut(), c["props"].as_object())
+                {
+                    for (k, v) in src {
+                        dst.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            "object.delete" => objects.retain(|o| o["id"] != json!(id)),
+            _ => {}
+        }
+    }
+}
+
+/// The rectangles of one component class, as `(name, (x, y, w, h))`.
+///
+/// For a hive the name is its PATH, because nesting is decided on it; for a node
+/// the object id is enough.
+fn boxes_of(objects: &[Value], component: &str) -> Vec<(String, (i64, i64, i64, i64))> {
+    let mut out = Vec::new();
+    for o in objects
+        .iter()
+        .filter(|o| o["component"] == json!(component))
+    {
+        let p = &o["props"];
+        let (Some(x), Some(y), Some(w), Some(h)) = (
+            p["x"].as_i64(),
+            p["y"].as_i64(),
+            p["w"].as_i64(),
+            p["h"].as_i64(),
+        ) else {
+            continue;
+        };
+        let name = p["path"]
+            .as_str()
+            .unwrap_or_else(|| o["id"].as_str().unwrap_or_default())
+            .to_string();
+        out.push((name, (x, y, w, h)));
+    }
+    out.sort();
+    out
+}
+
+fn hits(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// Whether one hive path contains the other. A parent's frame is SUPPOSED to
+/// hold its child's — that is the nesting inset, not an overlap.
+fn nested(a: &str, b: &str) -> bool {
+    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+}
+
+/// The property GH #416 is about, as a number: on an arranged colony the hive
+/// frames do not interleave.
+///
+/// The defect was that `flow_layout` computed the whole picture as if nothing
+/// were pinned and `auto_layout` then overwrote the pinned cells — two
+/// coordinate systems on one canvas, and a hive's frame is the bounding box of
+/// its members in whichever system they ended up in. Measured on a real 59-cell
+/// colony: 41 non-nested frame crossings. ANCHORING and EVICTION brought that to
+/// zero; this is where the zero is kept.
+#[test]
+fn an_arranged_colony_renders_without_overlaps() {
+    let Some(root) = shipped_canvy() else { return };
+    let Some(fx) = arranged_fixture() else { return };
+    let (mut objects, hop) = arranged_objects(&root, &fx);
+
+    let out = run_shipped(
+        &root,
+        "layout",
+        stdin_doc(
+            query_answer(&objects),
+            json!({ "operation": "query" }),
+            layout_context(&hop),
+        ),
+    );
+    if let Some(patch) = out.first() {
+        apply_calls(&mut objects, &calls_of(patch));
+    }
+
+    let frames = boxes_of(&objects, "canvy-hive");
+    assert!(
+        frames.len() >= 19,
+        "every hive draws a frame: {}",
+        frames.len()
+    );
+    let mut crossing: Vec<String> = Vec::new();
+    for i in 0..frames.len() {
+        for j in (i + 1)..frames.len() {
+            let (a, ra) = &frames[i];
+            let (b, rb) = &frames[j];
+            if !nested(a, b) && hits(*ra, *rb) {
+                crossing.push(format!("{a} x {b}"));
+            }
+        }
+    }
+    // Measured baseline on this fixture (GH #416, Lane 7): the anchoring +
+    // eviction correction leaves 5 crossings on an arrangement pulled this far
+    // apart (`farm`/`farm/jobs` against `lab` and two of its children). It is 0
+    // on the colony the issue measured; this fixture is the sharper case, and
+    // the number is what the redesign has to beat.
+    assert!(
+        crossing.len() <= 5,
+        "regression: {} crossings, baseline 5:\n{}",
+        crossing.len(),
+        crossing.join("\n")
+    );
+
+    let nodes = boxes_of(&objects, "canvy-node");
+    assert_eq!(nodes.len(), 59);
+    let mut stacked: Vec<String> = Vec::new();
+    for i in 0..nodes.len() {
+        for j in (i + 1)..nodes.len() {
+            if hits(nodes[i].1, nodes[j].1) {
+                stacked.push(format!("{} x {}", nodes[i].0, nodes[j].0));
+            }
+        }
+    }
+    assert!(
+        stacked.is_empty(),
+        "{} boxes sit on top of each other — in an overlap the topmost one eats \
+         the pointer, so grabbing 'the node I see' moves a different one:\n{}",
+        stacked.len(),
+        stacked.join("\n")
+    );
 }

@@ -1,4 +1,4 @@
-# `vault@1.0.1`
+# `vault@1.1.0`
 
 A secret store with **no operation that returns a secret**.
 
@@ -25,16 +25,18 @@ The `vault` cell type has no read. Its route surface is:
 | `revoke` | user channel, broker | how many versions were revoked |
 | `status` | user channel, broker | names, versions, key fingerprint |
 | `unlock` / `lock` | the user channel only | locked true/false |
+| `deliver` | the broker only | the secret, SEALED to a key only the requester holds |
 
-There is no eighth row. `get` is refused the same way `frobnicate` is — as an
-unknown op — because the absence is structural, not a special case somebody
-could argue away later.
+There are eight rows, and the eighth hands out nothing in the clear. `get` is
+still refused the same way `frobnicate` is — as an unknown op — because the
+absence of a READ is structural, not a special case somebody could argue away
+later. `deliver` is not `get` with a coat on: what comes back is a ciphertext
+whose key lives in exactly one task's memory and dies with it.
 
 `use` v1 signs: HMAC-SHA256 over a caller-supplied payload. That is the
 ssh-agent shape deliberately — the secret does work and stays home. The one
 case that genuinely needs the value itself, a connector authenticating to a
-platform, is served by injection at unlock (below) rather than by an operation,
-so no request can ever ask for one.
+platform, is served by `deliver` (see *Sealed delivery* below).
 
 ## The two callers
 
@@ -69,15 +71,98 @@ lane, and the **vault** does the one thing only it can do — check who is
 talking — and records the `grant_id` it was handed. The ACL is on the vault
 side; the lookup belongs to the broker.
 
-## Injection at unlock — the one way a secret leaves
+## Sealed delivery
+
+`deliver` answers with a **sealed box**: the secret encrypted to a key that
+only the requester ever held. The broker forwards it, the message log records
+it, and neither can read it.
+
+```text
+recipient, once per request
+  e_sk, e_pk := X25519 keygen        # a fresh pair for this one request
+  ask the broker:
+    {"op": "deliver", "name": ..., "grant_id": ...,
+     "recipient_key": hex(e_pk)}     # only the public half travels
+
+vault, once per response
+  r_sk, r_pk := X25519 keygen        # the vault's own ephemeral half
+  shared     := X25519(r_sk, e_pk)
+  box_key    := HMAC-SHA256(key: "meclaw-sealed-box-v1",
+                            msg: shared || e_pk || r_pk)
+  nonce      := 24 random bytes
+  ct         := XChaCha20-Poly1305(box_key, nonce, secret)
+  answer     := {"epk": hex(r_pk), "nonce": hex(nonce),
+                 "ciphertext": hex(ct)}
+  r_sk is dropped here               # nothing is kept that could reopen it
+
+recipient
+  shared  := X25519(e_sk, r_pk)      # the same shared value, from the other side
+  box_key := HMAC-SHA256(same label, same transcript)
+  secret  := open(box_key, nonce, ct)
+  e_sk dies with the task that minted it
+```
+
+**No long-term vault key.** The vault mints its half per answer and forgets it.
+There is no key material anywhere that could open yesterday's box, so a stolen
+disk, a subpoenaed message log and a captured broker all buy the same thing:
+ciphertext. Forward secrecy is not a feature here, it is what is left when you
+refuse to keep a key.
+
+**The box proves nothing about who sealed it.** That is deliberate, not an
+oversight. Authenticity is carried by the topology — only the path in
+`params.broker` is ever answered — plus the policy the broker enforced before
+the request reached the vault. Putting a second, weaker answer to the same
+question inside the crypto would invite callers to trust the weaker one.
+
+**Both public keys are in the transcript.** The key agreement alone fixes the
+peers but not the context: the same shared value could be reached under some
+other protocol that happens to reuse one of the halves. Binding `e_pk` and
+`r_pk` into the derivation means a box is only openable as *this* protocol's
+box, and cross-protocol recycling of a key produces garbage rather than a
+plaintext.
+
+**HMAC, not HKDF.** The output needed is exactly 32 bytes — one
+XChaCha20-Poly1305 key. HKDF's expand step exists to stretch a PRK to arbitrary
+length, and at exactly one block it does nothing but add a construction to
+explain. The extract step is an HMAC. So this is the extract step, named
+honestly.
+
+A request and its answer:
+
+```json
+{"op": "deliver", "name": "telegram_token",
+ "grant_id": "g-7f3a...",
+ "recipient_key": "3b6a...c1"}
+```
+
+```json
+{"name": "telegram_token", "version": 3, "grant_id": "g-7f3a...",
+ "sealed": {"epk": "9d21...4e", "nonce": "5c0f...a7",
+            "ciphertext": "e18b...2d"}}
+```
+
+Only the broker may call it — a delivery is a **spend**, and the user channel
+that deposits secrets has no business drawing them back out. A locked vault
+answers `vault_locked`; a name that was never deposited or has been revoked
+answers `unknown_secret`; a missing or malformed `recipient_key` (anything that
+is not 64 hex characters of X25519 public key) answers `invalid_input`. No new
+`error_code` was added — the documented list stays closed. Every delivery and
+every refusal is written to `vault_audit`.
+
+## Injection at unlock (deprecated)
+
+**Deprecated since GH #421.** This path pushes the secret to the connector as a
+message body, which means it travels through the `message_log` — precisely the
+exposure sealed delivery exists to remove. It is not being removed now, because
+removing it would break running colonies; it logs a warning and will disappear
+with the first release that bundles breaking changes. Use `deliver` instead.
 
 `use` signs and returns a signature. That covers everything a vault can do
 *without* the secret going anywhere. But a connector that has to authenticate to
 Telegram needs the token itself, and pretending otherwise would make the vault
 decorative.
 
-So there is exactly one path out, and it is shaped so that no message can steer
-it:
+So this path was shaped so that no message could steer it:
 
 ```json
 "inject_map": {"telegram_token": {"to": "./connector", "key": "bot_token"}}
@@ -108,6 +193,15 @@ one of five credentials is missing is a vault nobody can commission.
 Before it accepts key material, the vault verifies its own inbound edges against
 `params.broker` plus `params.sealed_neighbors`. If anything else is wired to it,
 it stays **locked** and says which path it found.
+
+The check is also strict about what must be *present*. A vault whose broker edge
+is missing does **not** attest — it stays locked and reports
+`broker_unwired: <path>` (still under `error_code: "attestation_failed"`; no new
+code). Earlier versions let a vault with no inbound edges at all attest, on the
+grounds that nothing suspicious was wired to it. That was backwards: if the
+topology is what stands in for a signature — and with sealed delivery it
+explicitly is — then the absence of that topology cannot be allowed to attest.
+An unwired vault is an unverifiable one.
 
 This closes a specific hole. The hive-port boundary is enforced on *mutations*,
 and the birth topology is deliberately exempt (author sovereignty). A `code` cell
@@ -162,7 +256,7 @@ access/
   store/     store
 ```
 
-`access@2.0.5` ships with exactly this (`access@1` did too -- the property has been
+`access@2.1.0` ships with exactly this (`access@1` did too -- the property has been
 true of every version): the vault is an interior cell of the hive
 and deliberately **not** one of its ports, so the generic boundary refuses any
 edge into it from outside the scope. Its `params.inject_map` is empty on a fresh
@@ -194,6 +288,12 @@ hive uses (`crates/meclaw-colony/src/mutation/port_boundary.rs`).
   dangerous claim.
 - **The key while unlocked** is zeroed on drop, which closes the freed-page
   window and not the live-memory one. Labelled rather than advertised.
+- **A sealed box does not prove who sealed it.** It proves only that whoever
+  did held the requester's public key. Who that was is carried by the topology
+  (`params.broker` is the only path answered) and by the policy the broker
+  enforced — not by the ciphertext. A signature can be added later as a fourth
+  field alongside `epk`, `nonce` and `ciphertext`, without breaking the wire
+  form.
 
 ## Storage
 

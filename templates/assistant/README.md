@@ -36,7 +36,7 @@ is now two nodes side by side, paired by edges:
 ```
 
 `telegram-connector@2.0.0` is **one cell** — it has no hive around it any more,
-and it is addressed as the cell it is. `talky@4.2.1` is a sealed hive and is
+and it is addressed as the cell it is. `talky@4.2.2` is a sealed hive and is
 addressed by path and lane. What binds them is one edge (`<talky> → <connector>`
 on `answer`), not a shared directory.
 
@@ -108,13 +108,13 @@ Thirteen, all at the assistant's own path. The level is **open**: it declares no
 
 Two pairings are declared in `params.required_drains`, both in the **lane** form:
 `in_turn → error` (from the retired channel hive) and `in_prune → prune` (from
-`talky@4.2.1`). A parent that sends turns in and does not take the failures back
+`talky@4.2.2`). A parent that sends turns in and does not take the failures back
 has built a generation whose every failure is a dead letter.
 
 ### Where the lanes come from
 
 *A level declares the union of the lanes its occupants ship, minus the lanes a
-sibling inside the level consumes itself.* Derived from `talky@4.2.1` and
+sibling inside the level consumes itself.* Derived from `talky@4.2.2` and
 `telegram-connector@2.0.0` in the container, `cogny@4.0.3` and `tools@1.0.0`
 beside it. Four subtractions, every one of them a lane an occupant really ships:
 
@@ -126,7 +126,7 @@ beside it. Four subtractions, every one of them a lane an occupant really ships:
   inside.
 - **`in_tool`** — supplied by `./tools`, never from outside.
 
-`in_memory_call` and `in_thread_call` are declared by `talky@4.2.1` and are
+`in_memory_call` and `in_thread_call` are declared by `talky@4.2.2` and are
 deliberately **not** declared here: no occupant outside this level produces them,
 and a declared lane with no door is `hive_contract` at the next mutation the
 colony runs. GH #55 serves them inside the talky.
@@ -237,7 +237,7 @@ writing `"to": "."` is refused with `edge_schema` — `.` names no node.
 {"scope": "<assistant>", "ctx": {"model": "<the brain's model>"}, "diff": {
   "add_nodes": [
     {"name": "channels/tg",    "template": "telegram-connector@2.0.0"},
-    {"name": "channels/talky", "template": "talky@4.2.1"}
+    {"name": "channels/talky", "template": "talky@4.2.2"}
   ],
   "add_edges": [
     {"from": "./channels/tg", "to": "./channels",

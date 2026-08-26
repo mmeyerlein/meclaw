@@ -1,10 +1,15 @@
 //! The vault cell — the route surface with no read on it.
 //!
-//! Seven operations: `status`, `unlock`, `lock`, `put`, `rotate`, `revoke`,
-//! `use`. There is no eighth one that returns a secret, and that is the entire
-//! security claim of this cell type. Everything else here — the sender ACL, the
-//! unlock attestation, the audit trail — protects that claim; none of it
-//! *creates* it.
+//! Eight operations: `status`, `unlock`, `lock`, `put`, `rotate`, `revoke`,
+//! `use`, `deliver`. There is none that returns a secret IN THE CLEAR, and that
+//! is the entire security claim of this cell type. Everything else here — the
+//! sender ACL, the unlock attestation, the audit trail — protects that claim;
+//! none of it *creates* it.
+//!
+//! `deliver` (GH #421, ruling R3) is the sanctioned eighth: its answer carries
+//! the credential as a sealed box addressed to an ephemeral key the requester
+//! minted for that one call. It is not a `get` with a coat on — what lands in
+//! the message log is a ciphertext, and the key for it lives in one task's RAM.
 //!
 //! Two callers exist, and they can do different things:
 //!
@@ -13,7 +18,8 @@
 //!   one, because the colony stamps `reply_to` on everything a cell emits. This
 //!   is the only way a secret gets *in*.
 //! - **The broker** — the one path named in `params.broker`. It may ask the
-//!   vault to *use* a secret. The grant lookup is the broker's job, not the
+//!   vault to *use* a secret, or to *deliver* one sealed. The grant lookup is
+//!   the broker's job, not the
 //!   vault's: a cell cannot query another cell within one `handle()`, so the
 //!   vault does what it alone can do — check who is talking — and requires the
 //!   broker to carry the grant it validated.
@@ -32,7 +38,9 @@ use meclaw_core::{Body, CellOutput, Message, OutputSink, Path};
 
 /// The operations a vault answers. Written out as a list so that the absence
 /// of `get` is a visible property of the source, not an accident of dispatch.
-const OPS: &[&str] = &["status", "unlock", "lock", "put", "rotate", "revoke", "use"];
+const OPS: &[&str] = &[
+    "status", "unlock", "lock", "put", "rotate", "revoke", "use", "deliver",
+];
 
 /// The `vault` cell: an encrypted store plus an executor, and no way out for
 /// what it holds.
@@ -130,7 +138,7 @@ impl Caller {
                 op,
                 "status" | "unlock" | "lock" | "put" | "rotate" | "revoke"
             ),
-            Self::Broker => matches!(op, "status" | "use" | "revoke"),
+            Self::Broker => matches!(op, "status" | "use" | "revoke" | "deliver"),
             Self::Foreign(_) => false,
         }
     }
@@ -334,6 +342,7 @@ impl StatefulCell for VaultCell {
                 "put" | "rotate" => self.op_put(db, &args).await,
                 "revoke" => self.op_revoke(db, &args).await,
                 "use" => self.op_use(db, &args).await,
+                "deliver" => self.op_deliver(db, &args).await,
                 _ => unreachable!("op list checked above"),
             };
 
@@ -434,7 +443,11 @@ impl VaultCell {
                     Ok(paths) => {
                         let inbound: Vec<String> =
                             paths.iter().map(|p| p.as_str().to_string()).collect();
-                        attest::attest_neighbours(&inbound, &expected)
+                        attest::attest_neighbours(
+                            &inbound,
+                            &expected,
+                            &self.params.broker_path(vault_path.as_str()),
+                        )
                     }
                     Err(e) => Attestation::Unverifiable(e.to_string()),
                 }
@@ -518,6 +531,14 @@ impl VaultCell {
         let plan = self.params.injections(vault_path.as_str());
         let mut delivered = Vec::new();
         for injection in plan {
+            tracing::warn!(
+                secret = injection.name.as_str(),
+                target = injection.to.as_str(),
+                "vault: params.inject_map is DEPRECATED (GH #421) — this delivery puts a \
+                 plaintext credential into the message log. Use the sealed delivery through \
+                 the broker instead; this path goes away with the next release that bundles \
+                 breaking changes"
+            );
             let n = injection.name.clone();
             let sealed = match db.call(move |c| store::active(c, &n)).await? {
                 Some(s) => s,
@@ -638,6 +659,56 @@ impl VaultCell {
             "signature": crypto::hex(&tag),
         }))
     }
+
+    /// `deliver` — hand a credential out SEALED, never in the clear (R3).
+    ///
+    /// The one operation whose answer contains the secret, and it contains it
+    /// under a key only the requester holds: the recipient minted an ephemeral
+    /// X25519 pair for this one request and sent the public half through the
+    /// broker, the vault seals against it and mints its own ephemeral half for
+    /// the box. Nothing here is a long-lived key, and nothing here proves who
+    /// sealed — authenticity is the topology (only `params.broker` is answered)
+    /// plus the policy the broker enforced before the message arrived.
+    ///
+    /// Why this is not a `get` in disguise: a `get` would put the value into a
+    /// body that the message log journals and any later reader can read. This
+    /// one puts a ciphertext there whose key exists in exactly one task's RAM
+    /// and dies with it.
+    async fn op_deliver(&mut self, db: &mut DbConn, args: &Value) -> Result<Value, String> {
+        self.unlocked();
+        if self.key.is_none() {
+            return Err(
+                "vault: locked — the broker cannot be handed a secret before an unlock".into(),
+            );
+        }
+        let grant_id = arg(args, "grant_id")?.to_string();
+        let name = arg(args, "name")?.to_string();
+        let recipient = arg(args, "recipient_key")?.to_string();
+
+        let n = name.clone();
+        let sealed_at_rest = db
+            .call(move |c| store::active(c, &n))
+            .await?
+            .ok_or_else(|| {
+                format!("vault: no such secret {name:?} (or every version is revoked)")
+            })?;
+        let Some(key) = self.key.as_ref() else {
+            return Err("vault: locked — the key expired while this call was in flight".into());
+        };
+        let plaintext = key
+            .open(&sealed_at_rest.nonce, &sealed_at_rest.ciphertext)
+            .map_err(|e| format!("vault: {e}"))?;
+        let box_for_recipient = crate::sealed::seal_to(&recipient, &plaintext)
+            .map_err(|e| format!("vault: missing or malformed recipient_key ({e})"))?;
+        // `plaintext` dies at the end of this scope, having never been put into
+        // a body, a log line or an error string.
+        Ok(json!({
+            "name": name,
+            "version": sealed_at_rest.version,
+            "grant_id": grant_id,
+            "sealed": box_for_recipient.to_json(),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -650,11 +721,16 @@ mod tests {
     }
 
     #[test]
-    fn there_is_no_operation_that_returns_a_secret() {
+    fn there_is_no_operation_that_returns_a_secret_in_the_clear() {
+        // The absence that carries the type is still the absence of a READ:
+        // there is no name here for "show me the value".
         assert!(!OPS.contains(&"get"), "a vault with a get is a store");
         assert!(!OPS.contains(&"read"));
         assert!(!OPS.contains(&"export"));
-        assert_eq!(OPS.len(), 7);
+        // GH #421 / R3: `deliver` is the sanctioned eighth, and what it returns
+        // is a ciphertext addressed to one ephemeral key — not the value.
+        assert!(OPS.contains(&"deliver"));
+        assert_eq!(OPS.len(), 8);
     }
 
     #[test]
@@ -680,6 +756,11 @@ mod tests {
         assert!(
             !Caller::Broker.may("put"),
             "a broker that can plant a secret makes the filling workflow pointless"
+        );
+        assert!(Caller::Broker.may("deliver"));
+        assert!(
+            !Caller::UserChannel.may("deliver"),
+            "the filling channel does not spend grants, and deliver is a spend"
         );
         for op in OPS {
             assert!(

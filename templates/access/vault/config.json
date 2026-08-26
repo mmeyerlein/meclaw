@@ -12,7 +12,7 @@
     "inject_map": {}
   },
   "contract": {
-    "version": "1.0.1",
+    "version": "1.1.0",
     "settings": {
       "key_source": {
         "type": "string",
@@ -79,8 +79,8 @@
     }
   },
   "description": {
-    "purpose": "The vault cell: an encrypted store plus an executor. XChaCha20-Poly1305 per secret, argon2id from the passphrase, and one operation that USES a secret (HMAC-SHA256) so the key does work and stays home -- the ssh-agent shape.",
+    "purpose": "The vault cell: an encrypted store plus an executor. XChaCha20-Poly1305 per secret, argon2id from the passphrase, one operation that USES a secret (HMAC-SHA256) so the key does work and stays home -- the ssh-agent shape -- and one that DELIVERS it sealed to an ephemeral key the requester minted for that single call (GH #421). There is still no operation that returns a secret in the clear.",
     "use_when": "Interior cell of the access hive, and NOT one of its ports -- the generic boundary refuses any edge from outside the scope to it. `params.broker` is `./invoke`, the cell that validated the grant; `params.inject_map` names which credential is handed to which connector at unlock, and it is empty on a fresh instance because a vault that ships with delivery addresses would deliver to somebody else's.",
-    "not_in_scope": "There is no `get`, and adding one would not be a feature but a different cell type. A woken vault is always LOCKED -- the key lives in the task and dies with it, because a key that survives a sleep would have to be kept somewhere worse than the problem it solves."
+    "not_in_scope": "There is no `get`, and adding one would not be a feature but a different cell type -- `deliver` is not one in disguise: what it returns is a ciphertext whose key exists in one requesting task's RAM and dies with it. A woken vault is always LOCKED -- the key lives in the task and dies with it, because a key that survives a sleep would have to be kept somewhere worse than the problem it solves."
   }
 }

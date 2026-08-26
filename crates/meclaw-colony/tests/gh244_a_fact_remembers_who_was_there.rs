@@ -662,23 +662,42 @@ fn a_belief_has_no_channel_so_an_open_history_cannot_rescue_it() {
     }
 }
 
-/// The candidate ids one tier-1 leg wrote into `recall_scratch`.
-fn t1_leg(phase: &str, leg: &str, now: &[&str], rows: Value) -> Vec<String> {
+/// The candidate ids one tier-1 leg contributed to the parked `legs` row.
+///
+/// GH #418: the legs that need no query vector arrive in ONE reply and are
+/// parked as ONE row, because the fan that produced them is one message. `cid`
+/// names the leg's call in that bundle; each leg body is unchanged, and so is
+/// what this measures -- that a hidden row never reaches the ranking.
+fn t1_leg(cid: &str, leg: &str, now: &[&str], rows: Value) -> Vec<String> {
     let mut ctx = asking(now, CH1, None);
-    ctx["mem_phase"] = json!(phase);
+    ctx["mem_phase"] = json!("t1-fan");
     ctx["memory_tier"] = json!("1");
     let body = json!({
-        "header": {"context": ctx, "hop": {"operation": "select"}},
-        "messages": [{"origin": "tool", "type": "tool_result", "text": rows.to_string()}]
+        "header": {"context": ctx,
+                   "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}},
+        "messages": [{"origin": "tool", "type": "tool_result", "id": cid,
+                      "text": rows.to_string()}],
+        "results": [{"tool_call_id": cid, "operation": "select",
+                     "rows_affected": 1, "duration_ms": 0}]
     });
     let insert = emitted(&run_hop("recall", &body))
         .iter()
-        .map(args_of)
-        .find(|a| a["table"] == json!("recall_scratch") && a["row"]["leg"] == json!(leg))
-        .unwrap_or_else(|| panic!("{phase} writes the `{leg}` leg"));
-    let payload: Value =
-        meclaw_core::serde_json::from_str(insert["row"]["payload"].as_str().unwrap_or("[]"))
-            .expect("the leg payload is JSON");
+        .flat_map(|m| {
+            m["messages"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    meclaw_core::serde_json::from_str::<Value>(t["text"].as_str()?).ok()
+                })
+        })
+        .find(|a| a["table"] == json!("recall_scratch") && a["row"]["leg"] == json!("legs"))
+        .unwrap_or_else(|| panic!("the fan parks its `legs` row"));
+    let parked: Value =
+        meclaw_core::serde_json::from_str(insert["row"]["payload"].as_str().unwrap_or("{}"))
+            .expect("the parked legs are JSON");
+    let payload = parked[leg].clone();
     payload
         .as_array()
         .cloned()
@@ -702,7 +721,7 @@ fn a_tier1_leg_drops_a_hidden_row_before_the_fusion_ever_sees_it() {
         {"id": "e-shut", "content": "private", "channel": CH1, "audience_set": aud(&[A, B])},
     ]);
     assert_eq!(
-        t1_leg("t1-kw-ep", "kw-ep", &[A, B, C], eps),
+        t1_leg("r-fan-kw-ep", "kw-ep", &[A, B, C], eps),
         vec!["e-open".to_string()],
         "the keyword leg over episodes"
     );
@@ -713,12 +732,12 @@ fn a_tier1_leg_drops_a_hidden_row_before_the_fusion_ever_sees_it() {
          "channel": CH1, "audience_set": aud(&[A, B])},
     ]);
     assert_eq!(
-        t1_leg("t1-kw-fact", "kw-fact", &[A, B, C], facts.clone()),
+        t1_leg("r-fan-kw-fact", "kw-fact", &[A, B, C], facts.clone()),
         vec!["f-open".to_string()],
         "the keyword leg over facts"
     );
     assert_eq!(
-        t1_leg("t1-temporal", "temporal", &[A, B, C], facts),
+        t1_leg("r-fan-temporal", "temporal", &[A, B, C], facts),
         vec!["f-open".to_string()],
         "the temporal leg"
     );
@@ -739,21 +758,50 @@ fn an_entity_edge_is_gated_like_the_episode_it_came_from() {
     };
     let leg = |now: &[&str], channel: &str, audience: &str| -> Vec<String> {
         let mut ctx = asking(now, channel, None);
-        ctx["mem_phase"] = json!("t1-graph");
+        // GH #418: the walk answers in the `t1-legs` bundle, beside the
+        // semantic companion and the read-back the fusion runs out of. The
+        // graph leg's own body -- the gate ON THE EDGE, the ranking, the
+        // episode dedup -- is unchanged; only where its rows arrive moved.
+        ctx["mem_phase"] = json!("t1-legs");
         ctx["memory_tier"] = json!("1");
+        let parked_legs = json!({"kw-ep": [], "kw-fact": [], "temporal": [],
+                                 "beliefs": [], "anchors": [], "axis": {},
+                                 "model": {"model_id": "m", "dim": 1024}});
         let body = json!({
-            "header": {"context": ctx, "hop": {"operation": "traverse"}},
-            "messages": [{"origin": "tool", "type": "tool_result",
-                          "text": paths(audience).to_string()}]
+            "header": {"context": ctx,
+                       "hop": {"operation": "bundle", "rows_affected": 1,
+                               "bundle_errors": 0}},
+            "messages": [
+                {"origin": "tool", "type": "tool_result", "id": "r-legs-graph",
+                 "text": paths(audience).to_string()},
+                {"origin": "tool", "type": "tool_result", "id": "r-legs-read",
+                 "text": json!([
+                     {"request_id": "r1", "leg": "legs", "fired": 0,
+                      "payload": parked_legs.to_string()},
+                     {"request_id": "r1", "leg": "sem", "fired": 0, "payload": "[]"}
+                 ]).to_string()}
+            ],
+            "results": [
+                {"tool_call_id": "r-legs-graph", "operation": "traverse",
+                 "rows_affected": 1, "duration_ms": 0},
+                {"tool_call_id": "r-legs-read", "operation": "select",
+                 "rows_affected": 2, "duration_ms": 0}
+            ]
         });
         let out = emitted(&run_hop("recall", &body));
-        assert_eq!(
-            out.len(),
-            1,
-            "the graph leg emits its scratch insert: {out:?}"
-        );
-        let insert = args_of(&out[0]);
-        let payload = insert["row"]["payload"].as_str().unwrap_or("[]");
+        assert_eq!(out.len(), 1, "the fusion emits ONE store message: {out:?}");
+        let fused = out[0]["messages"]
+            .as_array()
+            .and_then(|ts| ts.first().cloned())
+            .expect("the fused row");
+        let insert: Value =
+            meclaw_core::serde_json::from_str(fused["text"].as_str().unwrap_or("{}"))
+                .expect("op args");
+        let ranking: Value =
+            meclaw_core::serde_json::from_str(insert["row"]["payload"].as_str().unwrap_or("{}"))
+                .expect("the fused ranking is JSON");
+        let payload = ranking["candidates"].to_string();
+        let payload = payload.as_str();
         let items: Value = meclaw_core::serde_json::from_str(payload).expect("payload is JSON");
         items
             .as_array()
@@ -1152,17 +1200,30 @@ fn the_graph_leg_traverses_for_the_provenance_it_has_to_check() {
         return;
     }
     let mut ctx = asking(&[A, B], CH1, None);
-    ctx["mem_phase"] = json!("t1-anchor");
+    // GH #418: the anchors are asked at the RENDEZVOUS, together with the
+    // vector neighbours, and the walk goes out one bundle later. What it has to
+    // fetch is unchanged, which is what this case is about.
+    ctx["mem_phase"] = json!("t1-join");
     ctx["memory_tier"] = json!("1");
     let body = json!({
-        "header": {"context": ctx, "hop": {"operation": "select"}},
+        "header": {"context": ctx,
+                   "hop": {"operation": "select", "rows_affected": 1}},
         "messages": [{"origin": "tool", "type": "tool_result",
                       "text": json!([{"id": "ent-1", "canonical_name": "cem"}]).to_string()}]
     });
     let out = emitted(&run_hop("recall", &body));
     let traverse = out
         .iter()
-        .map(args_of)
+        .flat_map(|m| {
+            m["messages"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    meclaw_core::serde_json::from_str::<Value>(t["text"].as_str()?).ok()
+                })
+        })
         .find(|a| a["operation"] == json!("traverse"))
         .expect("the graph leg traverses");
     let cols: Vec<String> = traverse["columns"]

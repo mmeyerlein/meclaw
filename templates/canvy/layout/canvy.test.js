@@ -325,15 +325,43 @@ console.log("\nthe hook");
   el.listeners.pointermove({target: a, clientX: 160, clientY: 140});
   flush();
   el.listeners.pointerup({target: a, clientX: 160, clientY: 140});
-  ok("letting go of a box sends two events — one per editable prop",
-     sent.length === 2, JSON.stringify(sent));
-  ok("both are object:set on the dragged OBJECT",
+  ok("letting go of an unpinned box sends three events — the position and the marker",
+     sent.length === 3, JSON.stringify(sent));
+  ok("all are object:set on the dragged OBJECT",
      sent.every(s => s.name === "object:set" && s.payload.id === "n/a/one"),
      JSON.stringify(sent));
   ok("and they carry the drop position",
      sent[0].payload.prop === "x" && sent[0].payload.value === 84 &&
      sent[1].payload.prop === "y" && sent[1].payload.value === 70,
      JSON.stringify(sent));
+  sent.length = 0;
+
+  // The marker (GH #415). A box the layout placed is not pinned; dropping it
+  // somewhere is what pins it, and that has to be SAID — the coordinate cannot
+  // say it, because the layout writes coordinates for everything.
+  el.listeners.pointerdown({target: b, clientX: 100, clientY: 100, preventDefault() {}});
+  el.listeners.pointermove({target: b, clientX: 200, clientY: 100});
+  flush();
+  el.listeners.pointerup({target: b, clientX: 200, clientY: 100});
+  ok("a drag on an unpinned box sends three events",
+     sent.length === 3, JSON.stringify(sent));
+  ok("and one of them is the marker",
+     sent.some(s => s.payload.prop === "pinned" && s.payload.value === "1" &&
+                    s.payload.id === "n/a/two"),
+     JSON.stringify(sent));
+  sent.length = 0;
+
+  // Dragging it AGAIN costs two events, not three: the marker is written only
+  // when it changes, so an arranged picture does not pay for the same fact
+  // twice on every gesture.
+  el.listeners.pointerdown({target: b, clientX: 200, clientY: 100, preventDefault() {}});
+  el.listeners.pointermove({target: b, clientX: 260, clientY: 140});
+  flush();
+  el.listeners.pointerup({target: b, clientX: 260, clientY: 140});
+  ok("a drag on an already-pinned box still costs two events",
+     sent.length === 2, JSON.stringify(sent));
+  ok("and none of them repeats the marker",
+     !sent.some(s => s.payload.prop === "pinned"), JSON.stringify(sent));
   sent.length = 0;
 
   // Pressing the empty canvas pans instead, and sends nothing.
@@ -517,10 +545,14 @@ console.log("\nthe hook");
   ok("and a cell two levels down moves too",
      boxAttr(deepCell).x === 120 && boxAttr(deepCell).y === 80,
      JSON.stringify(boxAttr(deepCell)));
-  ok("one member, so one patch pair for the whole gesture",
-     sent2.length === 2 &&
+  // One member, so one patch pair — plus the marker, because this box was
+  // placed by the layout and a hive drag pins its members exactly as a cell
+  // drag pins one (GH #415). Marked once: dragging it again costs the pair.
+  ok("one member, so one patch pair plus the marker for the whole gesture",
+     sent2.length === 3 &&
      sent2.every(s => s.name === "object:set" && s.payload.id === "n/a/b/deep/four") &&
-     sent2[0].payload.value === 120 && sent2[1].payload.value === 80,
+     sent2[0].payload.value === 120 && sent2[1].payload.value === 80 &&
+     sent2[2].payload.prop === "pinned" && sent2[2].payload.value === "1",
      JSON.stringify(sent2));
 }
 
@@ -620,6 +652,41 @@ console.log("\nselection");
      panel.innerHTML.indexOf("hop.route == 'x'") >= 0,
      panel.innerHTML.slice(0, 200));
   ok("and its modifier", panel.innerHTML.indexOf("set_context") >= 0);
+
+  // Handing a cell back to the layout (GH #415). Every box the layout ever drew
+  // used to be pinned by construction, and an accidental group drag pinned
+  // dozens more — with no way out short of deleting the objects.
+  const acts = {};
+  panel.querySelector = (sel) => (sel === ".unpin" && /data-unpin/.test(panel.innerHTML)
+    ? {addEventListener(n, f) { acts[n] = f; }} : null);
+  const unpinned = [];
+  hook3.pushEvent = (name, payload) => unpinned.push({name, payload});
+
+  cellA.attrs["data-pinned"] = "1";
+  cellA.closest = (sel) => (sel === "[data-node]" ? cellA : null);
+  board.listeners.click({target: cellA});
+  ok("a pinned cell offers to be released",
+     panel.innerHTML.indexOf("release to the layout") >= 0,
+     panel.innerHTML.slice(0, 240));
+  ok("and the action is wired", typeof acts.click === "function");
+
+  acts.click();
+  ok("releasing sends one object:set that clears the marker",
+     unpinned.length === 1 && unpinned[0].name === "object:set" &&
+     unpinned[0].payload.id === "n/a/one" &&
+     unpinned[0].payload.prop === "pinned" && unpinned[0].payload.value === "",
+     JSON.stringify(unpinned));
+  ok("and the box stops claiming to be pinned right away",
+     !cellA.getAttribute("data-pinned"), String(cellA.getAttribute("data-pinned")));
+
+  cellB.attrs["data-pinned"] = "";
+  cellB.closest = (sel) => (sel === "[data-node]" ? cellB : null);
+  board.listeners.click({target: cellB});
+  ok("a cell the layout places says so instead of offering a no-op",
+     panel.innerHTML.indexOf("placed by the layout") >= 0 &&
+     panel.innerHTML.indexOf("data-unpin") < 0,
+     panel.innerHTML.slice(0, 240));
+  hook3.pushEvent = () => {};
 
   const empty = elem({});
   empty.closest = () => null;

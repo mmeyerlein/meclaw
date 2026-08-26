@@ -124,24 +124,27 @@ fn emit(params: serde_json::Value, doc: serde_json::Value) -> Vec<serde_json::Va
     serde_json::from_slice(&out.stdout).expect("emissions are json")
 }
 
-/// The store reply that makes the collector read its rolling window -- the one
-/// emission that carries a knob (`window_turns`) verbatim into a store op, and
-/// therefore the cheapest OBSERVABLE probe of a configured value.
+/// The arriving turn -- the occasion the window read is built on. Since
+/// GH #419 the window is a CALL of the ONE message a turn opens with, so the
+/// knob is observed where the op is written rather than one hop later.
 fn window_read() -> serde_json::Value {
     serde_json::json!({
-        "header": {"context": {"session_id": "s1", "turn_id": "t1", "iter": "0",
-                               "col_phase": "turn-open", "store_origin": "collector"},
-                   "hop": {"operation": "select", "rows_affected": 0}},
-        "messages": [{"origin": "tool", "type": "tool_result", "id": "x", "text": "[]"}]
+        "header": {"context": {"session_id": "s1", "turn_id": "t1"},
+                   "hop": {"route": "in_turn"}},
+        "messages": [{"origin": "user", "type": "text", "text": "hello"}]
     })
 }
 
 /// The `limit` of the window select -- i.e. what `window_turns` actually did.
 fn window_limit(out: &[serde_json::Value]) -> i64 {
-    assert_eq!(out.len(), 1, "the window read is one emission");
-    let text = out[0]["messages"][0]["text"].as_str().expect("op text");
-    let op: serde_json::Value = serde_json::from_str(text).expect("op json");
-    assert_eq!(op["table"], "turns");
+    assert_eq!(out.len(), 1, "the turn opens with one message");
+    let op = out[0]["messages"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t["text"].as_str()?).ok())
+        .find(|a| a["table"] == "turns" && a["operation"] == "select" && a["limit"].is_i64())
+        .expect("the window call");
     op["limit"].as_i64().expect("limit")
 }
 
@@ -207,7 +210,21 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     }
 
     // No knob may hide: every non-substrate param is one of the twenty above.
-    let substrate = ["runner", "external_timeout_ms", "script_inline"];
+    //
+    // The allow-list is the `code` cell's OWN param surface, i.e. every key
+    // `CodeParams::parse` reads (crates/meclaw-cells/src/code/params.rs) --
+    // not the subset this template happens to set today. Kept complete on
+    // purpose: a substrate param the list forgets shows up here as a phantom
+    // "undeclared knob", which is a false accusation against the template.
+    let substrate = [
+        "runner",
+        "script_path",
+        "script_inline",
+        "external_timeout_ms",
+        "max_concurrency",
+        "sandbox",
+        "runner_mode",
+    ];
     for key in params.keys() {
         assert!(
             substrate.contains(&key.as_str()) || KNOBS.iter().any(|(k, _)| k == key),

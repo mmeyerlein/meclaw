@@ -452,3 +452,54 @@ async fn the_two_events_of_one_release_both_land() {
 
     live.join.abort();
 }
+
+/// The un-pin has to be writable from a browser, or GH #415 is only half fixed:
+/// the panel would send an event the display refuses with `not_editable` and the
+/// cell would stay nailed down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_may_clear_the_pin_marker() {
+    let Some(root) = shipped_canvy() else { return };
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    let mut live = start(&root, &cell_dir).await;
+
+    let mut a = join_page(live.port, "1").await;
+
+    // The drag's marker…
+    drag(&mut a, "1", "n/a/one", "pinned", json!("1")).await;
+    let mut ok_seen = false;
+    while let Some(f) = next_frame(&mut a, Duration::from_secs(3)).await {
+        if f[3] == json!("phx_reply") && f[4]["status"] == json!("ok") {
+            ok_seen = true;
+        }
+    }
+    assert!(ok_seen, "a drag's marker is a declared editable prop");
+    assert_eq!(stored_prop(&live.cell_dir, "n/a/one", "pinned"), json!("1"));
+
+    // …and the panel's release, which is the same prop back to empty.
+    drag(&mut a, "1", "n/a/one", "pinned", json!("")).await;
+    let mut released = false;
+    while let Some(f) = next_frame(&mut a, Duration::from_secs(3)).await {
+        if f[3] == json!("phx_reply") && f[4]["status"] == json!("ok") {
+            released = true;
+        }
+    }
+    assert!(
+        released,
+        "and clearing it is the same declaration, not a second one"
+    );
+    assert_eq!(
+        stored_prop(&live.cell_dir, "n/a/one", "pinned"),
+        json!(""),
+        "the marker is gone, so the next layout tick lays this cell out again"
+    );
+
+    // Still the local lane: an un-pin is CRUD on the display's own database.
+    assert!(
+        live.out_rx.try_recv().is_err(),
+        "releasing a cell must emit NO message either"
+    );
+
+    live.join.abort();
+}

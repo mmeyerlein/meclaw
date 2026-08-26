@@ -133,20 +133,70 @@ fn emit(doc: serde_json::Value) -> Vec<serde_json::Value> {
     })
 }
 
+/// Every store op an emission carries, in call order.
+///
+/// Since GH #418 a recall hop puts N ops into ONE message (#295), so an op is a
+/// CALL of a message rather than a message of its own. Reading calls instead of
+/// `messages[0]` is what keeps the assertions below measuring the op they were
+/// written for instead of the message boundary around it.
+fn ops_of(msgs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for m in msgs {
+        let Some(turns) = m["messages"].as_array() else {
+            continue;
+        };
+        for t in turns {
+            let Some(text) = t["text"].as_str() else {
+                continue;
+            };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
 /// The payload a phase wrote into `recall_scratch` under `leg`.
 fn scratch_payload(msgs: &[serde_json::Value], leg: &str) -> serde_json::Value {
-    for m in msgs {
-        let text = m["messages"][0]["text"].as_str().unwrap_or_default();
-        let args: serde_json::Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+    for args in ops_of(msgs) {
         if args["operation"] == "insert" && args["row"]["leg"] == leg {
             let payload = args["row"]["payload"].as_str().expect("payload string");
             return serde_json::from_str(payload).expect("payload json");
         }
     }
     panic!("no scratch insert for leg {leg}");
+}
+
+/// The tier-1 fan, as the store answers it: ONE bundle, one leg per call.
+///
+/// Since GH #418 the five legs that need no query vector are one message and one
+/// reply, and each is computed by the body that used to be its own phase. A leg
+/// that is not named here is not in the reply -- which is what a query with no
+/// usable token (no keyword pages) produces, and what the receiving side reads
+/// as the empty list the substitute inserts used to be.
+fn fan_reply(legs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+    serde_json::json!({
+        "header": {
+            "context": {"mem_phase": "t1-fan", "recall_id": "r1", "memory_tier": "1",
+                        "recall_query": "what do I prefer?",
+                        "recall_as_of": "2026-08-12T00:00:00Z",
+                        "recall_window_from": "", "recall_window_to": "",
+                        "audience_now": ["u1"], "channel": "chat"},
+            "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}
+        },
+        "messages": legs.iter().map(|(id, rows)| serde_json::json!(
+            {"origin": "tool", "type": "tool_result", "id": id, "text": rows.to_string()}))
+            .collect::<Vec<_>>(),
+        "results": legs.iter().map(|(id, _)| serde_json::json!(
+            {"tool_call_id": id, "operation": "select", "rows_affected": 1,
+             "duration_ms": 0})).collect::<Vec<_>>()
+    })
+}
+
+/// One leg out of the single `legs` row the fan parks.
+fn fan_leg(msgs: &[serde_json::Value], leg: &str) -> serde_json::Value {
+    scratch_payload(msgs, "legs")[leg].clone()
 }
 
 /// The document a phase of a tier-1 request receives.
@@ -233,60 +283,115 @@ fn search_rows(prefix: &str, ranks: &[serde_json::Value]) -> serde_json::Value {
     )
 }
 
-/// The anchor names `t1-kw-fact` handed to the entity lookup that seeds the
-/// graph leg — empty when the phase seeded an empty graph leg instead.
-fn graph_anchors(msgs: &[serde_json::Value]) -> Vec<String> {
-    for m in msgs {
-        let text = m["messages"][0]["text"].as_str().unwrap_or_default();
-        let args: serde_json::Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if args["operation"] == "select" && args["table"] == "entities" {
-            return args["where"]["canonical_name"]["in"]
-                .as_array()
-                .expect("anchor list")
-                .iter()
-                .map(|n| n.as_str().unwrap_or_default().to_string())
-                .collect();
+/// The reply that reaches the FUSION.
+///
+/// Since GH #418 there is no `t1-fuse` phase to hand a scratch page to: a leg
+/// phase parks and reads the parking place back in one bundle, and the hop whose
+/// read-back holds every required leg is the hop that fuses. So a fusion fixture
+/// is a bundle reply whose trailing `r-<phase>-read` turn carries the legs.
+/// `t1-temporal` stands in for the completing hop -- it has to be one of them,
+/// and which one it is says nothing about the fusion.
+fn fusion_reply(legs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+    let mut store_legs = serde_json::Map::new();
+    let (mut sem, mut sem_aud) = (serde_json::json!([]), serde_json::json!([]));
+    let mut graph: Vec<serde_json::Value> = Vec::new();
+    for (name, payload) in legs {
+        match *name {
+            "sem" => sem = payload.clone(),
+            "sem-aud" => sem_aud = payload.clone(),
+            // The graph leg is handed over as the WALK it is computed from: the
+            // ranking, the dedup and the gate on the edge all run in this hop.
+            "graph" => graph = payload.as_array().cloned().unwrap_or_default(),
+            _ => {
+                store_legs.insert((*name).to_string(), payload.clone());
+            }
         }
     }
-    Vec::new()
+    let n = graph.len();
+    let paths: Vec<serde_json::Value> = graph
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            serde_json::json!({"node": format!("n{i}"), "depth": 1,
+                               "weight_sum": (n - i) as i64,
+                               "edge": {"episode_id": c["id"], "channel": "chat",
+                                        "audience_set": ["u1"]}})
+        })
+        .collect();
+    let page = serde_json::json!([
+        {"request_id": "r1", "leg": "legs", "fired": 0,
+         "payload": serde_json::Value::Object(store_legs).to_string()},
+        {"request_id": "r1", "leg": "sem", "fired": 0, "payload": sem.to_string()},
+    ]);
+    serde_json::json!({
+        "header": {
+            "context": {"mem_phase": "t1-legs", "recall_id": "r1", "memory_tier": "1",
+                        "recall_query": "what do I prefer?",
+                        "recall_as_of": "2026-08-12T00:00:00Z",
+                        "recall_window_from": "", "recall_window_to": "",
+                        "audience_now": ["u1"], "channel": "chat"},
+            "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}
+        },
+        "messages": [
+            {"origin": "tool", "type": "tool_result", "id": "r-legs-graph",
+             "text": serde_json::json!({"paths": paths}).to_string()},
+            {"origin": "tool", "type": "tool_result", "id": "r-legs-sem-aud",
+             "text": sem_aud.to_string()},
+            {"origin": "tool", "type": "tool_result", "id": "r-legs-read",
+             "text": page.to_string()},
+        ],
+        "results": [
+            {"tool_call_id": "r-legs-graph", "operation": "traverse",
+             "rows_affected": 1, "duration_ms": 0},
+            {"tool_call_id": "r-legs-sem-aud", "operation": "select",
+             "rows_affected": 1, "duration_ms": 0},
+            {"tool_call_id": "r-legs-read", "operation": "select",
+             "rows_affected": 2, "duration_ms": 0},
+        ]
+    })
 }
 
-/// The `t1-fuse` document: the semantic leg exactly as `t1-sem` wrote it, its
+/// The fusion document: the semantic leg exactly as `t1-sem` wrote it, its
 /// companion audience page, the `model` leg carrying the embedding's bit width,
 /// and the three other legs empty.
 fn fuse_doc(sem: &serde_json::Value, model: serde_json::Value, n: usize) -> serde_json::Value {
-    let rows = serde_json::json!([
-        leg_row("kw-ep", &serde_json::json!([])),
-        leg_row("kw-fact", &serde_json::json!([])),
-        leg_row("graph", &serde_json::json!([])),
-        leg_row("temporal", &serde_json::json!([])),
-        leg_row("sem", sem),
-        leg_row("sem-aud", &sem_aud_rows(n)),
-        leg_row("model", &model),
-    ]);
-    phase_doc("t1-fuse", "select", rows)
+    fusion_reply(&[
+        ("kw-ep", serde_json::json!([])),
+        ("kw-fact", serde_json::json!([])),
+        ("graph", serde_json::json!([])),
+        ("temporal", serde_json::json!([])),
+        ("sem", sem.clone()),
+        ("sem-aud", sem_aud_rows(n)),
+        ("model", model),
+    ])
 }
 
-/// A `t1-fuse` document built from an explicit list of scratch legs — the four
+/// A fusion document built from an explicit list of scratch legs — the four
 /// rank lists, `sem-aud`, `model` and whatever bookkeeping legs a test names.
 fn fuse_doc_legs(legs: &[(&str, serde_json::Value)]) -> serde_json::Value {
-    let rows = serde_json::json!(
-        legs.iter()
-            .map(|(name, payload)| leg_row(name, payload))
-            .collect::<Vec<_>>()
-    );
-    phase_doc("t1-fuse", "select", rows)
+    fusion_reply(legs)
 }
 
 /// The semantic leg as the shipped `t1-sem` phase writes it for these distances.
 fn sem_leg(distances: &[i64]) -> serde_json::Value {
-    scratch_payload(
-        &emit(phase_doc("t1-sem", "similar", similar_rows(distances))),
-        "sem",
-    )
+    // #418: the semantic leg is computed in the reply of `t1-join` -- the
+    // rendezvous asked `similar` there, and the walk it is parked next to is
+    // asked in the same message. The leg's own body is unchanged.
+    let join = serde_json::json!({
+        "header": {
+            "context": {"mem_phase": "t1-join", "recall_id": "r1", "memory_tier": "1",
+                        "recall_query": "what do I prefer?",
+                        "recall_as_of": "2026-08-12T00:00:00Z",
+                        "recall_window_from": "", "recall_window_to": "",
+                        "audience_now": ["u1"], "channel": "chat"},
+            "hop": {"operation": "bundle", "rows_affected": 1, "bundle_errors": 0}
+        },
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "r-join-sem",
+                      "text": similar_rows(distances).to_string()}],
+        "results": [{"tool_call_id": "r-join-sem", "operation": "similar",
+                     "rows_affected": 1, "duration_ms": 0}]
+    });
+    scratch_payload(&emit(join), "sem")
 }
 
 /// The ids the fusion nominated, in order.
@@ -461,12 +566,11 @@ fn six_ranks() -> Vec<serde_json::Value> {
 
 #[test]
 fn the_keyword_leg_drops_hits_its_own_best_dwarfs() {
-    let msgs = emit(phase_doc(
-        "t1-kw-ep",
-        "search",
+    let msgs = emit(fan_reply(&[(
+        "r-fan-kw-ep",
         search_rows("e", &six_ranks()),
-    ));
-    let leg = scratch_payload(&msgs, "kw-ep");
+    )]));
+    let leg = fan_leg(&msgs, "kw-ep");
     assert_eq!(
         leg_ids(&leg),
         vec!["e0".to_string(), "e1".to_string(), "e2".to_string()],
@@ -489,8 +593,8 @@ fn a_leg_whose_best_hit_carries_no_signal_is_not_cut() {
         ],
     ] {
         let n = ranks.len();
-        let msgs = emit(phase_doc("t1-kw-ep", "search", search_rows("e", &ranks)));
-        let leg = scratch_payload(&msgs, "kw-ep");
+        let msgs = emit(fan_reply(&[("r-fan-kw-ep", search_rows("e", &ranks))]));
+        let leg = fan_leg(&msgs, "kw-ep");
         assert_eq!(
             leg_ids(&leg).len(),
             n,
@@ -512,8 +616,8 @@ fn the_fact_search_is_floored_by_its_own_best_hit_not_the_episode_one() {
         {"id": "f2", "channel": "chat", "audience_set": ["u1"],
          "subject": "user:Zorro", "claim": "c", "rank": -0.4},
     ]);
-    let msgs = emit(phase_doc("t1-kw-fact", "search", rows));
-    let leg = scratch_payload(&msgs, "kw-fact");
+    let msgs = emit(fan_reply(&[("r-fan-kw-fact", rows)]));
+    let leg = fan_leg(&msgs, "kw-fact");
     assert_eq!(
         leg_ids(&leg),
         vec!["f0".to_string(), "f1".to_string()],
@@ -522,7 +626,15 @@ fn the_fact_search_is_floored_by_its_own_best_hit_not_the_episode_one() {
 
     // ... and the graph anchors are read off the SURVIVING rows only, so a hit
     // below the floor cannot seed the graph leg through the back door either.
-    let anchors = graph_anchors(&msgs);
+    // #418: the anchors are PARKED with the leg rather than asked for at once --
+    // the walk lives behind the rendezvous, and asking before the vector is
+    // there buys nothing. WHAT they are built from is unchanged.
+    let anchors: Vec<String> = fan_leg(&msgs, "anchors")
+        .as_array()
+        .expect("anchor list")
+        .iter()
+        .map(|n| n.as_str().unwrap_or_default().to_string())
+        .collect();
     assert!(
         anchors.contains(&"Alice".to_string()) && anchors.contains(&"Bob".to_string()),
         "the survivors seed the graph leg: {anchors:?}"
@@ -538,13 +650,12 @@ fn the_diagnostic_reports_both_the_raw_and_the_floored_leg_size() {
     // Without this pair of numbers a floor regression is invisible in the eval:
     // `leg_sizes` alone reports the same 3 whether the store held three rows or
     // six of which three were noise.
-    let msgs = emit(phase_doc(
-        "t1-kw-ep",
-        "search",
+    let msgs = emit(fan_reply(&[(
+        "r-fan-kw-ep",
         search_rows("e", &six_ranks()),
-    ));
-    let kw_ep = scratch_payload(&msgs, "kw-ep");
-    let kw_ep_raw = scratch_payload(&msgs, "kw-ep-raw");
+    )]));
+    let kw_ep = fan_leg(&msgs, "kw-ep");
+    let kw_ep_raw = fan_leg(&msgs, "kw-ep-raw");
 
     let fused = scratch_payload(
         &emit(fuse_doc_legs(&[

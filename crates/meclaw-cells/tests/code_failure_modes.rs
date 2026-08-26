@@ -11,7 +11,7 @@
 //! 6. stderr-on-exit-0 is NOT injected into output.text (only header had_stderr=true)
 //! 7. stderr-on-exit-0 IS persisted as a warn line in log.jsonl (GH #44)
 
-use meclaw_cells::code::{CodeCell, CodeParams, Script};
+use meclaw_cells::code::{CodeCell, CodeParams, RunnerMode, Script};
 use meclaw_colony::StatelessCell;
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
@@ -137,6 +137,7 @@ async fn script_failed_emits_script_failed_error_code() {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         },
         false,
         None,
@@ -166,6 +167,7 @@ async fn invalid_json_emits_invalid_json_error_code() {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         },
         false,
         None,
@@ -194,6 +196,7 @@ async fn script_timeout_emits_script_timeout_error_code() {
             external_timeout_ms: Some(100),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         },
         false,
         None,
@@ -230,6 +233,7 @@ async fn io_error_emits_io_error_when_runner_not_on_path() {
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         },
         false,
         None,
@@ -260,6 +264,7 @@ async fn contract_violation_multi_send_not_declared() {
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     }, false, None, false); // multi_send_capable: false
     let (otx, mut orx) = mpsc::channel(8);
     let sink = make_sink(otx);
@@ -287,6 +292,7 @@ sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","te
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     }, false, None, false);
     let (otx, mut orx) = mpsc::channel(8);
     let sink = make_sink(otx);
@@ -324,6 +330,7 @@ sys.stdout.write(json.dumps({"messages":[{"origin":"assistant","type":"text","te
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     }, false, None, false);
 
     let (outs, warns) = run_capturing_warns(&cell).await;
@@ -359,6 +366,7 @@ async fn clean_exit_0_without_stderr_logs_nothing() {
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     }, false, None, false);
 
     let (outs, warns) = run_capturing_warns(&cell).await;
@@ -390,6 +398,7 @@ async fn script_failed_keeps_stderr_in_the_error_message_and_logs_no_warn_line()
             external_timeout_ms: Some(10_000),
             max_concurrency: None,
             sandbox: None,
+            runner_mode: RunnerMode::Cold,
         },
         false,
         None,
@@ -431,6 +440,7 @@ async fn standard_headers_override_script_supplied_values() {
         external_timeout_ms: Some(10_000),
         max_concurrency: None,
         sandbox: None,
+        runner_mode: RunnerMode::Cold,
     }, false, None, false);
     let (otx, mut orx) = mpsc::channel(8);
     let sink = make_sink(otx);

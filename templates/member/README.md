@@ -5,7 +5,7 @@ One person, as a level. Three holders and one open container:
 | holder | what it holds |
 |---|---|
 | [`affinity@3.0.0`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
-| [`memory-hive@3.0.1`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
+| [`memory-hive@3.0.3`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
 | [`firewall@2.0.5`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 
 The fourth thing a channel needs — the channel itself — is the
@@ -81,7 +81,7 @@ that accepts a refusal and drops it is the one arrangement in which nobody finds
 out.
 
 The memory's half of that lane is not optional in the same loose sense:
-`memory-hive@3.0.1` declares `required_drains` pairings for `in_query`,
+`memory-hive@3.0.3` declares `required_drains` pairings for `in_query`,
 `in_remember` and `in_episode` against `reject`, and this level sends the first
 two. Whoever wires a member drains its `reject`.
 
@@ -158,7 +158,7 @@ a level that gets wired into is for. No hive in this template carries a `ports`
 key.
 
 **What transits it**, derived from the contract of `assistant@1.0.1` and from
-what this member sends back down (`firewall@2.0.5`, `memory-hive@3.0.1`):
+what this member sends back down (`firewall@2.0.5`, `memory-hive@3.0.3`):
 
 - **in** — `in_turn` (the screened turn), `in_bundle` (the memory's answer).
   Both are produced by a sibling of the container, not by a caller outside the
@@ -241,7 +241,7 @@ at it.
   would force the writer to pick one before extraction has run, which is not a
   decision it can make. A group that owns an agent nobody owns personally is a
   **member** with its own name, instantiated from this template like any other.
-- **No close pass.** `memory-hive@3.0.1` has an `in_close_pass` lane; this level
+- **No close pass.** `memory-hive@3.0.3` has an `in_close_pass` lane; this level
   does not send it. Whether the close pass should cross the member boundary is a
   level question, and an unanswered one is better than a lane declared here that
   nothing opens.

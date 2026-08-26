@@ -1,4 +1,4 @@
-# `collector@3.0.0`
+# `collector@3.0.2`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state).
@@ -525,6 +525,16 @@ of the session left with the batch, and R-OS-6 places it with the memory hive, n
 
 ### When the store says no (GH #343, since `collector@2.1.1`)
 
+Since `collector@3.0.2` most of the assembler's reads travel as **bundles**, and a bundle reply
+never stamps `error_code` on the hop: that header means "the whole reply is a refusal and
+carries no payload", and a bundle whose second leg failed still hands back the first leg's rows.
+It stamps `hop.bundle_errors` instead, with the per-leg codes in `results[]`. For this cell one
+refused leg is one too many -- an assembly that fires on a half-read round is exactly the
+"answered with no conversation at all" failure this section exists to prevent -- so the guard
+reads `bundle_errors`, takes the first refused leg's `error_code` and `operation`, and degrades
+the turn with `hop.degraded`, `hop.store_error` and `hop.store_operation` exactly as a refused
+single op does.
+
 The assembler is a state machine over `(context.col_phase, hop.operation)`: it sends the
 store one op, and the reply's `operation` tells it which branch it is in. That reading has
 one hole, and the hole is the whole of this section.
@@ -561,6 +571,11 @@ degradation *strategy* -- the collector does not guess a window it could not rea
 refuses to pretend it read one.
 
 ### Round robustness (GH #103)
+
+Unchanged by `collector@3.0.2`, and worth one sentence about where it now happens: the idle exit
+(`lost_results`, `hop.round_stale=1`) and the defer rule are decided out of the **same bundle
+reply** the round is read in, rather than one hop behind it. What they decide, and on what
+evidence, did not move.
 
 Two edge cases of the tool round, both real in production shape, both decided instead of
 accidental:
@@ -857,21 +872,22 @@ rather than in a silence. Hop table and derivation:
 A turn runs through the `round` table twice: once to assemble, once per tool round.
 
 ```
-in_turn   -> insert turns(user)          phase turn-w
+in_turn   -> ONE message, four calls      phase turn-open   <- GH #419
+             c-open-turn:  insert turns(user)
+             c-open-round: select round (open rounds)       <- GH #103
+             c-open-win:   select turns (limit N)           <- read unconditionally
+             c-open-day:   select turns (the day)           <- only with turn_write
           -> [recall request]            (only with a memory tier)
-turn-w    -> select round (open rounds)  phase turn-open    <- GH #103
-turn-open -> no open round:
-             select turns (limit N)      phase win
+turn-open -> no open round: insert round(leg-window)
+             + select round               phase collect     <- the byte cap runs here
           -> open round: update turns
-             set deferred=1              phase defer-w      <- the turn parks
+             set deferred=1               phase defer-w     <- the turn parks
              (+ per stale round: the round-check below)
-win       -> insert round(leg-window)    phase collect      <- the byte cap runs here
-in_bundle -> insert round(leg-memory)    phase collect
-collect   -> select round                phase gate
-gate      -> update round set fired=1    phase fire-guard   <- exactly-once guard
-fire-guard-> select round                phase fire
-fire      -> ROUTE brain                                    <- the seam
-          (+ update turns set deferred=0 phase defer-clear, when a deferred
+in_bundle -> insert round(leg-memory)
+             + select round               phase collect
+collect   -> complete: ROUTE brain                          <- the seam
+             + update round set fired=1   phase collect-done<- the round has answered
+          (+ update turns set deferred=0  phase defer-clear, when a deferred
              turn travelled: round_deferred=1 marks the arrival)
 ```
 
@@ -891,15 +907,13 @@ in_memory_call -> ROUTE recall           (memory_call_id = the tool_call_id,  <-
                                           recall_window_from/_to = the args)
 in_bundle (with a memory_call_id)
           -> insert round(tool)          phase round-w      <- back in the regular fan-in
-round-w   -> select round                phase round-check
-round-check-> complete: update round
-             set fired=1                 phase round-guard  <- per ITERATION
+round-check-> complete: ROUTE brain (iter + 1)              <- the same seam
+             + update round set fired=1  phase round-done   <- per ITERATION
+          -> ROUTE answer (round_capped) <- at max_iter, instead of the brain
           -> incomplete + idle: insert
              round(tool, 'tool result
-             lost') per missing call     phase round-w      <- GH #103, back into
-round-guard-> select round               phase round-fire      the regular fan-in
-round-fire-> ROUTE brain (iter + 1)                         <- the same seam
-          -> ROUTE answer (round_capped) <- at max_iter, instead of the brain
+             lost') per missing call     phase round-check  <- GH #103, back into
+                                                               the regular fan-in
 ```
 
 and, when a timer (or an operator) asks whether a round is stuck:
@@ -915,8 +929,8 @@ and, when a session ends:
 
 ```
 in_close   -> select turns (session, asc) phase close-turns <- the hop id carries the
-close-turns-> insert round(leg-close)     phase close-w        arrival time: the prune
-close-w    -> select round (session)      phase close-fire     boundary of this close
+close-turns-> insert round(leg-close)      phase close-fire    arrival time: the prune
+            +  select round (session)                          boundary of this close
 close-fire -> ROUTE write                                   <- one batch, append-all
            +  insert batched(session, B)  phase close-ledger<- the delivery evidence,
                                                                in the SAME multi-send
@@ -926,14 +940,33 @@ and, when a timer (or an operator) asks for housekeeping:
 
 ```
 in_prune    -> select batched (aged, unused)  phase prune-ledger
-prune-ledger-> per session: delete turns      phase prune-t  <- boundary in the hop id;
-prune-t     -> delete round (same boundary)   phase prune-r     no ledger row -> zero
-prune-r     -> update batched set pruned_at   phase prune-mark  report, NO delete
+prune-ledger-> per session: delete turns       phase prune-cut<- boundary in the hop id;
+            +  delete round (same boundary)                    no ledger row -> zero
+prune-cut   -> update batched set pruned_at   phase prune-mark  report, NO delete
             +  ROUTE prune (the report)                     <- pruned_turns / _rounds
+                                                               out of results[]
 ```
 
-An incomplete fan-in and a lost guard race emit **nothing** (empty multi-send, terminal by
-design) -- the same discipline as the store-backed tool loop this grew out of.
+An incomplete fan-in emits **nothing** (empty multi-send, terminal by design) -- the same
+discipline as the store-backed tool loop this grew out of.
+
+**How the election works since `collector@3.0.2`** (GH #419). Every leg of a round parks its row
+and reads the round table back in the **same message**. The `store` is a stateful cell -- one
+task, one connection, one message at a time -- and a bundle is one message whose ops run in call
+order, so the trailing `select` sees the `insert` in front of it and **of N legs parking
+concurrently exactly one reads a complete set**. That one assembles. There is no guard row to
+win and no message to win it with: `gate` (a select), `fire-guard` (a guarded update) and `fire`
+(a second select) are gone, and so are `round-w`/`round-guard`/`round-fire`, `turn-w`, `win` and
+`close-w`.
+
+**What did NOT go with them, and this is the half that matters**: the `fired` column. The
+guarded update did two jobs. It elected among the legs racing to complete the round -- that is
+the read-back's job now -- and it made the election **permanent**: a leg that lands AFTER the
+turn has left (the advisor's late event is the ordinary case) reads a complete set too, and
+without the mark it would assemble the turn a second time. So the mark still travels, now
+**beside** the seam in the same multi-send rather than one hop in front of it, and the election
+reads it. A round marked `fired` never fires again -- which is also what `turn-open` and the
+idle sweep read to tell an open round from an answered one (GH #103).
 
 ## The async class and the return lane (GH #28, R-CG-3, GH #372)
 

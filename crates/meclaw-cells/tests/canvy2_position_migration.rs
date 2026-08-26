@@ -374,7 +374,13 @@ fn the_export_carries_the_node_rows_and_names_what_it_drops() {
     // The coordinates travel whole, as integers — the prop schema types both
     // `int`, and a string there would render as a broken transform.
     let one = calls.iter().find(|c| c["id"] == "n/a/one").unwrap();
-    assert_eq!(one["props"], json!({"x": 4321, "y": 1234}));
+    assert_eq!(
+        one["props"],
+        json!({"x": 4321, "y": 1234, "pinned": "1"}),
+        "a replayed position is a HAND-placed one and has to say so (GH #415): \
+         without the marker the very next layout tick lays the cell out again \
+         and the migration's one promise is quietly broken"
+    );
     assert!(
         one["props"]["x"].is_i64() && one["props"]["y"].is_i64(),
         "positions are numbers, not strings: {one}"
@@ -507,10 +513,15 @@ fn the_migration_writes_only_props_the_component_declares() {
                 "the migration writes {key:?}, which `canvy-node` does not \
                  declare editable ({editable:?})"
             );
+            // Declared, and declared as the kind of value the migration
+            // actually writes: the coordinates are integers, and the pin
+            // marker is the `"text"` flag this template language spells a
+            // boolean with (GH #415).
+            let want = if key == "pinned" { "text" } else { "int" };
             assert_eq!(
                 node["prop_schema"][key.as_str()],
-                json!("int"),
-                "{key:?} is not an int prop of canvy-node: {}",
+                json!(want),
+                "{key:?} is not a {want} prop of canvy-node: {}",
                 node["prop_schema"]
             );
         }

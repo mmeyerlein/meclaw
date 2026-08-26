@@ -87,6 +87,28 @@ impl StdioChild {
             .map_err(|_| StdioChildError::Timeout)?
     }
 
+    /// Write one ALREADY-SERIALIZED JSON document as a frame.
+    ///
+    /// No timeout of its own -- like [`write_line`], the caller owns the
+    /// A-timeout. It exists so a consumer that already holds the bytes does not
+    /// have to parse them into a `Value` only to serialize them again: on the
+    /// `code` cell's warm path that round trip would copy every message body
+    /// twice on the very hop the mode exists to shorten.
+    pub async fn write_raw(&mut self, line: &str) -> Result<(), StdioChildError> {
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| StdioChildError::Write(e.to_string()))?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| StdioChildError::Write(e.to_string()))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| StdioChildError::Write(e.to_string()))
+    }
+
     /// Read the next frame from the child's stdout.
     ///
     /// Deliberately NOT timeout-wrapped: see the plan's rule-12 classification

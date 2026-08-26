@@ -40,7 +40,10 @@ impl CellFactory for CodeCellFactory {
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
         let params = CodeParams::parse(&raw_params)?;
-        let max_concurrency = params.max_concurrency.unwrap_or(4);
+        // `resident` forces 1 (R2); every other mode keeps the pre-lane default.
+        // The SAME number bounds the dispatcher and sizes the pool, so a warm
+        // cell can never have more workers than children or the other way round.
+        let max_concurrency = params.effective_max_concurrency();
         // Reads contract.multi_send_capable from the CellFactory trait param (Phase 11).
         let multi_send_capable = contract.multi_send_capable;
         // Paket 7 (P13/D-017): carry compiled emits + effective validate flag.
@@ -57,7 +60,12 @@ impl CellFactory for CodeCellFactory {
                 // W12 route A: the script reads its own configuration off stdin.
                 // Both spawn paths (here and `boot_inactive_respawn` below)
                 // must attach it, or a restarted cell would silently lose it.
-                .with_stdin_params(&raw_params),
+                .with_stdin_params(&raw_params)
+                // Runner modes (R2): `cold` leaves the cell untouched; warm and
+                // resident start their pool HERE, once per cell value, so a
+                // crash-respawn keeps the warm children (it is the dispatcher
+                // that died, not the script).
+                .with_runner_pool(&params, max_concurrency),
         );
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: initial dispatcher via
@@ -152,10 +160,10 @@ impl CellFactory for CodeCellFactory {
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
         let params = CodeParams::parse(&raw_params).ok()?;
-        let max_concurrency = params.max_concurrency.unwrap_or(4);
+        let max_concurrency = params.effective_max_concurrency();
         let cell = Arc::new(
             CodeCell::new(
-                params,
+                params.clone(),
                 contract.multi_send_capable,
                 contract.emits.clone(),
                 // Befund 2 (Phase-1): `code` is an always-on trust boundary (see
@@ -164,7 +172,10 @@ impl CellFactory for CodeCellFactory {
             )
             // W12 route A: same params copy as on the regular spawn path — a
             // restarted cell must see the configuration it was born with.
-            .with_stdin_params(&raw_params),
+            .with_stdin_params(&raw_params)
+            // A boot-inactive warm cell costs nothing: the child task spawns its
+            // process on the FIRST job, so only the broker exists here.
+            .with_runner_pool(&params, max_concurrency),
         );
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
@@ -288,6 +299,86 @@ mod tests {
         sender.send(msg).await.unwrap();
         let em = orx.recv().await.unwrap();
         assert_eq!(em.content["header"]["exit_code"], 0);
+    }
+
+    /// `resident` forces the dispatcher's semaphore to 1 even when nothing was
+    /// declared -- otherwise the mode's serial promise would be decided by a
+    /// default of 4 somewhere else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resident_spawns_with_a_concurrency_of_one() {
+        let p = CodeParams::parse(&json!({
+            "runner":"python3","script_inline":"pass","runner_mode":"resident"
+        }))
+        .unwrap();
+        assert_eq!(p.effective_max_concurrency(), 1);
+    }
+
+    /// A declared value that contradicts the mode is refused BEFORE a cell
+    /// exists -- `validate_params` is the pre-spawn gate the colony calls.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resident_cell_with_two_workers_is_refused_at_validation() {
+        let e = Arc::new(CodeCellFactory)
+            .validate_params(&json!({
+                "runner":"python3","script_inline":"pass",
+                "runner_mode":"resident","max_concurrency":2
+            }))
+            .unwrap_err();
+        assert_eq!(
+            e,
+            "params.max_concurrency must be 1 when runner_mode is \"resident\""
+        );
+    }
+
+    /// The whole point of the factory in this lane: a warm cell that goes
+    /// through the production spawn path answers, and answers from a process
+    /// that the NEXT message finds again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_warm_cell_spawned_by_the_factory_reuses_its_interpreter() {
+        let raw = json!({
+            "runner":"python3",
+            "script_inline": "import os,sys,json; sys.stdout.write(json.dumps({\"messages\":[],\"pid\":os.getpid()}))",
+            "external_timeout_ms": 10000,
+            "runner_mode": "warm",
+            "max_concurrency": 1
+        });
+        let (otx, mut orx) = tokio::sync::mpsc::channel(8);
+        let td = tempfile::TempDir::new().unwrap();
+        let (itx, _irx) = tokio::sync::mpsc::channel(8);
+        let spawned = Arc::new(CodeCellFactory)
+            .spawn_cell(
+                Path::new("/code"),
+                raw,
+                otx,
+                td.path().to_path_buf(),
+                meclaw_colony::ContractView::default(),
+                itx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            )
+            .unwrap();
+        let sender = match spawned {
+            SpawnedCellKind::Active { sender, .. } => sender,
+            SpawnedCellKind::Dormant { .. } => unreachable!("code spawns Active"),
+        };
+        let mut pids = Vec::new();
+        for _ in 0..2 {
+            sender
+                .send(
+                    MessageBuilder::new(Path::new("/code"))
+                        .body(Body::Inline(json!({"messages":[]})))
+                        .reply_to(Path::new("/sink"))
+                        .build(),
+                )
+                .await
+                .unwrap();
+            let em = orx.recv().await.unwrap();
+            assert_eq!(em.content["header"]["exit_code"], 0);
+            pids.push(em.content["pid"].as_i64().unwrap());
+        }
+        assert_eq!(pids[0], pids[1], "the warm cell kept its interpreter");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
