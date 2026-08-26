@@ -648,19 +648,121 @@ def flow_layout(nodes, edges):
 
 
 def auto_layout(nodes, edges, saved):
-    """Where every box sits: the flow layout, overruled by what is on record.
+    """Where every box sits: the flow layout, anchored to and overruled by
+    what is on record.
 
     Deterministic: same input, same output, so a changed picture means a changed
     colony -- or a hand that moved something.
+
+    The flow is computed blind to stored positions on purpose (GH #170: nothing
+    stored is ever expressed against it). But USING it blind put two coordinate
+    systems on one canvas: the flow's grid and the person's arrangement, and a
+    hive's frame -- the bounding box of its members -- dutifully drew around
+    members in whichever system they ended up in, straight through the frames
+    of unrelated hives (GH #416, measured: 41 sibling-frame overlaps on an
+    arranged 59-cell colony). Two corrections, both derived and neither stored:
+
+    1. ANCHORING -- a hive that holds pinned cells drags its whole block to
+       them. Walked parents-first, each level translating its subtree by the
+       mean offset between its pinned members' stored spots and where the flow
+       put them, so the unpinned siblings of an arranged cluster land BESIDE
+       the cluster instead of half a canvas away. With nothing pinned this is
+       the identity.
+    2. EVICTION -- a top-level hive with NO pinned cell anywhere below it is
+       one free-floating block, and it is moved out of the anchored hives'
+       rectangles wholesale (nearest free spot, grid steps, deterministic),
+       so its frame cannot lie inside a foreign one. Per-cell `settle` still
+       runs after it for whatever remains.
     """
     pos = flow_layout(nodes, edges)
+
+    kids = hive_tree(list(pos))
+
+    def subtree_cells(h):
+        out = [i for i in pos if hive_of(i) == h]
+        for c in kids.get(h, []):
+            out.extend(subtree_cells(c))
+        return out
+
+    def anchor(h):
+        cells = subtree_cells(h)
+        pinned = [i for i in cells if i in saved]
+        if pinned:
+            dx = round(sum(saved[i][0] - pos[i][0] for i in pinned) / len(pinned))
+            dy = round(sum(saved[i][1] - pos[i][1] for i in pinned) / len(pinned))
+            if dx or dy:
+                for i in cells:
+                    pos[i] = (pos[i][0] + dx, pos[i][1] + dy)
+        for c in sorted(kids.get(h, [])):
+            anchor(c)
+
+    anchor("")
+
     for i, xy in saved.items():
         if i in pos:
             pos[i] = xy
+
     # Only a STORED position counts as placed by hand, and the frames are computed
     # over those cells ALONE: they are what a foreign hive occupies, and deriving
     # them from the cells still being settled would be circular.
-    settle(pos, set(saved), hive_frames({i: pos[i] for i in saved if i in pos}))
+    frames = hive_frames({i: pos[i] for i in saved if i in pos})
+
+    def hits_rect(x, y, w, h, r):
+        rx, ry, rw, rh = r
+        return x < rx + rw and rx < x + w and y < ry + rh and ry < y + h
+
+    step_x, step_y = NODE_W + GAP_X, NODE_H + GAP_Y
+
+    def evict(parent):
+        """Move each pin-free child block out of every OTHER hive's rectangle.
+
+        Checked against the frames the finished picture will actually draw --
+        every cell except the block's own -- because the overlap a person sees
+        is against those, not against the pinned skeleton alone. Sequential and
+        sorted, so evicting one block is visible to the next; nested pin-free
+        blocks inside a pinned hive get the same treatment one level down.
+        """
+        for c in sorted(kids.get(parent, [])):
+            cells = subtree_cells(c)
+            if not cells:
+                continue
+            if any(i in saved for i in cells):
+                evict(c)
+                continue
+            bx = min(pos[i][0] for i in cells) - PAD_SIDE
+            by = min(pos[i][1] for i in cells) - PAD_TOP
+            bw = max(pos[i][0] for i in cells) + NODE_W + PAD_SIDE - bx
+            bh = max(pos[i][1] for i in cells) + NODE_H + PAD_BOT - by
+            mine = set(cells)
+            others = hive_frames({i: pos[i] for i in pos if i not in mine})
+            foreign = [r for hh, r in sorted(others.items())
+                       if hh and hh != c and not c.startswith(hh + "/")
+                       and not hh.startswith(c + "/")]
+            if not any(hits_rect(bx, by, bw, bh, r) for r in foreign):
+                continue
+            spot = None
+            for ring in range(1, 13):
+                candidates = []
+                for dx in range(-ring, ring + 1):
+                    for dy in range(-ring, ring + 1):
+                        if max(abs(dx), abs(dy)) != ring:
+                            continue
+                        candidates.append((abs(dx) + abs(dy), dx < 0, dy < 0,
+                                           (dx * step_x, dy * step_y)))
+                for cand in sorted(candidates):
+                    ox, oy = cand[-1]
+                    if not any(hits_rect(bx + ox, by + oy, bw, bh, r) for r in foreign):
+                        spot = (ox, oy)
+                        break
+                if spot:
+                    break
+            if spot:
+                for i in cells:
+                    pos[i] = (pos[i][0] + spot[0], pos[i][1] + spot[1])
+
+    evict("")
+
+    settle(pos, set(saved), frames)
     return pos
 
 

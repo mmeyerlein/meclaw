@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.1.2`
+# Migrating a `canvy` instance from 1.x to `canvy@2.1.3`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -58,7 +58,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.1.2` beside the old hive
+## 1. Instantiate `canvy@2.1.3` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free port:
@@ -70,7 +70,7 @@ with the old one and the display a free port:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.1.2",
+        "template": "canvy@2.1.3",
         "override_params": {"web": {"port": 7811}}
       }
     ]

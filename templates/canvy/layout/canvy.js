@@ -767,6 +767,7 @@
       this.geom = geometryOf(this.el);
       this.wire();
       applyCamera(this.el, this.cam);
+      applyFrames(this.el, this.geom);
       drawEdges(this.el);
     },
     // A diff re-renders the slot it changed, so the edges of the boxes it moved
@@ -774,9 +775,18 @@
     // viewport element is now in the DOM. Re-applying is not a workaround for the
     // SSR model, it IS the model: the client owns the view, the server owns the
     // picture.
+    //
+    // The FRAMES are re-derived too, and this line is load-bearing: LiveView
+    // morphs the whole container back to the server tree on every diff, and the
+    // server's hive rectangles only catch up on the next layout tick. Without
+    // re-deriving here, dropping a cell snapped every frame back to the stale
+    // server geometry for up to a minute -- seen as "the hive jumps back, then
+    // corrects itself seconds later". Frames are derived from the cells, so the
+    // client can always recompute them from what the morph just delivered.
     updated() {
       this.geom = geometryOf(this.el);
       applyCamera(this.el, this.cam);
+      applyFrames(this.el, this.geom);
       drawEdges(this.el);
       if (this.sel) select(this.el, this.sel); else clearSelection(this.el);
     },
@@ -856,9 +866,26 @@
           // position shifted by the same vector, and every auto-laid cell got
           // pinned where it happened to stand. The label is small, unambiguous
           // and always on top of its own frame; the fill pans the camera.
-          const hg0 = ev.target.closest ? ev.target.closest("[data-hive]") : null;
-          const hg = hg0 && hg0.querySelector && hg0.querySelector("text") === ev.target
-            ? hg0 : null;
+          //
+          // "On the label" is decided by looking THROUGH the paint order: on an
+          // arranged colony, frames overlap (GH #416) and a later sibling's
+          // fill covers an earlier hive's label — hit-testing the top element
+          // alone made those hives ungrabbable. So every element under the
+          // pointer is considered, and the first hive LABEL in the stack wins.
+          let hg = null;
+          if (document.elementsFromPoint) {
+            for (const under of document.elementsFromPoint(ev.clientX, ev.clientY)) {
+              if (under.tagName === "text" && under.closest) {
+                const owner = under.closest("[data-hive]");
+                if (owner) { hg = owner; break; }
+              }
+              if (under.closest && under.closest("[data-node]")) break;
+            }
+          } else {
+            const hg0 = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+            hg = hg0 && hg0.querySelector && hg0.querySelector("text") === ev.target
+              ? hg0 : null;
+          }
           if (hg) {
             const id = hg.getAttribute("data-hive");
             const members = membersOf(el, id);
