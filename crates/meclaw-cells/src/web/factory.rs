@@ -201,10 +201,12 @@ fn make_build(
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed here so a params error is a spawn failure rather than a panic on
     // the respawn path. The effective values are re-derived per (re)spawn
-    // inside the closure — see the restore step there.
-    WebParams::parse(&params)?;
+    // inside the closure — see the restore step there — and this value is what
+    // that step falls back to, so the fallback cannot fail either.
+    let birth_parsed = WebParams::parse(&params)?;
 
     let birth_cap = params;
+    let birth_parsed_cap = birth_parsed;
     let path_cap = path;
     let outputs_cap = outputs_tx;
     let cell_dir_cap = cell_dir;
@@ -265,7 +267,11 @@ fn make_build(
                     "web: could not replay the params overlay — this display \
                      starts on its birth params"
                 );
-                WebParams::parse(&birth_cap).expect("birth params parsed at build time")
+                // The value parsed above, not a second parse of the same JSON:
+                // a re-parse here would be an infallible call that still had to
+                // say what it does when it fails, on the respawn path, where a
+                // panic takes the whole colony task.
+                birth_parsed_cap.clone()
             }
         };
         // 2. Build the I/O state and the cell (sync). The pages channel is the
