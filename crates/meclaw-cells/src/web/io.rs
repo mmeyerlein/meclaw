@@ -629,12 +629,13 @@ async fn fan_out(pushes: &mut mpsc::Receiver<WebReconfig>, viewers: &Arc<ViewerR
         match push {
             WebReconfig::Push { route, diff } => {
                 for (tx, join_ref, topic) in viewers.on_route(&route).await {
-                    let frame = meclaw_surface::frames::push(
-                        &join_ref,
-                        &topic,
-                        "diff",
-                        meclaw_core::serde_json::json!({ "diff": diff }),
-                    );
+                    // The tree rides BARE on the push lane (GH #413). The
+                    // `{"diff": ...}` wrapper is the *reply* shape; the client
+                    // hands a push payload straight to `Rendered.extract`, so a
+                    // wrapper becomes one junk slot and the re-render restores
+                    // the old markup — the drag's spring-back.
+                    let frame =
+                        meclaw_surface::frames::push(&join_ref, &topic, "diff", diff.clone());
                     // A full or closed viewer channel means that browser is
                     // gone or wedged; its connection task cleans up the registry
                     // entry. One slow viewer must not hold up the others.

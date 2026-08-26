@@ -289,7 +289,13 @@ async fn a_joined_viewer_gets_exactly_one_diff_per_write() {
     for f in &frames {
         assert_eq!(f[3], json!("diff"), "a push is a diff frame: {f}");
         assert_eq!(f[1], Value::Null, "a push has no message ref: {f}");
-        assert!(f[4]["diff"].is_object(), "the payload carries a diff: {f}");
+        // Bare tree, no `{"diff": ...}` wrapper (GH #413): the client hands a
+        // push payload straight to `Rendered.extract`.
+        assert!(f[4].is_object(), "the payload is the diff tree itself: {f}");
+        assert!(
+            f[4].get("diff").is_none(),
+            "no reply-shaped wrapper on the push lane: {f}"
+        );
     }
 
     live.join.abort();

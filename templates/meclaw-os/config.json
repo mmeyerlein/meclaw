@@ -25,19 +25,19 @@
         },
         {
           "route": "in_turn",
-          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.0.1"
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.0.2"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.0.1"
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.0.2"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.0.1"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.0.2"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.0.1"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.0.2"
         }
       ],
       "emits": [
@@ -47,7 +47,7 @@
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.0.5 and org@1.0.1"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.0.5 and org@1.0.2"
         },
         {
           "route": "mutate",
@@ -55,27 +55,27 @@
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.0.1"
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.0.2"
         },
         {
           "route": "reject",
-          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.0.1"
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.0.2"
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.11 and org@1.0.1"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.0.5, steward@2.0.11 and org@1.0.2"
         },
         {
           "route": "write",
-          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.0.1"
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.0.2"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.0.1"
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.0.2"
         },
         {
           "route": "prune",
-          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.0.1"
+          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.0.2"
         }
       ]
     },

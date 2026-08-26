@@ -1,4 +1,4 @@
-# `org@1.0.1`
+# `org@1.0.2`
 
 The namespace, and nothing else.
 
@@ -56,7 +56,7 @@ They are **derived, not invented**. The rule is the one this wave ruled for a co
 level: *a level declares the union of what its occupants accept and emit at the version
 it was derived from, minus the lanes a sibling inside the level consumes itself.*
 
-The occupant of this level is `member@1.0.1`. Its accepts list is `in_turn`,
+The occupant of this level is `member@1.0.2`. Its accepts list is `in_turn`,
 `in_recall`, `in_brief`, `in_propose`; its emits list is `answer`, `ack`, `reject`,
 `error`, `write`, `turn_write`, `prune`. **Nothing is subtracted**, because the only
 thing inside an org is the container -- there is no sibling here to consume anything. So
@@ -101,7 +101,7 @@ seems to need is either one member's or the shell's.
 
 **The one exception, and it is not an exception to the rule.** A group that owns an
 agent nobody owns personally -- a shared assistant, a duty desk, a support persona --
-is a **member** with its own name, instantiated from `member@1.0.1` like any other. It
+is a **member** with its own name, instantiated from `member@1.0.2` like any other. It
 gets a memory because it is a member, not because it is a group. The rule survives
 intact; only the naming moves.
 
@@ -140,12 +140,12 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@1.0.1`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@1.0.2`, plus the transit
    edges -- the four inbound lanes onto the org's own path, and the seven outbound ones
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor.
 2. **Each member, afterwards, one at a time.** An `add_nodes` into `<org>/members` with
-   `member@1.0.1`, and in the *same* mutation the edges that member needs. The container
+   `member@1.0.2`, and in the *same* mutation the edges that member needs. The container
    is open precisely so that this mutation is legal.
 
 Pin the version rather than writing a bare name: a bare `org` resolves to the highest

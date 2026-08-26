@@ -1,4 +1,4 @@
-# `member@1.0.1`
+# `member@1.0.2`
 
 One person, as a level. Three holders and one open container:
 
@@ -40,7 +40,7 @@ version pinned above — nothing here describes a lane a holder lost.
 | in | goes to | the caller promotes |
 |---|---|---|
 | `in_turn` | the screen | `context.channel` — and `context.user_id` if this colony has per-user firewall rules |
-| `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, plus the round: `context.audience_set` and `context.channel` |
+| `in_recall` | the memory, as its own `in_query` | `hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`, `hop.memory_call_id` (the collector's correlation id, GH #411 — promoted into context because a hop does not survive the hive), plus the round: `context.audience_set` and `context.channel` |
 | `in_brief` | the record, to read | `context.asker` and `context.audience_set` |
 | `in_propose` | the record, to write | `context.actor`, and `context.subscriber` for a `subscribe` |
 

@@ -1040,7 +1040,32 @@ def patches(want, have, bootstrap):
     Components before objects, the root before its children, the page after its
     root -- one bundle, applied in call order, so a fresh display and a running
     one take exactly the same path.
+
+    An update whose props the display ALREADY holds is not a call (GH #412).
+    `want` is a function of the snapshot and of the positions read back out of
+    the display, so on a colony nobody changed and nobody dragged, `want` IS
+    `have` and the honest patch is empty. Emitting it anyway is not merely
+    wasteful: the `web` cell applies a bundle through its single database
+    actor, so a full rewrite of every object holds that actor for as long as
+    the rewrite takes -- and a browser's `object:set` is served by the same
+    actor. A drag released into that window is not written until the rewrite
+    ends, while the diffs of the rewrite keep re-rendering the node at the
+    position the display still holds. That is a node that springs back to
+    where it was and stays there for seconds, which is the one thing a drag
+    must never do. Measured on a live colony of 505 objects: every tick wrote
+    all 505, all of them byte-identical, and held the actor ~3 s of every 60.
     """
+
+    def unchanged(oid, props):
+        """True when the display already holds exactly these props.
+
+        Compared over the props of `want` ALONE, because `object.update` merges
+        per key: the root additionally carries `client_css`/`client_js`, which
+        no later patch mentions and which must not read as a difference.
+        """
+        old = have.get(oid)
+        return old is not None and all(old.get(k) == v for k, v in props.items())
+
     calls = []
     if bootstrap:
         for c in components():
@@ -1062,13 +1087,15 @@ def patches(want, have, bootstrap):
         })
         calls.append({"op": "page.set", "route": "/", "root": ROOT_ID,
                       "title": "canvy"})
-    elif ROOT_ID in want:
+    elif ROOT_ID in want and not unchanged(ROOT_ID, want[ROOT_ID]["props"]):
         calls.append({"op": "object.update", "id": ROOT_ID,
                       "props": want[ROOT_ID]["props"]})
 
     for oid in sorted(k for k in want if k != ROOT_ID):
         spec = want[oid]
         if oid in have:
+            if unchanged(oid, spec["props"]):
+                continue
             calls.append({"op": "object.update", "id": oid, "props": spec["props"]})
         else:
             calls.append({

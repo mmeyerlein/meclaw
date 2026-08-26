@@ -11,6 +11,42 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A browser actually applies the `web` cell's live updates now**
+  ([#413](https://github.com/mmeyerlein/meclaw/issues/413)). The broadcast
+  frame `fan_out` sent to every viewer wrapped the diff tree in an extra
+  `{"diff": ...}` object — the *reply* shape, on the *push* lane. The vendored
+  LiveView client hands a push payload straight to `Rendered.extract`, so the
+  wrapper read as one junk slot, the dynamics stayed what they were, and the
+  re-render morphed the DOM back to the old markup. Visible as "the move bug":
+  a dragged canvy node sprang back on release although the write had landed
+  and a fresh page load rendered it at the dropped position. The tree now
+  rides bare on the push lane; the three tests that had pinned the wrapped
+  shape assert the bare one, plus that no `diff` key can come back.
+
+- **`member`: the recall doors promote `memory_call_id` into context**
+  ([#411](https://github.com/mmeyerlein/meclaw/issues/411)). The collector
+  correlates a returning bundle over `context.memory_call_id`; the caller puts
+  the id in the hop, and a hop does not survive the memory-hive. Both member
+  edges into `./memory-hive` promoted everything the recall shape names except
+  that id, so every four-level composition had a working memory it could not
+  use in conversation — the bundle came back correct, was filed as the ambient
+  leg, and the brain saw "tool result lost". `member@1.0.2`; the versioned
+  pins pulled `org@1.0.2` and `meclaw-os@1.0.3` behind it, each stage reported
+  by its own test.
+
+- **`canvy`: the layout tick emits nothing when nothing changed**
+  ([#412](https://github.com/mmeyerlein/meclaw/issues/412)). `patches()`
+  turned every object in `want` that also exists in `have` into an
+  `object.update` unconditionally — on a steady colony that is a byte-identical
+  full rewrite per tick, and it held the display's single database actor for
+  seconds of every minute, stalling the browser's `object:set` writes.
+  A no-op guard compares over the props of `want` alone (the root's
+  `client_css`/`client_js` must not read as a difference); measured effects:
+  steady state emits nothing, a drag's next tick emits at most the root's
+  viewbox. `canvy@2.1.1`.
+
 ## [0.23.0] — 2026-08-26
 
 ### Added

@@ -122,7 +122,8 @@
               "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
               "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
               "audience_now": "has(context.audience_set) ? context.audience_set : ''",
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "memory_call_id": "has(hop.memory_call_id) ? hop.memory_call_id : ''"
             }
           }
         },
@@ -166,7 +167,8 @@
               "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
               "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
               "audience_now": "has(context.audience_set) ? context.audience_set : ''",
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "memory_call_id": "has(hop.memory_call_id) ? hop.memory_call_id : ''"
             }
           }
         },

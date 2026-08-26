@@ -724,12 +724,16 @@ fn the_tick_after_an_adoption_is_an_ordinary_patch() {
             layout_context(&hop),
         ),
     );
-    let calls = calls_of(&out[0]);
+    // Nothing changed between the boot and this tick, so the honest patch is
+    // empty — no re-bootstrap, and no rewrite either (GH #412): an update whose
+    // props the display already holds is not a call, and a steady-state tick
+    // that wrote all 505 objects of a live colony held the display's single
+    // database actor ~3 s of every 60, which is what made a released drag
+    // spring back. This is the property the module docstring promises, held
+    // over the TRAFFIC and not merely over the values.
     assert!(
-        !calls.iter().any(|c| c["op"] == "component.define"),
-        "a display that already holds canvy's root is not bootstrapped again — \
-         the definitions are idempotent, but re-sending them every minute would \
-         mean the condition never converged: {calls:#?}"
+        out.is_empty(),
+        "the tick after an adoption emits nothing at all: {out:#?}"
     );
 }
 
@@ -778,12 +782,18 @@ fn a_position_the_display_already_holds_is_left_alone() {
         "a display that already holds the picture is patched, not rebuilt: {:#?}",
         calls.iter().map(|c| c["op"].clone()).collect::<Vec<_>>()
     );
-    let moved = calls
-        .iter()
-        .find(|c| c["id"] == "n/a/one")
-        .expect("n/a/one");
-    assert_eq!(moved["props"]["x"], json!(4321));
-    assert_eq!(moved["props"]["y"], json!(1234));
+    // The dragged box is NOT re-emitted (GH #412): the display already holds
+    // (4321,1234), the pass reads it back into `want`, and an update whose
+    // props the display already holds is not a call. What does move is the
+    // root — its viewbox follows the box that left the frame.
+    assert!(
+        !calls.iter().any(|c| c["id"] == "n/a/one"),
+        "a position the display already holds is left alone, on the wire too: {calls:#?}"
+    );
+    assert!(
+        calls.iter().any(|c| c["id"] == "canvy"),
+        "the root's viewbox follows the dragged box: {calls:#?}"
+    );
 
     // …and a cell the colony no longer has loses its box. 1.x could not do this
     // — a row naming a vanished cell was indistinguishable from a rename, so the
@@ -1371,15 +1381,22 @@ async fn a_drag_survives_the_next_tick() {
             layout_context(&hop),
         ),
     );
-    let moved = calls_of(&next[0])
-        .into_iter()
-        .find(|c| c["id"] == "n/a/one")
-        .expect("n/a/one");
-    assert_eq!(
-        (moved["props"]["x"].as_i64(), moved["props"]["y"].as_i64()),
-        (Some(4321), Some(1234)),
-        "the tick after a drag must not move the box back: {moved}"
-    );
+    // The tick after a drag does not move the box back — and since GH #412 it
+    // does not even mention it: the display already holds (4321,1234), the
+    // pass reads it back, and an update whose props the display already holds
+    // is not a call. If anything is emitted at all it is the root's viewbox
+    // following the box, never the box itself at a different position.
+    for emission in &next {
+        for call in calls_of(emission) {
+            if call["id"] == "n/a/one" {
+                assert_eq!(
+                    (call["props"]["x"].as_i64(), call["props"]["y"].as_i64()),
+                    (Some(4321), Some(1234)),
+                    "the tick after a drag must not move the box back: {call}"
+                );
+            }
+        }
+    }
 
     live.join.abort();
 }

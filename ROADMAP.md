@@ -62,11 +62,6 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   drain: in-flight work is lost on EOF and child termination
 - [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
   subscription plan actually carries until reset
-- [#267](https://github.com/mmeyerlein/meclaw/issues/267) `steward` reads
-  `colony.db` directly, which the spec has forbidden without exception since
-  #160 — the data it needs (cost, errors, dead letters, whether a mutation
-  committed) has no sanctioned route today, so this is a decision about the rule
-  rather than a repair
 - [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
   selection and closed-loop automation, beyond the v1 catalogue
 
@@ -123,9 +118,6 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
   (decided 2026-08-23): the extraction and recall lanes are still moving
   underneath the read path, and a paired end-to-end measurement only means
   something once the thing it measures stops changing between runs.
-- [#55](https://github.com/mmeyerlein/meclaw/issues/55) the recall window has a
-  producer since #78, but no shipped composite carries the tool that drives it,
-  so time-range questions still run as point recalls
 - [#261](https://github.com/mmeyerlein/meclaw/issues/261) the memory porter
   predates the substrate's `transfer` slot and now duplicates four things it does
   natively — a hand-maintained schema mirror, an idempotence probe, a provenance
@@ -137,20 +129,29 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 ## Alongside: surfaces and docs
 
 New ways in and out. [#38](https://github.com/mmeyerlein/meclaw/issues/38) voice
-ingress first — dictation-style now, realtime speech when the APIs land — then
-[#39](https://github.com/mmeyerlein/meclaw/issues/39) the realtime HTML window.
+ingress — dictation-style now, realtime speech when the APIs land — is what is
+left of this stream.
 [#43](https://github.com/mmeyerlein/meclaw/issues/43) is down to its last piece:
 the keyless quickstart and the annotated message trace shipped with 0.9.0, the
 *moving* demo did not.
 
+The realtime HTML window ([#39](https://github.com/mmeyerlein/meclaw/issues/39))
+left it in the other direction: closed as **superseded** rather than built as
+asked. It pictured a bridge outside the core with a swappable fragment protocol;
+0.22.0 built the opposite, a display that is a cell type inside the substrate
+with a port and a `cell.db` of its own. What the issue wanted a browser to do it
+does. What it pictured and nobody has built — an agent showing something *while*
+it speaks — earns its own issue when someone takes it, rather than a line here.
+
 ## Ongoing: community templates
 
 The template surface is open: a template is a directory, a README and a
-`template.json`. Nineteen are listed in
-[`templates/README.md`](templates/README.md) as worked examples — sixteen
-single-purpose ones plus three composites: `talky@3.0.14`, which references four
-of them as sub-units, `cogny@3.0.11`, which references two, and
-`memory-hive@2.3.4`, a member's long-term memory as a hive of twelve cells.
+`template.json`. Twenty-six are listed in
+[`templates/README.md`](templates/README.md) as worked examples. Among them the
+four composition levels — `meclaw-os`, `org`, `member`, `assistant` — the two
+agent composites `talky@4.2.1`, which references four of the smaller templates
+as sub-units, and `cogny@4.0.3`, which references two, and `memory-hive@3.0.1`,
+a member's long-term memory as a hive of thirteen cells.
 
 New ones are welcome. What a hive template has to satisfy is
 [`templates/README.md`](templates/README.md) § The hive boundary — it is a
@@ -159,18 +160,15 @@ requirement, not a convention.
 What a shipped template promises and what it does drift apart silently, because
 nothing recomputes the promise. 0.17.0 closed six such findings and swept the
 `not_in_scope` field of all 34 templates against the code, which turned up eleven
-more sentences that were simply false. What is left:
-
-- [#272](https://github.com/mmeyerlein/meclaw/issues/272) every user turn of one
-  drained batch is attributed to the same speaker, because `context` is per
-  message and a batch is a day. The audience gate holds and nothing leaks; what
-  breaks is who said what *inside* the room, which is the distinction a
-  multi-person channel exists to make. A wrong identity is worse than an absent
-  one — nothing downstream can tell a filled column from a correct one
-- [#254](https://github.com/mmeyerlein/meclaw/issues/254) the general form of the
-  same problem, one level up: a review checks code against spec, so a spec that
-  is ahead of the code passes every review. The audit sorts every claim about
-  behaviour into built-and-pinned, built-and-unpinned, or described-and-absent
+more sentences that were simply false. The general form of that problem — a
+review checks code against spec, so a spec that is ahead of the code passes every
+review — has a standing answer since 0.22.4: the spec-claims registry
+([#254](https://github.com/mmeyerlein/meclaw/issues/254)) sorts every claim about
+behaviour into built-and-pinned, built-and-unpinned or described-and-absent, and
+its middle bucket is empty. What remains is keeping it that way, which is a gate
+rather than a stream item: a claim that is described and absent carries a visible
+retraction marker in both language versions, and CI refuses the pair that
+disagree.
 
 ## Shipped
 
@@ -190,6 +188,71 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
   shipped contract moved with the capability: it required a `messages` array, so
   a params update would have been refused at the door of every display
   instantiated from the template.
+
+- **v0.22.5 — the toolchain moves when somebody moves it.**
+  `rust-toolchain.toml` names an exact version instead of tracking `stable`, so a
+  lint that ships with a new compiler arrives in a commit that says so and can be
+  reverted, never underneath a tag mid-release. That pin is **1.98.0**, raised
+  deliberately, with everything 1.98 denies handled in the same commit: the four
+  substrate send paths return a boxed `SendError`, so the undelivered value still
+  comes back to the caller and the allocation moves into the failure branch. No
+  caller had to change, nothing on the wire is different, and the frozen
+  corridors were not touched.
+
+- **v0.22.4 — the registry has no unpinned bucket left, and a mutation stops
+  growing a cell the boot refuses.** The spec-claims audit's second bucket —
+  behaviour the code has and nothing proves — went from eight rows to zero.
+  Three of those needed a test nobody had written, and each is a **set** claim
+  that per-item assertions cannot make: the dead-letter `error_code` vocabulary
+  is closed and canonical, the mutation `error_code` enum is exactly what the
+  spec lists across all three of its producers, and cron expressions are
+  evaluated in UTC — pinned with a wall-clock hour in January *and* July. Beside
+  it, the two paths that put a cell into a colony stopped disagreeing:
+  `add_nodes` validated a dozen things and never asked whether the `params` block
+  deserializes for the type it names, so a mutation committed and the colony
+  refused to start at the *next* boot, in front of whoever restarted it rather
+  than whoever grew it. Instantiation now runs the factory's own parse at staging
+  and refuses pre-destructively (**new `error_code`: `invalid_params`**,
+  additive). Plus the two shipped templates that still taught `./surface` in
+  their own recipes, and a ruling written down where it happens: a bundle is not
+  a transaction, so a destructive `web` bundle goes as two.
+
+- **v0.22.3 — a mixed completion answers the turn it spoke for.** When a brain
+  answered with prose **and** an async tool call in one completion — the shape an
+  async tool description asks for — the dispatcher marked the prose `interim`
+  unconditionally while the collector, correctly, filed the round as over. The
+  turn ended with an interim answer and no final one, forever, in 10 of 12
+  measured rounds. `interim` is a promise that a final answer follows, so it is
+  set only when one is coming; where every call is async-and-not-handoff, the
+  sentence beside them **is** the answer.
+
+- **v0.22.2 — a seed nobody can load is refused by name, and a starting display
+  says it is starting.** Six cell types were still being seeded eagerly by
+  mutation staging, which builds a table from a header that cannot describe a
+  schema — no key, no `NOT NULL`, no `CHECK` — leaving the cell's own DDL to find
+  the wrong table standing. They declare `owns_schema` now, so staging stands
+  down, and a `seed/*.jsonl` beside one of them is refused in the plan phase
+  naming the file and the type. The other half: a `web` cell binds its port
+  before its page map is published, so about one install in three answered `404`
+  for a page its own seed declares — and `404` from that cell is a statement
+  about the `pages` table. The window answers `503 starting` now. The examples'
+  front-door cell is called `door` rather than `surface`, since the route prefix
+  it used to collide with is gone.
+
+- **v0.22.1 — what the first day of a `web` cell in production found.** The
+  toolchain was pinned here first, because clippy passed on one commit and failed
+  on a byte-identical one an hour later. `canvy` adopted the demo page its own
+  `web` sub-unit seeds — the bootstrap branch never ran, so 412 of 418 bundle
+  legs were refused while the `delete` legs landed, and the display emptied
+  itself once a minute; the condition is "is this page mine" now rather than "did
+  the query fail". The canvy migration's retirement step warns before it can take
+  a colony down (it removed the only boundary-crossing edge of a subtree and
+  flipped 47 active cells to zero), and its way back stops promising an undo the
+  substrate refuses. A shipped `steward` schedule the `timer` rejects on all four
+  counts meant the control loop had never ticked and the colony would not start
+  again; every shipped `timer` now goes through the factory call the boot makes.
+  And three reader-facing documents were re-measured against the tree they
+  describe rather than re-worded.
 
 - **v0.22.0 — a display is a cell, and it owns its port.** Until now a colony had
   exactly one HTTP surface and it belonged to the process rather than to the tree:
@@ -217,7 +280,13 @@ One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
   a level that holds channels does the lane normalisation it used to do.
   `channel@1.0.3` is withdrawn. The `tools` hive gives an assistant's whole tool
   surface one address with one contract, so swapping three tool cells for one
-  code-executing cell moves no edge of the caller.
+  code-executing cell moves no edge of the caller. The composite also serves its
+  own two recall tools and ships their schemas in the brain's seed, so a talky
+  instantiated from the library answers a time-range question without its owner
+  hand-writing a tool schema first
+  ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) — with one caveat in
+  the README: an **existing** instance gains the edges from the mutation and the
+  schemas only from a `system.tools` update or a fresh generation.
 
 - **v0.20.1 — an emission from the boot window is held, not lost.** A `proxy`,
   `timer` or `mcp` cell emits from the moment its I/O task spawns, and the colony

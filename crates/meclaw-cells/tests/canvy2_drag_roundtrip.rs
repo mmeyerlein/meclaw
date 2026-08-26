@@ -356,9 +356,16 @@ async fn a_drag_reaches_every_viewer_and_costs_no_message() {
         .await
         .expect("the other viewer receives the diff");
     assert_eq!(b_diff[3], json!("diff"), "{b_diff}");
+    // The tree rides BARE in the push payload (GH #413): the LiveView client
+    // hands the payload straight to `Rendered.extract`, so a `{"diff": ...}`
+    // wrapper becomes a junk slot and no browser ever applies the update.
     assert!(
-        b_diff[4]["diff"].to_string().contains("translate(4321"),
-        "the diff carries the box at its new place"
+        b_diff[4].get("diff").is_none(),
+        "the push payload is the tree itself, not a reply-shaped wrapper: {b_diff}"
+    );
+    assert!(
+        b_diff[4].to_string().contains("translate(4321"),
+        "the diff carries the box at its new place: {b_diff}"
     );
 
     // The write landed, in the shape the layout reads back on the next tick.

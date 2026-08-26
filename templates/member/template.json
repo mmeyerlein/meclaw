@@ -1,6 +1,6 @@
 {
   "name": "member",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": {
     "purpose": "One person, as a level. A level owns what its siblings must share, and what two assistants of one person must share is exactly three things: the MEMORY of what was said to that person (memory-hive@3.0.1 -- observations, tagged with the participant set they were learned in, raw and carrying a confidence), the RECORD of who that person and their people are (affinity@3.0.0 -- curated, fail-closed, quotable), and the SCREEN every inbound turn passes (firewall@2.0.5 -- deterministic, row-driven, one rate window). Beside them sits one open container, `assistants`, that the person's agents are instantiated into. The level holds nothing else: no brain, no channel, no tools, no drain, no sink.",
     "use_when": "One instance per person. A group that owns an agent nobody owns personally is a member too, with its own name -- a group is an AUDIENCE, not a holder, so there is no org-level store to put it in. Instantiate it into an org's `members` container and wire its four inbound and seven outbound lanes in the same mutation; the hive is an island until an edge crosses into it. Assistants come afterwards, one mutation each, instantiated into ./assistants with their own edges to that container. A second assistant for the same person inherits everything this level already knows -- that is the acceptance of GH #122 and the reason the memory is not in the agent.",

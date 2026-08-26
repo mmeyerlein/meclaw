@@ -225,8 +225,14 @@ async fn an_editable_write_reaches_every_viewer_without_a_message() {
         .await
         .expect("the other viewer receives the diff");
     assert_eq!(b_diff[3], json!("diff"), "{b_diff}");
+    // Bare tree, no `{"diff": ...}` wrapper (GH #413) — the wrapper is the
+    // reply shape, and on the push lane it reads as a junk slot client-side.
     assert!(
-        b_diff[4]["diff"].to_string().contains("250"),
+        b_diff[4].get("diff").is_none(),
+        "the push payload is the tree itself, not a reply-shaped wrapper: {b_diff}"
+    );
+    assert!(
+        b_diff[4].to_string().contains("250"),
         "the diff carries the new value: {b_diff}"
     );
 

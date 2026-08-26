@@ -1,6 +1,6 @@
 {
   "name": "meclaw-os",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": {
     "purpose": "The colony shell: the outermost of the four composition levels, and the tree everything else is grown into. It is authored under one rule that all four levels repeat in the same words -- A LEVEL OWNS WHAT ITS SIBLINGS MUST SHARE. What every organisation of a colony shares is the capability broker and the control loop, so those two stand here as refs, pinned to exact versions; beside them stands `orgs`, a real but empty container hive. The shell holds no cell of its own, no memory, no model and no state: it routes seven lanes in, nine lanes out, and owns the boundary.",
     "use_when": "Once per colony, as the first thing an operator instantiates. Everything else arrives afterwards as an organisation instantiated into `./orgs`, and the mutation that grows one draws that organisation's own edges in the same breath. Do not instantiate a second shell into a colony that already has one: two brokers mean two answers to the same question, and two control loops mean two hands on the same params.",

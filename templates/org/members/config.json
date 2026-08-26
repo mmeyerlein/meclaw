@@ -4,7 +4,7 @@
   },
   "description": {
     "purpose": "The container this organisation's members are instantiated into. It ships empty and open: no cells, no ports, no contract of its own. Its whole job is to be an address that already exists, so the mutation that instantiates a member has somewhere to put one.",
-    "use_when": "Never on its own -- it travels with org@1.0.1. Address it as <org>/members in the add_nodes of the mutation that instantiates a member, and draw that member's own edges in the same mutation.",
+    "use_when": "Never on its own -- it travels with org@1.0.2. Address it as <org>/members in the add_nodes of the mutation that instantiates a member, and draw that member's own edges in the same mutation.",
     "not_in_scope": "No ports, because a sealed hive refuses exactly the endpoints a member instantiation needs (hive_port_boundary). No contract, because a lane declared here would have no door until the first member exists, and a contracted hive with no door refuses every later mutation in the colony. No cells: what stands in this container is a member, and a member is instantiated, never shipped."
   }
 }
