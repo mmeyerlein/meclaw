@@ -275,7 +275,7 @@ impl WebCell {
         session_id: &str,
         sink: &OriginSink,
         db: &mut DbConn,
-    ) -> EventReply {
+    ) -> (EventReply, ops::Touched) {
         if name != "object:set" {
             // The semantic lane (R-W8-5). Everything that is not a declared
             // local write is somebody else's business: it leaves as an ordinary
@@ -284,13 +284,16 @@ impl WebCell {
             // the topology, and this cell does not ask it.
             self.emit_semantic(name, value, route, session_id, sink)
                 .await;
-            return EventReply::Ok;
+            return (EventReply::Ok, ops::Touched::default());
         }
         let (Some(id), Some(prop)) = (
             value.get("id").and_then(Value::as_str),
             value.get("prop").and_then(Value::as_str),
         ) else {
-            return EventReply::Error("object:set needs \"id\" and \"prop\"".to_string());
+            return (
+                EventReply::Error("object:set needs \"id\" and \"prop\"".to_string()),
+                ops::Touched::default(),
+            );
         };
         let new_value = value.get("value").cloned().unwrap_or(Value::Null);
         let (id, prop) = (id.to_string(), prop.to_string());
@@ -698,7 +701,7 @@ impl LongRunningCell for WebCell {
                     value,
                     respond,
                 } => {
-                    let reply = self
+                    let (reply, touched) = self
                         .handle_browser_event(&name, &value, &route, &session_id, _sink, _db)
                         .await;
                     // The verdict goes back to the socket that is holding its
@@ -707,14 +710,14 @@ impl LongRunningCell for WebCell {
                     let accepted = reply == EventReply::Ok;
                     let _ = respond.send(reply);
 
-                    if accepted {
+                    if accepted && !touched.slots.is_empty() {
                         // The write landed, so everyone looking at that page —
-                        // the sender included — gets the new picture. Task 10
-                        // handles the other class of event.
-                        let touched = ops::Touched {
-                            slots: vec![(route.clone(), String::new())],
-                            structural: true,
-                        };
+                        // the sender included — gets the new picture: the ONE
+                        // slot the write touched, not the whole packed tree
+                        // (GH #414 — the structural fake here broadcast ~220 KB
+                        // per drag write, and a group drag flooded the viewer
+                        // channels until frames dropped). Task 10 handles the
+                        // other class of event.
                         self.publish_and_push(_db, &touched).await;
                     }
                     tracing::debug!(path = %self.path, %viewer, %route, %name, "web: browser event");

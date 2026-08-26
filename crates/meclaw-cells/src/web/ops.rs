@@ -931,14 +931,19 @@ fn query(conn: &Connection, args: &Value) -> OpOutcome {
 /// and it is checked against the **component**, never against the message: a
 /// browser says what it wants changed, and the component says what may be.
 ///
-/// Returns the verdict the socket owes its client. Nothing is written on a
-/// refusal — not a partial prop, not an audit row.
+/// Returns the verdict the socket owes its client, and — on success — the
+/// slot the write touched, so the push carries that one slot instead of the
+/// whole packed tree (GH #414: the browser lane used to fake a structural
+/// touch, and on a real colony every drag write broadcast ~220 KB; a group
+/// drag flooded the viewer channels until frames dropped). Nothing is written
+/// on a refusal — not a partial prop, not an audit row — and the touched set
+/// is empty.
 pub fn set_editable(
     conn: &Connection,
     id: &str,
     prop: &str,
     value: &Value,
-) -> crate::web::cell::EventReply {
+) -> (crate::web::cell::EventReply, Touched) {
     use crate::web::cell::EventReply;
 
     let row: Result<(String, String, String), _> = conn.query_row(
@@ -955,13 +960,19 @@ pub fn set_editable(
         },
     );
     let Ok((component, props_raw, editable_raw)) = row else {
-        return EventReply::Error(format!("no object {id:?}"));
+        return (
+            EventReply::Error(format!("no object {id:?}")),
+            Touched::default(),
+        );
     };
 
     let editable: Vec<String> =
         meclaw_core::serde_json::from_str(&editable_raw).unwrap_or_default();
     if !editable.iter().any(|e| e == prop) {
-        return EventReply::Error("not_editable".to_string());
+        return (
+            EventReply::Error("not_editable".to_string()),
+            Touched::default(),
+        );
     }
 
     let mut props: Value =
@@ -974,10 +985,13 @@ pub fn set_editable(
         "UPDATE objects SET props = ?1 WHERE id = ?2",
         rusqlite::params![props.to_string(), id],
     ) {
-        Ok(_) => EventReply::Ok,
+        Ok(_) => (EventReply::Ok, touched_by(conn, id)),
         Err(e) => {
             tracing::error!(%component, %id, %prop, error = %e, "web: editable write failed");
-            EventReply::Error("the write failed".to_string())
+            (
+                EventReply::Error("the write failed".to_string()),
+                Touched::default(),
+            )
         }
     }
 }

@@ -374,7 +374,28 @@ console.log("\nthe hook");
 
   const aBefore = boxAttr(a), bBefore = boxAttr(b);
   const wBefore = rect.getAttribute("width"), hBefore = rect.getAttribute("height");
-  el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
+  // The gesture starts on the hive's LABEL (GH #415): the fill pans, only the
+  // label moves the group. The stub label answers `closest("[data-hive]")`
+  // with its hive, exactly as the real DOM's containment does.
+  label.closest = (sel) => (sel === "[data-hive]" ? hiveG : null);
+
+  // A drag starting on the hive's FILL pans the camera and writes nothing —
+  // that gesture once relocated an entire colony by accident.
+  {
+    const camBefore = vp.getAttribute("transform");
+    el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
+    el.listeners.pointermove({clientX: 30, clientY: 20});
+    flush();
+    el.listeners.pointerup({clientX: 30, clientY: 20});
+    ok("a drag on a hive FILL pans instead of moving the group",
+       vp.getAttribute("transform") !== camBefore && sent.length === 0,
+       vp.getAttribute("transform") + " sent=" + JSON.stringify(sent));
+    ok("and the members did not move",
+       boxAttr(a).x === aBefore.x && boxAttr(a).y === aBefore.y,
+       JSON.stringify(boxAttr(a)));
+  }
+
+  el.listeners.pointerdown({target: label, clientX: 0, clientY: 0, preventDefault() {}});
   el.listeners.pointermove({clientX: 120, clientY: 60});
   flush();
   el.listeners.pointerup({clientX: 120, clientY: 60});
@@ -464,7 +485,10 @@ console.log("\nthe hook");
   const sent2 = [];
   hook2.pushEvent = (n, p) => sent2.push({name: n, payload: p});
   hook2.mounted();
-  nested.listeners.pointerdown({target: innerG, clientX: 0, clientY: 0, preventDefault() {}});
+  // Grabbed by its label (GH #415) — the fill would pan.
+  const innerLabel = innerG.querySelector("text");
+  innerLabel.closest = (sel) => (sel === "[data-hive]" ? innerG : null);
+  nested.listeners.pointerdown({target: innerLabel, clientX: 0, clientY: 0, preventDefault() {}});
   nested.listeners.pointermove({clientX: 70, clientY: 30});
   flush();
   nested.listeners.pointerup({clientX: 70, clientY: 30});

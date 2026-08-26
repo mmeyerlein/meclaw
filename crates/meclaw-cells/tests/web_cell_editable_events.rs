@@ -225,6 +225,22 @@ async fn an_editable_write_reaches_every_viewer_without_a_message() {
         .await
         .expect("the other viewer receives the diff");
     assert_eq!(b_diff[3], json!("diff"), "{b_diff}");
+    // One editable write, ONE slot in the diff (GH #414). The browser lane
+    // used to fake a structural touch and re-send the whole packed tree per
+    // write — ~220 KB per drag write on a real colony, which is what flooded
+    // the socket on a group drag until frames dropped and viewers went stale.
+    // `set_editable` changes exactly one object, so the honest diff is that
+    // object's slot and nothing else — no statics, no siblings.
+    let slots = b_diff[4].as_object().expect("diff is an object");
+    assert_eq!(
+        slots.len(),
+        1,
+        "an editable write diffs exactly its own slot: {b_diff}"
+    );
+    assert!(
+        slots.keys().all(|k| k.parse::<usize>().is_ok()),
+        "the one key is a slot index, not statics or a wrapper: {b_diff}"
+    );
     // Bare tree, no `{"diff": ...}` wrapper (GH #413) — the wrapper is the
     // reply shape, and on the push lane it reads as a junk slot client-side.
     assert!(

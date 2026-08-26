@@ -849,7 +849,16 @@
           // its label are the group's handle, and moving a group is the gesture
           // that makes a 50-cell picture arrangeable at all — one drag instead of
           // twenty.
-          const hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          // A hive moves by its LABEL only (GH #415). The fills overlap and
+          // the outermost one covers nearly the whole stage, so a drag that
+          // lands on a fill is almost always a pan that missed — and grabbing
+          // a frame by its fill once relocated an entire colony: every stored
+          // position shifted by the same vector, and every auto-laid cell got
+          // pinned where it happened to stand. The label is small, unambiguous
+          // and always on top of its own frame; the fill pans the camera.
+          const hg0 = ev.target.closest ? ev.target.closest("[data-hive]") : null;
+          const hg = hg0 && hg0.querySelector && hg0.querySelector("text") === ev.target
+            ? hg0 : null;
           if (hg) {
             const id = hg.getAttribute("data-hive");
             const members = membersOf(el, id);
