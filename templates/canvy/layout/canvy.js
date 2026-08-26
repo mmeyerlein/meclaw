@@ -777,6 +777,16 @@
       // camera any more, because nothing writes one.
       this.cam = {x: 0, y: 0, z: 1000};
       this.geom = geometryOf(this.el);
+      // The frame is part of the camera. The server recomputes the `viewBox`
+      // from the content's bounding box on every layout tick, and after a drag
+      // that box HAS changed — so up to a minute later a diff arrived carrying
+      // a new frame, and the whole picture jumped to re-fit it. To the person
+      // looking at it that is "the page reloaded and re-centred itself". So
+      // the viewBox the page mounted with is recorded here and pinned across
+      // every later morph: a fresh load still adopts the server's fit (this
+      // very line reads it), but a session's view moves only by its own hand.
+      const svg = this.el.querySelector("svg.stage");
+      this.vb = svg && svg.getAttribute ? svg.getAttribute("viewBox") : null;
       this.wire();
       applyCamera(this.el, this.cam);
       applyFrames(this.el, this.geom);
@@ -797,6 +807,12 @@
     // client can always recompute them from what the morph just delivered.
     updated() {
       this.geom = geometryOf(this.el);
+      // The morph just wrote the server's freshly-fitted viewBox; put the
+      // session's own frame back before anything is painted (this runs in the
+      // same task as the patch). Without it the picture re-centres on the
+      // first tick after any drag — see mounted() for the full story.
+      const svg = this.el.querySelector("svg.stage");
+      if (svg && this.vb) svg.setAttribute("viewBox", this.vb);
       applyCamera(this.el, this.cam);
       applyFrames(this.el, this.geom);
       drawEdges(this.el);

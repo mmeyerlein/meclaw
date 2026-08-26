@@ -779,6 +779,76 @@ console.log("\nselection");
      String(onFrame.getAttribute("d")));
 }
 
+// ── The frame belongs to the session, not to the tick ───────────────────────
+//
+// The layout recomputes the root `viewbox` from the content's bounding box, so
+// the first tick after any drag pushes a NEW frame at every open viewer — and a
+// morph that rewrites the `viewBox` re-fits the whole picture: to the person
+// looking at it, "the page reloaded and re-centred itself" up to a minute after
+// they let go. The hook records the viewBox it mounted with and puts it back
+// after every morph; only a fresh load adopts the server's fit.
+{
+  const Canvy = (global.SurfaceHooks || globalThis.SurfaceHooks).Canvy;
+  function elem(attrs, tag) {
+    return {
+      tag: tag || "g",
+      attrs: Object.assign({}, attrs),
+      getAttribute(k) { return k in this.attrs ? String(this.attrs[k]) : null; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      closest(sel) {
+        const m = /^\[([\w-]+)/.exec(sel);
+        return m && m[1] in this.attrs ? this : null;
+      },
+    };
+  }
+  const svg = elem({viewBox: "157 33 1549 1775"}, "svg");
+  const vp = elem({});
+  const el = {
+    classList: {add() {}, remove() {}},
+    attrs: {"data-nw": "150", "data-nh": "38", "data-pad-side": "24",
+            "data-pad-top": "30", "data-pad-bot": "24", "data-nest": "18"},
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    listeners: {},
+    addEventListener(n, f) { this.listeners[n] = f; },
+    removeEventListener(n) { delete this.listeners[n]; },
+    querySelector(sel) {
+      if (sel === "g.viewport") return vp;
+      if (sel === "svg.stage") return svg;
+      return null;
+    },
+    querySelectorAll() { return []; },
+  };
+  const hook = Object.create(Canvy);
+  hook.el = el;
+  hook.pushEvent = () => {};
+  hook.mounted();
+  ok("mounting adopts the server's viewBox",
+     hook.vb === "157 33 1549 1775", String(hook.vb));
+
+  // The tick after a drag: the morph delivers a re-fitted frame.
+  svg.setAttribute("viewBox", "157 33 1549 1921");
+  hook.updated();
+  ok("a morph's new viewBox is overruled by the session's own",
+     svg.getAttribute("viewBox") === "157 33 1549 1775",
+     String(svg.getAttribute("viewBox")));
+
+  // A page whose markup offers no stage must not blow up — and must not pin.
+  const bare = Object.create(Canvy);
+  bare.el = {
+    classList: {add() {}, remove() {}},
+    getAttribute() { return null; },
+    listeners: {},
+    addEventListener() {}, removeEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  bare.pushEvent = () => {};
+  bare.mounted();
+  bare.updated();
+  ok("no stage, no pin, no crash", bare.vb === null, String(bare.vb));
+}
+
 // ── A door edge: one box INSIDE the other ───────────────────────────────────
 //
 // The shape the boundary rule produces (overview § The hive boundary): `.` -> the
