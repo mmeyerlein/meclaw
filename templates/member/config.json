@@ -37,19 +37,19 @@
         },
         {
           "route": "error",
-          "because": "a failure that was not a refusal, from a holder of this member OR from one of its assistants; which cell inside produced it is not the caller's business. The member is a boundary, not a consumer -- an error that crosses it is one the parent owes a drain. Two sources, one lane, one declaration: `./affinity -> .` and `./assistants -> .`, the second derived from the emits list of assistant@1.0.0"
+          "because": "a failure that was not a refusal, from a holder of this member OR from one of its assistants; which cell inside produced it is not the caller's business. The member is a boundary, not a consumer -- an error that crosses it is one the parent owes a drain. Two sources, one lane, one declaration: `./affinity -> .` and `./assistants -> .`, the second derived from the emits list of assistant@1.0.1"
         },
         {
           "route": "write",
-          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `extraction` and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@1.0.0 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
+          "because": "an assistant's batched conversation write, on its way past this member to whatever archive the parent wired. It is NOT this level's memory lane: the member's memory is written per turn on `extraction` and read on `in_recall`, both of which stop here. Derived from the emits list of assistant@1.0.1 -- nothing inside this member consumes it, so a level that did not declare it would let a real, recurring message die as no_route at its own boundary"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn an assistant offers for archiving, one message per turn. Same reasoning as `write` and the same non-consumption: the member's own episode path is `extraction` -> the memory hive's `in_remember`, so this lane crosses the boundary untouched and is the parent's to place or to drain. Derived from the emits list of assistant@1.0.0"
+          "because": "one finished turn an assistant offers for archiving, one message per turn. Same reasoning as `write` and the same non-consumption: the member's own episode path is `extraction` -> the memory hive's `in_remember`, so this lane crosses the boundary untouched and is the parent's to place or to drain. Derived from the emits list of assistant@1.0.1"
         },
         {
           "route": "prune",
-          "because": "an assistant's housekeeping report, raised when something upstream fired its `in_prune` lane. This member owns no timer and fires nothing, so it neither produces this lane nor consumes it -- it only refuses to swallow it. Derived from the emits list of assistant@1.0.0"
+          "because": "an assistant's housekeeping report, raised when something upstream fired its `in_prune` lane. This member owns no timer and fires nothing, so it neither produces this lane nor consumes it -- it only refuses to swallow it. Derived from the emits list of assistant@1.0.1"
         }
       ]
     },

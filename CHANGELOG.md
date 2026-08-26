@@ -11,6 +11,28 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.3] — 2026-08-26
+
+### Fixed
+
+- **A mixed completion answers the turn it spoke for**
+  ([#378](https://github.com/mmeyerlein/meclaw/issues/378)). When a brain answers
+  with prose **and** an async tool call in one completion — the shape an async
+  tool description asks a model to produce — the dispatcher marked the prose
+  `interim` unconditionally, while the collector, correctly, filed the round as
+  over: nothing is being waited for, so no second inference follows. The turn
+  therefore ended with an interim answer and no final one, forever. Measured at
+  10 of 12 rounds under the shipped contract. `interim` is a promise that a final
+  answer follows, so `dispatcher@1.1.1` now sets it only when one is coming — a
+  **non-async** call re-enters the brain with its result, a **handoff** call takes
+  the turn with it — and leaves it off when every call is async-and-not-handoff,
+  because then the sentence beside them **is** the answer. That is the precise
+  mirror of the fan-in's own `acked and not waiting and over`: the two cells stop
+  disagreeing rather than one of them learning a new rule. Sibling of #372, and
+  pinned beside it in
+  `crates/meclaw-cells/tests/gh372_an_async_only_round_still_answers.rs`.
+  `talky@4.2.1` and `cogny@4.0.3` follow the pin.
+
 ## [0.22.2] — 2026-08-25
 
 ### Fixed

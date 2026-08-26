@@ -1,12 +1,12 @@
-# `cogny@4.0.2`
+# `cogny@4.0.3`
 
 The agent core as one template. Four units under one hive:
-[`collector@3.0.0`](../collector/) and [`dispatcher@1.1.0`](../dispatcher/) -- each carrying its
+[`collector@3.0.0`](../collector/) and [`dispatcher@1.1.1`](../dispatcher/) -- each carrying its
 template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
 `brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@4.2.0`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky@4.2.1`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and the memory it reads is the member's central hive rather
@@ -51,7 +51,7 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 | path | type | from |
 |---|---|---|
 | `collector/{assemble,window}` | `code`, `store` | `collector@3.0.0` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1.1.0` (a single-cell template) |
+| `dispatcher` | `code` | `dispatcher@1.1.1` (a single-cell template) |
 | `brain` | `llm` | this template -- the thinking lane |
 | `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
 
@@ -72,7 +72,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`cogny@4.0.2` above it in its provenance chain.
+`cogny@4.0.3` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
 registry, so `collector` and `dispatcher` have to sit in the same `templates/` directory
@@ -225,14 +225,14 @@ the consultation died.
 | memory tool (`in_memory_call` back into the collector) | not declared; inside the composite it would be a loop at the hive path, as `talky` does it |
 | housekeeping (`in_prune`, `in_round_sweep`) | not declared |
 | a normalising `errors` cell | R-CG-2 names "collector + dispatcher + llm, and nothing else" (the lookup lane made the llm slot two in 1.1.0); an `errors` cell is not among them, so the two brains are joined by the exit edges' `set_hop.route` instead. That is enough to make the failure reachable; it is not enough to give it a body a reader can grep, which is what `talky/errors` adds |
-| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is still a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- but since `4.0.2` it costs exactly **one ordinary edge** and no change to the tool exit: the default edge stays silent for any name an ordinary edge claims. That is the shape `talky@4.2.0` ships for both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) |
+| the thread tool (`in_thread_call` back into the collector) | not declared. The sub-unit's collector **does** accept the lane (since `collector@2.0.1`, [#245](https://github.com/mmeyerlein/meclaw/issues/245)), but this composite draws no edge to it, so a `thread_recall` call leaves on the `tool` lane and finds no cell. Wiring it is still a change to `params.graph` -- a parent cannot draw it, because the seal refuses an outside edge naming `./cogny/dispatcher` -- but since `4.0.2` it costs exactly **one ordinary edge** and no change to the tool exit: the default edge stays silent for any name an ordinary edge claims. That is the shape `talky@4.2.1` ships for both of its own served tools ([#55](https://github.com/mmeyerlein/meclaw/issues/55)) |
 
 The tool SCHEMAS are a different thing again: they live in the brains' `system.tools`,
 seeded (`brain/seed/system.jsonl`) or written by a system update. **This composite carries
 none of them**, and that claim still holds unchanged for `cogny` -- identity, core
 instructions and tools are the agent here, not the topology.
 
-**It reads differently next door, and the difference is deliberate.** `talky@4.2.0`
+**It reads differently next door, and the difference is deliberate.** `talky@4.2.1`
 retracted the same sentence for itself ([#55](https://github.com/mmeyerlein/meclaw/issues/55)):
 a tool the composite *implements* is topology and ships with it, schema and edge together;
 a tool the parent wires is the agent. By that line `cogny` has exactly one candidate --
@@ -407,7 +407,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@4.0.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@4.0.3", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"memory_tier": "1",
                                             "context_window": 200000,
                                             "recoverability": "lookup:repeatable,write:env"}}}
@@ -533,7 +533,7 @@ knowledge ends.
 - **Not a persona.** Identity, core instructions and tool schemas live in the brains'
   `cell.db`, one writer per `system` path -- and there are two of them now, so a system
   update that reaches only one lane is the drift to watch for. The shipped `brevity` slot
-  is the single exception and it is deliberately not `instructions`. Unlike `talky@4.2.0`
+  is the single exception and it is deliberately not `instructions`. Unlike `talky@4.2.1`
   this composite ships no tool schema of its own; the reason is above, under *What this
   composite still does NOT declare*.
 - **Not a classifier.** Which lane an errand takes is decided outside this hive, on the

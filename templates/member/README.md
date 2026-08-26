@@ -55,7 +55,7 @@ version pinned above — nothing here describes a lane a holder lost.
 | `prune` | an assistant | a housekeeping report, raised when something above fired `in_prune` |
 
 The last four rows are the assistant's, and they are the reason this level has
-an outward edge from `./assistants` at all. `assistant@1.0.0` emits **seven**
+an outward edge from `./assistants` at all. `assistant@1.0.1` emits **seven**
 lanes; three of them stop inside this member — `turn` at the screen, `recall`
 and `extraction` at the memory — and the other four have to leave, because
 nothing here consumes them. A level that declared them without the edge, or
@@ -157,7 +157,7 @@ slot's sake would additionally **seal** the member, which is the opposite of wha
 a level that gets wired into is for. No hive in this template carries a `ports`
 key.
 
-**What transits it**, derived from the contract of `assistant@1.0.0` and from
+**What transits it**, derived from the contract of `assistant@1.0.1` and from
 what this member sends back down (`firewall@2.0.4`, `memory-hive@3.0.1`):
 
 - **in** — `in_turn` (the screened turn), `in_bundle` (the memory's answer).
@@ -172,7 +172,7 @@ re-emitted on the member's own contract and leave; the parent drains them.
 
 ### Four inbound lanes this level deliberately does not carry
 
-`assistant@1.0.0` accepts six lanes. Two of them are handed down by a sibling of
+`assistant@1.0.1` accepts six lanes. Two of them are handed down by a sibling of
 the container: `in_turn` from the screen and `in_bundle` from the memory. The
 other four — **`in_advice`**, **`in_sweep`**, **`in_prune`** and
 **`in_round_sweep`** — are **not** lanes of this member, and that is a decision

@@ -1,4 +1,4 @@
-# `dispatcher@1.1.0`
+# `dispatcher@1.1.1`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -27,9 +27,20 @@ messages a graph can route.
 - **A final answer, passed through.** `finish_reason == 'stop'` leaves on its own lane,
   unchanged.
 - **A sentence next to the bundle, delivered at once.** One brain response may carry
-  `content` **and** `tool_calls`. The text leaves on the `answer` lane with
-  `hop.interim = "1"` while the calls keep running: the turn ends with "one moment, I am
-  asking" instead of with silence, and no second inference is spent on saying so.
+  `content` **and** `tool_calls`. The text leaves on the `answer` lane while the calls keep
+  running: the turn ends with "one moment, I am asking" instead of with silence, and no
+  second inference is spent on saying so.
+
+  **Whether it carries `hop.interim = "1"` depends on the bundle beside it**
+  ([#378](https://github.com/mmeyerlein/meclaw/issues/378)). `interim` is a promise that a
+  final answer follows, so it is set only when one is actually coming: a **non-async** call
+  re-enters the brain with its result, and a **handoff** call takes the turn with it. An
+  **async non-handoff** call is fire-and-forget and the model still owes this turn an
+  answer -- so when every call in the bundle is one of those, the sentence **is** the final
+  answer and goes out unmarked. **Correction:** this was marked `interim` unconditionally,
+  which left every such turn with an interim answer and no final one, forever -- 10 of 12
+  measured rounds under the shipped contract, because that mixed shape is exactly what an
+  async tool description asks a model to produce.
 - **An async tool class that opens no expectation.** Names listed in
   `DISPATCHER_ASYNC_TOOLS` are classified here -- this cell is the only one that ever sees
   the whole bundle -- and their `tool_call_id`s ride out on `hop.async_calls`. The fan-in

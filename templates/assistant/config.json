@@ -7,27 +7,27 @@
       "accepts": [
         {
           "route": "in_turn",
-          "because": "a screened turn on its way to the surface -- normally the one this assistant's own channel sent up on `turn` and the member's firewall passed back down. The caller MUST promote `context.channel`, and `context.audience_set` if the closed sessions of this generation are ever to reach a memory: both are read three cells deep and the hop they arrived on is gone by then. Derived from the accepts list of talky@4.2.0, which is what stands in ./channels"
+          "because": "a screened turn on its way to the surface -- normally the one this assistant's own channel sent up on `turn` and the member's firewall passed back down. The caller MUST promote `context.channel`, and `context.audience_set` if the closed sessions of this generation are ever to reach a memory: both are read three cells deep and the hop they arrived on is gone by then. Derived from the accepts list of talky@4.2.1, which is what stands in ./channels"
         },
         {
           "route": "in_bundle",
-          "because": "a memory bundle, coming back from whatever keeps this person's memory -- under GH #122 that is the MEMBER's memory hive, one level up, because two assistants of one person must know the same person. The assistant carries the answer down to the surface that asked and keeps no copy. Derived from the accepts list of talky@4.2.0"
+          "because": "a memory bundle, coming back from whatever keeps this person's memory -- under GH #122 that is the MEMBER's memory hive, one level up, because two assistants of one person must know the same person. The assistant carries the answer down to the surface that asked and keeps no copy. Derived from the accepts list of talky@4.2.1"
         },
         {
           "route": "in_advice",
-          "because": "an advisor's answer arriving as its own turn. The reasoning core inside this level answers on this lane too (./cogny -> ./channels), and the lane stays outward-facing for the other case: a SECOND agent, outside this assistant, that was asked something and answered late. Derived from the accepts list of talky@4.2.0"
+          "because": "an advisor's answer arriving as its own turn. The reasoning core inside this level answers on this lane too (./cogny -> ./channels), and the lane stays outward-facing for the other case: a SECOND agent, outside this assistant, that was asked something and answered late. Derived from the accepts list of talky@4.2.1"
         },
         {
           "route": "in_sweep",
-          "because": "an operator-forced session sweep outside the night timer. It belongs to whoever operates the colony, not to anything inside this level, which is why it enters at the assistant path rather than being produced by a sibling. Derived from the accepts list of talky@4.2.0"
+          "because": "an operator-forced session sweep outside the night timer. It belongs to whoever operates the colony, not to anything inside this level, which is why it enters at the assistant path rather than being produced by a sibling. Derived from the accepts list of talky@4.2.1"
         },
         {
           "route": "in_prune",
-          "because": "a prune verdict for the context window, from a timer or an operator. It is paired with the `prune` report in `params.required_drains`: a prune answers unconditionally, and an operator who sends one without taking the report back cuts unwitnessed. Derived from the accepts list of talky@4.2.0"
+          "because": "a prune verdict for the context window, from a timer or an operator. It is paired with the `prune` report in `params.required_drains`: a prune answers unconditionally, and an operator who sends one without taking the report back cuts unwitnessed. Derived from the accepts list of talky@4.2.1"
         },
         {
           "route": "in_round_sweep",
-          "because": "a round that ran out of iterations, swept by an operator. Same owner as `in_sweep` and the same reason it crosses the level boundary rather than starting inside it. Derived from the accepts list of talky@4.2.0"
+          "because": "a round that ran out of iterations, swept by an operator. Same owner as `in_sweep` and the same reason it crosses the level boundary rather than starting inside it. Derived from the accepts list of talky@4.2.1"
         }
       ],
       "emits": [
@@ -37,27 +37,27 @@
         },
         {
           "route": "write",
-          "because": "a closed session as one write batch, for wherever a day belongs. It carries `context.channel` and `context.audience_set` off the generation row rather than off the sweep that ended it. The assistant does not consume it -- no store of any kind lives at this level. Derived from the emits list of talky@4.2.0"
+          "because": "a closed session as one write batch, for wherever a day belongs. It carries `context.channel` and `context.audience_set` off the generation row rather than off the sweep that ended it. The assistant does not consume it -- no store of any kind lives at this level. Derived from the emits list of talky@4.2.1"
         },
         {
           "route": "turn_write",
-          "because": "ONE finished turn per message, after every stored turn and every stored answer -- never a batch (GH #298, ruling Q11). It is the shape a memory hive's episode lane reads, and that hive belongs to the member (GH #122). Derived from the emits list of talky@4.2.0"
+          "because": "ONE finished turn per message, after every stored turn and every stored answer -- never a batch (GH #298, ruling Q11). It is the shape a memory hive's episode lane reads, and that hive belongs to the member (GH #122). Derived from the emits list of talky@4.2.1"
         },
         {
           "route": "extraction",
-          "because": "the sidecar a turn's answer carried, in the inline contract form, one message per annotated turn and never repaired. It routes UPWARD to the member's memory hive `in_remember` door, exactly where talky's own shipped recipe sends it (templates/talky/README.md, 'two edges, never one'), because under GH #122 the memory belongs to the member. The assistant grows no memory of its own: a second store would force the writer to pick a store before extraction has run. Derived from the emits list of talky@4.2.0"
+          "because": "the sidecar a turn's answer carried, in the inline contract form, one message per annotated turn and never repaired. It routes UPWARD to the member's memory hive `in_remember` door, exactly where talky's own shipped recipe sends it (templates/talky/README.md, 'two edges, never one'), because under GH #122 the memory belongs to the member. The assistant grows no memory of its own: a second store would force the writer to pick a store before extraction has run. Derived from the emits list of talky@4.2.1"
         },
         {
           "route": "recall",
-          "because": "a memory read this turn needs, for the member's memory hive. One lane, one asker: the surface. The reasoning core's own memory leg is deliberately NOT wired at this level -- see `not_in_scope`. Derived from the emits list of talky@4.2.0"
+          "because": "a memory read this turn needs, for the member's memory hive. One lane, one asker: the surface. The reasoning core's own memory leg is deliberately NOT wired at this level -- see `not_in_scope`. Derived from the emits list of talky@4.2.1"
         },
         {
           "route": "prune",
-          "because": "the report of a window prune: one message per cut session, or a single zero report saying nothing was eligible. Paired with `in_prune` in `params.required_drains`. Derived from the emits list of talky@4.2.0"
+          "because": "the report of a window prune: one message per cut session, or a single zero report saying nothing was eligible. Paired with `in_prune` in `params.required_drains`. Derived from the emits list of talky@4.2.1"
         },
         {
           "route": "error",
-          "because": "a normalised failure report from anything inside this generation -- the surface, the reasoning core, or a channel's connector. Which cell produced it is not the caller's business; the assistant is a boundary, not a consumer, and an error that crosses it is one the parent owes a drain. Derived from the emits lists of talky@4.2.0 and cogny@4.0.2"
+          "because": "a normalised failure report from anything inside this generation -- the surface, the reasoning core, or a channel's connector. Which cell produced it is not the caller's business; the assistant is a boundary, not a consumer, and an error that crosses it is one the parent owes a drain. Derived from the emits lists of talky@4.2.1 and cogny@4.0.3"
         }
       ]
     },
@@ -70,7 +70,7 @@
       {
         "accepts": "in_prune",
         "emits": "prune",
-        "because": "a prune answers unconditionally -- with what it cut, or with a zero report saying nothing was eligible. Undrained, every operator prune dead-letters its own answer and the deletions run unwitnessed: the cut happened, nobody can say what fell. Taken from talky@4.2.0, which pairs the same two lanes one level down"
+        "because": "a prune answers unconditionally -- with what it cut, or with a zero report saying nothing was eligible. Undrained, every operator prune dead-letters its own answer and the deletions run unwitnessed: the cut happened, nobody can say what fell. Taken from talky@4.2.1, which pairs the same two lanes one level down"
       }
     ],
     "graph": {
@@ -245,7 +245,7 @@
     "purpose": "One generation of one person's agent: the reasoning core, the tool surface, and the channels level the surfaces are instantiated into. Two refs and one open container. The fan-in edges between the channels level and its siblings are INTERNAL edges of this template (GH #303) -- a second channel costs two instantiations inside ./channels and their pairing edges, never a re-run of the sibling fan-in.",
     "use_when": "One per generation of an assistant, instantiated into a member's ./assistants container, with its transit lanes wired in the same mutation. Channels come afterwards, one mutation per channel: a connector and a talky into ./channels, plus the edges that pair them and the edges that carry the level's lanes down to the talky. Replacing the generation replaces this node; the older one stays in place, silent and readable.",
     "not_in_scope": "No memory hive and no memory-drain: the memory belongs to the MEMBER (GH #122, ADR 0012) and per-turn extraction (GH #298, ruling Q11) replaced the drain -- `extraction` leaves this level on its own lane. No firewall: the screen sits one level up, outside the generation, so two channels meet one view of an attacker and a swap does not restart the rate window. No terminal and no sink of any kind (ruling Q2, GH #284): `error` leaves the level and becomes no_route in the DLQ if nobody consumes it, which is recorded and self-localising. No tool schemas: they live in the calling brain's system.tools, not in the tool surface and not here. And NO memory leg for the reasoning core -- see contract_derivation.",
-    "contract_derivation": "The thirteen lanes are the union of what this level's occupants accept and emit at the versions named in each `because` (talky@4.2.0 and telegram-connector@2.0.0 in ./channels, cogny@4.0.2, tools@1.0.0), minus the lanes a sibling inside the level consumes itself. Four subtractions, all real: `answer` (the talky's, consumed by the connector on the per-channel pairing edge), `tool` (both the talky's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.2.0 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). The reasoning core's `recall` is the one occupant emit with no home: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, and the bundle coming back carries nothing that tells them apart -- a context discriminator would have to survive the member's memory hive, and a door guarded on context alone is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs. cogny@4.0.2 ships `memory_tier` empty, so it asks for no recall unless an instance turns the leg on; an instance that does must wire that leg and pick its own correlation key.",
+    "contract_derivation": "The thirteen lanes are the union of what this level's occupants accept and emit at the versions named in each `because` (talky@4.2.1 and telegram-connector@2.0.0 in ./channels, cogny@4.0.3, tools@1.0.0), minus the lanes a sibling inside the level consumes itself. Four subtractions, all real: `answer` (the talky's, consumed by the connector on the per-channel pairing edge), `tool` (both the talky's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.2.1 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). The reasoning core's `recall` is the one occupant emit with no home: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, and the bundle coming back carries nothing that tells them apart -- a context discriminator would have to survive the member's memory hive, and a door guarded on context alone is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs. cogny@4.0.3 ships `memory_tier` empty, so it asks for no recall unless an instance turns the leg on; an instance that does must wire that leg and pick its own correlation key.",
     "contract_in": "Six lanes, all at the assistant's own path: in_turn, in_bundle, in_advice, in_sweep, in_prune, in_round_sweep.",
     "contract_out": "Seven lanes, all leaving the assistant's path: turn, write, turn_write, extraction, recall, prune, error. The member consumes turn, recall and extraction itself; the other four cross it."
   }

@@ -64,7 +64,7 @@ the union is the whole of both lists, and every `because` in `config.json` names
 version it came from.
 
 The last three emits are the member's own pass-through of what an assistant raises and
-nothing at member level consumes (`assistant@1.0.0` emits seven lanes; the member takes
+nothing at member level consumes (`assistant@1.0.1` emits seven lanes; the member takes
 `turn`, `recall` and `extraction` and lets the rest go). They reached this level the day
 the member started re-emitting them, which is what the derivation rule is for: nobody
 re-derived the list by hand, the test read the neighbour's file and went red.

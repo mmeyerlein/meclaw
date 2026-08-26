@@ -65,12 +65,12 @@ principle of GH #26: a tree is grown, not checked in.
                 ├── firewall          → firewall@2.0.4      the screen
                 ├── memory-hive       → memory-hive@3.0.1   what was said to them
                 └── assistants        (empty container)
-                    └── scribe    assistant@1.0.0   one generation of an agent
-                        ├── cogny     → cogny@4.0.2         the reasoning core
+                    └── scribe    assistant@1.0.1   one generation of an agent
+                        ├── cogny     → cogny@4.0.3         the reasoning core
                         ├── tools     → tools@1.0.0         the tool surface
                         └── channels  (empty container)
                             ├── telegram-connector   telegram-connector@2.0.0
-                            └── talky                talky@4.2.0
+                            └── talky                talky@4.2.1
 ```
 
 Six `add_nodes` entries name six templates, and **thirteen** distinct templates end up stamped
@@ -172,7 +172,7 @@ standing side by side in `channels`, plus the edges that pair them:
 - seven lanes carried down to the talky and seven carried back up.
 
 Seventeen edges. **The eighteen edges between `channels` and its siblings are not among them** —
-they belong to `assistant@1.0.0` and were drawn once, when step 4 ran. That is the whole of
+they belong to `assistant@1.0.1` and were drawn once, when step 4 ran. That is the whole of
 #303's ruling, and a second channel does not move the number.
 
 ## A second agent, a second channel
@@ -182,7 +182,7 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 ```json
 {"scope": "/os/orgs/acme/members/alex",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}"},
- "diff": {"add_nodes": [{"name": "assistants/aide", "template": "assistant@1.0.0",
+ "diff": {"add_nodes": [{"name": "assistants/aide", "template": "assistant@1.0.1",
                          "override_params": {"cogny/brain": {"temperature": "0.9"}}}],
           "add_edges": []}}
 ```

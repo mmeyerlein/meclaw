@@ -11,7 +11,7 @@
       },
       {
         "name": "channels/talky",
-        "template": "talky@4.2.0"
+        "template": "talky@4.2.1"
       }
     ],
     "add_edges": [

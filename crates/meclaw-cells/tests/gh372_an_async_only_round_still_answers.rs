@@ -47,7 +47,9 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
-use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
+use mock_openai::{
+    MockOpenAI, canned_chat_completion, canned_content_and_tool_calls, canned_tool_calls,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -512,5 +514,118 @@ async fn an_async_only_round_still_answers() {
         "a good block does not travel the reject lane"
     );
     assert_eq!(dlq_count(td.path()), 0, "nothing dead-letters on the way");
+    h.shutdown().await;
+}
+
+/// GH #378 -- the sibling case: prose and an async call in ONE completion.
+///
+/// #372 above is the async-call-**without**-text round. This is the
+/// async-call-**with**-text round, and it stranded every turn that used it: the
+/// dispatcher marked the prose `interim` unconditionally, while the collector
+/// -- correctly -- filed the round as over, because nothing is being waited for.
+/// The turn therefore ended with an interim answer and no final one, forever.
+/// Measured under the shipped contract at 10 of 12 rounds, because that mixed
+/// shape is exactly what an async tool description asks a model to produce.
+///
+/// The rule the fix restores is the dispatcher's own, already written in its
+/// header: an async non-handoff call is fire-and-forget and "the model still
+/// owes THIS turn an answer". If every call in the bundle is one of those, the
+/// sentence beside them **is** that answer, and there is no second inference
+/// coming to replace it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mixed_completion_answers_the_turn_it_spoke_for() {
+    let mock = MockOpenAI::start(vec![
+        // ONE completion carrying both. The round is over when it lands: the
+        // only call is async and not a handoff, so nothing will come back and
+        // no iteration follows. If a second response were consumed here, this
+        // test would be measuring a re-entry rather than the answer.
+        canned_content_and_tool_calls(
+            "Noted -- Helix it is.",
+            vec![("call-r1", "remember", REMEMBER_ARGS)],
+        ),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    let marker = td.path().join("episode-seen");
+    build_tree(&td, &mock.base_url, &marker);
+    let (h, mut sink_rx, mut reject_rx) = boot(&td).await;
+    let db = td.path().join("main/memory/store/cell.db");
+
+    h.send(turn("my favourite editor is Helix")).await;
+
+    let episodes = await_rows(&db, EPISODES, 1);
+    let user_turn = episodes
+        .iter()
+        .find(|r| r[2] == "user")
+        .expect("the user turn is an episode");
+    std::fs::write(&marker, b"go").unwrap();
+
+    // CLAIM 1 -- the channel is answered, and the answer is the sentence the
+    // model actually said. Before the fix this arrived marked `interim`, which
+    // is a promise of a final that never came.
+    let answer = recv_bounded(&mut sink_rx)
+        .await
+        .expect("a mixed completion must still answer the turn");
+    assert_eq!(text_of(&answer), "Noted -- Helix it is.");
+    assert_ne!(
+        hop_of(&answer, "interim"),
+        "1",
+        "every call in this bundle is async and not a handoff, so nothing is \
+         being waited for and no second inference is coming -- the sentence \
+         beside the call IS the turn's answer, and marking it interim is what \
+         stranded 10 of 12 measured rounds (GH #378)"
+    );
+    assert_ne!(hop_of(&answer, "round_capped"), "1", "the round had budget");
+    assert_ne!(hop_of(&answer, "degraded"), "1", "no store refusal here");
+
+    // CLAIM 2 -- and the async call still did its work. A fix that answered the
+    // turn by dropping the annotation would pass claim 1 and be worse than the
+    // bug.
+    let facts = await_rows(&db, FACTS, 1);
+    assert_eq!(facts.len(), 1, "one fact, not two: {facts:?}");
+    assert_eq!(
+        facts[0][0], user_turn[0],
+        "the fact hangs on the episode of the turn it answered"
+    );
+    assert_eq!(facts[0][2], "favorite_editor");
+    assert_eq!(facts[0][3], "Helix");
+
+    assert!(
+        reject_rx.try_recv().is_err(),
+        "a good block does not travel the reject lane"
+    );
+    assert_eq!(dlq_count(td.path()), 0, "nothing dead-letters on the way");
+
+    // The prose half of the § 2d drift lock. The mechanism above is the
+    // promise; this is the sentence on the dispatcher's public surface that
+    // states it. A repair that moved one without the other is the class that
+    // put this rule in development-rules in the first place.
+    let readme = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../templates/dispatcher/README.md");
+    if let Ok(text) = std::fs::read_to_string(&readme) {
+        let para = text
+            .split("\n\n")
+            .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+            .find(|p| p.contains("depends on the bundle beside it"))
+            .expect(
+                "templates/dispatcher/README.md must still say that `interim` \
+                 depends on the bundle — a README that promises it \
+                 unconditionally describes the bug (GH #378)",
+            );
+        for phrase in [
+            "non-async",
+            "handoff",
+            "fire-and-forget",
+            "goes out unmarked",
+        ] {
+            assert!(
+                para.contains(phrase),
+                "the interim paragraph must still name `{phrase}`: the three \
+                 classes are what makes the rule checkable rather than a \
+                 slogan\n  {para}"
+            );
+        }
+    }
+
     h.shutdown().await;
 }

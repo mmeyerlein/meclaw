@@ -1070,6 +1070,6 @@ still tell an event from a user's word.
   the living session keeps every byte, a lost tool result whose round a sweep closes, and
   a mid-round turn that defers and rides with the next assembly, and a batching
   dispatcher whose tool answers the whole bundle in one message. Two more trees run the
-  memory tool against the **shipped `dispatcher@1.1.0`** -- one with the recall port wired
+  memory tool against the **shipped `dispatcher@1.1.1`** -- one with the recall port wired
   (both results fan in, the model's time range reaches the request) and one without it
   (the call is unroutable and the round ends in the idle exit).

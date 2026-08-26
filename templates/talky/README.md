@@ -1,8 +1,8 @@
-# `talky@4.2.0`
+# `talky@4.2.1`
 
 A whole conversational agent as one template. Five units under one hive:
 [`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.0`](../collector/),
-[`dispatcher@1.1.0`](../dispatcher/) and [`summarizer@2.0.1`](../summarizer/) -- each carrying
+[`dispatcher@1.1.1`](../dispatcher/) and [`summarizer@2.0.1`](../summarizer/) -- each carrying
 its template's own name -- plus an `llm` brain and one error collector. No new cell
 type, no Rust.
 
@@ -42,7 +42,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 |---|---|---|
 | `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2.0.4` **(sealed)** |
 | `collector/{assemble,window}` | `code`, `store` | `collector@3.0.0` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1.1.0` (a single-cell template) |
+| `dispatcher` | `code` | `dispatcher@1.1.1` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2.0.1` **(sealed)** |
 | `errors` | `code` | this template |
@@ -66,7 +66,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped `collector@3.0.0`, with
-`talky@4.2.0` above it in its provenance chain.
+`talky@4.2.1` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -218,7 +218,7 @@ stalls that round until the collector's idle window closes it (`round_idle_ms`).
 
 ### The two tools the composite serves itself
 
-**Since `talky@4.2.0` the composite draws these edges, not the parent**
+**Since `talky@4.2.1` the composite draws these edges, not the parent**
 ([#55](https://github.com/mmeyerlein/meclaw/issues/55)). `memory_recall` (GH #78) and
 `thread_recall` ([#245](https://github.com/mmeyerlein/meclaw/issues/245)) are not the
 per-agent choice above: the collector inside this hive **serves** both of them. It holds
