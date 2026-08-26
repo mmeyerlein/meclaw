@@ -99,6 +99,19 @@ impl ViewerRegistry {
             .collect()
     }
 
+    /// Forget every viewer and hand back their senders (GH #410).
+    ///
+    /// One critical section, and the registry is empty when it ends: a viewer
+    /// that joined on a listener which no longer exists must not be found by a
+    /// later fan-out. The connection tasks close on their own once they read
+    /// the [`ViewerMsg::Close`] the caller sends, and their own `remove` then
+    /// finds nothing — which is the harmless order, unlike removing after the
+    /// close and racing a re-join against it.
+    pub async fn drain(&self) -> Vec<mpsc::Sender<ViewerMsg>> {
+        let mut inner = self.inner.lock().await;
+        inner.drain().map(|(_, v)| v.tx).collect()
+    }
+
     /// How many viewers are joined. Diagnostics and tests.
     pub async fn len(&self) -> usize {
         self.inner.lock().await.len()
@@ -423,20 +436,52 @@ pub(crate) fn router(io: WebIo) -> Router {
         .with_state(io)
 }
 
+/// What ended one serving round.
+enum Round {
+    /// The params moved (GH #410): serve this address next. Carried as an
+    /// address rather than as an open listener because the old socket is only
+    /// released when the round's `serve` future is dropped, and the new one is
+    /// bound after that.
+    Rebind {
+        /// The address to bind.
+        bind: String,
+        /// The port to bind.
+        port: u16,
+        /// Where the handler is waiting for the verdict.
+        ack: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    /// The cell is going away.
+    Done,
+}
+
 /// The I/O loop: bind, serve, and stay up for the cell's whole life.
 ///
 /// **A1′**: this function must not return voluntarily while the cell is live.
 /// A clean early return would silence the I/O side while the handler keeps
-/// running and open the "io-finish-first" loss class the trait documents. So
-/// even the bind failure below parks instead of returning — it reports the
-/// failure to the handler, then waits for the shutdown it would otherwise
-/// pre-empt.
+/// running and open the "io-finish-first" loss class the trait documents. Only
+/// the shutdown signal — the handler closing the reconfig channel — ends it.
+///
+/// # Why this is a loop (GH #410)
+///
+/// A display moves to another address by being told to, not by being rebuilt.
+/// One iteration is one listening address; a `Rebind` on the reconfig channel
+/// ends the iteration and the next one begins on the new socket, with the same
+/// router over the same published snapshots — so the pages, the files and the
+/// readiness seam are literally the same objects before and after the move, and
+/// the GH #395 window cannot reopen: `ready` was published long before and is
+/// never taken back.
+///
+/// A round with **no** listener is an ordinary round. That is what makes a
+/// failed bind recoverable by message rather than only by restart: a display
+/// whose port was taken at boot keeps its task, keeps draining the diffs its
+/// handler produces, and starts serving the moment an update names an address
+/// it can have. Before this it parked until shutdown, and a port collision cost
+/// a restart to fix.
 pub async fn run_io(
     io: WebIo,
     events_tx: mpsc::Sender<WebEvent>,
     mut reconfig_rx: mpsc::Receiver<WebReconfig>,
 ) {
-    let addr = (io.bind.clone(), io.port);
     // The listener half learns where to send browser events only here, because
     // this is where the channel exists.
     let mut io = io;
@@ -448,52 +493,159 @@ pub async fn run_io(
         .await
         .take()
         .expect("run_io takes the push receiver exactly once");
-    let app = router(io);
 
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
+    let mut listener = match bind_addr(&io.bind, io.port).await {
+        Ok(l) => Some(l),
         Err(e) => {
-            let _ = events_tx.send(WebEvent::BindFailed(e.to_string())).await;
-            // A1′: park until the handler closes the channel.
-            while reconfig_rx.recv().await.is_some() {}
-            return;
+            let _ = events_tx.send(WebEvent::BindFailed(e)).await;
+            None
         }
     };
 
-    let bound = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    let _ = events_tx.send(WebEvent::Bound(bound)).await;
+    loop {
+        let round = match listener.take() {
+            Some(l) => {
+                let bound = l
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let _ = events_tx.send(WebEvent::Bound(bound)).await;
 
-    // Two things end this task, and neither is a voluntary return: the server
-    // stopping, or the handler closing the reconfig channel. While both are
-    // alive, every `Push` the handler sends is fanned out to the viewers of
-    // that route.
-    tokio::select! {
-        _ = axum::serve(listener, app) => {}
-        // The handler is gone when this channel closes — the shutdown signal.
-        _ = async { while reconfig_rx.recv().await.is_some() {} } => {}
-        _ = async {
-            while let Some(push) = pushes.recv().await {
-                match push {
-                    WebReconfig::Push { route, diff } => {
-                        for (tx, join_ref, topic) in viewers.on_route(&route).await {
-                            let frame = meclaw_surface::frames::push(
-                                &join_ref,
-                                &topic,
-                                "diff",
-                                meclaw_core::serde_json::json!({ "diff": diff }),
-                            );
-                            // A full or closed viewer channel means that
-                            // browser is gone or wedged; its connection task
-                            // cleans up the registry entry. One slow viewer
-                            // must not hold up the others.
-                            let _ = tx.try_send(ViewerMsg::Frame(frame));
-                        }
+                // The scope matters. `serve` owns the listener, and the socket
+                // is only released when `serve` is dropped — which happens at
+                // the end of this block, BEFORE the next address is bound.
+                // Binding while the old socket is still open would fail for the
+                // ordinary move (`0.0.0.0:P` collides with `127.0.0.1:P`), so
+                // the order is not an optimisation.
+                //
+                // `IntoFuture` rather than the `Serve` value: pinning it here is
+                // what lets the round end without ending the task, and what
+                // makes the socket's release a point in the code rather than a
+                // guess about when a `select!` drops its arms.
+                let serve =
+                    std::future::IntoFuture::into_future(axum::serve(l, router(io.clone())));
+                tokio::pin!(serve);
+                // Three things end a round, and only one of them continues the
+                // cell: the server stopping, the handler closing the reconfig
+                // channel (the shutdown signal), or a `Rebind`.
+                tokio::select! {
+                    _ = &mut serve => Round::Done,
+                    r = next_round(&mut reconfig_rx) => r,
+                    _ = fan_out(&mut pushes, &viewers) => Round::Done,
+                }
+            }
+            // Nothing to serve on, and still not a reason to return. The diffs
+            // keep being drained: the handler pushes one per write whether or
+            // not anybody can see them, and a receiver nobody reads would fill
+            // and block the only writer of the `cell.db`.
+            None => tokio::select! {
+                r = next_round(&mut reconfig_rx) => r,
+                _ = fan_out(&mut pushes, &viewers) => Round::Done,
+            },
+        };
+
+        let Round::Rebind { bind, port, ack } = round else {
+            return;
+        };
+
+        // The old socket is closed at this point, so this is the first moment
+        // the new address can be bound.
+        let attempt = bind_addr(&bind, port).await;
+        // Answered before anything else, and deliberately: the handler is
+        // parked on this oneshot and drains no events while it waits, so the
+        // `Bound` line above must not be able to reach a full events channel
+        // ahead of the verdict.
+        let _ = ack.send(attempt.as_ref().map(|_| ()).map_err(String::clone));
+        listener = match attempt {
+            Ok(l) => {
+                io.bind = bind;
+                io.port = port;
+                // Every joined viewer was accepted on a socket that no longer
+                // exists — the connection tasks outlive the listener that
+                // accepted them, so this is a decision and not a consequence.
+                // Dropping them is the honest state: the client reconnects
+                // against the address its page now resolves to, and a registry
+                // still naming them would fan diffs at connections nobody can
+                // reach. Only on a real move: a failed one left the display
+                // exactly where its viewers are looking.
+                for tx in viewers.drain().await {
+                    let _ = tx.try_send(ViewerMsg::Close);
+                }
+                Some(l)
+            }
+            // The value passed the parser and still cannot be a listening
+            // address. The handler has the verdict already and will refuse the
+            // update to whoever sent it; this half's job is to put the display
+            // back where it was, so a typo costs a moment of downtime rather
+            // than the listener. If even that address is gone now, the next
+            // round is a listener-less one — reachable, and still movable.
+            Err(e) => {
+                let _ = events_tx.send(WebEvent::BindFailed(e)).await;
+                match bind_addr(&io.bind, io.port).await {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        let _ = events_tx.send(WebEvent::BindFailed(e)).await;
+                        None
                     }
                 }
             }
-        } => {}
+        };
+    }
+}
+
+/// Bind one address, with the failure text an operator can act on.
+async fn bind_addr(addr: &str, port: u16) -> Result<tokio::net::TcpListener, String> {
+    tokio::net::TcpListener::bind((addr, port))
+        .await
+        .map_err(|e| format!("{addr}:{port}: {e}"))
+}
+
+/// Wait for whatever ends this serving round on the reconfig channel.
+///
+/// A `Rebind` closes nothing here — the old listener is still open, owned by
+/// the `serve` future in the caller's scope. The **new** address is bound after
+/// this returns, which is why a failure to bind it can still fall back.
+async fn next_round(reconfig_rx: &mut mpsc::Receiver<WebReconfig>) -> Round {
+    loop {
+        match reconfig_rx.recv().await {
+            // The handler is gone when this channel closes.
+            None => return Round::Done,
+            Some(WebReconfig::Rebind { bind, port, ack }) => {
+                return Round::Rebind { bind, port, ack };
+            }
+            // Diffs travel on the cell's own push channel; one arriving here
+            // would mean a caller outside this cell built the wiring.
+            Some(WebReconfig::Push { route, .. }) => tracing::warn!(
+                %route,
+                "web: a diff arrived on the reconfig channel and was dropped"
+            ),
+        }
+    }
+}
+
+/// Fan every `Push` the handler sends out to the viewers of its route.
+async fn fan_out(pushes: &mut mpsc::Receiver<WebReconfig>, viewers: &Arc<ViewerRegistry>) {
+    while let Some(push) = pushes.recv().await {
+        match push {
+            WebReconfig::Push { route, diff } => {
+                for (tx, join_ref, topic) in viewers.on_route(&route).await {
+                    let frame = meclaw_surface::frames::push(
+                        &join_ref,
+                        &topic,
+                        "diff",
+                        meclaw_core::serde_json::json!({ "diff": diff }),
+                    );
+                    // A full or closed viewer channel means that browser is
+                    // gone or wedged; its connection task cleans up the registry
+                    // entry. One slow viewer must not hold up the others.
+                    let _ = tx.try_send(ViewerMsg::Frame(frame));
+                }
+            }
+            // Rebinds travel on the substrate's reconfig channel, which is the
+            // only one the handler sends them on.
+            WebReconfig::Rebind { .. } => {
+                tracing::warn!("web: a rebind arrived on the push channel and was dropped")
+            }
+        }
     }
 }

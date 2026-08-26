@@ -5,7 +5,7 @@
 //! PROMISES, and every question is asked of the **substrate's own reader**
 //! rather than of a second opinion written in this file:
 //!
-//! 1. **The descriptor resolves.** `web@1.0.0` — the reference a mutation
+//! 1. **The descriptor resolves.** `web@1.1.0` — the reference a mutation
 //!    writes down.
 //! 2. **The config is a persistent `web` cell with a port of its own**, read
 //!    through `meclaw_colony::ParsedConfig` (the reader every boot and every
@@ -75,10 +75,22 @@ fn seeded_db() -> Connection {
 fn the_descriptor_names_the_template_at_the_version_it_ships() {
     let val = json("template.json");
     assert_eq!(val["name"].as_str(), Some("web"));
+    // Derived from the shipped file rather than repeated here: the version is
+    // a number in a public surface, and a second copy of it is one more place
+    // a bump can half-land (`development-rules.md` § 2d). What this asserts is
+    // the SHAPE — a version exists and is a three-part one a reference can
+    // name; which version it is, is `template.json`'s to say.
+    let version = val["version"]
+        .as_str()
+        .expect("template.json names a version");
     assert_eq!(
-        val["version"].as_str(),
-        Some("1.0.0"),
-        "the reference a mutation writes down is `web@1.0.0`"
+        version.split('.').count(),
+        3,
+        "the reference a mutation writes down is `web@{version}`"
+    );
+    assert!(
+        version.split('.').all(|p| p.parse::<u32>().is_ok()),
+        "each part of `web@{version}` is a number"
     );
     // The four description slots the library table and the builder read.
     for slot in ["purpose", "use_when", "not_in_scope"] {

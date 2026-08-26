@@ -177,6 +177,20 @@ more sentences that were simply false. What is left:
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- **v0.23.0 — a display moves without being rebuilt.** `port` and `bind` were
+  immutable: an update naming either was refused, and moving a display from
+  loopback to a LAN bind meant re-instantiating the cell and replaying every
+  hand-placed object, because a new instance is a new database. That refusal is
+  withdrawn, named as a retraction everywhere it stood. A params update rebinds
+  the running listener, the `cell.db` is untouched, and the joined browsers are
+  dropped and reconnect. The order is move then write, so nothing the socket
+  refused is ever persisted and a respawn cannot replay an address the display
+  was never on — while a move that did bind survives one. A failed bind is
+  curable by message now, at boot too, where it used to cost a restart. The
+  shipped contract moved with the capability: it required a `messages` array, so
+  a params update would have been refused at the door of every display
+  instantiated from the template.
+
 - **v0.22.0 — a display is a cell, and it owns its port.** Until now a colony had
   exactly one HTTP surface and it belonged to the process rather than to the tree:
   `--api` bound the one port, a display could not be created by mutation, and

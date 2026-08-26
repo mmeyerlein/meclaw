@@ -1,4 +1,4 @@
-# `web@1.0.0`
+# `web@1.1.0`
 
 A display as one cell, with a port of its own. One `web` cell, one listener, one
 `cell.db`, and a token stylesheet in the visionOS design language shipped as seed
@@ -55,22 +55,47 @@ second display takes its own. The template is one cell, so `override_params` tak
 the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@1.0.0",
+{"name": "web-two", "template": "web@1.1.0",
  "override_params": {"port": 7801}}
 ```
 
-**`port` and `bind` are immutable, and the refusal says so.** Both stand in the
-params overlay's `KNOWN_KEYS` *and* in its `IMMUTABLE_KEYS`. A params update that
-names either is refused as `Immutable` -- loudly, and with no partial apply --
-rather than as `Unknown`, and the difference matters to whoever reads the error:
-"you may not move this" is not "there is no such key". `override_params` at
-**instantiation** is therefore the one moment the port is chosen; after that,
-moving a running display would drag it out from under the reverse proxy pointed
-at it, which is an outage dressed up as a configuration change. A second display
-is a second instance, never a rebind of the first.
+**RETRACTED: `port` and `bind` are immutable.** Up to `web@1.0.0` this page
+said: *"Both stand in the params overlay's `KNOWN_KEYS` and in its
+`IMMUTABLE_KEYS`. A params update that names either is refused as `Immutable`
+-- loudly, and with no partial apply … `override_params` at **instantiation**
+is therefore the one moment the port is chosen … A second display is a second
+instance, never a rebind of the first."* **That refusal is withdrawn** (GH #410,
+`web@1.1.0`). This type's `IMMUTABLE_KEYS` is empty.
+
+The half that still holds is the last sentence: a second display is still a
+second instance with its own port. What no longer holds is that a *first* one
+cannot move. Moving a running display from loopback to a LAN bind used to mean
+re-instantiating the cell and replaying every hand-made object position, because
+a new instance is a new `cell.db`; it is now one message:
+
+```json
+{"params": {"bind": "0.0.0.0"}}
+```
+
+The listener closes, the new address is bound, every joined viewer is dropped
+and reconnects on its own. The `cell.db` is untouched -- same objects, same
+components, same pages, same files. A value the socket cannot take (a name
+nothing resolves, a port somebody else holds) is refused to the sender as
+`invalid_input` with the text `bind failed: …`, the display comes back on its
+old address, and nothing is written: a respawn can never replay an address the
+display was never on. What *did* bind is remembered, so a restart keeps the
+move.
 
 `params.external_timeout_ms` (default `5000`) is the ordinary A-timeout around
-I/O the cell itself starts. It is mutable.
+I/O the cell itself starts. It also bounds the wait for a rebind's verdict.
+
+**The contract moved with the capability** (`contract.version` `1.0.0` →
+`1.1.0`). `consumes.body.messages` was **required**, which would have refused a
+params update at the door — `consumes_violation`, and the cell never called. It
+is optional now, and `params` is declared beside it. Nothing is lost: a
+declarative type check cannot tell a display patch from a params update, so the
+refusal moved to the only side that can. A body carrying neither slot comes back
+`invalid_input` from the cell itself.
 
 ## Authentication is external, forever
 
@@ -81,8 +106,9 @@ that one decision:
 
 - **The default bind is `127.0.0.1`.** A type that never authenticates must not
   be reachable off-host by default. Setting `bind` to `0.0.0.0` is a decision
-  somebody makes on purpose, in the mutation that creates the instance, and it
-  cannot be taken back without replacing the cell.
+  somebody makes on purpose. Since `web@1.1.0` it can be made in a params update
+  on a running cell as well as in the mutation that creates it -- and taken back
+  the same way, which it could not be before.
 - **There is no allowlist, no rate limit and no session of its own.** Whoever
   reaches the port sees the display and can move whatever a component declared
   `editable`.

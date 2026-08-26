@@ -1,4 +1,4 @@
-# `canvy@2.0.1`
+# `canvy@2.1.0`
 
 One interactive canvas of the colony, served on a port of its own. A timer takes
 a topology snapshot, a `code` cell turns it into display objects, and a `web`
@@ -62,7 +62,7 @@ that matters:
    **Correction ([#402](https://github.com/mmeyerlein/meclaw/issues/402)):** this
    said the refusal was the bootstrap signal and the only one there is. It was
    not, and reading it that way made `canvy` unusable over its own substrate:
-   `canvy/web` is a `ref` to `web@1.0.0`, which **seeds a demo page at `/`**, so
+   `canvy/web` is a `ref` to `web@1.1.0`, which **seeds a demo page at `/`**, so
    the `query` succeeded, the branch never ran, the `canvy-*` components were
    never defined, and every `object.create` in the bundle came back
    `unknown_component` while the deletes landed. The bootstrap pass adopts a
@@ -73,7 +73,7 @@ that matters:
    turned one tick into two into four and wedged the routing loop on a full
    mailbox inside twenty seconds ([#161](https://github.com/mmeyerlein/meclaw/issues/161)).
 
-**`web`** is a reference to [`web@1.0.0`](../web/) with one default overridden:
+**`web`** is a reference to [`web@1.1.0`](../web/) with one default overridden:
 the port. It holds four tables — objects, components, pages, assets — renders
 its pages once into a materialised tree, and serves them from that. **A page
 load therefore costs no cell call at all**: a colony that is wedged still serves
@@ -175,13 +175,27 @@ ships `7810`; a second canvas in the same colony needs a different one, because
 two displays sharing a port is a bind race rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.0.1",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.1.0",
                 "override_params": {"web": {"port": 7900}}}]}
 ```
 
-The port is **immutable once the cell exists**: a params update naming it is
+**RETRACTED (GH #410, `canvy@2.1.0`).** Up to `canvy@2.0.1` this page said:
+*"The port is **immutable once the cell exists**: a params update naming it is
 refused, loudly and without partial apply, because rebinding a live display
-would move it out from under whatever reverse proxy is pointed at it.
+would move it out from under whatever reverse proxy is pointed at it."* **That
+refusal is withdrawn** — `web@1.1.0` rebinds a running listener. The port is
+still chosen here, at instantiation, and it is still the identity that keeps two
+canvases apart; it is simply no longer irreversible. To move a live canvas, send
+its display cell a params update:
+
+```json
+{"params": {"bind": "0.0.0.0", "port": 7901}}
+```
+
+The canvas keeps its `cell.db` — every node position a person dragged is exactly
+where it was — and the open browsers reconnect on their own. This is what
+`MIGRATION.md` step 1's "pick a free port" no longer costs you if you pick the
+wrong one.
 
 ### Auth and TLS are somebody else's job, permanently
 

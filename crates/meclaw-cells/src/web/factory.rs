@@ -199,8 +199,12 @@ fn make_build(
     consumes: Option<Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
-    let parsed = WebParams::parse(&params)?;
+    // Parsed here so a params error is a spawn failure rather than a panic on
+    // the respawn path. The effective values are re-derived per (re)spawn
+    // inside the closure — see the restore step there.
+    WebParams::parse(&params)?;
 
+    let birth_cap = params;
     let path_cap = path;
     let outputs_cap = outputs_tx;
     let cell_dir_cap = cell_dir;
@@ -238,6 +242,32 @@ fn make_build(
                  (the colony is kept alive; fix the seed file and re-create cell.db)"
             );
         }
+        // 1d. Restore: effective params = birth ⊕ the `cell.db` overlay
+        //     (GH #410). A display that was moved to another address by a
+        //     params update must come back there after a respawn, or the crash
+        //     of a cell would quietly undo an operator's move — the same
+        //     divergence between declared and actual params that `port` and
+        //     `bind` were once immutable to prevent. A corrupt overlay is not
+        //     worth a panic on the restart barrier: the birth params are a
+        //     working display, and the failure is loud.
+        let parsed = match crate::params_overlay::restore::<crate::web::params::WebOverlay>(
+            &conn, &birth_cap,
+        ) {
+            Ok(o) => WebParams {
+                port: o.port,
+                bind: o.bind,
+                external_timeout_ms: o.external_timeout_ms,
+            },
+            Err(e) => {
+                tracing::error!(
+                    path = path_cap.as_str(),
+                    error = %e,
+                    "web: could not replay the params overlay — this display \
+                     starts on its birth params"
+                );
+                WebParams::parse(&birth_cap).expect("birth params parsed at build time")
+            }
+        };
         // 2. Build the I/O state and the cell (sync). The pages channel is the
         //    one seam between the two halves: the handler publishes rendered
         //    pages, the listener serves whatever was last published. It starts
@@ -271,6 +301,7 @@ fn make_build(
         let cell = WebCell::new(
             path_cap.as_str().to_string(),
             io,
+            &parsed,
             pages_tx,
             assets_tx,
             ready_tx,

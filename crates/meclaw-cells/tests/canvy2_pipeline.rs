@@ -27,7 +27,7 @@
 //!    emitted bundle is put into an actual `web` cell and the page is fetched
 //!    over HTTP: one box per colony cell, one line per edge, and the hook
 //!    mounted on markup that carries `phx-hook`. Once against an empty display
-//!    and once against one carrying `web@1.0.0`'s seeded demo, which is what
+//!    and once against one carrying `web@1.1.0`'s seeded demo, which is what
 //!    `canvy/web` actually is — the case that was missing, and the whole of
 //!    GH #402.
 //!
@@ -419,7 +419,7 @@ fn the_display_is_a_reference_with_its_port_overridden() {
     let Some(root) = shipped_canvy() else { return };
     let web = read_json(&root.join("web/config.json"));
     assert_eq!(web["cell"]["type"], "ref");
-    assert_eq!(web["cell"]["template"], "web@1.0.0");
+    assert_eq!(web["cell"]["template"], "web@1.1.0");
     // `override_params` sits top-level beside `cell`, keyed by the cells of the
     // REFERENCED template — `""` is its root (docs/config.md § Template
     // reference). Not inside `cell` (that key list is closed) and not inside
@@ -592,7 +592,7 @@ fn an_empty_display_is_bootstrapped_by_the_same_pass() {
 /// A `query` that answers with SOMEBODY ELSE'S root is the bootstrap case too
 /// (GH #402).
 ///
-/// `canvy/web` is a `ref` to `web@1.0.0`, and that template seeds a demo:
+/// `canvy/web` is a `ref` to `web@1.1.0`, and that template seeds a demo:
 /// `pages.jsonl` declares `("/", "root", "Vision")`. So the `query` a fresh
 /// `canvy` sends **succeeds**, and until this test the layout read success as
 /// "the display is already mine": the bootstrap branch never ran, the
@@ -609,7 +609,7 @@ fn a_display_holding_a_foreign_page_is_bootstrapped_too() {
     let ask = ask_pass(&root, fixture_graph());
     let ctx = layout_context(ask["header"]["canvy_graph"].as_str().unwrap());
 
-    // The shipped `web@1.0.0` seed, in the shape `query` answers with: a page
+    // The shipped `web@1.1.0` seed, in the shape `query` answers with: a page
     // at `/` rooted at `root`, with the demo's own objects under it. Not one of
     // them is a `canvy` object, and none of them is the id `canvy`.
     let foreign = json!({
@@ -864,7 +864,7 @@ struct Live {
 
 /// A `web` cell over `cell_dir`. With an empty directory the database starts
 /// empty; hand it a `seed/` and the cell seeds itself from it, which is what a
-/// real `canvy/web` gets — the ref brings `web@1.0.0`'s own demo seed with it.
+/// real `canvy/web` gets — the ref brings `web@1.1.0`'s own demo seed with it.
 /// This comment used to claim the opposite ("a ref directory carries no seed"),
 /// and believing it is how GH #402 shipped: every test here started from a
 /// state no instance is ever in.
@@ -1047,7 +1047,7 @@ async fn the_pipeline_fills_a_real_display() {
 /// GH #402 end to end, over the display a real instance actually gets.
 ///
 /// The test above starts the `web` cell with an EMPTY database, and that is not
-/// what `canvy/web` is: it is a `ref` to `web@1.0.0`, whose `seed/` ships a demo
+/// what `canvy/web` is: it is a `ref` to `web@1.1.0`, whose `seed/` ships a demo
 /// — `pages.jsonl` declares `("/", "root", "Vision")` and seventeen objects
 /// under it. So every canvy ever instantiated from the shipped template met a
 /// display that already had a page, the `query` succeeded, the bootstrap branch

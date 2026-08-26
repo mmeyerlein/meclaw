@@ -29,7 +29,9 @@ pub enum WebEvent {
     Bound(String),
     /// The bind failed. The cell stays alive and serves nothing — see the A1′
     /// note in [`run_io`]: a display that cannot bind must not take its cell
-    /// down, or a port collision would look like a crash loop.
+    /// down, or a port collision would look like a crash loop. Since GH #410
+    /// the state is recoverable without a restart: a params update naming a
+    /// free address is served by the same task, on the same `cell.db`.
     BindFailed(String),
     /// A browser said something on a joined socket.
     ///
@@ -71,6 +73,13 @@ pub enum EventReply {
 ///
 /// The channel also carries the shutdown signal by being closed — the I/O half
 /// treats a closed reconfig channel as "the handler is gone".
+///
+/// The two variants travel on **different** channels, which is why neither is
+/// ever seen on the other's: `Push` goes over the cell's own `push_tx` (minted
+/// in [`WebCell`], so a browser event can push too), `Rebind` over the
+/// substrate's `reconfig_tx` (the seam `handle` is handed, and the one the
+/// proxy uses for `SetPolling`). One enum for both because the trait declares
+/// one `Reconfig` type.
 #[derive(Debug)]
 pub enum WebReconfig {
     /// Send this diff to everyone joined on `route`.
@@ -83,6 +92,31 @@ pub enum WebReconfig {
         route: String,
         /// The LiveView diff payload, already packed.
         diff: Value,
+    },
+    /// Move the listener to this address (GH #410).
+    ///
+    /// The I/O half closes the old listener, binds the new address and drops
+    /// every joined viewer; if the new address cannot be bound it comes back to
+    /// the old one.
+    ///
+    /// # Why this one is answered
+    ///
+    /// A `bind` that the parser accepts can still fail at the socket — a
+    /// hostname nothing resolves, a port somebody else holds. Only the I/O half
+    /// knows which, and the handler must not write such a value into the
+    /// `cell.db` overlay: a respawn would replay it and the display would come
+    /// up with no listener at all. So the verdict travels back, the handler
+    /// persists only what actually bound, and a value that did not is refused
+    /// to the sender in the cell's ordinary error shape rather than only
+    /// appearing in a log line.
+    Rebind {
+        /// The address to bind.
+        bind: String,
+        /// The port to bind.
+        port: u16,
+        /// Where the verdict goes: `Ok` once the new address is serving, `Err`
+        /// with the socket's own words if it could not be bound.
+        ack: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -127,13 +161,29 @@ pub struct WebCell {
     /// keeps the shutdown signal unambiguous and lets both halves of the cell
     /// push, which is what a browser event needs.
     pub(crate) push_tx: mpsc::Sender<WebReconfig>,
+    /// Where the listener currently is (GH #410).
+    ///
+    /// The handler holds it because it is the only side that may change it: an
+    /// update is merged over these values, and the I/O half is *told* the
+    /// result. Two copies of the same fact would be a lock in disguise.
+    pub(crate) bind: String,
+    /// The port the listener currently holds. See [`WebCell::bind`].
+    pub(crate) port: u16,
+    /// The live operation-timeout, held for the same reason: a params update
+    /// merges over it.
+    pub(crate) external_timeout_ms: u64,
 }
 
 impl WebCell {
     /// Build a cell around an already-constructed I/O state.
+    ///
+    /// `params` are the **effective** ones — birth params with the `cell.db`
+    /// overlay replayed over them — so a display that was moved comes back
+    /// where it was moved to rather than where it was born.
     pub fn new(
         path: String,
         io: WebIo,
+        params: &crate::web::params::WebParams,
         pages_tx: watch::Sender<Arc<PageMap>>,
         assets_tx: watch::Sender<Arc<AssetMap>>,
         ready_tx: watch::Sender<bool>,
@@ -146,6 +196,9 @@ impl WebCell {
             assets_tx,
             ready_tx,
             push_tx,
+            bind: params.bind.clone(),
+            port: params.port,
+            external_timeout_ms: params.external_timeout_ms,
         }
     }
 
@@ -244,6 +297,134 @@ impl WebCell {
 
         db.call(move |conn| ops::set_editable(conn, &id, &prop, &new_value))
             .await
+    }
+
+    /// Apply a runtime params update (GH #410).
+    ///
+    /// The order is the whole design: merge, **move**, then persist. Nothing
+    /// reaches `cell.db` that the socket did not accept, so a respawn cannot
+    /// replay an address the display was never on — which is the divergence
+    /// between declared and actual params that `port` and `bind` were once
+    /// immutable to prevent, and the only part of that argument worth keeping.
+    /// A refusal writes nothing and moves nothing.
+    ///
+    /// Silent on success, in the shape every other cell type's params update
+    /// has (`proxy`, `timer`, `mcp`): the acknowledgement an operator wants is
+    /// the display answering on the new address, and a `Bound` line in the
+    /// journal says which one that is.
+    async fn apply_params_update(
+        &mut self,
+        update: &Map<String, Value>,
+        started: std::time::Instant,
+        reply_target: meclaw_core::Path,
+        sink: &OutputSink,
+        db: &mut DbConn,
+        reconfig_tx: &mpsc::Sender<WebReconfig>,
+    ) {
+        let refuse = |text: String| {
+            output::build_refusal(
+                "params",
+                "invalid_input",
+                text,
+                started.elapsed().as_millis() as i64,
+            )
+        };
+
+        let current = crate::web::params::WebOverlay {
+            port: self.port,
+            bind: self.bind.clone(),
+            external_timeout_ms: self.external_timeout_ms,
+        };
+        let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
+            Ok(ok) => ok,
+            Err(e) => {
+                let _ = sink
+                    .push(CellOutput {
+                        target: reply_target,
+                        content: refuse(e.detail()),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        // The move, before the write. A `bind` the parser accepted can still
+        // fail at the socket, and only the I/O half finds out.
+        if merged.port != self.port || merged.bind != self.bind {
+            if let Err(text) = self.rebind(&merged.bind, merged.port, reconfig_tx).await {
+                let _ = sink
+                    .push(CellOutput {
+                        target: reply_target,
+                        content: refuse(text),
+                    })
+                    .await;
+                return;
+            }
+            self.port = merged.port;
+            self.bind = merged.bind.clone();
+        }
+
+        let now = crate::params_overlay::now_unix_seconds();
+        let persist = db
+            .call(move |c| crate::params_overlay::persist_params_overlay(c, &overlay, now))
+            .await;
+        if let Err(e) = persist {
+            // The display has already moved, and saying otherwise would be
+            // worse than saying this: a respawn will put it back where it was
+            // born, because that write is what a respawn reads.
+            let _ = sink
+                .push(CellOutput {
+                    target: reply_target,
+                    content: refuse(format!(
+                        "cell.db params write failed: {e} — the display moved but \
+                         a respawn will not remember it"
+                    )),
+                })
+                .await;
+            return;
+        }
+
+        self.external_timeout_ms = merged.external_timeout_ms;
+        db.set_query_timeout(Some(std::time::Duration::from_millis(
+            self.external_timeout_ms,
+        )));
+    }
+
+    /// Ask the I/O half to move the listener and wait for its verdict.
+    ///
+    /// Operation-timeout (hard rule 12) around the wait: binding an address
+    /// resolves a name, and a wedged resolver must not hold a params update
+    /// open forever. A timeout is reported as a refusal — the display may or
+    /// may not have moved by then, and the journal is what says which.
+    async fn rebind(
+        &self,
+        bind: &str,
+        port: u16,
+        reconfig_tx: &mpsc::Sender<WebReconfig>,
+    ) -> Result<(), String> {
+        let (ack, verdict) = tokio::sync::oneshot::channel();
+        if reconfig_tx
+            .send(WebReconfig::Rebind {
+                bind: bind.to_string(),
+                port,
+                ack,
+            })
+            .await
+            .is_err()
+        {
+            return Err("the listener is gone".to_string());
+        }
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(self.external_timeout_ms),
+            verdict,
+        )
+        .await;
+        match waited {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(format!("bind failed: {e}")),
+            Ok(Err(_)) => Err("the listener did not answer".to_string()),
+            Err(_) => Err("bind exceeded external_timeout_ms".to_string()),
+        }
     }
 
     /// Emit one semantic browser event on the cell's out-edges.
@@ -385,11 +566,49 @@ impl LongRunningCell for WebCell {
         msg: Message,
         sink: &'a OutputSink,
         db: &'a mut DbConn,
-        _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
+        reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             let started = std::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
+
+            // The params-update slot (`config.md` § Access), handled FIRST and
+            // exclusively: a message that carries it is not a tool call, and
+            // reading it as one would refuse a valid update for having no
+            // `messages` array. Since GH #410 this is also how a running
+            // display is moved to another address.
+            if let Body::Inline(v) = &msg.body
+                && let Some(params_val) = v.get("params")
+            {
+                match params_val.as_object() {
+                    Some(update) => {
+                        let update = update.clone();
+                        self.apply_params_update(
+                            &update,
+                            started,
+                            reply_target,
+                            sink,
+                            db,
+                            reconfig_tx,
+                        )
+                        .await;
+                    }
+                    None => {
+                        let _ = sink
+                            .push(CellOutput {
+                                target: reply_target,
+                                content: output::build_refusal(
+                                    "params",
+                                    "invalid_input",
+                                    "params slot: not a JSON object".to_string(),
+                                    started.elapsed().as_millis() as i64,
+                                ),
+                            })
+                            .await;
+                    }
+                }
+                return;
+            }
 
             let calls = match parse_tool_calls(&msg) {
                 Ok(c) => c,
@@ -505,11 +724,14 @@ impl LongRunningCell for WebCell {
                     // listener: a port collision is an operator's mistake to
                     // read in the journal, not a reason to take a cell — and
                     // with it possibly a whole colony boot — down.
+                    // Since GH #410 the way out is a message rather than a
+                    // restart: a params update naming a free address moves the
+                    // display there, and the `cell.db` is not touched by it.
                     tracing::error!(
                         path = %self.path,
                         error = %err,
-                        "web: could not bind — this display serves nothing until \
-                         the port is free and the cell is restarted"
+                        "web: could not bind — send this cell a params update \
+                         naming a free port or bind address"
                     );
                 }
             }

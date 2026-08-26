@@ -59,8 +59,10 @@ fn core_root() -> std::path::PathBuf {
 
 /// A port nothing is listening on, obtained by binding and letting go.
 ///
-/// `params.port` is required and immutable, so the port is chosen before the
-/// cell exists and written into the template the mutation instantiates.
+/// `params.port` is required, so the port is chosen before the cell exists and
+/// written into the template the mutation instantiates. It is no longer
+/// immutable (GH #410) — a running display can be moved by a params update —
+/// but this test is about the instantiation moment, which is unchanged.
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
     let port = l.local_addr().expect("read the bound address").port();
@@ -246,7 +248,7 @@ async fn a_web_cell_instantiated_by_mutation_serves_in_the_same_boot() {
 
     let outcome = send_mutation(
         &h,
-        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@1.0.0"}]}}),
+        json!({"scope": "/", "diff": {"add_nodes": [{"name": "display", "template": "web@1.1.0"}]}}),
     )
     .await;
     assert!(
@@ -508,7 +510,7 @@ fn a_template_may_not_declare_a_lane_to_the_trace_endpoint() {
 /// canvas: both of its unusual lanes resolve at a deeply nested scope. Guarded
 /// like every other template-reading test (GH #49).
 ///
-/// Since `canvy@2.0.0` the hive holds a `cell.type: "ref"` to `web@1.0.0`
+/// Since `canvy@2.0.0` the hive holds a `cell.type: "ref"` to `web@1.1.0`
 /// (W8 Task 13), so the resolution needs the real library rather than an empty
 /// registry — and a tree that does not carry the referenced template skips, for
 /// the same reason a tree without the canvas does.

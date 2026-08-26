@@ -1169,7 +1169,7 @@ def main():
         #                      cell whose `pages` table has no `/` answers
         #                      `query` with `invalid_input`.
         #   ROOT_ID not in have  there IS a page and somebody else's root is on
-        #                      it. `canvy/web` refs `web@1.0.0`, which SEEDS a
+        #                      it. `canvy/web` refs `web@1.1.0`, which SEEDS a
         #                      demo at `/`, so this is the state every canvy
         #                      instantiated from the shipped template starts in.
         #

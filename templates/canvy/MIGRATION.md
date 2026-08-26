@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.0.1`
+# Migrating a `canvy` instance from 1.x to `canvy@2.1.0`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -40,11 +40,15 @@ after.
   HTTP API under `/surface/<cell path>`. 2.0.0's display owns a port of its own
   (the template ships `7810`), so both can run side by side for as long as you
   want to compare them.
-- **The display's port is immutable once the cell exists.** Pick a free one at
+- **RETRACTED (GH #410, `canvy@2.1.0`): the display's port is immutable once
+  the cell exists.** Up to `canvy@2.0.1` this step said: *"Pick a free one at
   instantiation; a later params update naming it is refused without partial
-  apply. If a reverse proxy points at the old canvas, point a second location
-  block at the new port rather than trying to move the new display onto the old
-  address.
+  apply."* **That refusal is withdrawn.** Pick a free one anyway — but if you
+  pick wrongly, or if you later want the new canvas on the address the old one
+  had, send the display cell `{"params": {"port": 7810}}` instead of rebuilding
+  it. Positions survive, because the `cell.db` is untouched. Until the old
+  canvas is retired, a second location block on the reverse proxy is still the
+  simpler answer.
 - **Find the old store.** The positions live in the `cell.db` of the 1.x
   instance's `store` cell — the directory named `store` inside the old hive's
   directory, under the colony root. Not the hive's directory, and not another
@@ -54,7 +58,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.0.1` beside the old hive
+## 1. Instantiate `canvy@2.1.0` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free port:
@@ -66,7 +70,7 @@ with the old one and the display a free port:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.0.1",
+        "template": "canvy@2.1.0",
         "override_params": {"web": {"port": 7811}}
       }
     ]

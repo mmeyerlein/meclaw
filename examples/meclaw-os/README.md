@@ -314,7 +314,7 @@ you what it *would* have done before you let it do anything.
 
 ## Step four: the colony draws itself
 
-`grow-canvy.json` adds [`canvy@2.0.1`](../../templates/canvy/) — a timer, two `code` cells and a
+`grow-canvy.json` adds [`canvy@2.1.0`](../../templates/canvy/) — a timer, two `code` cells and a
 `web` cell that serves one interactive canvas of this colony on a port of its own:
 
 ```bash
@@ -338,8 +338,10 @@ there because the port is the one knob an instance almost always sets:
 ```
 
 The template's own default is `7810`; this example takes `7811` so that a canvas you already
-run elsewhere on the default keeps it. A port is settled at instantiation and immutable
-afterwards — two displays sharing one is a bind race rather than a configuration.
+run elsewhere on the default keeps it. A port is settled at instantiation — two displays
+sharing one is a bind race rather than a configuration. **The "and immutable afterwards" half
+of that sentence is withdrawn** (GH #410): a running display moves to another address on a
+params update, keeping its `cell.db` and every hand-placed object.
 
 The `event` lane out of the hive is **not** wired here, for the reason the rest of this example
 gives: something a person does in the browser that this colony has no consumer for

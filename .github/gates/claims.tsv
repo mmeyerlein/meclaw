@@ -223,3 +223,9 @@ PIN-web-bundle-destructive-de	docs/cell-types.md	**Was das fuer ein Bundle heiss
 PIN-web-bundle-destructive-en	docs/cell-types.en.md	**What that means for a bundle that clears and rebuilds** (GH #405)	pinned	a_bundle_whose_creates_are_all_refused_still_applies_its_deletes
 PIN-web-bundle-two-sends-de	docs/cell-types.md	ein zerstoerendes Bundle wird als ZWEI geschickt	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree
 PIN-web-bundle-two-sends-en	docs/cell-types.en.md	a destructive bundle is sent as TWO	pinned	the_documented_recipe_sends_two_bundles_and_keeps_the_tree
+PIN-web-rebind-runtime-de	docs/cell-types.md	**`port` und `bind` sind zur Laufzeit änderbar — und damit wird eine Zusage zurückgenommen (GH #410).**	pinned	a_params_update_moves_the_port_of_a_running_display
+PIN-web-rebind-runtime-en	docs/cell-types.en.md	**`port` and `bind` change at runtime — and this retracts a promise (GH #410).**	pinned	a_params_update_moves_the_port_of_a_running_display
+PIN-web-rebind-move-then-write-de	docs/cell-types.md	**Die Reihenfolge ist verschieben, dann schreiben.**	pinned	a_bind_nothing_can_resolve_leaves_the_old_listener_serving
+PIN-web-rebind-move-then-write-en	docs/cell-types.en.md	**The order is move, then write.**	pinned	a_bind_nothing_can_resolve_leaves_the_old_listener_serving
+PIN-web-rebind-boot-failure-de	docs/cell-types.md	**Ein fehlgeschlagener Bind ist per Nachricht heilbar.**	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message
+PIN-web-rebind-boot-failure-en	docs/cell-types.en.md	**A failed bind is curable by message.**	pinned	a_display_that_could_not_bind_at_boot_is_moved_by_a_message

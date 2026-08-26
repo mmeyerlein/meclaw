@@ -11,6 +11,68 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-26
+
+### Added
+
+- **A display moves without being rebuilt — and this retracts the promise that it
+  could not** ([#410](https://github.com/mmeyerlein/meclaw/issues/410)). A `params`
+  update naming `bind` and/or `port` now takes effect on the running `web` cell:
+  the listener rebinds, the `cell.db` is untouched, and the joined LiveView sockets
+  are dropped and reconnect against the new address. Moving a display from loopback
+  to a LAN bind used to mean re-instantiating the cell and replaying every hand-made
+  object position, because a new instance is a new database. It is one message now:
+
+  ```json
+  {"params": {"bind": "0.0.0.0"}}
+  ```
+
+  **The retraction, named.** `docs/cell-types*` § `web`, `templates/web/README.md`,
+  `templates/web/template.json`, `templates/canvy/README.md`,
+  `templates/canvy/MIGRATION.md` and `examples/meclaw-os/README.md` all promised that
+  `port` and `bind` were immutable and that an update naming either was refused as
+  `Immutable`. Every one of those sentences is now marked as withdrawn where it stood,
+  in both language versions of the spec. `WebOverlay::IMMUTABLE_KEYS` is empty.
+
+  What the immutability protected against was silent divergence between the declared
+  params and the socket the cell holds — and an accepted params update *is* the
+  declared params moving. The W8 ruling *"the port is the identity"* is untouched: it
+  separates two displays at instantiation, and a rebind changes neither cell path, nor
+  database, nor declared contract.
+
+  **The order is move, then write.** A `bind` the parser accepts can still fail at the
+  socket, so the I/O half's verdict travels back and only what actually bound is
+  written to the overlay: an unbindable value is refused to the sender as
+  `invalid_input` with the text `bind failed: …`, the display returns to its old
+  address, and a respawn can never replay an address the display was never on. What
+  did bind survives a respawn, which is new — the `web` cell replays its `cell.db`
+  params overlay per (re)spawn now, as the other long-running types already did.
+
+  **A failed bind is curable by message.** At boot too: a display whose port was taken
+  at startup keeps its task and starts serving the moment an update names an address it
+  can have. It used to park until shutdown, so a port collision cost a restart.
+
+  The GH #395 readiness seam is unaffected by a move — the page map, the asset map and
+  `ready` are the same objects before and after, and `ready` is never taken back.
+
+  **The shipped contract had to move with it** (`templates/web/config.json`,
+  `contract.version` `1.0.0` → `1.1.0`). `consumes.body.messages` was `required: true`,
+  so a params update — which carries no `messages` — was refused with
+  `consumes_violation` before the cell was ever called: the capability would have existed
+  and been unreachable on every display instantiated from the template. `messages` is
+  optional now and `params` is declared beside it. The guard is not lost, it moved to the
+  only side that can tell a display patch from a params update: a body carrying neither
+  comes back `invalid_input` from the cell.
+
+### Changed
+
+- **`templates/web` → `1.1.0`, `templates/canvy` → `2.1.0`.** Both gain a capability
+  they were promised not to have, which is the second digit by the versioning rule.
+  `canvy/web`'s ref pin moves with it (an exact-match reference: `web@1.0.0` resolves
+  to nothing once `web` ships `1.1.0`), and the documented `canvy@…` references in
+  `templates/README.md`, `templates/canvy/{README,MIGRATION}.md` and
+  `examples/meclaw-os/` move in the same commit.
+
 ## [0.22.5] — 2026-08-26
 
 ### Changed

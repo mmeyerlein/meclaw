@@ -58,8 +58,9 @@ fn core_root() -> std::path::PathBuf {
 
 /// A port nothing is listening on, obtained by binding and letting go.
 ///
-/// `params.port` is required and immutable, so it is chosen before the cell
-/// exists and written into the template the mutation instantiates.
+/// `params.port` is required, so it is chosen before the cell exists and
+/// written into the template the mutation instantiates. Since GH #410 it can
+/// also be changed afterwards; this test is about the instantiation moment.
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral port");
     let port = l.local_addr().expect("read the bound address").port();
@@ -137,7 +138,7 @@ async fn grow_the_display(h: &ColonyHandle) {
         .send(ColonyMsg::Mutation {
             payload: json!({
                 "scope": "/",
-                "diff": {"add_nodes": [{"name": NODE, "template": "web@1.0.0"}]}
+                "diff": {"add_nodes": [{"name": NODE, "template": "web@1.1.0"}]}
             }),
             reply_to: None,
             trace_id: Uuid::now_v7(),

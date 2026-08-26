@@ -41,6 +41,14 @@ use crate::web::render::PageMap;
 pub enum ViewerMsg {
     /// A raw frame, already encoded.
     Frame(String),
+    /// End this connection (GH #410).
+    ///
+    /// Sent when the listener moves to another address. The socket was accepted
+    /// on the old one and cannot follow it; the client's own reconnect is what
+    /// brings the viewer back, against the address its page now resolves to. A
+    /// close frame goes out first so the browser learns the connection ended
+    /// rather than waiting for its heartbeat to time out.
+    Close,
 }
 
 /// One joined viewer, as the registry holds it.
@@ -76,9 +84,23 @@ pub async fn run_connection(
     loop {
         tokio::select! {
             // Frames the handler (or anybody else) wants pushed at this viewer.
-            Some(ViewerMsg::Frame(text)) = out_rx.recv() => {
-                if sink.send(WsMessage::Text(text)).await.is_err() {
-                    break;
+            //
+            // Matched inside the arm rather than in the pattern: a pattern that
+            // only names `Frame` would consume a `Close` and disable the branch
+            // for the rest of this `select!`, which is silently dropping the one
+            // message that must not be dropped.
+            out = out_rx.recv() => {
+                match out {
+                    Some(ViewerMsg::Frame(text)) => {
+                        if sink.send(WsMessage::Text(text)).await.is_err() {
+                            break;
+                        }
+                    }
+                    // The listener moved (GH #410), or the sender is gone.
+                    Some(ViewerMsg::Close) | None => {
+                        let _ = sink.send(WsMessage::Close(None)).await;
+                        break;
+                    }
                 }
             }
             incoming = stream.next() => {
