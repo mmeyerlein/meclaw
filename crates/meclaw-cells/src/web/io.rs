@@ -342,7 +342,16 @@ async fn get_path(State(io): State<WebIo>, uri: axum::http::Uri) -> Response {
     let pages = io.pages.borrow().clone();
     if let Some(page) = pages.get(path) {
         return (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                // A page is a live render and must never be served from a
+                // heuristic browser cache: it carries the client script inline,
+                // and a cached copy keeps running a client the cell has long
+                // replaced — seen as fixed bugs that will not die in one
+                // person's tab. `no-cache` still allows conditional reuse; the
+                // response has no validators, so in practice it means "fetch".
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
             shell(&io.cell_path, &page.title, &page.rendered_body()),
         )
             .into_response();
