@@ -804,6 +804,60 @@ def settle(pos, placed, frames=None):
                 return False
         return not any(hits(box, *r) for r in foreign)
 
+    def padded(box):
+        """The rectangle a cell at `box` contributes to its hive's frame."""
+        x, y = box
+        return (x - PAD_SIDE, y - PAD_TOP,
+                NODE_W + 2 * PAD_SIDE, NODE_H + PAD_TOP + PAD_BOT)
+
+    def crosses(a, b):
+        return (a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+                and a[1] < b[1] + b[3] and b[1] < a[1] + a[3])
+
+    def growth_ok(i, box):
+        """Would the OWN frame, grown around `box`, NEWLY cross an unrelated one?
+
+        The frames are LIVE: every stray already settled has grown its hive's
+        rectangle. Checking a spot against the pinned skeleton alone let the
+        frames chase each other -- a glue cell of one hive settled legally just
+        outside its neighbour's rectangle, its own frame grew around it, and
+        the two rectangles crossed anyway (the firewall/memory case).
+
+        Only NEW crossings are refused. Two hand-pinned clusters may already
+        cross (the hand outranks the layout), and refusing every spot then
+        would strand the strays on top of each other instead -- a crossing the
+        hand made is the hand's to resolve, and no automatic spot can unmake it.
+        """
+        own = hive_of(i)
+        r = frames.get(own)
+        if r is None:
+            return True
+        g = padded(box)
+        grown = (min(r[0], g[0]), min(r[1], g[1]), 0, 0)
+        grown = (grown[0], grown[1],
+                 max(r[0] + r[2], g[0] + g[2]) - grown[0],
+                 max(r[1] + r[3], g[1] + g[3]) - grown[1])
+        for h, fr in sorted(frames.items()):
+            if not h or h == own:
+                continue
+            if own.startswith(h + "/") or h.startswith(own + "/"):
+                continue
+            if crosses(grown, fr) and not crosses(r, fr):
+                return False
+        return True
+
+    def grow_own(i, box):
+        own = hive_of(i)
+        r = frames.get(own)
+        if r is None:
+            return
+        g = padded(box)
+        x0 = min(r[0], g[0])
+        y0 = min(r[1], g[1])
+        frames[own] = (x0, y0,
+                       max(r[0] + r[2], g[0] + g[2]) - x0,
+                       max(r[1] + r[3], g[1] + g[3]) - y0)
+
     def foreign_frames(i):
         own = hive_of(i)
         return [
@@ -826,7 +880,21 @@ def settle(pos, placed, frames=None):
     taken = [pos[i] for i in sorted(placed) if i in pos]
     for i in sorted(k for k in pos if k not in placed):
         foreign = foreign_frames(i)
-        if free(pos[i], taken, foreign):
+
+        # A cell whose OWN hive holds a pinned cluster starts its search inside
+        # that cluster's rectangle. Left at the flow's spot it would legally
+        # settle just OUTSIDE a foreign frame -- and its own hive's frame then
+        # grows around it, straight into the neighbour's (the firewall/memory
+        # case: the memory hive's glue cells settled a row above the pinned
+        # cluster, and the united frame swallowed the screen's). Own hive only,
+        # no ancestor walk: seeding into a distant ancestor's huge rectangle
+        # lands in somebody else's cluster and makes it worse, measured.
+        own_rect = frames.get(hive_of(i))
+        if own_rect and not hits(pos[i], *own_rect):
+            pos[i] = (own_rect[0] + PAD_SIDE, own_rect[1] + PAD_TOP)
+
+        if free(pos[i], taken, foreign) and growth_ok(i, pos[i]):
+            grow_own(i, pos[i])
             taken.append(pos[i])
             continue
         # Rings of grid steps around the computed spot, nearest first. Bounded:
@@ -849,12 +917,13 @@ def settle(pos, placed, frames=None):
                     )
             for c in sorted(candidates):
                 cand = c[-1]
-                if free(cand, taken, foreign):
+                if free(cand, taken, foreign) and growth_ok(i, cand):
                     spot = cand
                     break
             if spot:
                 break
         pos[i] = spot or pos[i]
+        grow_own(i, pos[i])
         taken.append(pos[i])
 
 
