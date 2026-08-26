@@ -116,8 +116,19 @@ impl OutputSink {
 
     /// Push a `CellOutput` to colony's outputs mailbox, enriched with the parent
     /// context. Backpressure applies via `mpsc::Sender::send`.
-    pub async fn push(&self, out: CellOutput) -> Result<(), mpsc::error::SendError<CellEmission>> {
-        self.tx.send(self.enrich(out, false)).await
+    ///
+    /// The error is boxed for the reason given on `ActorHandle::send`
+    /// (GH #406): `SendError<CellEmission>` carries the whole undelivered
+    /// emission, so the allocation belongs in the failure branch rather than in
+    /// the size of every success.
+    pub async fn push(
+        &self,
+        out: CellOutput,
+    ) -> Result<(), Box<mpsc::error::SendError<CellEmission>>> {
+        self.tx
+            .send(self.enrich(out, false))
+            .await
+            .map_err(Box::new)
     }
 
     /// Push a substrate-generated **error reply** addressed to a known sender
@@ -125,11 +136,13 @@ impl OutputSink {
     /// outputs-arm delivers it DIRECTLY via `route_with_log` rather than through
     /// the sender's out-edges (W2b Ruling A1, ruling 2026-06-12). Used by the
     /// `consumes_violation` ingress check and the `message_timeout` backstop.
+    ///
+    /// Boxed error, same reason as [`Self::push`] (GH #406).
     pub async fn push_direct_reply(
         &self,
         out: CellOutput,
-    ) -> Result<(), mpsc::error::SendError<CellEmission>> {
-        self.tx.send(self.enrich(out, true)).await
+    ) -> Result<(), Box<mpsc::error::SendError<CellEmission>>> {
+        self.tx.send(self.enrich(out, true)).await.map_err(Box::new)
     }
 
     fn enrich(&self, out: CellOutput, direct_reply: bool) -> CellEmission {

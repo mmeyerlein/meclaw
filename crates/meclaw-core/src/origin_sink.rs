@@ -41,7 +41,15 @@ impl OriginSink {
 
     /// Emit a `CellOutput` as a source emission (parent_message_id=None,
     /// fresh trace_id). Backpressure via `mpsc::Sender::send`.
-    pub async fn emit(&self, out: CellOutput) -> Result<(), mpsc::error::SendError<CellEmission>> {
+    ///
+    /// The error is boxed for the reason given on `ActorHandle::send`
+    /// (GH #406): `SendError<CellEmission>` carries the whole undelivered
+    /// emission, so the allocation belongs in the failure branch rather than in
+    /// the size of every success.
+    pub async fn emit(
+        &self,
+        out: CellOutput,
+    ) -> Result<(), Box<mpsc::error::SendError<CellEmission>>> {
         let emission = CellEmission {
             sender_path: self.sender_path.clone(),
             parent_message_id: None,
@@ -55,7 +63,7 @@ impl OriginSink {
             // Source emissions are never substrate error replies.
             direct_reply: false,
         };
-        self.tx.send(emission).await
+        self.tx.send(emission).await.map_err(Box::new)
     }
 }
 

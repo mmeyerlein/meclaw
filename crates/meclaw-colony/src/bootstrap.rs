@@ -967,30 +967,30 @@ pub fn plan_bootstrap_with_env(
     // endpoint check, the activity recompute and the header contract — describe
     // the graph the colony will run with, and nothing downstream has to ask
     // which boot this is.
-    let header_hives: std::collections::BTreeSet<String>;
-    if matches!(boot_state, BootState::Reboot) {
-        match crate::persist::colony_db::read_persisted_edges(&root.join("colony.db")) {
-            Ok(persisted) => plan.edges = persisted,
-            Err(e) => {
-                // A colony.db that exists but will not yield its edges must never
-                // be planned as edge-less — that would boot a routing-blind
-                // colony. Loud, and the same class the runtime hydration treats
-                // as fatal.
-                errors.push(BootstrapError::InconsistentColonyDb {
-                    reason: format!("edge hydration: {e}"),
-                });
+    let header_hives: std::collections::BTreeSet<String> =
+        if matches!(boot_state, BootState::Reboot) {
+            match crate::persist::colony_db::read_persisted_edges(&root.join("colony.db")) {
+                Ok(persisted) => plan.edges = persisted,
+                Err(e) => {
+                    // A colony.db that exists but will not yield its edges must never
+                    // be planned as edge-less — that would boot a routing-blind
+                    // colony. Loud, and the same class the runtime hydration treats
+                    // as fatal.
+                    errors.push(BootstrapError::InconsistentColonyDb {
+                        reason: format!("edge hydration: {e}"),
+                    });
+                }
             }
-        }
-        // The scope rows this colony committed — already read above for the
-        // adoption question, and the same answer to "is this path a hive". No
-        // union with the walk is needed: a hive directory the colony registered
-        // has its row here, and one it did not is the unregistered case the walk
-        // deliberately skipped.
-        header_hives = registered_hives.iter().cloned().collect();
-    } else {
-        plan.edges = spec_edges;
-        header_hives = spec_hives;
-    }
+            // The scope rows this colony committed — already read above for the
+            // adoption question, and the same answer to "is this path a hive". No
+            // union with the walk is needed: a hive directory the colony registered
+            // has its row here, and one it did not is the unregistered case the walk
+            // deliberately skipped.
+            registered_hives.iter().cloned().collect()
+        } else {
+            plan.edges = spec_edges;
+            spec_hives
+        };
 
     // GH #283 (ruling Q1 2026-08-21): one advisory per UNGUARDED default. An
     // unguarded default takes everything the ordinary edges out of `from`

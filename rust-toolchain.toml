@@ -12,8 +12,15 @@
 # was ever seen — at the worst moment, in the middle of a release.
 #
 # So the version moves when somebody moves it, in a commit that says so and can
-# be reverted. Raising it is a small piece of deliberate work (see GH #406 for
-# what 1.98 currently wants), not something that happens to a release.
+# be reverted. Raising it is a small piece of deliberate work, not something
+# that happens to a release.
+#
+# Raised to 1.98.0 on 2026-08-26 (GH #406), which is that piece of work: the
+# four `result_large_err` sites the 1.98 release denies were boxed in the same
+# commit that moves this line, so the toolchain and the code that satisfies it
+# arrive together and revert together. The rule the incident bought stands —
+# the next raise is a commit of its own, with its lints handled before it, not
+# a stable channel drifting underneath a tag.
 [toolchain]
-channel = "1.95.0"
+channel = "1.98.0"
 components = ["clippy", "rustfmt"]

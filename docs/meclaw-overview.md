@@ -2725,7 +2725,7 @@ The `error` token is machine-readable and stable; `detail` is **free text for a 
 
 | Area | Choice |
 |---|---|
-| Language | Rust (edition 2024, `rust-toolchain.toml` with `channel = "stable"`, a rustup update of the workstation suffices, no explicit version pin/bump; a build break from a new stable is treated as a spec-conflict question) |
+| Language | Rust (edition 2024, `rust-toolchain.toml` with an **exact version pin** — rustup fetches the pinned toolchain, so the workstation and CI build with the same one; raising it is a commit of its own that handles the new lints in the same move, not a channel drifting out from under a tag, GH #406) |
 | Workspace resolver | `resolver = "3"` in the workspace `Cargo.toml` (the default for edition 2024, but to be set explicitly in the workspace manifest) |
 | Async runtime | `tokio` (multi-thread flavor, work-stealing scheduler, see "Concurrency and parallelism") |
 | Async observability (from phase 1) | `console-subscriber` for the `tokio-console` bridge; activated via `--cfg tokio_unstable` in `.cargo/config.toml` (phase 0) |

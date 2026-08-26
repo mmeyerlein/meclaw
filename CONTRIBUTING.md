@@ -13,10 +13,17 @@ will not land. Keep us honest.
 
 ## Build it
 
-Linux and a current stable Rust toolchain. `rust-toolchain.toml` selects the `stable` channel
-rather than pinning a version, so `rustup update` is the whole setup — the floor is set by
-edition 2024, which needs 1.85 or newer. A build break introduced by a fresh stable is treated
-as a question about the spec, not as a reason to pin.
+Linux and rustup. `rust-toolchain.toml` pins an **exact** Rust version, so there is nothing to
+choose: rustup fetches that toolchain on the first `cargo` command and your build is the same
+one CI runs. The floor is set by edition 2024, which needs 1.85 or newer; the pin is currently
+well above it.
+
+The pin is deliberate (GH #406). An unpinned channel made the gate depend on the calendar —
+byte-identical code passed clippy one evening and failed it the next, because a new stable had
+promoted a lint — and it meant "green locally" said nothing, since the workstation and CI were
+never on the same compiler. Raising the pin is therefore its own commit, which handles whatever
+lints the new version denies in the same move. A build break from a newer stable is a piece of
+scheduled work, not something that happens to a release.
 
 ```bash
 git clone https://github.com/mmeyerlein/meclaw

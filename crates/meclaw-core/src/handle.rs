@@ -15,8 +15,21 @@ impl ActorHandle {
         Self { path, sender }
     }
 
-    pub async fn send(&self, msg: Message) -> Result<(), mpsc::error::SendError<Message>> {
-        self.sender.send(msg).await
+    /// Send a message to this cell's mailbox. Backpressure applies via
+    /// `mpsc::Sender::send`.
+    ///
+    /// The error is BOXED (GH #406). `SendError<T>` is large precisely because
+    /// it hands the undelivered value back, and `Message` is one of the biggest
+    /// types in the substrate — an unboxed `Err` variant would make every
+    /// success on this path carry the failure's footprint, which is what
+    /// `clippy::result_large_err` objects to. Handing the message back is worth
+    /// keeping (a full or gone mailbox is exactly where a caller may want to
+    /// see what did not arrive), so the value survives and the allocation moves
+    /// into the failure branch: `Box::new` runs only when the send has already
+    /// failed, i.e. when a mailbox is gone and one allocation is the least of
+    /// it. Nothing on the wire changes — this is a crate-internal signature.
+    pub async fn send(&self, msg: Message) -> Result<(), Box<mpsc::error::SendError<Message>>> {
+        self.sender.send(msg).await.map_err(Box::new)
     }
 
     /// Configured bounded-mpsc capacity of this cell's mailbox (the value passed to `channel()`).

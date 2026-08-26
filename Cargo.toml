@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.22.4"
+version = "0.22.5"
 edition = "2024"
 publish = true
 rust-version = "1.85"

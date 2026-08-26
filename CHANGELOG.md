@@ -11,6 +11,34 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.22.5] — 2026-08-26
+
+### Changed
+
+- **The toolchain moves when somebody moves it — and this is somebody moving it**
+  ([#406](https://github.com/mmeyerlein/meclaw/issues/406)). `rust-toolchain.toml`
+  is pinned to an exact version rather than tracking `stable`, so a lint that
+  ships with a new compiler arrives in a commit that says so and can be reverted,
+  never underneath a tag mid-release. That pin is now **1.98.0**, raised
+  deliberately, with the lints 1.98 denies handled in the same commit:
+
+  Four `result_large_err` sites — `ActorHandle::send`, `OriginSink::emit`,
+  `OutputSink::push` and `OutputSink::push_direct_reply` — return
+  `Box<SendError<…>>` instead of `SendError<…>`. `SendError<T>` is large exactly
+  because it hands the undelivered value back, and handing it back is worth
+  keeping on these four: they are the substrate's send paths, and a full or gone
+  mailbox is precisely where a caller may want to see what did not arrive. So the
+  value survives and the allocation moves into the failure branch — `Box::new`
+  runs only once the send has already failed. No caller had to change: nothing
+  outside these four signatures ever names the type. Crate-internal signatures,
+  no `error_code` string moved, nothing on the wire is different.
+
+  Two smaller ones landed with it: a `needless_late_init` in `plan_bootstrap`'s
+  reboot/spec branch became the `if` expression it always was, and the
+  hand-rolled SHA-256 in `gh277_composite_instantiation_is_byte_identical` uses
+  `as_chunks` where it had a constant `chunks_exact`. Both semantics-neutral, and
+  the frozen corridors in `colony.rs` were not touched — 1.98 does not bite there.
+
 ## [0.22.4] — 2026-08-26
 
 ### Added
