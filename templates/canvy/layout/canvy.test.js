@@ -379,20 +379,31 @@ console.log("\nthe hook");
   // with its hive, exactly as the real DOM's containment does.
   label.closest = (sel) => (sel === "[data-hive]" ? hiveG : null);
 
-  // A drag starting on the hive's FILL pans the camera and writes nothing —
-  // that gesture once relocated an entire colony by accident.
+  // A press on the hive that never moves is a CLICK and writes nothing —
+  // with the body as the grab surface, selection must survive the grab.
   {
-    const camBefore = vp.getAttribute("transform");
     el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
-    el.listeners.pointermove({clientX: 30, clientY: 20});
+    el.listeners.pointerup({clientX: 0, clientY: 0});
+    ok("a press on a hive that never moved writes nothing",
+       sent.length === 0, JSON.stringify(sent));
+  }
+
+  // The BODY moves the group — the 1.x gesture a hand reaches for. (The label
+  // still works too, tested below.)
+  {
+    el.listeners.pointerdown({target: hiveG, clientX: 0, clientY: 0, preventDefault() {}});
+    el.listeners.pointermove({clientX: 120, clientY: 60});
     flush();
-    el.listeners.pointerup({clientX: 30, clientY: 20});
-    ok("a drag on a hive FILL pans instead of moving the group",
-       vp.getAttribute("transform") !== camBefore && sent.length === 0,
-       vp.getAttribute("transform") + " sent=" + JSON.stringify(sent));
-    ok("and the members did not move",
-       boxAttr(a).x === aBefore.x && boxAttr(a).y === aBefore.y,
-       JSON.stringify(boxAttr(a)));
+    el.listeners.pointerup({clientX: 120, clientY: 60});
+    ok("a drag on the hive body moves the group",
+       sent.length === 4 && sent.every(s => s.name === "object:set"),
+       JSON.stringify(sent));
+    // put the members back for the label-drag assertions below
+    el.listeners.pointerdown({target: hiveG, clientX: 120, clientY: 60, preventDefault() {}});
+    el.listeners.pointermove({clientX: 0, clientY: 0});
+    flush();
+    el.listeners.pointerup({clientX: 0, clientY: 0});
+    sent.length = 0;
   }
 
   el.listeners.pointerdown({target: label, clientX: 0, clientY: 0, preventDefault() {}});

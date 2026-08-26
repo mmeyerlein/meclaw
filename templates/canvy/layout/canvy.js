@@ -641,6 +641,18 @@
   /// to fit its frame, so the box lags or overshoots the cursor by exactly the
   /// zoom factor. `getScreenCTM` is the only thing that knows the whole chain
   /// (viewBox fit x camera transform), so ask it rather than reconstruct it.
+  /// User units per CSS pixel of the fitted SVG, camera excluded.
+  ///
+  /// The camera's translate lives INSIDE the viewBox mapping, so a pan that
+  /// wants the picture to follow the pointer 1:1 must feed the camera
+  /// pixel-deltas divided by exactly this factor. Feeding raw pixels made the
+  /// picture crawl at the viewBox-fit fraction of the pointer speed.
+  function fitScale(el) {
+    const svg = el.querySelector("svg.stage");
+    const m = svg && svg.getScreenCTM && svg.getScreenCTM();
+    return m && m.a ? m.a : 1;
+  }
+
   function userPoint(el, ev) {
     const svg = el.querySelector("svg.stage");
     const g = viewportOf(el);
@@ -859,48 +871,31 @@
           // its label are the group's handle, and moving a group is the gesture
           // that makes a 50-cell picture arrangeable at all — one drag instead of
           // twenty.
-          // A hive moves by its LABEL only (GH #415). The fills overlap and
-          // the outermost one covers nearly the whole stage, so a drag that
-          // lands on a fill is almost always a pan that missed — and grabbing
-          // a frame by its fill once relocated an entire colony: every stored
-          // position shifted by the same vector, and every auto-laid cell got
-          // pinned where it happened to stand. The label is small, unambiguous
-          // and always on top of its own frame; the fill pans the camera.
-          //
-          // "On the handle" is decided geometrically, not by SVG hit-testing:
-          // a label on a zoomed-out picture is a few pixels tall and SVG text
-          // only hits on its painted glyphs, so demanding the exact glyph made
-          // the gesture a lottery. A hive is grabbed at its LABEL's bounding
-          // box (padded) or along its frame's BORDER; when handles of nested
-          // hives coincide, the deepest hive wins. The fill still pans.
+          // A hive moves by its BODY, like 1.x did — that is the gesture a
+          // hand reaches for, and the label alone turned out to be a
+          // glyph-lottery on a zoomed-out picture. The DEEPEST hive whose
+          // rectangle holds the pointer is the one grabbed (decided
+          // geometrically, so paint order and overlapping fills cannot steal
+          // the grab), which is what makes the gesture safe where it once
+          // relocated a whole colony: back then the OUTERMOST fill covered
+          // everything and won every grab; now the grab is the box you are
+          // visually inside of. The camera pans on true background — outside
+          // every frame — and on ctrl-drag anywhere (handled above).
           let hg = ev.target.closest ? ev.target.closest("[data-hive]") : null;
-          if (hg && !(hg.querySelector && hg.querySelector("text") === ev.target)) {
-            hg = null;
-          }
-          if (!hg && ev.clientX !== undefined) {
-            const PAD = 6, BORDER = 5;
+          if (ev.clientX !== undefined) {
+            const OUT = 4;
             let best = null;
             el.querySelectorAll("[data-hive]").forEach(function (g) {
-              const t = g.querySelector && g.querySelector("text");
               const r = g.querySelector && g.querySelector("rect");
-              const depth = (g.getAttribute("data-hive") || "").split("/").length;
-              let hit = false;
-              if (t && t.getBoundingClientRect) {
-                const b = t.getBoundingClientRect();
-                hit = ev.clientX >= b.left - PAD && ev.clientX <= b.right + PAD &&
-                      ev.clientY >= b.top - PAD && ev.clientY <= b.bottom + PAD;
+              if (!(r && r.getBoundingClientRect)) return;
+              const b = r.getBoundingClientRect();
+              if (ev.clientX >= b.left - OUT && ev.clientX <= b.right + OUT &&
+                  ev.clientY >= b.top - OUT && ev.clientY <= b.bottom + OUT) {
+                const depth = (g.getAttribute("data-hive") || "").split("/").length;
+                if (!best || depth >= best.depth) best = {g: g, depth: depth};
               }
-              if (!hit && r && r.getBoundingClientRect) {
-                const b = r.getBoundingClientRect();
-                const inOuter = ev.clientX >= b.left - BORDER && ev.clientX <= b.right + BORDER &&
-                                ev.clientY >= b.top - BORDER && ev.clientY <= b.bottom + BORDER;
-                const inInner = ev.clientX >= b.left + BORDER && ev.clientX <= b.right - BORDER &&
-                                ev.clientY >= b.top + BORDER && ev.clientY <= b.bottom - BORDER;
-                hit = inOuter && !inInner;
-              }
-              if (hit && (!best || depth >= best.depth)) best = {g: g, depth: depth};
             });
-            hg = best && best.g;
+            if (best) hg = best.g;
           }
           if (hg) {
             const id = hg.getAttribute("data-hive");
@@ -968,8 +963,9 @@
           return;
         }
         if (pan) {
-          hook.cam.x = pan.origin.x + (ev.clientX - pan.from.x);
-          hook.cam.y = pan.origin.y + (ev.clientY - pan.from.y);
+          const k = fitScale(el);
+          hook.cam.x = pan.origin.x + (ev.clientX - pan.from.x) / k;
+          hook.cam.y = pan.origin.y + (ev.clientY - pan.from.y) / k;
           applyCamera(el, hook.cam);
           return;
         }
@@ -1010,8 +1006,11 @@
               hook.setProp(m.oid, "x", m.at.x + dx);
               hook.setProp(m.oid, "y", m.at.y + dy);
             });
+            hook.dragged = true;        // the click that follows is the drag's tail
           }
-          hook.dragged = true;          // the click that follows is the drag's tail
+          // A press that never moved is a CLICK, and with the body as the
+          // grab surface every click starts here — swallowing it would kill
+          // edge and cell selection inside every frame.
           return;
         }
         if (pan) {
@@ -1025,10 +1024,15 @@
         done.g.releasePointerCapture && done.g.releasePointerCapture(ev.pointerId);
         // Two events for the whole drag, one per editable prop. The provisional
         // DOM stays as it is — the diff replaces it, and the cell decides what
-        // the object now says.
-        hook.setProp(done.oid, "x", Math.round(done.at.x));
-        hook.setProp(done.oid, "y", Math.round(done.at.y));
-        hook.dragged = true;            // so the click that follows does not select
+        // the object now says. A press that never moved is a CLICK: it writes
+        // nothing (two no-op writes per selection click, before this guard) and
+        // it must not swallow the selection that follows.
+        const nx = Math.round(done.at.x), ny = Math.round(done.at.y);
+        if (nx !== Math.round(done.origin.x) || ny !== Math.round(done.origin.y)) {
+          hook.setProp(done.oid, "x", nx);
+          hook.setProp(done.oid, "y", ny);
+          hook.dragged = true;          // so the click that follows does not select
+        }
       };
 
       // Escape lets go of a selection without having to find empty canvas to
