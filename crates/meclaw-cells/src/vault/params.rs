@@ -79,25 +79,22 @@ pub struct VaultParams {
     pub sealed_neighbors: Vec<String>,
     /// Operation timeout for filesystem reads of key material (rule 12/A).
     pub external_timeout_ms: u64,
-    /// Which secrets are handed to which cell at unlock, and under which param
-    /// key: `{"telegram_token": {"to": "./connector", "key": "bot_token"}}`.
+    /// R9 / GH #427: the environment variable holding the passphrase, for a
+    /// vault that must unlock itself at wake. `None` (the default) keeps the
+    /// documented promise intact — a woken vault is LOCKED and stays that way
+    /// until the user channel says otherwise.
     ///
-    /// This is the one path on which a plaintext secret leaves the vault, and
-    /// it is deliberately shaped so that no message can steer it: the map is
-    /// configuration, the delivery happens once at unlock rather than per
-    /// request, and a target that is not in the map cannot be named by anybody.
-    pub inject_map: Vec<Injection>,
-}
-
-/// One entry of `params.inject_map`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Injection {
-    /// The secret's name in the vault.
-    pub name: String,
-    /// The cell that receives it — absolute or hive-relative.
-    pub to: String,
-    /// The param key it arrives under, e.g. `api_key`.
-    pub key: String,
+    /// It exists because a vault inside a sealed hive has no other way in: the
+    /// user channel is a source message, a source message cannot reach a cell
+    /// inside a sealed hive, and everything that can reach one is an edge. The
+    /// rejected alternative was an unlock LANE — which would have carried the
+    /// passphrase through the `message_log`, the exact failure class the sealed
+    /// delivery was built to end.
+    ///
+    /// Like `key_source`, this names a SOURCE and never material: the value
+    /// lives in the process environment (the `.env` the substrate already
+    /// reads), so a stolen `cell.db` on its own is still worthless.
+    pub unlock_env: Option<String>,
 }
 
 /// Default operation timeout for reading key material.
@@ -133,7 +130,7 @@ impl VaultParams {
                 "unlock_ttl_ms",
                 "sealed_neighbors",
                 "external_timeout_ms",
-                "inject_map",
+                "unlock_env",
             ];
             if !KNOWN.contains(&key.as_str()) {
                 return Err(format!("vault: unknown param {key:?}"));
@@ -204,41 +201,24 @@ impl VaultParams {
                 .ok_or("vault: external_timeout_ms must be a non-negative integer")?,
         };
 
-        let inject_map = match obj.get("inject_map") {
-            None | Some(JsonValue::Null) => Vec::new(),
+        // A declared-but-empty name is a misconfiguration, not "off": switching
+        // this off is done by REMOVING the key, and an empty string almost
+        // always means a `${VAR}` that resolved to nothing.
+        let unlock_env = match obj.get("unlock_env") {
+            None | Some(JsonValue::Null) => None,
             Some(v) => {
-                let m = v
-                    .as_object()
-                    .ok_or("vault: inject_map must be an object of name -> {to, key}")?;
-                let mut out = Vec::new();
-                for (name, spec) in m {
-                    let o = spec.as_object().ok_or_else(|| {
-                        format!("vault: inject_map[{name:?}] must be an object with to and key")
-                    })?;
-                    let to = o
-                        .get("to")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| format!("vault: inject_map[{name:?}] needs \"to\""))?;
-                    if !to.starts_with('/') && !to.starts_with("./") {
-                        return Err(format!(
-                            "vault: inject_map[{name:?}].to must be absolute or hive-relative, \
-                             got {to:?}"
-                        ));
-                    }
-                    let key = o
-                        .get("key")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| format!("vault: inject_map[{name:?}] needs \"key\""))?;
-                    out.push(Injection {
-                        name: name.clone(),
-                        to: to.to_string(),
-                        key: key.to_string(),
-                    });
+                let name = v
+                    .as_str()
+                    .ok_or("vault: unlock_env must be a string naming an environment variable")?;
+                if name.is_empty() {
+                    return Err(
+                        "vault: unlock_env is present but empty — remove the key to keep \
+                                the vault locked at wake, or name the variable that holds the \
+                                passphrase"
+                            .into(),
+                    );
                 }
-                out.sort_by(|a, b| a.name.cmp(&b.name));
-                out
+                Some(name.to_string())
             }
         };
 
@@ -250,7 +230,7 @@ impl VaultParams {
             unlock_ttl_ms,
             sealed_neighbors,
             external_timeout_ms,
-            inject_map,
+            unlock_env,
         })
     }
 
@@ -270,18 +250,6 @@ impl VaultParams {
     /// The broker's absolute path, resolved against the vault's own.
     pub fn broker_path(&self, vault_path: &str) -> String {
         resolve(&self.broker, vault_path)
-    }
-
-    /// The injection targets, resolved against the vault's own path.
-    pub fn injections(&self, vault_path: &str) -> Vec<Injection> {
-        self.inject_map
-            .iter()
-            .map(|i| Injection {
-                name: i.name.clone(),
-                to: resolve(&i.to, vault_path),
-                key: i.key.clone(),
-            })
-            .collect()
     }
 }
 
@@ -312,6 +280,30 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.contains("key_file"), "{err}");
+    }
+
+    #[test]
+    fn the_auto_unlock_env_is_optional_and_names_a_variable_not_a_secret() {
+        // Default OFF: the documented promise "a woken vault is always locked"
+        // stays the default truth (ruling R9).
+        let off = VaultParams::parse(&json!({"broker": "/main/access/broker"})).unwrap();
+        assert_eq!(off.unlock_env, None);
+
+        let on = VaultParams::parse(&json!({
+            "broker": "/main/access/broker",
+            "unlock_env": "MECLAW_VAULT_PASSPHRASE"
+        }))
+        .unwrap();
+        assert_eq!(on.unlock_env.as_deref(), Some("MECLAW_VAULT_PASSPHRASE"));
+
+        // Same discipline as `key_source`: the param names a SOURCE, never
+        // material. An empty name is a misconfiguration, not "off".
+        let err = VaultParams::parse(&json!({
+            "broker": "/main/access/broker",
+            "unlock_env": ""
+        }))
+        .unwrap_err();
+        assert!(err.contains("unlock_env"), "{err}");
     }
 
     #[test]

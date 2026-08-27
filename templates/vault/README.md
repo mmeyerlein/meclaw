@@ -1,4 +1,4 @@
-# `vault@1.1.0`
+# `vault@1.2.0`
 
 A secret store with **no operation that returns a secret**.
 
@@ -148,45 +148,61 @@ answers `unknown_secret`; a missing or malformed `recipient_key` (anything that
 is not 64 hex characters of X25519 public key) answers `invalid_input`. No new
 `error_code` was added — the documented list stays closed. Every delivery and
 every refusal is written to `vault_audit`.
+## Injection at unlock — removed (GH #428)
 
-## Injection at unlock (deprecated)
+Until GH #421 `params.inject_map` was the one way a plaintext secret left this
+cell: at unlock, each named secret went to a cell named in configuration as a
+params update. The sealed delivery superseded it and deprecated it; measuring it
+finished it off.
 
-**Deprecated since GH #421.** This path pushes the secret to the connector as a
-message body, which means it travels through the `message_log` — precisely the
-exposure sealed delivery exists to remove. It is not being removed now, because
-removing it would break running colonies; it logs a warning and will disappear
-with the first release that bundles breaking changes. Use `deliver` instead.
+The push never worked. Its emission is a `params`-only body, the UBF schema
+requires one of `system` / `messages` / `attachments`, so the colony rejected it
+as `InvalidUbfBody` — it died in the dead-letter queue before a `message_log`
+row was ever written. A path with no users and no working delivery is not worth
+a migration, so it was removed rather than repaired.
 
-`use` signs and returns a signature. That covers everything a vault can do
-*without* the secret going anywhere. But a connector that has to authenticate to
-Telegram needs the token itself, and pretending otherwise would make the vault
-decorative.
+A config that still carries the key now fails **loudly** at spawn (unknown
+param) instead of silently doing nothing. What fetches the VALUE of a credential
+today is `deliver`, and nothing else — see "Sealed delivery" above.
 
-So this path was shaped so that no message could steer it:
+## Auto-unlock at wake (GH #427)
+
+A vault **inside a sealed hive cannot be reached over the user channel at all**.
+The user channel is by definition a source message — one with no `reply_to` —
+and a source message cannot address a cell inside a sealed hive. Everything that
+can reach one is an edge, and an edge always carries `reply_to`, so it is never
+the user channel. `unlock` is user-channel-only in the ACL, so such a vault
+stayed locked for its whole life and refused every operation that needed a key.
+
+`params.unlock_env` names the environment variable holding the passphrase. The
+cell reads it out of the process environment at first use and unlocks itself.
+Like `key_source`, the param names a **source and never material**: the value
+lives in the environment the colony already reads, so a stolen `cell.db` on its
+own is still worthless.
 
 ```json
-"inject_map": {"telegram_token": {"to": "./connector", "key": "bot_token"}}
+"unlock_env": "MECLAW_VAULT_PASSPHRASE"
 ```
 
-At **unlock** — once, not per request — the vault hands each named secret to the
-cell in the map, as a params update: a body with a `params` slot and no
-`messages`, which the receiving cell merges, persists and answers with silence.
-No inference, no cost, no echo.
+**Default off.** Without the key the documented promise stands unchanged: a
+woken vault is LOCKED and stays that way until the user channel says otherwise.
+A sealed deployment declares the exception deliberately.
 
-Three properties make this narrow rather than a hole:
+**An unlock lane over edges was rejected and stays rejected.** An unlock message
+travelling an edge carries the passphrase through the `message_log` — exactly
+the failure class the sealed delivery was built to end.
 
-- **The map is configuration.** A caller that names its own target in the body
-  changes nothing, because the field is never read — the same reasoning that
-  makes `reply_to` the only identity this cell trusts.
-- **It happens at unlock**, so the hot path never carries a credential and the
-  requester never triggers a delivery.
-- **The requester learns THAT, not WHAT.** The unlock answer lists which name
-  went where under which key. The value appears in exactly one place: the
-  connector's params.
+The self-unlock runs the same path the user channel does: the attestation runs,
+the passphrase is proved against a stored secret, `unlock_ttl_ms` applies. If the
+named variable is unset or empty the refusal is **loud and named** — an `ERROR`
+line plus an `invalid_input` whose message names the variable — rather than a
+generic `vault_locked`. `status` and `lock` deliberately do NOT trigger it:
+neither needs a key, and an operator diagnosing a broken `unlock_env` needs at
+least one operation that still answers.
 
-A secret named in the map that has not been deposited yet is skipped with a
-warning rather than failing the unlock — a vault that refuses to open because
-one of five credentials is missing is a vault nobody can commission.
+A declared but empty value is a misconfiguration and is refused at parse time.
+Switching this off means REMOVING the key; an empty string is almost always a
+`${VAR}` that resolved to nothing.
 
 ## Unlock attestation
 
@@ -256,12 +272,13 @@ access/
   store/     store
 ```
 
-`access@2.1.0` ships with exactly this (`access@1` did too -- the property has been
+`access@2.2.0` ships with exactly this (`access@1` did too -- the property has been
 true of every version): the vault is an interior cell of the hive
 and deliberately **not** one of its ports, so the generic boundary refuses any
-edge into it from outside the scope. Its `params.inject_map` is empty on a fresh
-instance — a template that shipped with delivery addresses would deliver to
-somebody else's.
+edge into it from outside the scope. That is also why it declares
+`params.unlock_env`: a vault nothing outside can address cannot be unlocked over
+the user channel either, so it opens itself from the environment or not at all
+(see "Auto-unlock at wake" below).
 
 `params.broker` may be absolute (`/main/access/invoke`) or hive-relative
 (`./invoke`, resolved against the vault's own path) — the relative form is what

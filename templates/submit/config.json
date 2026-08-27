@@ -1,0 +1,58 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_apply",
+          "context": [],
+          "because": "a manifest somebody drafted and now wants applied, under their own identity. The identity is NOT promoted by the edge and must not be: it is `envelope.reply_to`, stamped by the substrate on the emission itself. A context key would be a claim, and a claim is not an identity"
+        }
+      ],
+      "emits": [
+        {
+          "route": "mutate",
+          "because": "the manifest, checked and attributed, on its way to the mutation door. This is the ONLY lane in the whole tree that reaches that door, which is why it is the only audit trail there is -- `/colony/mutations` cannot be drawn by any mutation on any scope, so the edge that carries this lane lives in the birth topology and nowhere else"
+        },
+        {
+          "route": "receipt",
+          "because": "what happened, for whoever asked: how many declarations committed, at which position it stopped, and with which code. A refusal travels here too -- a submission that was not made is a fact its requester has to be told, not a silence"
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "in_apply",
+        "emits": "receipt",
+        "because": "a caller that hands this hive a manifest and does not take the receipt back has asked for a change to the colony and arranged to never learn whether it happened. A manifest rolls forward with no rollback, so 'I do not know' is the one answer that cannot be recovered from. The two edges are one decision"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./gate",
+          "condition": "has(hop.route) && hop.route == 'in_apply'"
+        },
+        {
+          "from": "./gate",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
+        },
+        {
+          "from": "./gate",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'receipt'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "The submission gate: one cell behind one door, and the only reach onto the mutation door in the whole tree.",
+    "use_when": "At the OS level, beside the builder that drafts -- and never inside it. The guardrail of R6 is a MISSING EDGE, and a missing edge can only be missing between two nodes.",
+    "not_in_scope": "No drafting, no composing, no model, no disk, no network."
+  }
+}

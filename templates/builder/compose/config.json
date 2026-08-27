@@ -1,0 +1,52 @@
+{
+  "cell": {
+    "type": "llm"
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${MODEL_BUILDER:-}",
+    "api_key": "${LOCAL_LLM_API_KEY:-}",
+    "base_url": "${LOCAL_LLM_BASE_URL:-}",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "external_timeout_ms": 170000,
+    "system_order": [
+      "instructions"
+    ]
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "finish_reason": {
+          "type": "string",
+          "required": true
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The one model call of the design lane: it turns a briefed request into a draft manifest. `provider` names the WIRE PROTOCOL, not the vendor, so any OpenAI-shaped endpoint serves -- including the stub the scenario suite starts, which is why the composed class is provable at zero cost.",
+    "use_when": "Behind `brief`, on hop.route == 'compose'.",
+    "not_in_scope": "No parsing and no trust: whatever it answers is read by `normalise` before it becomes a manifest. And no boot-time demand: all three variables carry an EMPTY default. This hive travels inside the OS shell, and a shell that could not be grown without a model credential would make the FAST LANE -- which asks no model at all -- conditional on one. A colony with no composer configured still rewires an edge; what it cannot do fails at call time, loudly, and not at boot."
+  }
+}

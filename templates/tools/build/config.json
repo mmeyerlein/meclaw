@@ -1,0 +1,75 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The build tool: two phases, each recognised POSITIVELY.\n#\n# Phase A turns a tool_call into a build request and sends it out of this hive.\n# Phase B takes the draft back and renders it as ONE tool_result under the id\n# the call arrived with. Nothing in between is this cell's business -- it does\n# not know where the builder is, and the whole point of the lane is that it\n# never will.\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nbody = doc[\"body\"]\n\nif hop.get(\"route\") == \"in_build_result\":\n    # ---- Phase B: the draft, on its way back into the round that asked.\n    #\n    # The tool_call_id travels in the CONTEXT, not in the hop: hop is a one-hop\n    # compartment and there are eight hops between here and the builder. The\n    # fan-in waits for exactly this id, so a tool_result under the wrong one is\n    # a round that never ends.\n    call_id = str(ctx.get(\"build_call_id\") or hop.get(\"tool_call_id\") or \"\")\n    manifest = body.get(\"manifest\") if isinstance(body.get(\"manifest\"), list) else None\n    header = {\"operation\": \"build\", \"tool_call_id\": call_id}\n    if hop.get(\"error_code\"):\n        header[\"error_code\"] = str(hop[\"error_code\"])\n        note = \"the build was refused: %s\" % hop[\"error_code\"]\n        for m in (body.get(\"messages\") or []):\n            if m.get(\"text\"):\n                note += \" -- \" + str(m[\"text\"])[:600]\n        text = note\n    else:\n        header[\"manifest_sha256\"] = str(hop.get(\"manifest_sha256\") or \"\")\n        header[\"manifest_class\"] = str(hop.get(\"manifest_class\") or \"\")\n        text = json.dumps({\n            \"manifest\": manifest if manifest is not None else [],\n            \"manifest_sha256\": header[\"manifest_sha256\"],\n            \"note\": (\"This is a DRAFT. Nothing has been applied. To apply it, call \"\n                     \"apply_manifest with the manifest and the digest, exactly as \"\n                     \"they are here.\")})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n# ---- Phase A: a fresh tool_call.\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nargs = \"\"\nfor m in (body.get(\"messages\") or []):\n    if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n        args = m[\"text\"]\nsys.stdout.write(json.dumps({\n    \"header\": {\"operation\": \"build_request\", \"build_op\": \"draft\",\n               \"tool_call_id\": call_id},\n    \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": call_id,\n                  \"text\": args}]}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "build_request",
+            "build"
+          ],
+          "required": true
+        },
+        "build_op": {
+          "type": "string",
+          "values": [
+            "draft"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": true
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "required": false
+        },
+        "manifest_class": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The build tool: two phases on one cell. A tool_call becomes a build request that leaves this hive; the draft comes back and is rendered as ONE tool_result under the id the call arrived with.",
+    "use_when": "Behind the tools door, on hop.tool_name == 'build_topology'.",
+    "not_in_scope": "No drafting of its own and no knowledge of where the builder is. It reads the arguments only far enough to pass them on, and the whole point of the lane is that it never learns more."
+  }
+}

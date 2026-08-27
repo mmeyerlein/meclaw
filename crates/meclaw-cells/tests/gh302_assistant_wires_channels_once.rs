@@ -462,22 +462,36 @@ fn the_level_declares_the_lanes_its_occupants_ship() {
     let (accepts, emits) = lanes(&hive_params(&root));
     let (talky_accepts, talky_emits) = lanes(&hive_params(&talky));
     let (_, cogny_emits) = lanes(&hive_params(&cogny));
+    // The THIRD occupant. Until R6 (GH #425) the tool surface shipped no lane
+    // that crossed this level — `tool_call` and `tool_result` are both consumed
+    // inside it — so it was absent from the derivation and the absence looked
+    // like a rule. It was a coincidence: the surface now reaches out of the
+    // assistant on `build` and takes the answer back on `in_build_result`, and
+    // both cross. A derivation that read two of three occupants would call the
+    // level's own contract a lie.
+    let tools = repo("templates/tools");
+    let (tools_accepts, tools_emits) = if tools.join("config.json").is_file() {
+        lanes(&hive_params(&tools))
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     // Every inbound lane is one the surface really takes.
     for a in &accepts {
         assert!(
-            talky_accepts.contains(a),
-            "the level accepts '{a}', which talky no longer does: {talky_accepts:?}. An \
-             accepted lane no occupant takes is an interface that lies."
+            talky_accepts.contains(a) || tools_accepts.contains(a),
+            "the level accepts '{a}', which no occupant does: talky {talky_accepts:?}, \
+             tools {tools_accepts:?}. An accepted lane no occupant takes is an interface \
+             that lies."
         );
     }
     // Every outbound lane is one an occupant really produces — except `turn`,
     // which the level itself normalises out of the connector's one wire.
     for e in emits.iter().filter(|e| *e != "turn") {
         assert!(
-            talky_emits.contains(e) || cogny_emits.contains(e),
-            "the level emits '{e}', which neither talky nor cogny produces: \
-             talky {talky_emits:?}, cogny {cogny_emits:?}"
+            talky_emits.contains(e) || cogny_emits.contains(e) || tools_emits.contains(e),
+            "the level emits '{e}', which no occupant produces: talky {talky_emits:?}, \
+             cogny {cogny_emits:?}, tools {tools_emits:?}"
         );
     }
 
@@ -1179,5 +1193,48 @@ async fn a_second_channel_adds_no_edge_between_the_channels_level_and_its_siblin
     assert!(
         SIBLINGS.contains(&ASSISTANT),
         "the assistant path itself is one of the siblings the container is wired to"
+    );
+}
+
+/// GH #425 — the reach of the tool surface crosses this level, in both
+/// directions, and is therefore declared here.
+///
+/// ADR-0013 § Consequences: *"A level declares the union of its occupants' lanes
+/// that CROSS it. An emit lane crosses by definition. An accepts lane crosses
+/// only when its producer sits outside the level and addresses through it."*
+/// `build` leaves `./tools` and no sibling inside this level consumes it →
+/// crosses. `in_build_result` comes from four levels up and addresses THROUGH
+/// this level → crosses. Both fall out of the rule rather than out of a
+/// decision — and both are derived from `templates/tools/config.json`, off the
+/// tree, so a lane that moves in the occupant goes red HERE instead of losing a
+/// message to `no_route`.
+#[test]
+fn the_level_carries_the_reach_of_its_tool_surface() {
+    let Some(root) = shipped() else { return };
+    let tools = repo("templates/tools");
+    if !tools.join("config.json").is_file() {
+        return;
+    }
+    let (tools_accepts, tools_emits) = lanes(&hive_params(&tools));
+    let (accepts, emits) = lanes(&hive_params(&root));
+
+    let out = "build".to_string();
+    assert!(
+        tools_emits.contains(&out),
+        "tools no longer emits {out}: {tools_emits:?}"
+    );
+    assert!(
+        emits.contains(&out),
+        "the assistant does not carry {out}: {emits:?}"
+    );
+
+    let back = "in_build_result".to_string();
+    assert!(
+        tools_accepts.contains(&back),
+        "tools no longer accepts {back}: {tools_accepts:?}"
+    );
+    assert!(
+        accepts.contains(&back),
+        "the assistant does not carry {back}: {accepts:?}"
     );
 }

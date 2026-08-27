@@ -1,0 +1,52 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_request",
+          "because": "a build request to find patterns for. The briefing comes back on `brief`; the original question rides along in it"
+        }
+      ],
+      "emits": [
+        {
+          "route": "brief",
+          "because": "the request plus the patterns found for it, for the authoring cell behind this librarian. Retrieval is an enhancement: a failed lookup comes back here too, degraded and marked, and never hangs a build"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./retrieve",
+          "condition": "has(hop.route) && hop.route == 'in_request'"
+        },
+        {
+          "from": "./retrieve",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'lsearch'",
+          "modifier": {
+            "set_context": {
+              "orig_request": "hop.orig",
+              "librarian_origin": "'retrieve'"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./retrieve",
+          "condition": "context.librarian_origin == 'retrieve'"
+        },
+        {
+          "from": "./retrieve",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'brief'"
+        }
+      ]
+    }
+  }
+}

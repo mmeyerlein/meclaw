@@ -1,0 +1,17 @@
+{
+  "name": "submit",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "The one cell in the tree with an edge onto the mutation door. It takes a manifest that somebody drafted, checks that its bytes are the ones the digest was drawn over, takes the requester's identity off the ENVELOPE rather than out of the body, checks a policy that is rows in its own params, and emits ONCE on `mutate`. The colony's answer comes back to it directly, and it renders the receipt.",
+    "use_when": "Once per colony, at the OS level, beside the builder that drafts -- and NOT inside it. The guardrail of R6 is a missing edge, and a missing edge can only be missing between two nodes.",
+    "not_in_scope": "No drafting, no composing, no model, no disk, no network. It does not decide WHAT is applied and it cannot make one up: everything it emits was handed to it, byte for byte, by somebody whose identity the substrate stamped.",
+    "examples": [
+      "a manifest whose bytes changed on the way through a chat -> `manifest_digest_mismatch`, and nothing is emitted on `mutate`",
+      "a requester with no policy row -> `requester_not_permitted`; a fresh instance ships an empty policy and therefore submits nothing",
+      "the colony answers `{\"outcome\": \"rejected\", \"applied\": 2, \"failed_at\": 3}` -> a receipt that says WHERE it stopped and how much is live now, because a manifest has no rollback"
+    ]
+  },
+  "tags": ["mutation", "manifest", "policy", "audit", "submission"],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

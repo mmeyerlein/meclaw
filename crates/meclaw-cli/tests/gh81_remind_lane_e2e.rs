@@ -147,6 +147,7 @@ async fn an_agent_tool_call_schedules_a_lane_and_gets_its_tool_result_back() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6673,

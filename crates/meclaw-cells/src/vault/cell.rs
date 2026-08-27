@@ -332,13 +332,46 @@ impl StatefulCell for VaultCell {
                 return;
             }
 
+            // R9 / GH #427: the opt-in self-unlock. A vault inside a sealed
+            // hive can be reached by nothing but its broker, and `unlock` is
+            // user-channel-only — so without this it would stay locked for its
+            // whole life. The rejected alternative was an unlock LANE, which
+            // would have put the passphrase into the `message_log`.
+            //
+            // `status` and `lock` are exempt on purpose: neither needs a key,
+            // and an operator diagnosing a misconfigured `unlock_env` needs at
+            // least one operation that still answers. `unlock` is exempt
+            // because it is the thing itself.
+            if self.params.unlock_env.is_some()
+                && !self.unlocked()
+                && !matches!(op.as_str(), "status" | "lock" | "unlock")
+                && let Err(detail) = self.auto_unlock(db, &vault_path).await
+            {
+                let code = error_code_for(&detail);
+                let (o, a, at) = (op.clone(), caller.actor().to_string(), now_iso());
+                let reason = code;
+                let _ = db
+                    .call(move |c| store::audit(c, &at, &o, &a, None, "refused", Some(reason)))
+                    .await;
+                emit(
+                    sink,
+                    &reply_target,
+                    call_id,
+                    json!(detail),
+                    Some(code),
+                    started,
+                )
+                .await;
+                return;
+            }
+
             let outcome = match op.as_str() {
                 "status" => self.op_status(db).await,
                 "lock" => {
                     self.relock();
                     Ok(json!({"locked": true}))
                 }
-                "unlock" => self.op_unlock(db, &args, &vault_path, sink).await,
+                "unlock" => self.op_unlock(db, &args, &vault_path).await,
                 "put" | "rotate" => self.op_put(db, &args).await,
                 "revoke" => self.op_revoke(db, &args).await,
                 "use" => self.op_use(db, &args).await,
@@ -422,7 +455,6 @@ impl VaultCell {
         db: &mut DbConn,
         args: &Value,
         vault_path: &Path,
-        sink: &OutputSink,
     ) -> Result<Value, String> {
         // GH #160: the neighbourhood comes from the colony, by capability — never
         // out of `colony.db`. Nothing here blocks or touches a file, so there is
@@ -504,81 +536,12 @@ impl VaultCell {
             .unlock_ttl_ms
             .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
-        // Injection-at-unlock: the one path on which a plaintext secret leaves
-        // this cell, and it happens ONCE, here, to a target named in
-        // configuration — never per request and never to an address a message
-        // could choose. The requester learns only how many went out.
-        let delivered = self.inject_all(db, vault_path, sink).await?;
-        Ok(json!({"locked": false, "key_id": key_id, "injected": delivered}))
-    }
-
-    /// Hand every configured secret to the cell that needs it.
-    ///
-    /// The receiving cell gets a params update — the same wire an `llm` cell
-    /// (or any cell with a mutable param) already understands: a body with a
-    /// `params` slot and no `messages`, which is merged, persisted and answered
-    /// with silence. No inference, no cost, no echo.
-    ///
-    /// A missing secret is skipped with a warning rather than failing the
-    /// unlock: a vault that refuses to open because one of five credentials has
-    /// not been deposited yet is a vault nobody can commission.
-    async fn inject_all(
-        &mut self,
-        db: &mut DbConn,
-        vault_path: &Path,
-        sink: &OutputSink,
-    ) -> Result<Vec<Value>, String> {
-        let plan = self.params.injections(vault_path.as_str());
-        let mut delivered = Vec::new();
-        for injection in plan {
-            tracing::warn!(
-                secret = injection.name.as_str(),
-                target = injection.to.as_str(),
-                "vault: params.inject_map is DEPRECATED (GH #421) — this delivery puts a \
-                 plaintext credential into the message log. Use the sealed delivery through \
-                 the broker instead; this path goes away with the next release that bundles \
-                 breaking changes"
-            );
-            let n = injection.name.clone();
-            let sealed = match db.call(move |c| store::active(c, &n)).await? {
-                Some(s) => s,
-                None => {
-                    tracing::warn!(
-                        secret = injection.name.as_str(),
-                        target = injection.to.as_str(),
-                        "vault: nothing to inject under this name — deposit it with \
-                         `meclaw --vault-add` and unlock again"
-                    );
-                    continue;
-                }
-            };
-            let Some(key) = self.key.as_ref() else {
-                return Err("vault: the key vanished mid-injection".into());
-            };
-            let plaintext = key
-                .open(&sealed.nonce, &sealed.ciphertext)
-                .map_err(|e| format!("vault: {e}"))?;
-            let value = String::from_utf8(plaintext).map_err(|_| {
-                "vault: this secret is not valid UTF-8 and cannot travel as a param".to_string()
-            })?;
-            let _ = sink
-                .push(CellOutput {
-                    target: Path::new(&injection.to),
-                    content: json!({
-                        "header": {"msg_type": "params_update", "vault_key": injection.key},
-                        "params": {injection.key.clone(): value},
-                    }),
-                })
-                .await;
-            // What comes back to the requester is metadata: which name went
-            // where, under which key. Never the value.
-            delivered.push(json!({
-                "name": injection.name,
-                "to": injection.to,
-                "key": injection.key
-            }));
-        }
-        Ok(delivered)
+        // R10 / GH #428: there is no injection here any more. The one path on
+        // which a plaintext secret used to leave this cell never worked — the
+        // emission was a params-only body, which the UBF schema refuses, so it
+        // dead-lettered before it was ever logged. The sealed delivery (`deliver`)
+        // replaced it, and an unlock now answers with the two facts it has.
+        Ok(json!({"locked": false, "key_id": key_id}))
     }
 
     /// `put` / `rotate` — the filling workflow. Same code, two names: a put
@@ -658,6 +621,41 @@ impl VaultCell {
             "grant_id": grant_id,
             "signature": crypto::hex(&tag),
         }))
+    }
+
+    /// Unlock from the environment, once, on the way to serving an operation.
+    ///
+    /// This is the same `op_unlock` the user channel drives — the attestation
+    /// runs, the passphrase is proved against a stored secret, the TTL applies.
+    /// The only difference is where the passphrase comes from: a variable named
+    /// in configuration, read out of this process's environment, never off a
+    /// wire. A loud, named failure is the point when it is missing: an operator
+    /// who set `unlock_env` and got nothing wants to be told which variable is
+    /// empty, not handed a generic "locked".
+    async fn auto_unlock(&mut self, db: &mut DbConn, vault_path: &Path) -> Result<(), String> {
+        let Some(name) = self.params.unlock_env.clone() else {
+            return Ok(());
+        };
+        let passphrase = std::env::var(&name).unwrap_or_default();
+        if passphrase.is_empty() {
+            tracing::error!(
+                variable = name.as_str(),
+                "vault: params.unlock_env names an environment variable that is unset or empty — \
+                 this vault cannot open itself and will refuse every operation that needs a key"
+            );
+            return Err(format!(
+                "vault: missing passphrase — params.unlock_env names {name:?}, and that \
+                 environment variable is unset or empty. Set it where the colony reads its \
+                 environment (the .env), or remove the param to unlock over the user channel."
+            ));
+        }
+        self.op_unlock(db, &json!({"passphrase": passphrase}), vault_path)
+            .await?;
+        tracing::info!(
+            variable = name.as_str(),
+            "vault: unlocked itself from the environment at first use (params.unlock_env)"
+        );
+        Ok(())
     }
 
     /// `deliver` — hand a credential out SEALED, never in the clear (R3).

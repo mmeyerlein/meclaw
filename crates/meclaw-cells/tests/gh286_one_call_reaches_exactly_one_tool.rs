@@ -624,15 +624,29 @@ fn no_occupant_answers_with_the_key_the_doors_dispatch_on() {
     let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
     let hp: HiveParams = meclaw_core::serde_json::from_value(v["params"].clone()).unwrap();
 
-    // The occupants a door dispatches to, read off the graph rather than listed.
+    // The occupants a TOOL door dispatches to, read off the graph rather than
+    // listed. Since R6 (GH #425) the hive has doors on a second inbound lane —
+    // `in_build_result`, which dispatches on `hop.build_op` and not on a tool
+    // name — so the filter names the key this test is about instead of taking
+    // every non-default door and hoping they are all tool doors.
     let dispatched: Vec<String> = hp
         .graph
         .edges
         .iter()
-        .filter(|e| e.from == "." && !e.is_default)
+        .filter(|e| {
+            e.from == "."
+                && !e.is_default
+                && e.condition
+                    .as_deref()
+                    .is_some_and(|c| c.contains("hop.tool_name"))
+        })
         .map(|e| e.to.trim_start_matches("./").to_string())
         .collect();
-    assert_eq!(dispatched.len(), 3, "three tool doors: {dispatched:?}");
+    assert_eq!(
+        dispatched.len(),
+        5,
+        "five tool doors — three tools plus the two halves of a build round: {dispatched:?}"
+    );
 
     for name in &dispatched {
         let cfg =
@@ -675,7 +689,7 @@ fn no_occupant_answers_with_the_key_the_doors_dispatch_on() {
 /// `is_default: false` it fires on `probe("tool_call")` and is covered the
 /// ordinary way.
 #[test]
-fn the_shipped_dispatch_is_three_narrowing_doors_and_one_guarded_default() {
+fn the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane() {
     let raw =
         std::fs::read_to_string(templates_root().join("tools/config.json")).expect("tools ships");
     let v: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
@@ -683,27 +697,60 @@ fn the_shipped_dispatch_is_three_narrowing_doors_and_one_guarded_default() {
         .expect("the shipped params parse through the real HiveParams");
 
     let doors: Vec<&EdgeSpec> = hp.graph.edges.iter().filter(|e| e.from == ".").collect();
-    assert_eq!(doors.len(), 4, "three tools and one default: {doors:#?}");
-
-    let defaults: Vec<&&EdgeSpec> = doors.iter().filter(|e| e.is_default).collect();
     assert_eq!(
-        defaults.len(),
-        1,
-        "exactly one default edge — a second one would fire beside the first, \
-         because guarded defaults do not compete: {defaults:#?}"
-    );
-    assert_eq!(defaults[0].to, "./unknown");
-    assert!(
-        defaults[0]
-            .condition
-            .as_deref()
-            .is_some_and(|c| c.contains("hop.route")),
-        "the default is GUARDED — an unguarded one is legal but only earns a boot \
-         advisory, and says nothing about which traffic it consumes: {:?}",
-        defaults[0].condition
+        doors.len(),
+        9,
+        "five tool doors, two build-result doors, and one guarded default each: {doors:#?}"
     );
 
-    for door in doors.iter().filter(|e| !e.is_default) {
+    // ONE guarded default PER LANE. The old wording was "exactly one default
+    // edge", and the argument under it is untouched and still enforced below:
+    // guarded defaults do not compete, so two that could match the same message
+    // would both fire. What R6 (GH #425) added is a default on a SECOND lane,
+    // and two defaults whose guards name different lanes can never both match.
+    // So the count moved from "one" to "one per lane", and the lane is read off
+    // the guard rather than assumed.
+    let defaults: Vec<&&EdgeSpec> = doors.iter().filter(|e| e.is_default).collect();
+    let mut lanes: Vec<String> = defaults
+        .iter()
+        .map(|e| {
+            let c = e.condition.as_deref().unwrap_or_default();
+            let at = c
+                .find("hop.route == '")
+                .unwrap_or_else(|| panic!("a default with no lane guard: {e:#?}"));
+            let rest = &c[at + "hop.route == '".len()..];
+            rest[..rest.find('\'').expect("closing quote")].to_string()
+        })
+        .collect();
+    let before = lanes.len();
+    lanes.sort();
+    lanes.dedup();
+    assert_eq!(
+        lanes.len(),
+        before,
+        "two guarded defaults name the SAME lane — they do not compete, so both \
+         would fire on the same message: {defaults:#?}"
+    );
+    assert!(
+        defaults.iter().any(|e| e.to == "./unknown"),
+        "the tool_call default no longer leads to ./unknown: {defaults:#?}"
+    );
+    for d in &defaults {
+        assert!(
+            d.condition
+                .as_deref()
+                .is_some_and(|c| c.contains("hop.route")),
+            "a default is GUARDED — an unguarded one is legal but only earns a boot \
+             advisory, and says nothing about which traffic it consumes: {:?}",
+            d.condition
+        );
+    }
+
+    for door in doors.iter().filter(|e| !e.is_default).filter(|e| {
+        e.condition
+            .as_deref()
+            .is_some_and(|c| c.contains("'tool_call'"))
+    }) {
         let c = door.condition.as_deref().unwrap_or_default();
         assert!(
             c.contains("hop.tool_name"),
@@ -724,8 +771,24 @@ fn the_shipped_dispatch_is_three_narrowing_doors_and_one_guarded_default() {
     }
 
     // The return direction: one exit per occupant, each STATING the outward lane.
-    let exits: Vec<&EdgeSpec> = hp.graph.edges.iter().filter(|e| e.to == ".").collect();
-    assert_eq!(exits.len(), 4, "one exit per occupant: {exits:#?}");
+    // Since R6 the hive has TWO outward lanes, and only one of them is a
+    // result: `tool_result` (one exit per occupant) and `build` (the reach of
+    // the surface, from the two occupants that have one). The result half is
+    // what this test is about, so it is the half that is filtered for.
+    let exits: Vec<&EdgeSpec> = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| e.to == ".")
+        .filter(|e| {
+            e.modifier
+                .as_ref()
+                .and_then(|m| m.set_hop.get("route"))
+                .map(String::as_str)
+                == Some("'tool_result'")
+        })
+        .collect();
+    assert_eq!(exits.len(), 6, "one result exit per occupant: {exits:#?}");
     for exit in &exits {
         assert!(
             !exit.is_default,

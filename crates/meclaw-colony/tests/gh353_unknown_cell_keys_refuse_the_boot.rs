@@ -376,11 +376,20 @@ async fn a_clean_subtree_template_still_commits() {
     h.shutdown().await;
 }
 
-// ── (f) `cell.template` in a LIVE tree is a boot error ───────────────────────
+// ── (f) `cell.template` in a live tree: a DECLARATION since GH #424 ──────────
 
 /// Boots a one-cell tree whose `cell` block is `cell_block` and returns the
-/// first `InvalidJson` reason.
-async fn boot_reason(cell_block: &str) -> String {
+/// first `GrowthFailed` reason plus the marker path it names.
+///
+/// GH #424 moved this case: until then a `cell.template` in a root tree was an
+/// `InvalidJson` refusal ("template-time only … must not stand in an
+/// instantiated tree"), because the boot could not instantiate. It can now, and
+/// a marker on a FIRST boot is a declaration the boot fulfils. What survives —
+/// and is what this section was really protecting — is the LOUDNESS: the key is
+/// never silently parsed into a cell of type `"ref"` that no factory can spawn.
+/// A marker naming a template that does not exist refuses the boot, and the
+/// refusal names both halves: which reference, and which directory.
+async fn boot_growth_refusal(cell_block: &str) -> (String, String) {
     let td = TempDir::new().unwrap();
     std::fs::create_dir_all(td.path().join("main")).unwrap();
     std::fs::write(
@@ -396,46 +405,45 @@ async fn boot_reason(cell_block: &str) -> String {
     let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
     let err = bootstrap_from_filesystem(td.path(), &echo_registry(), &h.runtime())
         .await
-        .expect_err("a template ref in a live tree must refuse the boot");
-    let reason = err
+        .expect_err("a marker naming an unknown template must refuse the boot");
+    let found = err
         .items()
         .iter()
         .find_map(|e| match e {
-            BootstrapError::InvalidJson { reason, .. } => Some(reason.clone()),
+            BootstrapError::GrowthFailed {
+                path,
+                reference,
+                reason,
+            } => Some((format!("{reference}: {reason}"), path.display().to_string())),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("expected an InvalidJson boot error, got: {:?}", err.items()));
+        .unwrap_or_else(|| panic!("expected a GrowthFailed boot error, got: {:?}", err.items()));
     h.shutdown().await;
-    reason
+    found
 }
 
-/// A `ref` is resolved at instantiation and never stands in an instantiated
-/// tree (`docs/config.md`: template-time only). Before GH #353 the boot's
-/// hand-maintained allow-list made a stray `cell.template` a loud error simply
-/// by not listing it; declaring the key on `CellHeader` must not trade that
-/// loudness for a silent parse. Both spellings of the marker are refused: the
-/// key alone, and the `type: "ref"` it usually travels with.
+/// Both spellings of the marker are read as a declaration, and an unresolvable
+/// one refuses the boot by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_template_ref_in_a_live_tree_refuses_the_boot() {
-    let reason = boot_reason(r#"{"type":"echo","template":"dispatcher@1.0.1"}"#).await;
-    assert!(
-        reason.contains("template"),
-        "the refusal must NAME the offending key, got: {reason}"
-    );
-    assert!(
-        reason.contains("main/config.json"),
-        "the refusal must NAME the file the key stands in, got: {reason}"
-    );
-
-    let reason = boot_reason(r#"{"type":"ref","template":"dispatcher@1.0.1"}"#).await;
-    assert!(
-        reason.contains("template"),
-        "the refusal must NAME the offending key, got: {reason}"
-    );
-    assert!(
-        reason.contains("main/config.json"),
-        "the refusal must NAME the file the key stands in, got: {reason}"
-    );
+    for cell_block in [
+        r#"{"type":"echo","template":"dispatcher@1.0.1"}"#,
+        r#"{"type":"ref","template":"dispatcher@1.0.1"}"#,
+    ] {
+        let (reason, path) = boot_growth_refusal(cell_block).await;
+        assert!(
+            reason.contains("dispatcher@1.0.1"),
+            "the refusal must NAME the reference, got: {reason}"
+        );
+        assert!(
+            reason.contains("template_missing"),
+            "…with the mutation path's own code, got: {reason}"
+        );
+        assert!(
+            path.ends_with("main"),
+            "…and the directory the marker stands in, got: {path}"
+        );
+    }
 }
 
 /// The negative twin of (d): a key that is NOT on the documented list is

@@ -1142,6 +1142,93 @@ async fn a_vault_refusal_comes_back_on_the_ack_lane_and_is_booked_as_a_denial() 
     h.shutdown().await;
 }
 
+/// R9 / GH #427, the acceptance: the vault INSIDE the sealed hive, usable after
+/// a plain boot.
+///
+/// This is the scenario that could not be built before. A vault inside a sealed
+/// hive is reachable by nothing but its broker, and `unlock` is
+/// user-channel-only — so it stayed locked for its whole life and every
+/// delivery came back `vault_locked` (the test above still pins exactly that,
+/// for a hive that does NOT declare the param). With `params.unlock_env` set,
+/// the cell reads the passphrase out of the process environment at first use
+/// and serves. Nothing sends an unlock, and no passphrase touches any wire —
+/// which is the reason an unlock lane was rejected rather than built.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hived_vault_with_unlock_env_delivers_after_a_plain_boot() {
+    const ENV: &str = "MECLAW_TEST_HIVED_VAULT_PASSPHRASE";
+    let Some(root) = shipped_access() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, QUIET_CRON);
+    seed_vault_secret(
+        &td,
+        "cred:openrouter:primary",
+        "SUPER-SECRET-TOKEN",
+        VAULT_PASSPHRASE,
+    );
+    // `set_var` is unsafe in edition 2024 (a concurrent `getenv` would be a
+    // data race). Sound here because the name is unique to this test and the
+    // cell that reads it does not exist yet.
+    unsafe { std::env::set_var(ENV, VAULT_PASSPHRASE) };
+    patch(td.path(), "main/access/vault/config.json", |v| {
+        v["params"]["unlock_env"] = json!(ENV);
+    });
+    let (h, mut rx) = boot(&td).await;
+
+    probe(
+        &h,
+        &mut rx,
+        credential_rule("r-cred", "agent:brain", "cred:openrouter:primary"),
+    )
+    .await;
+    let grant = credential_grant_for(&h, &mut rx, "agent:brain").await;
+
+    let me = meclaw_cells::sealed::RecipientKeypair::generate().expect("keypair");
+    h.send(send_json(
+        "/spender",
+        &json!({"who": "agent:brain", "grant_id": grant,
+                "operation": "vault.deliver",
+                "payload": {"recipient_key": me.public_hex()}}),
+    ))
+    .await;
+
+    let ack = recv_route(&mut rx, "ack").await;
+    unsafe { std::env::remove_var(ENV) };
+    let payload = turn_json(&ack);
+    assert_eq!(
+        payload["outcome"], "ok",
+        "the hived vault opened itself and served: {payload}"
+    );
+    assert_eq!(hop_of(&ack, "operation"), "vault.deliver");
+
+    let sealed = meclaw_cells::sealed::SealedBox::from_json(&body_of(&ack)["sealed"])
+        .expect("the ack carries a sealed box");
+    assert_eq!(
+        me.open(&sealed).expect("open"),
+        b"SUPER-SECRET-TOKEN".to_vec()
+    );
+
+    // The whole message, header included, carries no value — and no passphrase.
+    let whole = meclaw_core::serde_json::to_string(body_of(&ack)).unwrap();
+    assert!(!whole.contains("SUPER-SECRET-TOKEN"), "{whole}");
+    assert!(!whole.contains(VAULT_PASSPHRASE), "{whole}");
+
+    // And it was booked like any other spend.
+    let usage = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "usage",
+               "columns": ["grant_id", "operation", "outcome"],
+               "where": {"grant_id": grant}}),
+    )
+    .await;
+    assert_eq!(usage[0]["operation"], "vault.deliver");
+    assert_eq!(usage[0]["outcome"], "ok");
+
+    h.shutdown().await;
+}
+
 /// The TTL, both halves. `invoke` refuses on its own comparison, so the door
 /// closes on time whether or not the clock ticks; the `expired` row in
 /// `grant_events` is what the sweep adds afterwards, and it is bookkeeping.

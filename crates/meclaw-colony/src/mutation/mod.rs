@@ -7,6 +7,7 @@ pub mod apply;
 pub mod header_views;
 pub mod hive_contract;
 pub mod hook;
+pub mod manifest;
 pub mod port_boundary;
 pub mod recovery;
 pub mod rejection;
@@ -18,6 +19,8 @@ pub mod substitute;
 pub mod subtree;
 pub(crate) mod swap;
 pub mod validate;
+
+pub use manifest::{ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome};
 
 use meclaw_core::Path;
 

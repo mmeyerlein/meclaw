@@ -15,7 +15,10 @@ mod test_root;
 pub mod topologies;
 pub mod wait;
 
-pub use code_wire::{code_stdin, code_stdin_bytes};
+pub use code_wire::{
+    code_stdin, code_stdin_bytes, emit_all, emit_one, resolve_script_vars, run_shipped_script,
+    shipped_script,
+};
 pub use colony_handle::{ColonyHandle, spawn_colony_task_at};
 pub use factories::EmitOnceMockCellFactory;
 pub use factories::{SPAWN_REFUSAL, SpawnRefusesCellFactory};

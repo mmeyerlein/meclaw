@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "orgs/acme",
-        "template": "org@1.0.2"
+        "template": "org@1.1.0"
       }
     ],
     "add_edges": [
@@ -62,6 +62,16 @@
         "from": "./orgs/acme",
         "to": "./orgs",
         "condition": "has(hop.route) && hop.route == 'prune'"
+      },
+      {
+        "from": "./orgs/acme",
+        "to": "./orgs",
+        "condition": "has(hop.route) && hop.route == 'build'"
+      },
+      {
+        "from": "./orgs",
+        "to": "./orgs/acme",
+        "condition": "has(hop.route) && hop.route == 'in_build_result'"
       }
     ]
   }

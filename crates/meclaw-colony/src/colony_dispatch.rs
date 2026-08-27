@@ -1361,6 +1361,85 @@ fn build_mutation_reply(
     meclaw_core::serde_json::json!({ "mutation": body })
 }
 
+/// GH #422 — the receipt of one manifest roll-off, in its OWN top-level slot.
+///
+/// The `/colony` replies each answer in a slot named after what was asked:
+/// `mutation`, `graph`, `registry`, `templates`, `trace`, `ledger`, `rescan`.
+/// A manifest is a different question and gets a different slot; the slot holds
+/// an OBJECT, as `ledger` does.
+///
+/// `failed_at` is 1-based (an operator counts entries, not indices), `remaining`
+/// counts the entries that were NEVER LOOKED AT, and `applied` counts the ones
+/// that committed and STAY committed — there is no rollback. No new
+/// `error_code` string is minted here: the slot carries the refusing entry's
+/// own code, verbatim.
+fn build_manifest_reply(
+    outcome: &crate::mutation::ManifestOutcome,
+) -> meclaw_core::serde_json::Value {
+    use crate::mutation::ManifestOutcome;
+    let body = match outcome {
+        ManifestOutcome::Committed { ids } => meclaw_core::serde_json::json!({
+            "outcome": "committed",
+            "applied": ids.len(),
+            "ids": ids,
+        }),
+        ManifestOutcome::Rejected {
+            ids,
+            failed_at,
+            id,
+            error_code,
+            details,
+            remaining,
+        } => meclaw_core::serde_json::json!({
+            "outcome": "rejected",
+            "applied": ids.len(),
+            "ids": ids,
+            "failed_at": failed_at,
+            "id": id,
+            "error_code": error_code,
+            "details": details,
+            "remaining": remaining,
+        }),
+    };
+    meclaw_core::serde_json::json!({ "manifest": body })
+}
+
+/// GH #422 — a body that meant to be a manifest and could not be read.
+///
+/// No `failed_at`: there was no position. The manifest was not readable AS A
+/// WHOLE, so nothing was applied and nothing was attempted — `applied` is 0 and
+/// the code is `schema`, the one a broken body form has always carried.
+fn build_manifest_error_reply(
+    e: &crate::mutation::ManifestError,
+) -> meclaw_core::serde_json::Value {
+    meclaw_core::serde_json::json!({
+        "manifest": {
+            "outcome": "rejected",
+            "applied": 0,
+            "error_code": e.error_code(),
+            "details": e.to_string(),
+        }
+    })
+}
+
+/// GH #422 — render the verdict of one knock at `/colony/mutations`.
+///
+/// One renderer for both doors: the EDA reply body and the HTTP body are the
+/// same JSON, so a caller reading `{"mutation": …}` or `{"manifest": …}` gets
+/// the same document whether the body came through a cell edge or a `POST`.
+/// The HTTP status is the enum's own `is_committed()` — 200 / 422, the pair the
+/// single form has always used.
+pub fn mutation_door_reply(
+    outcome: &crate::mutation::MutationDoorOutcome,
+) -> meclaw_core::serde_json::Value {
+    use crate::mutation::MutationDoorOutcome;
+    match outcome {
+        MutationDoorOutcome::Single(o) => build_mutation_reply(o),
+        MutationDoorOutcome::Manifest(o) => build_manifest_reply(o),
+        MutationDoorOutcome::MalformedManifest(e) => build_manifest_error_reply(e),
+    }
+}
+
 fn build_registry_reply(
     reply: &crate::api_dto::ReadRegistryReply,
 ) -> meclaw_core::serde_json::Value {
@@ -1433,6 +1512,104 @@ fn build_ledger_reply(reply: &crate::api_dto::ReadLedgerReply) -> meclaw_core::s
     })
 }
 
+/// GH #422 — ONE knock at `/colony/mutations`, whichever body form knocked.
+///
+/// This is where the two body forms are told apart, and it is the ONLY place:
+/// the EDA dispatch arm and the `ColonyMsg::MutationDoor` inbox arm both come
+/// through here, so the rule cannot drift between the message door and the
+/// HTTP door. The question is exactly one — does the body carry a top-level
+/// `manifest` key — and a `None` answer hands the body to `handle_mutation`
+/// byte-for-byte the way it has always been handed (R5, pinned by
+/// `tests/gh422_the_single_mutation_body_does_not_move.rs`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_mutation_door(
+    registry: &mut std::collections::HashMap<meclaw_core::Path, crate::RegistryEntry>,
+    hive_scopes: &mut crate::hive_scope::HiveScopeTable,
+    edges: &mut crate::edge_table::EdgeTable,
+    node_contracts: &mut std::collections::HashMap<meclaw_core::Path, crate::NodeContract>,
+    dead_letters: &mut std::collections::VecDeque<crate::dead_letter::DeadLetter>,
+    writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    templates_snapshot: crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
+    root: &std::path::Path,
+    inbox_self_tx: &tokio::sync::mpsc::Sender<crate::colony::ColonyMsg>,
+    outputs_tx: &tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
+    body: meclaw_core::serde_json::Value,
+    reply_to: Option<meclaw_core::Path>,
+    trace_id: meclaw_core::Uuid,
+    parent_message_id: meclaw_core::Uuid,
+    idle_default_ms: u64,
+    message_timeout_default_ms: u64,
+    mailbox_default_capacity: usize,
+    strict_validation: bool,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    env_source: Option<&std::path::Path>,
+    death_ack_wait_tx: Option<&tokio::sync::mpsc::Sender<()>>,
+) -> crate::mutation::MutationDoorOutcome {
+    use crate::mutation::MutationDoorOutcome;
+    match crate::mutation::ManifestBody::detect(&body) {
+        Some(Ok(manifest)) => MutationDoorOutcome::Manifest(
+            crate::colony::handle_manifest(
+                registry,
+                hive_scopes,
+                edges,
+                node_contracts,
+                dead_letters,
+                writer_tx,
+                templates_snapshot,
+                factories,
+                root,
+                inbox_self_tx,
+                outputs_tx,
+                &manifest,
+                trace_id,
+                parent_message_id,
+                idle_default_ms,
+                message_timeout_default_ms,
+                mailbox_default_capacity,
+                strict_validation,
+                blob_store,
+                blob_inline_max_bytes,
+                env_source,
+                death_ack_wait_tx,
+            )
+            .await,
+        ),
+        Some(Err(e)) => MutationDoorOutcome::MalformedManifest(e),
+        None => MutationDoorOutcome::Single(
+            // F4-PIN: body is passed verbatim as payload — `handle_mutation`
+            // extracts `diff`/`ctx`/`scope` from its own schema.
+            crate::colony::handle_mutation(
+                registry,
+                hive_scopes,
+                edges,
+                node_contracts,
+                dead_letters,
+                writer_tx,
+                templates_snapshot,
+                factories,
+                root,
+                inbox_self_tx,
+                outputs_tx,
+                body,
+                reply_to,
+                trace_id,
+                parent_message_id,
+                idle_default_ms,
+                message_timeout_default_ms,
+                mailbox_default_capacity,
+                strict_validation,
+                blob_store,
+                blob_inline_max_bytes,
+                env_source,
+                death_ack_wait_tx,
+            )
+            .await,
+        ),
+    }
+}
+
 // ---------------------------- Main dispatcher ----------------------------
 
 /// Phase-13.5-A6-T3: routes `/colony/<endpoint>` to the T1 helpers resp.
@@ -1503,6 +1680,43 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold forwarded to handle_mutation
     env_source: Option<&std::path::Path>, // U8 (RULED A8) — env source from startup, forwarded to handle_mutation
 ) -> crate::colony::RouteAction {
+    // GH #432 — the door resolves a blob body BEFORE it dispatches.
+    //
+    // `body_value` is a synchronous projection with neither `blob_store` nor an
+    // `.await`, so it maps `Body::Blob(_)` to `Value::Null`. Every `/colony`
+    // endpoint then read an empty body: a mutation found no `diff`, fell back to
+    // an empty one and replied `committed` for something it had never seen. The
+    // message door simply did not inherit the delivery-boundary resolution every
+    // CELL gets, and a body large enough for the substrate's own offload is
+    // exactly such a body.
+    //
+    // Resolved here, by the very function that resolves it at a cell's door —
+    // one place decides what "the body" means, whether the recipient is a cell
+    // or the colony itself.
+    let mut msg = msg;
+    if !crate::cell_task::resolve_blob_for_delivery(&mut msg, &blob_store, &None).await {
+        // Same rule as at the cell boundary: a failed resolution delivers the
+        // message NOT AT ALL, never half. `resolve_blob_for_delivery` has already
+        // warned with the precise cause; the dead letter carries the whole-body
+        // class name, which is what an operator greps for.
+        tracing::warn!(
+            endpoint = %endpoint.as_str(),
+            sender = %sender.as_str(),
+            "blob resolution failed at the /colony door — dead-lettering instead of dispatching"
+        );
+        let resolved = endpoint.clone();
+        crate::colony::push_dead_letter(
+            dead_letters,
+            crate::dead_letter::DeadLetter {
+                sender_path: sender,
+                original_target: endpoint,
+                resolved_target: resolved,
+                message: msg,
+                reason: crate::dead_letter::DeadLetterReason::BlobUnavailable,
+            },
+        );
+        return crate::colony::RouteAction::Done;
+    }
     let body = body_value(&msg);
     let reply_to = msg.reply_to.clone();
     let trace_id = msg.trace_id;
@@ -1510,9 +1724,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
 
     match endpoint.as_str() {
         "/colony/mutations" => {
-            // F4-PIN: body is passed verbatim as payload — `handle_mutation`
-            // extracts `diff`/`ctx`/`scope` from its own schema.
-            let outcome = crate::colony::handle_mutation(
+            let outcome = run_mutation_door(
                 registry,
                 hive_scopes,
                 edges,
@@ -1538,7 +1750,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 None, // /colony/mutations dispatch path: no test sync hook
             )
             .await;
-            let reply_body = build_mutation_reply(&outcome);
+            let reply_body = mutation_door_reply(&outcome);
             emit_reply_or_done(reply_to, reply_body)
         }
         "/colony/registry" => {

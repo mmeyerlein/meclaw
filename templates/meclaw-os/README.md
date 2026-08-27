@@ -1,8 +1,9 @@
-# `meclaw-os@1.0.4`
+# `meclaw-os@1.1.1`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
-else is grown into. It holds no cell of its own. It holds two occupants, one empty
-container and nineteen edges, and its entire job is to be the boundary those things share.
+else is grown into. It holds no cell of its own. It holds four occupants, one empty
+container and twenty-five edges, and its entire job is to be the boundary those things
+share.
 
 ## The rule this level was authored under
 
@@ -21,7 +22,7 @@ a shell that grew one would have stopped being a boundary and become a participa
 
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
-| `access` | a `ref` to `access@2.1.0` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
+| `access` | a `ref` to `access@2.2.0` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
 | `steward` | a `ref` to `steward@2.0.11` — the control loop | one colony, one loop; it ships with every goal disabled |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
@@ -61,12 +62,19 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The nineteen edges
+## The twenty-five edges
 
-Every one of them is a door or an exit, and every declared lane has exactly one. Nothing
-inside the shell talks to anything else inside it, because the occupants are strangers:
-the broker knows nothing about the loop, the loop asks the colony rather than the broker,
-and neither of them knows an organisation exists.
+Nineteen of them are a door or an exit, and every declared lane has exactly one. The
+broker knows nothing about the loop, the loop asks the colony rather than the broker, and
+neither of them knows an organisation exists.
+
+**Six wire two occupants to each other, and that is what owning a baumeister looks like.**
+Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
+was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
+`member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
+share and sharing means being wired to it. The container reaches the builder on `build`
+with `hop.build_op == 'draft'`, reaches the submitter with `'apply'`, and both answer it
+back on `in_build_result`.
 
 ```json
 {"add_edges": [
@@ -88,11 +96,25 @@ and neither of them knows an organisation exists.
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'write'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'turn_write'"},
-  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'prune'"}
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'prune'"},
+
+  {"from": "<shell>/orgs",      "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'draft'"},
+  {"from": "<shell>/orgs",      "to": "<shell>/submit",  "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'"},
+  {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'manifest'"},
+  {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'error'"},
+  {"from": "<shell>/submit",    "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'receipt'"},
+  {"from": "<shell>/submit",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"}
 ]}
 ```
 
-Those nineteen travel with the template; they are shown here so a reader can see the shape,
+**`mutate` carries two senders now**, the control loop and the submitter, and that is this
+file's own precedent applied a third time: `ack` and `error` each carry two already, and a
+caller subscribes to a lane rather than to whoever raised it. One lane means one privileged
+edge out of the shell, and one privileged edge means one audit trail — which is the whole
+of R6's guardrail. The builder gets no such edge, and cannot be given one later:
+`/colony/mutations` is not an endpoint a mutation may draw, on any scope.
+
+Those twenty-five travel with the template; they are shown here so a reader can see the shape,
 not so anyone has to draw them. The last three arrived when the level below them started
 re-emitting what a member's assistants raise and nothing at member level consumes — nobody
 re-derived the list by hand, `gh302_meclaw_os_shell.rs` read `templates/org/config.json`
@@ -141,7 +163,7 @@ but the level's promise is already true and already checkable on the day it ship
 ## What is deliberately not here
 
 **No second vault.** GH #302's original sketch listed `vault` beside `access` at this level.
-It is not here, and that is a ruling (Q20), not an omission: `access@2.1.0` already carries
+It is not here, and that is a ruling (Q20), not an omission: `access@2.2.0` already carries
 its own interior `vault`, reachable from nowhere outside, and the standalone `vault`
 template attests its inbound edges against `params.broker` and `params.sealed_neighbors`.
 With no broker at this level, a second one would boot locked and inert — a credential store
@@ -199,20 +221,28 @@ already a requirement of this composite.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.4"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.1.1"}],
           "add_edges": []}}
 ```
 
 One node and no edges at all: the shell is the outermost boundary, so what reaches it comes
 from outside the colony and what leaves it leaves the colony. The broker, the control loop,
-the `orgs` container and the nineteen edges between them came with the template.
+the `orgs` container, the baumeister, the submitter and the twenty-five edges between them
+came with the template.
+
+**One line is still missing, and it has to be written by hand:** the edge from the shell to
+`/colony/mutations`. It cannot be added by a mutation on any scope, so it lives in the
+birth topology of the root or it does not exist. A colony without it is one where the
+control loop measures and reports and changes nothing, and where a submission ends as a
+`no_route` in the dead-letter queue — loudly, and localising itself. That is the right
+default: a colony nobody privileged applies nothing.
 
 Then one organisation at a time, into the container, each with its transit edges in the
 **same** mutation — a hive is an island until an edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.2"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.1.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

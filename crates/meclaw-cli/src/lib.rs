@@ -3,6 +3,7 @@
 //! Internal crate — the public contract is the HTTP API and the template DSL;
 //! no SemVer guarantee on Rust items. See README.md § Stability.
 
+pub mod apply;
 pub mod bridge;
 pub mod factories;
 pub mod lease;
@@ -164,6 +165,15 @@ pub struct Cli {
     /// hence the name, which says which mode it modifies.
     #[arg(long = "validate-strict", default_value_t = false)]
     pub validate_strict: bool,
+
+    /// Apply a mutation manifest right after the boot: one ordered list of
+    /// mutation bodies in one file, handed to `/colony/mutations` as one body.
+    /// `-` reads it from stdin. Without `--daemon`/`--api` this is a one-shot --
+    /// boot, apply, print the receipt, shut down; the exit code is the receipt's
+    /// verdict. Against a colony that is already running, use its HTTP door: the
+    /// same manifest body form travels there (`POST /colony/mutations`).
+    #[arg(long, value_name = "PATH")]
+    pub apply: Option<PathBuf>,
 
     /// GH #97: report which `params.sandbox` properties THIS HOST can enforce
     /// and exit. A question about the machine, not about a colony: it needs no
@@ -342,6 +352,21 @@ pub async fn run_with_hooks(
     run_with_hooks_tuned(cli, addr_hook, shutdown_hook, None).await
 }
 
+/// Does this invocation run the stdin/stdout bridge?
+///
+/// Direct mode is the ABSENCE of every mode that keeps the process busy with
+/// something else: `--api` serves HTTP, `--daemon` just runs, and since GH #423
+/// `--apply` boots to hand one manifest to the mutation door and then leaves.
+/// A bridge under `--apply` would sit on stdin waiting for a human while the
+/// receipt it exists to print has already been written — and `--apply -` reads
+/// its manifest FROM stdin, so the two cannot share it anyway.
+///
+/// A named function rather than an inline `&&`-chain so a test can ask it
+/// without booting a colony.
+pub fn direct_mode(cli: &Cli) -> bool {
+    cli.api.is_none() && !cli.daemon && cli.apply.is_none()
+}
+
 /// [`run_with_hooks`] with the watchdog deadline made explicit.
 ///
 /// Same lifecycle, one extra knob: `watchdog_override` decides how much colony
@@ -363,8 +388,10 @@ pub async fn run_with_hooks_tuned(
     // It is a question about the HOST, so it must work in a directory that is
     // not a colony at all — no colony.db, no bootstrap plan, no cell.
     if cli.sandbox_probe {
-        if cli.validate || cli.api.is_some() || cli.daemon {
-            eprintln!("note: --sandbox-probe has precedence; --validate/--api/--daemon ignored");
+        if cli.validate || cli.api.is_some() || cli.daemon || cli.apply.is_some() {
+            eprintln!(
+                "note: --sandbox-probe has precedence; --validate/--api/--daemon/--apply ignored"
+            );
         }
         print!(
             "{}",
@@ -480,6 +507,10 @@ pub async fn run_with_hooks_tuned(
     // so the re-open never races the template-scan writer of the SAME process.
     // Cross-process contention stays covered by the explicit 30 s busy budget
     // (`meclaw_colony::persist::DB_BUSY_TIMEOUT`).
+    // GH #424: the template rows a planned growth would resolve against, read
+    // BEFORE the handle is given up — the scan above has just filled the table,
+    // and `--validate` (below) has no colony to ask.
+    let scanned_templates = colony_db.read_templates().unwrap_or_default();
     colony_db.shutdown_async().await;
 
     // --validate: Dry-Run-Vorrang (Spec Z.430).
@@ -504,8 +535,8 @@ pub async fn run_with_hooks_tuned(
     // (add_nodes replay) and mutation replay from `mutation_log` stay deferred
     // (their own robustness pass). See PROGRESS § phase-12 limitations.
     if cli.validate {
-        if cli.api.is_some() || cli.daemon {
-            eprintln!("note: --validate has precedence; --api/--daemon ignored");
+        if cli.api.is_some() || cli.daemon || cli.apply.is_some() {
+            eprintln!("note: --validate has precedence; --api/--daemon/--apply ignored");
         }
         let mut had_error = false;
         // GH #97: does anything in this tree ask to be sandboxed? Decides
@@ -526,6 +557,21 @@ pub async fn run_with_hooks_tuned(
             .unwrap_or_else(|_| meclaw_colony::RegistryOverlay::new());
         let validate_boot_state = meclaw_colony::probe_boot_state(&db_path)
             .unwrap_or(meclaw_colony::BootState::FirstBoot);
+        // GH #424: the registry a planned growth would resolve against. The
+        // template scan above (`boot_load_or_scan`) has already run, so this is
+        // the very table the boot itself would ask.
+        let validate_templates = meclaw_colony::templates::TemplatesRegistry::from_entries(
+            scanned_templates
+                .iter()
+                .cloned()
+                .map(|r| meclaw_colony::templates::TemplateEntry {
+                    template_id: r.template_id,
+                    name: r.name,
+                    version: r.version,
+                    filesystem_path: std::path::PathBuf::from(r.filesystem_path),
+                })
+                .collect(),
+        );
         match meclaw_colony::plan_bootstrap_with_env(
             &cli.root,
             &factories,
@@ -620,6 +666,33 @@ pub async fn run_with_hooks_tuned(
                 for advisory in &plan.advisories {
                     eprintln!("validate: note: {advisory}");
                 }
+                // GH #424: what the first boot will GROW, listed — and nothing
+                // grown. `--validate` promises to touch nothing (it is the
+                // nginx -t role), and a dry run that created directories would
+                // be a broken promise. What it CAN check is resolvability, and
+                // that it does: an unresolvable reference is a hard error even
+                // WITHOUT `--validate-strict`, because it is not a warning
+                // class — it is a tree that is guaranteed not to boot, the same
+                // sharpness `DanglingEndpoint` already has.
+                for g in &plan.growths {
+                    println!("validate: growth: {} → {}", g.path.as_str(), g.reference);
+                }
+                let unresolvable: Vec<&meclaw_colony::PlannedGrowth> = plan
+                    .growths
+                    .iter()
+                    .filter(|g| validate_templates.resolve(&g.reference).is_err())
+                    .collect();
+                for g in &unresolvable {
+                    eprintln!(
+                        "validate: growth {} references {}, which no template in this tree \
+                         provides — this boot cannot fulfil it",
+                        g.path.as_str(),
+                        g.reference
+                    );
+                }
+                if !unresolvable.is_empty() {
+                    had_error = true;
+                }
             }
         }
 
@@ -680,7 +753,7 @@ pub async fn run_with_hooks_tuned(
     // `--api` boots the full colony headless (timer-/proxy-driven topologies run
     // without HTTP); the spawn + bootstrap below runs for all modes. Direct mode
     // (no flag) additionally needs the root-hive guard.
-    let is_direct_mode = cli.api.is_none() && !cli.daemon;
+    let is_direct_mode = direct_mode(&cli);
 
     // Step 5.1 — root-hive guard: direct mode requires `/` as a hive scope.
     // Checked via the bootstrap plan (no side effect, identical to --validate).
@@ -925,6 +998,98 @@ pub async fn run_with_hooks_tuned(
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
             return Err(anyhow::anyhow!("bootstrap failed: {e:?}"));
         }
+    }
+
+    // GH #423 — `--apply`: one manifest, handed to the mutation door, right
+    // here.
+    //
+    // The position is the whole argument: only AFTER the boot does the tree
+    // stand that the manifest mutates. A `--apply` before it would mutate
+    // against an empty registry and refuse everything with a straight face.
+    //
+    // In-process, not HTTP (orchestrator ruling O5): `lease::acquire` is the
+    // FIRST thing this function does, so a second `meclaw --root X --apply f`
+    // against a running daemon on `X` never boots at all — it gets
+    // `LeaseError::Held`, which is the right answer. Against a colony that is
+    // already up one mutates through its HTTP door, and since R5 that is one
+    // `curl` instead of five. In our own process the door is the same
+    // `ColonyMsg::MutationDoor` `post_mutation` sends, one hop shorter and with
+    // no address to spell wrong.
+    let apply_verdict = if let Some(source) = cli.apply.clone() {
+        let body = crate::apply::read_manifest_source(&source, &mut std::io::stdin())?;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        inbox_tx
+            .send(meclaw_colony::ColonyMsg::MutationDoor {
+                payload: body,
+                reply_to: None,
+                trace_id: meclaw_core::Uuid::now_v7(),
+                parent_message_id: meclaw_core::Uuid::nil(),
+                ack: ack_tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("colony inbox closed before --apply"))?;
+        let outcome = ack_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("colony dropped the --apply ack"))?;
+        // A manifest is what `--apply` accepts (`read_manifest_source` refuses
+        // anything else), so the door answers in the manifest form or says the
+        // form was unreadable. Both are rendered for a terminal here; the exit
+        // code is the contract, the text is for a human.
+        let (rendered, committed) = match &outcome {
+            meclaw_colony::MutationDoorOutcome::Manifest(m) => {
+                (crate::apply::render_receipt(m), outcome.is_committed())
+            }
+            meclaw_colony::MutationDoorOutcome::MalformedManifest(e) => {
+                (format!("the manifest could not be read: {e}\n"), false)
+            }
+            // Unreachable through `read_manifest_source`, and written out
+            // rather than `unreachable!()` because a panic here would take the
+            // colony's process down over a message it could have printed.
+            meclaw_colony::MutationDoorOutcome::Single(_) => (
+                "--apply: the door answered as a single mutation; \
+                 the body was not a manifest after all\n"
+                    .to_string(),
+                outcome.is_committed(),
+            ),
+        };
+        // Committed goes to stdout, refused to stderr: a script that pipes
+        // `--apply` then gets nothing false on stdout, and a refusal lands in
+        // the same stream as every other diagnostic.
+        if committed {
+            print!("{rendered}");
+        } else {
+            eprint!("{rendered}");
+        }
+        Some(committed)
+    } else {
+        None
+    };
+
+    // GH #423 — the one-shot: without `--daemon`/`--api` the process has said
+    // everything it came to say.
+    //
+    // The shutdown is the one the bootstrap failure branch above already runs —
+    // Shutdown + ack + join, each with its own timeout. Deliberately NOT
+    // `std::process::exit`: that would skip the lease guard's `Drop` and leave
+    // a stale lease behind for the next boot to reclaim.
+    if let Some(committed) = apply_verdict
+        && !cli.daemon
+        && cli.api.is_none()
+    {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let _ = inbox_tx
+            .send(meclaw_colony::ColonyMsg::Shutdown { ack: ack_tx })
+            .await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
+        // The exit-code contract of the overview § CLI: 0 means it worked,
+        // anything else means it did not, and no code carries a diagnosis —
+        // the receipt already printed one.
+        return if committed {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("--apply: the manifest was refused"))
+        };
     }
 
     // GH #84, half 3: a trip becomes a reported event. This task is the single

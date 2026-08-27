@@ -40,11 +40,17 @@ organism/
 ├── seed/                      the --root of the colony. This is the whole tree.
 │   ├── colony.json            substrate defaults. two lines.
 │   └── main/config.json       type: "hive", and its graph is EMPTY
+├── seed-ref/                  the same, plus ONE declaration that grows the shell
+│   ├── colony.json            byte-identical to seed/colony.json
+│   └── main/
+│       ├── config.json        byte-identical to seed/main/config.json
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.1.1"
 ├── grow-os.json               1. the shell.      1 node,  0 edges
 ├── grow-org.json              2. an organisation. 1 node, 11 edges
 ├── grow-member.json           3. a person.        1 node, 11 edges
 ├── grow-assistant.json        4. one generation.  1 node,  9 edges
-└── grow-channel.json          5. a Telegram surface. 2 nodes, 17 edges
+├── grow-channel.json          5. a Telegram surface. 2 nodes, 17 edges
+└── grow.manifest.json         all five, in one body, in that order
 ```
 
 **Zero cells.** Not a door, not a brain, not a store, not a screen — every one of them
@@ -54,20 +60,20 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.0.4   the shell
-├── access                            → access@2.1.0        the capability broker
+/os                                 meclaw-os@1.1.1   the shell
+├── access                            → access@2.2.0        the capability broker
 ├── steward                           → steward@2.0.11      the control loop
 └── orgs                              (empty container)
-    └── acme                       org@1.0.2         a namespace and a boundary
+    └── acme                       org@1.1.0         a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@1.0.2      one person
+            └── alex               member@1.1.0      one person
                 ├── affinity          → affinity@3.0.0      identity and meaning
                 ├── firewall          → firewall@2.0.5      the screen
                 ├── memory-hive       → memory-hive@3.0.1   what was said to them
                 └── assistants        (empty container)
-                    └── scribe    assistant@1.0.1   one generation of an agent
+                    └── scribe    assistant@1.1.0   one generation of an agent
                         ├── cogny     → cogny@4.0.3         the reasoning core
-                        ├── tools     → tools@1.0.0         the tool surface
+                        ├── tools     → tools@1.1.0         the tool surface
                         └── channels  (empty container)
                             ├── telegram-connector   telegram-connector@2.0.0
                             └── talky                talky@4.2.2
@@ -101,7 +107,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.0.4"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.1.1"}],
           "add_edges": []}}
 ```
 
@@ -119,7 +125,7 @@ on anything inside it.
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.0.2"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@1.1.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",
@@ -172,7 +178,7 @@ standing side by side in `channels`, plus the edges that pair them:
 - seven lanes carried down to the talky and seven carried back up.
 
 Seventeen edges. **The eighteen edges between `channels` and its siblings are not among them** —
-they belong to `assistant@1.0.1` and were drawn once, when step 4 ran. That is the whole of
+they belong to `assistant@1.1.0` and were drawn once, when step 4 ran. That is the whole of
 #303's ruling, and a second channel does not move the number.
 
 ## A second agent, a second channel
@@ -182,8 +188,8 @@ Both are one instantiation with their own parameters, and neither re-runs anythi
 ```json
 {"scope": "/os/orgs/acme/members/alex",
  "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}"},
- "diff": {"add_nodes": [{"name": "assistants/aide", "template": "assistant@1.0.1",
-                         "override_params": {"cogny/brain": {"temperature": "0.9"}}}],
+ "diff": {"add_nodes": [{"name": "assistants/aide", "template": "assistant@1.1.0",
+                         "override_params": {"cogny/brain": {"temperature": 0.9}}}],
           "add_edges": []}}
 ```
 
@@ -198,12 +204,12 @@ channel likewise costs its own seventeen edges and nothing else.
 | what | how many |
 |---|---:|
 | cells checked in | **0** |
-| cells after the five declarations | **55** |
-| edges after the five declarations | **287** |
-| edges written by hand in the five files | **48** |
-| edges that came with a template | **239** |
+| cells after the five declarations | **65** |
+| edges after the five declarations | **334** |
+| edges written by hand in the five files | **54** |
+| edges that came with a template | **280** |
 | `add_nodes` entries | **6** |
-| distinct templates stamped in the registry | **13** |
+| distinct templates stamped in the registry | **16** |
 | edges between `channels` and its siblings | **18** |
 
 Re-measure them with
@@ -264,6 +270,73 @@ The broker and the control loop start **inert by design** — every seeded polic
 disabled and every charter goal ships disabled — so a fresh shell grants nothing and changes
 nothing until an operator turns on exactly what they mean.
 
+## The seed that grows itself
+
+`seed-ref/` is the same seed with one thing added: a `cell.type: "ref"` marker where the shell
+shall stand.
+
+```json
+{"cell": {"type": "ref", "template": "meclaw-os@1.1.1"}}
+```
+
+That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
+resolves it against the template library and grows it — through the very resolution and staging
+a mutation takes, which is why the result is byte-identical to what `grow-os.json` builds
+(`crates/meclaw-cells/tests/gh424_the_seed_grows_itself.rs`). Then the marker is **gone**: what
+stands in its place is the shell it named. Two consequences follow from that rather than being
+bookkept — a second boot finds nothing to grow, and a node you later remove with `remove_nodes`
+cannot be re-declared into existence by a restart.
+
+**What it is not.** `seed-ref/` does not replace the five declarations, and it cannot. A `ref`
+marker declares a **node** and never an **edge** — and 48 of this example's 287 edges are
+hand-written transit lanes hanging off `orgs`, `members`, `assistants` and `channels`, hives the
+templates themselves materialise. Until the growth has happened those addresses do not exist, so
+there is nowhere to write them down. `seed-ref/` therefore grows exactly the first level, and it
+is the honest form of "a tree that boots itself".
+
+The whole stack from one file is the other half, and it is a manifest:
+
+## One file, one command
+
+`grow.manifest.json` is the five declarations verbatim, in the same order, in one body:
+
+```json
+{"manifest": [ …grow-os.json…, …grow-org.json…, …grow-member.json…,
+               …grow-assistant.json…, …grow-channel.json… ]}
+```
+
+The colony rolls it off itself — entry by entry, each through the very validation a single
+mutation gets, stopping at the **first** refusal and answering with one receipt. There is
+deliberately **no rollback**: what committed stays committed, and the receipt says where to pick
+it up again.
+
+```bash
+./target/release/meclaw --root ./examples/organism/seed \
+                        --templates ./templates \
+                        --apply examples/organism/grow.manifest.json
+# applied 5 of 5 mutations.
+```
+
+Boot, apply, print, shut down — the exit code is the verdict. A refusal reads:
+
+```text
+applied 3 of 5 mutations; entry 4 was refused.
+  error_code: env_var_missing
+  details:    …
+  the first 3 entries are committed and stay committed (no rollback).
+  to resume: drop the first 3 entries from the manifest and apply it again.
+```
+
+Against a colony that is **already running**, `--apply` is refused by the root lease, and that is
+the right answer: there you mutate through its HTTP door — which takes the same manifest body, so
+it is one `curl` instead of five.
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/colony/mutations \
+     -H 'Content-Type: application/json' \
+     -d @examples/organism/grow.manifest.json
+```
+
 ## Not in scope
 
 - **No sink.** Nothing here accepts a refusal and emits nothing (ruling Q2, GH #284): a lane
@@ -272,6 +345,6 @@ nothing until an operator turns on exactly what they mean.
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.1.0` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.2.0` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.

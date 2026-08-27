@@ -1,0 +1,87 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The apply tool: the SECOND tool call of the same requester, and the reason the\n# builder never needs an edge to the mutation door. It carries the manifest and\n# its digest back out of this hive under the caller's own identity.\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nbody = doc[\"body\"]\n\nif hop.get(\"route\") == \"in_build_result\":\n    # ---- Phase B: the receipt.\n    call_id = str(ctx.get(\"build_call_id\") or hop.get(\"tool_call_id\") or \"\")\n    header = {\"operation\": \"apply\", \"tool_call_id\": call_id}\n    if hop.get(\"error_code\"):\n        header[\"error_code\"] = str(hop[\"error_code\"])\n    for key in (\"applied\", \"failed_at\", \"remaining\"):\n        if hop.get(key) is not None:\n            header[key] = hop[key]\n    said = \"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"text\"):\n            said = str(m[\"text\"])\n    if hop.get(\"error_code\"):\n        # NAME the code in the turn. The model only sees the turn, and a\n        # refusal it cannot name is one it cannot explain to the human who\n        # asked -- nor decide what to do about.\n        text = \"the submission was refused: %s\" % hop[\"error_code\"]\n        if said:\n            text += \" -- \" + said[:600]\n    elif said:\n        text = said\n    else:\n        text = \"the submission came back without a sentence\"\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                      \"text\": text}]}))\n    sys.exit(0)\n\n# ---- Phase A: the second tool call. The manifest and its digest come back\n# through the chat verbatim -- they were shown to a human, and the digest is\n# what makes \"verbatim\" checkable rather than hoped for. This cell does NOT\n# re-render, re-order or re-serialise them: any of those changes the bytes and\n# the submitter would refuse its own colony's draft.\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nraw_args = \"\"\nfor m in (body.get(\"messages\") or []):\n    if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n        raw_args = m[\"text\"]\ntry:\n    args = json.loads(raw_args)\n    if not isinstance(args, dict):\n        args = {}\nexcept Exception:\n    args = {}\n\nmanifest = args.get(\"manifest\")\nif not isinstance(manifest, list) or not manifest:\n    # A call without a manifest has nothing to do at the OS level, and the\n    # answer belongs in the same round.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"apply\", \"error_code\": \"manifest_missing\",\n                   \"tool_call_id\": call_id},\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n            \"text\": \"apply_manifest needs the manifest list from the draft, verbatim\"}]}))\n    sys.exit(0)\n\nsys.stdout.write(json.dumps({\n    \"header\": {\"operation\": \"apply_request\", \"build_op\": \"apply\",\n               \"tool_call_id\": call_id,\n               \"manifest_sha256\": str(args.get(\"manifest_sha256\") or \"\")},\n    \"manifest\": manifest,\n    \"messages\": []}))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "manifest": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "apply_request",
+            "apply"
+          ],
+          "required": true
+        },
+        "build_op": {
+          "type": "string",
+          "values": [
+            "apply"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": true
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "required": false
+        },
+        "applied": {
+          "type": "number",
+          "required": false
+        },
+        "failed_at": {
+          "type": "number",
+          "required": false
+        },
+        "remaining": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The apply tool: the SECOND tool call of the same requester. It carries the manifest and its digest back out of this hive, verbatim, under the caller's own identity -- which is why the builder never needs an edge to the mutation door.",
+    "use_when": "Behind the tools door, on hop.tool_name == 'apply_manifest'.",
+    "not_in_scope": "No re-rendering, no re-ordering, no re-serialising: any of those changes the bytes, and the submitter would refuse its own colony's draft. And no application -- this cell only carries."
+  }
+}

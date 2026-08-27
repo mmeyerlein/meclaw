@@ -179,7 +179,7 @@ an unknown audience is an error, not an occasion to guess. Same for the room: if
 known, it is not known.
 
 **Where they usually come from.** In a colony whose channels sit in the `channels` level of
-`assistant@1.0.1` both are already in `context` before the turn ever reaches the talky: the
+`assistant@1.1.0` both are already in `context` before the turn ever reaches the talky: the
 ingress door of the generation declares `audience_set` (the participant set is a constant
 of a generation's lifetime, ADR-0002 E8) and the connector promotes the room to
 `context.channel`. Such a tree wires this adapter exactly as it always did and adds

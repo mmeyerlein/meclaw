@@ -1,0 +1,96 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, hashlib\n\n# The submitter. It is the ONE cell in the tree with an edge onto the mutation\n# door, and everything about it is arranged so that being that cell costs as\n# little trust as possible: it composes nothing, it consults no model, it reads\n# no disk, and it decides in a straight line.\n\n# --8<-- digest-helper\ndef canonical(declarations):\n    # Canonical bytes: keys sorted, no spaces, no ascii escaping. The digest has\n    # to survive a round trip through a CHAT -- the draft is shown to a human,\n    # the model repeats it in the second tool call, and the submitter refuses\n    # anything whose bytes changed on the way. Without that, the manifest a\n    # human said yes to and the manifest that gets applied are only PROBABLY\n    # the same one.\n    return json.dumps(declarations, sort_keys=True, separators=(\",\", \":\"),\n                      ensure_ascii=False)\n\n\ndef digest(declarations):\n    return hashlib.sha256(canonical(declarations).encode(\"utf-8\")).hexdigest()\n# --8<-- end\n\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nbody = doc[\"body\"]\nparams = doc.get(\"params\") or {}\n\n\ndef receipt(code, detail, extra=None):\n    header = {\"route\": \"receipt\", \"operation\": \"submit\"}\n    if code:\n        header[\"error_code\"] = code\n    header.update(extra or {})\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": json.dumps({\"detail\": detail})}]}))\n    sys.exit(0)\n\n\nmanifest = body.get(\"manifest\")\n\n# ---- Phase B is recognised POSITIVELY: the colony's answer carries an OBJECT\n# in the manifest slot, with an `outcome` in it, while a submission carries the\n# ordered LIST. Reading phase B as \"anything that is not a fresh submission\"\n# would read an error reply as a new submission and re-emit it, which is the\n# loop workshop/cookbook/reply-to-fallback-loops.md is named after.\nif isinstance(manifest, dict) and \"outcome\" in manifest:\n    r = manifest\n    applied = int(r.get(\"applied\") or 0)\n    ok = (r.get(\"outcome\") == \"committed\")\n    header = {\"route\": \"receipt\", \"operation\": \"submit\", \"applied\": applied}\n    ids = r.get(\"ids\") if isinstance(r.get(\"ids\"), list) else []\n    if ids:\n        header[\"mutation_id\"] = str(ids[-1])\n    elif r.get(\"id\"):\n        header[\"mutation_id\"] = str(r.get(\"id\"))\n    if not ok:\n        # Read, not forwarded (GH #355/#360). `committed` and `rejected` are the\n        # same slot and opposite facts; a run that stamps both the same way says\n        # \"applied\" and applied nothing. And \"rejected\" WITHOUT the count is a\n        # lie about what is live now, because a manifest has no rollback.\n        header[\"error_code\"] = str(r.get(\"error_code\") or \"manifest_rejected\")\n        if r.get(\"failed_at\") is not None:\n            header[\"failed_at\"] = r[\"failed_at\"]\n        if r.get(\"remaining\") is not None:\n            header[\"remaining\"] = r[\"remaining\"]\n    text = (\"manifest applied: %d declaration(s)\" % applied if ok else\n            \"manifest refused at position %s: %s (%d applied, %s untouched)\" % (\n                r.get(\"failed_at\"), r.get(\"error_code\"), applied,\n                r.get(\"remaining\") if r.get(\"remaining\") is not None else \"the rest\"))\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": text}]}))\n    sys.exit(0)\n\n# ---- Phase A: a submission.\nif not isinstance(manifest, list) or not manifest:\n    receipt(\"manifest_missing\", \"no manifest to submit\")\ndecls = manifest\n\nclaimed = str(hop.get(\"manifest_sha256\") or \"\")\nactual = digest(decls)\nif not claimed or claimed != actual:\n    receipt(\"manifest_digest_mismatch\",\n            \"the manifest does not match the digest it was drafted with\",\n            {\"expected\": claimed, \"actual\": actual})\n\n# The identity is the one the SUBSTRATE stamped. A body that names itself is a\n# claim, and a claim is not an identity.\nrequester = str(env.get(\"reply_to\") or \"\")\nif not requester:\n    receipt(\"requester_unknown\", \"no reply_to on the envelope -- nobody to attribute this to\")\n\n# Policy as ROWS, in the cell's own params: first matching row wins, and no row\n# means no. `verdict` is \"allow\" or \"deny\", `requester_prefix` is a path prefix,\n# `scopes` a list of scope prefixes this requester may touch. Politics is\n# changed with an entry, not with code.\nrows = params.get(\"policy\")\nif isinstance(rows, str):\n    try:\n        rows = json.loads(rows or \"[]\")\n    except Exception:\n        rows = []\nif not isinstance(rows, list):\n    rows = []\n\nverdict, matched = \"deny\", None\nfor row in rows:\n    if not isinstance(row, dict):\n        continue\n    if not requester.startswith(row.get(\"requester_prefix\") or \"\\0\"):\n        continue\n    matched = row\n    verdict = row.get(\"verdict\") or \"deny\"\n    break\nif verdict != \"allow\" or matched is None:\n    receipt(\"requester_not_permitted\", \"no policy row allows this requester\",\n            {\"requester\": requester})\n\nallowed = matched.get(\"scopes\") or []\n\n\ndef under(scope, prefix):\n    # A PATH prefix, not a string prefix: \"/os\" permits \"/os\" and \"/os/orgs\",\n    # and does not permit \"/oscar\". A plain startswith would hand out a scope\n    # nobody named, which is the one mistake a permission check may not make.\n    prefix = str(prefix or \"\")\n    if not prefix:\n        return False\n    if prefix == \"/\":\n        return scope.startswith(\"/\")\n    prefix = prefix.rstrip(\"/\")\n    return scope == prefix or scope.startswith(prefix + \"/\")\n\n\nfor i, d in enumerate(decls):\n    scope = str((d or {}).get(\"scope\") or \"\")\n    if not any(under(scope, s) for s in allowed):\n        receipt(\"scope_not_permitted\",\n                \"declaration %d addresses scope %s\" % (i, scope),\n                {\"requester\": requester})\n\n# The audit stamp goes into EVERY entry: the manifest form carries no\n# manifest-wide ctx (each entry is byte-for-byte one single-form body), so an\n# attribution that lived at the top level would reach no mutation_log row.\n# It is added AFTER the digest check, on purpose -- the digest is over what was\n# drafted and approved, never over what the submitter added to it.\nout = []\nfor d in decls:\n    e = dict(d)\n    ctx = dict(e.get(\"ctx\") or {})\n    ctx[\"requester\"] = requester\n    ctx[\"manifest_sha256\"] = actual\n    e[\"ctx\"] = ctx\n    out.append(e)\n\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"mutate\", \"operation\": \"submit\",\n               \"manifest_sha256\": actual, \"declaration_count\": len(out),\n               \"requester\": requester},\n    \"manifest\": out,\n    \"messages\": []}))\n",
+    "policy": "${SUBMIT_POLICY:-[]}",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "manifest": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "mutate",
+            "receipt"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "submit"
+          ],
+          "required": true
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "required": false
+        },
+        "declaration_count": {
+          "type": "number",
+          "required": false
+        },
+        "requester": {
+          "type": "string",
+          "required": false
+        },
+        "applied": {
+          "type": "number",
+          "required": false
+        },
+        "failed_at": {
+          "type": "number",
+          "required": false
+        },
+        "remaining": {
+          "type": "number",
+          "required": false
+        },
+        "mutation_id": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "Two phases on one cell: a submission goes out on `mutate`, and the colony's answer -- which arrives here directly, because the substrate stamps reply_to on every cell emission -- comes back as a receipt.",
+    "use_when": "At the OS level, as the only sender besides the control loop on the `mutate` lane.",
+    "not_in_scope": "No drafting and no rollback: what it emits was handed to it, and what committed stays committed."
+  }
+}

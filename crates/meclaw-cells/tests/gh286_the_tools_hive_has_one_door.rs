@@ -14,10 +14,26 @@
 //! same shape as `gh173_shipped_hive_contracts` and `gh196_shipped_hive_ports`:
 //!
 //! 1. The template is a hive and it is sealed.
-//! 2. It accepts exactly one lane, `tool_call`.
-//! 3. It emits exactly one lane, `tool_result`.
-//! 4. The two are paired in the LANE form of `required_drains` (GH #237), and
-//!    the substrate's own reader KEEPS that pairing.
+//! 2. It has ONE result lane, `tool_result`, whatever the tool was.
+//! 3. It DECLARES the one lane on which a tool of this surface reaches out of
+//!    the assistant, and the return lane that answers it.
+//! 4. Every lane pair is written in the LANE form of `required_drains`
+//!    (GH #237), and the substrate's own reader KEEPS both pairings.
+//!
+//! **Points 2 and 3 were one assertion until R6** (GH #425, the builder intake),
+//! and the change is sanctioned rather than accidental. The old wording was
+//! "exactly one lane in, exactly one lane out", and the argument under it was
+//! about tool RESULTS: a second RESULT lane puts the choice of tool back into
+//! the caller's edge table, which is the coupling this hive exists to remove.
+//! That argument is untouched and still enforced below.
+//!
+//! What R6 adds is a different class. This surface now carries a tool that
+//! reaches OUT of the assistant -- a build request travels to `/os/builder` and
+//! an answer comes back -- and the honest place for that fact is the contract,
+//! not a footnote. It is the same defect `sandbox_union` was written to fix one
+//! level down: a radius that exists collectively and is invisible because it is
+//! spread over several files. So the count moved from "one and one" to "one
+//! result lane, and one declared reach with its return".
 //!
 //! Point 4 is the one that cannot be read off the JSON alone, and it is the one
 //! most likely to rot: the lane form names two routes of the hive's own
@@ -123,7 +139,7 @@ fn the_tools_hive_is_sealed_so_the_hive_path_is_the_only_address() {
 // ──────────────────────────────────────────────────────── 2./3. the lanes
 
 #[test]
-fn the_contract_is_one_lane_in_and_one_lane_out() {
+fn the_contract_is_one_result_lane_and_one_declared_reach() {
     let params = hive_params();
     let contract = params
         .contract
@@ -132,19 +148,23 @@ fn the_contract_is_one_lane_in_and_one_lane_out() {
     let accepts: Vec<&str> = contract.accepts.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         accepts,
-        vec!["tool_call"],
-        "the tools hive must accept exactly one lane, `tool_call`. A second inbound lane \
-         would be a second thing a caller has to know about this hive."
+        vec!["tool_call", "in_build_result"],
+        "the tools hive takes a call in and takes the builder's answer back in, and \
+         nothing else. A third inbound lane would be a third thing a caller has to \
+         know about this hive."
     );
 
     let emits: Vec<&str> = contract.emits.iter().map(|l| l.route.as_str()).collect();
     assert_eq!(
         emits,
-        vec!["tool_result"],
-        "the tools hive must emit exactly one lane, `tool_result` — whatever the tool was. \
-         A second outward lane puts the choice of tool back into the caller's edge table, \
-         which is exactly the coupling this hive exists to remove; a tool's own refusal \
-         travels as `hop.error_code` on this lane, not as a route of its own."
+        vec!["tool_result", "build"],
+        "there is exactly ONE result lane, `tool_result` — whatever the tool was. A \
+         second RESULT lane would put the choice of tool back into the caller's edge \
+         table, which is the coupling this hive exists to remove; a tool's own refusal \
+         travels as `hop.error_code` on that lane, not as a route of its own. `build` \
+         is not a result: it is the REACH of this surface, the one lane on which a tool \
+         of this assistant addresses something outside it, and it is declared here \
+         rather than left to be discovered in an edge table."
     );
 
     for lane in contract.accepts.iter().chain(contract.emits.iter()) {
@@ -164,29 +184,32 @@ fn the_two_lanes_are_paired_in_the_lane_form() {
     let declared = hive_params()
         .required_drains
         .expect("templates/tools declares params.required_drains");
+    // Two pairings since R6, one per direction the surface is wired in:
+    // send me `tool_call` and subscribe to `tool_result`; send me
+    // `in_build_result` and subscribe to `build`.
+    let want = [("tool_call", "tool_result"), ("in_build_result", "build")];
     assert_eq!(
         declared.len(),
-        1,
-        "the tools hive states exactly one pairing: send me `tool_call`, subscribe to \
-         `tool_result`"
+        want.len(),
+        "the tools hive states {} pairings, one per direction it is wired in",
+        want.len()
     );
-    match &declared[0] {
-        DrainSpec::Lane(d) => {
-            assert_eq!(
-                (d.accepts.as_str(), d.emits.as_str()),
-                ("tool_call", "tool_result")
-            );
-            assert!(
-                !d.because.trim().is_empty(),
-                "the pairing states no `because`"
-            );
+    for (spec, (accepts, emits)) in declared.iter().zip(want) {
+        match spec {
+            DrainSpec::Lane(d) => {
+                assert_eq!((d.accepts.as_str(), d.emits.as_str()), (accepts, emits));
+                assert!(
+                    !d.because.trim().is_empty(),
+                    "the pairing {accepts}/{emits} states no `because`"
+                );
+            }
+            DrainSpec::Port(d) => panic!(
+                "the pairing is written in the PORT form (port '{}'), which a sealed hive can never \
+                 trigger: `port_is_wired_from_outside` needs an edge onto a child, and `ports: []` \
+                 refuses exactly those. Use the lane form (GH #237).",
+                d.port
+            ),
         }
-        DrainSpec::Port(d) => panic!(
-            "the pairing is written in the PORT form (port '{}'), which a sealed hive can never \
-             trigger: `port_is_wired_from_outside` needs an edge onto a child, and `ports: []` \
-             refuses exactly those. Use the lane form (GH #237).",
-            d.port
-        ),
     }
 }
 
@@ -197,27 +220,31 @@ fn the_substrate_keeps_the_pairing_it_is_handed() {
     // a warning and nothing else — so a declaration that no longer applies
     // reads exactly like one that does.
     let reqs = requirements_the_substrate_reads();
+    let want = [("tool_call", "tool_result"), ("in_build_result", "build")];
     assert_eq!(
         reqs.len(),
-        1,
-        "the substrate's reader kept {} of the 1 pairing templates/tools declares — a dropped \
+        want.len(),
+        "the substrate's reader kept {} of the {} pairings templates/tools declares — a dropped \
          entry is a hive that looks like it insists and does not. The lane form names two \
-         routes of this hive's OWN params.contract; check that `tool_call` is in `accepts` \
-         and `tool_result` in `emits`.",
-        reqs.len()
+         routes of this hive's OWN params.contract; check that both halves of every pairing \
+         are in `accepts` and `emits`.",
+        reqs.len(),
+        want.len()
     );
-    assert_eq!(reqs[0].hive_path, HIVE);
-    match &reqs[0].kind {
-        DrainKind::Lane { accepts, emits } => {
-            assert_eq!(
-                (accepts.as_str(), emits.as_str()),
-                ("tool_call", "tool_result")
-            );
-        }
-        DrainKind::Port { port_path, .. } => {
-            panic!(
-                "the reader collected a PORT requirement ('{port_path}') — see the lane-form test above"
-            )
+    for (req, (want_accepts, want_emits)) in reqs.iter().zip(want) {
+        assert_eq!(req.hive_path, HIVE);
+        match &req.kind {
+            DrainKind::Lane { accepts, emits } => {
+                assert_eq!(
+                    (accepts.as_str(), emits.as_str()),
+                    (want_accepts, want_emits)
+                );
+            }
+            DrainKind::Port { port_path, .. } => {
+                panic!(
+                    "the reader collected a PORT requirement ('{port_path}') — see the lane-form test above"
+                )
+            }
         }
     }
 }
@@ -231,11 +258,16 @@ const BASH_SANDBOX: &str =
     r#"{"trust":"restricted","network":"deny","filesystem":{"runtime":true}}"#;
 
 #[test]
-fn the_three_tool_occupants_are_the_shipped_cell_types() {
+fn the_five_tool_occupants_are_the_shipped_cell_types() {
+    // `build` and `apply` joined with R6 (GH #425). They are `code` cells, which
+    // is the point: no cell type is invented in this hive, and the two that
+    // reach out of the assistant reach with the tightest sandbox in the tree.
     for (dir, cell_type) in [
         ("bash", "bash"),
         ("web_fetch", "web_fetch"),
         ("web_search", "web_search"),
+        ("build", "code"),
+        ("apply", "code"),
     ] {
         let val = config_at(&format!("{dir}/config.json"));
         assert_eq!(

@@ -26,6 +26,7 @@ fn cli_validate(root: &std::path::Path, strict: bool) -> Cli {
         daemon: false,
         validate: true,
         validate_strict: strict,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

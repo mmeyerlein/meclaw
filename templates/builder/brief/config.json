@@ -1,0 +1,66 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# Assembles the authoring prompt. The retrieved sections become instructions,\n# the request stays a user turn -- the same split builder-hive/brief uses, and\n# the reason is that a model told \"here is the corpus\" writes about the corpus,\n# while a model told \"here is the request, and here is what the corpus says\n# about it\" writes about the request.\ndoc = json.load(sys.stdin)\nhop = (doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {}\nctx = (doc[\"envelope\"].get(\"header\") or {}).get(\"context\") or {}\nmsgs = doc[\"body\"].get(\"messages\") or []\n\nrequest, patterns = \"\", \"\"\nfor m in msgs:\n    if m.get(\"origin\") == \"user\" and m.get(\"text\"):\n        request = m[\"text\"]\n    elif m.get(\"type\") == \"tool_result\" and m.get(\"text\"):\n        patterns = m[\"text\"]\n\n# Retrieval is an ENHANCEMENT. The librarian answers on `brief` even when the\n# lookup failed, marked `degraded`; carrying that mark on rather than treating\n# it as a failure of our own is what keeps a corpus outage from hanging a build.\ndegraded = bool(hop.get(\"degraded\")) or not patterns.strip() \\\n    or patterns.strip().startswith(\"(no matching patterns)\") \\\n    or patterns.strip().startswith(\"(retrieval unavailable\")\n\nhead = (\"You are drafting a MANIFEST for a meclaw colony: an ordered list of \"\n        \"mutation declarations, each {\\\"scope\\\": <path>, \\\"ctx\\\": {}, \"\n        \"\\\"diff\\\": {...}}. The diff keys you may use are add_nodes, \"\n        \"remove_nodes, add_edges, remove_edges, swap_nodes and move_nodes -- \"\n        \"no others exist. Answer with ONE json object \"\n        \"{\\\"declarations\\\": [...]} and nothing else. \"\n        \"The manifest rolls FORWARD and stops at the first refusal, with no \"\n        \"rollback, so order the declarations so that a partial application is \"\n        \"never worse than none.\")\n\ncorpus = (\"The corpus is unavailable for this request: draft from the shapes you \"\n          \"are sure of, keep it small, and say in `note` what you could not check. \"\n          \"There are no patterns to lean on.\"\n          if degraded else \"Patterns retrieved for this request:\\n\\n\" + patterns)\n\nscope = str(ctx.get(\"build_scope\") or \"\")\nif scope:\n    head += (\" Every declaration you write must name the scope %r or a path \"\n             \"beneath it; that is what the requester asked for and what the \"\n             \"submitter will let through.\" % scope)\n\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"compose\", \"operation\": \"brief\", \"degraded\": degraded},\n    \"system\": {\"instructions\": {\"text\": head + \"\\n\\n\" + corpus}},\n    \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"id\": \"\", \"text\": request}]}))\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "system": {
+          "type": "object",
+          "required": true
+        },
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "compose"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "brief"
+          ],
+          "required": true
+        },
+        "degraded": {
+          "type": "boolean",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "Assembles the authoring prompt: the retrieved sections become system instructions, the request stays a user turn. A model told 'here is the corpus' writes about the corpus; a model told 'here is the request, and here is what the corpus says about it' writes about the request.",
+    "use_when": "Behind the librarian, on hop.route == 'brief'.",
+    "not_in_scope": "No retrieval of its own and no failure of its own: a degraded briefing is carried on, marked, and the composer is told -- retrieval is an enhancement and must never hang a build."
+  }
+}

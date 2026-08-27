@@ -1,0 +1,126 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_build",
+          "context": [],
+          "because": "a structural wish to draft a manifest for. It carries NO promoted identity, and that is a decision rather than an omission: this hive never emits a mutation, so it has nothing to attribute. Identity is read exactly once, at the submitter, off `envelope.reply_to` where the substrate stamped it -- and an edge modifier cannot reach the envelope, so a `context.requester` demanded here could only ever be filled with a constant somebody wrote down. A claim is not an identity, and one place that can verify it beats two that cannot."
+        }
+      ],
+      "emits": [
+        {
+          "route": "manifest",
+          "because": "the draft -- an ordered list of mutation declarations plus the sha256 digest over it and a sentence a human can read before saying yes. It is a PROPOSAL: nothing here has applied it and nothing here can"
+        },
+        {
+          "route": "error",
+          "because": "a wish this hive did not turn into a manifest, named. Drafting is not an enhancement that may degrade quietly: a build that stops must say so on a lane, never as silence and never as an empty manifest"
+        }
+      ]
+    },
+    "required_drains": [
+      {
+        "accepts": "in_build",
+        "emits": "manifest",
+        "because": "a caller that sends a wish in and does not take the draft back has started a round that answers into nothing. The two edges are one decision"
+      }
+    ],
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./classify",
+          "condition": "has(hop.route) && hop.route == 'in_build'"
+        },
+        {
+          "from": "./classify",
+          "to": "./recipes",
+          "condition": "has(hop.route) && hop.route == 'recipe'"
+        },
+        {
+          "from": "./classify",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'design'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_request'"
+            },
+            "set_context": {
+              "build_scope": "hop.build_scope"
+            }
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./brief",
+          "condition": "has(hop.route) && hop.route == 'brief'"
+        },
+        {
+          "from": "./brief",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'compose'"
+        },
+        {
+          "from": "./compose",
+          "to": "./normalise",
+          "condition": "has(hop.finish_reason)"
+        },
+        {
+          "from": "./recipes",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'recipe' && !has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'manifest'"
+            }
+          }
+        },
+        {
+          "from": "./normalise",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'normalise' && !has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'manifest'"
+            }
+          }
+        },
+        {
+          "from": "./classify",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'classify' && has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            }
+          }
+        },
+        {
+          "from": "./recipes",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'recipe' && has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            }
+          }
+        },
+        {
+          "from": "./normalise",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'normalise' && has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

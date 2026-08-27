@@ -1,0 +1,44 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, re\n\n# Two phases on one cell -- and a THIRD branch that exists because the naive\n# two-phase shape loops. If phase B is \"anything that is not a fresh request\",\n# then a store error reply is read as a fresh\n# request, re-queried from the error text, and the pair spins until the TTL\n# kills it. That is the failure the cookbook calls reply-to-fallback-loops, and\n# it was observed here before it was fixed.\n#\n# So: phase B is recognised POSITIVELY (hop.operation == \"search\") -- and\n# ONLY for a reply that carries no error_code. The store writes `operation`\n# unconditionally and `error_code` on top of it (store/output.rs -- and since\n# GH #331 the error paths stamp `operation` too, so `error_code` is the ONLY\n# thing that tells a failure from an answer), so a\n# FAILED search arrives looking exactly like a successful one; reading it as\n# phase B rendered the error text as zero rows and handed the build an\n# honest-looking empty briefing (GH #308).\n#\n# Anything else that arrives with a hop already set is TERMINAL -- the\n# librarian degrades to a briefing that SAYS SO, and the build carries on\n# without patterns. Retrieval is an enhancement; it must never be able to\n# hang a build, and it must never pass a failure off as a zero-hit.\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nhop = (envelope.get(\"header\") or {}).get(\"hop\") or {}\nmsgs = d.get(\"messages\") or []\ntext = \"\"\nfor m in msgs:\n    if m.get(\"text\"):\n        text = m[\"text\"]\n        break\n\nif hop.get(\"operation\") == \"search\" and not hop.get(\"error_code\"):\n    # ---- Phase B: rows back from the store, turn them into a briefing.\n    rows = []\n    try:\n        rows = json.loads(text)\n    except Exception:\n        rows = []\n    brief = []\n    for r in rows[:${BUILDER_LIBRARIAN_TOPK:-5}]:\n        # The row id belongs in the heading because source+section+kind stopped\n        # being unique (GH #344): a section over 4000 characters is carried in\n        # continuation rows that share all three, so two pieces of one section\n        # would arrive under the SAME heading with different bodies and nothing\n        # saying which is which -- or that either is a fragment. The id says\n        # which piece, and \"continued\" says the text starts mid-argument, which\n        # is the part a model must not read as a whole statement.\n        doc_id = r.get(\"id\") or \"?\"\n        brief.append(\"### %s -- %s (%s) [%s]\\n%s\" % (\n            r.get(\"source\", \"?\"), r.get(\"section\", \"?\"), r.get(\"kind\", \"?\"),\n            doc_id + (\", continued\" if \"-cont\" in doc_id else \"\"),\n            (r.get(\"text\") or \"\")[:1200]))\n    # The original request travels in the CONTEXT compartment (hop is per-hop\n    # and the store overwrites it), put there by the edge modifier that reads\n    # hop.orig on the way out. Without it phase B would hand the authoring cell\n    # a pile of patterns and no question.\n    ctx = (envelope.get(\"header\") or {}).get(\"context\") or {}\n    original = ctx.get(\"orig_request\") or \"\"\n    sys.stdout.write(json.dumps({\n        \"header\": {\"route\": \"brief\", \"stage\": \"briefed\", \"hits\": len(rows)},\n        \"messages\": [\n            {\"origin\": \"user\", \"type\": \"text\", \"text\": original, \"id\": \"\"},\n            {\"origin\": \"tool\", \"type\": \"tool_result\",\n             \"text\": \"\\n\\n\".join(brief) if brief else \"(no matching patterns)\",\n             \"id\": \"\"},\n        ],\n    }))\n    sys.exit(0)\n\nif hop.get(\"error_code\") or hop.get(\"stage\") == \"briefed\":\n    # ---- Terminal: retrieval failed. Say so, and stop.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"route\": \"brief\", \"stage\": \"briefed\", \"hits\": 0, \"degraded\": True},\n        \"messages\": [\n            {\"origin\": \"user\", \"type\": \"text\",\n             \"text\": ((envelope.get(\"header\") or {}).get(\"context\") or {}).get(\"orig_request\") or \"\",\n             \"id\": \"\"},\n            {\"origin\": \"tool\", \"type\": \"tool_result\",\n             \"text\": \"(retrieval unavailable: %s)\" % (\n                 hop.get(\"error_code\") or \"unexpected reply\"),\n             \"id\": \"\"}],\n    }))\n    sys.exit(0)\n\n# ---- Phase A: request in, build a BM25 query.\n#\n# FTS5 treats punctuation as syntax, so a raw natural-language sentence is not a\n# safe query string. Reduce to word tokens and OR them: recall matters more than\n# precision here because the ranking, not the filter, is what surfaces the good\n# chunk.\nwords = [w for w in re.findall(r\"[A-Za-z_][A-Za-z0-9_-]{2,}\", text.lower())]\nstop = {\"the\", \"and\", \"for\", \"that\", \"with\", \"this\", \"from\", \"into\", \"have\",\n        \"you\", \"are\", \"was\", \"not\", \"but\", \"can\", \"will\", \"would\", \"should\",\n        \"mir\", \"einen\", \"eine\", \"der\", \"die\", \"das\", \"und\", \"mit\", \"bau\",\n        \"baue\", \"build\", \"make\", \"create\", \"please\", \"want\", \"need\"}\n#\n# Each term travels as a QUOTED PHRASE. A bare hyphen is FTS5 syntax, so\n# `daily-digest OR cell` came back `no such column: digest` -- and every\n# multi-word template name in this corpus is hyphenated (`daily-digest`,\n# `builder-hive`, `memory-hive`, `coder-pipeline`), which made the query the\n# librarian exists to serve the query that could not run (GH #308). The\n# quoted spelling means \"these tokens, adjacent\", which is what a hyphenated\n# name is. The double quote is stripped from every token first, so nothing\n# in a request can break out of the quoting.\nterms = [w.replace('\"', \"\") for w in words if w not in stop][:12]\nterms = [w for w in terms if w]\nquery = \" OR \".join('\"%s\"' % w for w in terms) if terms else '\"cell\"'\n\nop = {\"operation\": \"search\", \"table\": \"docs\", \"match\": query,\n      \"columns\": [\"id\", \"source\", \"section\", \"kind\", \"text\"],\n      \"limit\": ${BUILDER_LIBRARIAN_TOPK:-5}}\n\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"lsearch\", \"librarian_query\": query, \"orig\": text},\n    \"messages\": [\n        # A UBF turn object allows exactly origin/type/text/id\n        # (schemas/ubf-body.json, TurnObject: additionalProperties false), so\n        # the op travels in `text` and nowhere else.\n        {\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"lib1\",\n         \"text\": json.dumps(op)},\n    ],\n}))\n",
+    "external_timeout_ms": 20000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "lsearch",
+            "brief"
+          ],
+          "required": true
+        },
+        "stage": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  }
+}

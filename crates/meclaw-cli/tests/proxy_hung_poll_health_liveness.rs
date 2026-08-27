@@ -122,6 +122,7 @@ async fn a_hung_proxy_poll_is_visible_on_health_while_a_healthy_one_stays_fresh(
         daemon: true,
         validate: false,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

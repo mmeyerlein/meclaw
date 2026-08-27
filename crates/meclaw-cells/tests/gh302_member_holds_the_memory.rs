@@ -866,3 +866,39 @@ fn the_member_declares_the_lanes_that_cross_its_boundary() {
         reject.because
     );
 }
+
+/// GH #425 — the member carries the builder lane pair, and carries nothing else
+/// about it.
+///
+/// ADR-0013: a level declares the union of its occupants' lanes that CROSS it.
+/// `build` leaves `./assistants` and no sibling of this level consumes it;
+/// `in_build_result` comes from the OS level and addresses THROUGH this one.
+/// Both cross, both are declared, and neither is read here — the builder is at
+/// the OS level because one colony has one baumeister, and everything between
+/// is transit.
+#[test]
+fn the_member_carries_the_builder_lane_pair_and_reads_nothing_in_it() {
+    let Some(_root) = shipped() else { return };
+    let (assistant_accepts, assistant_emits) = lanes_of("assistant");
+    if assistant_emits.is_empty() {
+        return;
+    }
+    let (accepts, emits) = lanes_of("member");
+
+    assert!(
+        assistant_emits.contains(&"build".to_string()),
+        "the assistant no longer emits `build`: {assistant_emits:?}"
+    );
+    assert!(
+        emits.contains(&"build".to_string()),
+        "the member does not carry `build`: {emits:?}"
+    );
+    assert!(
+        assistant_accepts.contains(&"in_build_result".to_string()),
+        "the assistant no longer accepts `in_build_result`: {assistant_accepts:?}"
+    );
+    assert!(
+        accepts.contains(&"in_build_result".to_string()),
+        "the member does not carry `in_build_result`: {accepts:?}"
+    );
+}

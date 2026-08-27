@@ -677,150 +677,41 @@ async fn the_user_channel_refuses_a_passphrase_that_does_not_open_the_vault() {
     let status = result(&run(&mut cell, &mut db, call(None, json!({"op":"status"}))).await);
     assert_eq!(status["secrets"].as_array().unwrap().len(), 1);
 }
-
 // ---------------------------------------------------------------------------
-// Injection at unlock — the one path a plaintext secret takes out of the cell
+// Injection at unlock — REMOVED (ruling R10, GH #428)
 // ---------------------------------------------------------------------------
 
-/// A vault that hands `tg` to a co-located connector at unlock.
-async fn vault_with_injection() -> (tempfile::TempDir, VaultCell, DbConn) {
-    let (root, _cell, db) = sealed_vault().await;
-    let params = VaultParams::parse(&json!({
+/// `params.inject_map` used to be the one path on which a plaintext secret left
+/// this cell: at unlock, each named secret went to a configured cell as a
+/// params update. GH #421 replaced it with the sealed delivery and deprecated
+/// it; GH #428 then measured that it never worked at all — the emission is a
+/// params-only body, the UBF schema requires one of `system`/`messages`/
+/// `attachments`, so the colony rejected it as `InvalidUbfBody` and it
+/// dead-lettered before a `message_log` row was ever written.
+///
+/// A path with no users and no working delivery is not worth a migration, so
+/// ruling R10 removed it rather than repairing it. What stands in its place is
+/// this pin: the key is gone from the param surface, and an old config that
+/// still carries it fails LOUDLY at spawn instead of silently doing nothing.
+#[test]
+fn the_injection_param_is_gone_and_an_old_config_says_so() {
+    let err = VaultParams::parse(&json!({
         "broker": BROKER,
         "inject_map": {"tg": {"to": "./connector", "key": "bot_token"}}
     }))
-    .unwrap();
-    let colony = colony_answering(vec![(BROKER.to_string(), VAULT_PATH.to_string())]);
-    let view = meclaw_colony::NeighbourhoodView::new(Path::new(VAULT_PATH), colony);
-    (root, VaultCell::new(params, Some(view)), db)
-}
-
-/// Every emission of one handle() call, in order.
-async fn run_all(cell: &mut VaultCell, db: &mut DbConn, msg: Message) -> Vec<CellEmission> {
-    let (sink, mut orx) = sink_pair();
-    cell.handle(msg, &sink, db).await;
-    drop(sink);
-    let mut out = Vec::new();
-    while let Some(em) = orx.recv().await {
-        out.push(em);
-    }
-    out
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_secret_reaches_its_connector_at_unlock_and_the_requester_only_hears_that_it_did() {
-    let (_root, mut cell, mut db) = vault_with_injection().await;
-    unlock(&mut cell, &mut db).await;
-    put(&mut cell, &mut db, "tg", "SUPER-SECRET-TOKEN").await;
-    run(&mut cell, &mut db, call(None, json!({"op": "lock"}))).await;
-
-    let emissions = run_all(
-        &mut cell,
-        &mut db,
-        call(None, json!({"op": "unlock", "passphrase": PASSPHRASE})),
-    )
-    .await;
-
-    // One params update to the connector, one answer to the requester.
-    let injected = emissions
-        .iter()
-        .find(|em| em.target.as_str() == "/main/access/connector")
-        .expect("the connector is handed its credential");
-    assert_eq!(
-        injected.content["params"]["bot_token"],
-        "SUPER-SECRET-TOKEN"
-    );
+    .expect_err("inject_map must be an unknown param now");
     assert!(
-        injected.content.get("messages").is_none(),
-        "a params update carries no turn, so the receiving cell answers with silence"
+        err.contains("inject_map"),
+        "the refusal has to name the key an operator has to remove: {err}"
     );
 
-    let answer = emissions
-        .iter()
-        .find(|em| em.target.as_str() != "/main/access/connector")
-        .expect("the requester is answered");
-    let r = result(&answer.content);
-    assert_eq!(r["locked"], false);
-    assert_eq!(r["injected"][0]["name"], "tg");
-    assert_eq!(r["injected"][0]["to"], "/main/access/connector");
-    assert_eq!(r["injected"][0]["key"], "bot_token");
+    // And the route surface never grew a replacement: what leaves the vault is
+    // a sealed box on `deliver`, not a push to somebody named in config.
     assert!(
-        !answer.content.to_string().contains("SUPER-SECRET-TOKEN"),
-        "the requester learns THAT it went, never WHAT went: {}",
-        answer.content
+        VaultParams::parse(&json!({"broker": BROKER})).is_ok(),
+        "a vault without the key parses as before"
     );
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_missing_secret_is_skipped_rather_than_failing_the_unlock() {
-    // A vault that refuses to open because one of five credentials has not been
-    // deposited yet is a vault nobody can commission.
-    let (_root, mut cell, mut db) = vault_with_injection().await;
-    let emissions = run_all(
-        &mut cell,
-        &mut db,
-        call(None, json!({"op": "unlock", "passphrase": PASSPHRASE})),
-    )
-    .await;
-    assert_eq!(emissions.len(), 1, "nothing was injected");
-    let r = result(&emissions[0].content);
-    assert_eq!(r["locked"], false, "and the vault is open regardless");
-    assert_eq!(r["injected"].as_array().unwrap().len(), 0);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn no_message_can_choose_where_a_secret_goes() {
-    // The map is configuration. A caller naming its own target changes nothing,
-    // because the field is never read — the same reasoning that makes `reply_to`
-    // the only identity this cell trusts.
-    let (_root, mut cell, mut db) = vault_with_injection().await;
-    unlock(&mut cell, &mut db).await;
-    put(&mut cell, &mut db, "tg", "SUPER-SECRET-TOKEN").await;
-    run(&mut cell, &mut db, call(None, json!({"op": "lock"}))).await;
-
-    let emissions = run_all(
-        &mut cell,
-        &mut db,
-        call(
-            None,
-            json!({"op": "unlock", "passphrase": PASSPHRASE,
-                   "inject_map": {"tg": {"to": "/main/egon/brain", "key": "x"}},
-                   "to": "/main/egon/brain"}),
-        ),
-    )
-    .await;
-    assert!(
-        !emissions
-            .iter()
-            .any(|em| em.target.as_str() == "/main/egon/brain"),
-        "a body may not steer an injection"
-    );
-    assert!(
-        emissions
-            .iter()
-            .any(|em| em.target.as_str() == "/main/access/connector"),
-        "and the configured target still gets it"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_injection_target_must_be_a_path_and_a_key() {
-    for bad in [
-        json!({"tg": {"to": "connector", "key": "bot_token"}}),
-        json!({"tg": {"to": "./connector"}}),
-        json!({"tg": {"key": "bot_token"}}),
-        json!({"tg": "connector"}),
-    ] {
-        assert!(
-            VaultParams::parse(&json!({"broker": BROKER, "inject_map": bad})).is_err(),
-            "a malformed injection must fail at validation, not at unlock"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Regression lock — the sanctioned extension (R3) may ADD, never move
-// ---------------------------------------------------------------------------
 
 /// GH #421: `deliver` joined the route surface by sanctioned ruling R3 (2026-08-26). That is an
 /// addition to a sealed cell type, so what was there before is pinned here by

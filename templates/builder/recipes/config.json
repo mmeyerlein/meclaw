@@ -1,0 +1,82 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json, hashlib\n\n# The fast lane. Three recipes, rendered from parameters that `classify` has\n# already validated. No model, no network, no disk: what leaves here is a string\n# built out of a dict.\n\n# --8<-- digest-helper\ndef canonical(declarations):\n    # Canonical bytes: keys sorted, no spaces, no ascii escaping. The digest has\n    # to survive a round trip through a CHAT -- the draft is shown to a human,\n    # the model repeats it in the second tool call, and the submitter refuses\n    # anything whose bytes changed on the way. Without that, the manifest a\n    # human said yes to and the manifest that gets applied are only PROBABLY\n    # the same one.\n    return json.dumps(declarations, sort_keys=True, separators=(\",\", \":\"),\n                      ensure_ascii=False)\n\n\ndef digest(declarations):\n    return hashlib.sha256(canonical(declarations).encode(\"utf-8\")).hexdigest()\n# --8<-- end\n\n\ndef rewire_edge(p):\n    edge = {\"from\": p[\"from\"], \"to\": p[\"to\"]}\n    if p.get(\"condition\"):\n        edge[\"condition\"] = p[\"condition\"]\n    # Remove FIRST. A manifest rolls forward and stops at the first refusal,\n    # with no rollback (R5): an add that lands before its remove leaves both\n    # edges live if the remove is then refused, which is a silent fan-out, not\n    # a rewire.\n    return [\n        {\"scope\": p[\"scope\"], \"ctx\": {},\n         \"diff\": {\"remove_edges\": [{\"match\": {\"from\": p[\"from\"], \"to\": p[\"old_to\"]}}]}},\n        {\"scope\": p[\"scope\"], \"ctx\": {}, \"diff\": {\"add_edges\": [edge]}},\n    ]\n\n\ndef add_node(p):\n    # `add_timer` was the third recipe in the plan; the tree ships no standalone\n    # timer template, and inventing one to make a recipe true would be the tail\n    # wagging the dog. The class it stood for -- grow a cell and wire it in --\n    # survives with the template as a PARAMETER, which makes the recipe useful\n    # for every single-cell template instead of exactly one.\n    node = {\"name\": p[\"name\"], \"template\": p[\"template\"]}\n    if isinstance(p.get(\"override_params\"), dict):\n        node[\"override_params\"] = p[\"override_params\"]\n    return [\n        {\"scope\": p[\"scope\"], \"ctx\": {}, \"diff\": {\"add_nodes\": [node]}},\n        {\"scope\": p[\"scope\"], \"ctx\": {},\n         \"diff\": {\"add_edges\": [{\"from\": \"./\" + p[\"name\"], \"to\": p[\"target\"],\n                                 \"modifier\": {\"set_hop\": {\"route\": \"'%s'\" % p[\"route\"]}}}]}},\n    ]\n\n\ndef attach_drain(p):\n    return [{\"scope\": p[\"scope\"], \"ctx\": {},\n             \"diff\": {\"add_edges\": [{\"from\": p[\"from\"], \"to\": p[\"to\"],\n                 \"condition\": \"has(hop.route) && hop.route == '%s'\" % p[\"route\"]}]}}]\n\n\nRENDER = {\"rewire_edge\": rewire_edge, \"add_node\": add_node,\n          \"attach_drain\": attach_drain}\n\ndoc = json.load(sys.stdin)\nmsgs = doc[\"body\"].get(\"messages\") or []\npayload = {}\nfor m in msgs:\n    if m.get(\"text\"):\n        try:\n            payload = json.loads(m[\"text\"])\n        except Exception:\n            payload = {}\n\nrecipe = payload.get(\"recipe\")\nif recipe not in RENDER:\n    # Cannot happen after `classify` -- and it is here anyway, because a cell\n    # knows no topology and must not build on who stands in front of it.\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"recipe\", \"error_code\": \"recipe_unknown\"},\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": json.dumps({\"reason\": \"no renderer for %r\" % recipe})}]}))\n    sys.exit(0)\n\nparams = payload.get(\"params\") or {}\ntry:\n    decls = RENDER[recipe](params)\nexcept KeyError as e:\n    sys.stdout.write(json.dumps({\n        \"header\": {\"operation\": \"recipe\", \"error_code\": \"recipe_params_incomplete\",\n                   \"recipe\": recipe},\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                      \"text\": json.dumps({\"reason\": \"missing parameter %s\" % e})}]}))\n    sys.exit(0)\n\nsys.stdout.write(json.dumps({\n    \"header\": {\"operation\": \"recipe\", \"manifest_class\": \"fast\",\n               \"manifest_sha256\": digest(decls), \"declaration_count\": len(decls)},\n    \"manifest\": decls,\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                  \"text\": \"%s: %d declaration(s), scope %s\" % (\n                      recipe, len(decls), params.get(\"scope\", \"?\"))}]}))\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "manifest": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "recipe"
+          ],
+          "required": true
+        },
+        "manifest_class": {
+          "type": "string",
+          "values": [
+            "fast"
+          ],
+          "required": false
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "required": false
+        },
+        "declaration_count": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "recipe_unknown",
+            "recipe_params_incomplete"
+          ],
+          "required": false
+        },
+        "recipe": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The fast lane: three predefined recipes rendered straight from their parameters into a manifest, with its sha256 digest. No model, no network, no disk -- what leaves here is a string built out of a dict.",
+    "use_when": "Behind `classify` on hop.route == 'recipe', when the caller named a recipe and its parameters are complete.",
+    "not_in_scope": "No inference, no retrieval, no application. And no rollback to lean on: the order of the declarations is semantics, because a manifest rolls forward and stops at the first refusal."
+  }
+}

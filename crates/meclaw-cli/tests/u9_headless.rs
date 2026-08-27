@@ -47,6 +47,7 @@ fn headless_cli(root: &std::path::Path) -> Cli {
         daemon: true,
         validate: false,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

@@ -1,6 +1,6 @@
 {
   "name": "tools",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": {
     "purpose": "The tool surface of one assistant as ONE node with ONE contract: `tool_call` in, `tool_result` out. Today three occupants stand behind it -- a sandboxed one-shot shell, a GET-only HTTP client and a generic search wrapper -- and which of them serves a call is decided inside the hive, on `hop.tool_name`. Because the contract names lanes rather than cells, the whole implementation is one `swap_nodes` away from being something else: N tool cells today, one code-executing cell tomorrow, with no edge of the caller moving.",
     "use_when": "One per assistant. Draw ONE edge to the hive path stamping `hop.route = 'tool_call'`, and one back off it on `tool_result` -- the pairing is declared in `params.required_drains` and a mutation that wires only the first is refused. `params.ports` is empty: the hive path is the only address, so no caller can grow an edge to a single tool and thereby pin the set.",
@@ -29,7 +29,7 @@
     "trust": "full",
     "network": "allow",
     "filesystem": "unrestricted",
-    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all: `web_fetch` and `web_search` carry none, which is the shipped truth rather than an omission -- egress IS what those two cells do, `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host. Either one of them alone therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. `bash` (`trust: restricted`, `network: deny`, `filesystem.runtime: true`) and `unknown` (the same block, the tightest in the hive) tighten nothing about the hive as a WHOLE: a union is not an average, and the two sandboxed occupants only bound what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over four `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file."
+    "because": "The widest occupant wins on every axis, and on every axis the widest is an occupant that declares no `params.sandbox` at all: `web_fetch` and `web_search` carry none, which is the shipped truth rather than an omission -- egress IS what those two cells do, `network: \"deny\"` would turn them off, and a process sandbox has no notion of an allowed host. Either one of them alone therefore sets the whole hive to trust `full`, network `allow`, filesystem `unrestricted`. `bash` (`trust: restricted`, `network: deny`, `filesystem.runtime: true`) and `unknown` (the same block, the tightest in the hive) tighten nothing about the hive as a WHOLE: a union is not an average, and the two sandboxed occupants only bound what happens once dispatch has already chosen them. This reads uncomfortable and it is meant to: the radius already exists collectively and was invisible while it was spread over four `config.json` files. Written down, it is what a replacement is measured against -- a single code-executing cell that needs exactly this is not a widening, and one that needs more is, visibly, in the diff of this file. Two occupants joined the hive with R6 (`build`, `apply`) and neither widens this union by a hair: both carry the tightest block in the tree (`trust: restricted`, network `deny`, filesystem `runtime`), the same one `bash` and `unknown` carry. They are named here anyway, because a union that leaves half its posts out of the calculation is the defect this block exists to prevent -- and because their REACH is the thing that is new about them, which is stated where reach belongs: in `params.contract`, on the `build` lane."
   },
   "reentrancy": {
     "bash": {
@@ -47,6 +47,14 @@
     "unknown": {
       "reentrant": true,
       "because": "It formats a string out of the hop it was handed and emits it. It reads nothing, writes nothing and executes nothing, so there is no state for a concurrent call to reach. Declared explicitly although it is not a tool: #286's hazard is a swap that quietly turns a parallel tool round sequential, and a declaration with a hole cannot catch that -- the occupant nobody declared is the one whose serialisation surprises the caller."
+    },
+    "build": {
+      "reentrant": true,
+      "because": "It reads a hop and a turn and writes a turn: no disk, no network, no state of its own. The correlation of a round runs over `tool_call_id`, which travels in the CONTEXT of that round's own message, so two builds in flight cannot reach each other's. What they DO share is the builder at the OS level -- one baumeister for the whole colony -- and that is a queue there, not a serialisation here: the second round waits for its own answer and still gets it under its own id."
+    },
+    "apply": {
+      "reentrant": true,
+      "because": "The same shape: it carries a manifest out and a receipt back, keeping nothing. Two submissions in flight are two manifests the colony rolls off one after the other, in the order they reach the mutation door -- and because a manifest has no rollback, that order is the colony's to decide and never this cell's to assume."
     }
   },
   "tags": [

@@ -1,6 +1,6 @@
 {
   "name": "vault",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": {
     "purpose": "A secret store with no operation that returns a secret. Not a policy layer over a store -- the route surface of the `vault` cell type simply has no read on it: `put`, `use`, `rotate`, `revoke`, `status`, `unlock`, `lock`, and no `get`. A fully compromised model on the other end of an edge can ask the vault to USE a credential inside a granted scope; it cannot ask to see one, because the question has no name here.",
     "use_when": "Wherever an agent tree needs a credential it must never be able to read -- typically inside an access hive, as the sibling of the cell that validated the grant. Instantiate it INSIDE the hive that owns it and declare it as a non-port interior cell (`params.ports`), so the generic hive-port boundary refuses any edge from outside the scope.",

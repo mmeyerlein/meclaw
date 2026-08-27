@@ -489,7 +489,7 @@ async fn grow(extras: Vec<Value>) -> Grown {
 fn second_assistant() -> Value {
     let raw = std::fs::read_to_string(repo("examples/organism/grow-assistant.json")).unwrap();
     let mut v: Value = meclaw_core::serde_json::from_str(&raw.replace("scribe", "aide")).unwrap();
-    v["diff"]["add_nodes"][0]["override_params"]["cogny/brain"]["temperature"] = json!("0.9");
+    v["diff"]["add_nodes"][0]["override_params"]["cogny/brain"]["temperature"] = json!(0.9);
     v
 }
 
@@ -849,12 +849,13 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          member@1.0.0 declares"
     );
     assert_eq!(
-        declared, 9,
+        declared, 11,
         "the member's own edges to and from its assistants container are the member \
-         template's, drawn ONCE at member instantiation: two down (the screened turn \
-         coming back off ./firewall, the memory hive's bundle) and seven up (turn, \
-         recall, extraction, write, turn_write, prune, error). A second agent must not \
-         move this number — that is what makes it one instantiation."
+         template's, drawn ONCE at member instantiation: three down (the screened turn \
+         coming back off ./firewall, the memory hive's bundle, and the builder's answer \
+         since GH #425) and eight up (turn, recall, extraction, write, turn_write, prune, \
+         error, and `build`). A second agent must not move this number — that is what \
+         makes it one instantiation."
     );
 }
 

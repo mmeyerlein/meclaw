@@ -353,3 +353,153 @@ async fn a_vault_nobody_can_reach_stays_locked() {
     let status = result(&run(&mut cell, &mut db, call(None, json!({"op":"status"}))).await);
     assert_eq!(status["locked"], true);
 }
+
+// ---------------------------------------------------------------------------
+// R9 / GH #427 — auto-unlock at wake, opt in
+// ---------------------------------------------------------------------------
+
+/// Set an environment variable for the duration of one test.
+///
+/// `set_var` is `unsafe` in edition 2024 because a concurrent `getenv` in
+/// another thread is a data race. It is sound here for a reason that has to
+/// hold, not be hoped for: every test below uses its OWN variable name, and
+/// writes it before the cell that reads it exists — so no reader of this name
+/// can be running while this writes.
+fn arm_env(name: &str, value: &str) {
+    unsafe { std::env::set_var(name, value) };
+}
+
+fn disarm_env(name: &str) {
+    unsafe { std::env::remove_var(name) };
+}
+
+/// A vault with the sealed topology and `params.unlock_env` set.
+async fn vault_with_auto_unlock(env_name: &str) -> (tempfile::TempDir, VaultCell, DbConn) {
+    let root = tempfile::TempDir::new().unwrap();
+    let cell_dir = root.path().join("main").join("access").join("vault");
+    std::fs::create_dir_all(&cell_dir).unwrap();
+    let conn = meclaw_colony::persist::open_or_create_cell_db(&cell_dir.join("cell.db")).unwrap();
+    vault_store::apply_ddl(&conn).unwrap();
+    let colony = colony_answering(vec![
+        (BROKER.to_string(), VAULT_PATH.to_string()),
+        (VAULT_PATH.to_string(), BROKER.to_string()),
+    ]);
+    let view = meclaw_colony::NeighbourhoodView::new(Path::new(VAULT_PATH), colony);
+    let params = VaultParams::parse(&json!({"broker": BROKER, "unlock_env": env_name})).unwrap();
+    (
+        root,
+        VaultCell::new(params, Some(view)),
+        DbConn::wrap(conn, None),
+    )
+}
+
+/// The property ruling R9 buys: a vault that woke up locked serves the very
+/// first operation that needs a key, because it unlocked itself from the
+/// environment on the way. No unlock message, no passphrase on any wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vault_with_unlock_env_serves_the_first_operation_without_being_told_to_open() {
+    const ENV: &str = "MECLAW_TEST_VAULT_PASSPHRASE_SERVES";
+    arm_env(ENV, PASSPHRASE);
+    let (_root, mut cell, mut db) = vault_with_auto_unlock(ENV).await;
+
+    // Fill it the way the CLI does — but note the vault is still LOCKED here,
+    // and nothing below ever sends an unlock.
+    put(&mut cell, &mut db, "openrouter", "SUPER-SECRET-TOKEN").await;
+
+    let me = RecipientKeypair::generate().expect("keypair");
+    let content = run(
+        &mut cell,
+        &mut db,
+        call(
+            Some(BROKER),
+            json!({"op": "deliver", "name": "openrouter", "grant_id": "g-1",
+                   "recipient_key": me.public_hex()}),
+        ),
+    )
+    .await;
+    disarm_env(ENV);
+
+    assert!(
+        content["header"]["error_code"].is_null(),
+        "the vault opened itself and served: {content}"
+    );
+    let sealed = SealedBox::from_json(&result(&content)["sealed"]).expect("a box came back");
+    assert_eq!(
+        me.open(&sealed).expect("open"),
+        b"SUPER-SECRET-TOKEN".to_vec()
+    );
+    assert!(
+        !content.to_string().contains("SUPER-SECRET-TOKEN"),
+        "and still nothing in the clear: {content}"
+    );
+}
+
+/// The default is unchanged, and that is the whole point of making this opt-in:
+/// without the param a woken vault is locked and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_param_a_woken_vault_is_still_locked() {
+    let (_root, mut cell, mut db) = sealed_vault().await;
+    unlock(&mut cell, &mut db).await;
+    put(&mut cell, &mut db, "openrouter", "SUPER-SECRET-TOKEN").await;
+    run(&mut cell, &mut db, call(None, json!({"op": "lock"}))).await;
+
+    let me = RecipientKeypair::generate().expect("keypair");
+    let content = run(
+        &mut cell,
+        &mut db,
+        call(
+            Some(BROKER),
+            json!({"op": "deliver", "name": "openrouter", "grant_id": "g",
+                   "recipient_key": me.public_hex()}),
+        ),
+    )
+    .await;
+    assert_eq!(content["header"]["error_code"], "vault_locked");
+}
+
+/// A declared variable that holds nothing is a misconfiguration, and it is
+/// refused BY NAME rather than degrading into a plain `vault_locked` — an
+/// operator who set this param wants to know that the value never arrived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unlock_env_that_holds_nothing_is_refused_by_name() {
+    const UNSET: &str = "MECLAW_TEST_VAULT_PASSPHRASE_UNSET";
+    const EMPTY: &str = "MECLAW_TEST_VAULT_PASSPHRASE_EMPTY";
+    disarm_env(UNSET);
+    arm_env(EMPTY, "");
+
+    for env_name in [UNSET, EMPTY] {
+        let (_root, mut cell, mut db) = vault_with_auto_unlock(env_name).await;
+        let me = RecipientKeypair::generate().expect("keypair");
+        let content = run(
+            &mut cell,
+            &mut db,
+            call(
+                Some(BROKER),
+                json!({"op": "deliver", "name": "openrouter", "grant_id": "g",
+                       "recipient_key": me.public_hex()}),
+            ),
+        )
+        .await;
+        assert_eq!(
+            content["header"]["error_code"], "invalid_input",
+            "{env_name}: {content}"
+        );
+        let text = content["messages"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains(env_name),
+            "the refusal has to name the variable an operator has to fill: {text}"
+        );
+    }
+    disarm_env(EMPTY);
+}
+
+/// `status` and `lock` never need a key, so they do not trigger the self-unlock
+/// — which is what keeps them usable for diagnosing a broken `unlock_env`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_still_answers_when_the_auto_unlock_cannot_work() {
+    const UNSET: &str = "MECLAW_TEST_VAULT_PASSPHRASE_DIAGNOSE";
+    disarm_env(UNSET);
+    let (_root, mut cell, mut db) = vault_with_auto_unlock(UNSET).await;
+    let status = result(&run(&mut cell, &mut db, call(None, json!({"op": "status"}))).await);
+    assert_eq!(status["locked"], true);
+}

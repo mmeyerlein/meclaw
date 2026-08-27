@@ -602,6 +602,34 @@ pub async fn bootstrap_from_filesystem(
 ) -> Result<BootstrapReport, BootstrapErrors> {
     bootstrap_from_filesystem_with_env(root, factories, runtime, None).await
 }
+/// GH #424 — the templates registry a boot-time growth resolves against.
+///
+/// Read-only, straight out of `{root}/colony.db`'s `templates` table — the same
+/// `TemplatesRegistry::from_entries` conversion the colony does at its five
+/// other sites.
+///
+/// ORDER MATTERS, and it holds in production: `meclaw-cli` runs
+/// `templates::boot_load_or_scan` BEFORE it calls
+/// `bootstrap_from_filesystem_with_env`, so the table is filled by the time a
+/// growth asks. A test that calls the bootstrap without a prior scan sees an
+/// EMPTY registry — which is not a silent failure but a `template_missing` that
+/// names `none`, the right answer to "resolve this against nothing".
+fn boot_templates_registry(root: &std::path::Path) -> crate::templates::TemplatesRegistry {
+    let Ok(db) = crate::persist::colony_db::ColonyDb::open(&root.join("colony.db")) else {
+        return crate::templates::TemplatesRegistry::default();
+    };
+    let rows = db.read_templates().unwrap_or_default();
+    crate::templates::TemplatesRegistry::from_entries(
+        rows.into_iter()
+            .map(|r| crate::templates::TemplateEntry {
+                template_id: r.template_id,
+                name: r.name,
+                version: r.version,
+                filesystem_path: std::path::PathBuf::from(r.filesystem_path),
+            })
+            .collect(),
+    )
+}
 
 /// `bootstrap_from_filesystem` with an explicit `.env` location (U7, `--env`
 /// CLI flag). `None` keeps the `{root}/.env` default.
@@ -625,8 +653,63 @@ pub async fn bootstrap_from_filesystem_with_env(
     // classifier in `colony_task` strict-fails an inconsistent DB separately).
     let boot_state = crate::bootstrap::probe_boot_state(&root.join("colony.db"))
         .unwrap_or(crate::bootstrap::BootState::FirstBoot);
-    let plan =
-        crate::bootstrap::plan_bootstrap_with_env(root, factories, &overlay, boot_state, env_path)?;
+    let mut plan = crate::bootstrap::plan_bootstrap_with_env(
+        root,
+        factories,
+        &overlay,
+        boot_state.clone(),
+        env_path,
+    )?;
+    // GH #424: a FIRST boot fulfils its declarations BEFORE it applies
+    // anything.
+    //
+    // Before the apply, deliberately: if the tree grew afterwards, the colony
+    // would have spawned half a tree and the activity derivation (A7) would
+    // have reasoned over a topology that is about to stop existing.
+    //
+    // The plan above described a tree that still had markers in it, so it is
+    // thrown away and re-planned over what now stands. Idempotent by
+    // construction: a grown marker is no longer a marker, so the next pass
+    // plans no growth at all — which is also the loop's termination argument.
+    // Each pass consumes at least one marker, so the number of passes is
+    // bounded by the number of markers the first pass found, plus one to
+    // discover there is nothing left. A pass that consumes none while markers
+    // remain is a defect, and it is named rather than spun on.
+    if !plan.growths.is_empty() {
+        let templates = boot_templates_registry(root);
+        let budget = plan.growths.len() + 1;
+        for pass in 0..=budget {
+            if plan.growths.is_empty() {
+                break;
+            }
+            if pass == budget {
+                let mut errors = BootstrapErrors::new();
+                for g in &plan.growths {
+                    errors.push(crate::bootstrap::BootstrapError::GrowthFailed {
+                        path: g.fs_path.clone(),
+                        reference: g.reference.clone(),
+                        reason: "growth did not converge: the marker survived its own growth"
+                            .to_string(),
+                    });
+                }
+                return Err(errors);
+            }
+            crate::bootstrap_grow::grow_planned_refs(
+                root,
+                &plan.growths,
+                &templates,
+                factories,
+                env_path,
+            )?;
+            plan = crate::bootstrap::plan_bootstrap_with_env(
+                root,
+                factories,
+                &overlay,
+                boot_state.clone(),
+                env_path,
+            )?;
+        }
+    }
     // A5b: a Reboot that walked over unknown cell dirs reports them — loudly, so
     // the operator sees the consistency drift — but the boot succeeds (they are
     // simply not registered; instantiation/mutation is the only registration
@@ -854,6 +937,7 @@ mod tests {
     #[test]
     fn dangling_edge_endpoints_empty_when_all_known() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -875,6 +959,7 @@ mod tests {
     #[test]
     fn dangling_edge_endpoints_reports_unknown_to() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -898,6 +983,7 @@ mod tests {
     #[test]
     fn dangling_edge_endpoints_reports_unknown_from() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -920,6 +1006,7 @@ mod tests {
     #[test]
     fn dangling_edge_endpoints_reports_both_unknown() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -941,6 +1028,7 @@ mod tests {
     #[test]
     fn dangling_edge_endpoints_hive_endpoint_not_dangling() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![
                 PlannedHive {
                     path: Path::new("/"),
@@ -975,6 +1063,7 @@ mod tests {
     fn unresolved_boot_endpoints_resolves_registry_only_and_colony_but_flags_typo() {
         use std::collections::HashSet;
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -1044,6 +1133,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn apply_via_runtime_registers_hive_count() {
         let plan = BootstrapPlan {
+            growths: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],

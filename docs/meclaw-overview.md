@@ -192,7 +192,7 @@ For **counts out of the colony's ledgers** (message log, dead letters, mutation 
 
 `consumes.topology` is **not** a message compartment: nothing in it is validated against an incoming message, and a key declared there never makes a message invalid. It is a capability declaration in the same grammar as `body`/`context`/`hop` — "this cell reads X". The only key the substrate knows is `inbound_edges`: the `from` paths of every edge pointing at the cell's **own** path (`meclaw_colony::NeighbourhoodView`, answered from colony's in-memory `EdgeTable`). Not the graph, not a scope, not its own outbound edges, and never another cell's. Without the declaration the handle does not exist. "Cells know no topology" therefore survives in the form that carries the weight: a cell learns the shape of **its own doorway**, from the authority, and only ever in order to **refuse** — an unverifiable neighbourhood (no handle, no answer, a timeout) is treated exactly like a wrong one and the `vault` stays LOCKED.
 
-**Instantiation and cell_id stability** *(specified, not built — see GH #277)*: instantiation happens **exactly when** no cell directory exists at the
+**Instantiation and cell_id stability**: instantiation happens **exactly when** no cell directory exists at the
 target path. When processing a graph, colony checks, per declared node, whether the
 directory exists in the tree, `params.graph` at bootstrap as well as a mutation diff at runtime: if it is missing, colony copies the referenced template to the
 target path and thereby assigns a fresh UUID v7 as `cell_id` (plus `${VAR}` substitution);
@@ -205,7 +205,11 @@ exclusively when copying into the tree. On instantiation, colony records the nod
 its `cell_id` in `colony.db`; entries there are never deleted, only marked inactive
 (see § Connectivity and activity).
 
-**The bootstrap does not instantiate, and that retracts the promise in the paragraph above** ("when processing a graph, colony checks … `params.graph` at bootstrap as well as a mutation diff at runtime"). Only the mutation half is built (`mutation/stage.rs` + `mutation/substitute.rs`). Below `params.graph` the boot parser knows **only** `edges`: `GraphHints` (`crates/meclaw-colony/src/config.rs`) sits under `deny_unknown_fields`, so a hive `config.json` carrying the `nodes` block documented below is not an ignored hint but a **hard boot error**. The filesystem bootstrap can merely **recognise** an uninstantiated node and reports it (ruling A5b, see § Startup algorithm). The paragraph stays because it is the target picture GH #277 builds; until then what § Startup algorithm describes is what runs.
+**The bootstrap instantiates exactly one class: the resolved `ref` marker** (GH #424). A `config.json` with `cell.type: "ref"` (or the key `cell.template`) in the root tree is **not a cell but a declaration**: it names the template that shall stand at this position. The **first** boot resolves it and materialises it through the very chain a mutation takes (`mutation/subtree.rs::stage_subtree`) — the same registry resolution, the same version pinning, the same refusals (`template_missing`, `template_ref_cycle`, `schema`). On a **reboot** the same marker is an unresolved remnant in an already grown tree and, per ruling A5b, is **reported, never grown** — fulfilling it there would mean instantiating into a running colony behind the operator's back.
+
+**The marker consumes itself.** After the growth the referenced template's content stands in its place and the declaration is gone. Two properties **follow** from that rather than being bookkept: a second boot finds nothing left to grow (idempotence without a ledger), and a node unhooked by `remove_nodes` cannot rise again (no declaration stands anywhere to demand it back). The no-delete policy is untouched by this — it protects cell state, and a marker has none: no `cell.db`, no `cell_id`, no registry row.
+
+Below `params.graph` the boot parser still knows **only** `edges`: `GraphHints` (`crates/meclaw-colony/src/config.rs`) sits under `deny_unknown_fields`, so a hive `config.json` carrying the `nodes` block documented below is a **hard boot error**. That is no longer a gap but a **stated boundary**: there is exactly one declaration form at boot, and it is the `ref` marker.
 
 **Flow on graph mutation (EDA, verdict reply to `reply_to`)**:
 
@@ -224,12 +228,12 @@ The graph of a meclaw colony is a directed graph of **nodes** (= cells, register
 
 The same schema describes the graph in two write usages:
 
-1. **Bootstrap** *(specified, not built — see GH #277)*: `params.graph` in the `config.json` of a hive scope marker provides the initial desired state for its subtree on first instantiation. Colony reads this at the filesystem bootstrap (see "Startup algorithm") and registers the declared cells.
+1. **Bootstrap**: `params.graph` in the `config.json` of a hive scope marker provides the initial **edges** for its subtree; colony reads them at the filesystem bootstrap (see "Startup algorithm"). The initial desired state for a **position**, by contrast, is provided by a **`cell.type: "ref"` marker in the root tree**: it names the template that shall stand there, and the first boot resolves it through the very chain a mutation takes (GH #424, see § Authority model). Two declaration forms, two responsibilities — edges in `params.graph`, nodes as markers.
 2. **Runtime diff**: a builder sends a mutation message with a diff to `/colony/mutations` (see "Mutation format"). Colony computes the post_state from it and executes scoped registry edits.
 
 ### Schema
 
-The `nodes` key in the block below is built **only in the mutation usage**; in a hive `config.json` it aborts the boot — see the retraction under **`nodes`** directly after the schema *(specified, not built — see GH #277)*.
+The `nodes` key in the block below is built **only in the mutation usage**; in a hive `config.json` it aborts the boot — see the boundary under **`nodes`** directly after the schema.
 
 ```json
 {
@@ -251,9 +255,9 @@ The `nodes` key in the block below is built **only in the mutation usage**; in a
 }
 ```
 
-**`nodes`** *(specified, not built — see GH #277)*: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (the one registered version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
+**`nodes`**: mapping `name → { template, override_params? }`. The name is the path component and must be unique within the same hive scope; collisions are rejected during mutation validation. `template` is a template reference in the form `<name>` (the one registered version) or `<name>@<version>` (see "Resolution `name@version`"). `override_params` is optional and overlays the default params of the template.
 
-**The key exists in the mutation diff only, and that retracts the promise above** ("the same schema … in two write usages"). On the bootstrap path `GraphHints` knows only `edges` under `deny_unknown_fields` — a hive `config.json` carrying the `nodes` block fails the parser and **aborts the boot** instead of creating the node. Whoever creates a node today sends a mutation diff (`add_nodes`, see "Mutation format"). The schema stays in full because it is GH #277's target picture.
+**The key exists in the mutation diff only, and that is a decision, not a gap** (GH #424). On the bootstrap path `GraphHints` knows only `edges` under `deny_unknown_fields` — a hive `config.json` carrying the `nodes` block fails the parser and **aborts the boot** instead of creating the node. At boot you declare a node with a **`cell.type: "ref"` marker** in its place (§ Authority model), at runtime with a mutation diff (`add_nodes`, see "Mutation format"). Both take the **same** resolution; a `nodes` block at boot would be a second instantiation language with its own name-to-path lookup and its own override addressing. The schema stays in full because it describes the mutation usage.
 
 **`edges`**: a list; order irrelevant. Required fields: `from`, `to` (paths relative to the hive scope in which the schema is declared). The paths may lie at **any depth** within the scope (`./name` as well as `./unit/dispatch`); a depth restriction does not exist; this holds symmetrically in the bootstrap `params.graph` path and in the mutation diff (R12 ruling 2026-06-11). Optional: `condition` (CEL boolean, default `true` = always matches), `modifier` (operations object with `set_context`/`delete_context`/`set_hop`/`delete_hop`/`restore_ttl`, default `null` = identity, see "Edge model" for schema and example), `default` (boolean, default `false`; `true` makes the edge a **default edge**, consulted only after no regular out-edge of the same sender fired — GH #283, see "Edge model"). Edges operate strictly on the header layer.
 
@@ -561,6 +565,39 @@ A mutation is a message to `/colony/mutations` whose body carries a **diff** plu
 }
 ```
 
+### Second body form: the manifest
+
+`/colony/mutations` **additively** takes a second body form (GH #422): the **manifest**, an ordered list of ordinary mutation bodies in ONE body.
+
+```json
+{ "manifest": [
+    { "scope": "/",   "diff": { "add_nodes": [ … ] } },
+    { "scope": "/os", "diff": { "add_edges": [ … ] } }
+] }
+```
+
+**It is recognised by exactly one key**: the top-level `manifest`. A body without it takes byte-for-byte the path it has always taken — no other key discriminates, not even an unknown one. A body carrying `manifest` **and** `diff`/`scope` is `schema`: it is either the one or the other, not both.
+
+**Every entry is byte-for-byte one single-form body.** No `kind`, no `id`, no manifest-wide `ctx` — each entry brings its own, or a manifest would have two places for one substitution.
+
+**The colony rolls it off itself:** in order, every entry through the same one-stage validation a single body gets, **stopping at the first refusal**, one receipt. **No rollback**: what applied stays applied — the receipt says at which position it stopped, and the rest is submitted again. The audit carries it: one `mutation_log` row per applied entry, plus the refusing one's `rejected` row.
+
+```json
+{ "manifest": { "outcome": "committed", "applied": 5, "ids": ["…","…","…","…","…"] } }
+```
+
+```json
+{ "manifest": { "outcome": "rejected", "applied": 3, "ids": ["…","…","…"],
+                "failed_at": 4, "id": "…", "error_code": "edge_schema",
+                "details": "…", "remaining": 1 } }
+```
+
+`failed_at` is **1-based** (an operator counts entries, not indices), `remaining` is the number of entries **never looked at**, and `id` is the refused entry's mutation id if it got one. **No new `error_code` is minted**: the slot carries the refusing entry's own code, and a form-broken manifest is `schema`, which already exists. HTTP mapping as for the single form: `committed` → 200, `rejected` → 422.
+
+**Manifest v1 is mutations-only.** A message entry could not be expressed in this receipt — "applied" has no meaning at a message, and a receipt that lies for half its entries is worse than one that does not accept half. It would also be a side entrance: `/colony/mutations` is the mutation door, and arbitrarily addressed traffic through it would be exactly the mixing § Permissions rules out. Messages go through `POST /messages` or over an edge. **It stays additively extensible** regardless: an entry carries no `kind` discriminator today, and whoever wants message entries later introduces one and lets its absence mean `"mutation"`.
+
+Large bodies travel over the existing blob offload; the mutation door resolves a `Body::Blob` before it dispatches (GH #432).
+
 **`scope`** is an absolute path prefix, typically the path of a hive scope marker. All relative paths in the diff are resolved against this scope. Mutations whose paths would lie outside the scope are rejected during validation.
 
 **`diff`** contains the change operations. Order irrelevant; colony computes the post_state after applying all operations and validates _that_, not partial states. Thereby an `add_edges` edge may name any address the diff itself puts a node at, and that is all three creating operations: `add_nodes[].name`, the instantiate form of `swap_nodes[].with`, and `move_nodes[].to` (GH #198). Relocating and wiring in one committed mutation is exactly what `move_nodes` was built for: there is no window in which a lane hangs twice or not at all. The converse holds for addresses the diff VACATES (`remove_nodes`, `swap_nodes[].match`, `move_nodes[].match`, GH #194) — those are no longer endpoints afterwards, and an edge naming one is rejected. The existing-node form of `swap_nodes[].with` (no `template`) puts nothing anywhere: it references a node that is already there or that the same diff creates via `add_nodes`.
@@ -850,6 +887,18 @@ The default mode is **direct mode**: a stdin/stdout bridge to the root cell, all
 
 `--rescan-templates`: rebuilds the templates registry from the filesystem. Default: templates are scanned at the first startup and persisted in `colony.db`. If you have edited `templates/` manually (add/remove), run `--rescan-templates` once.
 
+`--apply <file|->` (GH #423): hands **one manifest** (§ Mutation format, "Second body form") to `/colony/mutations` right after the boot and prints the receipt. `-` reads it from stdin. The position is the argument: only after the boot does the tree stand that the manifest mutates.
+
+| Invocation | Behaviour |
+|---|---|
+| `meclaw --root R --apply f` | One-shot: boot → apply → receipt on stdout → graceful shutdown → exit 0 on `committed`, ≠ 0 otherwise. The stdin/stdout bridge is **off**, as under `--daemon` |
+| `meclaw --root R --daemon --apply f` | Boot → apply → receipt → keeps running. A `rejected` does **not** end the daemon — the colony stands, the mutation does not; that is the audit semantics of every mutation. The line goes to stderr |
+| `meclaw --root R --api A --apply f` | as `--daemon --apply` |
+| `meclaw --root R --validate --apply f` | `--validate` has precedence, with a `note:` line on stderr |
+| `--apply` against a held root | `LeaseError::Held`, with the message the lease already writes today. **That is the refusal, and it is right**: against a running colony you mutate through its HTTP door — and that door takes the same manifest body form, so it is one `curl` instead of five |
+
+The exit-code contract below holds unchanged: `0` means it worked, anything else means it failed. The receipt itself is **free text** to read; a `rejected` names the position, the `error_code` and how to resume.
+
 ### Flags
 
 **Flags are introduced phase by phase.** At any point `clap` knows only the flags of the already completed phases; unknown flags are rejected with an unknown-flag error. `meclaw --help` thus shows the respective functional CLI surface without misleading "accepts-but-does-nothing" flags. The phase column below states in which phase a flag is first declared and becomes functional in `clap`.
@@ -869,6 +918,7 @@ The default mode is **direct mode**: a stdin/stdout bridge to the root cell, all
 | `--daemon` | 12 | off | Lifecycle decoupled from stdin, shutdown only via signal/watchdog, stdin EOF does not end (the bridge mechanism remains: *(specified, not built — see GH #254)*, today the bridge is not spawned at all under `--daemon`) |
 | `--api <bind>` | 12 | off (no port) | HTTP API + web UI on bind address; e.g. `127.0.0.1:7777` or `0.0.0.0:7777` |
 | `--validate` | 12 | off | Dry run |
+| `--apply <path>` | GH #423 | none | Applies a mutation manifest right after the boot; `-` reads from stdin. Without `--daemon`/`--api` a one-shot (boot, apply, receipt, shutdown) whose exit code carries the verdict. Against a running colony: its HTTP door, which takes the same body form |
 | `--validate-strict` | 16 | off | Modifier for `--validate` only (without it: no effect): promotes the static findings that are warnings by default -- non-resolvable `params.graph` endpoints, unregistered cell directories at reboot -- to errors (exit ≠ 0). The set of promoted warning classes grows with `--validate` |
 | `--stdio-format <text\|json>` | P9 | `text` | Format of the stdin/stdout bridge: `text` = raw line format (default, unchanged), `json` = wire-v1 JSONL (envelope reach-through for `trace_id`/`ttl`/`context`, `ready` handshake) |
 | `--sandbox-probe` | GH #97 | off | A question about the host rather than a colony run: which `params.sandbox` properties **this host** can enforce. Needs no colony root, creates neither `colony.db` nor `log.jsonl`, always exits 0; takes precedence over `--validate`/`--api`/`--daemon`. The same report is appended informatively to `--validate` (detail + example output: `config.md` § `sandbox`) |
@@ -2120,6 +2170,8 @@ blobs/<uuid-v7>.<ext>.meta.json  # sidecar with authoritative metadata
 
    **Bootstrap recovery (first apply)**: the first apply writes a durable `bootstrap_in_flight` marker into the `meta` table of `colony.db` BEFORE the first cell spawn; its deletion runs atomically in the same transaction as the `InitialApply` bundle (edges + hive_scopes) at the apply end. If the boot-state classification finds the marker, the last first apply was interrupted (a crash between the per-cell registry upserts and the bundle): the boot is classified as **FirstBoot** and the apply runs again as an idempotent resume, a deterministic rebuild from the filesystem (the FS is the source; the registry upserts are `cell_id`-stable via the identity overlay, the bundle is `INSERT OR IGNORE`). No operator intervention, no "delete the DB". Without the marker (GH #89): **Reboot** means the InitialApply bundle has committed at least once (edges **or** hive_scopes non-empty) — edge-less or cell-less contents (single-cell colonies without edges, hive-only roots, staged builds before wiring) are legitimate persisted shapes, not corruption. Registry rows **alone** are no reboot proof: runtime-spawned cells persist registry upserts before the first filesystem bootstrap ever runs — that state classifies as **FirstBoot** (the walk stays the source, re-adoption is idempotent, `cell_id`s stay stable via the identity overlay). `Inconsistent` (a strict-fail boot panic) is reserved for a file whose persistence tables are unreadable (not a colony.db); real data corruption inside readable tables is caught loudly at the read layer (edge/hive-scope hydration hard-fail, cell.db quick_check).
 3. **Templates registry**: colony reads the templates registry from `colony.db`. If empty or `--rescan-templates`: a scan of `templates/`.
+
+3a. **Growth from references (FirstBoot only)** (GH #424): the planning pass classifies every `config.json` with `cell.type: "ref"` (or the key `cell.template`) as a **declaration**, not a cell. On a **FirstBoot** each one is materialised through `mutation/subtree.rs::stage_subtree` — the same resolution, the same substitution, the same seeds and the same refusals as at the mutation path — and the marker is replaced by what it names. The plan is then **made again**, because the tree the first one described no longer exists that way; this repeats while markers remain (a nested marker in the grown tree grows in the next pass). The bound is the number of markers of the first pass plus one — every pass consumes at least one. On a **reboot** nothing grows: a marker there is an `unregistered_node` and is reported (A5b). The growth runs **before** the apply, or the colony would spawn half a tree and the activity derivation would reason over a topology that is about to stop existing.
 4. **Registry rehydration + filesystem validation**: colony rehydrates the registry from
    `colony.db`, known paths keep their persisted `cell_id` and their
    active/inactive status. The recursive tree walk validates the filesystem state against the
@@ -2133,9 +2185,10 @@ blobs/<uuid-v7>.<ext>.meta.json  # sidecar with authoritative metadata
    (adoption path "2b", see § Mutation format). For no already known path
    is a new `cell_id` assigned. Hive scope markers: read the `params.graph` hint and enter it as
    declarative edges for the scope (insofar as not yet persisted in `colony.db`).
-   **Edges only — the boot instantiates no node**: the `nodes` block described in § Graph schema
-   is marked "specified, not built" there (GH #277) and is an error at the boot parser; this step
-   describes current behaviour, that section the target picture.
+   **Edges only — this step instantiates no node**: nodes grew in step 3a and already stand
+   here, `params.graph` carries edges and nothing else. The `nodes` block described in
+   § Graph schema remains an error at the boot parser — a stated boundary, not a gap
+   (GH #424).
    **Derived activity from the first bootstrap onward (the-one-rule):** the first bootstrap applies
    the same activation rule as the mutation recompute (§ Connectivity and activity): the
    computation is seeded from the `params.graph` edges (like a mutation from its

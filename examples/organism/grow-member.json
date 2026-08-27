@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "members/alex",
-        "template": "member@1.0.2"
+        "template": "member@1.1.0"
       }
     ],
     "add_edges": [
@@ -62,6 +62,16 @@
         "from": "./members/alex",
         "to": "./members",
         "condition": "has(hop.route) && hop.route == 'prune'"
+      },
+      {
+        "from": "./members/alex",
+        "to": "./members",
+        "condition": "has(hop.route) && hop.route == 'build'"
+      },
+      {
+        "from": "./members",
+        "to": "./members/alex",
+        "condition": "has(hop.route) && hop.route == 'in_build_result'"
       }
     ]
   }

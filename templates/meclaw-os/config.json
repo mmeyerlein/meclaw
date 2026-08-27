@@ -10,14 +10,14 @@
           "context": [
             "requester"
           ],
-          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.1.0"
+          "because": "ask the broker whether this actor may do this thing -- the level carries the lane because every organisation under it asks the SAME broker; the edge that brings it in MUST promote the caller to context.requester, or the grant is issued to whoever asked loudest. Derived from access@2.2.0"
         },
         {
           "route": "in_invoke",
           "context": [
             "requester"
           ],
-          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.1.0"
+          "because": "spend a grant the broker already issued; same promotion, because a grant belongs to somebody and the shell does not know who that is. Derived from access@2.2.0"
         },
         {
           "route": "in_cycle",
@@ -25,57 +25,57 @@
         },
         {
           "route": "in_turn",
-          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.0.2"
+          "because": "one turn on its way to an organisation. The LEVEL declares this lane and routes it into `./orgs`, because the container is empty by construction and a contract on an empty hive would have doors that lead nowhere (W7-R2). Derived from org@1.1.0"
         },
         {
           "route": "in_recall",
-          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.0.2"
+          "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org@1.1.0"
         },
         {
           "route": "in_brief",
-          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.0.2"
+          "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org@1.1.0"
         },
         {
           "route": "in_propose",
-          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.0.2"
+          "because": "a write against that same record: a correction, a trust or disclosure decision, a subscription. Derived from org@1.1.0"
         }
       ],
       "emits": [
         {
           "route": "grant",
-          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.1.0"
+          "because": "the broker's verdict on a request -- a handle, never a credential; the shell hands it straight back out because the caller lives above the shell. Derived from access@2.2.0"
         },
         {
           "route": "ack",
-          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.1.0 and org@1.0.2"
+          "because": "an outcome that was decided rather than answered: the broker spending a grant (ok or denied plus a reason_code), or an organisation acknowledging a proposed change to a member's record. TWO senders, ONE lane -- a caller subscribes to the lane, not to whoever raised it. Derived from access@2.2.0 and org@1.1.0"
         },
         {
           "route": "mutate",
-          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.11"
+          "because": "the change the control loop decided on, as an ordinary params update naming the cell it belongs to; a colony that draws no edge for it runs a loop that measures and receipts and changes nothing, which is a legitimate way to run it. Derived from steward@2.0.11 Since R6 (GH #425) this lane has TWO senders: the control loop, and the SUBMITTER that carries an agentically drafted manifest to the same door under the requester's own identity. That is the shape this file already runs twice -- `ack` and `error` each carry two senders on one lane, and a caller subscribes to the lane rather than to whoever raised it. One lane means one privileged edge out of the shell, and one privileged edge means one audit trail, which is the whole of R6's guardrail."
         },
         {
           "route": "answer",
-          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.0.2"
+          "because": "what an organisation produced for whoever asked -- a turn answered, a brief read. Note that `turn` is NOT a lane of this level: it is consumed inside the member that raised it, and a shell that re-declared it would offer an exit no message ever takes. Derived from org@1.1.0"
         },
         {
           "route": "reject",
-          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.0.2"
+          "because": "a refusal from inside an organisation that is a VERDICT rather than a failure -- a screened turn, a proposal the record would not take. It is not `error`, because the two are drained by different readers. Derived from org@1.1.0"
         },
         {
           "route": "error",
-          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.1.0, steward@2.0.11 and org@1.0.2"
+          "because": "a lane of the broker, of the control loop or of an organisation failed and it was not a verdict; which of the three produced it is not the caller's business, and a colony that drains nothing loses every refusal. Derived from access@2.2.0, steward@2.0.11 and org@1.1.0"
         },
         {
           "route": "write",
-          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.0.2"
+          "because": "the batched conversation write of an assistant inside an organisation, handed straight out of the shell. The shell owns no archive: what is done with a conversation record is the colony operator's decision, and a shell that consumed it would have made that decision for them. Derived from org@1.1.0"
         },
         {
           "route": "turn_write",
-          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.0.2"
+          "because": "one finished turn, offered for archiving as it is produced rather than at the close. Same reasoning as `write`, and the same non-consumption -- the shell is the outermost boundary, not the last consumer. Derived from org@1.1.0"
         },
         {
           "route": "prune",
-          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.0.2"
+          "because": "a housekeeping report raised inside an organisation. Nothing in this shell schedules it -- the control loop's cycle is its own lane -- so the shell only refuses to swallow it. Derived from org@1.1.0"
         }
       ]
     },
@@ -175,6 +175,70 @@
           "from": "./orgs",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'prune'"
+        },
+        {
+          "from": "./orgs",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'draft'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_build'"
+            },
+            "set_context": {
+              "requester_build_op": "'draft'"
+            }
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": "./submit",
+          "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_apply'"
+            },
+            "set_context": {
+              "requester_build_op": "'apply'"
+            }
+          }
+        },
+        {
+          "from": "./builder",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'manifest'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_build_result'",
+              "build_op": "'draft'"
+            }
+          }
+        },
+        {
+          "from": "./builder",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_build_result'",
+              "build_op": "'draft'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'receipt'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_build_result'",
+              "build_op": "'apply'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'mutate'"
         }
       ]
     }

@@ -1,4 +1,4 @@
-# `access@2.1.0`
+# `access@2.2.0`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -302,11 +302,20 @@ agreement is minted per answer and discarded with it, so there is no long-term k
 compromise would open yesterday's box.
 
 `params.inject_map` -- the older path, a plaintext push to a connector cell at unlock time --
-is therefore **deprecated**. It writes a clear credential into the `message_log`, which is
-precisely what sealed delivery exists to prevent. It is not removed, because removing it
-would be breaking; it goes with the first release that bundles breaking changes. It remains
-empty on a fresh instance, because a vault that shipped with delivery addresses would deliver
-to somebody else's.
+is **gone** (GH #428). It was deprecated by the sealed delivery, and measuring it showed it had
+never worked at all: the emission is a `params`-only body, which the UBF schema refuses, so it
+dead-lettered before it was ever logged. A path with no users and no working delivery was not
+worth a migration, so it was removed rather than repaired. A config that still carries the key
+fails loudly at spawn.
+
+What a deployment has to add instead is **`params.unlock_env`** (GH #427), naming the environment
+variable that holds the vault's passphrase. It has to, because a vault inside a sealed hive is
+unreachable over the user channel -- a source message cannot address a cell inside a sealed hive,
+and everything that can is an edge -- so without it the vault stays locked for its whole life and
+every delivery comes back `vault_locked`. The template ships the key UNSET on purpose: "a woken
+vault is locked" stays the default truth, and opening one is a decision an operator makes
+deliberately. An unlock LANE was rejected outright: it would carry the passphrase through the
+`message_log`, which is the failure class sealed delivery exists to end.
 
 `./vault` is **not** a port of this hive. `params.ports` is empty, so the generic boundary
 refuses any edge from outside the scope onto it; the only cell it answers on the broker

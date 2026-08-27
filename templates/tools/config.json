@@ -10,12 +10,21 @@
           "route": "tool_call",
           "context": [],
           "because": "one call a brain decided to make. The body is the tool_call turn the dispatcher split out; `hop.tool_name` says which tool, and choosing the cell that serves it is this hive's business, not the caller's. Nothing else travels: no schema, no credential, no permission -- the schema lives in the calling brain's `system.tools`, the credential in the cell that needs it, and whether the call should have been made at all was decided before it got here"
+        },
+        {
+          "route": "in_build_result",
+          "context": [],
+          "because": "the builder's answer on its way back into the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters here and not at a tool's own path because a caller subscribes to a lane, never to a cell: which of the two occupants it belongs to is decided by `hop.build_op` inside this hive, the same way `hop.tool_name` decides the way in"
         }
       ],
       "emits": [
         {
           "route": "tool_result",
           "because": "the answer of whichever tool ran, as one tool_result turn, on ONE lane whatever the tool was. A tool that failed answers here too -- a non-zero exit code, a 404, an empty result list are ordinary results and the round continues; only `hop.error_code` distinguishes the tool's own refusal, and the caller reads it off the message rather than off the route. A second outward lane would put the choice of tool back into the caller's edge table, which is exactly the coupling this hive exists to remove"
+        },
+        {
+          "route": "build",
+          "because": "a structural wish leaving this assistant, or a manifest being submitted by whoever drafted it. This is the one lane on which a tool of this surface reaches OUT of the assistant, and it is DECLARED rather than hidden. The note beside `tool_result` still holds and is about tool RESULTS: a second result lane would put the choice of tool back into the caller's edge table. This is a different class -- the REACH of the surface -- and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down, where a radius existed collectively and was invisible because it was spread over four files"
         }
       ]
     },
@@ -24,6 +33,11 @@
         "accepts": "tool_call",
         "emits": "tool_result",
         "because": "a caller that hands this hive a call and does not take the result back has stopped its own tool round half way: the tool runs, costs whatever it costs, and answers into nothing while the brain waits for a turn that was produced and delivered nowhere. The two edges are one decision -- there is no topology in which sending a call and not subscribing to the result is the intended shape"
+      },
+      {
+        "accepts": "in_build_result",
+        "emits": "build",
+        "because": "a level that carries the builder's answer DOWN into this hive and does not carry the request UP has wired the half of the lane pair that can only deliver into nothing: the tool round waits for a turn that was never asked for. The two edges are one decision, exactly as `tool_call`/`tool_result` are"
       }
     ],
     "graph": {
@@ -83,6 +97,80 @@
           "from": "./unknown",
           "to": ".",
           "condition": "has(hop.operation) && hop.operation == 'unknown'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./build",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'build_topology'"
+        },
+        {
+          "from": ".",
+          "to": "./apply",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'apply_manifest'"
+        },
+        {
+          "from": "./build",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'build_request'",
+          "modifier": {
+            "set_hop": {
+              "route": "'build'"
+            },
+            "set_context": {
+              "build_call_id": "hop.tool_call_id",
+              "build_op": "hop.build_op"
+            }
+          }
+        },
+        {
+          "from": "./apply",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'apply_request'",
+          "modifier": {
+            "set_hop": {
+              "route": "'build'"
+            },
+            "set_context": {
+              "build_call_id": "hop.tool_call_id",
+              "build_op": "hop.build_op"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./build",
+          "condition": "has(hop.route) && hop.route == 'in_build_result' && has(hop.build_op) && hop.build_op == 'draft'"
+        },
+        {
+          "from": ".",
+          "to": "./apply",
+          "condition": "has(hop.route) && hop.route == 'in_build_result' && has(hop.build_op) && hop.build_op == 'apply'"
+        },
+        {
+          "from": ".",
+          "to": "./build",
+          "default": true,
+          "condition": "has(hop.route) && hop.route == 'in_build_result'"
+        },
+        {
+          "from": "./build",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'build'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'"
+            }
+          }
+        },
+        {
+          "from": "./apply",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'apply'",
           "modifier": {
             "set_hop": {
               "route": "'tool_result'"

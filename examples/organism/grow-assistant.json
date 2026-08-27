@@ -8,10 +8,10 @@
     "add_nodes": [
       {
         "name": "assistants/scribe",
-        "template": "assistant@1.0.1",
+        "template": "assistant@1.1.0",
         "override_params": {
           "cogny/brain": {
-            "temperature": "0.2"
+            "temperature": 0.2
           }
         }
       }
@@ -61,6 +61,21 @@
         "from": "./assistants/scribe",
         "to": "./assistants",
         "condition": "has(hop.route) && hop.route == 'error'"
+      },
+      {
+        "from": "./assistants/scribe",
+        "to": "./assistants",
+        "condition": "has(hop.route) && hop.route == 'build'",
+        "modifier": {
+          "set_context": {
+            "agent": "'scribe'"
+          }
+        }
+      },
+      {
+        "from": "./assistants",
+        "to": "./assistants/scribe",
+        "condition": "has(hop.route) && hop.route == 'in_build_result' && (!has(context.agent) || context.agent == 'scribe')"
       }
     ]
   }

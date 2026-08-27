@@ -1,0 +1,77 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The switch. It calls no model and reaches nothing: the class is decided from\n# the ARGUMENTS the chat model already filled in, and from a table that lives\n# right here.\n#\n# Every recipe declares its required parameters. A recipe that is NAMED but\n# incomplete is an ERROR, never a downgrade into the design lane: a typo in one\n# argument would otherwise silently buy an inference and answer a different\n# question than the one that was asked.\nRECIPES = {\n    \"rewire_edge\":  [\"scope\", \"from\", \"to\", \"old_to\"],\n    \"add_node\":     [\"scope\", \"name\", \"template\", \"target\", \"route\"],\n    \"attach_drain\": [\"scope\", \"from\", \"to\", \"route\"],\n}\n\ndoc = json.load(sys.stdin)\nmsgs = doc[\"body\"].get(\"messages\") or []\nraw = \"\"\nfor m in msgs:\n    if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n        raw = m[\"text\"]\nif not raw:\n    for m in msgs:\n        if m.get(\"text\"):\n            raw = m[\"text\"]\n\ntry:\n    args = json.loads(raw)\n    if not isinstance(args, dict):\n        args = {}\nexcept Exception:\n    args = {}\n\n\ndef emit(header, payload):\n    # `operation` is on EVERY emission, because the hive's out-edges condition\n    # on it. An edge that fired on \"whatever is left over\" would carry the day\n    # somebody adds a fourth outcome.\n    header[\"operation\"] = \"classify\"\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                      \"text\": json.dumps(payload), \"id\": \"\"}]}))\n    sys.exit(0)\n\n\nrequest = str(args.get(\"request\") or \"\").strip()\nif not request:\n    emit({\"route\": \"error\", \"error_code\": \"request_missing\"},\n         {\"reason\": \"the tool call carried no request text\"})\n\nrecipe = args.get(\"recipe\")\nif recipe:\n    if recipe not in RECIPES:\n        emit({\"route\": \"error\", \"error_code\": \"recipe_unknown\", \"recipe\": str(recipe)},\n             {\"reason\": \"no recipe by that name\", \"known\": sorted(RECIPES)})\n    params = args.get(\"params\") if isinstance(args.get(\"params\"), dict) else {}\n    missing = [k for k in RECIPES[recipe] if not params.get(k)]\n    if missing:\n        emit({\"route\": \"error\", \"error_code\": \"recipe_params_incomplete\", \"recipe\": recipe},\n             {\"reason\": \"the named recipe is missing parameters\", \"missing\": missing,\n              \"required\": RECIPES[recipe]})\n    emit({\"route\": \"recipe\", \"recipe\": recipe},\n         {\"recipe\": recipe, \"params\": params, \"request\": request})\n\n# The design lane hands the request on as a plain USER turn. The librarian\n# tokenises the first turn that carries text for its BM25 query, and `brief`\n# looks for `origin == \"user\"` -- a json blob in that slot would be tokenised\n# as `request`, `scope` and a pile of punctuation, which is the query the\n# librarian exists to serve turned into noise. The scope travels in the\n# CONTEXT compartment instead, where it survives the hops that hop does not.\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"design\", \"operation\": \"classify\",\n               \"build_scope\": str(args.get(\"scope\") or \"/\")},\n    \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"id\": \"\", \"text\": request}]}))\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "recipe",
+            "design",
+            "error"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "classify"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "request_missing",
+            "recipe_unknown",
+            "recipe_params_incomplete"
+          ],
+          "required": false
+        },
+        "recipe": {
+          "type": "string",
+          "required": false
+        },
+        "build_scope": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The switch of the builder: it reads the arguments of the build_topology tool call and decides the CLASS of the request -- a named recipe whose parameters are complete takes the fast lane, everything else takes the design lane. It calls no model and reads nothing but the message.",
+    "use_when": "First cell behind the builder's door, on `in_build`.",
+    "not_in_scope": "No rendering, no retrieval, no inference, and no downgrade: a named recipe that is missing a parameter is refused by name rather than quietly re-asked of a model."
+  }
+}

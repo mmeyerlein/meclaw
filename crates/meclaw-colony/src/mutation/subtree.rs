@@ -1645,6 +1645,24 @@ impl SubtreeOverrides {
         Self { by_rel_path }
     }
 
+    /// GH #424 — the same map, read off a root-tree `ref` MARKER's top-level
+    /// `override_params` instead of an `add_nodes` entry.
+    ///
+    /// A thin constructor beside [`Self::from_add_node`], and deliberately not
+    /// a call to [`Self::with_ref_defaults`]: at boot there is no mutation
+    /// layer above the marker, so the marker's own layer IS the layer.
+    /// `with_ref_defaults` stays for the mutation path, where both exist and
+    /// have to be merged param key by param key.
+    pub fn from_ref_marker(override_params: &JsonValue) -> Self {
+        let mut by_rel_path = HashMap::new();
+        if let Some(obj) = override_params.as_object() {
+            for (k, v) in obj {
+                by_rel_path.insert(k.clone(), v.clone());
+            }
+        }
+        Self { by_rel_path }
+    }
+
     /// This mutation's `override_params` layered **on top of** `defaults` — a
     /// [`SubtreeTemplate::ref_overrides`] map, already re-addressed to the outer
     /// template's rel-paths (GH #277).

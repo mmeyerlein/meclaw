@@ -702,6 +702,29 @@ pub enum ColonyMsg {
         /// Ack — fires AFTER committed-UPDATE (or AFTER validate-fail reply).
         ack: tokio::sync::oneshot::Sender<crate::mutation::MutationOutcome>,
     },
+    /// GH #422 — a knock at `/colony/mutations` whose body form is not yet
+    /// known: a single mutation, or a manifest of them.
+    ///
+    /// Sibling of [`ColonyMsg::Mutation`], not a replacement. That variant says
+    /// "I know this is one mutation" and answers with a `MutationOutcome`; this
+    /// one says "here is what arrived at the door" and answers with whichever
+    /// verdict the body earned. Both arms run the same
+    /// `colony_dispatch::run_mutation_door`, so the discrimination rule lives in
+    /// exactly one place — and the single form's own path stays byte-for-byte
+    /// what it was (R5).
+    ///
+    /// Used by the HTTP door (`POST /colony/mutations`) and by `--apply`.
+    MutationDoor {
+        /// Raw body, verbatim. The colony decides which form it is.
+        payload: meclaw_core::JsonValue,
+        /// Reply target for the single form's EDA error reply, if any.
+        reply_to: Option<meclaw_core::Path>,
+        /// Trace header fields, needed for the error-reply envelope.
+        trace_id: meclaw_core::Uuid,
+        parent_message_id: meclaw_core::Uuid,
+        /// Ack — the verdict of the whole body.
+        ack: tokio::sync::oneshot::Sender<crate::mutation::MutationDoorOutcome>,
+    },
 }
 
 /// Fire-and-forget watcher. Awaits `peace_rx` — explicit peace → exit silent,
@@ -1954,6 +1977,33 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     ).await;
                                     let _ = ack.send(outcome);
                                 }
+                                ColonyMsg::MutationDoor { payload, reply_to, trace_id, parent_message_id, ack } => {
+                                    // Same snapshot discipline as the Mutation arm above.
+                                    let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+                                        colony_db.read_templates().unwrap_or_default().into_iter()
+                                            .map(|r| crate::templates::TemplateEntry {
+                                                template_id: r.template_id,
+                                                name: r.name,
+                                                version: r.version,
+                                                filesystem_path: std::path::PathBuf::from(r.filesystem_path),
+                                            }).collect(),
+                                    );
+                                    let outcome = crate::colony_dispatch::run_mutation_door(
+                                        &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters,
+                                        &colony_db.writer_tx, templates_snapshot, &factories, &root, &inbox_self_tx,
+                                        &outputs_tx,
+                                        payload, reply_to, trace_id, parent_message_id,
+                                        colony_config.idle_timeout_default_ms,
+                                        colony_config.message_timeout_default_ms,
+                                        colony_config.mailbox_default_capacity,
+                                        colony_config.strict_validation,
+                                        blob_store.clone(),
+                                        colony_config.blob_inline_max_bytes,
+                                        env_source.as_deref(),
+                                        death_ack_wait_tx.as_ref(),
+                                    ).await;
+                                    let _ = ack.send(outcome);
+                                }
                                 ColonyMsg::Sleep { path, receiver } => {
                                     handle_sleep(&mut registry, &mut dead_letters, &inbox_self_tx, path, receiver).await;
                                 }
@@ -2302,6 +2352,38 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         ).await;
                         // GH #285: a mutation may add a hive, fill a slot, or
                         // rewrite a `params.ports` declaration.
+                        slot_table_dirty = true;
+                        let _ = ack.send(outcome);
+                    }
+                    ColonyMsg::MutationDoor { payload, reply_to, trace_id, parent_message_id, ack } => {
+                        // Phase-11 T16: Templates-Snapshot SYNCHRON (ColonyDb is
+                        // !Sync → no &ColonyDb across an .await boundary).
+                        let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+                            colony_db.read_templates().unwrap_or_default().into_iter()
+                                .map(|r| crate::templates::TemplateEntry {
+                                    template_id: r.template_id,
+                                    name: r.name,
+                                    version: r.version,
+                                    filesystem_path: std::path::PathBuf::from(r.filesystem_path),
+                                }).collect(),
+                        );
+                        let outcome = crate::colony_dispatch::run_mutation_door(
+                            &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters,
+                            &colony_db.writer_tx, templates_snapshot, &factories, &root, &inbox_self_tx,
+                            &outputs_tx,
+                            payload, reply_to, trace_id, parent_message_id,
+                            colony_config.idle_timeout_default_ms,
+                            colony_config.message_timeout_default_ms,
+                            colony_config.mailbox_default_capacity,
+                            colony_config.strict_validation,
+                            blob_store.clone(),
+                            colony_config.blob_inline_max_bytes,
+                            env_source.as_deref(),
+                            death_ack_wait_tx.as_ref(),
+                        ).await;
+                        // GH #285: a mutation may add a hive, fill a slot, or
+                        // rewrite a `params.ports` declaration — and a manifest
+                        // is a list of mutations.
                         slot_table_dirty = true;
                         let _ = ack.send(outcome);
                     }
@@ -3249,6 +3331,108 @@ fn subtree_inert_respawn() -> crate::RespawnFn {
 /// **Phase-5 borrow-pattern**: the `ColonyDb` itself is non-Send (rusqlite
 /// `Connection` is not Sync), so it is NEVER borrowed across `.await`. The
 /// arm passes `&colony_db.writer_tx` (clonable, Send+Sync) instead.
+/// GH #422 — roll ONE manifest off, entry by entry, through `handle_mutation`.
+///
+/// R5: the colony rolls the list itself. Order is the manifest's order; every
+/// entry is validated and applied by exactly the code a single body takes; the
+/// FIRST refusal stops the run and nothing behind it is looked at. There is no
+/// rollback — the entries that committed are committed, and the receipt names
+/// the position so the rest can be sent again.
+///
+/// This function sits BESIDE `handle_mutation`, never inside it: the single
+/// form has to stay provably unmoved (pinned by
+/// `tests/gh422_the_single_mutation_body_does_not_move.rs`), and a loop woven
+/// into it could not prove that any more.
+///
+/// **`reply_to` is `None` for every entry, and that is load-bearing.** A
+/// refused single mutation with a `reply_to` answers TWICE at that address:
+/// its own EDA reject, and the dispatcher's reply behind it. A manifest gets
+/// ONE verdict; if each entry also sent its own reject, the sender would get
+/// two answers to one question and the second would contradict the first. The
+/// manifest's reply is built by the caller, from the outcome returned here.
+///
+/// **Hot-path discipline.** This runs inside `colony_task`'s select loop: no
+/// `unwrap`/`expect`/`panic!`, no `Mutex`, no `block_on`. `templates` is taken
+/// by value by `handle_mutation`, so it is cloned per entry; `blob_store` is an
+/// `Arc` and cloned; every `&mut` is reborrowed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_manifest(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &mut HiveScopeTable,
+    edges: &mut crate::edge_table::EdgeTable,
+    node_contracts: &mut HashMap<Path, NodeContract>,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    templates: crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
+    root: &std::path::Path,
+    inbox_self_tx: &mpsc::Sender<ColonyMsg>,
+    outputs_tx: &mpsc::Sender<CellEmission>,
+    manifest: &crate::mutation::ManifestBody,
+    trace_id: Uuid,
+    parent_message_id: Uuid,
+    idle_default_ms: u64,
+    message_timeout_default_ms: u64,
+    mailbox_default_capacity: usize,
+    strict_validation: bool,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    env_source: Option<&std::path::Path>,
+    death_ack_wait_tx: Option<&mpsc::Sender<()>>,
+) -> crate::mutation::ManifestOutcome {
+    use crate::mutation::{ManifestOutcome, MutationOutcome};
+
+    let entries = manifest.entries();
+    let mut ids: Vec<String> = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let outcome = handle_mutation(
+            registry,
+            hive_scopes,
+            edges,
+            node_contracts,
+            dead_letters,
+            log_tx,
+            templates.clone(),
+            factories,
+            root,
+            inbox_self_tx,
+            outputs_tx,
+            entry.clone(),
+            None,
+            trace_id,
+            parent_message_id,
+            idle_default_ms,
+            message_timeout_default_ms,
+            mailbox_default_capacity,
+            strict_validation,
+            blob_store.clone(),
+            blob_inline_max_bytes,
+            env_source,
+            death_ack_wait_tx,
+        )
+        .await;
+        match outcome {
+            MutationOutcome::Committed { id } => ids.push(id),
+            MutationOutcome::Rejected {
+                id,
+                error_code,
+                details,
+                violations: _,
+            } => {
+                return ManifestOutcome::Rejected {
+                    failed_at: i + 1,
+                    remaining: entries.len() - i - 1,
+                    ids,
+                    id,
+                    error_code,
+                    details,
+                };
+            }
+        }
+    }
+    ManifestOutcome::Committed { ids }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_mutation(
     registry: &mut HashMap<Path, RegistryEntry>,

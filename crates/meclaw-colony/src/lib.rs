@@ -7,6 +7,7 @@ pub mod api_dto;
 pub mod blob;
 pub mod bootstrap;
 mod bootstrap_apply;
+mod bootstrap_grow;
 mod build_task;
 pub mod cel_eval;
 mod cell_task;
@@ -54,7 +55,8 @@ pub use blob::{
 };
 pub use bootstrap::{
     BootState, BootstrapError, BootstrapErrors, BootstrapPlan, PlannedCell, PlannedEdge,
-    PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state, registered_hive_paths,
+    PlannedGrowth, PlannedHive, plan_bootstrap, plan_bootstrap_with_env, probe_boot_state,
+    registered_hive_paths,
 };
 pub use bootstrap_apply::{
     BootstrapReport, apply_bootstrap_plan, boot_edges_from_graph, bootstrap_from_filesystem,
@@ -72,6 +74,7 @@ pub use colony::{
 pub use colony_config::{
     COLONY_CONFIG_SCHEMA_VERSION, ColonyConfig, ConfigError, resolve_message_timeout,
 };
+pub use colony_dispatch::mutation_door_reply;
 pub use config::{CellHeader, EdgeSpec, GraphHints, HiveParams, ParsedConfig};
 pub use db_conn::{DbConn, QueryTimeout};
 pub use dead_letter::{DeadLetter, DeadLetterReason};
@@ -80,7 +83,10 @@ pub use factory::{CellFactory, CellFactoryRegistry, ContractView, SpawnedCellKin
 pub use hive_scope::{HiveScope, HiveScopeTable};
 pub use io_liveness::IoLivenessMark;
 pub use long_running_cell::LongRunningCell;
-pub use mutation::{MutationError, MutationOutcome};
+pub use mutation::{
+    ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome, MutationError,
+    MutationOutcome,
+};
 pub use neighbourhood::{NeighbourhoodError, NeighbourhoodView};
 pub use persist::colony_db::{ColonyDb, RegistryOverlay, read_registry_overlay};
 pub use runtime::ColonyRuntime;

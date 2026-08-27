@@ -78,8 +78,8 @@ PIN-cell-key-closed-mutation-de	docs/config.md	auf dem Mutationspfad eine regul�
 PIN-cell-key-closed-mutation-en	docs/config.en.md	on the mutation path a normal pre-destructive validation refusal	pinned	a_staged_template_with_an_unknown_cell_key_is_refused_at_validation
 PIN-cell-key-closed-subtree-de	docs/config.md	schließt **jeden Knoten eines mehrzelligen (Subtree-)Templates** ein	pinned	a_staged_subtree_template_with_an_unknown_inner_cell_key_is_refused
 PIN-cell-key-closed-subtree-en	docs/config.en.md	includes **every node of a multi-cell (subtree) template**	pinned	a_staged_subtree_template_with_an_unknown_inner_cell_key_is_refused
-PIN-cell-ref-boot-refusal-de	docs/config.md	ist eine unaufgelöste Referenz und damit derselbe harte Boot-Fehler wie ein unbekannter Schlüssel	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
-PIN-cell-ref-boot-refusal-en	docs/config.en.md	is an unresolved reference, and so the same hard boot error as an unknown key	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
+PIN-cell-ref-boot-refusal-de	docs/config.md	auf einem **Reboot** ist er eine unaufgelöste Referenz in einem bereits gewachsenen Baum und wird gemeldet, nie gewachsen	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
+PIN-cell-ref-boot-refusal-en	docs/config.en.md	on a **reboot** it is an unresolved reference in an already grown tree and is reported, never grown	pinned	a_template_ref_in_a_live_tree_refuses_the_boot
 #
 PIN-lane-context-enforced-de	docs/config.md	muss deren `accepts[].context`-Keys mitbringen	pinned	a_lane_without_its_promoted_key_is_refused
 PIN-lane-context-enforced-en	docs/config.en.md	must carry that lane's `accepts[].context` keys	pinned	a_lane_without_its_promoted_key_is_refused
@@ -134,14 +134,14 @@ PIN-attachment-reader	docs/meclaw-overview.md	Ohne Deklaration gibt es keinen Ha
 # language versions; the marker names the issue that would build it or retire
 # it. Twin rows (-de / -en) are what makes "in BOTH languages" checkable.
 #
-SNB-instantiation-de	docs/meclaw-overview.md	**Instanziierung & cell_id-Stabilität**	specified-not-built	GH #277
-SNB-instantiation-en	docs/meclaw-overview.en.md	**Instantiation and cell_id stability**	specified-not-built	GH #277
-SNB-graph-bootstrap-de	docs/meclaw-overview.md	liefert den initialen Soll-Stand für seinen Subtree bei Erst-Instanziierung	specified-not-built	GH #277
-SNB-graph-bootstrap-en	docs/meclaw-overview.en.md	provides the initial desired state for its subtree on first instantiation	specified-not-built	GH #277
-SNB-graph-nodes-note-de	docs/meclaw-overview.md	ist **nur in der Mutations-Verwendung gebaut**	specified-not-built	GH #277
-SNB-graph-nodes-note-en	docs/meclaw-overview.en.md	is built **only in the mutation usage**	specified-not-built	GH #277
-SNB-graph-nodes-de	docs/meclaw-overview.md	Mapping `name → { template, override_params? }`	specified-not-built	GH #277
-SNB-graph-nodes-en	docs/meclaw-overview.en.md	mapping `name → { template, override_params? }`	specified-not-built	GH #277
+SNB-instantiation-de	docs/meclaw-overview.md	**Instanziierung & cell_id-Stabilität**	pinned	a_boot_grows_the_ref_and_a_reboot_keeps_every_cell_id
+SNB-instantiation-en	docs/meclaw-overview.en.md	**Instantiation and cell_id stability**	pinned	a_boot_grows_the_ref_and_a_reboot_keeps_every_cell_id
+SNB-graph-bootstrap-de	docs/meclaw-overview.md	liefert die initialen **Kanten** für seinen Subtree	pinned	a_boot_grown_ref_is_byte_identical_to_the_mutation_grown_tree
+SNB-graph-bootstrap-en	docs/meclaw-overview.en.md	provides the initial **edges** for its subtree	pinned	a_boot_grown_ref_is_byte_identical_to_the_mutation_grown_tree
+SNB-graph-nodes-note-de	docs/meclaw-overview.md	ist **nur in der Mutations-Verwendung gebaut**	pinned	a_hive_declaring_params_graph_nodes_refuses_the_boot
+SNB-graph-nodes-note-en	docs/meclaw-overview.en.md	is built **only in the mutation usage**	pinned	a_hive_declaring_params_graph_nodes_refuses_the_boot
+SNB-graph-nodes-de	docs/meclaw-overview.md	Mapping `name → { template, override_params? }`	pinned	a_hive_declaring_params_graph_nodes_refuses_the_boot
+SNB-graph-nodes-en	docs/meclaw-overview.en.md	mapping `name → { template, override_params? }`	pinned	a_hive_declaring_params_graph_nodes_refuses_the_boot
 SNB-remove-edges-by-id-de	docs/meclaw-overview.md	**Edge-UUIDs sichtbar**	specified-not-built	GH #254
 SNB-remove-edges-by-id-en	docs/meclaw-overview.en.md	**Edge UUIDs visible**	specified-not-built	GH #254
 SNB-daemon-bridge-de	docs/meclaw-overview.md	Dass die stdin/stdout-Bridge dabei **nicht abgeschaltet** wird	specified-not-built	GH #254

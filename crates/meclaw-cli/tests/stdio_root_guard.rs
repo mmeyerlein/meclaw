@@ -19,6 +19,7 @@ fn direct_mode_cli(root: &std::path::Path) -> Args {
         daemon: false,
         validate: false,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

@@ -28,6 +28,10 @@
         {
           "route": "in_round_sweep",
           "because": "a round that ran out of iterations, swept by an operator. Same owner as `in_sweep` and the same reason it crosses the level boundary rather than starting inside it. Derived from the accepts list of talky@4.2.2"
+        },
+        {
+          "route": "in_build_result",
+          "because": "the builder's answer on its way back to the tool round that asked -- a draft manifest, or the receipt of one that was submitted. It enters at the assistant path because its producer sits four levels up, at the OS level, where a level owns what its siblings must share (ADR-0013): one baumeister, one corpus, one audit trail for every organisation in the colony. This level only carries it down to the tool surface; it reads nothing in it. Derived from the accepts list of tools@1.1.0"
         }
       ],
       "emits": [
@@ -58,6 +62,10 @@
         {
           "route": "error",
           "because": "a normalised failure report from anything inside this generation -- the surface, the reasoning core, or a channel's connector. Which cell produced it is not the caller's business; the assistant is a boundary, not a consumer, and an error that crosses it is one the parent owes a drain. Derived from the emits lists of talky@4.2.2 and cogny@4.0.3"
+        },
+        {
+          "route": "build",
+          "because": "a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. It is the one lane on which a tool of this assistant reaches OUT of the assistant, and it is declared rather than hidden: the reach exists, and a contract that did not name it would be the same defect `sandbox_union` was written to fix one level down. Derived from the emits list of tools@1.1.0"
         }
       ]
     },
@@ -237,6 +245,16 @@
           "from": "./cogny",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'"
+        },
+        {
+          "from": "./tools",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'build'"
+        },
+        {
+          "from": ".",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'in_build_result'"
         }
       ]
     }
@@ -245,7 +263,7 @@
     "purpose": "One generation of one person's agent: the reasoning core, the tool surface, and the channels level the surfaces are instantiated into. Two refs and one open container. The fan-in edges between the channels level and its siblings are INTERNAL edges of this template (GH #303) -- a second channel costs two instantiations inside ./channels and their pairing edges, never a re-run of the sibling fan-in.",
     "use_when": "One per generation of an assistant, instantiated into a member's ./assistants container, with its transit lanes wired in the same mutation. Channels come afterwards, one mutation per channel: a connector and a talky into ./channels, plus the edges that pair them and the edges that carry the level's lanes down to the talky. Replacing the generation replaces this node; the older one stays in place, silent and readable.",
     "not_in_scope": "No memory hive and no memory-drain: the memory belongs to the MEMBER (GH #122, ADR 0012) and per-turn extraction (GH #298, ruling Q11) replaced the drain -- `extraction` leaves this level on its own lane. No firewall: the screen sits one level up, outside the generation, so two channels meet one view of an attacker and a swap does not restart the rate window. No terminal and no sink of any kind (ruling Q2, GH #284): `error` leaves the level and becomes no_route in the DLQ if nobody consumes it, which is recorded and self-localising. No tool schemas: they live in the calling brain's system.tools, not in the tool surface and not here. And NO memory leg for the reasoning core -- see contract_derivation.",
-    "contract_derivation": "The thirteen lanes are the union of what this level's occupants accept and emit at the versions named in each `because` (talky@4.2.2 and telegram-connector@2.0.0 in ./channels, cogny@4.0.3, tools@1.0.0), minus the lanes a sibling inside the level consumes itself. Four subtractions, all real: `answer` (the talky's, consumed by the connector on the per-channel pairing edge), `tool` (both the talky's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.2.2 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). The reasoning core's `recall` is the one occupant emit with no home: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, and the bundle coming back carries nothing that tells them apart -- a context discriminator would have to survive the member's memory hive, and a door guarded on context alone is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs. cogny@4.0.3 ships `memory_tier` empty, so it asks for no recall unless an instance turns the leg on; an instance that does must wire that leg and pick its own correlation key.",
+    "contract_derivation": "The thirteen lanes are the union of what this level's occupants accept and emit at the versions named in each `because` (talky@4.2.2 and telegram-connector@2.0.0 in ./channels, cogny@4.0.3, tools@1.1.0), minus the lanes a sibling inside the level consumes itself. Four subtractions, all real: `answer` (the talky's, consumed by the connector on the per-channel pairing edge), `tool` (both the talky's and the core's, consumed by ./tools through the guarded default), `tool_call`/`tool_result` (the tool surface's own pair, both ends inside), and `in_tool` (supplied by ./tools, never from outside). `in_memory_call` and `in_thread_call` are declared by talky@4.2.2 and are deliberately NOT declared here: no occupant outside this level produces them, and giving them a door would be an interface promising something nothing sends (GH #55 serves them inside the talky). The reasoning core's `recall` is the one occupant emit with no home: at this boundary the surface's recall leg and the core's collapse onto ONE lane pair, and the bundle coming back carries nothing that tells them apart -- a context discriminator would have to survive the member's memory hive, and a door guarded on context alone is condemned by crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs. cogny@4.0.3 ships `memory_tier` empty, so it asks for no recall unless an instance turns the leg on; an instance that does must wire that leg and pick its own correlation key. R6 (GH #425) adds TWO lanes and subtracts neither, and both fall out of the rule rather than out of a decision: `build` leaves ./tools and no sibling inside this level consumes it, so it crosses; `in_build_result` is produced four levels up, at the OS level, and addresses THROUGH this level to reach the tool surface, so it crosses too. The tool surface had shipped no crossing lane before -- `tool_call`/`tool_result` are both subtracted above -- which is why it was absent from the derivation until now; that was a coincidence and not a rule, and gh302_assistant_wires_channels_once reads all three occupants since.",
     "contract_in": "Six lanes, all at the assistant's own path: in_turn, in_bundle, in_advice, in_sweep, in_prune, in_round_sweep.",
     "contract_out": "Seven lanes, all leaving the assistant's path: turn, write, turn_write, extraction, recall, prune, error. The member consumes turn, recall and extraction itself; the other four cross it."
   }

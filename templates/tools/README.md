@@ -1,4 +1,4 @@
-# `tools@1.0.0`
+# `tools@1.1.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -12,18 +12,30 @@ honest note about what it does not yet cover.
 |---|---|---|
 | in | `tool_call` | one call a brain decided to make. `hop.tool_name` says which tool; the body is the `tool_call` turn a dispatcher split out of the brain's bundle. |
 | out | `tool_result` | what the tool answered -- **whatever the tool was**. |
+| out | `build` | a structural wish, or a manifest being submitted -- the one lane on which a tool of this surface reaches OUT of the assistant. |
+| in | `in_build_result` | the answer to that: a draft manifest, or the receipt of a submission. |
 
-Two lanes and no third. A tool that failed answers on the same lane: a non-zero exit code,
-a 404, an empty result list are ordinary results and the round continues. Only
-`hop.error_code` distinguishes a tool's own refusal, and the caller reads that off the
-message rather than off the route.
+**One RESULT lane and no second.** A tool that failed answers on `tool_result` too: a
+non-zero exit code, a 404, an empty result list are ordinary results and the round
+continues. Only `hop.error_code` distinguishes a tool's own refusal, and the caller reads
+that off the message rather than off the route. A second result lane would put the choice
+of tool back into the caller's edge table, which is exactly the coupling this hive exists
+to remove.
 
-`params.required_drains` pairs the two in the lane form: *a caller that sends me
-`tool_call` must subscribe to `tool_result`.* A mutation that wires the ingress without the
-drain is refused with `required_drain_missing` before anything is staged. There is no
-topology in which handing this hive a call and not taking the answer back is the intended
-shape -- the tool would run, cost whatever it costs, and answer into nothing while the
-brain waits for a turn that was produced and delivered nowhere.
+**`build` is not a result -- it is the REACH of this surface** (GH #425 / R6). Until the
+builder intake this surface reached nowhere; now it carries a tool whose whole job is to
+address `/os/builder`, four levels up, and to carry a submission there under the caller's
+own identity. That fact is declared here rather than left to be discovered in an edge
+table -- the same reason `sandbox_union` exists one level down, where a process radius
+existed collectively and was invisible while it was spread over several files.
+
+`params.required_drains` pairs both directions in the lane form: *a caller that sends me
+`tool_call` must subscribe to `tool_result`*, and *a level that sends me `in_build_result`
+must subscribe to `build`*. A mutation that wires one half without the other is refused
+with `required_drain_missing` before anything is staged. There is no topology in which
+handing this hive a call and not taking the answer back is the intended shape -- the tool
+would run, cost whatever it costs, and answer into nothing while the brain waits for a turn
+that was produced and delivered nowhere.
 
 ## Why it is sealed
 
@@ -46,6 +58,15 @@ because the contract does not change.
 | `web_fetch/` | `web_fetch` | `hop.tool_name == 'web_fetch'` | none |
 | `web_search/` | `web_search` | `hop.tool_name == 'web_search'` | none |
 | `unknown/` | `code` | nothing else fired | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `build/` | `code` | `hop.tool_name == 'build_topology'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+| `apply/` | `code` | `hop.tool_name == 'apply_manifest'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
+
+`build` and `apply` are the two halves of one round and carry the tightest block in the
+tree: they compute nothing, reach nothing and store nothing. What they do is carry -- a
+wish out and a draft back, then that same draft out again and a receipt back. Both phases
+of both cells are recognised POSITIVELY, and the correlation of the round travels in the
+CONTEXT (`build_call_id`), because `hop` is a one-hop compartment and the builder is eight
+hops away.
 
 The three tools are each a copy of a shape the library already carries -- `bash` after the
 coder pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search` after
@@ -82,7 +103,7 @@ measured it on the shipped instance -- it was merely spread across four files wh
 had to look at it whole. **The union is what a replacement is measured against: a
 code-executing cell that needs exactly this is not a widening; one that needs more is.**
 
-**`reentrancy` -- one entry per occupant, all four `true` today.**
+**`reentrancy` -- one entry per occupant, all six `true` today.**
 
 | occupant | reentrant | why |
 |---|---|---|
@@ -90,6 +111,8 @@ code-executing cell that needs exactly this is not a widening; one that needs mo
 | `web_fetch` | yes | stateless request/response, one GET per call |
 | `web_search` | yes | stateless request/response, no cursor, no pagination state |
 | `unknown` | yes | it formats a string; there is no state to reach |
+| `build` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
+| `apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
 
 `params.max_concurrency` (4 / 4 / 8) is a queue, not a serialisation: the call over the cap
 waits and still answers on its own `tool_result`.

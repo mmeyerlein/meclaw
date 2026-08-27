@@ -303,6 +303,30 @@ pub struct PlannedEdge {
     /// [`crate::edge_table::Edge::is_default`] by the `InitialApply` conversion.
     pub is_default: bool,
 }
+/// GH #424 — a `cell.type: "ref"` marker the FIRST boot will grow.
+///
+/// The marker is a DECLARATION, not a cell: it names a template that shall
+/// stand at this position. It is planned here and materialised after the plan,
+/// through the same `parse_subtree`/`stage_subtree` chain a mutation takes —
+/// never spawned, never registered, never given a `cell_id` of its own.
+///
+/// It also CONSUMES ITSELF. After the growth the referenced template's content
+/// stands in its place and the declaration is gone, from which two properties
+/// follow rather than being booked: a second boot finds nothing to grow, and a
+/// node a mutation removed cannot be re-declared into existence by a reboot.
+#[derive(Debug, Clone)]
+pub struct PlannedGrowth {
+    /// Absolute meclaw path the referenced template's root will occupy.
+    pub path: McPath,
+    /// The marker directory on disk. Its `config.json` is what the growth
+    /// replaces; everything an operator wrote BESIDE it survives.
+    pub fs_path: std::path::PathBuf,
+    /// `cell.template`, verbatim — `<name>` or `<name>@<version>`.
+    pub reference: String,
+    /// Top-level `override_params`, addressed by the referenced template's own
+    /// cell paths (`""` is its root). `docs/config.md` § Spezialfall.
+    pub override_params: JsonValue,
+}
 
 /// A fully validated bootstrap plan. `apply_bootstrap_plan` (Task 15b) takes
 /// this and performs spawn/register/AddEdge/AddHiveScope — guaranteed not to
@@ -311,6 +335,11 @@ pub struct PlannedEdge {
 pub struct BootstrapPlan {
     /// All hive scopes found in the filesystem tree.
     pub hives: Vec<PlannedHive>,
+    /// GH #424 — the `cell.type: "ref"` markers this FIRST boot will grow,
+    /// in walk order. Empty on a reboot (a marker in an already-grown tree is
+    /// an `unregistered_nodes` entry) and empty after the growth, because a
+    /// grown marker is no longer a marker.
+    pub growths: Vec<PlannedGrowth>,
     /// All non-hive cells found in the filesystem tree.
     pub cells: Vec<PlannedCell>,
     /// All validated edges declared in hive params blocks.
@@ -426,6 +455,36 @@ pub(crate) fn compile_contract_view(
         write_surface: block.write_surface,
         // GH #314: likewise — whether this cell's database travels at all.
         transfer: block.transfer,
+    })
+}
+/// GH #424 — read one `ref` marker's `config.json` into a [`PlannedGrowth`].
+///
+/// Pure: it decides nothing about resolvability (that is the registry's answer,
+/// at growth time) and touches no filesystem. Two named refusals:
+///
+/// * no `cell.template` — worded EXACTLY as `mutation/subtree.rs::expand_ref`
+///   words it, because one cause must not have two formulations;
+/// * `override_params` present but not an object.
+fn plan_growth(
+    config: &JsonValue,
+    fs_path: &std::path::Path,
+    mc_path: &McPath,
+) -> Result<PlannedGrowth, String> {
+    let reference = config
+        .get("cell")
+        .and_then(|c| c.get("template"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| "a ref cell must declare cell.template".to_string())?;
+    let override_params = match config.get("override_params") {
+        None => JsonValue::Object(Default::default()),
+        Some(v) if v.is_object() => v.clone(),
+        Some(_) => return Err("override_params must be an object".to_string()),
+    };
+    Ok(PlannedGrowth {
+        path: mc_path.clone(),
+        fs_path: fs_path.to_path_buf(),
+        reference: reference.to_string(),
+        override_params,
     })
 }
 
@@ -618,15 +677,27 @@ pub fn plan_bootstrap_with_env(
         // which no factory exists. Named, not merely rejected — same two halves
         // as every other refusal here: which key, and which file.
         if cfg.cell.template.is_some() || cfg.cell.cell_type == "ref" {
-            errors.push(BootstrapError::InvalidJson {
-                path: fs_path.clone(),
-                reason: format!(
-                    "{}: cell: the key `template` (and `type: \"ref\"`) is template-time only \
-                     — a template reference is resolved at instantiation and must not stand in \
-                     an instantiated tree",
-                    fs_path.join("config.json").display()
-                ),
-            });
+            // GH #424: on a FIRST boot a ref marker is a declaration THIS boot
+            // fulfils — the sentence above described a boot that could not
+            // instantiate, and that premise is gone.
+            //
+            // On a REBOOT it stays what it was: an unresolved marker in a tree
+            // that has already been grown once. The A5b rule applies (report,
+            // never adopt), because growing it now would instantiate into a
+            // running colony behind the operator's back. A crash mid-growth
+            // leaves `bootstrap_in_flight` behind and THAT reboot classifies as
+            // FirstBoot, so the resume case is covered by the same branch.
+            if matches!(boot_state, BootState::Reboot) && !has_pending_mutation {
+                plan.unregistered_nodes.push(mc_path.clone());
+                continue;
+            }
+            match plan_growth(&substituted, fs_path, &mc_path) {
+                Ok(g) => plan.growths.push(g),
+                Err(reason) => errors.push(BootstrapError::InvalidJson {
+                    path: fs_path.clone(),
+                    reason: format!("{}: {reason}", fs_path.join("config.json").display()),
+                }),
+            }
             continue;
         }
 
@@ -698,9 +769,15 @@ pub fn plan_bootstrap_with_env(
             let hp: HiveParams = match serde_json::from_value(params_value) {
                 Ok(h) => h,
                 Err(e) => {
+                    // GH #353's two halves, applied here too (GH #424): a
+                    // refusal names which key and which file. `path` stays the
+                    // cell DIRECTORY, as every variant in this walk reports it;
+                    // the reason names the file the operator has to open. This
+                    // is the seam `params.graph.nodes` arrives at, and that
+                    // boundary is now a stated one — it has to locate itself.
                     errors.push(BootstrapError::InvalidJson {
                         path: fs_path.clone(),
-                        reason: format!("params: {e}"),
+                        reason: format!("{}: params: {e}", fs_path.join("config.json").display()),
                     });
                     continue;
                 }
@@ -1595,6 +1672,20 @@ pub enum BootstrapError {
         edge_id: Uuid,
         /// The endpoint path that does not resolve.
         endpoint: McPath,
+    },
+    /// GH #424: a `cell.type: "ref"` marker the first boot planned to grow
+    /// could not be fulfilled.
+    ///
+    /// `reason` is the mutation path's own wording, carried through word for
+    /// word (`template_missing`, `template_ref_cycle`, `schema`, or a rename
+    /// that failed) — one cause, one formulation, whichever door asked.
+    GrowthFailed {
+        /// Filesystem directory of the marker.
+        path: PathBuf,
+        /// `cell.template`, verbatim.
+        reference: String,
+        /// Why it could not be grown.
+        reason: String,
     },
 }
 

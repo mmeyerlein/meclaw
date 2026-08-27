@@ -119,6 +119,7 @@ async fn cli_env_seam_carries_through_boot_mutation_and_adoption() {
         daemon: false,
         validate: false,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

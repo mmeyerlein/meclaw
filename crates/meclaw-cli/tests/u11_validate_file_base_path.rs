@@ -29,6 +29,7 @@ fn cli_validate(root: PathBuf, api: Option<SocketAddr>) -> Cli {
         daemon: false,
         validate: true,
         validate_strict: false,
+        apply: None,
         blobs: None,
         tokio_console: false,
         tokio_console_port: 6669,

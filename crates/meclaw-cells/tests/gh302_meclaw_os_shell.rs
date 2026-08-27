@@ -43,7 +43,7 @@
 //! 6. **No swallowing sink** (#284, ruling Q2): nothing in here resolves to
 //!    `terminal`, and every refusal lane leaves the shell instead of ending in
 //!    it.
-//! 7. **No second vault** (#302 ruling Q20): `access@2.1.0` carries its own
+//! 7. **No second vault** (#302 ruling Q20): `access@2.2.0` carries its own
 //!    interior `vault`, and the standalone `vault` template attests its inbound
 //!    edges against `params.broker` — with no broker at this level it would boot
 //!    locked and inert.
@@ -68,10 +68,49 @@ const HIVE: &str = "/h";
 const SHELL: &str = "meclaw-os";
 const BROKER: &str = "access";
 const LOOP: &str = "steward";
+
+/// GH #425 / R6 — the two halves of the ONE authoring path a colony has: the
+/// baumeister that drafts, and the submitter that is the only cell in the tree
+/// with a reach onto the mutation door. Both pass the question ADR-0013 asks
+/// (do all occupants of the level beneath share it?): one colony, one manifest
+/// audit trail — yes.
+const BAUMEISTER: &str = "builder";
+const SUBMITTER: &str = "submit";
 /// The container the organisations are instantiated into.
 const CONTAINER: &str = "orgs";
 /// The one lane of the broker that is deliberately NOT re-emitted outward.
 const NOT_RE_EMITTED: &str = "connect";
+
+/// GH #425 — the six lanes an occupant of this level ships and this level
+/// deliberately does NOT declare, because a sibling INSIDE the level is the one
+/// that produces or consumes them.
+///
+/// ADR-0013: *"a level declares the union of its occupants' lanes that CROSS it
+/// … minus what a sibling inside the level consumes itself."* The builder pair
+/// crosses nothing at this boundary, and that is not a saving — it is the rule
+/// applied: the lane is invisible at the rim precisely because the baumeister
+/// stands INSIDE.
+///
+/// | lane | who ships it | who inside answers for it |
+/// |---|---|---|
+/// | `build` | `org`, emitted | `./builder` / `./submit`, by class |
+/// | `in_build_result` | `org`, accepted | `./builder` / `./submit`, on the way back |
+/// | `in_build` | `builder`, accepted | produced by the `./orgs -> ./builder` edge |
+/// | `in_apply` | `submit`, accepted | produced by the `./orgs -> ./submit` edge |
+/// | `manifest` | `builder`, emitted | consumed by the `./builder -> ./orgs` edge |
+/// | `receipt` | `submit`, emitted | consumed by the `./submit -> ./orgs` edge |
+///
+/// `mutate` is deliberately NOT here: the submitter emits it and the shell
+/// re-emits it, because it has to leave the level to reach the mutation door.
+/// That is the one lane of this pair that crosses, and it is the whole guardrail.
+const CONSUMED_INSIDE: &[&str] = &[
+    "build",
+    "in_build_result",
+    "in_build",
+    "in_apply",
+    "manifest",
+    "receipt",
+];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
 const TENANT: &str = "org";
@@ -181,21 +220,30 @@ fn template_json() -> Value {
 // ─────────────────────────────────────────────────────────────── the shape
 
 #[test]
-fn the_shell_holds_the_broker_the_control_loop_and_one_empty_container() {
+fn the_shell_holds_four_refs_and_one_empty_container() {
     let dir = shell_dir();
     let _ = hive_params(&dir); // it is a hive, and its params parse
 
+    let mut want = vec![
+        BROKER.to_string(),
+        BAUMEISTER.to_string(),
+        CONTAINER.to_string(),
+        LOOP.to_string(),
+        SUBMITTER.to_string(),
+    ];
+    want.sort();
     assert_eq!(
         children(&dir),
-        vec![BROKER.to_string(), CONTAINER.to_string(), LOOP.to_string()],
-        "the shell's occupants are exactly `{BROKER}`, `{LOOP}` and the `{CONTAINER}` container — \
-         a level that grows a fourth sibling has taken on something its siblings do not share"
+        want,
+        "the shell's occupants are exactly `{BROKER}`, `{LOOP}`, `{BAUMEISTER}`, \
+         `{SUBMITTER}` and the `{CONTAINER}` container — a level that grows a sixth \
+         sibling has taken on something its siblings do not share"
     );
 
     // A ref directory holds nothing besides its own `config.json` (the
     // substrate refuses anything else with `schema`,
     // `mutation/subtree.rs:612-634`).
-    for name in [BROKER, LOOP] {
+    for name in [BROKER, LOOP, BAUMEISTER, SUBMITTER] {
         let d = dir.join(name);
         assert!(
             ref_target(&d).is_some(),
@@ -294,22 +342,30 @@ fn occupant_routes(name: &str) -> (Vec<String>, Vec<String>) {
 }
 
 #[test]
-fn the_shells_contract_is_its_occupants_lanes_minus_the_one_that_stays_inside() {
+fn the_shells_contract_is_its_occupants_lanes_minus_the_ones_that_stay_inside() {
     let (broker_in, broker_out) = occupant_routes(BROKER);
     let (loop_in, loop_out) = occupant_routes(LOOP);
+    let (builder_in, builder_out) = occupant_routes(BAUMEISTER);
+    let (submit_in, submit_out) = occupant_routes(SUBMITTER);
 
-    // Three occupants, and the third one — the organisation in the container —
-    // has no contract of its own to read here, because it does not exist until
+    // Five occupants, and the one in the container — the organisation — has no
+    // contract of its own to read here, because it does not exist until
     // somebody instantiates one. Its lanes are the `org` template's, read off
-    // the tree exactly like the other two.
+    // the tree exactly like the rest.
     let (tenant_in, tenant_out) = occupant_routes(TENANT);
 
-    let expect_in = sorted([broker_in, loop_in, tenant_in].concat());
-    let expect_out = sorted(
-        [broker_out, loop_out, tenant_out]
+    let expect_in = sorted(
+        [broker_in, loop_in, tenant_in, builder_in, submit_in]
             .concat()
             .into_iter()
-            .filter(|r| r != NOT_RE_EMITTED)
+            .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let expect_out = sorted(
+        [broker_out, loop_out, tenant_out, builder_out, submit_out]
+            .concat()
+            .into_iter()
+            .filter(|r| r != NOT_RE_EMITTED && !CONSUMED_INSIDE.contains(&r.as_str()))
             .collect::<Vec<_>>(),
     );
 
@@ -483,7 +539,10 @@ fn the_org_lanes_cross_this_level_unchanged() {
     let mine_in = routes(&c.accepts);
     let mine_out = routes(&c.emits);
 
-    for lane in &tenant_in {
+    for lane in tenant_in
+        .iter()
+        .filter(|l| !CONSUMED_INSIDE.contains(&l.as_str()))
+    {
         assert!(
             mine_in.contains(lane),
             "`{TENANT}` accepts `{lane}` and this level does not: nothing can reach an \
@@ -492,11 +551,33 @@ fn the_org_lanes_cross_this_level_unchanged() {
              here in the same commit. This level accepts {mine_in:?}."
         );
     }
-    for lane in &tenant_out {
+    for lane in tenant_out
+        .iter()
+        .filter(|l| !CONSUMED_INSIDE.contains(&l.as_str()))
+    {
         assert!(
             mine_out.contains(lane),
             "`{TENANT}` emits `{lane}` and this level does not: the answer stops at the \
              container. This level emits {mine_out:?}."
+        );
+    }
+
+    // The subtractions are decisions, so they are asserted as ones: each lane in
+    // CONSUMED_INSIDE that the TENANT ships must still be shipped by it, and
+    // must still not be declared here. A lane the org stopped raising would
+    // otherwise sit in the table forever, silently exempting nothing.
+    for lane in ["build", "in_build_result"] {
+        let owned = tenant_out.iter().any(|l| l == lane) || tenant_in.iter().any(|l| l == lane);
+        assert!(
+            owned,
+            "the subtraction of `{lane}` is stale: `{TENANT}` no longer ships it"
+        );
+        assert!(
+            !mine_out.iter().chain(mine_in.iter()).any(|l| l == lane),
+            "the shell declares `{lane}`, which a sibling INSIDE it answers for. On this \
+             level the builder lane pair crosses NOTHING: `./orgs` raises it, `./builder` \
+             or `./submit` takes it, and back. Declaring it at the rim would promise a lane \
+             whose messages never leave."
         );
     }
 
@@ -531,11 +612,32 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     let table = table_for(&hp);
     let hive = Path::new(HIVE);
 
+    // GH #425 — until R6 every edge of this shell touched the rim, and the
+    // assertion below read that as a rule: "a level routes, it does not wire its
+    // occupants to each other". It was a coincidence of who lived here. ADR-0013
+    // says a level OWNS what its siblings must share, and owning a baumeister
+    // means the container is wired to it — exactly as `assistant` wires
+    // `./cogny -> ./tools` and `member` wires `./assistants -> ./firewall`.
+    //
+    // What survives of the old rule is the part that was load-bearing: an
+    // occupant-to-occupant edge must name a lane, so it can be read, and it must
+    // not be the container talking to itself.
     for e in &hp.graph.edges {
+        if e.from == "." || e.to == "." {
+            continue;
+        }
+        assert_ne!(
+            e.from, e.to,
+            "the edge {} -> {} is an occupant wired to itself",
+            e.from, e.to
+        );
         assert!(
-            e.from == "." || e.to == ".",
-            "the edge {} -> {} is internal to the shell — a level routes, it does not wire its \
-             occupants to each other",
+            e.condition
+                .as_deref()
+                .is_some_and(|c| c.contains("hop.route ==")),
+            "the internal edge {} -> {} states no lane — an edge between two occupants of a \
+             level is the level exercising what it owns, and it says on which lane or it is \
+             not readable",
             e.from,
             e.to
         );
@@ -584,20 +686,87 @@ fn every_edge_is_a_door_or_an_exit_and_every_one_carries_a_declared_lane() {
     };
     let child = format!("./{CONTAINER}");
     let (tenant_in, tenant_out) = occupant_routes(TENANT);
-    for route in &tenant_in {
+    // The builder pair is skipped here and asserted in its own shape below: its
+    // door is not the rim but a SIBLING, which is the whole of what "a level
+    // owns what its siblings must share" buys.
+    for route in tenant_in
+        .iter()
+        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+    {
         assert!(
             carries(".", &child, route),
             "no `. -> {child}` edge on `{route}` — `{TENANT}` accepts that lane and this level \
              declares it, so the container needs a door for it"
         );
     }
-    for route in &tenant_out {
+    for route in tenant_out
+        .iter()
+        .filter(|r| !CONSUMED_INSIDE.contains(&r.as_str()))
+    {
         assert!(
             carries(&child, ".", route),
             "no `{child} -> .` edge on `{route}` — `{TENANT}` emits that lane and this level \
              declares it, so the container needs an exit for it"
         );
     }
+
+    // GH #425 — the container reaches the baumeister and the submitter, and both
+    // answer it back. Four edges, and the two upward ones discriminate on
+    // `hop.build_op` rather than on the lane, because the lane is one and the
+    // classes are two.
+    for (to, op) in [
+        (format!("./{BAUMEISTER}"), "draft"),
+        (format!("./{SUBMITTER}"), "apply"),
+    ] {
+        assert!(
+            hp.graph.edges.iter().any(|e| e.from == child
+                && e.to == to
+                && e.condition
+                    .as_deref()
+                    .is_some_and(|c| c.contains("'build'") && c.contains(&format!("'{op}'")))),
+            "no `{child} -> {to}` edge on `build` with build_op `{op}` — the container \
+             cannot reach the one baumeister the colony shares"
+        );
+        assert!(
+            hp.graph.edges.iter().any(|e| e.from == to
+                && e.to == child
+                && e.modifier
+                    .as_ref()
+                    .and_then(|m| m.set_hop.get("route"))
+                    .is_some_and(|v| v.contains("in_build_result"))),
+            "nothing comes back from {to} — a round that answers into nothing is a tool \
+             call the brain waits out"
+        );
+    }
+
+    // And the one edge that leaves the shell for the mutation door.
+    let senders: Vec<&str> = hp
+        .graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.to == "."
+                && e.condition
+                    .as_deref()
+                    .is_some_and(|c| c.contains("'mutate'"))
+        })
+        .map(|e| e.from.as_str())
+        .collect();
+    assert_eq!(
+        senders.len(),
+        2,
+        "the `mutate` lane carries two senders and no more: {senders:?}"
+    );
+    assert!(
+        senders.contains(&format!("./{LOOP}").as_str())
+            && senders.contains(&format!("./{SUBMITTER}").as_str()),
+        "the control loop and the submitter, and nobody else: {senders:?}"
+    );
+    assert!(
+        !senders.contains(&format!("./{BAUMEISTER}").as_str()),
+        "R6: the builder gets NO edge to the mutation door. If this ever passes with \
+         ./{BAUMEISTER} in it, the guardrail is gone and the README is fiction"
+    );
 }
 
 // ───────────────────────────────────────────── the subtractions (Q2, Q20)
@@ -629,12 +798,45 @@ fn nothing_in_the_shell_swallows_a_refusal() {
         if !(cond.contains("'error'") || cond.contains("'reject'")) {
             continue;
         }
-        assert_eq!(
-            e.to, ".",
-            "the refusal edge {} -> {} ends INSIDE the shell; a refusal lane leaves the level it \
-             was raised in, or it is not a refusal any more",
-            e.from, e.to
-        );
+        if e.to != "." {
+            // GH #425 — one exception, and it is an assertion rather than a
+            // silence: a refusal may stay inside this level if it is being
+            // carried BACK TO WHOEVER ASKED, re-stamped onto a lane the
+            // receiving occupant accepts. The builder's `error` is exactly
+            // that: it becomes `in_build_result` and lands in the chat that
+            // raised the request, as a tool_result naming the code. What this
+            // rule protects against is a refusal reaching a place that answers
+            // nothing — so the test is that the target TAKES the lane, not that
+            // the edge points outwards.
+            let stamped = e
+                .modifier
+                .as_ref()
+                .and_then(|m| m.set_hop.get("route"))
+                .map(|v| v.trim_matches('\'').to_string())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the refusal edge {} -> {} stays inside the shell and re-stamps no \
+                         lane — a refusal that keeps its own name inside a level is one \
+                         nobody downstream declared to take",
+                        e.from, e.to
+                    )
+                });
+            let occupant = e.to.trim_start_matches("./");
+            let (accepts, _) = occupant_routes(if occupant == CONTAINER {
+                TENANT
+            } else {
+                occupant
+            });
+            assert!(
+                accepts.contains(&stamped),
+                "the refusal edge {} -> {} re-stamps `{stamped}`, which `{occupant}` does not \
+                 accept: {accepts:?}. A refusal delivered onto a lane nobody takes is a \
+                 refusal turned into silence, which is what this rule exists to prevent",
+                e.from,
+                e.to
+            );
+            continue;
+        }
     }
 }
 

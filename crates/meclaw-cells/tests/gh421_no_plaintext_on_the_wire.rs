@@ -292,7 +292,6 @@ fn build_tree(td: &tempfile::TempDir, access: &std::path::Path, base_url: &str) 
     // Only the broker edge points at the vault, so nothing else has to be
     // declared here — an undeclared inbound edge would keep the vault locked.
     vault["params"]["sealed_neighbors"] = json!([]);
-    vault["params"]["inject_map"] = json!({});
     write(root, "main/vault/config.json", &vault);
     write(
         root,
@@ -737,14 +736,16 @@ async fn a_full_credential_round_leaves_no_plaintext_in_the_log_or_in_a_blob() {
 /// Swap that fixture for a `put` and the pin next door goes red — which is the
 /// property a control case exists to demonstrate.
 ///
-/// **Why not `params.inject_map`**, the deprecated injection-at-unlock that
-/// advertises itself as THE plaintext path: measured here, it never reaches
-/// `message_log` at all. Its emission is a `params`-only body, the UBF schema
-/// requires one of `system`/`messages`/`attachments`, and the colony's
-/// debug-build validation dead-letters the emission (`InvalidUbfBody`) before a
-/// log row is written. A counter-proof hung on it would have been green by
-/// accident and blind by construction. (That the deprecated path is broken in a
-/// debug build is a finding of its own, not a thing this file repairs.)
+/// **Why not `params.inject_map`**: because there is no such param any more.
+/// The injection-at-unlock advertised itself as THE plaintext path, and when
+/// this file was first written it was the obvious place to hang a control case
+/// on. Measuring it is what killed it (GH #428): the emission is a `params`-only
+/// body, the UBF schema requires one of `system`/`messages`/`attachments`, and
+/// the colony dead-letters it as `InvalidUbfBody` before a log row is written.
+/// A counter-proof hung on it would have been green by accident and blind by
+/// construction. Ruling R10 removed the path outright rather than repairing a
+/// mechanism with no users and no working delivery; `put` is what this control
+/// case has stood on since, and it is the sharper one anyway.
 ///
 /// If this test ever goes green by NOT finding the secret, the pin next door has
 /// lost its teeth and both belong looked at together. And on the day the `put`

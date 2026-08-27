@@ -1,4 +1,4 @@
-# `assistant@1.0.1`
+# `assistant@1.1.0`
 
 One generation of one person's agent. Two occupants, one open container, and
 twenty-one edges.
@@ -6,7 +6,7 @@ twenty-one edges.
 | what | it is | why it is at THIS level |
 |---|---|---|
 | `cogny` | a `ref` to [`cogny@4.0.3`](../cogny/README.md) — the reasoning core | every channel of this assistant consults the same second opinion; two cores would be two opinions |
-| `tools` | a `ref` to [`tools@1.0.0`](../tools/README.md) — the tool surface, one node with one contract | every channel calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
+| `tools` | a `ref` to [`tools@1.1.0`](../tools/README.md) — the tool surface, one node with one contract | every channel calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
 | `channels` | a real, **empty, open** container hive | the surfaces stand here — and because it is a node of this template, the eighteen edges that address it ship **once** (GH #303) |
 
 ## a level owns what its siblings must share
@@ -50,7 +50,7 @@ silent and readable. No statist is created to satisfy a contract.
 assistant/
   config.json            the level: thirteen lanes, two drain pairings, twenty-one edges
   cogny/config.json      a ref to cogny@4.0.3
-  tools/config.json      a ref to tools@1.0.0
+  tools/config.json      a ref to tools@1.1.0
   channels/config.json   an open, empty container -- no cells, no ports, NO CONTRACT
 ```
 
@@ -84,7 +84,7 @@ instantiated takes the ordinary path. The measurement comes from
 
 ## Lanes
 
-Thirteen, all at the assistant's own path. The level is **open**: it declares no
+Fifteen, all at the assistant's own path. The level is **open**: it declares no
 `params.ports`, because it is wired into.
 
 | in | what travels |
@@ -95,6 +95,7 @@ Thirteen, all at the assistant's own path. The level is **open**: it declares no
 | `in_sweep` | an operator-forced session sweep |
 | `in_prune` | a prune verdict for the context window |
 | `in_round_sweep` | a round that ran out of iterations |
+| `in_build_result` | the builder's answer on its way back to the tool round that asked — a draft manifest, or the receipt of one that was submitted. This level carries it down to the tool surface and reads nothing in it |
 
 | out | what travels |
 |---|---|
@@ -105,6 +106,7 @@ Thirteen, all at the assistant's own path. The level is **open**: it declares no
 | `recall` | a memory read this turn needs |
 | `prune` | the report of a window prune |
 | `error` | a normalised failure from anything inside this generation |
+| `build` | a structural wish leaving this generation, or a manifest being submitted by whoever drafted it. The one lane on which a tool of this assistant reaches OUT of the assistant — declared rather than hidden, for the same reason `sandbox_union` exists one level down (GH #425) |
 
 Two pairings are declared in `params.required_drains`, both in the **lane** form:
 `in_turn → error` (from the retired channel hive) and `in_prune → prune` (from
@@ -115,7 +117,7 @@ has built a generation whose every failure is a dead letter.
 
 *A level declares the union of the lanes its occupants ship, minus the lanes a
 sibling inside the level consumes itself.* Derived from `talky@4.2.2` and
-`telegram-connector@2.0.0` in the container, `cogny@4.0.3` and `tools@1.0.0`
+`telegram-connector@2.0.0` in the container, `cogny@4.0.3` and `tools@1.1.0`
 beside it. Four subtractions, every one of them a lane an occupant really ships:
 
 - **`answer`** — the talky's, consumed by the connector on the per-channel
@@ -211,7 +213,7 @@ the same mutation. The hive is an island until an edge crosses into it.
 
 ```json
 {"scope": "<member>/assistants", "diff": {
-  "add_nodes": [{"name": "agent", "template": "assistant@1.0.1"}]
+  "add_nodes": [{"name": "agent", "template": "assistant@1.1.0"}]
 }}
 ```
 

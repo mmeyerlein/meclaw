@@ -1,4 +1,4 @@
-# `org@1.0.2`
+# `org@1.1.0`
 
 The namespace, and nothing else.
 
@@ -40,14 +40,18 @@ The contract carries exactly what must cross this level to reach or leave a memb
 | emits | `write` | an assistant's batched conversation write, crossing on its way out |
 | emits | `turn_write` | one finished turn a member's assistant offers for archiving |
 | emits | `prune` | a housekeeping report from a member's assistant |
+| accepts | `in_build_result` | the builder's answer on its way back into the member it belongs to |
+| emits | `build` | a structural wish or a submission leaving one of this organisation's members, bound for the one baumeister the whole colony shares |
 
 Each lane's `because` says the same thing in the hive's own words: **the level is a
 boundary and a namespace, not a participant.** It reads nothing, decides nothing and
 holds nothing, and it translates nothing -- hop and context cross untouched.
 
-The internal graph is eleven edges and nothing else: **four doors** `.` into
-`./members`, one per accepted lane, and **seven exits** `./members` back out to `.`, one
-per emitted lane. Below the container there is nothing to route to until a member is instantiated,
+The internal graph is thirteen edges and nothing else: **five doors** `.` into
+`./members`, one per accepted lane, and **eight exits** `./members` back out to `.`, one
+per emitted lane. The two that arrived with GH #425 add no cell and no decision — thinness
+is the property under test here (ADR-0013 corollary b), and a lane pair through an empty
+container is exactly what this level already does for `in_turn`/`answer`. Below the container there is nothing to route to until a member is instantiated,
 and the mutation that instantiates one draws that member's own edges.
 
 ## Where the eleven lanes come from
@@ -56,7 +60,7 @@ They are **derived, not invented**. The rule is the one this wave ruled for a co
 level: *a level declares the union of what its occupants accept and emit at the version
 it was derived from, minus the lanes a sibling inside the level consumes itself.*
 
-The occupant of this level is `member@1.0.2`. Its accepts list is `in_turn`,
+The occupant of this level is `member@1.1.0`. Its accepts list is `in_turn`,
 `in_recall`, `in_brief`, `in_propose`; its emits list is `answer`, `ack`, `reject`,
 `error`, `write`, `turn_write`, `prune`. **Nothing is subtracted**, because the only
 thing inside an org is the container -- there is no sibling here to consume anything. So
@@ -64,7 +68,7 @@ the union is the whole of both lists, and every `because` in `config.json` names
 version it came from.
 
 The last three emits are the member's own pass-through of what an assistant raises and
-nothing at member level consumes (`assistant@1.0.1` emits seven lanes; the member takes
+nothing at member level consumes (`assistant@1.1.0` emits seven lanes; the member takes
 `turn`, `recall` and `extraction` and lets the rest go). They reached this level the day
 the member started re-emitting them, which is what the derivation rule is for: nobody
 re-derived the list by hand, the test read the neighbour's file and went red.
@@ -101,7 +105,7 @@ seems to need is either one member's or the shell's.
 
 **The one exception, and it is not an exception to the rule.** A group that owns an
 agent nobody owns personally -- a shared assistant, a duty desk, a support persona --
-is a **member** with its own name, instantiated from `member@1.0.2` like any other. It
+is a **member** with its own name, instantiated from `member@1.1.0` like any other. It
 gets a memory because it is a member, not because it is a group. The rule survives
 intact; only the naming moves.
 
@@ -140,12 +144,12 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@1.0.2`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@1.1.0`, plus the transit
    edges -- the four inbound lanes onto the org's own path, and the seven outbound ones
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor.
 2. **Each member, afterwards, one at a time.** An `add_nodes` into `<org>/members` with
-   `member@1.0.2`, and in the *same* mutation the edges that member needs. The container
+   `member@1.1.0`, and in the *same* mutation the edges that member needs. The container
    is open precisely so that this mutation is legal.
 
 Pin the version rather than writing a bare name: a bare `org` resolves to the highest

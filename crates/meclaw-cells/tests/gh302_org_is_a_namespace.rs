@@ -585,3 +585,49 @@ async fn a_hive_template_with_zero_cells_instantiates() {
         );
     }
 }
+
+/// GH #425 — the org carries the builder lane pair and grows no cell for it.
+///
+/// ADR-0013 corollary (b): *"`org` owns a name and a boundary and nothing else …
+/// it must not be padded to look substantial: an org that grows a cell has
+/// stopped being a namespace. Thinness is the property under test here."*
+///
+/// This pair adds two transit lanes and two edges through the empty container,
+/// which is exactly what the level already does for `in_turn`/`answer`. If the
+/// thinness tests above ever go red beside this one, the level was padded and
+/// this lane is the wrong shape.
+#[test]
+fn the_org_carries_the_builder_lane_pair_without_growing_a_cell() {
+    let Some(org) = shipped() else { return };
+    let member = repo("templates/member");
+    if !member.join("config.json").is_file() {
+        return;
+    }
+    let (member_accepts, member_emits) = lanes(&hive_params(&member));
+    let (accepts, emits) = lanes(&hive_params(&org));
+
+    assert!(
+        member_emits.contains(&"build".to_string()),
+        "the member no longer emits `build`: {member_emits:?}"
+    );
+    assert!(
+        emits.contains(&"build".to_string()),
+        "the org does not carry `build`: {emits:?}"
+    );
+    assert!(
+        member_accepts.contains(&"in_build_result".to_string()),
+        "the member no longer accepts `in_build_result`: {member_accepts:?}"
+    );
+    assert!(
+        accepts.contains(&"in_build_result".to_string()),
+        "the org does not carry `in_build_result`: {accepts:?}"
+    );
+
+    // The container is still empty: two lanes and two edges, no occupant.
+    let raw = std::fs::read_to_string(org.join("members/config.json"))
+        .expect("templates/org/members/config.json");
+    assert!(
+        !raw.contains("\"code\"") && !raw.contains("\"llm\"") && !raw.contains("\"store\""),
+        "the container grew a cell — an org that grows one has stopped being a namespace"
+    );
+}
