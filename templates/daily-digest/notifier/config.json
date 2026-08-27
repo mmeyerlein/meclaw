@@ -1,0 +1,70 @@
+{
+  "cell": {
+    "type": "proxy",
+    "timeout": -1
+  },
+  "params": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "emit_to": "../void",
+    "long_poll_timeout_ms": 35000,
+    "long_poll_request_secs": 30,
+    "send_timeout_ms": 10000,
+    "query_timeout_ms": 5000,
+    "base_url": "https://api.telegram.org"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "bot_token": {
+        "type": "string",
+        "secret": true,
+        "default": "${TELEGRAM_BOT_TOKEN}",
+        "description": "Telegram bot token (BotFather)"
+      },
+      "long_poll_request_secs": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "Telegram-side getUpdates long-poll wait in seconds"
+      },
+      "send_timeout_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 10000,
+        "description": "Client-side timeout around sendMessage"
+      }
+    },
+    "emits": {
+      "body": {},
+      "hop": {}
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "chat_id": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "network:proxy",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "Telegram delivery sink for the digest: takes the last assistant turn and sends it to context.chat_id. Inbound user messages to the digest bot are not part of this design: they leave via emit_to to ./void, the silent terminal that emits nothing. Nothing here dead-letters -- /colony/dead_letters is the READ endpoint, never a discard.",
+    "use_when": "As the terminal cell of a push pipeline (no inbound conversation expected).",
+    "not_in_scope": "No conversation handling, no command parsing \u2014 this proxy is delivery-only by topology.",
+    "emits_meaning": "Nothing into the pipeline by design (pure sink; inbound user messages leave via emit_to to the silent ./void terminal - S1 addendum: /colony/dead_letters is the READ endpoint, not a discard).",
+    "consumes_meaning": "messages[]: last assistant turn is sent. context.chat_id (number) selects the chat \u2014 promoted from the format cell's hop.",
+    "examples": [
+      "assistant 'Daily digest:...' + context.chat_id 12345 -> Telegram sendMessage(chat_id=12345)"
+    ]
+  }
+}

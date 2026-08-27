@@ -42,6 +42,13 @@ use std::sync::Arc;
 ///
 /// Returns an owned `CellFactoryRegistry` (`HashMap<String, Arc<dyn CellFactory>>`).
 /// Callers move or clone as needed.
+///
+/// GH #434: the key set of this registry is kept set-equal to the shipped
+/// catalogue in `docs/cell-types.md` § Overview (minus `hive`, a scope marker
+/// with no factory) by
+/// `crates/meclaw-cli/tests/gh325_the_registry_spawns_what_the_catalogue_lists.rs`.
+/// A new entry here is an undocumented capability until that table grows with
+/// it — in **both** language editions.
 pub fn built_in_factories() -> CellFactoryRegistry {
     let mut reg = CellFactoryRegistry::new();
     reg.insert("bash".to_string(), Arc::new(BashCellFactory));

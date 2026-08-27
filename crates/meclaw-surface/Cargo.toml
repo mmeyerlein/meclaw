@@ -3,24 +3,14 @@ name = "meclaw-surface"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Internal crate of the MeClaw substrate — the LiveView serving machinery shared by the HTTP API and the `web` cell; the library API is not stable."
+description = "Internal crate of the MeClaw substrate — the Phoenix-LiveView wire format, session tokens and vendored client bundles used by the `web` cell; the library API is not stable."
 repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
 [dependencies]
-# GH #381: this crate IS the surface machinery that used to live in
-# `meclaw-api/src/surface/`. It keeps that crate's own sanctioning for `ws`
-# (GH #159, sanctioned 2026-08-17): a surface's client is a LiveView client,
-# which is a socket client — HTTP carries only the dead render, and nothing
-# moves after that without a transport. `multipart` stays behind in
-# `meclaw-api`, which needs it for its own upload route; the surface machinery
-# never parses a multipart body.
-axum = { version = "0.7", features = ["ws"] }
-serde_json = "1"
-tokio = { version = "1", features = ["sync", "macros", "time"] }
-tracing = "0.1"
-meclaw-core = { path = "../meclaw-core", version = "0.25.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.25.0" }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# GH #396: the list is this short because the crate is pure protocol arithmetic
+# now — a frame codec, a session token and two vendored bundles read with
+# `include_str!`. It binds neither a server nor a runtime: the socket that used
+# to need `axum`/`tokio`/`tracing` and a colony handle went with `render` and
+# `socket`, and JSON comes through `meclaw_core::serde_json` as it always did.
+meclaw-core = { path = "../meclaw-core", version = "0.26.0" }

@@ -69,6 +69,7 @@ fn stage_one(td: &TempDir, template: &str, config: &str) -> (JsonValue, JsonValu
         &HashMap::new(),
         &HashMap::new(),
         &Default::default(),
+        &meclaw_colony::WorkPulse::silent(),
     )
     .expect("staging");
     let node = staged.into_iter().next().expect("one staged node");

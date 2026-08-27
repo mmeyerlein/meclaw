@@ -1,4 +1,4 @@
-# `memory-hive@3.0.3`
+# `memory-hive@3.0.4`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Thirteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1223,7 +1223,7 @@ it was allowed to leave the bundle at all.
 | `rank`, `score` | ditto, `score` next to the `agreement` it was multiplied by |
 | `legs` | ditto — leg attribution answers "which leg found this", which is a question about the RUN |
 | `superseded_by` (the successor's row id) | ditto; the payload answers the reader's question instead, with `until` — the DAY the statement stopped |
-| the full `history` chain | ditto; the payload carries at most ONE `previously` entry |
+| the full `history` chain | ditto; both halves of the bundle carry at most ONE `previously` entry |
 | exact instants | ditto; the payload carries days (below) |
 | `legs_present`, `leg_sizes`, `semantic_degraded` (bundle level) | `recall_diagnostic`, at bundle level — they describe the RUN, never the answer. `leg_sizes_raw` and `leg_capped` are new in 2.3.0 and were never in the payload |
 
@@ -1247,16 +1247,18 @@ go through the same `fmt_day` the rendered line uses. A "since when?" question i
 resolution, and the two halves of the message answer it identically. The exact timestamps are in
 the diagnostic.
 
-**`previously` is one entry, never a chain.** The version chain is sorted by start, so the last
-entry is the claim this one immediately replaced — everything older is the history OF that
-history and answers a question nobody asked this round. It renders as `[{"claim": …, "until": …}]`
-(the `until` absent when the predecessor's end is unknown). The whole chain stays in the
-diagnostic. **This is a rule about the JSON payload slot, not about the whole message:** the
-rendered text block beside it still ends a superseded line with the FULL chain
-(`(previously: vim until 2026-02-01; emacs until 2026-03-01; kakoune until 2026-04-01)`), because
-both renderers share one `candidate_annotations`. Both halves travel in the same prompt, so on a
-long-lived axis part of the saving is given back in the text — the one-entry cut has not reached
-the rendered half yet ([#296](https://github.com/mmeyerlein/meclaw/issues/296)).
+**`previously` is one entry, never a chain — in BOTH halves of the message.** The version chain
+is sorted by start, so the last entry is the claim this one immediately replaced — everything
+older is the history OF that history and answers a question nobody asked this round. In the JSON
+payload it renders as `[{"claim": …, "until": …}]` (the `until` absent when the predecessor's end
+is unknown); in the rendered text block beside it, as `(previously: kakoune until 2026-04-01)`.
+Both halves ask the same `history_entries` helper, which is what keeps them from parting again —
+and they had, for two releases: the text ended a superseded line with the FULL chain while the
+JSON carried one entry, and since both travel in the SAME prompt a long-lived axis handed part
+of the saving back one slot over
+([#296](https://github.com/mmeyerlein/meclaw/issues/296), ruling S6). The whole chain stays in
+the diagnostic — as a RECORD (`recall_diagnostic.candidates[].history`), not as prose, which is
+exactly why a rendering decision cannot shorten it.
 
 **`superseded` is copied by PRESENCE, not by truth.** Present-and-empty is an answer of its own:
 closed, with no successor anybody can name. Absent means the statement is open.
@@ -1395,7 +1397,7 @@ fact that did not exist yet.
 
 | Mode | What a fact hit becomes |
 |---|---|
-| point (no window) | the **current** statement of the hit's axis, i.e. the one its closures lead to, carrying its predecessors: the whole chain as `history: [{id, claim, from, until}]` on the record in `recall_diagnostic` and in the dialectic payload, its LAST entry as `previously` in the bundle (see the retraction above — the JSON payload slot has carried one entry since 2.3.0, while the rendered text block still ends the line with the whole chain). A CLOSED hit is therefore never a candidate of its own — it is a field on the statement that closed it. Two hits landing on one statement collapse into one candidate, and that candidate carries the **union** of both hits' `legs` (P15 O-4b) |
+| point (no window) | the **current** statement of the hit's axis, i.e. the one its closures lead to, carrying its predecessors: the whole chain as `history: [{id, claim, from, until}]` on the record in `recall_diagnostic` and in the dialectic payload, its LAST entry as `previously` in the bundle — in the JSON payload slot and in the rendered text block alike, out of one `history_entries` helper (#296, ruling S6). A CLOSED hit is therefore never a candidate of its own — it is a field on the statement that closed it. Two hits landing on one statement collapse into one candidate, and that candidate carries the **union** of both hits' `legs` (P15 O-4b) |
 | window | **every** version stays its own candidate and carries `span: {from, until}` — in a time-range question the versions themselves are the answer, so nothing collapses |
 | multivalued axis | untouched: no predecessors at all — no `history` on the record, no `previously` in the payload — every value stands (see below) |
 
@@ -1758,13 +1760,13 @@ Three shapes are answerable, and they differ only in what the caller puts in the
 
 | Question | Hop | What comes back |
 |---|---|---|
-| "what does Alex use?" (now) | `recall_as_of: ""`, both window keys `""` | the current fact of each axis, with the claim it replaced attached — one entry as `previously` in the JSON payload slot, the whole chain in the rendered `(previously: …)` annotation beside it, and the full `history` records in `recall_diagnostic` |
+| "what does Alex use?" (now) | `recall_as_of: ""`, both window keys `""` | the current fact of each axis, with the claim it replaced attached — one entry as `previously` in the JSON payload slot and the same one entry in the rendered `(previously: …)` annotation beside it, and the full `history` records in `recall_diagnostic` |
 | "what did he use in May?" (an instant) | `recall_as_of: "2026-05-01T00:00:00Z"`, both window keys `""` | the chain trimmed to that instant first — the answer is what was true THEN, not what is true now with a date attached |
 | "what did he use between March and now?" (a range) | `recall_window_from` + `recall_window_to` both set | every version whose derived span intersects the window, newest validity first, each with its own `span` |
 
 **"And what was it before?" is a field, not a second query.** The predecessor travels with the
-current candidate — one entry as `previously` in the JSON payload slot (the rendered text block
-beside it still carries the whole chain), the full `history` records in `recall_diagnostic` — so
+current candidate — one entry as `previously` in the JSON payload slot and the same one in the
+rendered text block beside it, the full `history` records in `recall_diagnostic` — so
 the change is answerable from one recall, which is the whole reason supersession moved to read
 time.
 

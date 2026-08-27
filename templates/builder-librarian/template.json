@@ -1,6 +1,6 @@
 {
   "name": "builder-librarian",
-  "version": "2.0.4",
+  "version": "2.0.6",
   "description": {
     "purpose": "Lexical retrieval over the builder's knowledge base: the spec and the template catalogue, plus -- where the tree carries them -- the cookbook patterns, the corpus briefs and the pinned error codes, chunked by section and ranked with BM25.",
     "use_when": "In front of any authoring cell, so a model retrieves the pattern instead of carrying the whole corpus in its prompt. One per builder hive.",

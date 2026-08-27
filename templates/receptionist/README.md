@@ -82,8 +82,8 @@ which hands out counts and never message content, *are* drawable by a mutation
 as named entries and not as a prefix. `/colony/mutations` is authority transfer
 and stays out.) It exists exactly if an operator
 wrote it into a `config.json` before boot, and no topology can grant itself the
-lane afterwards (the colony-endpoint roundtrip rule 4; the `builder-hive`
-topology has the same shape).
+lane afterwards -- that is rule 4 of the colony-endpoint roundtrip, and it holds
+for every topology, not just this one.
 
 Consequence for the gate runbook: a receptionist instantiated by `add_nodes`
 registers and activates, but its mutation lane is **inert** until an operator

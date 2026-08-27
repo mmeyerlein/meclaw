@@ -121,7 +121,10 @@ async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u1
         })
         .await
         .expect("rescan sent");
-    ack_rx.await.expect("rescan acked");
+    ack_rx
+        .await
+        .expect("rescan acked")
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {

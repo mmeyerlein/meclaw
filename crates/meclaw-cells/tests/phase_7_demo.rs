@@ -34,7 +34,10 @@ async fn setup_file_template(td: &tempfile::TempDir, h: &meclaw_testing::ColonyH
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 fn make_tool_call_probe(args: &str, id: &str, reply_to: Path) -> meclaw_core::Message {

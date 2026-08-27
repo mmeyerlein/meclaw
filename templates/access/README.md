@@ -1,4 +1,4 @@
-# `access@2.2.0`
+# `access@2.3.0`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -30,6 +30,10 @@ cell.
  "purpose":    "answer the incoming message",
  "ttl_ms":     900000}
 ```
+
+One optional field: `"check_only": true` asks for a **verdict** rather than for a grant.
+Nothing is minted, `ttl_ms` is ignored, and the answer's `status` is `allowed` instead of
+`granted` (see *Asking whether, without asking for*, below).
 
 **2. `access.grant`** -- the answer, a `tool_result` on the same call id:
 
@@ -181,7 +185,7 @@ lane is stated once, on this hive's own door edge, and nowhere else.
 |---|---|---|
 | `in_request` | in | `access.request` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
 | `in_invoke` | in | `access.invoke` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
-| `grant` | out | the verdict, with `hop.verdict` and `hop.grant_id` beside it |
+| `grant` | out | the verdict, with `hop.verdict` and `hop.grant_id` beside it. `hop.verdict` is one of `granted`, `allowed` (a `check_only` request — a yes with no grant behind it, so `hop.grant_id` is empty), `pending` or `denied` |
 | `ack` | out | `ok` or `denied` plus a `reason_code`; a sealed credential leaves here too, recognisable by `hop.operation == "vault.deliver"` and the extra `sealed` body slot |
 | `connect` | out | `hop.address` is the grant's scope as canonical JSON, `hop.channel` and `hop.operation` beside it, the body carries the payload minus every address key |
 | `error` | out | a lane failed -- the parent **MUST** wire it |
@@ -240,6 +244,7 @@ restart and without a deploy:
 | `capability` | `chat.send`, `web.fetch`, … or `*` |
 | `subject` | on whose behalf, or `*` |
 | `scope_match` | `{"channel": "…", "chat_id": "*", "actions": ["send_message"]}` |
+| `scope_match.scope_prefix` | a reserved key: a **path prefix** matched against `resource.scope` |
 | `verdict` | `allow` / `deny` / `require_approval` |
 | `max_ttl_ms` | the ceiling; the request may ask for less, never for more |
 | `constraints` | `{"max_invocations": 20, "rate_per_min": 6}` |
@@ -248,7 +253,22 @@ restart and without a deploy:
 
 Every seeded row ships `enabled: 0`. A fresh instance therefore **grants nothing** and
 answers `capability_unknown` until an operator turns on exactly what they meant to. The
-seed exists to be read, not to authorise.
+seed exists to be read, not to authorise. Four rows ship: three examples, and the
+submission rule `colony.mutate.default` — `requester: "/os/submit"`, `subject: "*"`,
+`scope_match: {"scope_prefix": "/os/orgs", "actions": ["apply"]}`. It is the row that
+lets a manifest reach the mutation door, and R-AC-1 is what shapes it: the requester is
+the **submit hive**, promoted by the edge, and the identity on whose behalf it asks
+travels as `subject`. The delegation stands visibly in a row instead of implicitly in a
+script.
+
+Every comparison in `scope_match` is an equality or a wildcard — except `scope_prefix`,
+which is a **path prefix** against `resource.scope`: `/os` permits `/os` and `/os/orgs`
+and does **not** permit `/oscar`. It is a new, reserved key rather than prefix semantics
+bolted onto `scope`, because reinterpreting `scope` would silently widen every rule that
+ever used it, and that is the one change a permission comparator may not make. A rule that
+names it needs a `resource.scope` to compare against: without one the answer is
+`scope_incomplete`, never a match. And it never enters the grant's frozen scope — a
+permission states what is allowed, not where the grant points (R-AC-2).
 
 Rules are examined in `priority` order and the **first match wins**. An explicit `deny` is
 worth writing precisely because it reads differently from silence: `denied_by_rule` tells a
@@ -257,6 +277,20 @@ caller it found a closed door, `capability_unknown` tells it there is no door th
 `require_approval` reports `status: "pending"` and mints **no** grant. The approval lane
 itself is not in v1 -- decision B-4 is unruled, and a pending grant nothing can approve
 would be a grant that says yes by accident.
+
+### Asking whether, without asking for
+
+A request may carry `"check_only": true`. The verdict is decided exactly as it always was
+— same rules, same order, same reason codes — but a matching `allow` answers
+`status: "allowed"` with an **empty** `grant_id`, no `expires_at` and no `scope_summary`,
+and writes **one** audit row with `outcome: "checked"`. Nothing lands in `grants`, nothing
+in `grant_events`.
+
+That is the whole point: a grant nobody redeems is a bearer row with an expiry date that
+only `./sweep` ever touches again. A caller who wants to know *whether* an action is
+permitted -- `submit` asking whether a manifest may go to the mutation door -- has no
+instrument to spend, so it should be handed none. A refused check is the ordinary refusal:
+same `reason_code`, `outcome: "denied"`, no grant either way.
 
 ## Revocation, expiry, and why neither is a column
 

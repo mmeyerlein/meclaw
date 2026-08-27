@@ -515,6 +515,37 @@ fn a_superseded_claim_still_announces_itself_without_its_chain() {
         "and the whole chain is still in the record: {}",
         msg["recall_diagnostic"]["candidates"][0]
     );
+
+    // Ruling S6: the same cut in the half a model actually READS. Until this
+    // package the rendered block ended the line with the whole chain, so the
+    // saving measured on the JSON was partly handed back one slot over -- both
+    // halves travel in the SAME prompt.
+    let rendered = msg["messages"][0]["text"]
+        .as_str()
+        .expect("the rendered tool_result");
+    assert!(
+        rendered.contains("(previously: kakoune until 2026-04-01)"),
+        "the rendered line names the claim this one replaced: {rendered}"
+    );
+    for gone in ["vim", "emacs"] {
+        assert!(
+            !rendered.contains(gone),
+            "the older claims stay out of the rendered block — {gone} is in it: {rendered}"
+        );
+    }
+
+    // And the diagnostic RENDERING caps with the rest, because one helper answers
+    // for every renderer. That is not where the trace keeps the chain -- the
+    // assertion above is: the RECORD is the trace's copy, and it is a record and
+    // not prose precisely so that a rendering decision cannot shorten it.
+    let diagnostic = msg["recall_diagnostic"]["text"]
+        .as_str()
+        .expect("the diagnostic rendering");
+    assert!(
+        diagnostic.contains("(previously: kakoune until 2026-04-01)")
+            && !diagnostic.contains("vim"),
+        "one helper, so the flat ranked form says the same thing: {diagnostic}"
+    );
 }
 
 /// A uuid-shaped id — the ids a real store hands out, which is what makes the

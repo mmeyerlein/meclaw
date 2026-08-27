@@ -60,7 +60,7 @@ messages a graph can route.
 |---|---|---|
 | the template root | `code` | the whole split: lanes, the budget, the OpenAI-form unwrap. No state, no `cell.db`. |
 
-This is a single-cell template (the `_cell-types` shape): instantiate it under any name --
+This is a single-cell template (one cell of one cell type, the smallest `config.json` that starts it, and a README that explains its declarations): instantiate it under any name --
 `split` and `dispatch` are the usual ones -- and the instance IS the cell.
 
 ```bash
@@ -138,7 +138,7 @@ DISPATCHER_ASYNC_TOOLS=write_journal
 ```
 
 **`remember` used to be the example in that second line, and it is not one any more.**
-Per-turn memory extraction stopped being a tool call in `talky@4.1.0`: the model writes a
+Per-turn memory extraction is no longer a tool call: since `talky@4.1.0` the model writes a
 fenced block into its own answer and a splitter cell cuts it out
 ([#379](https://github.com/mmeyerlein/meclaw/issues/379)). The async class itself is
 unchanged and stays documented here -- it is what any fire-and-forget tool an instance

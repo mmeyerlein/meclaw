@@ -101,7 +101,10 @@ async fn install_code_template(
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 async fn add_code_node(h: &ColonyHandle, node: &str, template: &str) {

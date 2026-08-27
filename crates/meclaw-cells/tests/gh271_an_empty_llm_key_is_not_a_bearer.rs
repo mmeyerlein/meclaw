@@ -12,9 +12,9 @@
 //! #268 and #270 repaired the same shape in `mcp` and `web_search`, and #270
 //! additionally made an empty **required** credential a parse-time refusal.
 //! Refusal is wrong here: an OpenAI-compatible server on localhost typically
-//! ignores the header entirely, and `templates/builder-hive/intake-llm` points
-//! at exactly such an endpoint, so refusing would break a keyless setup the
-//! library itself ships. Sending the empty bearer is wrong too, for #270's
+//! ignores the header entirely, and `templates/builder/compose` points at exactly
+//! such an endpoint (`${LOCAL_LLM_API_KEY:-}` defaults to empty), so refusing
+//! would break a keyless setup the library itself ships. Sending the empty bearer is wrong too, for #270's
 //! reason: against a server that would have answered anonymously an empty
 //! `Authorization` header can be a flat rejection, and that failure then reads
 //! as "the provider is down" rather than as "a key nobody configured".

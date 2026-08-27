@@ -272,7 +272,7 @@ access/
   store/     store
 ```
 
-`access@2.2.0` ships with exactly this (`access@1` did too -- the property has been
+`access` ships with exactly this (`access@1` did too -- the property has been
 true of every version): the vault is an interior cell of the hive
 and deliberately **not** one of its ports, so the generic boundary refuses any
 edge into it from outside the scope. That is also why it declares

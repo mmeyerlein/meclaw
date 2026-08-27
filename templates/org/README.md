@@ -60,7 +60,7 @@ They are **derived, not invented**. The rule is the one this wave ruled for a co
 level: *a level declares the union of what its occupants accept and emit at the version
 it was derived from, minus the lanes a sibling inside the level consumes itself.*
 
-The occupant of this level is `member@1.1.0`. Its accepts list is `in_turn`,
+The occupant of this level is `member`. Its accepts list is `in_turn`,
 `in_recall`, `in_brief`, `in_propose`; its emits list is `answer`, `ack`, `reject`,
 `error`, `write`, `turn_write`, `prune`. **Nothing is subtracted**, because the only
 thing inside an org is the container -- there is no sibling here to consume anything. So
@@ -68,7 +68,7 @@ the union is the whole of both lists, and every `because` in `config.json` names
 version it came from.
 
 The last three emits are the member's own pass-through of what an assistant raises and
-nothing at member level consumes (`assistant@1.1.0` emits seven lanes; the member takes
+nothing at member level consumes (`assistant` emits seven lanes; the member takes
 `turn`, `recall` and `extraction` and lets the rest go). They reached this level the day
 the member started re-emitting them, which is what the derivation rule is for: nobody
 re-derived the list by hand, the test read the neighbour's file and went red.
@@ -105,7 +105,7 @@ seems to need is either one member's or the shell's.
 
 **The one exception, and it is not an exception to the rule.** A group that owns an
 agent nobody owns personally -- a shared assistant, a duty desk, a support persona --
-is a **member** with its own name, instantiated from `member@1.1.0` like any other. It
+is a **member** with its own name, instantiated from `member` like any other. It
 gets a memory because it is a member, not because it is a group. The rule survives
 intact; only the naming moves.
 
@@ -149,7 +149,8 @@ Two mutations, in this order.
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor.
 2. **Each member, afterwards, one at a time.** An `add_nodes` into `<org>/members` with
-   `member@1.1.0`, and in the *same* mutation the edges that member needs. The container
+   the `member` template at a pinned version, and in the *same* mutation the edges that
+   member needs. The container
    is open precisely so that this mutation is legal.
 
 Pin the version rather than writing a bare name: a bare `org` resolves to the highest

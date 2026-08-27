@@ -217,11 +217,52 @@ async fn emit_backstop_timeout(sink: &OutputSink, reply_to: Option<Path>) {
         .await;
 }
 
+/// GH #47: gives a delivery's ticket back to the colony's `DrainLedger` when the
+/// handler that owns it is done.
+///
+/// Modelled on `TermAckGuard`: the sender lives in an `Option` so `Drop` can
+/// `take()` it and report exactly once, and `None` makes the guard inert (the
+/// test-only `cell_task` without a colony behind it). `try_send` because `Drop`
+/// cannot await — the same constraint `MailboxGuard` works under.
+///
+/// The guard must be constructed on the message-taking path BEFORE any `.await`
+/// of the handling itself, and it must live until after `handle()` returns. Its
+/// `Drop` then covers all four ways a handler can end: a normal return, a
+/// `continue` from one of the delivery gates, the B-backstop's cancellation, and
+/// a panic unwinding through the `.await`.
+///
+pub(crate) struct WorkGuard {
+    own_path: Path,
+    tx: Option<mpsc::Sender<crate::ColonyMsg>>,
+}
+
+impl WorkGuard {
+    /// Build a guard for `own_path`. `None` → inert (no report on drop).
+    pub(crate) fn new(own_path: Path, tx: Option<mpsc::Sender<crate::ColonyMsg>>) -> Self {
+        Self { own_path, tx }
+    }
+}
+
+impl Drop for WorkGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            // Colony gone or inbox full: the ledger keeps the ticket and the
+            // drain reports it at the deadline. Never a panic on the way out.
+            let _ = tx.try_send(crate::ColonyMsg::WorkDone {
+                path: self.own_path.clone(),
+            });
+        }
+    }
+}
+
 /// Generic per-cell task loop. See module doc for the B-Backstop
 /// (`cell.message_timeout`) deferral status.
 ///
 /// `consumes`: pre-compiled required-`consumes` views, enforced at the
 /// delivery boundary via `enforce_consumes_for_delivery` (Slice 2, Task 2.4).
+///
+/// `colony_inbox_tx`: GH #47 — where the per-delivery `WorkDone` ticket goes.
+/// `None` for the unit tests that run this task without a colony behind it.
 pub async fn cell_task<C: Cell + Send + 'static>(
     own_path: Path,
     mut mailbox: mpsc::Receiver<Message>,
@@ -229,8 +270,13 @@ pub async fn cell_task<C: Cell + Send + 'static>(
     mut cell: C,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    colony_inbox_tx: Option<mpsc::Sender<crate::ColonyMsg>>,
 ) {
     while let Some(mut msg) = mailbox.recv().await {
+        // GH #47: the plain task has no DLQ path and no rescue, but it does have
+        // to account for what the colony handed it — `meclaw-testing`'s echo
+        // factory runs here behind a real colony.
+        let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
         let input_id = msg.id;
         let input_trace = msg.trace_id;
         let input_ttl = msg.ttl;
@@ -379,6 +425,10 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell>(
             }
             maybe_msg = mailbox.recv() => {
                 let Some(mut msg) = maybe_msg else { return; };
+                // GH #47: the ticket the colony took for this delivery comes
+                // back when this arm ends — normal return, delivery-gate
+                // `continue`, backstop return or panic unwind, all of them.
+                let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
                 let input_id = msg.id;
                 let input_trace = msg.trace_id;
                 let input_ttl = msg.ttl;
@@ -717,6 +767,8 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
             }
             mb = mailbox.recv() => match mb {
                 Some(mut msg) => {
+                    // GH #47: same ticket discipline as the stateful task.
+                    let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
                     let sink = meclaw_core::OutputSink::new(
                         outputs_tx.clone(),
                         own_path.clone(),
@@ -864,6 +916,12 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
             .acquire_owned()
             .await
             .expect("dispatcher semaphore closed");
+        // GH #47: built here, in the dispatcher, and moved into the worker.
+        // Building it inside the spawned task would leave a window between the
+        // `recv()` above and the worker's first line in which the message is
+        // neither in the mailbox nor accounted for — and the drain samples
+        // asynchronously, so that window is a real race, not a theoretical one.
+        let work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone());
         let outputs_tx = outputs_tx.clone();
         let cell = cell.clone();
         let own_path = own_path.clone();
@@ -871,6 +929,7 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
         let worker_inbox_tx = colony_inbox_tx.clone();
         let worker_consumes = consumes.clone();
         tokio::spawn(async move {
+            let _work = work;
             let mut msg = msg;
             let input_id = msg.id;
             let input_trace = msg.trace_id;
@@ -931,7 +990,15 @@ mod tests {
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
         let cell = EchoMockCell::new(Path::new("/a")).emitted_target(Path::new("/b"));
-        let _join = tokio::spawn(cell_task(Path::new("/a"), in_rx, out_tx, cell, None, None));
+        let _join = tokio::spawn(cell_task(
+            Path::new("/a"),
+            in_rx,
+            out_tx,
+            cell,
+            None,
+            None,
+            None,
+        ));
 
         in_tx
             .send(MessageBuilder::new(Path::new("/a")).build())
@@ -940,6 +1007,55 @@ mod tests {
 
         // With echo forward disabled (task 12), just verify no panic occurs.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    /// GH #47: the plain task reports too. `meclaw-testing`'s echo factory runs
+    /// on it behind a real colony, so a silent `cell_task` would make every one
+    /// of those colonies drain to its deadline.
+    #[tokio::test]
+    async fn cell_task_returns_its_ticket_after_handle() {
+        use std::future::Future;
+
+        struct EchoCellForTest;
+        impl Cell for EchoCellForTest {
+            #[allow(clippy::manual_async_fn)]
+            fn handle(
+                &mut self,
+                _msg: Message,
+                sink: &OutputSink,
+            ) -> impl Future<Output = ()> + Send {
+                async move {
+                    let _ = sink
+                        .push(meclaw_core::CellOutput {
+                            target: Path::new("/out"),
+                            content: meclaw_core::JsonValue::Bool(true),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        let (in_tx, in_rx) = mpsc::channel::<Message>(4);
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(4);
+        let (colony_tx, mut colony_rx) = mpsc::channel::<crate::ColonyMsg>(8);
+        let _join = tokio::spawn(cell_task(
+            Path::new("/a"),
+            in_rx,
+            out_tx,
+            EchoCellForTest,
+            None,
+            None,
+            Some(colony_tx),
+        ));
+        in_tx
+            .send(MessageBuilder::new(Path::new("/a")).build())
+            .await
+            .unwrap();
+        let _em = out_rx.recv().await.expect("emission");
+        match colony_rx.recv().await.expect("ticket") {
+            crate::ColonyMsg::WorkDone { path } => assert_eq!(path.as_str(), "/a"),
+            _ => panic!("expected WorkDone"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -975,6 +1091,7 @@ mod tests {
             in_rx,
             out_tx,
             PushOnce,
+            None,
             None,
             None,
         ));
@@ -1054,6 +1171,82 @@ mod tests {
         tx.send(msg).await.unwrap();
         drop(tx);
         join.await.unwrap();
+    }
+
+    /// GH #47: a stateful cell returns its ticket after `handle()`, and not
+    /// before. The receipt is ordering: the emission is already in the outputs
+    /// channel when the `WorkDone` arrives, which is what makes the drain's
+    /// "outputs empty AND ledger zero" conjunction sound.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cell_task_stateful_returns_its_ticket_after_handle() {
+        use crate::stateful_cell::StatefulCell;
+
+        struct EchoStateful;
+        impl StatefulCell for EchoStateful {
+            #[allow(clippy::manual_async_fn)]
+            fn handle<'a>(
+                &'a mut self,
+                _msg: meclaw_core::Message,
+                sink: &'a meclaw_core::OutputSink,
+                _db: &'a mut crate::DbConn,
+            ) -> impl std::future::Future<Output = ()> + Send + 'a {
+                async move {
+                    let _ = sink
+                        .push(meclaw_core::CellOutput {
+                            target: Path::new("/out"),
+                            content: meclaw_core::JsonValue::Bool(true),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        let (in_tx, in_rx) = mpsc::channel::<Message>(4);
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(4);
+        let (colony_tx, mut colony_rx) = mpsc::channel::<crate::ColonyMsg>(16);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let db = crate::DbConn::wrap(conn, None);
+
+        let join = tokio::spawn(cell_task_stateful(
+            Path::new("/s"),
+            in_rx,
+            out_tx,
+            EchoStateful,
+            db,
+            None, // idle_timeout
+            None, // message_timeout
+            None, // peace_tx
+            None, // backstop_tx
+            Some(colony_tx),
+            0,    // cell_timeout
+            None, // stop_rx
+            None, // death_ack
+            None, // blob_store
+            None, // consumes
+            Default::default(),
+        ));
+
+        in_tx
+            .send(MessageBuilder::new(Path::new("/s")).build())
+            .await
+            .unwrap();
+
+        let em = tokio::time::timeout(std::time::Duration::from_secs(30), out_rx.recv())
+            .await
+            .expect("the cell must emit")
+            .expect("emission");
+        assert_eq!(em.sender_path.as_str(), "/s");
+
+        // The emission is already out; only THEN may the ticket come back.
+        let done = tokio::time::timeout(std::time::Duration::from_secs(30), colony_rx.recv())
+            .await
+            .expect("the ticket must come back")
+            .expect("colony message");
+        match done {
+            crate::ColonyMsg::WorkDone { path } => assert_eq!(path.as_str(), "/s"),
+            _ => panic!("expected WorkDone"),
+        }
+        join.abort();
     }
 
     /// Paket-3 P3-B2 / P3-B-restart: the Concept-B backstop fires when `handle()`
@@ -1512,20 +1705,28 @@ mod tests {
         );
 
         // Colony inbox gets `Stopped` (NOT `Sleep`), carrying the receiver with
-        // the unprocessed remainder.
-        let inbox_msg = tokio::time::timeout(std::time::Duration::from_secs(5), inbox_rx.recv())
-            .await
-            .expect("Stopped must arrive within 5s")
-            .expect("inbox open");
-        let mut returned_rx = match inbox_msg {
-            crate::ColonyMsg::Stopped { path, receiver } => {
-                assert_eq!(path.as_str(), "/probe");
-                receiver
+        // the unprocessed remainder. GH #47: the in-flight delivery returns its
+        // `WorkDone` ticket first — skip those, the obligation here is that
+        // exactly one `Stopped` carrying the receiver arrives.
+        let mut returned_rx = loop {
+            let inbox_msg =
+                tokio::time::timeout(std::time::Duration::from_secs(5), inbox_rx.recv())
+                    .await
+                    .expect("Stopped must arrive within 5s")
+                    .expect("inbox open");
+            match inbox_msg {
+                crate::ColonyMsg::WorkDone { path } => {
+                    assert_eq!(path.as_str(), "/probe");
+                }
+                crate::ColonyMsg::Stopped { path, receiver } => {
+                    assert_eq!(path.as_str(), "/probe");
+                    break receiver;
+                }
+                other => panic!(
+                    "expected ColonyMsg::Stopped, got a different variant: {:?}",
+                    std::mem::discriminant(&other)
+                ),
             }
-            other => panic!(
-                "expected ColonyMsg::Stopped, got a different variant: {:?}",
-                std::mem::discriminant(&other)
-            ),
         };
 
         // Task ended cleanly (returned, not panicked).
@@ -1550,6 +1751,139 @@ mod tests {
             done + remainder,
             2,
             "all messages accounted for (handled + remainder)"
+        );
+    }
+
+    /// GH #47, long-running form: the handler half returns its ticket. The I/O
+    /// half never takes one — it is a source, not a delivery. The count is exact
+    /// because the drain runs to the end of the inbox: the task is joined first,
+    /// so every sender is gone and `recv()` terminates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cell_task_long_running_returns_its_ticket_after_handle() {
+        use crate::long_running_cell::LongRunningCell;
+        use meclaw_core::{OriginSink, OutputSink, Path};
+        use std::future::Future;
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        // One delivered message and three I/O events. `run_io` parks after its
+        // three sends so the events channel stays open — the loop then ends on
+        // the mailbox close, after both rendezvous have fired.
+        struct Sourcey {
+            handled: Arc<Semaphore>,
+            events_seen: Arc<Semaphore>,
+        }
+        struct SourceIo;
+        impl LongRunningCell for Sourcey {
+            type Event = ();
+            type Reconfig = ();
+            type Io = SourceIo;
+            fn split_io(&mut self) -> Self::Io {
+                SourceIo
+            }
+            #[allow(clippy::manual_async_fn)]
+            fn run_io(
+                _io: Self::Io,
+                events_tx: mpsc::Sender<Self::Event>,
+                mut reconfig_rx: mpsc::Receiver<Self::Reconfig>,
+            ) -> impl Future<Output = ()> + Send {
+                async move {
+                    for _ in 0..3 {
+                        if events_tx.send(()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Park until the handler frame drops `reconfig_tx`.
+                    while reconfig_rx.recv().await.is_some() {}
+                }
+            }
+            #[allow(clippy::manual_async_fn)]
+            fn handle<'a>(
+                &'a mut self,
+                _msg: meclaw_core::Message,
+                _sink: &'a OutputSink,
+                _db: &'a mut crate::DbConn,
+                _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
+            ) -> impl Future<Output = ()> + Send + 'a {
+                async move {
+                    self.handled.add_permits(1);
+                }
+            }
+            #[allow(clippy::manual_async_fn)]
+            fn handle_event<'a>(
+                &'a mut self,
+                _event: Self::Event,
+                _sink: &'a OriginSink,
+                _db: &'a mut crate::DbConn,
+            ) -> impl Future<Output = ()> + Send + 'a {
+                async move {
+                    self.events_seen.add_permits(1);
+                }
+            }
+        }
+
+        let handled = Arc::new(Semaphore::new(0));
+        let events_seen = Arc::new(Semaphore::new(0));
+        let (mb_tx, mb_rx) = mpsc::channel::<Message>(8);
+        let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
+        let (colony_tx, mut colony_rx) = mpsc::channel::<crate::ColonyMsg>(32);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let db = crate::DbConn::wrap(conn, None);
+
+        let join = tokio::spawn(cell_task_long_running(
+            Path::new("/lr"),
+            mb_rx,
+            out_tx,
+            64,
+            Sourcey {
+                handled: handled.clone(),
+                events_seen: events_seen.clone(),
+            },
+            db,
+            None,            // peace_tx
+            Some(colony_tx), // colony_inbox_tx
+            None,            // stop_rx
+            None,            // death_ack
+            None,            // blob_store
+            None,            // consumes
+            Default::default(),
+        ));
+
+        mb_tx
+            .send(MessageBuilder::new(Path::new("/lr")).build())
+            .await
+            .unwrap();
+
+        // Both rendezvous before the mailbox closes: the delivery ran, and so
+        // did all three events. Whatever tickets exist are drawn by now.
+        let _h = tokio::time::timeout(std::time::Duration::from_secs(30), handled.acquire())
+            .await
+            .expect("handle() must run")
+            .expect("semaphore open");
+        let _e = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            events_seen.acquire_many(3),
+        )
+        .await
+        .expect("all three events must be handled")
+        .expect("semaphore open");
+
+        drop(mb_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(30), join)
+            .await
+            .expect("the task must end on mailbox close")
+            .expect("task returned cleanly");
+
+        let mut tickets = 0;
+        while let Some(msg) = colony_rx.recv().await {
+            if let crate::ColonyMsg::WorkDone { path } = msg {
+                assert_eq!(path.as_str(), "/lr");
+                tickets += 1;
+            }
+        }
+        assert_eq!(
+            tickets, 1,
+            "exactly the one delivery draws a ticket — the three I/O events draw none"
         );
     }
 
@@ -1732,21 +2066,25 @@ mod tests {
             "io polling must be frozen after stop (io_join aborted)"
         );
 
-        // Exactly one Stopped carrying the receiver with the remainder.
-        let inbox_msg = inbox_rx
-            .try_recv()
-            .expect("Stopped must have been sent before task end");
-        let mut returned_rx = match inbox_msg {
-            crate::ColonyMsg::Stopped { path, receiver } => {
-                assert_eq!(path.as_str(), "/lr");
-                receiver
+        // Exactly one Stopped carrying the receiver with the remainder. GH #47:
+        // the in-flight delivery's ticket sits ahead of it — tickets are
+        // bookkeeping, the obligation here is one Stopped and nothing else.
+        let mut returned_rx: Option<mpsc::Receiver<meclaw_core::Message>> = None;
+        while let Ok(inbox_msg) = inbox_rx.try_recv() {
+            match inbox_msg {
+                crate::ColonyMsg::WorkDone { path } => assert_eq!(path.as_str(), "/lr"),
+                crate::ColonyMsg::Stopped { path, receiver } => {
+                    assert_eq!(path.as_str(), "/lr");
+                    assert!(
+                        returned_rx.is_none(),
+                        "exactly one inbox message (Stopped), no Sleep/extra"
+                    );
+                    returned_rx = Some(receiver);
+                }
+                _ => panic!("expected ColonyMsg::Stopped"),
             }
-            _ => panic!("expected ColonyMsg::Stopped"),
-        };
-        assert!(
-            inbox_rx.try_recv().is_err(),
-            "exactly one inbox message (Stopped), no Sleep/extra"
-        );
+        }
+        let mut returned_rx = returned_rx.expect("Stopped must have been sent before task end");
         // At most the in-flight handle() completed; the rest is unread.
         let done = handled.load(Ordering::SeqCst);
         assert!(
@@ -1782,6 +2120,84 @@ mod tests {
     //    ephemeral by design — see the module docs above). `join.await` joins ONLY
     //    the dispatcher, not the workers. Without this sync the drain assert
     //    `concurrent_now==0` would race a late worker that has not done fetch_sub yet.
+    /// GH #47, stateless form: every one of N concurrent workers returns its own
+    /// ticket. This is the fan-out case the roadmap called out as subtle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stateless_dispatcher_returns_one_ticket_per_message() {
+        use crate::stateless_cell::StatelessCell;
+
+        struct EchoStateless;
+        impl StatelessCell for EchoStateless {
+            #[allow(clippy::manual_async_fn)]
+            fn handle<'a>(
+                &'a self,
+                _msg: meclaw_core::Message,
+                sink: &'a meclaw_core::OutputSink,
+            ) -> impl std::future::Future<Output = ()> + Send + 'a {
+                async move {
+                    let _ = sink
+                        .push(meclaw_core::CellOutput {
+                            target: Path::new("/out"),
+                            content: meclaw_core::JsonValue::Bool(true),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        let (in_tx, in_rx) = mpsc::channel::<Message>(8);
+        let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+        let (colony_tx, mut colony_rx) = mpsc::channel::<crate::ColonyMsg>(32);
+
+        let join = tokio::spawn(stateless_dispatcher(
+            Path::new("/d"),
+            in_rx,
+            out_tx,
+            std::sync::Arc::new(EchoStateless),
+            4,               // max concurrency
+            None,            // message_timeout
+            None,            // peace_tx
+            None,            // stop_rx
+            Some(colony_tx), // colony_inbox_tx
+            None,            // death ack
+            None,            // blob store
+            None,            // consumes
+        ));
+
+        for _ in 0..5 {
+            in_tx
+                .send(MessageBuilder::new(Path::new("/d")).build())
+                .await
+                .unwrap();
+        }
+
+        let mut emissions = 0;
+        while emissions < 5 {
+            tokio::time::timeout(std::time::Duration::from_secs(30), out_rx.recv())
+                .await
+                .expect("all five must emit")
+                .expect("emission");
+            emissions += 1;
+        }
+
+        let mut tickets = 0;
+        while tickets < 5 {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), colony_rx.recv())
+                .await
+                .expect("all five tickets must come back")
+                .expect("colony message")
+            {
+                crate::ColonyMsg::WorkDone { path } => {
+                    assert_eq!(path.as_str(), "/d");
+                    tickets += 1;
+                }
+                _ => panic!("expected WorkDone"),
+            }
+        }
+        assert_eq!(tickets, 5);
+        join.abort();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn stateless_dispatcher_caps_concurrency_at_max_and_processes_all() {
         use crate::stateless_cell::StatelessCell;
@@ -2099,6 +2515,7 @@ mod tests {
             EchoHeaders,
             None,
             None,
+            None,
         ));
 
         let mut headers = meclaw_core::serde_json::Map::new();
@@ -2153,6 +2570,7 @@ mod tests {
             in_rx,
             out_tx,
             EmitNull,
+            None,
             None,
             None,
         ));
@@ -2573,5 +2991,49 @@ mod tests {
             peace_rx2.await.is_err(),
             "peace MUST NOT fire on mailbox-close → watcher Err → DeathKind::Normal → remove"
         );
+    }
+
+    /// GH #47: the guard reports exactly once, on every exit path, and an
+    /// inert guard says nothing.
+    #[tokio::test]
+    async fn a_work_guard_reports_once_when_it_drops() {
+        let (tx, mut rx) = mpsc::channel::<crate::ColonyMsg>(4);
+        {
+            let _g = WorkGuard::new(Path::new("/a"), Some(tx.clone()));
+        }
+        // `ColonyMsg` carries boxed spawn closures and join handles, so it is not
+        // `Debug`; the failure arm names the expectation instead of the value.
+        match rx.try_recv() {
+            Ok(crate::ColonyMsg::WorkDone { path }) => assert_eq!(path.as_str(), "/a"),
+            _ => panic!("expected one WorkDone"),
+        }
+        assert!(rx.try_recv().is_err(), "the guard must report exactly once");
+    }
+
+    #[tokio::test]
+    async fn an_inert_work_guard_reports_nothing() {
+        let (tx, mut rx) = mpsc::channel::<crate::ColonyMsg>(4);
+        {
+            let _g = WorkGuard::new(Path::new("/a"), None);
+        }
+        drop(tx);
+        assert!(rx.try_recv().is_err(), "a None guard must stay silent");
+    }
+
+    /// The load-bearing half: a handler that PANICS still gives its ticket back,
+    /// because the unwind runs the guard's `Drop`. Without this a panicking cell
+    /// would hold the drain until the deadline on every restart.
+    #[tokio::test]
+    async fn a_work_guard_reports_through_a_panicking_scope() {
+        let (tx, mut rx) = mpsc::channel::<crate::ColonyMsg>(4);
+        let handle = tokio::spawn(async move {
+            let _g = WorkGuard::new(Path::new("/boom"), Some(tx));
+            panic!("handler exploded");
+        });
+        assert!(handle.await.is_err(), "the task must have panicked");
+        match rx.try_recv() {
+            Ok(crate::ColonyMsg::WorkDone { path }) => assert_eq!(path.as_str(), "/boom"),
+            _ => panic!("a panicking handler must still return its ticket"),
+        }
     }
 }

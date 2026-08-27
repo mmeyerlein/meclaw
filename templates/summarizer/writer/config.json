@@ -1,6 +1,7 @@
 {
   "cell": {
-    "type": "llm"
+    "type": "llm",
+    "message_timeout": 180000
   },
   "params": {
     "provider": "openai",

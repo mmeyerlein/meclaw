@@ -19,6 +19,7 @@ pub mod connectivity;
 pub mod db_conn;
 pub mod db_transfer;
 pub mod dead_letter;
+mod drain;
 pub mod edge_table;
 pub mod env_file;
 pub mod factory;
@@ -93,7 +94,9 @@ pub use runtime::ColonyRuntime;
 pub use stateful_cell::StatefulCell;
 pub use stateless_cell::StatelessCell;
 pub use term_ack::TermAckGuard;
-pub use watchdog::{HostWitness, Watchdog, WatchdogAction, WatchdogOnTrip, WatchdogTrip};
+pub use watchdog::{
+    HostWitness, Watchdog, WatchdogAction, WatchdogOnTrip, WatchdogTrip, WorkItem, WorkPulse,
+};
 
 #[cfg(test)]
 mod tests {

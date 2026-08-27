@@ -326,6 +326,12 @@ pub struct PlannedGrowth {
     /// Top-level `override_params`, addressed by the referenced template's own
     /// cell paths (`""` is its root). `docs/config.md` § Spezialfall.
     pub override_params: JsonValue,
+    /// GH #437: the top-level `birth` declaration of the marker, beside
+    /// `override_params` and NOT inside the `cell` block — `CellHeader`
+    /// describes every cell and its key list is closed, while a birth state
+    /// describes an INSTANTIATION order. `override_params` sits there for
+    /// exactly the same reason (`docs/config.md` § Spezialfall).
+    pub birth: crate::mutation::Birth,
 }
 
 /// A fully validated bootstrap plan. `apply_bootstrap_plan` (Task 15b) takes
@@ -335,6 +341,12 @@ pub struct PlannedGrowth {
 pub struct BootstrapPlan {
     /// All hive scopes found in the filesystem tree.
     pub hives: Vec<PlannedHive>,
+    /// GH #437: the meclaw paths of the growth roots that declared
+    /// `birth: "inactive"` in their `ref` marker, filled by the boot AFTER the
+    /// growth (a marker consumes itself, so the re-plan cannot rediscover it).
+    /// Every cell at or below one of these is registered inactive AND has its
+    /// `registry.status` row written, so the next boot agrees.
+    pub born_inactive: Vec<McPath>,
     /// GH #424 — the `cell.type: "ref"` markers this FIRST boot will grow,
     /// in walk order. Empty on a reboot (a marker in an already-grown tree is
     /// an `unregistered_nodes` entry) and empty after the growth, because a
@@ -480,11 +492,17 @@ fn plan_growth(
         Some(v) if v.is_object() => v.clone(),
         Some(_) => return Err("override_params must be an object".to_string()),
     };
+    // GH #437: the same grammar the mutation door uses, so a marker and an
+    // `add_nodes` entry cannot disagree about what a birth state is. A boot that
+    // cannot fulfil a declaration must not start half a tree, so this refuses.
+    let birth =
+        crate::mutation::Birth::parse(config, "cell.type ref marker").map_err(|e| e.message())?;
     Ok(PlannedGrowth {
         path: mc_path.clone(),
         fs_path: fs_path.to_path_buf(),
         reference: reference.to_string(),
         override_params,
+        birth,
     })
 }
 

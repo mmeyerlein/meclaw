@@ -131,7 +131,10 @@ async fn knock(payload: Value) -> Knock {
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 
     handle
         .send(

@@ -115,10 +115,12 @@ fn write_echo_fixture(root: &std::path::Path) {
 ///   apply_edges findet Return-Edge from="/echo" to="/" → HiveTransit("/")
 ///   → enqueue_hive_transit(egress_tx) → egress-Kanal → stdout.
 ///
-/// Test strategy: stdout is read BEFORE the stdin EOF (blocking, max 10s). Only
-/// once the first stdout line ("pong") has arrived is stdin closed → EOF →
-/// shutdown. That avoids the race between the cell worker and the colony
-/// shutdown.
+/// Test strategy (GH #47, 2026-08-27): stdin is closed FIRST and stdout read
+/// after. Until the shutdown drain existed this test had to do the opposite and
+/// said so here — closing stdin early raced the cell worker and lost the answer.
+/// That race is gone: the drain waits for the handler, so a pipe behaves like a
+/// pipe. Reverting this test to read-before-EOF would hide the regression it
+/// now guards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn direct_mode_stdin_line_produces_assistant_stdout() {
     // Fixture schreiben.
@@ -140,12 +142,12 @@ async fn direct_mode_stdin_line_produces_assistant_stdout() {
         let mut child_stdin = child.stdin.take().expect("stdin");
         let child_stdout = child.stdout.take().expect("stdout");
 
-        // Stdout reader: reads one line blocking (max 10s until "pong" arrives).
-        // Strategy: first send "ping", then block until "pong" appears, THEN
-        // close stdin → EOF → shutdown.
-        // That way the cell output is guaranteed to precede the shutdown.
+        // Send "ping" and close stdin IMMEDIATELY — EOF while the answer is
+        // still in flight. That is what a pipe does, and what the drain makes
+        // survivable.
         child_stdin.write_all(b"ping\n").expect("write");
         // No stdout flush via flush() needed (unbuffered write_all).
+        drop(child_stdin);
 
         let stdout_line = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stdout_line_clone = stdout_line.clone();
@@ -171,9 +173,6 @@ async fn direct_mode_stdin_line_produces_assistant_stdout() {
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = reader_thread.join();
-
-        // Only now close stdin → EOF → shutdown.
-        drop(child_stdin);
 
         // Wait for the process to end (max 5s: shutdown after EOF is fast).
         let exit_deadline = std::time::Instant::now() + Duration::from_secs(5);

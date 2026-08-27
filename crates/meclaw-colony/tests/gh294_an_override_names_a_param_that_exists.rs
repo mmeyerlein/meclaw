@@ -62,7 +62,10 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
@@ -297,6 +300,43 @@ async fn the_flat_form_of_a_single_cell_template_is_checked_the_same_way() {
         "an existing param stays settable in the flat form; got {good:?}"
     );
     assert_eq!(instance_params(td.path(), "main/c2")["p"], 7);
+
+    h.shutdown().await;
+}
+
+/// GH #436, found by the first real composition-grown colony: the two notations
+/// of `override_params` are easy to swap, and the refusal for the wrong one
+/// named a missing param instead of the mistake. It is still `schema` and still
+/// pre-destructive — what changes is that the operator can act on it.
+///
+/// A manifest has no rollback by design, so an operator who swapped the
+/// notations pays with a half-grown tree: the entries before the refusal stay
+/// committed. Being told WHICH mistake was made is the difference between
+/// re-submitting a corrected entry and re-reading the whole spec.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_nested_form_on_a_single_cell_template_names_the_notation() {
+    let td = tempfile::TempDir::new().unwrap();
+    let h = boot(&td).await;
+
+    let outcome = send_mutation(
+        &h,
+        json!({"scope":"/","diff":{"add_nodes":[
+            // The path-keyed form. Legal on a ref marker and on a subtree
+            // template, meaningless here: there is nothing to address.
+            {"name":"c1","template":"solo","override_params":{"":{"p":1}}}
+        ]}}),
+    )
+    .await;
+    let details = schema_details(&outcome);
+
+    assert!(
+        details.contains("single-cell template") && details.contains("flat params object"),
+        "the refusal must name the NOTATION, not a param that does not exist: {details}",
+    );
+    assert!(
+        !details.contains("names no param"),
+        "the old message survived alongside the new one: {details}",
+    );
 
     h.shutdown().await;
 }

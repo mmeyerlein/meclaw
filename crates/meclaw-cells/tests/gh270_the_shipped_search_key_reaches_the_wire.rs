@@ -127,7 +127,10 @@ async fn search_once_and_record(
         })
         .await
         .expect("rescan sent");
-    ack_rx.await.expect("rescan acked");
+    ack_rx
+        .await
+        .expect("rescan acked")
+        .expect("GH #440: the rescan must not have aborted");
 
     let (sink_tx, mut sink_rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(16);
     h.spawn(Path::new("/sink"), move || {

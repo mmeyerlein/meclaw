@@ -19,9 +19,9 @@
 //! # What is read, and what deliberately is not
 //!
 //! **Config VALUES only.** Template prose carries illustrative `${VAR}` and
-//! `${ctx.model}` placeholders — `templates/llm-unit/template.json` explains
+//! `${ctx.model}` placeholders — `templates/cogny/template.json` explains
 //! the K-H2 model convention by quoting the token, and
-//! `templates/llm-unit/README.md` does the same. Those are documentation about
+//! `templates/cogny/README.md` does the same. Those are documentation about
 //! a placeholder, not a placeholder, and a sweep that read them would demand a
 //! declaration for every example anybody ever writes down. The same rule keeps
 //! `templates/builder-librarian/store/seed/docs.jsonl` — a GENERATED corpus

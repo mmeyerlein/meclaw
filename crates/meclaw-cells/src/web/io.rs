@@ -164,8 +164,8 @@ impl ViewerRegistry {
 /// behind the same contended lock. A `watch` channel is message passing: the
 /// handler publishes a new immutable snapshot, readers take a cheap borrow of
 /// whatever is current, and nobody waits on anybody. The same reasoning the
-/// api-side `Dispatcher` follows when it keeps its cache inside one task and
-/// answers over a channel.
+/// api-side render cache followed when it kept its pages inside one task and
+/// answered over a channel — that code is retired (GH #396), the shape is not.
 #[derive(Clone)]
 pub struct WebIo {
     /// The address to bind.

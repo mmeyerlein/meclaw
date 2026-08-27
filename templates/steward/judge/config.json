@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "llm",
-    "message_timeout": 180
+    "message_timeout": 180000
   },
   "params": {
     "provider": "${STEWARD_JUDGE_PROVIDER:-openai}",

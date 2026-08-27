@@ -14,8 +14,9 @@ license.workspace = true
 # nothing moves after the dead render without a transport). GH #383 retired that
 # route, so this crate serves no socket any more and the feature is unused here.
 # It is left in place because removing a feature is a Cargo.toml change of its
-# own (CLAUDE.md rule 6) and `meclaw-surface` + `meclaw-cells` enable `ws`
-# anyway — the built axum is byte-identical either way. Reported, not taken.
+# own (CLAUDE.md rule 6) and `meclaw-cells` enables `ws` anyway — the built axum
+# is byte-identical either way. Reported, not taken. (GH #396: `meclaw-surface`
+# used to be the second crate named here; it binds no server any more.)
 axum = { version = "0.7", features = ["multipart", "ws"] }
 # 0.27 drops the unmaintained `proc-macro-error` (RUSTSEC-2024-0370) that
 # maud_macros 0.26 pulled in; API surface used here (Markup/html!/DOCTYPE) is
@@ -26,8 +27,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync", "macros", "time"] }
 tracing = "0.1"
 anyhow = "1"
-meclaw-core = { path = "../meclaw-core", version = "0.25.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.25.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.26.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.26.0" }
 # GH #383: `meclaw-surface` is gone from here. GH #381 moved the LiveView
 # machinery out of this crate so the `web` cell could speak the protocol without
 # depending on the HTTP API; #383 removed this crate's last consumer of it (the

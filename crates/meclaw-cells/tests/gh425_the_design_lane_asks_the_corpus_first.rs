@@ -36,7 +36,7 @@ fn run_brief(hop: Value, messages: Value) -> Value {
 fn instructions_of(out: &Value) -> String {
     out["system"]["instructions"]["text"]
         .as_str()
-        .expect("system.instructions.text — the shape builder-hive/brief ships")
+        .expect("system.instructions.text — the shape the brief step ships")
         .to_string()
 }
 

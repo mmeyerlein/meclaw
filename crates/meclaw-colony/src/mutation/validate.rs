@@ -5,6 +5,71 @@ use crate::CellFactoryRegistry;
 use crate::mutation::MutationError;
 use meclaw_core::JsonValue;
 
+/// Every key a mutation `diff` may carry, in the order the door executes them.
+///
+/// This list IS the diff vocabulary. It is not a convenience copy of one: the
+/// door reads the diff key by key (`diff.get("add_nodes")`, …), so a key that
+/// appears here and nowhere else would be accepted and never executed, and a
+/// key executed somewhere without appearing here would be refused. Adding an
+/// operation means adding its key here in the same change.
+pub const DIFF_OPERATIONS: [&str; 7] = [
+    "add_templates",
+    "add_nodes",
+    "remove_nodes",
+    "swap_nodes",
+    "move_nodes",
+    "add_edges",
+    "remove_edges",
+];
+
+/// A `diff` key no operation reads is refused, not ignored.
+///
+/// The door used to read the keys it knew and let everything else fall through
+/// every arm untouched — and then answer `committed`. The shape that made it
+/// indefensible: a colony on an OLDER binary is handed an `add_templates`
+/// declaration, has no arm for the key, registers nothing, and replies
+/// "applied". The same hole swallows a typo (`add_node`), a key from a newer
+/// schema, and a hand-written declaration whose author guessed the vocabulary.
+/// In every case the receipt claims work that did not happen.
+///
+/// Reporting success without effect is the defect, so an unreadable key is a
+/// refusal under the token a broken body form has always carried — `schema`,
+/// never a new `error_code` (README § Stability). The message names the key it
+/// could not read AND the ones it can, because an operator who mistyped one
+/// word needs the vocabulary, not a verdict.
+///
+/// Pre-destructive by position: this runs on the RAW diff, before substitution
+/// and before a single byte is staged, spawned, wired or registered. A manifest
+/// inherits it entry by entry — the entries before the offending one stay
+/// committed, the ones after it are never read — and `--apply` inherits it as
+/// the single form.
+///
+/// A `diff` that is not an object is NOT this function's verdict: that is
+/// [`validate_post_state`]'s long-standing "diff is not an object", and moving
+/// it here would change which refusal an old caller sees.
+pub fn refuse_unknown_diff_keys(diff: &JsonValue) -> Result<(), MutationError> {
+    let Some(obj) = diff.as_object() else {
+        return Ok(());
+    };
+    let unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !DIFF_OPERATIONS.contains(k))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(MutationError::Schema(format!(
+        "diff carries {} no operation reads: {}. \
+         The diff keys this colony executes are: {}. \
+         Refused rather than ignored — a key nothing reads would have committed \
+         without effect.",
+        if unknown.len() == 1 { "a key" } else { "keys" },
+        unknown.join(", "),
+        DIFF_OPERATIONS.join(", "),
+    )))
+}
+
 /// T10 — schema check + template existence.
 ///
 /// T11 extends this with match patterns and naming uniqueness; T11b adds
@@ -1193,7 +1258,13 @@ pub fn validate_post_state_with_templates_scoped(
         .collect();
 
     if let Some(adds) = obj.get("add_nodes").and_then(|v| v.as_array()) {
-        for n in adds {
+        for (i, n) in adds.iter().enumerate() {
+            // GH #437: the birth state is a closed vocabulary and it is grammar,
+            // so it is refused PRE-DESTRUCTIVELY — before the adopt branch and
+            // before any template lookup, because an `adopt` entry instantiates
+            // a cell at an address too and that instantiation has an activity
+            // like any other.
+            crate::mutation::Birth::parse(n, &format!("add_nodes[{i}]"))?;
             // A5b 2b (Phase-16 W1b, Ruling 2026-06-12): an `adopt` entry
             // instantiates from an EXISTING on-disk node, not a template. Grammar
             // (pure, here): `adopt` is an object declaring the expected identity
@@ -1455,11 +1526,30 @@ fn collect_add_node_addresses(
                             }
                         }
                     }
-                } else if let Some(cell) = parsed.cells.first()
-                    && let Err(error) =
+                } else if let Some(cell) = parsed.cells.first() {
+                    // GH #436: the two notations of `override_params` look alike
+                    // and the wrong one used to be refused for the wrong reason.
+                    // On a single-cell template the object IS the params — a
+                    // `""` key is the path-keyed form, which belongs to a ref
+                    // marker or a subtree, and asking about a param called ""
+                    // answers a question nobody asked. Checked HERE and not in
+                    // `check_override_params`, because only the caller knows how
+                    // many cells the template has.
+                    if let Some(nested) = over.get("").and_then(|v| v.as_object()) {
+                        out.push(MutationError::Schema(format!(
+                            "override_params[''] on '{template}': this is a single-cell \
+                             template — override_params is a flat params object here \
+                             ({{\"{}\": …}}), not keyed by the paths of cells inside a \
+                             template. The path-keyed form ({{\"\": …}}) applies to a ref \
+                             marker and to a subtree template, and this template has \
+                             nothing to address.",
+                            nested.keys().next().map(|k| k.as_str()).unwrap_or("param"),
+                        )));
+                    } else if let Err(error) =
                         crate::mutation::subtree::check_override_params(cell, None, template, over)
-                {
-                    out.push(error);
+                    {
+                        out.push(error);
+                    }
                 }
             }
         }
@@ -1577,6 +1667,12 @@ pub fn collect_post_state_addresses(
                 .or_else(|| n.get("template").and_then(|v| v.as_str()))
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("add_nodes[{i}]"));
+            // GH #437: the collecting face asks the SAME grammar as the
+            // `Result` face above — one question, two answers, never two
+            // questions (GH #293).
+            if let Err(error) = crate::mutation::Birth::parse(n, &format!("add_nodes[{i}]")) {
+                refuse(&error, Some(address.clone()));
+            }
             if n.get("adopt").is_some() {
                 if let Some(error) = adopt_grammar(n) {
                     refuse(&error, Some(address));
@@ -3888,6 +3984,171 @@ mod tests {
         ) -> Result<crate::SpawnedCellKind, String> {
             unimplemented!()
         }
+    }
+
+    // ── GH #437: `add_nodes[].birth` ─────────────────────────────────────
+
+    /// GH #437: the birth state is a CLOSED vocabulary, and an unknown value is
+    /// refused PRE-DESTRUCTIVELY — before anything is staged, like every other
+    /// grammar refusal of this stage. The message names the site, quotes the
+    /// offending value and lists the values that DO exist, because a closed
+    /// vocabulary that does not say what it contains is a riddle.
+    #[test]
+    fn an_unknown_birth_value_is_refused_with_schema_and_names_the_alternatives() {
+        let diff = json!({"add_nodes": [
+            {"name": "p", "template": "poller", "birth": "asleep"}
+        ]});
+        let templates = crate::templates::TemplatesRegistry::default();
+        let factories = CellFactoryRegistry::new();
+        let err = validate_post_state_with_templates(
+            &diff,
+            &templates,
+            &factories,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect_err("an unknown birth value must be refused");
+        assert_eq!(err.error_code(), "schema");
+        let msg = err.message();
+        assert!(
+            msg.contains("add_nodes[0].birth"),
+            "must name the site: {msg}"
+        );
+        assert!(
+            msg.contains("'asleep'"),
+            "must quote the offending value: {msg}"
+        );
+        assert!(
+            msg.contains("active") && msg.contains("inactive"),
+            "must list the values that DO exist: {msg}"
+        );
+    }
+
+    /// The refusal comes BEFORE the template lookup: a diff whose birth value is
+    /// wrong is refused for that, not for a template that was never reached.
+    /// That is what "pre-destructive" means here.
+    #[test]
+    fn the_birth_refusal_precedes_the_template_lookup() {
+        let diff = json!({"add_nodes": [
+            {"name": "p", "template": "does-not-exist", "birth": "dormant"}
+        ]});
+        let err = validate_post_state_with_templates(
+            &diff,
+            &crate::templates::TemplatesRegistry::default(),
+            &CellFactoryRegistry::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect_err("must be refused");
+        assert_eq!(err.error_code(), "schema", "not template_missing: {err:?}");
+    }
+
+    /// The collecting validator asks the SAME grammar as the `Result` form —
+    /// GH #293 discipline, so the two faces cannot drift apart.
+    #[test]
+    fn the_collecting_validator_sees_the_same_birth_violation() {
+        let diff = json!({"add_nodes": [
+            {"name": "a", "template": "poller", "birth": "asleep"}
+        ]});
+        let mut rejection = crate::mutation::rejection::MutationRejection::new();
+        collect_post_state_addresses(
+            &diff,
+            &crate::templates::TemplatesRegistry::default(),
+            &CellFactoryRegistry::new(),
+            &[],
+            &[],
+            &[],
+            "/",
+            &[],
+            &[],
+            &mut rejection,
+        );
+        assert!(
+            rejection
+                .entries()
+                .iter()
+                .any(|v| v.message.contains("add_nodes[0].birth")),
+            "the collecting face must report the birth violation too: {:?}",
+            rejection.entries()
+        );
+    }
+
+    /// An `adopt` entry declares its birth state too: adopting a directory
+    /// instantiates a cell at an address, and that instantiation has an
+    /// activity like any other. So the grammar is checked BEFORE the adopt
+    /// branch, and a wrong value there is refused as well.
+    #[test]
+    fn an_adopt_entry_is_held_to_the_same_birth_grammar() {
+        let diff = json!({"add_nodes": [
+            {"name": "a", "adopt": {"type": "echo"}, "birth": "asleep"}
+        ]});
+        let err = validate_post_state_with_templates(
+            &diff,
+            &crate::templates::TemplatesRegistry::default(),
+            &CellFactoryRegistry::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect_err("must be refused");
+        assert_eq!(err.error_code(), "schema");
+        assert!(err.message().contains("birth"), "{}", err.message());
+        // …and the legal value passes the grammar (the entry then fails, or
+        // not, for its own reasons — never for the declaration).
+        let ok = json!({"add_nodes": [
+            {"name": "a", "adopt": {"type": "echo"}, "birth": "inactive"}
+        ]});
+        assert!(
+            validate_post_state_with_templates(
+                &ok,
+                &crate::templates::TemplatesRegistry::default(),
+                &CellFactoryRegistry::new(),
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .is_ok(),
+            "an adopt entry may declare `birth: inactive`"
+        );
+    }
+
+    /// Absent = the shipped default. A wrong TYPE is a grammar error, not a
+    /// silently ignored key.
+    #[test]
+    fn birth_defaults_to_active_and_a_non_string_is_a_grammar_error() {
+        use crate::mutation::Birth;
+        assert_eq!(
+            Birth::parse(&json!({"name": "a"}), "add_nodes[0]").unwrap(),
+            Birth::Active
+        );
+        assert_eq!(
+            Birth::parse(&json!({"birth": "inactive"}), "add_nodes[0]").unwrap(),
+            Birth::Inactive
+        );
+        assert_eq!(
+            Birth::parse(&json!({"birth": "active"}), "add_nodes[0]").unwrap(),
+            Birth::Active
+        );
+        assert!(Birth::parse(&json!({"birth": true}), "add_nodes[0]").is_err());
+        assert!(Birth::parse(&json!({"birth": null}), "add_nodes[0]").is_err());
     }
 
     #[test]

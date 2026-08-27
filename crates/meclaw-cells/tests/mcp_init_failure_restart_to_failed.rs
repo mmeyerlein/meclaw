@@ -130,7 +130,10 @@ async fn install_mcp_template(
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Finding #9: `add_nodes` of an mcp cell with an unreachable endpoint commits,

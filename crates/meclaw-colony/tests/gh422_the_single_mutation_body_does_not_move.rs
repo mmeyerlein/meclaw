@@ -273,7 +273,10 @@ async fn knock_through_a_hive(payload: Value) -> Knock {
         })
         .await
         .expect("rescan");
-    ack_rx.await.expect("rescan ack");
+    ack_rx
+        .await
+        .expect("rescan ack")
+        .expect("GH #440: the rescan must not have aborted");
     // Ruling A1: a cell emission that matches no out-edge dead-letters as
     // `no_route`. Only `/colony/*` is dispatched edge-free, and `/door` is a
     // hive — so the probe needs a real lane to it.

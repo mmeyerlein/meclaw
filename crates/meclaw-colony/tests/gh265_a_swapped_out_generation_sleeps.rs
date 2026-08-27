@@ -344,7 +344,10 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// The registry's edge-derived `active` flag for one path.

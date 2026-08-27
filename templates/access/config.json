@@ -24,7 +24,7 @@
       "emits": [
         {
           "route": "grant",
-          "because": "the verdict on a request -- granted, denied with a reason_code, or pending; a handle and never a credential"
+          "because": "the verdict on a request -- granted, allowed (a check_only request: a yes with no grant behind it), denied with a reason_code, or pending; a handle and never a credential"
         },
         {
           "route": "ack",

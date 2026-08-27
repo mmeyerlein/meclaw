@@ -9,7 +9,7 @@ meclaw 0
 meclaw-api 2
 meclaw-cells 71
 meclaw-cli 0
-meclaw-colony 61
+meclaw-colony 64
 meclaw-core 3
 meclaw-surface 0
-meclaw-testing 38
+meclaw-testing 45

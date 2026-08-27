@@ -137,9 +137,9 @@ async fn the_operator_system_update_still_lands_by_default() {
 /// SHAPE each one actually sends, pushed through the default gate in one batch.
 ///
 /// Sources (one leaf per writer family):
-/// * `identity.soul` / `instructions.style` — the persona cells of bot-basic,
-///   slack-agent, egon and the coder-pipeline preps;
-/// * `tools.web_search` — the prep cells of llm-unit / research-assistant /
+/// * `identity.soul` / `instructions.style` — the persona cells of slack-agent,
+///   egon and the coder-pipeline preps;
+/// * `tools.web_search` — the prep cells of research-assistant /
 ///   coder-pipeline / the swarm and telegram-research examples (one level);
 /// * `tools.main_mcp.calc` — MCP discovery (`mcp::emit_system_tools_listing`),
 ///   which nests the provider key under `tools` (two levels);

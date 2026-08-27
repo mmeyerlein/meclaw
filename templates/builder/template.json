@@ -1,6 +1,6 @@
 {
   "name": "builder",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": {
     "purpose": "The intake that turns a structural wish into a MANIFEST -- an ordered list of mutation declarations, ready to be submitted by whoever asked for it. Two classes on one lane: a FAST LANE of predefined parameterised recipes that runs without calling a model at all, and a DESIGN LANE that consults the builder's own corpus and asks one. It never applies anything: no cell in this template has an edge onto the control plane, which is a property of the files rather than a promise in this text.",
     "use_when": "Once per colony, at the OS level, beside the capability broker and the control loop -- a level owns what its siblings must share (ADR-0013), and one baumeister, one corpus and one audit trail is exactly what every organisation under it shares. Reached on `in_build` at the hive path; the draft comes back on `manifest`, a refusal on `error`.",

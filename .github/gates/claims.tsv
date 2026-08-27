@@ -243,3 +243,31 @@ PIN-code-resident-serial-en	docs/cell-types.en.md	exactly one** child, strictly 
 T1B-six-store-messages	templates/memory-hive/README.md	A tier-1 recall costs the store **six messages**	pinned	a_tier1_recall_costs_six_store_messages
 T1B-no-guard-rows	templates/memory-hive/README.md	nothing on the tier-1 read path writes or reads `fired` any more	pinned	the_read_back_is_the_last_call_of_its_bundle
 CLB-one-message-election	templates/collector/README.md	exactly one reads a complete set	pinned	of_two_parking_bundles_exactly_one_reads_the_complete_set
+#
+# Added 2026-08-27 (GH #440). `add_templates` is the seventh diff key and the
+# first operation that puts a CLASS in the library instead of a cell in the
+# tree. Four promises a reader could act on: the built target path, the two
+# pre-destructive refusals, and the order across manifest entries. The rescan
+# door's new 422 rides along -- it is the same wave's repair (ruling L3-S) and
+# it is a status code, which is exactly the kind of statement a caller matches on.
+PIN-add-templates-target-built-de	docs/meclaw-overview.md	der Pfad wird von der Colony **gebaut**, nie aus einem Feld des Bodys übernommen	pinned	the_mutation_door_writes_under_the_resolved_templates_root
+PIN-add-templates-target-built-en	docs/meclaw-overview.en.md	the colony **builds** that path and never takes one from a field of the body	pinned	the_mutation_door_writes_under_the_resolved_templates_root
+PIN-add-templates-name-taken-de	docs/meclaw-overview.md	ein Name, den die Registry schon beantwortet, ist `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
+PIN-add-templates-name-taken-en	docs/meclaw-overview.en.md	a name the registry already answers is `template_name_taken`	pinned	a_taken_name_is_refused_and_leaves_nothing_behind
+PIN-add-templates-order-de	docs/meclaw-overview.md	ein späterer Eintrag löst auf, was ein früherer registriert hat	pinned	a_later_declaration_resolves_what_an_earlier_one_registered
+PIN-add-templates-order-en	docs/meclaw-overview.en.md	a later entry resolves what an earlier one registered	pinned	a_later_declaration_resolves_what_an_earlier_one_registered
+PIN-rescan-door-422-de	docs/meclaw-overview.md	wenn er abbrach (GH #440)	pinned	a_duplicate_name_reaches_the_caller_of_the_rescan_message
+PIN-rescan-door-422-en	docs/meclaw-overview.en.md	when it aborted (GH #440)	pinned	a_duplicate_name_reaches_the_caller_of_the_rescan_message
+PIN-birth-state-de	docs/meclaw-overview.md	sofern der Eintrag nichts anderes deklariert	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
+PIN-birth-state-en	docs/meclaw-overview.en.md	unless the entry declares otherwise	pinned	a_long_running_cell_born_inactive_is_registered_and_never_spawns
+PIN-birth-wake-de	docs/meclaw-overview.md	Wecksemantik eines	pinned	the_next_mutation_that_reaches_it_wakes_it
+PIN-birth-wake-en	docs/meclaw-overview.en.md	the wake semantics of a node born	pinned	the_next_mutation_that_reaches_it_wakes_it
+#
+# Added 2026-08-27 (GH #47). Der Satz ueber den Drain stand seit v0.1.0 in der
+# Spec und war unwahr; jetzt traegt ihn ein Test. Die zweite Zeile pinnt die
+# andere Haelfte der Zusage -- dass eine Deadline abschneidet UND benennt, was
+# liegenblieb: ohne Pin waere "drainet" eine Zusage ohne Grenze.
+PIN-direct-mode-drain-de	docs/meclaw-overview.md	drainet die in-flight-Arbeit und beendet sich mit Exit-Code 0	pinned	a_batch_pipe_delivers_every_answer_after_eof
+PIN-direct-mode-drain-en	docs/meclaw-overview.en.md	drains the in-flight work and exits with exit code 0	pinned	a_batch_pipe_delivers_every_answer_after_eof
+PIN-drain-deadline-de	docs/meclaw-overview.md	schneidet ab und die Warnung auf stderr **benennt**	pinned	a_hung_handler_ends_the_drain_at_the_deadline_and_is_named
+PIN-drain-deadline-en	docs/meclaw-overview.en.md	warning on stderr **names** what was left behind	pinned	a_hung_handler_ends_the_drain_at_the_deadline_and_is_named

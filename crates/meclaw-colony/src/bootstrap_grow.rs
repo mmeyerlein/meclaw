@@ -47,27 +47,36 @@ use crate::mutation::MutationError;
 /// One `stage_subtree` per marker, then the rename sequence above. Returns the
 /// first refusal as a `BootstrapErrors` — a boot that cannot fulfil a
 /// declaration must not start half a tree.
+///
+/// GH #437: the meclaw paths of the growth roots that declared
+/// `birth: "inactive"` travel back to the caller. The re-plan that follows a
+/// growth has no memory of the marker (the marker consumed itself), so the
+/// declaration has to be carried by hand across that boundary.
 pub(crate) fn grow_planned_refs(
     root: &std::path::Path,
     growths: &[PlannedGrowth],
     templates: &crate::templates::TemplatesRegistry,
     factories: &crate::CellFactoryRegistry,
     env_path: Option<&std::path::Path>,
-) -> Result<(), BootstrapErrors> {
+) -> Result<Vec<meclaw_core::Path>, BootstrapErrors> {
     let env_file = env_path
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| root.join(".env"));
     let env = crate::env_file::load_env(&env_file).unwrap_or_default();
     let ctx = std::collections::HashMap::new();
 
+    let mut born_inactive = Vec::new();
     for g in growths {
         if let Err(e) = grow_one(root, g, templates, factories, &env, &ctx) {
             let mut errors = BootstrapErrors::new();
             errors.push(e);
             return Err(errors);
         }
+        if g.birth == crate::mutation::Birth::Inactive {
+            born_inactive.push(g.path.clone());
+        }
     }
-    Ok(())
+    Ok(born_inactive)
 }
 
 fn grow_one(
@@ -103,6 +112,12 @@ fn grow_one(
         &crate::mutation::subtree::SubtreeOverrides::from_ref_marker(&g.override_params),
         templates,
         factories,
+        // GH #439: the boot growth runs BEFORE the watchdog is armed, so there
+        // is nothing to beat to.
+        &crate::watchdog::WorkPulse::silent(),
+        // GH #437: the marker's own declaration, stamped on every cell of the
+        // tree it grows.
+        g.birth,
     )
     .map_err(|e| growth_error(g, &e))?;
 

@@ -1,0 +1,45 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\njson.load(sys.stdin)\n# Silent terminal: inbound user messages to a push-only bot carry nothing to\n# persist (cookbook: swallow what you expect). Emits NOTHING, ever.\nsys.stdout.write(json.dumps([]))\n",
+    "external_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {}
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Silent terminal for the notifier's inbound lane (emit_to): a push-only digest bot has nothing to persist from inbound chats.",
+    "use_when": "emit_to target of a delivery-only proxy. S1 addendum 2026-06-11: /colony/dead_letters as an EMISSION target is the READ endpoint (the listing reply travels back and dies at the consumes check) - never use it as a discard.",
+    "not_in_scope": "No persistence - use the in-tree drain/errors pattern where errors should be visible.",
+    "emits_meaning": "Nothing, ever (empty multi-send).",
+    "consumes_meaning": "Anything; swallowed.",
+    "examples": [
+      "inbound Telegram chat to the digest bot -> swallowed silently"
+    ]
+  }
+}

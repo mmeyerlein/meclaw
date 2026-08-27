@@ -278,7 +278,10 @@ async fn demo_production_mutation_spawn_with_state() {
             })
             .await
             .unwrap();
-        ack_rx.await.unwrap();
+        ack_rx
+            .await
+            .unwrap()
+            .expect("GH #440: the rescan must not have aborted");
     }
 
     // Mutation: add_nodes [{name: "persist", template: "persist_mock",

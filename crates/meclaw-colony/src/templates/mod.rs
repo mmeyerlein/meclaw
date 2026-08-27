@@ -35,6 +35,45 @@ async fn send_op_via(
     writer_tx.send(op).await.expect("writer thread dead");
 }
 
+/// GH #440: the `templates`-table row for one scanned template.
+///
+/// Extracted so a registration (`mutation::register`) and a scan build the SAME
+/// row — a second construction site is how the two would start to disagree
+/// about what was registered.
+pub(crate) fn upsert_op(
+    template_id: String,
+    t: &scanner::ScannedTemplate,
+    now: i64,
+    ack: Option<std::sync::mpsc::Sender<()>>,
+) -> ColonyWriteOp {
+    ColonyWriteOp::UpsertTemplate {
+        template_id,
+        name: t.name.clone(),
+        version: t.version.clone(),
+        filesystem_path: t.filesystem_path.to_string_lossy().into_owned(),
+        description_json: t.description_json.clone(),
+        tags_json: t.tags_json.clone(),
+        author: t.author.clone(),
+        scanned_at: now,
+        ack,
+    }
+}
+
+/// GH #440: the in-memory registry entry for one scanned template, under the
+/// id its row carries. Same projection the five `read_templates()` call sites
+/// do, for a template that has no row yet.
+pub(crate) fn entry_from_scanned(
+    template_id: String,
+    t: &scanner::ScannedTemplate,
+) -> registry::TemplateEntry {
+    registry::TemplateEntry {
+        template_id,
+        name: t.name.clone(),
+        version: t.version.clone(),
+        filesystem_path: t.filesystem_path.clone(),
+    }
+}
+
 /// Async core of `apply_scan_result`: takes Send+Sync channels instead of
 /// `&ColonyDb` → no !Send capture in the `colony_task` future.
 async fn apply_scan_result_inner(
@@ -67,17 +106,7 @@ async fn apply_scan_result_inner(
         send_op_via(
             &writer_tx,
             &queue_depth,
-            ColonyWriteOp::UpsertTemplate {
-                template_id,
-                name: s.name.clone(),
-                version: s.version.clone(),
-                filesystem_path: s.filesystem_path.to_string_lossy().into_owned(),
-                description_json: s.description_json.clone(),
-                tags_json: s.tags_json.clone(),
-                author: s.author.clone(),
-                scanned_at: now,
-                ack: Some(tx),
-            },
+            upsert_op(template_id, s, now, Some(tx)),
         )
         .await;
         let _ = rx.recv();

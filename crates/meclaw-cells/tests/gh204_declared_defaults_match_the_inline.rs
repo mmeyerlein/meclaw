@@ -165,6 +165,13 @@ fn a_declared_default_is_the_default_the_script_resolves() {
     // `templates/`, 49 over the subset the export publishes
     // (`PUBLIC_TEMPLATES` in `plans/export-fixtures/make_export.py`).
     //
+    // Both numbers moved on 2026-08-27 (S5): `bot-basic` and `llm-unit` were
+    // deleted, so the private pool shrank, and `daily-digest` was released, so
+    // the public pool grew towards it. The two trees are closer together than
+    // the measurement above describes, and the direction is the safe one for a
+    // floor set on the SMALLER tree. The floor itself is unchanged and still
+    // measured, not declared.
+    //
     // It used to read 50, measured on 2026-08-18 at 69 private / 57 public --
     // and it went red in the public CI, not here. GH #277's W3 conversion
     // replaced the byte-copied sub-units inside `talky` and `cogny` with

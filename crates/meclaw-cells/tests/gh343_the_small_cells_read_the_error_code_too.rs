@@ -30,8 +30,9 @@
 //!
 //! Every test here drives the SHIPPED `script_inline` of the real template.
 //!
-//! **Split under GitHub #362.** The issue's table also covered the three small
-//! collector copies (`research-assistant`, `coder-pipeline`, `llm-unit`) and
+//! **Split under GitHub #362.** The issue's table also covered the small
+//! collector copies (`research-assistant`, `coder-pipeline` — and `llm-unit`
+//! until S5 deleted that template on 2026-08-27) and
 //! `coder-pipeline/taskarchive`. None of those templates is in the export
 //! allow-list, so their six cases would be red in the published clone and made
 //! this whole file unpublishable. They now live in

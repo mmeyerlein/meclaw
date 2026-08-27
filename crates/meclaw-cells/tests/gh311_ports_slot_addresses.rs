@@ -72,11 +72,14 @@
 //! reader differs, and the prose unit the carve-out reads is the text since the
 //! previous fence or heading instead of the sentence.
 //!
-//! Measured over the whole shipped library on 2026-08-21, the README rule yields
+//! Measured over the whole shipped library on 2026-08-21, the README rule yielded
 //! six hits: the three dispatcher lines (fixed with this file) and three in
-//! `templates/builder-hive/README.md`, which quote a boot-time scaffold verbatim
-//! under prose that names `hive_port_boundary` and are therefore exempt. Zero
-//! others, zero false positives.
+//! `templates/builder-hive/README.md`, which quoted a boot-time scaffold verbatim
+//! under prose that names `hive_port_boundary` and were therefore exempt. Zero
+//! others, zero false positives. That template was retired on 2026-08-27
+//! (GH #434), so the README sweep now finds no exempt hit at all; the carve-out
+//! stays because it is shared with the PORTS sweep, where `firewall` exercises
+//! it under a floor.
 
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::mutation::port_boundary::validate_hive_port_boundary;
@@ -749,24 +752,19 @@ fn a_readme_wiring_example_addresses_the_hive_it_seals() {
         "the sweep read almost no wiring endpoints: {}",
         counts.endpoints
     );
-    // The carve-out, exercised by the shipped tree rather than left as dead
-    // code. `builder-hive`'s README quotes the boot-time scaffolds verbatim
-    // (`./builder/{intake,deploy,promote}`) under prose that names
-    // `hive_port_boundary` and explains why a BIRTH topology is out of the
-    // seal's reach — true, and the exact sentence the exemption exists for.
-    // Asserted where its subject ships: `builder-hive` is not in the export's
-    // template allow-list, and this is a witness for a rule the sweep above
-    // enforces everywhere, not a guard around the sweep itself.
-    if core_root()
-        .join("templates/builder-hive/README.md")
-        .is_file()
-    {
-        assert_eq!(
-            exempted.get("builder-hive").copied(),
-            Some(3),
-            "the boot-scaffold quotes stopped earning the exemption (all exemptions: {exempted:?})"
-        );
-    }
+    // The carve-out has no witness in the README sweep any more, and that is a
+    // measured state rather than an oversight: of the six hits the rule ever
+    // yielded, three were the dispatcher lines this file fixed and three were in
+    // `templates/builder-hive/README.md`, retired with its template (GH #434).
+    // The exemption itself is NOT dead — `names_the_seal` is shared with the
+    // PORTS sweep above, where `firewall` exercises it and a floor holds it
+    // honest. So: no floor here, and the map is reported rather than asserted,
+    // because a fresh exempt README must not have to touch this test to be
+    // allowed.
+    assert!(
+        exempted.values().sum::<usize>() <= counts.endpoints,
+        "the exemption counter outran the reading it counts (exemptions: {exempted:?})"
+    );
 }
 
 /// A synthetic candidate carrying a shipped template's real seal and children,

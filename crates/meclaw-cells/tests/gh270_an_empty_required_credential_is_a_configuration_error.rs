@@ -45,8 +45,9 @@
 //! `auth: "api_key"` but accepts `""`, and the wire then sends
 //! `Authorization: Bearer `. It is left alone on purpose: an
 //! OpenAI-compatible server on localhost commonly ignores the header
-//! altogether, `templates/builder-hive/intake-llm` points at exactly such an
-//! endpoint, and an operator running keyless against it would be broken by a
+//! altogether, `templates/builder/compose` points at exactly such an endpoint
+//! (`${LOCAL_LLM_API_KEY:-}` defaults to empty), and an operator running
+//! keyless against it would be broken by a
 //! refusal that is right for Slack and Telegram. Whether that lane should
 //! reject the empty key or drop the header is a judgement about the auth
 //! contract, not a defect repair, and it is reported rather than decided here.

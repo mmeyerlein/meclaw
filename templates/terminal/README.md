@@ -54,7 +54,7 @@ which scans every shipped `templates/` and `examples/` declaration and fails on 
 |---|---|---|
 | the template root | `code` | `sys.stdout.write("[]")`. No state, no `cell.db`, no branch. |
 
-Single-cell template (the `_cell-types` shape): instantiate it under any name -- `sink`
+Single-cell template (one cell of one cell type, the smallest `config.json` that starts it, and a README that explains its declarations): instantiate it under any name -- `sink`
 is the usual one -- and the instance IS the cell.
 
 ## Ports and wiring

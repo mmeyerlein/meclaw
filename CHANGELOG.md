@@ -11,6 +11,564 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-08-27
+
+### Breaking
+
+#### `submit@2.0.0` + `access@2.3.0` + `meclaw-os@1.2.0` — die Einreich-Policy zieht zum Broker (GH #435)
+
+**Breaking (`submit`):** `params.policy` ist **zurückgezogen**. Wer eine
+`submit`-Instanz mit `SUBMIT_POLICY` oder `override_params` fütterte, füttert ab
+jetzt ins Leere; die Entscheidung liegt beim Capability-Broker. `required_drains`
+wächst um das Paar `in_verdict`/`ask` — eine Komposition, die die Frage
+verkabelt und die Antwort nicht, wird an der Instanziierung abgelehnt, statt
+still un-policed zu laufen.
+
+Der Einreicher entscheidet nicht mehr, er **fragt** — und zwar in der
+**prüf-only**-Form: ein Verdikt, kein Grant. Die volle Broker-Lane hätte
+verlangt, dass irgendetwas den Grant einlöst, und „einlösen" heißt bei `access`
+`./invoke` → `connect` in einen Konnektor. Der Konnektor wäre die Mutations-Tür
+gewesen — eine **zweite** Kante auf `/colony/mutations`, und damit das Ende der
+einen Aussage, für die `submit` existiert.
+
+- **Eine Frage je Einreichung**, über die **Scope-Wurzel** des Manifests (das
+  längste gemeinsame Pfad-*Segment*-Präfix). Liegt die Wurzel unter dem
+  erlaubten Präfix, liegt jede Deklaration darunter — das ist keine Näherung,
+  sondern ein Satz. Ein Manifest über zwei Äste fragt nach deren
+  Vereinigungspunkt, also strenger und nie großzügiger. Segmente statt Zeichen:
+  `/os` und `/oscar` treffen sich bei `/`.
+- **R-AC-1 bleibt unangetastet.** Der `requester` kommt beim Broker von der
+  Kante und sagt `/os/submit`; die vom Substrat gestempelte Identität des
+  Einreichenden reist als **`subject`**. Die Delegation steht damit sichtbar in
+  einer Regel statt implizit in einem Skript.
+- **Das Manifest wartet geparkt.** `access` antwortet mit einem `tool_result`,
+  der den Body ersetzt — das Manifest überlebt die Runde nur im Store, unter
+  seinem Digest, und wird von ihm wieder entparkt.
+- **Die Refusal-Namen bleiben.** Ein abgelehntes Verdikt heißt weiterhin
+  `requester_not_permitted`. Neu ist `submission_check_failed`: der Broker hat
+  **nicht** geantwortet — nicht dasselbe Faktum wie ein Nein, und nichts
+  erreicht die Tür.
+- **Der ehrliche Preis:** eine Kolonie, deren Broker nicht antwortet, reicht
+  nichts mehr ein — auch keine Reparatur ihrer selbst. Der Ausweg ist nicht die
+  Zelle, sondern die Operator-Tür: `POST /colony/mutations` und `--apply` hängen
+  nicht am Broker.
+
+**`access@2.3.0`** (additiv):
+
+- **`check_only`** in `access.request` — antwortet ein Verdikt und prägt
+  **keinen** Grant: eine `audit`-Zeile mit `outcome: "checked"`, `verdict:
+  "allowed"`, leere `grant_id`. Ein Grant, den niemand einlöst, ist eine
+  Bearer-Zeile mit Ablaufdatum, die nur `./sweep` je wieder anfasst. Präzedenz
+  im selben Skript: der `require_approval`-Zweig antwortet und prägt nichts.
+- **`scope_prefix`** als **reservierter** `scope_match`-Schlüssel, verglichen
+  als **Pfad**-Präfix gegen `resource.scope`. Ein neuer Schlüssel, weil eine
+  Umdeutung des bestehenden `scope` jede existierende Regel still verbreitert
+  hätte — die eine Änderung, die ein Berechtigungs-Vergleicher nicht machen
+  darf. Er beschreibt eine Erlaubnis, keine Adresse, und landet deshalb nicht im
+  eingefrorenen Grant-Scope (R-AC-2).
+- **Seed-Zeile `colony.mutate.default`**, `enabled: 0` — wer ein Manifest zur
+  Mutations-Tür tragen darf. Eine frische Kolonie reicht nichts ein.
+- **Bugfix:** `policy` erkannte den Rücklauf seines eigenen Stores an
+  `"operation" in hop`. Ein `hop.operation` schreibt aber, wer die Nachricht
+  emittiert — ein Aufrufer darf eines tragen, und der Broker fiel dann still in
+  seinen Echo-Zweig und **antwortete gar nicht**. Erkannt wird jetzt am Marker,
+  den die eigene Kante nach `context` hebt (`access_origin == 'policy'`).
+
+**`meclaw-os@1.2.0`:** zwei Kanten, `./submit -> ./access` auf `ask` und
+`./access -> ./submit` auf `grant`. Nur diese Ebene kann sie ziehen — dort sind
+die beiden Geschwister. Die Rim-Kante für `grant` schließt die Runde des
+Einreichers jetzt aus (`!has(context.sub_ask)`): Kanten **fächern auf**, und
+ohne den Guard hätte eine prüf-only-Frage zugleich ein Grant nach draußen
+gereicht, auf eine Frage, die draußen niemand gestellt hat.
+
+### Added
+
+#### Ein Template kommt in eine laufende Kolonie: `add_templates` (GH #440)
+
+Der `diff` einer Mutation nimmt einen siebten Schlüssel. Ein Eintrag ist
+`{"name": …, "files": {"<relpfad>": "<inhalt>", …}}` mit `template.json` als
+Pflichtdatei; geschrieben wird **immer** nach `{templates_root}/local/<name>/`.
+Den Pfad **baut** die Colony aus der aufgelösten `--templates`-Wurzel und dem
+geklemmten Namen — kein Feld des Bodys wird zum Pfadsegment, und damit ist die
+ausgelieferte Bibliothek unerreichbar: eine Deklaration kann sie ergänzen, nie
+überschreiben. Die Operation besetzt keine Adresse und räumt keine; sie legt
+eine Klasse in die Bibliothek, keine Zelle in den Baum.
+
+Sie läuft als **erste** des Diffs, damit ein `add_nodes` desselben Diffs das
+Template per Namen auflösen kann, und im Manifest gilt dasselbe eine Ebene
+höher: ein späterer Eintrag löst auf, was ein früherer registriert hat. Genau
+das ist der Grund, warum die Registrierung eine Deklaration ist und kein
+Seitenkanal — und es war vorher nicht eingelöst, weil der Templates-
+Schnappschuss pro Manifest eingefroren war.
+
+Geschrieben wird per Staging plus **einem** `rename(2)`; ein nebenläufiger
+Rescan sieht also nie eine halb geschriebene `template.json`. Die Registry-Zeile
+leitet **derselbe** Parser ab, den der Scan benutzt — Registrierung und Rescan
+können nicht auseinanderlaufen. `local/` ist dabei kein Sonderfall im Scanner,
+sondern eine Konvention der schreibenden Seite.
+
+Neu in der dokumentierten `error_code`-Enum (jetzt 25 Token, beide additiv):
+
+- **`invalid_template_name`** — ein Name außerhalb `^[a-z][a-z0-9-]{1,63}$`
+  oder ein Dateipfad, der aus dem Template-Verzeichnis herausklettert.
+- **`template_name_taken`** — ein Name, den die Registry schon beantwortet;
+  verweigert **an seiner Position** statt als Abbruch des nächsten Rescans für
+  alle. Derselbe Code trägt ein Verzeichnis, das unter `local/<name>/` schon
+  liegt, ohne dass eine Registry-Zeile es nennt — benannt zurückgewiesen statt
+  überschrieben (No-Delete).
+
+Beide sind pre-destruktiv: ein verweigerter Eintrag hinterlässt nichts auf
+Platte. Die beiden Türen erben die Operation ohne eine Zeile — `--apply` und
+`POST /colony/mutations` fragen nur nach dem `manifest`-Schlüssel und tragen
+keine Op-Liste; nachgemessen statt behauptet. Der Builder trug eine und kennt
+`add_templates` jetzt (`builder@1.0.1`).
+
+#### `add_nodes` deklariert seinen Geburtszustand (GH #437)
+
+Es gab keine Art zu sagen „wachse diese Zelle, aber starte sie nicht". Ein
+`add_nodes`-Eintrag deklariert das jetzt: **`"birth": "active" | "inactive"`**,
+Default `"active"` — wer nichts sagt, bekommt exakt das bisherige Verhalten.
+
+Der Schlüssel setzt die **Instanziierungs-Aktivität**, nicht den
+Hot/Cold-Status. Ein inaktiv geborener Knoten ist registriert, adressierbar und
+wird inaktiv **persistiert**; es entsteht keine Task, also öffnet ein
+Long-Poll-Konsument seinen Upstream bei der Geburt nicht. Der Workaround, eine
+`base_url` auf eine unroutbare Adresse zu zeigen, entfällt. Auf einem Subtree
+gilt die Deklaration für jede Zelle des Baums — eine Einheit wird ganz geboren.
+
+Die Deklaration gewinnt über den Konnektivitäts-Recompute **der Mutation, die
+den Knoten gebiert**. Damit lässt sich eine Zelle voll verkabelt **und**
+schlafend wachsen, was der eigentliche Fall des Issues ist. Jeder **spätere**
+Recompute behandelt sie wie jeden anderen Knoten, und genau das ist das Wecken:
+das gewöhnliche Reconnect (`add_edges` oder ein erneutes `add_nodes` am Pfad)
+flippt sie aktiv und startet ihre Long-Running-Cells sofort. **Kein neuer
+Operator, keine neue Message.**
+
+Zur Namensgebung: die Wire-Werte sind `active`/`inactive` — die beiden Wörter,
+die die Substrat-Registry selbst führt. `asleep` wurde verworfen, weil es einen
+Hot/Cold-Zustand benennt, in dem eine Long-Running-Cell — der Fall hier — per
+Spec gar nicht sein kann.
+
+Türen: die HTTP-Tür, die Manifest-Form und `--apply` reichen denselben
+untypisierten Diff durch und haben den Schlüssel ohne eine Zeile Code geerbt.
+Der `ref`-Marker geht **nicht** durch `add_nodes` (er wird als Growth geplant und
+vom Boot registriert) und hat deshalb eine eigene Deklaration bekommen: ein
+top-level `"birth"` neben `override_params` in der `config.json` des Markers.
+
+Ein unbekannter Wert wird pre-destruktiv mit `error_code: "schema"`
+zurückgewiesen und nennt Site, Wert und die Werte, die es gibt. **Kein neuer
+error_code.**
+
+**Klassifikation: Minor-Klasse.** Eine additive, nie versprochene neue Fähigkeit
+auf der Template-DSL-Fläche (`docs/development-rules.md` § 4).
+
+#### Die Bibliothek ist kuratiert: 39 → 36 Templates, öffentlich 29 → 30 (GH #434, Rulings S1/S5)
+
+**Freigegeben: `daily-digest`** (privat → öffentlich). Die ausgelieferte
+Bibliothek wächst damit auf **30** Templates.
+
+**Stillgelegt: `builder-hive`, `bot-basic`, `llm-unit`.** Keines der drei war je
+Teil des veröffentlichten Subsets — **nichts, was ein veröffentlichter Baum
+nennt, hört auf aufzulösen**, und deshalb steht das hier nicht unter *Breaking*.
+
+`builder-hive` war der Skript-Pfad zum Bauen: eine `code`-Zelle, die Zustand auf
+Platte hielt, um sich selbst zu serialisieren. Sein Nachfolger ist mit diesem
+Release vollständig — `builder` entwirft das Manifest, `submit` ist die einzige
+Kante zur Mutations-Tür, und `add_templates` legt jetzt auch die Klasse selbst in
+die laufende Bibliothek. Wer lieber schreibt als redet, nimmt
+`POST /colony/mutations` oder `meclaw --apply`; beide hängen an keiner Zelle.
+Gestorben sind mit dem Baum auch sein Generator, sein Zwilling, sechs
+Testdateien, zwei Eval-Scaffolds und drei Szenario-Fälle — in einem Zug, weil der
+Export sonst in beide Richtungen rot gewesen wäre. Die drei Pins, die nur dieser
+Baum trug, sind einzeln entschieden statt stillschweigend mitgestorben: zwei
+tragen jetzt eine stärkere Aussage (`docs/cell-types.md` § Overview statt eines
+generierten JSON; der Rescan-Verbatim misst gegen den echten Scanner statt gegen
+ein Fixture), einer starb mit der Mechanik, die es nicht mehr gibt.
+
+`bot-basic` zeigte auf ein Template, das es nicht mehr gibt; `llm-unit` war ein
+Testgerüst, das seinen Anlass überlebt hatte. Git ist das Archiv.
+
+**Und *privat* ist ab jetzt eine begründete Klasse statt einer Restmenge:**
+30 Templates öffentlich, 6 privat — Instanz-Ableitung (`egon`), Spielwiese
+(`research-assistant`) oder Staging mit benanntem Reifeziel (`coder-pipeline`,
+`llm-registry`, `slack-agent`, `_cell-types`). Das Verdikt **jedes** Templates
+steht im Export-Skript und wird von einer Mengengleichheit gehalten, nicht von
+einem Kommentar: der alte Doktrin-Text zählte die privaten in Prosa auf und
+endete auf „und die übrigen" — eine Formulierung, die nie altert, weil sie nichts
+behauptet, und die drei gelöschte Templates überlebt hatte, ohne rot zu werden.
+
+### Fixed
+
+#### Der Shutdown drainet jetzt wirklich (GH #47)
+
+`docs/meclaw-overview.md` verspricht seit v0.1.0, dass ein Direct-Mode-Prozess
+bei stdin-EOF „die in-flight-Arbeit drainet und sich mit Exit-Code 0 beendet".
+Er tat es nicht: `cat fragen.txt | meclaw` mit einer async Zelle lieferte
+gemessen 0 von 20 Antworten, weil der Colony-Loop beim Shutdown sofort abbrach.
+Der Loop kennt jetzt eine zweite Zustandsdimension. Nach dem Shutdown-Signal
+nimmt er keinen neuen Ingress mehr an, lässt aber jede fliegende Message samt
+Folge-Hops bis zur Quiescence auslaufen — Colony-Inbox leer, Emissions-Kanal
+leer, keine Zell-Mailbox belegt, kein `handle()` mehr unterwegs. Dasselbe gilt
+für SIGTERM; ein Watchdog-Trip überspringt den Drain.
+
+Neu und additiv: `colony.json shutdown_drain_timeout_ms` (Default 10000, `0`
+schaltet den Drain ab), die Dead-Letter-Reason `shutdown_draining` und der
+Mutations-`error_code` `shutdown_draining`.
+
+**Einstufung: dritte Stelle.** Das ist die Einlösung einer bestehenden Zusage,
+und `docs/development-rules.md` § 4 zählt eine Reparatur auch dann als Patch,
+wenn sie Deklarationen mitbringt (Präzedenz 0.23.0/#410).
+
+**Der Korridor blieb zu.** `docs/roadmap.md` hatte für diesen Posten vorab eine
+Öffnung von `route()` sanktioniert. Sie wurde nicht gebraucht: das Liefer-Prädikat
+lebte schon im Wrapper `route_with_log`. Beide Fixture-Paare stehen unverändert,
+die Byte-Gates sind leer.
+
+#### Ein Bauauftrag hält die Kolonie nicht mehr an (GH #439)
+
+Ein großer Bauauftrag konnte die Kolonie umbringen. Die Zeile aus dem Issue —
+`starved=colony_loop … colony_task=alive` — hatte eine Ursache, die eine Zeile
+lang ist: der `outputs_rx`-Arm der Colony-Loop hat sein Work-Item nie
+angemeldet. Eine **zell-emittierte** Mutation — genau der Weg, den der
+Builder-/`submit`-Flow geht — lief deshalb, während die letzte Phase, die der
+Supervisor gesehen hatte, `Parked` war. `in_flight_work` war damit `false`,
+`starved()` lieferte `colony_loop`, und dieses Verdikt ist unter dem
+ausgelieferten `watchdog_on_trip: exit` tödlich. Der Arm meldet sich jetzt, und
+ein Regression-Lock hält das fest.
+
+**Das Fenster bleibt unverändert** (5 × 100 ms) — nichts hier weitet es. Statt
+dessen wird die Instanziierung hörbar und höflich: sie schlägt den Herzschlag
+**je Zelle** und gibt den Runtime-Scheduler **je Zelle** frei, sowohl im
+synchronen Staging-Durchgang (dem teuren) als auch in den beiden
+Registrierungsschleifen. Eine Mutation bleibt dabei **ein** Work-Item und **ein**
+Verdikt: die Registry wird inkrementell mutiert und zwei Laufzeit-Rejects nach
+dem Spawn-Schritt können den ganzen Diff noch zurücknehmen — würde die Loop
+zwischen zwei Zellen routen, wäre ein halb gebauter Subtree adressierbar und
+nicht mehr rückabwickelbar. Diese Serialisierung war bisher nur Prosa; sie hat
+jetzt ihren ersten Test.
+
+Dazu die Diagnose-Hälfte: der phasentragende Herzschlag kann ein **Label**
+tragen. Ein Trip innerhalb einer Mutation rendert
+`work_item=mutation <id> scope=<scope> op=add_nodes[i/n] template=<t> cell=<pfad>`
+— am **Ende** der Zeile, das issue-#6-Präfix bleibt byte-stabil — und sagt nicht
+mehr `colony_loop`.
+
+**Klassifikation: Patch-Klasse.** Reparatur einer bestehenden Zusage
+(„der Watchdog erkennt einen Stillstand, keine lange Operation", GH #165); keine
+der fünf öffentlichen Vertragsflächen ändert sich, die Trip-Zeile wächst nur
+hinten.
+
+#### Zehn ausgelieferte `llm`-Zellen wurden von ihrem eigenen Backstop gekillt
+
+`docs/meclaw-overview.md` § Timeouts kennt zwei Deckel und eine Reihenfolge: der
+Operation-Timeout A (`params.external_timeout_ms`) greift zuerst und liefert eine
+saubere Error-Message, der Substrat-Backstop B (`cell.message_timeout`) liegt
+**deutlich darüber** und fängt nur den unerklärten Hänger („B großzügig, A
+präzise", zugleich harte Regel 12 der `CLAUDE.md`). **Zehn ausgelieferte
+`llm`-Zellen hatten die Reihenfolge umgedreht** — und keine einzige sah danach
+aus, weil eine Zelle A deklariert und über B schweigt: B fiel auf den
+Colony-Default von 60 s, und der Watchdog killte die Zelle, bevor ihr Aufruf
+überhaupt ablaufen durfte. Was der Aufrufer bekam, war `message_timeout` und ein
+Restart statt einer Antwort.
+
+Der schärfste Fall ist `builder/compose` mit `external_timeout_ms: 170000` unter
+einem 60-s-Deckel. Gefunden hat ihn eine Messreihe über 34 Builds
+(`plans/welle-2026-08-27/receipts/builder-messreihe.md`), die den Defekt zuerst
+für eine Aussage über das **Modell** hielt: `reasoning_effort: high` starb 5 von
+6 Läufen, `low` nie — aus dem simplen Grund, dass Denktiefe genau den Aufruf
+verlängert, den der Backstop abschnitt. Die stillere Hälfte des Audits sind die
+Zellen, die **gar keinen** `external_timeout_ms` deklarieren: die machen
+trotzdem einen 110-s-Aufruf (`LlmParams`-Default) und lagen damit ebenfalls über
+den 60 s. Nichts zu deklarieren ist hier nicht neutral.
+
+Repariert, je Zelle als `cell.message_timeout` nach dem Vorbild, das
+`memory-hive` und `cogny` schon ausliefern: `builder/compose` 240000 (über
+170000), `talky/brain` 180000 (über 120000), `steward/judge` 180000 — dort stand
+**180**, drei Größenordnungen daneben, also nie ein Backstop, sondern ein
+Sofort-Kill —, und je 180000 für `coder-pipeline/{coder,planner,reviewer}`,
+`egon/worker`, `research-assistant/planner`, `slack-agent/worker`,
+`summarizer/writer`. `cogny/brain`, `cogny/brain_fast` und die vier
+`memory-hive`-Zellen waren schon richtig herum.
+
+Dazu der zweite Deckel derselben Zelle: **`builder/compose` `max_tokens`
+8192 → 16384**. Auf der OpenAI-kompatiblen Wire, die diese Zelle spricht, sind
+Reasoning-Tokens Completion-Tokens — sie zählen gegen `max_tokens`, also kommt
+ein Modell, das über den Deckel hinaus denkt, mit `finish_reason: "length"` und
+**leerer** Antwort zurück, nicht mit einer abgeschnittenen. Gemessen, nicht
+gefolgert: 2 von 4 `high`-Läufen endeten bei exakt 8192 Completion-Tokens ohne
+ein Zeichen Antwort. Kein neuer Env-Knopf — beide Werte sind Eigenschaften
+dessen, was die Zelle tut, und eine Instanz überschreibt sie über `params`.
+Begründung im `templates/builder/README.md` § „The two caps the composer runs on".
+
+Das Gate, das die Umkehrung ab jetzt verbietet, prüft **alle** ausgelieferten
+`llm`-Zellen und fragt beide Seiten beim Substrat selbst ab (`LlmParams` für A,
+`resolve_message_timeout` für B):
+`crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`.
+
+Klassifikation nach `docs/development-rules.md` § 4: **Reparatur**, dritte
+Stelle. Neun Template-Versionen ziehen nach — `builder@1.0.3`,
+`coder-pipeline@2.0.5`, `egon@2.0.2`, `research-assistant@2.0.4`,
+`slack-agent@2.0.2`, `summarizer@2.0.2`, `steward@2.0.12`, `talky@4.2.3` (eigene
+Zelle plus der `summarizer`-Pin) und `meclaw-os@1.2.3` (die `builder`- und
+`steward`-Pins).
+
+#### Ein unbekannter `diff`-Schlüssel wird abgewiesen statt still ignoriert
+
+Die Mutations-Tür las den `diff` Schlüssel für Schlüssel — `add_nodes`,
+`add_edges`, … — und fragte nie, was sonst noch drinstand. Was sie nicht kannte,
+fiel durch **alle** Arme und die Deklaration antwortete `committed`. Die Form,
+die es unhaltbar macht: eine Colony auf einem **älteren Binary** bekommt eine
+`add_templates`-Deklaration, hat keinen Arm dafür, registriert nichts, schreibt
+nichts — und meldet „angewandt". Dieselbe Lücke schluckt einen Tippfehler
+(`add_node`), einen Schlüssel aus einer neueren Schema-Version und jede geratene
+Vokabel. In jedem Fall behauptet das Receipt Arbeit, die nicht stattgefunden hat.
+
+**Jetzt:** ein `diff`-Schlüssel, den keine Operation liest, ist eine Absage mit
+`error_code: schema`. Die `details` nennen den unlesbaren Schlüssel **und** die
+sieben, die die Colony ausführt — wer ein Wort vertippt hat, braucht die
+Vokabelliste, kein Urteil. Die Prüfung läuft auf dem **rohen** Diff, vor der
+Substitution und damit vor jedem gestagten, gespawnten, verdrahteten oder
+registrierten Byte; nichts aus dem Diff wird halb angewandt. Das Manifest erbt
+sie Eintrag für Eintrag (Stopp an der Position, frühere Einträge bleiben
+committed, spätere werden nie gelesen), `--apply` erbt sie als Einzelform.
+
+**Kein neuer `error_code`** (README § Stability): `schema` ist genau das, was ein
+formfalscher Body immer schon hieß. Klassifikation nach `docs/development-rules.md`
+§ 4 und der **#410-Präzedenz** eine **Reparatur des Substrat-Standards** — dass
+eine Tür meldet, was sie getan hat, ist Grundeigenschaft und war nie ein
+Sonderversprechen der Mutations-Tür; die Abweichung ist der Bug, nicht die
+Referenz. Ein Aufrufer, der heute rot wird, hat toten Ballast mitgeschickt, der
+noch nie eine Wirkung hatte.
+
+Gemessen in `crates/meclaw-colony/tests/an_unknown_diff_key_is_refused.rs`:
+Einzelform, „nichts aus dem Diff wird angewandt", die Gegenprobe (legale
+Schlüssel committen weiter, ein leerer `diff` bleibt der No-op, der er war) und
+der Manifest-Stopp an der Position.
+
+#### `submit@1.0.1` — der Receipt trägt wieder die Id, die nach ihm gefragt hat (GH #438)
+
+Eine Antwort von `/colony` beginnt einen **frischen Trace** — `emit_reply_or_done`
+baut eine nackte Message, ohne Header, ohne Kontext, ohne `reply_to`. Der
+Einreicher hielt zwischen seinen zwei Phasen nichts fest, also kam der
+`tool_result`, der die apply-Runde schließt, mit **leerer** `tool_call_id`
+zurück: ein Fan-in, das auf diese Id wartet, schloss auf ihr nicht.
+
+Der Fix liegt vollständig im Template, nicht in der Colony. `emit_reply_or_done`
+bedient sieben Endpunkte, und „ein virtueller Endpunkt antwortet in einen
+frischen Trace" ist die Eigenschaft dieser Fläche, kein Versehen — wer über den
+Roundtrip hinaus etwas wissen will, muss es sich **merken**. Die `submit`-Hive
+bekommt dafür einen zweiten Bewohner:
+
+- **`submit/store`** (`write_surface: "internal"`, Tabelle `submissions`) —
+  eine Zeile je Einreichung im Flug: `tool_call_id`, `manifest_sha256`,
+  `requester`, `at`. Eine `code`-Zelle hat kein `cell.db`, der Store-Roundtrip
+  **ist** das Gedächtnis der Zelle.
+- **Zwei hive-interne Kanten** `gate ↔ store` im eigenen Schlüsselraum
+  (`sub_origin`/`sub_phase`/`sub_carry`) — der Broker überschreibt `ac_*` auf
+  seinen eigenen Kanten.
+- **Phase A** schreibt die Zeile als letzte Handlung vor der Einreichung; **kein**
+  Refusal-Pfad schreibt eine. Eine Zeile ohne kommende Antwort verschöbe jede
+  folgende Korrelation um eins.
+- **Phase B** rendert nichts mehr, sondern holt die älteste Zeile (`order_by at,
+  id`, `limit 1`); der Receipt-Stoff wartet im `hop.carry`. Der **Pop** löscht
+  die Zeile und stempelt `tool_call_id` + `manifest_sha256` auf Header und Turn.
+- **Fehlt die Zeile** (Neustart, `--apply` von außen, Store-Fehler), geht der
+  Receipt trotzdem raus, mit leerer Id: die Korrelation ist verloren, die
+  Tatsache nicht.
+
+Bekannte Grenze, gemessen statt behauptet: die Korrelation gilt für **eine**
+Einreichung im Flug. Sind zwei gleichzeitig unterwegs, kann das `select` der
+zweiten Runde vor dem `delete` der ersten im Store laufen, und beide lesen
+dieselbe Zeile. Das Fenster schließt nur ein Claim im Read, und `store` hat
+keine Operation, die entfernt, was sie zurückgibt. Steht im README des Templates
+und im Kopf von `gh438_two_submissions_do_not_swap_receipts`.
+
+Reparatur, dritte Stelle: ein `tool_result`, der die `tool_call_id` seines
+Aufrufs trägt, ist Substrat-Standardverhalten der Tool-Lane — die leere Id war
+die Abweichung (Präzedenz #410). Der Vertrag der Hive (`accepts`/`emits`) bleibt
+byte-gleich; `meclaw-os` pinnt `submit@1.0.1`.
+
+#### Der Template-Katalog veröffentlicht, was er erzwingt
+
+`builder@1.0.2`, `builder-librarian@2.0.6`, `meclaw-os@1.2.2`.
+
+Ein Template darf per `requires` Keys fordern, und die Mutations-Tür weist ohne
+sie mit `requirement_missing` ab (GH #292/#347) — nur stand das nirgends, wo ein
+Modell es beim Auswählen liest. Eine Katalog-Zeile des Librarians ist
+`json.dumps(template.json)`, eine `template.json` ist description-first
+serialisiert, und die `retrieve`-Zelle reicht `row["text"][:1200]` weiter. Für
+`cogny@4.0.3` gemessen: 3760 Zeichen Beschreibung in der Basis-Zeile, der
+`requires`-Block **gar nicht darin** — er begann 467 Zeichen tief in der ersten
+Fortsetzungszeile. Der Katalog nannte einem Modell also Templates und sagte ihm
+nie, was sie verlangen; das Modell griff `cogny` und übergab einen leeren `ctx`
+(`plans/welle-2026-08-27/receipts/s12-luna-run.md`).
+
+Zwei Stellen, jede an ihrem Ort:
+
+- **Jede Katalog-Zeile beginnt jetzt mit ihrem Vertrag** — `CONTRACT — …`, die
+  geforderten `ctx`- und `env`-Keys und der `error_code`, der ohne sie kommt.
+  Vorn, damit sie **innerhalb** der 1200-Zeichen-Kürzung des Retrievers liegt;
+  über die `ref`s vereinigt, weil die Tür für die Vereinigung abweist und eine
+  Zeile aus dem äußeren `template.json` allein unterberichten würde; und auch
+  **leer** ausgeschrieben, weil „fordert nichts" von „Zeile fehlt" sonst nicht zu
+  unterscheiden ist. 479 → 481 Chunks.
+- **Der Prompt-Kopf trägt die Regel** — ein `REQUIREMENTS`-Absatz neben
+  `GRAMMAR`: geforderte `ctx`-Keys gehören in den `ctx`-Block **derselben**
+  Deklaration, `override_params` ist nicht der Kanal, `ctx` ist mutations-weit,
+  `env`-Keys gehören der Kolonie. Im Kopf, weil es bei ausgefallenem Korpus keine
+  Katalog-Zeile zu lesen gibt.
+
+Gepinnt in `crates/meclaw-cells/tests/librarian_catalogue_carries_the_contract.rs`
+und zwei neuen Aussagen in `builder_brief_mutation_grammar.rs`.
+
+**Damit lebt die Struktur.** Der Verifikationslauf gegen ein fähiges gehostetes
+Modell schrieb eine Deklaration, sie wurde angewandt, und was entstand ist eine
+**Komposition**: vier Einheiten unter einem Scope, drei zwischen ihnen kreuzende
+Kanten, alle 17 Zellen `active`. Keine Insel, kein erfundener Endpunkt, der
+geforderte `ctx` mitgebracht. Offen bleibt die **Auswahl**: das Modell nahm
+`research-assistant` für einen Collector und `submit` für einen Store.
+
+**Migration:** keine. Ein längerer Prompt und längere Katalog-Zeilen; die
+Verträge aller drei Templates sind unverändert.
+
+#### Der Bauauftrag bekommt eine Grammatik, nicht nur ein Vokabular
+
+`builder@1.0.1`, `builder-librarian@2.0.5`, `meclaw-os@1.2.1`.
+
+Das Briefing der Design-Lane nannte die sechs Diff-Keys, die es gibt, und
+nirgends die **Form eines Eintrags**. Gemessen, nicht vermutet: ein fähiges
+gehostetes Modell entwarf dieselbe Topologie dreimal richtig und kodierte
+dreimal jeden `add_nodes`-Eintrag falsch — `path` statt `name`, `kind`/`type`
+statt einer `template`-Referenz —, und die Mutations-Tür wies alle drei bei
+Deklaration 1 mit `schema` ab
+(`plans/welle-2026-08-27/receipts/s12-luna-run.md`). Ein Modell füllt eine
+fehlende Grammatik mit der Form, die es anderswo am häufigsten gesehen hat.
+
+Der Prompt-Kopf trägt jetzt einen Grammatik-Block: die Eintragsform
+(`name` + `template`, beide Pflicht), die drei Schlüssel, die es nicht gibt, die
+Kantenform samt Endpunkt-Regel, die Konnektivitäts-Regel (eine Einheit ohne
+grenzüberschreitende Kante wird inaktiv geboren, GH #265) und ein Beispiel. Er
+sitzt im **Kopf** und nicht im Korpus-Arm: ein ausgefallener Korpus ist genau
+der Moment, in dem ein Modell am wenigsten hat, woran es sich halten kann.
+Gepinnt in `crates/meclaw-cells/tests/builder_brief_mutation_grammar.rs`.
+
+Dazu die Tiefe: **`docs/rewiring.md` ist eine Korpus-Quelle** geworden
+(`workshop/tools/build_librarian_seed.py`, beide Quellenlisten — die englische
+Fassung reist seit GH #236 öffentlich). Es ist die Operator-Sicht auf das
+Mutations-Format und war das einzige Spec-Dokument über die Ausgabe des
+Builders, das dessen eigener Librarian nicht finden konnte. 452 → 479 Chunks.
+
+Drittens: `compose.max_tokens` **2048 → 8192**. Ein Reasoning-Modell verbrauchte
+sein ganzes Budget mit Denken und kam mit `finish_reason: "length"` und leerer
+Antwort zurück; die Lane meldete das als `no_manifest_in_answer` — eine Aussage
+über den Deckel, die wie eine Aussage über das Modell aussah.
+
+**Migration:** keine. Ein längerer Prompt und ein größeres Antwort-Budget; die
+Verträge aller drei Templates sind unverändert.
+
+**Grenze, offen benannt:** der Verifikationslauf schrieb danach ein
+form-korrektes Manifest mit kreuzenden Kanten — und wurde eine Ebene höher
+abgewiesen (`requirement_missing`), weil das Modell Templates nach Namen aus dem
+Katalog griff, ohne deren `requires`-Vertrag mitzubringen. Der Engpass ist von
+der Kodierung zur **Auswahl** gewandert. Nichts wurde angewandt. (Geschlossen im
+Eintrag darüber: der Katalog trägt den Vertrag jetzt sichtbar, und der nächste
+Lauf lief durch.)
+
+#### `recall`: ein Vorgänger pro Kandidat, in beiden Renderern (GH #296, Ruling S6)
+
+`memory-hive@3.0.4`. Der gerenderte Textblock eines Tier-1-Bundles beendete eine
+abgelöste Zeile mit der **ganzen** Versionskette
+(`(previously: vim until 2026-02-01; emacs until 2026-03-01; kakoune until 2026-04-01)`),
+während das JSON daneben seit 2.3.0 bei **einem** Vorgänger cappte. Beide Hälften
+reisen in **demselben** Prompt, also gab eine langlebige Achse einen Teil der
+#296-Ersparnis eine Slot weiter wieder her — und die zwei Pfade kodierten zwei
+absichtliche Entscheidungen, die sich widersprachen.
+
+Beide fragen jetzt **eine** Funktion, `history_entries(c, cap=1)`: den letzten
+Eintrag der nach Start sortierten Kette, also die Aussage, die diese hier ersetzt
+hat. Alles Ältere ist die Historie DIESER Historie.
+
+**Was das nicht ist: Historie weg.** `recall_diagnostic.candidates[].history` trägt
+die ganze Kette unverändert, in derselben Message — als Record, nicht als Prosa,
+und genau deshalb kann eine Rendering-Entscheidung sie nicht kürzen. Der
+Diagnose-Text (die flache gerankte Form) cappt mit, weil ein Helper für alle
+Renderer antwortet; wer die Kette braucht, liest den Record daneben.
+
+**Migration:** keine. Eine Zeile mit höchstens einem Vorgänger rendert byte für
+byte wie zuvor.
+
+#### `override_params`: die falsche Notation wird als Notation benannt (GH #436)
+
+Die zwei Schreibweisen von `override_params` sehen einander ähnlich, und die
+Absage für die falsche nannte einen Param, den es nicht gibt. Wer auf einem
+**Single-Cell-Template** die pfad-gekeyte Form `{"": {…}}` schrieb — legal auf
+einem `ref`-Marker und auf einem Subtree-Template —, bekam
+`override_params[''] names no param of <type> in template '<t>'`: laut,
+pre-destruktiv und über den falschen Fehler. Jetzt sagt die Absage, dass ein
+Single-Cell-Template ein **flaches** Params-Objekt nimmt, und nennt den
+Schlüssel, den der Aufrufer vermutlich meinte.
+
+Derselbe `error_code` (`schema`), dieselbe pre-destruktive Position, **keine
+neue Vertragsfläche**. Die Alternative — beide Notationen annehmen — wurde
+verworfen: ein Manifest hat per Design kein Rollback, also zahlt ein Operator,
+der die Notationen vertauscht, mit einem halb gewachsenen Baum. Wer dafür
+zahlt, will es gesagt bekommen, nicht stillschweigend zurechtgebogen.
+
+#### `POST /colony/templates/rescan` antwortet `422`, wenn der Scan abbrach (GH #440)
+
+Der Scanner benennt eine Namenskollision mit **beiden** Verzeichnissen, und die
+EDA-Tür reicht das seit jeher wörtlich durch. Die HTTP-Tür warf es weg: ihr Ack
+war `()`, `post_rescan` hatte genau einen Rückgabewert, und der sagte `ok` —
+auch für einen Scan, der nichts registriert hatte. Ein Baum mit zwei gleichen
+Namen meldete sich damit erst beim nächsten Boot, und der endet mit Exit 1.
+Jetzt: `200` mit `{"rescan":{"status":"ok"}}` oder `422` mit
+`{"rescan":{"status":"error","error":"<Wortlaut des Scanners>"}}` — beide Türen
+sagen dasselbe Wort.
+
+**Sichtbar an einer öffentlichen Fläche, aber keine Breaking-Sektion**: `200 ok`
+auf einen abgebrochenen Scan war eine falsche Antwort, kein Vertrag. Der Abbruch
+selbst bleibt (GH #277, Ruling Q7) — er ist der Grund, warum eine Referenz per
+blankem Namen genau eine Antwort hat.
+
+#### Prosa nennt ein fremdes Template beim Namen, nicht bei der Version (GH #408, Ruling S2)
+
+Ein Querverweis in einem Template-Markdown las sich als `foo@1.2.0` — und war
+falsch in dem Moment, in dem `foo` einen Patch bekam. **73 solcher
+Gegenwarts-Verweise standen im Baum; jetzt sind es null.** Versionen leben allein
+dort, wo sie gepflegt werden: in `template.json` und in der Bibliothekstabelle,
+beide gegated. Ein neues grep-Gate hält den Zustand, mit vier Ausnahmen, die jede
+einzeln gegen den Baum verdient wurde — historische Aussagen, die eine bestimmte
+Version tatsächlich *meinen*.
+
+Genau **ein** Bump fiel dabei an: `telegram-connector@2.0.1`. Mitgekommen ist die
+Verallgemeinerung eines Tests, der dieselbe Defektklasse in sich trug
+(`gh303_the_connector_is_one_cell` pinnte den ganzen String `2.0.0`, gemeint war
+die erste Stelle).
+
+**Migration:** keine. Kein Vertrag, kein Port, kein `error_code` ändert sich.
+
+#### `meclaw-surface` ist auf die genutzten Items zurückgebaut (GH #396)
+
+`Dispatcher` (Render-Cache und Diff-Push), `Connection`, die beiden Module
+`render` und `socket` sowie der Parser des `/surface/*`-URL-Schemas (`Target`,
+`parse_target`) sind entfernt. Sie konnten gehen, weil der `--api`-Rückbau
+(GH #383) ihren letzten Konsumenten mitgenommen hat: die `web`-Zelle beantwortet
+`phx_join` aus ihrem materialisierten Baum und hat nie einen Dispatcher benutzt,
+und die URLs, die `parse_target` zerlegt hat, gibt es seit #383 nicht mehr.
+`Dispatcher` war nur deshalb nicht compiler-tot, weil `Connection` ihn als Feld
+hielt — und `Connection` war für niemanden lebendig. Was bleibt, ist das, was
+der eine Konsument spricht: `frames`, `session`, `bundle` und
+`LIVEVIEW_VERSION`, das dabei von `socket` in die Crate-Wurzel gezogen ist
+(`meclaw_surface::LIVEVIEW_VERSION`). Die Crate hängt danach an genau einer
+Dependency, `meclaw-core`, und an keiner dev-dependency. Mitgekommen ist ein
+Wächter, den #383 unbeabsichtigt entfernt hatte: die Byte-Tabelle der
+einkompilierten LiveView-Bundles in `src/client/VERSIONS.md` wird wieder von
+einem Test geprüft. Git ist das Archiv.
+
+**Klassifikation: Patch-Klasse.** Die Rust-Crates sind laut Präambel Interna,
+und keine der fünf öffentlichen Vertragsflächen ist berührt. Die Crate teilt
+sich die Workspace-Version; dieser Rückbau bewegt keine Versionsdatei.
+
 ## [0.25.0] — 2026-08-27
 
 ### Breaking

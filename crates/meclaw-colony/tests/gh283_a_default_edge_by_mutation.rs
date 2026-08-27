@@ -154,7 +154,7 @@ fn make_echo_build(
         let o = outputs_tx.clone();
         let join = tokio::spawn(async move {
             let _keep_peace = peace_tx;
-            cell_task(p, rx, o, cell, None, None).await;
+            cell_task(p, rx, o, cell, None, None, None).await;
         });
         (tx, join, peace_rx, backstop_rx)
     }

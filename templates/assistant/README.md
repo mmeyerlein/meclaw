@@ -5,8 +5,8 @@ twenty-one edges.
 
 | what | it is | why it is at THIS level |
 |---|---|---|
-| `cogny` | a `ref` to [`cogny@4.0.3`](../cogny/README.md) — the reasoning core | every channel of this assistant consults the same second opinion; two cores would be two opinions |
-| `tools` | a `ref` to [`tools@1.1.0`](../tools/README.md) — the tool surface, one node with one contract | every channel calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
+| `cogny` | a `ref` to [`cogny`](../cogny/README.md) — the reasoning core | every channel of this assistant consults the same second opinion; two cores would be two opinions |
+| `tools` | a `ref` to [`tools`](../tools/README.md) — the tool surface, one node with one contract | every channel calls the same tools; replacing all of them is one `swap_nodes` and no edge of this level moves |
 | `channels` | a real, **empty, open** container hive | the surfaces stand here — and because it is a node of this template, the eighteen edges that address it ship **once** (GH #303) |
 
 ## a level owns what its siblings must share
@@ -35,8 +35,8 @@ is now two nodes side by side, paired by edges:
 .../assistants/<agent>/channels/<talky>
 ```
 
-`telegram-connector@2.0.0` is **one cell** — it has no hive around it any more,
-and it is addressed as the cell it is. `talky@4.2.2` is a sealed hive and is
+`telegram-connector` is **one cell** — it has no hive around it any more,
+and it is addressed as the cell it is. `talky` is a sealed hive and is
 addressed by path and lane. What binds them is one edge (`<talky> → <connector>`
 on `answer`), not a shared directory.
 
@@ -49,8 +49,8 @@ silent and readable. No statist is created to satisfy a contract.
 ```
 assistant/
   config.json            the level: thirteen lanes, two drain pairings, twenty-one edges
-  cogny/config.json      a ref to cogny@4.0.3
-  tools/config.json      a ref to tools@1.1.0
+  cogny/config.json      a ref to cogny, at the version its because names
+  tools/config.json      a ref to tools, at the version its because names
   channels/config.json   an open, empty container -- no cells, no ports, NO CONTRACT
 ```
 
@@ -110,15 +110,15 @@ Fifteen, all at the assistant's own path. The level is **open**: it declares no
 
 Two pairings are declared in `params.required_drains`, both in the **lane** form:
 `in_turn → error` (from the retired channel hive) and `in_prune → prune` (from
-`talky@4.2.2`). A parent that sends turns in and does not take the failures back
+the `talky`). A parent that sends turns in and does not take the failures back
 has built a generation whose every failure is a dead letter.
 
 ### Where the lanes come from
 
 *A level declares the union of the lanes its occupants ship, minus the lanes a
-sibling inside the level consumes itself.* Derived from `talky@4.2.2` and
-`telegram-connector@2.0.0` in the container, `cogny@4.0.3` and `tools@1.1.0`
-beside it. Four subtractions, every one of them a lane an occupant really ships:
+sibling inside the level consumes itself.* Derived from `talky` and
+`telegram-connector` in the container, `cogny` and `tools`
+beside it, each at the version its `because` names. Four subtractions, every one of them a lane an occupant really ships:
 
 - **`answer`** — the talky's, consumed by the connector on the per-channel
   pairing edge.
@@ -128,7 +128,7 @@ beside it. Four subtractions, every one of them a lane an occupant really ships:
   inside.
 - **`in_tool`** — supplied by `./tools`, never from outside.
 
-`in_memory_call` and `in_thread_call` are declared by `talky@4.2.2` and are
+`in_memory_call` and `in_thread_call` are declared by the `talky` and are
 deliberately **not** declared here: no occupant outside this level produces them,
 and a declared lane with no door is `hive_contract` at the next mutation the
 colony runs. GH #55 serves them inside the talky.
@@ -217,7 +217,7 @@ the same mutation. The hive is an island until an edge crosses into it.
 }}
 ```
 
-The member's own edges (`member@1.0.0`) already carry `in_turn` and `in_bundle`
+The member's own edges already carry `in_turn` and `in_bundle`
 down into the container and take `turn`, `recall` and `extraction` off it. The
 other four outward lanes — `write`, `turn_write`, `prune`, `error` — cross the
 member and are the parent's to drain.
@@ -238,8 +238,8 @@ writing `"to": "."` is refused with `edge_schema` — `.` names no node.
 ```json
 {"scope": "<assistant>", "ctx": {"model": "<the brain's model>"}, "diff": {
   "add_nodes": [
-    {"name": "channels/tg",    "template": "telegram-connector@2.0.0"},
-    {"name": "channels/talky", "template": "talky@4.2.2"}
+    {"name": "channels/tg",    "template": "telegram-connector@2.0.1"},
+    {"name": "channels/talky", "template": "talky@4.2.3"}
   ],
   "add_edges": [
     {"from": "./channels/tg", "to": "./channels",
@@ -289,7 +289,7 @@ steal each other's updates.
   never shipped.
 - **No memory leg for the reasoning core.** At this boundary the surface's recall
   leg and the core's would collapse onto **one** lane pair, and the bundle coming
-  back carries nothing that tells them apart. `cogny@4.0.3` ships `memory_tier`
+  back carries nothing that tells them apart. `cogny` ships `memory_tier`
   empty and asks for no recall unless an instance turns the leg on; an instance
   that does must wire that leg itself and pick its own correlation key.
 

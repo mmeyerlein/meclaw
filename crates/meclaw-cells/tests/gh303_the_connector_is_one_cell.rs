@@ -77,13 +77,22 @@ fn nothing_lives_below_the_connector() {
 
 #[test]
 fn the_removal_moved_the_first_digit() {
+    // The claim is about the FIRST digit, so that is what is asserted. It used
+    // to pin the whole string `2.0.0`, which made every later repair of this
+    // template red for a reason that has nothing to do with GH #303 -- a number
+    // that ages inside a test, the same defect class GH #408 removed from the
+    // prose. The template reached 2.0.1 in the #408 sweep (an unresolvable
+    // `firewall` reference in a shipped description field); the major digit is
+    // what carries the removed address, and it must never go back below 2.
     let path = connector().join("template.json");
     let val = read_json(&path);
+    let version = val["version"].as_str().unwrap_or_default();
+    let major = version.split('.').next().unwrap_or_default();
     assert_eq!(
-        val["version"].as_str(),
-        Some("2.0.0"),
-        "{}: collapsing the hive takes a documented address away -- that is the first digit, \
-         not the second and not the third",
-        path.display()
+        major,
+        "2",
+        "{path}: collapsing the hive takes a documented address away -- that is the first \
+         digit, not the second and not the third. Found version {version:?}",
+        path = path.display()
     );
 }

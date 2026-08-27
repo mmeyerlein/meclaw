@@ -186,7 +186,7 @@ Two consequences, both deliberate:
 however its caller can read it. That is not a workaround for a missing channel; it is the
 channel. A provider sees a tool result as one string on one `tool_call_id`, and anything
 richer would have to be flattened for the wire anyway -- the only question is who does it,
-and the tool that produced the structure knows its own shape best. `affinity@3.0.0` does
+and the tool that produced the structure knows its own shape best. The `affinity` template does
 exactly this: the receipt line, then the disclosed pack as JSON behind it.
 
 **If you want a durable constraint rather than an answer**, that is a different lane and a
@@ -1103,6 +1103,6 @@ still tell an event from a user's word.
   the living session keeps every byte, a lost tool result whose round a sweep closes, and
   a mid-round turn that defers and rides with the next assembly, and a batching
   dispatcher whose tool answers the whole bundle in one message. Two more trees run the
-  memory tool against the **shipped `dispatcher@1.1.1`** -- one with the recall port wired
+  memory tool against the **shipped `dispatcher`** -- one with the recall port wired
   (both results fan in, the model's time range reaches the request) and one without it
   (the call is unroutable and the round ends in the idle exit).

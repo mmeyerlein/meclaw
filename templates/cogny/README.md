@@ -1,12 +1,12 @@
 # `cogny@4.0.3`
 
 The agent core as one template. Four units under one hive:
-[`collector@3.0.2`](../collector/) and [`dispatcher@1.1.1`](../dispatcher/) -- each carrying its
+[`collector`](../collector/) and [`dispatcher`](../dispatcher/) -- each carrying its
 template's own name -- plus **two** `llm` brains, `brain` on a thinking model and
 `brain_fast` on a fast one. No new cell type, no Rust.
 
 **Structurally a talky without a channel.** The advisor split (GH #28, R-CG-1) gives an
-agent two brains: a fast [`talky@4.2.2`](../talky/) that owns the channel, and this one, which
+agent two brains: a fast [`talky`](../talky/) that owns the channel, and this one, which
 owns the thinking. The core therefore carries no session keeper, no summarizer and no
 proxy -- it has no channel, no sessions and no night. Its "conversation" is the errands
 the channel voices send it, and the memory it reads is the member's central hive rather
@@ -50,8 +50,8 @@ runs is a lens on the same hive, and a second one inherits what the member alrea
 
 | path | type | from |
 |---|---|---|
-| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.2` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1.1.1` (a single-cell template) |
+| `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template -- the thinking lane |
 | `brain_fast` | `llm` | this template -- the lookup lane (1.1.0) |
 
@@ -71,7 +71,7 @@ The two sub-units are **references**, not copies. Each of the two directories ho
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@3.0.2`, with
+the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
 `cogny@4.0.3` above it in its provenance chain.
 
 **The library has to carry both.** A reference resolves against the colony's template
@@ -232,7 +232,7 @@ seeded (`brain/seed/system.jsonl`) or written by a system update. **This composi
 none of them**, and that claim still holds unchanged for `cogny` -- identity, core
 instructions and tools are the agent here, not the topology.
 
-**It reads differently next door, and the difference is deliberate.** `talky@4.2.2`
+**It reads differently next door, and the difference is deliberate.** The `talky`
 retracted the same sentence for itself ([#55](https://github.com/mmeyerlein/meclaw/issues/55)):
 a tool the composite *implements* is topology and ships with it, schema and edge together;
 a tool the parent wires is the agent. By that line `cogny` has exactly one candidate --
@@ -533,7 +533,7 @@ knowledge ends.
 - **Not a persona.** Identity, core instructions and tool schemas live in the brains'
   `cell.db`, one writer per `system` path -- and there are two of them now, so a system
   update that reaches only one lane is the drift to watch for. The shipped `brevity` slot
-  is the single exception and it is deliberately not `instructions`. Unlike `talky@4.2.2`
+  is the single exception and it is deliberately not `instructions`. Unlike the `talky`,
   this composite ships no tool schema of its own; the reason is above, under *What this
   composite still does NOT declare*.
 - **Not a classifier.** Which lane an errand takes is decided outside this hive, on the

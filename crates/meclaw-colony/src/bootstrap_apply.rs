@@ -49,6 +49,9 @@ pub async fn apply_bootstrap_plan(
             .expect("colony inbox closed");
         ack_rx.await.expect("BeginInitialApply ack");
     }
+    // GH #437: the growth roots this boot fulfilled with `birth: "inactive"`.
+    // Cloned out of the plan before the loop borrows it.
+    let born_inactive = plan.born_inactive.clone();
     // Cells: spawn via factory + register via ColonyMsg::Register (Active) or
     // ColonyMsg::RegisterDormant (Dormant, Phase-13-K-2).
     for c in &plan.cells {
@@ -77,7 +80,14 @@ pub async fn apply_bootstrap_plan(
         // wake-on-message wiring via `spawn_cell` (F1-KH2 inventory #3; lazy
         // `spawn_cell` builds no task, so boot-gating is preserved).
         if !c.active {
-            register_inactive_non_spawned(runtime, factories, c).await;
+            // GH #437: only a node whose INACTIVITY WAS DECLARED gets its row
+            // written to `'inactive'` here. Doing it for every boot-inactive
+            // cell would be a behaviour change outside this order — those rows
+            // are the way they are for reasons of their own.
+            let declared_inactive = born_inactive
+                .iter()
+                .any(|r| crate::connectivity::is_self_or_descendant(&c.path, r));
+            register_inactive_non_spawned(runtime, factories, c, declared_inactive).await;
             continue;
         }
         let factory = factories
@@ -306,6 +316,11 @@ async fn register_inactive_non_spawned(
     runtime: &ColonyRuntime,
     factories: &CellFactoryRegistry,
     c: &crate::bootstrap::PlannedCell,
+    // GH #437: `true` iff a `ref` marker DECLARED this node's inactivity. Then,
+    // and only then, the row is written `'inactive'` — `UpsertRegistry` seeds
+    // `'active'` and never overwrites it, so without this the next boot would
+    // start exactly the cell the declaration exists to keep asleep.
+    declared_inactive: bool,
 ) {
     use tokio::sync::oneshot;
     // Try the factory's boot-inactive respawn hook (T7). `Some` → a real respawn
@@ -489,6 +504,20 @@ async fn register_inactive_non_spawned(
         .await
         .expect("colony inbox closed");
     nc_ack_rx.await.expect("SetNodeContract ack");
+    // GH #437: after the row exists (RegisterDormant acked above), not before.
+    if declared_inactive {
+        let (st_ack_tx, st_ack_rx) = oneshot::channel();
+        runtime
+            .inbox_tx
+            .send(ColonyMsg::SetRegistryStatus {
+                path: c.path.clone(),
+                status: "inactive".to_string(),
+                ack: st_ack_tx,
+            })
+            .await
+            .expect("colony inbox closed");
+        st_ack_rx.await.expect("SetRegistryStatus ack");
+    }
     index_provenance(runtime, c).await;
 }
 
@@ -675,6 +704,9 @@ pub async fn bootstrap_from_filesystem_with_env(
     // bounded by the number of markers the first pass found, plus one to
     // discover there is nothing left. A pass that consumes none while markers
     // remain is a defect, and it is named rather than spun on.
+    // GH #437: the growth roots that declared `birth: "inactive"`, collected
+    // across ALL passes — a nested marker can grow another one.
+    let mut born_inactive_roots: Vec<meclaw_core::Path> = Vec::new();
     if !plan.growths.is_empty() {
         let templates = boot_templates_registry(root);
         let budget = plan.growths.len() + 1;
@@ -694,13 +726,13 @@ pub async fn bootstrap_from_filesystem_with_env(
                 }
                 return Err(errors);
             }
-            crate::bootstrap_grow::grow_planned_refs(
+            born_inactive_roots.extend(crate::bootstrap_grow::grow_planned_refs(
                 root,
                 &plan.growths,
                 &templates,
                 factories,
                 env_path,
-            )?;
+            )?);
             plan = crate::bootstrap::plan_bootstrap_with_env(
                 root,
                 factories,
@@ -709,6 +741,25 @@ pub async fn bootstrap_from_filesystem_with_env(
                 env_path,
             )?;
         }
+    }
+    // GH #437: the growth declared its birth state, and the re-plan that
+    // followed it has no memory of the marker — the marker consumed itself.
+    // Stamp it here: after `plan_bootstrap_with_env` ran its boot recompute, so
+    // the declaration wins over its own derivation exactly as it does inside a
+    // mutation (step 10b). Self-or-descendant, because a unit is born whole.
+    if !born_inactive_roots.is_empty() {
+        for cell in &mut plan.cells {
+            if born_inactive_roots
+                .iter()
+                .any(|r| crate::connectivity::is_self_or_descendant(&cell.path, r))
+            {
+                cell.active = false;
+            }
+        }
+        // …and the apply needs to know WHICH inactivity was declared, so it can
+        // write those rows `'inactive'` and leave every other boot-inactive row
+        // exactly as it was.
+        plan.born_inactive = born_inactive_roots;
     }
     // A5b: a Reboot that walked over unknown cell dirs reports them — loudly, so
     // the operator sees the consistency drift — but the boot succeeds (they are
@@ -938,6 +989,7 @@ mod tests {
     fn dangling_edge_endpoints_empty_when_all_known() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -960,6 +1012,7 @@ mod tests {
     fn dangling_edge_endpoints_reports_unknown_to() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -984,6 +1037,7 @@ mod tests {
     fn dangling_edge_endpoints_reports_unknown_from() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -1007,6 +1061,7 @@ mod tests {
     fn dangling_edge_endpoints_reports_both_unknown() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -1029,6 +1084,7 @@ mod tests {
     fn dangling_edge_endpoints_hive_endpoint_not_dangling() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![
                 PlannedHive {
                     path: Path::new("/"),
@@ -1064,6 +1120,7 @@ mod tests {
         use std::collections::HashSet;
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],
@@ -1134,6 +1191,7 @@ mod tests {
     async fn apply_via_runtime_registers_hive_count() {
         let plan = BootstrapPlan {
             growths: vec![],
+            born_inactive: vec![],
             hives: vec![PlannedHive {
                 path: Path::new("/"),
             }],

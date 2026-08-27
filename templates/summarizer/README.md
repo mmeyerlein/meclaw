@@ -1,4 +1,4 @@
-# `summarizer@2.0.1`
+# `summarizer@2.0.2`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).

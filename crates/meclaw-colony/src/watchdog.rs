@@ -34,7 +34,7 @@
 /// which a blocked loop can say anything at all. Everything between a `Working`
 /// and the next `Parked` is ONE work item, so the supervisor can ask "how long
 /// has it been on this item" instead of only "how long has it been quiet".
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Beat {
     /// The loop has finished its work item and is about to wait for the next
     /// event. An idle colony sits here and is woken ~10×/s by the heartbeat
@@ -46,6 +46,94 @@ pub enum Beat {
     /// not returned yet. That is slow, and it is only a defect once the item
     /// exceeds a budget of its own.
     Working,
+    /// GH #439: the same declaration as [`Beat::Working`], plus the name of the
+    /// operation the loop is inside. A trip that happens inside a named item can
+    /// then say what it was inside instead of only how long it was quiet.
+    ///
+    /// The supervisor normalises this to `Working` for every judgement it makes
+    /// — a label changes the diagnosis, never the verdict — and remembers the
+    /// last label it saw until the loop parks.
+    WorkingOn(WorkItem),
+}
+
+/// The name of the work item the colony loop declared before it blocked
+/// (GH #439).
+///
+/// `Arc<str>` because a long instantiation clones the label once per cell and
+/// the supervisor keeps the last one; a fresh `String` per beat would allocate
+/// on the one path that must stay cheap enough to run inside a hot loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkItem(std::sync::Arc<str>);
+
+impl WorkItem {
+    /// A label for one work item. One line, no JSON, no private data — it is
+    /// rendered into a log line an operator reads.
+    pub fn new(label: impl Into<std::sync::Arc<str>>) -> Self {
+        Self(label.into())
+    }
+
+    /// The label as it will be rendered.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WorkItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A cheap, cloneable handle the mutation path pulses while it works (GH #439).
+///
+/// Sync by construction: [`WorkPulse::tick`] is a plain `fn` around `try_send`,
+/// exactly like [`beat`](crate::colony) itself, so it also works inside the
+/// SYNCHRONOUS staging functions in `mutation/{apply,stage,subtree}.rs` — which
+/// is where the expensive half of an instantiation actually lives. A pulse that
+/// blocked while saying "I am still working" would be the defect it reports.
+#[derive(Clone)]
+pub struct WorkPulse {
+    tx: Option<tokio::sync::mpsc::Sender<Beat>>,
+    label: WorkItem,
+}
+
+impl WorkPulse {
+    /// A pulse that reports to `tx` under `label`.
+    pub fn new(tx: Option<tokio::sync::mpsc::Sender<Beat>>, label: WorkItem) -> Self {
+        Self { tx, label }
+    }
+
+    /// A pulse that reports nowhere — the default for every call site with no
+    /// heartbeat wired (tests, `--validate`, the boot growth, which runs before
+    /// the supervisor is armed).
+    pub fn silent() -> Self {
+        Self {
+            tx: None,
+            label: WorkItem::new("<unlabelled>"),
+        }
+    }
+
+    /// One non-blocking beat. Never awaits, never blocks, never panics: a full
+    /// channel means the supervisor has not drained this period yet and needs
+    /// only one beat per period.
+    pub fn tick(&self) {
+        if let Some(t) = &self.tx {
+            let _ = t.try_send(Beat::WorkingOn(self.label.clone()));
+        }
+    }
+
+    /// The same pulse under a narrower label — one mutation, one cell at a time.
+    pub fn with_label(&self, label: WorkItem) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            label,
+        }
+    }
+
+    /// The label this pulse currently reports under.
+    pub fn label(&self) -> &WorkItem {
+        &self.label
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -150,7 +238,7 @@ impl std::fmt::Display for HostWitness {
 /// discriminator: the supervisor is a Tokio task in the same process, so if IT
 /// was late the missing heartbeats are not evidence that the colony loop was
 /// wedged — the whole process was off CPU and both tasks starved together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogTrip {
     /// Consecutive silent supervisor periods that produced the trip (`threshold`).
     pub silent_periods: u32,
@@ -177,6 +265,10 @@ pub struct WatchdogTrip {
     /// produced this trip. Compared against `silent_periods` — the identical bar
     /// the colony just failed — so the two observers are held to one rule.
     pub witness_worst_misses: u32,
+    /// GH #439: the label of the work item that was in flight when the loop went
+    /// quiet, if it declared one. `None` = a `Working` beat without a name, or a
+    /// parked loop — a parked loop is inside nothing.
+    pub work_item: Option<WorkItem>,
 }
 
 impl WatchdogTrip {
@@ -302,7 +394,7 @@ impl std::fmt::Display for WatchdogTrip {
              [starved={} silent_for={}ms nominal_window={}ms supervisor_lag={}ms \
              in_flight_work={} work_item_budget={}ms \
              witness={} witness_missed={}/{} \
-             beats_seen={} armed_for={}ms colony_task={}]",
+             beats_seen={} armed_for={}ms colony_task={} work_item={}]",
             self.silent_periods,
             self.period.as_millis(),
             self.starved(),
@@ -321,6 +413,12 @@ impl std::fmt::Display for WatchdogTrip {
             } else {
                 "alive"
             },
+            // GH #439: appended, never prepended — the issue-#6 prefix stays
+            // byte-stable for the log scans that grep for it.
+            self.work_item
+                .as_ref()
+                .map(WorkItem::as_str)
+                .unwrap_or("none"),
         )
     }
 }
@@ -474,6 +572,11 @@ pub async fn run_watchdog(
     // GH #165: the loop's last declared phase. `Parked` until it says otherwise —
     // a colony that has not spoken yet is not credited with work in flight.
     let mut last_phase = Beat::Parked;
+    // GH #439: the last LABEL the loop declared. Kept across bare `Working`
+    // beats (a labelled operation goes on beating under its own name and the
+    // loop's top-of-iteration beat is unlabelled), cleared by `Parked` — a
+    // parked loop is inside nothing.
+    let mut last_label: Option<WorkItem> = None;
     let mut witness_misses: u32 = 0;
     let mut witness_worst: u32 = 0;
     let mut witness_present = witness_rx.is_some();
@@ -497,7 +600,23 @@ pub async fn run_watchdog(
                     // GH #165: the LAST word wins. Within one period the loop may
                     // say `Working` then `Parked`; what matters at trip time is
                     // the phase it was in when it stopped talking.
-                    last_phase = beat;
+                    //
+                    // GH #439: a labelled beat is a `Working` beat that also
+                    // names its operation. It is normalised to `Working` here so
+                    // every judgement below (`in_flight_work`, the budget, the
+                    // fatality rule) reads exactly as it did — a label changes
+                    // the diagnosis, never the verdict.
+                    match beat {
+                        Beat::WorkingOn(w) => {
+                            last_phase = Beat::Working;
+                            last_label = Some(w);
+                        }
+                        Beat::Working => last_phase = Beat::Working,
+                        Beat::Parked => {
+                            last_phase = Beat::Parked;
+                            last_label = None;
+                        }
+                    }
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -549,6 +668,7 @@ pub async fn run_watchdog(
                 in_flight_work: last_phase == Beat::Working,
                 witness_present,
                 witness_worst_misses: witness_worst,
+                work_item: last_label.clone(),
             };
             let fatal = trip.is_fatal(on_trip);
             // `try_send`: the caller drains this channel; a full one means it has
@@ -771,6 +891,7 @@ mod tests {
             in_flight_work: false,
             witness_present: false,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert_eq!(base.nominal_window(), Duration::from_millis(500));
         assert_eq!(base.supervisor_lag(), Duration::from_millis(20));
@@ -807,6 +928,7 @@ mod tests {
             in_flight_work: false,
             witness_present: false,
             witness_worst_misses: 0,
+            work_item: None,
         };
         let line = format!("{trip}");
         assert!(
@@ -829,6 +951,171 @@ mod tests {
         ] {
             assert!(line.contains(needle), "missing {needle} in: {line}");
         }
+    }
+
+    /// A trip that was inside a DECLARED, named work item, for the GH #439
+    /// diagnosis tests below.
+    fn a_trip_in_flight() -> WatchdogTrip {
+        WatchdogTrip {
+            silent_periods: 5,
+            period: Duration::from_millis(100),
+            silent_for: Duration::from_millis(900),
+            beats_seen: 12,
+            colony_task_gone: false,
+            armed_for: Duration::from_millis(5_000),
+            in_flight_work: true,
+            witness_present: true,
+            witness_worst_misses: 0,
+            work_item: None,
+        }
+    }
+
+    /// GH #439: a trip inside a NAMED work item names it. The issue-#6 prefix
+    /// still survives verbatim — the diagnosis is appended, never prepended.
+    #[test]
+    fn the_trip_line_names_the_work_item_it_was_inside() {
+        let label = "mutation 0198 scope=/os op=add_nodes[3/7] template=memory-hive cell=/os/mem";
+        let trip = WatchdogTrip {
+            work_item: Some(WorkItem::new(label)),
+            ..a_trip_in_flight()
+        };
+        let line = format!("{trip}");
+        assert!(
+            line.starts_with(
+                "colony heartbeat lost for 5 consecutive supervisor periods of 100 ms"
+            ),
+            "the issue-#6 prefix must survive verbatim, was: {line}"
+        );
+        assert!(
+            line.contains(&format!("work_item={label}")),
+            "a trip inside a named item must name it, was: {line}"
+        );
+        assert_eq!(trip.starved(), "slow_work_item");
+    }
+
+    /// An unnamed item stays unnamed — the field is evidence, not decoration.
+    #[test]
+    fn an_unnamed_work_item_renders_as_none() {
+        let trip = a_trip_in_flight();
+        assert!(format!("{trip}").contains("work_item=none"));
+    }
+
+    /// GH #439: the supervisor keeps the LAST label the loop declared, and it
+    /// judges a labelled beat exactly as it judges a bare `Working` one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_supervisor_carries_the_last_declared_label_into_the_trip() {
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            Duration::from_millis(10),
+            armed(),
+            WatchdogOnTrip::LogOnly,
+            None,
+        ));
+        // A short stretch of labelled beats, then silence. Not ONE beat: the
+        // supervisor DISCARDS everything buffered before it arms (a beat from
+        // before arming proves a moment that is already past), and a single
+        // beat racing that drain is a flake, not a test.
+        for _ in 0..12 {
+            let _ = hb_tx.try_send(Beat::WorkingOn(WorkItem::new(
+                "mutation 42 op=add_nodes[1/1]",
+            )));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
+            .await
+            .expect("the supervisor must trip on silence")
+            .expect("a trip");
+        assert_eq!(
+            trip.work_item.as_ref().map(WorkItem::as_str),
+            Some("mutation 42 op=add_nodes[1/1]"),
+            "the trip must carry the label the loop last declared"
+        );
+        assert!(
+            trip.in_flight_work,
+            "a labelled beat is a declared work item"
+        );
+        assert_ne!(
+            trip.starved(),
+            "colony_loop",
+            "a declared item is never judged as a parked loop: {trip}"
+        );
+        drop(hb_tx);
+    }
+
+    /// A `Parked` beat clears the label: a parked loop is inside nothing, and a
+    /// stale name would be worse evidence than none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parking_clears_the_declared_label() {
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            Duration::from_millis(10),
+            armed(),
+            WatchdogOnTrip::LogOnly,
+            None,
+        ));
+        // Same reason as above: beat past the arming drain, and END on `Parked`.
+        for _ in 0..12 {
+            let _ = hb_tx.try_send(Beat::WorkingOn(WorkItem::new("mutation 42")));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let _ = hb_tx.try_send(Beat::Parked);
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
+            .await
+            .expect("the supervisor must trip on silence")
+            .expect("a trip");
+        assert_eq!(
+            trip.work_item, None,
+            "a parked loop must not carry the name of a finished item: {trip}"
+        );
+        assert!(!trip.in_flight_work);
+        drop(hb_tx);
+    }
+
+    /// GH #439: the pulse is the mutation path's way of speaking, and it is
+    /// SYNC — `try_send`, never an await, so it works inside the synchronous
+    /// staging functions. A silent pulse reports nowhere and never panics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_work_pulse_beats_under_its_label_and_a_silent_one_beats_nowhere() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let pulse = WorkPulse::new(Some(tx), WorkItem::new("mutation 7 op=add_nodes[1/2]"));
+        pulse.tick();
+        pulse
+            .with_label(WorkItem::new("mutation 7 op=add_nodes[2/2]"))
+            .tick();
+        let first = rx.try_recv().expect("a pulse beats");
+        let second = rx.try_recv().expect("a narrowed pulse beats too");
+        assert_eq!(
+            first,
+            Beat::WorkingOn(WorkItem::new("mutation 7 op=add_nodes[1/2]"))
+        );
+        assert_eq!(
+            second,
+            Beat::WorkingOn(WorkItem::new("mutation 7 op=add_nodes[2/2]"))
+        );
+        assert!(rx.try_recv().is_err(), "one tick is one beat");
+
+        // The silent pulse is the default for every call site without a
+        // heartbeat; it must be a no-op, not a panic.
+        WorkPulse::silent().tick();
+
+        // A full channel is not an error either — the supervisor needs one beat
+        // per period, not all of them.
+        let (tx2, rx2) = tokio::sync::mpsc::channel::<Beat>(1);
+        let p2 = WorkPulse::new(Some(tx2), WorkItem::new("full"));
+        for _ in 0..8 {
+            p2.tick();
+        }
+        drop(rx2);
+        p2.tick();
     }
 
     /// `exit` is the default policy and it is what production keeps.
@@ -854,6 +1141,7 @@ mod tests {
             in_flight_work: false,
             witness_present: false,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert!(silent.is_fatal(WatchdogOnTrip::Exit));
         assert!(!silent.is_fatal(WatchdogOnTrip::LogOnly));
@@ -1001,6 +1289,7 @@ mod tests {
         let pre_165 = WatchdogTrip {
             witness_present: false,
             witness_worst_misses: 0,
+            work_item: None,
             ..trip
         };
         assert_eq!(pre_165.starved(), "colony_loop");
@@ -1108,6 +1397,7 @@ mod tests {
             in_flight_work: false,
             witness_present: true,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert_eq!(base.supervisor_lag(), Duration::ZERO);
         assert_eq!(base.witness(), HostWitness::Kept);
@@ -1118,6 +1408,7 @@ mod tests {
         // finish something missed as many periods as the colony did.
         let starved = WatchdogTrip {
             witness_worst_misses: 5,
+            work_item: None,
             ..base
         };
         assert_eq!(starved.supervisor_lag(), Duration::ZERO);
@@ -1129,6 +1420,7 @@ mod tests {
         // periods is not the same failure and does not excuse anything.
         let brief = WatchdogTrip {
             witness_worst_misses: 4,
+            work_item: None,
             ..base
         };
         assert_eq!(brief.witness(), HostWitness::Kept);
@@ -1149,6 +1441,7 @@ mod tests {
             in_flight_work: false,
             witness_present: false,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert_eq!(t.witness(), HostWitness::Absent);
         assert_eq!(t.starved(), "colony_loop");
@@ -1220,6 +1513,7 @@ mod tests {
             in_flight_work: true,
             witness_present: true,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert_eq!(incident.supervisor_lag(), Duration::ZERO);
         assert_eq!(incident.work_item_budget(), Duration::from_secs(5));
@@ -1257,6 +1551,7 @@ mod tests {
             in_flight_work: true,
             witness_present: true,
             witness_worst_misses: 0,
+            work_item: None,
         };
         assert_eq!(base.starved(), "slow_work_item");
         assert!(!base.is_fatal(WatchdogOnTrip::Exit));

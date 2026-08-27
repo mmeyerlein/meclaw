@@ -229,7 +229,10 @@ async fn boot(td: &tempfile::TempDir) -> ColonyHandle {
         })
         .await
         .expect("rescan");
-    ack_rx.await.expect("rescan ack");
+    ack_rx
+        .await
+        .expect("rescan ack")
+        .expect("GH #440: the rescan must not have aborted");
     let mut registry = CellFactoryRegistry::new();
     for (name, f) in fs {
         registry.insert(name, f);

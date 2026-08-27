@@ -25,13 +25,14 @@ morphdom is bundled into the LiveView dist, so the git dependency in its
 ## Upgrading
 
 A three-line change: both files, and the `LIVEVIEW_VERSION` constant in
-`crates/meclaw-api/src/surface/socket.rs`. The version we report on join and the
+`crates/meclaw-surface/src/lib.rs`. The version we report on join and the
 bundle we serve must move **together** — a mismatch is only a `console.warn` in
 the client, which is exactly why it needs a rule and a test rather than a
 watchdog. `1.2.9` is verifiable in the bundle itself: it is the string next to the
 `liveview_version` reference.
 
-The byte counts above are asserted by `crates/meclaw-api/tests/gh159_surface_bundles.rs`,
+The byte counts above are asserted by
+`crates/meclaw-surface/tests/gh396_the_vendored_bundles_match_their_table.rs`,
 which parses this table. A drifted count means somebody edited a bundle. The test
 does not check the SHA-256, because no crate in the workspace provides a hash and
 this feature adds none; the sums are here for a human to verify with `sha256sum`.

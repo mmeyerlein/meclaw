@@ -89,6 +89,11 @@ pub enum DeadLetterReason {
     /// `resolved_target` is the slot address, exactly as for `slot_unbound`.
     /// Canonical string `slot_park_overflow`.
     SlotParkOverflow,
+    /// GH #47: the colony was draining for shutdown and this was a NEW arrival,
+    /// not the work being drained. Refused rather than routed, because routing
+    /// it would start work the drain then has to wait for — which is how a timer
+    /// firing every second makes a drain that never converges.
+    ShutdownDraining,
 }
 
 impl DeadLetterReason {
@@ -111,6 +116,7 @@ impl DeadLetterReason {
             Self::NoRoute => "no_route",
             Self::SlotUnbound => "slot_unbound",
             Self::SlotParkOverflow => "slot_park_overflow",
+            Self::ShutdownDraining => "shutdown_draining",
         }
     }
 
@@ -135,6 +141,7 @@ impl DeadLetterReason {
             "no_route" => Self::NoRoute,
             "slot_unbound" => Self::SlotUnbound,
             "slot_park_overflow" => Self::SlotParkOverflow,
+            "shutdown_draining" => Self::ShutdownDraining,
             _ => return None,
         })
     }
@@ -195,6 +202,7 @@ mod tests_3a {
             NoRoute,
             SlotUnbound,
             SlotParkOverflow,
+            ShutdownDraining,
         ];
         // The compile-time half of "closed": this match names every variant and
         // has no catch-all, so a new one is a compiler error in this function.
@@ -214,13 +222,14 @@ mod tests_3a {
                 DeadLetterReason::NoRoute => "no_route",
                 DeadLetterReason::SlotUnbound => "slot_unbound",
                 DeadLetterReason::SlotParkOverflow => "slot_park_overflow",
+                DeadLetterReason::ShutdownDraining => "shutdown_draining",
             }
         }
 
         assert_eq!(
             all.len(),
-            14,
-            "the canonical set is 14 codes; a variant was added or removed \
+            15,
+            "the canonical set is 15 codes; a variant was added or removed \
              without moving this count, and the spec list has to move with it"
         );
 

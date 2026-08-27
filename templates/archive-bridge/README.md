@@ -31,7 +31,7 @@ This template lifts that pattern into a clean, documented, reusable cell (GH #4)
 |---|---|---|
 | the template root | `code` | the answer scan, the insert construction, the echo guard. No state, no `cell.db`. |
 
-This is a single-cell template (the `_cell-types` shape): instantiate it under any
+This is a single-cell template (one cell of one cell type, the smallest `config.json` that starts it, and a README that explains its declarations): instantiate it under any
 name -- `archive` is the usual one -- and the instance IS the cell.
 
 ## Ports and wiring

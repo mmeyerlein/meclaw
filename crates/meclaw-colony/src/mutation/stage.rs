@@ -63,6 +63,10 @@ pub struct StagedDir {
     /// `colony.db`'s `registry` row. `None` for an `adopt` entry — adopting an
     /// existing directory is not a template instantiation and invents no origin.
     pub provenance: Option<crate::config::NodeProvenance>,
+    /// GH #437: the instantiation activity this entry declared
+    /// (`add_nodes[].birth`). Read once here, because the spawn loop no longer
+    /// has the diff it came from.
+    pub birth: crate::mutation::Birth,
     /// GH #169: `Some` iff this entry is a **relocation** — a `move_nodes` entry
     /// rather than an instantiation. See [`Relocation`].
     ///
@@ -136,6 +140,12 @@ pub fn build_staging_tree_from_templates(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     factories: &crate::CellFactoryRegistry,
+    // GH #439: staging is the expensive half of an instantiation — a template
+    // copy, a `config.json` rewrite and a `cell.db` seed per cell — and it is
+    // synchronous. One beat per staged cell keeps the colony audible while it
+    // runs; `WorkPulse::silent()` is the no-op for every caller without a
+    // heartbeat.
+    pulse: &crate::watchdog::WorkPulse,
 ) -> Result<
     (
         Vec<StagedDir>,
@@ -150,10 +160,17 @@ pub fn build_staging_tree_from_templates(
     let mut subtrees = Vec::new();
     let adds = diff.get("add_nodes").and_then(|v| v.as_array());
     for n in adds.into_iter().flatten() {
+        // GH #439: one entry of the diff, one beat. A subtree entry beats again
+        // per cell inside `stage_subtree_merge`.
+        pulse.tick();
         let name = n
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| MutationError::Schema("add_nodes[].name missing".into()))?;
+        // GH #437: the instantiation activity this entry declares. Validation
+        // already refused an unknown value pre-destructively; reading it again
+        // here keeps the staging independent of the order of the two stages.
+        let birth = crate::mutation::Birth::parse(n, "add_nodes[]")?;
         // A5b 2b (Phase-16 W1b, Ruling 2026-06-12): an `adopt` entry instantiates
         // from the EXISTING on-disk node (source = the final path), not a
         // template — the template-instantiation pipeline MINUS template
@@ -204,6 +221,7 @@ pub fn build_staging_tree_from_templates(
                 message_timeout,
                 mailbox_size,
                 header_view,
+                birth,
                 preexisting_target: true,
                 // GH #62: an adopt names no template — the node's origin is
                 // whatever its own config.json already said, carried through
@@ -256,6 +274,8 @@ pub fn build_staging_tree_from_templates(
                 &crate::mutation::subtree::SubtreeOverrides::from_add_node(n),
                 templates,
                 factories,
+                pulse,
+                birth,
             )?;
             subtrees.push(staged_subtree);
             continue;
@@ -306,6 +326,7 @@ pub fn build_staging_tree_from_templates(
             message_timeout,
             mailbox_size,
             header_view,
+            birth,
             preexisting_target: false,
             provenance: Some(provenance),
             // GH #169: an instantiation, not a relocation.
@@ -321,6 +342,8 @@ pub fn build_staging_tree_from_templates(
     // no `template`) needs NO staging — it references an already-live cell.
     let swaps = diff.get("swap_nodes").and_then(|v| v.as_array());
     for s in swaps.into_iter().flatten() {
+        // GH #439: a with-side instantiation is a staged cell like any other.
+        pulse.tick();
         let with = match s.get("with").and_then(|v| v.as_object()) {
             Some(w) => w,
             None => continue, // validate covers a missing/malformed `with`.
@@ -417,6 +440,14 @@ pub fn build_staging_tree_from_templates(
             message_timeout,
             mailbox_size,
             header_view,
+            // GH #437: a `swap_nodes[].with` instantiation deliberately carries
+            // NO declaration. A swap points the edges of a running
+            // implementation at a successor; a successor born inactive would
+            // leave those lanes pointing at nothing. Who wants a sleeping
+            // successor grows it with `add_nodes` and swaps later. A `birth`
+            // key inside `with` falls into the existing unknown-key refusal of
+            // the instantiate form (`validate.rs`), without a line of extra code.
+            birth: crate::mutation::Birth::Active,
             preexisting_target: false,
             provenance: Some(provenance),
             // GH #169: an instantiation, not a relocation.
@@ -1061,6 +1092,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1114,6 +1146,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1152,6 +1185,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1194,6 +1228,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1235,6 +1270,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1275,6 +1311,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert_eq!(
@@ -1312,6 +1349,7 @@ mod tests {
             &env,
             &ctx,
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1352,6 +1390,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap_err();
         assert!(
@@ -1394,6 +1433,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         let cell_db = staged[0].staging_path.join("cell.db");
@@ -1456,6 +1496,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
 
@@ -1544,6 +1585,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert!(
@@ -1562,5 +1604,177 @@ mod tests {
         assert_eq!(rr.cells[0].absolute_path.as_str(), "/main/m1/sub_cell");
         assert_eq!(rr.hive_scopes.len(), 1, "root hive scope");
         assert_eq!(rr.hive_scopes[0].as_str(), "/main/m1");
+    }
+
+    /// GH #437: the declaration has to survive staging — the spawn loop reads it
+    /// off the `StagedDir`, not off the diff (which it no longer has).
+    #[test]
+    fn a_staged_dir_carries_the_declared_birth_state() {
+        use crate::mutation::Birth;
+        let td = TempDir::new().unwrap();
+        let (tpl, registry) = make_registry(&td, "echo", "echo");
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let diff = json!({"add_nodes": [
+            {"name": "awake_one", "template": "echo"},
+            {"name": "sleepy", "template": "echo", "birth": "inactive"}
+        ]});
+        let (staged, _) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-birth",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+        )
+        .unwrap();
+        let by_name = |n: &str| {
+            staged
+                .iter()
+                .find(|s| s.absolute_path.as_str().ends_with(n))
+                .unwrap_or_else(|| panic!("{n} must be staged"))
+        };
+        assert_eq!(by_name("awake_one").birth, Birth::Active);
+        assert_eq!(by_name("sleepy").birth, Birth::Inactive);
+    }
+
+    /// A subtree entry stamps the SAME declaration on every cell it stages: the
+    /// declaration addresses the instantiation, and a unit is born whole.
+    #[test]
+    fn a_subtree_born_inactive_stamps_every_one_of_its_cells() {
+        use crate::mutation::Birth;
+        let td = TempDir::new().unwrap();
+        let root_cell = td.path().join("main");
+        std::fs::create_dir_all(&root_cell).unwrap();
+        std::fs::write(root_cell.join("config.json"), b"{}").unwrap();
+        let tpl = td.path().join("templates/multi");
+        for leaf in ["a", "b", "c"] {
+            std::fs::create_dir_all(tpl.join(leaf)).unwrap();
+            std::fs::write(
+                tpl.join(leaf).join("config.json"),
+                r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(tpl.join("template.json"), r#"{"name":"multi"}"#).unwrap();
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        )
+        .unwrap();
+        let registry = TemplatesRegistry::from_entries(vec![TemplateEntry {
+            template_id: "t1".into(),
+            name: "multi".into(),
+            version: None,
+            filesystem_path: tpl.clone(),
+        }]);
+        let diff = json!({"add_nodes": [
+            {"name": "unit", "template": "multi", "birth": "inactive"}
+        ]});
+        let (_, subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-birth-sub",
+            "/main",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+        )
+        .unwrap();
+        let mut seen = 0;
+        for r in &subtrees[0].rename_roots {
+            for c in &r.cells {
+                assert_eq!(
+                    c.birth,
+                    Birth::Inactive,
+                    "cell {} must inherit the birth state",
+                    c.absolute_path.as_str()
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen >= 3, "the fixture must stage several cells: {seen}");
+    }
+
+    /// GH #439: staging is the EXPENSIVE half of an instantiation — one template
+    /// copy, one `config.json` rewrite and one `cell.db` seed per cell — and it
+    /// is SYNCHRONOUS. So the pulse has to be sync too, and it has to reach in
+    /// here: without this the colony would only be audible during the cheap
+    /// registration half, and a 65-cell build order would still go quiet for
+    /// exactly as long as it takes to write 65 directories.
+    ///
+    /// The receipt is positive and counted: at least one beat per staged cell.
+    #[test]
+    fn staging_a_subtree_pulses_once_per_cell() {
+        let td = TempDir::new().unwrap();
+        let root_cell = td.path().join("main");
+        std::fs::create_dir_all(&root_cell).unwrap();
+        std::fs::write(root_cell.join("config.json"), b"{}").unwrap();
+
+        // A four-cell subtree template: root hive + three leaves.
+        let tpl = td.path().join("templates/multi");
+        for leaf in ["a", "b", "c"] {
+            std::fs::create_dir_all(tpl.join(leaf)).unwrap();
+            std::fs::write(
+                tpl.join(leaf).join("config.json"),
+                r#"{"cell":{"type":"echo_type"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(tpl.join("template.json"), r#"{"name":"multi"}"#).unwrap();
+        std::fs::write(
+            tpl.join("config.json"),
+            r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+        )
+        .unwrap();
+        let registry = TemplatesRegistry::from_entries(vec![TemplateEntry {
+            template_id: "t1".into(),
+            name: "multi".into(),
+            version: None,
+            filesystem_path: tpl.clone(),
+        }]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::watchdog::Beat>(256);
+        let pulse = crate::watchdog::WorkPulse::new(
+            Some(tx),
+            crate::watchdog::WorkItem::new("mutation test op=add_nodes[1/1]"),
+        );
+
+        let diff = json!({"add_nodes": [{"name":"u","template":"multi"}]});
+        let (staged, subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-pulse",
+            "/main",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &Default::default(),
+            &pulse,
+        )
+        .expect("staging must succeed");
+
+        let cells: usize = staged.len()
+            + subtrees
+                .iter()
+                .map(|s| s.rename_roots.iter().map(|r| r.cells.len()).sum::<usize>())
+                .sum::<usize>();
+        assert!(cells >= 3, "the fixture must stage several cells: {cells}");
+        let mut beats = 0;
+        while rx.try_recv().is_ok() {
+            beats += 1;
+        }
+        assert!(
+            beats >= cells,
+            "staging must beat at least once per staged cell: {beats} beats for {cells} cells"
+        );
     }
 }

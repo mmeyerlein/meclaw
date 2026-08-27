@@ -1,8 +1,8 @@
-# `talky@4.2.2`
+# `talky@4.2.3`
 
 A whole conversational agent as one template. Five units under one hive:
-[`session-keeper@2.0.4`](../session-keeper/), [`collector@3.0.2`](../collector/),
-[`dispatcher@1.1.1`](../dispatcher/) and [`summarizer@2.0.1`](../summarizer/) -- each carrying
+[`session-keeper`](../session-keeper/), [`collector`](../collector/),
+[`dispatcher`](../dispatcher/) and [`summarizer`](../summarizer/) -- each carrying
 its template's own name -- plus an `llm` brain and one error collector. No new cell
 type, no Rust.
 
@@ -40,11 +40,11 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 
 | path | type | from |
 |---|---|---|
-| `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper@2.0.4` **(sealed)** |
-| `collector/{assemble,window}` | `code`, `store` | `collector@3.0.2` **(sealed)** |
-| `dispatcher` | `code` | `dispatcher@1.1.1` (a single-cell template) |
+| `session-keeper/{stamp,close,sessions,night}` | `code`, `code`, `store`, `timer` | `session-keeper` **(sealed)** |
+| `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
+| `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
-| `summarizer/{prep,writer}` | `code`, `llm` | `summarizer@2.0.1` **(sealed)** |
+| `summarizer/{prep,writer}` | `code`, `llm` | `summarizer` **(sealed)** |
 | `errors` | `code` | this template |
 
 **The braces are an inventory, not an address list.** The three sealed sub-units declare
@@ -65,8 +65,8 @@ one `config.json` and nothing else:
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
-the template it really came from: `collector/assemble` is stamped `collector@3.0.2`, with
-`talky@4.2.2` above it in its provenance chain.
+the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
+`talky@4.2.3` above it in its provenance chain.
 
 **The library has to carry the four.** A reference resolves against the colony's template
 registry, so `collector`, `summarizer`, `session-keeper` and `dispatcher` have to sit in
@@ -234,7 +234,7 @@ routed internally, by two ordinary edges of this template's own `params.graph`:
 ```
 
 … and the same shape one lane further for `hop.tool_name == 'thread_recall'` →
-`in_thread_call`. Nothing downstream changed: `collector@3.0.2` has accepted both lanes
+`in_thread_call`. Nothing downstream changed: the `collector` has accepted both lanes
 since `2.0.1`, and the door edge from `.` still routes them for a caller that hands such a
 call in from outside.
 

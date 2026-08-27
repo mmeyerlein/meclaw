@@ -134,7 +134,10 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Boot a one-hive colony with the echo factory, then register `templates/`.

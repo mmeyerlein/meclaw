@@ -115,7 +115,10 @@ async fn install_web_template(td: &tempfile::TempDir, h: &ColonyHandle, port: u1
         })
         .await
         .expect("rescan sent");
-    ack_rx.await.expect("rescan acked");
+    ack_rx
+        .await
+        .expect("rescan acked")
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// A colony with the `web` factory registered and a capture cell to answer into.

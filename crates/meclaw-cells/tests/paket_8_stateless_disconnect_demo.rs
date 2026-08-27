@@ -172,7 +172,10 @@ async fn install_code_template(td: &tempfile::TempDir, h: &ColonyHandle, name: &
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// `add_nodes` a single code cell from `template` at logical `/<node>`.
@@ -1032,7 +1035,10 @@ async fn install_contract_code_template(
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Send a VIOLATING probe to `/code` (`reply_to=/sink`) and assert the receipt at

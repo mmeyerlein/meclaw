@@ -1,17 +1,27 @@
 {
   "name": "submit",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": {
-    "purpose": "The one cell in the tree with an edge onto the mutation door. It takes a manifest that somebody drafted, checks that its bytes are the ones the digest was drawn over, takes the requester's identity off the ENVELOPE rather than out of the body, checks a policy that is rows in its own params, and emits ONCE on `mutate`. The colony's answer comes back to it directly, and it renders the receipt.",
+    "purpose": "The one cell in the tree with an edge onto the mutation door, and a store beside it that is its whole memory. It takes a manifest that somebody drafted, checks that its bytes are the ones the digest was drawn over, takes the requester's identity off the ENVELOPE rather than out of the body -- and then ASKS. Who may submit is a question for the capability broker, put once per submission over the manifest's scope root and in the check-only form, while the manifest itself waits parked in the store under its own digest. A permitted manifest is un-parked, stamped with its attribution and emitted ONCE on `mutate`. The colony's answer comes back directly, in a fresh trace that carries no correlation at all -- so a second row is what tells it whose round this was, and the receipt goes out stamped with that call's id.",
     "use_when": "Once per colony, at the OS level, beside the builder that drafts -- and NOT inside it. The guardrail of R6 is a missing edge, and a missing edge can only be missing between two nodes.",
-    "not_in_scope": "No drafting, no composing, no model, no disk, no network. It does not decide WHAT is applied and it cannot make one up: everything it emits was handed to it, byte for byte, by somebody whose identity the substrate stamped.",
+    "not_in_scope": "No drafting, no composing, no model, no disk, no network -- and no policy of its own. It does not decide WHO may submit and it does not decide WHAT is applied: everything it emits was handed to it, byte for byte, by somebody whose identity the substrate stamped, and permitted by somebody else.",
     "examples": [
-      "a manifest whose bytes changed on the way through a chat -> `manifest_digest_mismatch`, and nothing is emitted on `mutate`",
-      "a requester with no policy row -> `requester_not_permitted`; a fresh instance ships an empty policy and therefore submits nothing",
-      "the colony answers `{\"outcome\": \"rejected\", \"applied\": 2, \"failed_at\": 3}` -> a receipt that says WHERE it stopped and how much is live now, because a manifest has no rollback"
+      "a manifest whose bytes changed on the way through a chat -> `manifest_digest_mismatch`, and nothing is parked and nothing is asked",
+      "two declarations under `/os/orgs/acme` and `/os/orgs/acme/members` -> ONE question, about `/os/orgs/acme`; two under `/os/orgs/acme` and `/os/orgs/beta` ask about `/os/orgs`, which is stricter and never more permissive",
+      "the broker says no -> `requester_not_permitted`, the same string this template has always used, and the parked row goes with the refusal",
+      "the broker does not answer a readable verdict -> `submission_check_failed`, and nothing reaches the door: the one cell with that edge does not guess",
+      "the colony answers `{\"outcome\": \"rejected\", \"applied\": 2, \"failed_at\": 3}` -> a receipt that says WHERE it stopped and how much is live now, because a manifest has no rollback",
+      "a tool call `c2` asks for the apply -> the receipt comes back as a `tool_result` whose id IS `c2`, taken off the remembered row and not off the colony's answer, which carries no correlation at all",
+      "the row is gone (a restart, an `--apply` from outside) -> the receipt still goes out, with an empty id: the correlation is lost, the fact that the manifest was applied is not"
     ]
   },
-  "tags": ["mutation", "manifest", "policy", "audit", "submission"],
+  "tags": [
+    "mutation",
+    "manifest",
+    "broker",
+    "audit",
+    "submission"
+  ],
   "author": "@mmeyerlein",
   "license": "MIT"
 }

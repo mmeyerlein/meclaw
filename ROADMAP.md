@@ -23,8 +23,15 @@ Milestones mirror these streams. Release detail is in
 A colony grown from a seed into a personal operating system. This is the stream,
 because the gate for a public showcase is a provably better agent rather than
 more memory machinery. The epic
-[#26](https://github.com/mmeyerlein/meclaw/issues/26) leads and carries the
-settled principles and the open forks.
+[#26](https://github.com/mmeyerlein/meclaw/issues/26) carried the settled
+principles and the open forks, and **closed on 2026-08-27** without being built:
+a target picture is not something anybody can finish, and this tracker holds
+work only ([#287](https://github.com/mmeyerlein/meclaw/issues/287)). Its body
+stays the public record of the four principles — seed growth, the colony and
+person levels, access as a capability broker rather than a secret dispenser, and
+isolation along trust boundaries rather than org structure — and of the one fork
+still open: whether a `proxy` keeps owning its credential or stops being a
+credential holder at all.
 
 Its first half shipped as templates across 0.5.0–0.7.0 (collector hives, the
 session lifecycle, one talky per channel, the firewall, the advisor split, the
@@ -39,18 +46,25 @@ rather than at midnight, and what keeps one room's talk out of another is the
 audience an entry carries, not a memory store per channel. The memory half of
 that rule shipped in 0.16.0; the topology half stays with #122 below.
 
-What is left of the epic:
+What is left of the epic as work:
 
-- [#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives, a hive
-  per document
-- [#122](https://github.com/mmeyerlein/meclaw/issues/122) information ownership:
-  who holds what, and how an asker finds the holder
 - [#124](https://github.com/mmeyerlein/meclaw/issues/124) the first thing the
   advisor measured about itself — a consult round trip is far too slow for a
   question memory could have answered
-- [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
-  app store, and [#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding
-  hive built with the builder
+
+The rest of the epic left the tracker on 2026-08-27, for two different reasons.
+[#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
+app store is **done**: twenty-nine templates ship from `templates/`, every one of
+them with a row in [`templates/README.md`](templates/README.md) § *The library*,
+and two tests keep that table honest — one demands a row per exported template,
+the other checks each row's version against the template's own `template.json`.
+[#32](https://github.com/mmeyerlein/meclaw/issues/32) one-file hives,
+[#34](https://github.com/mmeyerlein/meclaw/issues/34) a coding hive built with
+the builder and
+[#122](https://github.com/mmeyerlein/meclaw/issues/122) information ownership
+are **target pictures** — each says so in its own body — and closed under the
+same rule as the epic. The substance is unchanged in the closed issues; what
+moved is only where it is filed.
 
 ## Next: substrate flanks
 
@@ -60,10 +74,15 @@ Named flanks left by the pre-MVP waves, plus new findings from running the thing
   interpreter start, which dominates serial hot paths
 - [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
   drain: in-flight work is lost on EOF and child termination
-- [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
-  subscription plan actually carries until reset
-- [#130](https://github.com/mmeyerlein/meclaw/issues/130) natural-language model
-  selection and closed-loop automation, beyond the v1 catalogue
+
+Two more left this list on 2026-08-27 without being built.
+[#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
+subscription plan carries until reset has had an operator go since 2026-08-11
+and has still never been run, because it blocks nothing — it waits for a
+recurring lane that wants the subscription path, which is a trigger, not a
+backlog item. [#130](https://github.com/mmeyerlein/meclaw/issues/130)
+natural-language model selection beyond the v1 catalogue said in its own body
+that it recorded a target picture; it closed as one.
 
 Two flanks closed since this list was written, both by measurement rather than
 argument. [#46](https://github.com/mmeyerlein/meclaw/issues/46): the CLI never
@@ -79,45 +98,57 @@ coder-pipeline examples. The substrate half has nowhere to live — a `bash`
 cell's params know `max_concurrency`, `external_timeout_ms`, `max_bytes` and
 `sandbox`, and no environment key.
 
-Two of these are watches rather than fixes, and stay open on purpose:
+One of these is a migration rather than a fix, and stays open on purpose:
 
-- [#141](https://github.com/mmeyerlein/meclaw/issues/141) message headers are
-  unbounded by design — measured every few weeks rather than capped
 - [#138](https://github.com/mmeyerlein/meclaw/issues/138) the environment knobs
-  are a declared **experimental** surface; 103 behavioural knobs remain across the
-  shipped templates — 107 of the 131 occurrences sit in `script_inline` — and they
-  migrate to params one template at a time, defaults bit-identical. Order:
-  `memory-hive` (51, of which `recall` alone holds 25), then the small ones;
-  `talky` and `cogny` own none of their own, theirs come from their sub-units.
-  The count grew by three in 0.17.3 rather than shrinking: the fusion floors of
-  [#297](https://github.com/mmeyerlein/meclaw/issues/297) arrived as env knobs
-  like their neighbours, all three in `recall`
+  are a declared **experimental** surface; **140 distinct knob names** remain
+  across the shipped templates, and they migrate to params one template at a
+  time, defaults bit-identical. Order: `memory-hive` (56), then
+  `builder-librarian` (21), then the long tail; `talky` and `cogny` own none of
+  their own any more, theirs come from their sub-units. The count keeps
+  **growing** rather than shrinking, and the reason is not neglect — new
+  templates arrive with new knobs, and `builder-librarian` did not exist when
+  the issue was filed
+
+[#141](https://github.com/mmeyerlein/meclaw/issues/141) was the second of these
+and closed on 2026-08-27. Message headers stay unbounded by design, and the
+watch stays — but a standing watch whose own body says *do not close this on a
+green check* is a permanent resident of a tracker that holds work, so it became
+a triggered line instead. The last reading, from 2026-08-19 over 3,306 messages
+of a running colony, was 5,404 B at the maximum and 733 B on average; the
+trigger is drift past roughly 100 KB on a single hop, and the query that
+produces the reading is in the closed issue.
 
 ## Later: memory, after the measurement
 
 The memory hive shipped publicly in 0.9.0, test suite included. What replaces the
-old list here is one measurement: a 50-question LongMemEval run against the 0.9.0
-tree returned **96 % R@5 and 58 % end accuracy** — in 19 of 21 wrong answers the
-retrieval had delivered the gold session and the synthesis failed to answer from
-it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
+old list here is one finding, from a 50-question LongMemEval run against the
+0.9.0 tree: **the bottleneck is the synthesis, not the remembering.** In nineteen
+of the twenty-one wrong answers the retrieval had delivered the gold session and
+the answer still came out wrong; the sharpest class retrieved every gold session
+and answered correctly barely a third of the time. The exact figures are in
+[#148](https://github.com/mmeyerlein/meclaw/issues/148) and are deliberately not
+repeated as a claim anywhere else: they were measured on 0.9.0 against a
+different embedder than the tree runs today, so they are indicative of a
+direction and were never a paired comparison of anything.
 
-- [#148](https://github.com/mmeyerlein/meclaw/issues/148) is therefore where this
-  stream points: the bottleneck is not the remembering. Its first measure — the
-  shape of what tier 2 is handed — has had two instalments: 0.10.3 grouped the
-  candidates by session alongside the flat ranking and said how to aggregate,
-  and 0.17.3 rewrote the document itself (a header that says what it is,
-  separate `FACTS` and `WHAT WAS SAID` sections, the run's bookkeeping moved out
-  into `recall_diagnostic`). Neither instalment has been measured against end
-  accuracy. The other two measures are untouched — whether the tier-1 cap
-  truncates the *set* a multi-session answer needs, and whether `dialectic`
-  earns a second pass on questions that count, compare or span — because both
-  change what is retrieved or how often the model runs, and the gate for either
-  is a benchmark run rather than a test. The 0.17.3 fusion measurement does not
-  close any of this: it was retrieval-only and paired, and it says only that the
-  new relevance floors cost nothing. **The run itself waits for a stable stack**
-  (decided 2026-08-23): the extraction and recall lanes are still moving
-  underneath the read path, and a paired end-to-end measurement only means
-  something once the thing it measures stops changing between runs.
+That issue closed on 2026-08-27 — not because the gap closed, but because what
+was left in it was a **measurement waiting on a trigger**. Its first measure, the
+shape of what tier 2 is handed, has had two instalments (0.10.3 grouped the
+candidates by session alongside the flat ranking and said how to aggregate;
+0.17.3 rewrote the document itself, with a header that says what it is, separate
+`FACTS` and `WHAT WAS SAID` sections, and the run's bookkeeping moved out into
+`recall_diagnostic`), and neither has been measured against end accuracy. The
+other two are untouched — whether the tier-1 cap truncates the *set* a
+multi-session answer needs, and whether `dialectic` earns a second pass on
+questions that count, compare or span — because both change what is retrieved or
+how often the model runs, and the gate for either is a benchmark run rather than
+a test. The re-run waits for the memory chain (collector, recall, curator,
+memory hive) to be considered settled; measuring a surface that still moves
+between runs buys a number that is stale by the next build.
+
+What stays open here as work:
+
 - [#261](https://github.com/mmeyerlein/meclaw/issues/261) the memory porter
   predates the substrate's `transfer` slot and now duplicates four things it does
   natively — a hand-maintained schema mirror, an idempotence probe, a provenance
@@ -128,12 +159,26 @@ it. The sharpest case scored 100 % R@5 against 30.8 % accuracy.
 
 ## Alongside: surfaces and docs
 
-New ways in and out. [#38](https://github.com/mmeyerlein/meclaw/issues/38) voice
-ingress — dictation-style now, realtime speech when the APIs land — is what is
-left of this stream.
-[#43](https://github.com/mmeyerlein/meclaw/issues/43) is down to its last piece:
-the keyless quickstart and the annotated message trace shipped with 0.9.0, the
-*moving* demo did not.
+New ways in and out.
+[#43](https://github.com/mmeyerlein/meclaw/issues/43) is down to its last piece,
+and that piece was re-cut on 2026-08-27: the keyless quickstart and the
+annotated message trace shipped with 0.9.0, and the terminal capture sits above
+the fold, but the *moving* proof the issue asked for was a capture of the web UI
+on `examples/swarm` — and that surface no longer exists in the form it named.
+The display is a cell type now, with a port and a `cell.db` of its own, so what
+is left to capture is `canvy`, or nothing.
+
+Voice ingress ([#38](https://github.com/mmeyerlein/meclaw/issues/38)) left this
+stream on 2026-08-27, and the order inside it flipped. It had carried two stages
+with one done-condition each: dictation now, realtime speech when the APIs land.
+The second half waited on a third party, which makes a ticket half a reminder —
+and the priority was the wrong way round. Realtime speech is not a further
+channel; it is the way the thing is meant to be operated, and the foundation for
+turning spoken intent straight into structure in the tree. It is the near-term
+line now, with a design round of its own. Dictation stays fully designed and
+buildable — a voice note fetched by the proxy, a transcriber, a small model that
+cleans up filler and self-corrections, then the ordinary text path — and stays
+explicitly secondary.
 
 The realtime HTML window ([#39](https://github.com/mmeyerlein/meclaw/issues/39))
 left it in the other direction: closed as **superseded** rather than built as

@@ -50,7 +50,10 @@ async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str, params: &
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Send a mutation with an explicit `trace_id` and await the outcome.

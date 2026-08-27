@@ -168,6 +168,7 @@ impl ReplyRelayFactory {
         path: Path,
         emit_to: Path,
         outputs_tx: mpsc::Sender<CellEmission>,
+        colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         mailbox_capacity: usize,
     ) -> RelaySpawn {
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity);
@@ -179,7 +180,20 @@ impl ReplyRelayFactory {
         };
         let join = tokio::spawn(async move {
             let _peace_keep = peace_tx;
-            cell_task(path, rx, outputs_tx, cell, None, None).await;
+            // GH #47: the REAL colony inbox, not `None`. This cell runs behind a
+            // live colony, so its handler owes a ticket the shutdown drain waits
+            // on; discarding the sender would make every shutdown of this
+            // topology sit out the full drain budget.
+            cell_task(
+                path,
+                rx,
+                outputs_tx,
+                cell,
+                None,
+                None,
+                Some(colony_inbox_tx),
+            )
+            .await;
         });
         (tx, join, peace_rx, backstop_rx)
     }
@@ -206,7 +220,7 @@ impl CellFactory for ReplyRelayFactory {
         outputs_tx: mpsc::Sender<CellEmission>,
         _cell_dir: std::path::PathBuf,
         _contract: meclaw_colony::ContractView,
-        _colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
+        colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<Duration>,
         _cell_timeout: i64,
         _message_timeout: Option<Duration>,
@@ -218,6 +232,7 @@ impl CellFactory for ReplyRelayFactory {
             path.clone(),
             emit_to.clone(),
             outputs_tx.clone(),
+            colony_inbox_tx.clone(),
             mailbox_capacity,
         );
         let factory = self.clone();
@@ -226,6 +241,7 @@ impl CellFactory for ReplyRelayFactory {
                 path.clone(),
                 emit_to.clone(),
                 outputs_tx.clone(),
+                colony_inbox_tx.clone(),
                 mailbox_capacity,
             )
         });

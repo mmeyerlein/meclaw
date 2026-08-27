@@ -64,8 +64,13 @@ pub async fn get_templates(
 /// Handler for `POST /colony/templates/rescan` — phase 12-B T8.5.
 ///
 /// Wraps `ColonyMsg::RescanTemplates`. The `templates_root` comes from
-/// `ColonyHandle.templates_root` (fixed at CLI start). Response:
-/// `{"rescan": {"status": "ok"}}` — the RescanTemplates ack is `()`, no body.
+/// `ColonyHandle.templates_root` (fixed at CLI start).
+///
+/// GH #440: the ack carries the scan outcome, so this door answers `200` with
+/// `{"rescan": {"status": "ok"}}` or `422` with
+/// `{"rescan": {"status": "error", "error": "<the scanner's own words>"}}`.
+/// Until then the ack was `()` and there was exactly one return value, which
+/// said `ok` even for a scan that had aborted on a duplicate name.
 pub async fn post_rescan(State(colony): State<Arc<ColonyHandle>>) -> impl IntoResponse {
     let (ack_tx, ack_rx) = oneshot::channel();
     let msg = ColonyMsg::RescanTemplates {
@@ -78,11 +83,17 @@ pub async fn post_rescan(State(colony): State<Arc<ColonyHandle>>) -> impl IntoRe
             Json(json!({ "error": "colony unavailable" })),
         );
     }
-    if ack_rx.await.is_err() {
-        return (
+    match ack_rx.await {
+        Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "colony unavailable" })),
-        );
+        ),
+        Ok(Ok(())) => (StatusCode::OK, Json(json!({ "rescan": {"status": "ok"} }))),
+        // GH #440: an aborted scan is not an `ok`. 422 like a rejected
+        // mutation — the request was well formed, the tree was not.
+        Ok(Err(error)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "rescan": {"status": "error", "error": error} })),
+        ),
     }
-    (StatusCode::OK, Json(json!({ "rescan": {"status": "ok"} })))
 }

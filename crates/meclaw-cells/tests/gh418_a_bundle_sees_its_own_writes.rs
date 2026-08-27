@@ -203,7 +203,10 @@ async fn of_two_parking_bundles_exactly_one_reads_the_complete_set() {
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 
     let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx

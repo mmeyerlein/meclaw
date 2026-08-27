@@ -1252,6 +1252,10 @@ pub struct StagedCellMeta {
     /// `contract` block as `contract_view` — registered into the colony's
     /// `node_contracts` map by the subtree registration arm.
     pub header_view: crate::mutation::validate::HeaderNodeView,
+    /// GH #437: the instantiation activity the `add_nodes` entry declared for
+    /// the subtree as a whole. A unit is born whole, so every cell of one
+    /// instantiation carries the same value.
+    pub birth: crate::mutation::Birth,
     /// GH #62 / GH #277: this node's OWN template identity — the template it is
     /// an instance of, which is the one a bump addresses — plus
     /// [`template_chain`](crate::config::NodeProvenance::template_chain), the
@@ -1337,6 +1341,8 @@ pub fn stage_subtree(
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
     factories: &crate::CellFactoryRegistry,
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — one beat per staged cell
+    birth: crate::mutation::Birth,      // GH #437 — stamped on every cell of this subtree
 ) -> Result<StagedSubtree, MutationError> {
     // 1. Parse the template tree (reuse T3).
     let template = parse_subtree(template_root, templates)?;
@@ -1364,6 +1370,8 @@ pub fn stage_subtree(
     // 3.–5. Per cell node: patch config (fresh UUID + substitution), seed,
     // and classify into spawnable cells vs. hive scope markers.
     for node in &template.cells {
+        // GH #439: same reason as the merge path — one beat per staged cell.
+        pulse.tick();
         let cell_staging = staging_dir_for(&root_staging_path, &node.rel_path);
         let abs = absolute_for(&subtree_root_abs, &node.rel_path);
 
@@ -1413,6 +1421,10 @@ pub fn stage_subtree(
                 message_timeout,
                 mailbox_size,
                 header_view,
+                // GH #437: every cell of one instantiation carries the entry's
+                // declaration — the declaration addresses the instantiation,
+                // and a unit is born whole.
+                birth,
                 provenance: node_provenance,
             });
         }
@@ -1762,6 +1774,8 @@ pub fn stage_subtree_merge(
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
     factories: &crate::CellFactoryRegistry,
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — one beat per staged cell
+    birth: crate::mutation::Birth,      // GH #437 — the entry's declared instantiation activity
 ) -> Result<StagedSubtreeMerge, MutationError> {
     let template = parse_subtree(template_root, templates)?;
     let partition = classify_subtree_nodes(root, scope, name, template_root, templates)?;
@@ -1789,6 +1803,8 @@ pub fn stage_subtree_merge(
             overrides,
             templates,
             factories,
+            pulse,
+            birth,
         )?);
     }
 
@@ -1829,6 +1845,8 @@ fn stage_rename_root(
     overrides: &SubtreeOverrides,
     templates: &crate::templates::TemplatesRegistry,
     factories: &crate::CellFactoryRegistry,
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — one beat per staged cell
+    birth: crate::mutation::Birth,      // GH #437 — stamped on every cell of this root
 ) -> Result<StagedRenameRoot, MutationError> {
     // Copy the rename-root's template sub-path into staging (drops template.json).
     // GH #277: `root_rel` is a rel-path of the EXPANDED tree, so it may only
@@ -1859,6 +1877,9 @@ fn stage_rename_root(
         if !is_self_or_rel_descendant(&node.rel_path, root_rel) {
             continue;
         }
+        // GH #439: this is where a 65-cell instantiation actually spends its
+        // time — a copy, a config rewrite and a seed per cell. Beat before each.
+        pulse.tick();
         // Staging dir of this node = root_staging_path + (node.rel_path minus root_rel).
         let sub_rel = rel_under(&node.rel_path, root_rel);
         let cell_staging = staging_dir_for(&root_staging_path, &sub_rel);
@@ -1904,6 +1925,10 @@ fn stage_rename_root(
                 message_timeout,
                 mailbox_size,
                 header_view,
+                // GH #437: every cell of one instantiation carries the entry's
+                // declaration — the declaration addresses the instantiation,
+                // and a unit is born whole.
+                birth,
                 provenance: node_provenance,
             });
         }
@@ -2291,6 +2316,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -2352,6 +2379,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -2413,6 +2442,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -2467,6 +2498,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -2529,6 +2562,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect_err("escaping edge must be rejected");
         assert!(
@@ -2571,6 +2606,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -2997,6 +3034,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("merge-staging should succeed");
 
@@ -3070,6 +3109,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("merge should succeed");
 
@@ -3157,6 +3198,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &crate::templates::TemplatesRegistry::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("merge should succeed");
 
@@ -3355,6 +3398,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree should succeed");
 
@@ -3832,6 +3877,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("staging a ref template must succeed");
 
@@ -3904,6 +3951,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("merge-staging through a ref must succeed");
 
@@ -3969,6 +4018,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree");
 
@@ -4028,6 +4079,8 @@ mod tests {
             &SubtreeOverrides::default(),
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree");
 
@@ -4112,6 +4165,8 @@ mod tests {
             &overrides,
             &inner_registry(&inner),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            crate::mutation::Birth::Active,
         )
         .expect("stage_subtree");
 

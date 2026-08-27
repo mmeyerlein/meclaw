@@ -196,6 +196,7 @@ mod tests {
             message_timeout: None,
             mailbox_size: None,
             header_view: crate::mutation::validate::HeaderNodeView::default(),
+            birth: crate::mutation::Birth::Active,
             preexisting_target: false,
             provenance: None,
             // GH #169: an instantiation, not a relocation.

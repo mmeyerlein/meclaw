@@ -39,7 +39,10 @@ async fn setup_template(h: &ColonyHandle, name: &str, cell_type: &str) {
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Helper: send a mutation and await the outcome.

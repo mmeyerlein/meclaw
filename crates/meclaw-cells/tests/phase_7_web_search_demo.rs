@@ -43,7 +43,10 @@ async fn setup_web_search_template(td: &tempfile::TempDir, h: &meclaw_testing::C
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

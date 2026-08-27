@@ -1,6 +1,6 @@
-//! GH #425 — a reply is READ, not merely forwarded
-//! (`templates/builder-hive/README.md` § *A reply is read, not merely
-//! forwarded*, GH #355/#360).
+//! GH #425 — a reply is READ, not merely forwarded (GH #355/#360; the rule was
+//! first written down in the README of the self-applying pipeline retired under
+//! GH #434, and it outlived it).
 //!
 //! `{"outcome":"committed"}` and `{"outcome":"rejected"}` are the same slot and
 //! opposite facts. A cell that stamps both the same way produces a run that says
@@ -11,7 +11,7 @@
 //! never looked at. The sentence a human reads has to carry that.
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, shipped_script};
+use meclaw_testing::{emit_all, shipped_script};
 
 const SUBMIT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -20,10 +20,10 @@ const SUBMIT: &str = concat!(
 
 /// Phase B: the colony's answer, which arrives here directly because the
 /// substrate stamps `reply_to` on every cell emission — in a FRESH trace, with
-/// no correlation and no context (`templates/builder-hive/README.md` § *What a
-/// `/colony` round trip forced on the design*).
-fn run_submit_phase_b(receipt: Value) -> Value {
-    emit_one(
+/// no correlation and no context — the property of a `/colony` round trip that
+/// shaped this design.
+fn phase_b(receipt: Value) -> Vec<Value> {
+    emit_all(
         &shipped_script(SUBMIT),
         &json!({
             "target": "/os/submit",
@@ -34,6 +34,40 @@ fn run_submit_phase_b(receipt: Value) -> Value {
             "params": {"policy": []},
         }),
     )
+}
+
+/// The receipt, which since GH #438 is TWO phases rather than one: phase B asks
+/// the store whose round this was and renders nothing, and the `pop` that comes
+/// back with the row is where the sentence is written. The four statements this
+/// file makes are unchanged; they moved one phase further.
+fn run_submit_phase_b(receipt: Value) -> Value {
+    let asked = phase_b(receipt);
+    assert_eq!(
+        asked.len(),
+        1,
+        "phase B asks the store and renders nothing: {asked:?}"
+    );
+    assert_eq!(asked[0]["header"]["route"], json!("sstore"));
+    let carry = asked[0]["header"]["carry"]
+        .as_str()
+        .expect("the receipt facts ride in the carry")
+        .to_string();
+
+    let rows = json!([{"id": "r1", "tool_call_id": "c2", "manifest_sha256": "abc123"}]);
+    let mut out = emit_all(
+        &shipped_script(SUBMIT),
+        &json!({
+            "target": "/os/submit",
+            "header": {"hop": {"operation": "select", "rows_affected": 1},
+                       "context": {"sub_origin": "gate", "sub_phase": "pop",
+                                   "sub_carry": carry}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "x",
+                          "text": rows.to_string()}],
+            "params": {"policy": []},
+        }),
+    );
+    out.pop().expect("the pop answers")
 }
 
 #[test]
@@ -103,7 +137,9 @@ fn phase_b_is_recognised_by_what_it_carries_and_not_by_what_it_lacks() {
     // would read an error reply as a new submission and re-emit it — the loop
     // workshop/cookbook/reply-to-fallback-loops.md is named after, measured at
     // ~20 round trips a second before it was fixed elsewhere in this tree.
-    let out = run_submit_phase_b(json!({"applied": 2, "failed_at": 3}));
+    let mut asked = phase_b(json!({"applied": 2, "failed_at": 3}));
+    assert_eq!(asked.len(), 1, "and it is not two messages either");
+    let out = asked.pop().expect("something was said");
     assert_eq!(
         out["header"]["error_code"],
         json!("manifest_missing"),

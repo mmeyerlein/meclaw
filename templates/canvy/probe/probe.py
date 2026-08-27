@@ -12,9 +12,10 @@ no `parent_message_id`, no `correlation_id`, and **no `context`**
 (`crates/meclaw-colony/src/colony_dispatch.rs`, `emit_reply_or_done`). So a leg
 through `/colony/graph` inside a browser's request would come back with nothing
 that identifies the browser, and the answer could not be routed to whoever asked.
-`templates/builder-hive` hits the same wall and works around it with an on-disk
-in-flight pointer, which is only sound because a lease guarantees a single request
-at a time -- with several browsers it is not sound.
+A cell has no way to say WHICH browser asked, so the pairing has to live
+somewhere. An on-disk pointer would only be sound under a lease that guarantees
+one request at a time -- with several browsers it is not sound, which is why the
+correlation travels in the message instead.
 
 So the snapshot is taken on a timer, where **nothing is waiting**. A colony's
 graph changes on mutation, not on mouse movement, so a periodic snapshot is the

@@ -19,6 +19,7 @@ Messages are atomic. Trace reconstruction lives in the central message log in `c
 - **Authority**: Only the colony reads and writes `config.json`. The **only writer is instantiation** (exactly once). **Read-once:** the running cell task **never re-reads** `config.json` after startup; `config.json` is the **instantiation snapshot**, not a live document.
 - **At instantiation**: colony copies the template, assigns a new UUID v7, stamps the **origin** (`cell.provenance` — template name, template version, instantiation time), resolves the **instance class** (`${ctx.*}`, `${uuid7:*}`) and writes the result into the instance's `config.json`. The **environment class** (`${VAR}`, `${VAR:-default}`) is **not** resolved here: it stays a token in the file and binds late, at every read (see `meclaw-overview.md`, section Variable substitution, and Snapshot versus live-read below). A secret a template references as `${VAR}` therefore never reaches the disk. **The node reference is the filesystem directory name** (the path segment under `{root}`), **not** a `cell.name` field. The `config.json` carries no `name`. When resolving the root chain, the `${...}` substitution wins over the `template.json` template name. Naming collisions with siblings inside the same hive scope are rejected by colony in the single-stage mutation validation, see `meclaw-overview.md` section "Naming collisions".
 - **After instantiation**: `config.json` is semantically frozen, the bootstrap snapshot. No one writes into it anymore, neither colony nor the cell itself. **Dynamic cell state** (changed params) lives exclusively in `cell.db`; **colony state** (registry, edge table, `cell_id`, message log, mutations) lives in `colony.db`. After the snapshot, `config.json` carries neither of the two forward (see `meclaw-overview.md` section "Lifecycle of `config.json` and `cell.db`"). The graph of a topology lives centrally in colony's registry and `colony.db`, not in the `config.json` of the hive scope marker (its `params.graph` is only an initial bootstrap hint).
+- **On a runtime registration (`add_templates`, GH #440)**: the `config.json` a declaration entry brings along is written into the instance-local library **byte for byte** as it stood in the body — registering does **not** substitute it. `${ctx.*}`, `${uuid7:*}` and `${VAR}` stay put and bind where they always bind: the instance class at **instantiation**, the environment class at **read** time. Registering files a class; only the `add_nodes` that names it turns that into an instance. The same separation as everywhere else — otherwise a library blueprint would carry the `ctx` of whichever mutation happened to deliver it.
 - **Cells do not read `config.json`.** The colony hands the cell the `params` block at startup. Param updates come afterwards via message and are persisted by the cell in its `cell.db` (`config.json` diverges from the live state, by design; cell reset = `cell.db` wipe → cell starts again from the bootstrap state).
 
 ## Structure
@@ -58,6 +59,27 @@ The whole file of a `ref` directory, with a default for the referenced template'
   }
 }
 ```
+
+**Birth state (GH #437).** Beside `override_params` — and top-level for the same
+reason: the `cell` block has a closed key list and describes a *cell*, while a birth
+state describes an *instantiation order* — a `ref` marker may declare `birth`:
+
+```json
+{
+  "cell": {
+    "type": "ref",
+    "template": "unit@1.0.0"
+  },
+  "birth": "inactive"
+}
+```
+
+The values are the same two as for `add_nodes[].birth`: `"active"` (the default) and
+`"inactive"`. The declaration holds for **every** cell of the grown tree (a unit is
+born whole); the tree is then registered, addressable and persisted inactive, and
+nothing inside it runs until the ordinary reconnect wakes it
+(`docs/meclaw-overview.md` § Reconnect). An unknown value refuses the boot — a boot
+that cannot fulfil a declaration must not start half a tree.
 
 **The type is resolved at instantiation and never reaches disk.** What lands in the instance is the referenced template's content at the reference's position — there is no `ref` cell factory, no dispatcher path and no registry entry for one; `ref` is a template-time type, not a runtime type (see `cell-types.md` § Overview). At a resolved reference the referenced template root's `README.md` is dropped **together with** `template.json`: the two are the descriptor pair of a standalone template — its registry entry and its page — and neither of them belongs to the instance the reference places. The composite's own `README.md` is untouched (nothing was followed to reach it), so the instance is byte-identical to the copies the reference replaced. A ring of references is `template_ref_cycle` and renders the ring (`a@1.0.0 -> b@1.0.0 -> a@1.0.0`); a reference pointing at nothing is `template_missing` and names the versions the registry holds under that name (or `none`).
 

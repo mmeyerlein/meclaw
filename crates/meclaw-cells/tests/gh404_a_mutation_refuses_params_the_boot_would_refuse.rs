@@ -157,7 +157,10 @@ async fn rescan(h: &ColonyHandle, td: &tempfile::TempDir) {
         })
         .await
         .expect("rescan");
-    ack_rx.await.expect("rescan ack");
+    ack_rx
+        .await
+        .expect("rescan ack")
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 async fn mutate(h: &ColonyHandle, payload: Value) -> meclaw_colony::mutation::MutationOutcome {

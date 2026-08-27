@@ -62,12 +62,15 @@ fn write_fixture(root: &std::path::Path) {
     .expect("write code cell config");
 }
 
-/// Drive one `meclaw` process: write `input` lines, read `expect_lines` stdout
-/// lines, then close stdin and wait for exit.
+/// Drive one `meclaw` process: write `input` lines, close stdin, read
+/// `expect_lines` stdout lines, wait for exit.
 ///
-/// Reads BEFORE closing stdin, for the reason documented in
-/// `stdio_bridge_demo.rs`: the EOF-shutdown path does not wait for in-flight
-/// cell work, so closing early would race the answer.
+/// Closes stdin FIRST (GH #47, 2026-08-27), for the reason documented in
+/// `stdio_bridge_demo.rs`: until the shutdown drain existed this helper had to
+/// read before the EOF, because the EOF-shutdown path did not wait for in-flight
+/// cell work and closing early raced the answer. The drain waits for the handler
+/// now, so a pipe behaves like a pipe. Going back to read-before-EOF would hide
+/// the regression these six tests now guard.
 fn drive(args: &[&str], root: &std::path::Path, input: &str, expect_lines: usize) -> Vec<String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_meclaw"));
     cmd.arg("--root").arg(root);
@@ -85,6 +88,7 @@ fn drive(args: &[&str], root: &std::path::Path, input: &str, expect_lines: usize
     let stdout = child.stdout.take().expect("stdout");
     stdin.write_all(input.as_bytes()).expect("write stdin");
     stdin.flush().expect("flush stdin");
+    drop(stdin);
 
     let reader = std::thread::spawn(move || {
         std::io::BufReader::new(stdout)
@@ -104,7 +108,6 @@ fn drive(args: &[&str], root: &std::path::Path, input: &str, expect_lines: usize
         std::thread::sleep(Duration::from_millis(50));
     }
     let lines = reader.join().expect("reader thread");
-    drop(stdin);
     let _ = child.wait();
     lines
 }

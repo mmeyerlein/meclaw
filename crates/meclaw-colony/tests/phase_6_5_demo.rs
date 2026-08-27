@@ -46,7 +46,10 @@ async fn phase_6_5_demo_multi_update_cell_writes_log_between_emits() {
             })
             .await
             .unwrap();
-        ack_rx.await.unwrap();
+        ack_rx
+            .await
+            .unwrap()
+            .expect("GH #440: the rescan must not have aborted");
     }
 
     // /sink = terminal CaptureCell, registered directly (no mutation path,

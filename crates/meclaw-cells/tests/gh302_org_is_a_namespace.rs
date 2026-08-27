@@ -481,7 +481,10 @@ async fn a_hive_template_with_zero_cells_instantiates() {
         })
         .await
         .expect("rescan");
-    ack_rx.await.expect("rescan ack");
+    ack_rx
+        .await
+        .expect("rescan ack")
+        .expect("GH #440: the rescan must not have aborted");
 
     // Pinned by version rather than by bare name: a bare `<name>` resolves to
     // the highest version present, which is the drift `template_chain` exists

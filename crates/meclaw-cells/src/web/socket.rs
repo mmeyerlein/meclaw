@@ -2,13 +2,14 @@
 //!
 //! # Why the cell has its own loop
 //!
-//! `meclaw_surface::socket::Connection` answers a join by asking a cell over
-//! the api's `Dispatcher` — message out, HTML back. A `web` cell **is** the
-//! thing that would be asked, and it already holds the answer: the page was
-//! materialised before the request arrived. Reusing that type would have meant
-//! inventing a dispatcher pointing at ourselves. So the wire format moved to
+//! The api-side connection answered a join by asking a cell over its
+//! `Dispatcher` — message out, HTML back. A `web` cell **is** the thing that
+//! would be asked, and it already holds the answer: the page was materialised
+//! before the request arrived. Reusing that type would have meant inventing a
+//! dispatcher pointing at ourselves. So the wire format moved to
 //! `meclaw_surface::frames` (shared, tested once) and this is the cell's own
-//! thin loop over it.
+//! thin loop over it. That other loop is gone since GH #396 — it never had a
+//! consumer — and this one is what it always was: the only one.
 //!
 //! R-W8-4b lands here: **a join does no diff work**. It answers from
 //! [`Materialized::packed_tree`], which was built by a write, not by this read.
@@ -220,7 +221,7 @@ async fn answer(
                 &frame.topic,
                 json!({
                     "rendered": page.packed_tree(),
-                    "liveview_version": meclaw_surface::socket::LIVEVIEW_VERSION
+                    "liveview_version": meclaw_surface::LIVEVIEW_VERSION
                 }),
             ))
         }

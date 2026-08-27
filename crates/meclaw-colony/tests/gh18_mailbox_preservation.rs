@@ -32,11 +32,20 @@ use tokio::sync::mpsc;
 const MARKER: Duration = Duration::from_secs(30);
 
 /// Await the next colony message and return it, failing loudly on silence.
+///
+/// GH #47: a cell now returns a `WorkDone` ticket for every delivery it took,
+/// so the mailbox-rescue traffic this file is about is no longer the first
+/// thing in the inbox. Tickets are bookkeeping, not lifecycle — skip them.
 async fn next_colony_msg(rx: &mut mpsc::Receiver<ColonyMsg>) -> ColonyMsg {
-    tokio::time::timeout(MARKER, rx.recv())
-        .await
-        .expect("no colony message within the failure marker")
-        .expect("colony inbox closed")
+    loop {
+        let msg = tokio::time::timeout(MARKER, rx.recv())
+            .await
+            .expect("no colony message within the failure marker")
+            .expect("colony inbox closed");
+        if !matches!(msg, ColonyMsg::WorkDone { .. }) {
+            return msg;
+        }
+    }
 }
 
 /// A panicking stateful cell must not take its unread mailbox with it.

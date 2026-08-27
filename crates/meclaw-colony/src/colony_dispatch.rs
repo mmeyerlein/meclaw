@@ -1528,10 +1528,13 @@ pub(crate) async fn run_mutation_door(
     edges: &mut crate::edge_table::EdgeTable,
     node_contracts: &mut std::collections::HashMap<meclaw_core::Path, crate::NodeContract>,
     dead_letters: &mut std::collections::VecDeque<crate::dead_letter::DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
     templates_snapshot: crate::templates::TemplatesRegistry,
     factories: &crate::CellFactoryRegistry,
     root: &std::path::Path,
+    // GH #440: the resolved `--templates` library, forwarded unchanged.
+    templates_root: &std::path::Path,
     inbox_self_tx: &tokio::sync::mpsc::Sender<crate::colony::ColonyMsg>,
     outputs_tx: &tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
     body: meclaw_core::serde_json::Value,
@@ -1546,6 +1549,7 @@ pub(crate) async fn run_mutation_door(
     blob_inline_max_bytes: usize,
     env_source: Option<&std::path::Path>,
     death_ack_wait_tx: Option<&tokio::sync::mpsc::Sender<()>>,
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — passed straight through to the mutation path
 ) -> crate::mutation::MutationDoorOutcome {
     use crate::mutation::MutationDoorOutcome;
     match crate::mutation::ManifestBody::detect(&body) {
@@ -1556,10 +1560,12 @@ pub(crate) async fn run_mutation_door(
                 edges,
                 node_contracts,
                 dead_letters,
+                in_flight,
                 writer_tx,
                 templates_snapshot,
                 factories,
                 root,
+                templates_root,
                 inbox_self_tx,
                 outputs_tx,
                 &manifest,
@@ -1573,6 +1579,7 @@ pub(crate) async fn run_mutation_door(
                 blob_inline_max_bytes,
                 env_source,
                 death_ack_wait_tx,
+                pulse,
             )
             .await,
         ),
@@ -1586,10 +1593,12 @@ pub(crate) async fn run_mutation_door(
                 edges,
                 node_contracts,
                 dead_letters,
+                in_flight,
                 writer_tx,
                 templates_snapshot,
                 factories,
                 root,
+                templates_root,
                 inbox_self_tx,
                 outputs_tx,
                 body,
@@ -1604,6 +1613,10 @@ pub(crate) async fn run_mutation_door(
                 blob_inline_max_bytes,
                 env_source,
                 death_ack_wait_tx,
+                // The single form has no next entry, so nothing needs to hear
+                // what it registered (GH #440).
+                None,
+                pulse,
             )
             .await,
         ),
@@ -1654,6 +1667,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     edges: &mut crate::edge_table::EdgeTable,
     node_contracts: &mut std::collections::HashMap<meclaw_core::Path, crate::NodeContract>, // Hardening Slice 1 (Task 1.4) — forwarded to handle_mutation
     dead_letters: &mut std::collections::VecDeque<crate::dead_letter::DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
     writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
     db_path: &std::path::Path,
     templates_snapshot: crate::templates::TemplatesRegistry,
@@ -1667,6 +1681,9 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     >,
     factories: &crate::CellFactoryRegistry,
     root: &std::path::Path,
+    // GH #440: the resolved `--templates` library, forwarded to the mutation
+    // door — the same root the `rescan_future` beside it was built from.
+    templates_root: &std::path::Path,
     inbox_self_tx: &tokio::sync::mpsc::Sender<crate::colony::ColonyMsg>,
     outputs_tx: &tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
     endpoint: meclaw_core::Path,
@@ -1679,6 +1696,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>, // Phase-13.5 A8 — forwarded to handle_mutation
     blob_inline_max_bytes: usize, // Phase-13.5 A8 (F2) — offload threshold forwarded to handle_mutation
     env_source: Option<&std::path::Path>, // U8 (RULED A8) — env source from startup, forwarded to handle_mutation
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — the outputs-arm's work item, forwarded to handle_mutation
 ) -> crate::colony::RouteAction {
     // GH #432 — the door resolves a blob body BEFORE it dispatches.
     //
@@ -1730,10 +1748,12 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 edges,
                 node_contracts,
                 dead_letters,
+                in_flight,
                 writer_tx,
                 templates_snapshot,
                 factories,
                 root,
+                templates_root,
                 inbox_self_tx,
                 outputs_tx,
                 body,
@@ -1748,6 +1768,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 blob_inline_max_bytes,
                 env_source,
                 None, // /colony/mutations dispatch path: no test sync hook
+                pulse,
             )
             .await;
             let reply_body = mutation_door_reply(&outcome);
@@ -2340,6 +2361,7 @@ mod tests {
         let mut registry = HashMap::new();
         let mut edges = EdgeTable::new();
         let mut dead_letters = VecDeque::new();
+        let mut in_flight = crate::drain::DrainLedger::default();
         let factories: CellFactoryRegistry = HashMap::new();
         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(Vec::new());
 
@@ -2360,6 +2382,7 @@ mod tests {
             &mut edges,
             &mut HashMap::new(), // node_contracts — empty: no mutation endpoint in this test
             &mut dead_letters,
+            &mut in_flight,
             &colony_db.writer_tx,
             &db_path,
             templates_snapshot,
@@ -2367,6 +2390,7 @@ mod tests {
             rescan_future,
             &factories,
             td.path(),
+            &td.path().join("templates"),
             &inbox_self_tx,
             &outputs_tx,
             Path::new("/colony/bogus"),
@@ -2379,6 +2403,7 @@ mod tests {
             None,
             0,
             None,
+            &crate::watchdog::WorkPulse::silent(),
         )
         .await;
 
@@ -2605,6 +2630,7 @@ mod tests {
         registry.insert(dead.clone(), stub_entry(&dead, false, false));
         let mut edges = EdgeTable::new();
         let mut dead_letters = VecDeque::new();
+        let mut in_flight = crate::drain::DrainLedger::default();
         let factories: CellFactoryRegistry = HashMap::new();
         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(Vec::new());
 
@@ -2630,6 +2656,7 @@ mod tests {
             &mut edges,
             &mut HashMap::new(), // node_contracts — empty: no mutation endpoint in this test
             &mut dead_letters,
+            &mut in_flight,
             &colony_db.writer_tx,
             &db_path,
             templates_snapshot,
@@ -2637,6 +2664,7 @@ mod tests {
             rescan_future,
             &factories,
             td.path(),
+            &td.path().join("templates"),
             &inbox_self_tx,
             &outputs_tx,
             Path::new("/colony/registry"),
@@ -2649,6 +2677,7 @@ mod tests {
             None,
             0,
             None,
+            &crate::watchdog::WorkPulse::silent(),
         )
         .await;
 
@@ -2700,6 +2729,7 @@ mod tests {
         let mut registry = HashMap::new();
         let mut edges = EdgeTable::new();
         let mut dead_letters = VecDeque::new();
+        let mut in_flight = crate::drain::DrainLedger::default();
         let factories: CellFactoryRegistry = HashMap::new();
         let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(Vec::new());
 
@@ -2723,6 +2753,7 @@ mod tests {
             &mut edges,
             &mut HashMap::new(),
             &mut dead_letters,
+            &mut in_flight,
             &colony_db.writer_tx,
             &db_path,
             templates_snapshot,
@@ -2730,6 +2761,7 @@ mod tests {
             rescan_future,
             &factories,
             td.path(),
+            &td.path().join("templates"),
             &inbox_self_tx,
             &outputs_tx,
             Path::new("/colony/trace"),
@@ -2742,6 +2774,7 @@ mod tests {
             None,
             0,
             None,
+            &crate::watchdog::WorkPulse::silent(),
         )
         .await;
 

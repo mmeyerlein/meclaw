@@ -16,13 +16,13 @@
 //! is skipped by construction, and so is `_cell-types`, which is a README with
 //! no template behind it.
 //!
-//! A README whose H1 names no version is not a defect: seven templates title
+//! A README whose H1 names no version is not a defect: a few templates title
 //! their page with the bare name (`# egon`) or with a sentence (`# canvy — a
 //! canvas the colony serves itself`). Those are exempt — but the exemption is
 //! a closed list, not a silence: `the_versionless_set_stays_inside_its_list`
-//! requires every version-less README to be one of the seven, so a template
-//! that DROPS its version to escape the gate fails here instead of joining
-//! them.
+//! requires every version-less README to be one of the names in `VERSIONLESS`,
+//! so a template that DROPS its version to escape the gate fails here instead
+//! of joining them.
 //!
 //! # Why a floor, and why 15
 //!
@@ -45,11 +45,15 @@ use meclaw_core::serde_json::Value;
 /// Templates whose README H1 names no version. Exempt from the comparison, but
 /// asserted as an upper bound: see `the_versionless_set_stays_inside_its_list`.
 const VERSIONLESS: &[&str] = &[
-    "bot-basic",
+    // `bot-basic` left this set by being deleted (S5, 2026-08-27): the template
+    // is gone from the library, so the name would have been a claim about
+    // something that does not exist.
     // `canvy` left this set with 2.0.0 (W8, GH #383): its README H1 names the
     // version now, so the sweep judges it like any other shipped template.
     "coder-pipeline",
-    "daily-digest",
+    // `daily-digest` left this set with 2.0.2 (S5, 2026-08-27): released into
+    // the public library, so its H1 names the version and the sweep judges it
+    // like any other shipped template.
     "egon",
     "research-assistant",
     "slack-agent",

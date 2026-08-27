@@ -1,6 +1,7 @@
 {
   "cell": {
-    "type": "llm"
+    "type": "llm",
+    "message_timeout": 240000
   },
   "params": {
     "provider": "openai",
@@ -8,7 +9,7 @@
     "api_key": "${LOCAL_LLM_API_KEY:-}",
     "base_url": "${LOCAL_LLM_BASE_URL:-}",
     "temperature": 0,
-    "max_tokens": 2048,
+    "max_tokens": 16384,
     "external_timeout_ms": 170000,
     "system_order": [
       "instructions"
@@ -47,6 +48,6 @@
   "description": {
     "purpose": "The one model call of the design lane: it turns a briefed request into a draft manifest. `provider` names the WIRE PROTOCOL, not the vendor, so any OpenAI-shaped endpoint serves -- including the stub the scenario suite starts, which is why the composed class is provable at zero cost.",
     "use_when": "Behind `brief`, on hop.route == 'compose'.",
-    "not_in_scope": "No parsing and no trust: whatever it answers is read by `normalise` before it becomes a manifest. And no boot-time demand: all three variables carry an EMPTY default. This hive travels inside the OS shell, and a shell that could not be grown without a model credential would make the FAST LANE -- which asks no model at all -- conditional on one. A colony with no composer configured still rewires an edge; what it cannot do fails at call time, loudly, and not at boot."
+    "not_in_scope": "No parsing and no trust: whatever it answers is read by `normalise` before it becomes a manifest. And no boot-time demand: all three variables carry an EMPTY default. This hive travels inside the OS shell, and a shell that could not be grown without a model credential would make the FAST LANE -- which asks no model at all -- conditional on one. A colony with no composer configured still rewires an edge; what it cannot do fails at call time, loudly, and not at boot. The completion budget is 8192 rather than a manifest's worth of tokens: a reasoning model spends its budget on reasoning first, and at 2048 one measured call came back `finish_reason: \"length\"` with an EMPTY answer -- which the lane can only report as `no_manifest_in_answer`, a sentence about the model that was really a sentence about the cap (plans/welle-2026-08-27/receipts/s12-luna-run.md)."
   }
 }

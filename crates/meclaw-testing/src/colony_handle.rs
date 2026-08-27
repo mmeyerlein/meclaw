@@ -238,8 +238,23 @@ impl ColonyHandle {
         // exercise custom defaults (idle threshold, blob_inline_max_bytes) by
         // writing a colony.json into the caller-owned dir before construction.
         // Absent → defaults (no behaviour change for existing tests).
-        let colony_config =
+        let mut colony_config =
             meclaw_colony::colony_config::read_colony_config(&dir).unwrap_or_default();
+        // GH #47: the harness DRAINS — a drain that only runs in five dedicated
+        // tests is a drain nobody exercises. But a single hung cell must never
+        // cost a suite with hundreds of colonies more than a blink, so the
+        // budget here is 250 ms, not the production 10 s. A test that measures
+        // the drain sets its own budget through `colony.json`, and that value
+        // MUST win: the key's presence in the file, not its parsed value, is
+        // what decides — a test asking for exactly the production default or
+        // for `0` (the documented off switch, Ruling O7) is asking for it on
+        // purpose, and neither is distinguishable from "absent" after parsing.
+        let names_own_drain_budget = std::fs::read_to_string(dir.join("colony.json"))
+            .map(|s| s.contains("shutdown_drain_timeout_ms"))
+            .unwrap_or(false);
+        if !names_own_drain_budget {
+            colony_config.shutdown_drain_timeout_ms = 250;
+        }
         let mut cfg = meclaw_colony::ColonyTaskConfig::new(
             self_tx,
             inbox_rx,
@@ -356,6 +371,11 @@ impl ColonyHandle {
         // closure (await-free, like `outputs_tx`) so spawned cells resolve
         // `Body::Blob` at the delivery boundary when a store is wired.
         let blob_store = self.blob_store.clone();
+        // GH #47: the colony inbox, captured OUTSIDE the `Fn` closure exactly
+        // like `outputs_tx` — the closure is a `RespawnFn` and runs more than
+        // once, so it clones per call. Without the ticket every colony spawned
+        // through this helper would drain to its deadline.
+        let inbox_tx = self.inbox_tx.clone();
         let make_pair = {
             let factory = factory_arc.clone();
             let outputs_tx = outputs_tx.clone();
@@ -375,10 +395,20 @@ impl ColonyHandle {
                 let path_inner = path.clone();
                 let outputs_inner = outputs_tx.clone();
                 let blob_inner = blob_store.clone();
+                let inbox_inner = inbox_tx.clone();
                 let join = tokio::spawn(async move {
                     let _peace_keep = peace_tx;
                     // Slice 2: test helper without a contract → `consumes: None`.
-                    cell_task(path_inner, rx, outputs_inner, cell, blob_inner, None).await;
+                    cell_task(
+                        path_inner,
+                        rx,
+                        outputs_inner,
+                        cell,
+                        blob_inner,
+                        None,
+                        Some(inbox_inner),
+                    )
+                    .await;
                 });
                 (tx, join, peace_rx, backstop_rx)
             }

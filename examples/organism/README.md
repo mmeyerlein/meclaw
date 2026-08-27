@@ -44,7 +44,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@1.1.1"
+│       └── os/config.json     type: "ref", template: "meclaw-os@1.2.3"
 ├── grow-os.json               1. the shell.      1 node,  0 edges
 ├── grow-org.json              2. an organisation. 1 node, 11 edges
 ├── grow-member.json           3. a person.        1 node, 11 edges
@@ -60,9 +60,9 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@1.1.1   the shell
-├── access                            → access@2.2.0        the capability broker
-├── steward                           → steward@2.0.11      the control loop
+/os                                 meclaw-os@1.2.3   the shell
+├── access                            → access@2.3.0        the capability broker
+├── steward                           → steward@2.0.12      the control loop
 └── orgs                              (empty container)
     └── acme                       org@1.1.0         a namespace and a boundary
         └── members                  (empty container)
@@ -75,8 +75,8 @@ principle of GH #26: a tree is grown, not checked in.
                         ├── cogny     → cogny@4.0.3         the reasoning core
                         ├── tools     → tools@1.1.0         the tool surface
                         └── channels  (empty container)
-                            ├── telegram-connector   telegram-connector@2.0.0
-                            └── talky                talky@4.2.2
+                            ├── telegram-connector   telegram-connector@2.0.1
+                            └── talky                talky@4.2.3
 ```
 
 Six `add_nodes` entries name six templates, and **thirteen** distinct templates end up stamped
@@ -107,7 +107,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.1.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.2.3"}],
           "add_edges": []}}
 ```
 
@@ -172,7 +172,7 @@ standing side by side in `channels`, plus the edges that pair them:
 
 - the connector's **one wire**, normalised by the level it sits in: an emission carrying
   `hop.error_code` is the connector's own failure and becomes `error`, one without it is an
-  inbound turn and becomes `turn` (`telegram-connector@2.0.0`, GH #303). The outbound edge
+  inbound turn and becomes `turn` (the `telegram-connector` cell, GH #303). The outbound edge
   promotes `hop.chat_id` to context, or the reply has no chat to go to;
 - the pairing edge, `talky → connector` on `answer`;
 - seven lanes carried down to the talky and seven carried back up.
@@ -276,7 +276,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@1.1.1"}}
+{"cell": {"type": "ref", "template": "meclaw-os@1.2.3"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -345,6 +345,6 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.2.0` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.3.0` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.

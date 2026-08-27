@@ -272,11 +272,23 @@ Reshaping the graph is a first-class runtime move. A cell emits a mutation diff 
 
 The whole idea is agents that maintain their own harness. Read the current topology, notice it needs another tool cell or a smarter loopback, write the diff, ship it.
 
-That part shipped. The **builder-hive** — an `llm` plus `code` topology that turns a plain-English request into a validated, deployed subtree, itself pure DSL and not one line of new Rust — is **not** in this repository yet: it is built and tested in the private tree, and it is not on the public template allow-list, so nothing here instantiates it. What *is* here are the rails it runs on, and they are the interesting part anyway, because they are measured substrate behaviour rather than a promise: a cell cannot even *address* the mutation lane without an edge, and no mutation whatsoever can create an edge onto the control plane — that one is bootstrap-only. Approval is classified by effect, not by name: a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or touching the control plane escalates to a human.
+That part shipped, and so did the thing on top of it. The **builder** — an `llm` plus
+`code` topology that turns a plain-English request into a MANIFEST, itself pure DSL and
+not one line of new Rust — is in this repository, on the public template allow-list, at
+[`templates/builder`](templates/builder/). It never applies anything, and that is a
+property of the files rather than a promise in a README: no cell in it has an edge onto
+the control plane. The one reach onto the mutation door in the whole tree is
+[`templates/submit`](templates/submit/), which takes the requester's identity off the
+envelope rather than out of the body. The rails are the interesting part anyway, because
+they are measured substrate behaviour rather than a promise: a cell cannot even *address*
+the mutation lane without an edge, and no mutation whatsoever can create an edge onto the
+control plane — that one is bootstrap-only. Approval is classified by effect, not by name:
+a fresh unwired subtree is inert and auto-approved, while rerouting live traffic or
+touching the control plane escalates to a human.
 
 ## Where it's at
 
-meclaw is **v0.22.5**. A proof of concept for the DSL and the self-modifying substrate, with an on-disk schema that only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
+meclaw is a **0.x** proof of concept for the DSL and the self-modifying substrate — the version that shipped last is the top entry in [`CHANGELOG.md`](CHANGELOG.md), which is where release truth lives. The on-disk schema only ever grows: the `colony.db` `schema_version` stands at **7**, every step to it was additive, and an older database migrates in place on the boot that finds it. The DSL keeps growing; the database you already have keeps opening.
 
 Real and tested today: the full actor substrate, all 15 built-in cell types, hot and cold lifecycle, runtime mutations, the template system, long-running cells, the HTTP API and web UI, displays that own their own port, agent harnesses as supervised child processes, and child colonies composed as single cells. **5200+ tests. 0 fail. And climbing.** The hot routing paths are byte-pinned against fixtures, so they can't quietly drift.
 
@@ -338,9 +350,11 @@ than estimating them.
 **Now: meclaw-os.** The substrate had its waves; the first full agent is being built on top of
 it as pure topology, no new Rust — context orchestration, a conversation lifecycle, a screened
 front door, and memory the agent can ask rather than be handed. Every piece of it is a template
-you can read, and they are all in [`templates/README.md`](templates/README.md). The epic is
-[#26](https://github.com/mmeyerlein/meclaw/issues/26); every decision and open fork is tracked
-there in the open.
+you can read, and they are all in [`templates/README.md`](templates/README.md). The epic that
+carried it, [#26](https://github.com/mmeyerlein/meclaw/issues/26), is closed — a target picture
+is not something anyone can finish, and the tracker holds work only — but its body is still the
+public record of the settled principles and the one open fork. What comes next and in which
+order lives in [ROADMAP.md](ROADMAP.md).
 
 Also in the queue: cutting the fixed cost of a `code` cell invocation. We measured it instead of guessing — the driver is ~16 ms of interpreter startup per call, not the store and not the payload, so the cost equation is (number of `code` calls on the serial path) × 16 ms. That one line is worth roughly 90 % of the available speedup. After that: more than one builder per scope, capability checks with teeth, durability hardening. All of it is in the open. Pick one, send a PR.
 

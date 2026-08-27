@@ -56,3 +56,9 @@ adr	status	anchor_home	target
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_digest_helper_is_identical_in_every_script_that_carries_it
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	test:the_requester_is_taken_from_the_envelope_and_never_from_the_body
 0015-the-builder-belongs-to-the-os-level.md	accepted	self	file:templates/builder/README.md#This hive drafts and never applies
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	test:a_batch_pipe_delivers_every_answer_after_eof
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	test:a_running_handler_holds_the_shutdown_until_it_finishes
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	test:a_hung_handler_ends_the_drain_at_the_deadline_and_is_named
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	test:a_three_second_drain_under_the_default_watchdog_exits_clean
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	code:LoopPhase
+0016-a-shutdown-is-a-loop-phase-not-a-break.md	accepted	self	file:crates/meclaw-colony/src/drain.rs#is_quiescent

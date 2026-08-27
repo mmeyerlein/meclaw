@@ -69,6 +69,11 @@ impl EchoCellFactory {
     /// `consumes`: the cell's own pre-compiled required-`consumes` views
     /// (`contract.consumes`), forwarded to `cell_task` for the
     /// delivery-boundary consumes check (Slice 2, consumed in Task 2.4).
+    ///
+    /// `colony_inbox_tx`: GH #47 — this factory runs behind a REAL colony in
+    /// hundreds of tests, so its cell must return the per-delivery `WorkDone`
+    /// ticket; a silent one would hold every one of those drains to its
+    /// deadline. `None` only where there is no colony at all.
     pub(crate) fn spawn_once(
         &self,
         path: Path,
@@ -76,6 +81,7 @@ impl EchoCellFactory {
         outputs_tx: tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
         mailbox_capacity: usize,
         consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+        colony_inbox_tx: Option<tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>>,
     ) -> (
         tokio::sync::mpsc::Sender<meclaw_core::Message>,
         tokio::task::JoinHandle<()>,
@@ -97,7 +103,7 @@ impl EchoCellFactory {
         let join = tokio::spawn(async move {
             let _peace_keep = peace_tx;
             // Phase-13.5 A8: stateless echo factory does not use a blob store.
-            cell_task(path, rx, outputs_tx, cell, None, consumes).await;
+            cell_task(path, rx, outputs_tx, cell, None, consumes, colony_inbox_tx).await;
         });
         (tx, join, peace_rx, backstop_rx)
     }
@@ -118,7 +124,7 @@ impl CellFactory for EchoCellFactory {
         outputs_tx: tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
         _cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
-        _colony_inbox_tx: tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
+        colony_inbox_tx: tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
         _cell_timeout: i64,
         _message_timeout: Option<std::time::Duration>,
@@ -132,6 +138,7 @@ impl CellFactory for EchoCellFactory {
             outputs_tx.clone(),
             mailbox_capacity,
             contract.consumes.clone(),
+            Some(colony_inbox_tx.clone()),
         );
 
         // RespawnFn captures Arc-clone of factory + parsed params + path + outputs_tx.
@@ -146,6 +153,7 @@ impl CellFactory for EchoCellFactory {
                 outputs_tx.clone(),
                 mailbox_capacity,
                 respawn_consumes.clone(),
+                Some(colony_inbox_tx.clone()),
             )
         });
         // Phase-13.5 Lifecycle-3b Task 3: placeholder peace-stop ends. The
@@ -220,7 +228,7 @@ mod tests {
             emitted_header: None,
         };
         let (sender, _join, _peace_rx, _backstop_rx) =
-            factory.spawn_once(Path::new("/src"), params, out_tx, 1000, None);
+            factory.spawn_once(Path::new("/src"), params, out_tx, 1000, None, None);
         let msg = MessageBuilder::new(Path::new("/src")).build();
         sender.send(msg).await.expect("cell receives message");
     }

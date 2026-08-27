@@ -238,7 +238,10 @@ async fn install_unspawnable_template(td: &tempfile::TempDir, h: &ColonyHandle, 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// The stdio twin of core finding #9: an unspawnable child is a post-commit

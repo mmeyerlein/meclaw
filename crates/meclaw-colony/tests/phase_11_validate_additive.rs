@@ -39,7 +39,10 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// Test 1: the template name is not in the registry → error_code "template_missing".

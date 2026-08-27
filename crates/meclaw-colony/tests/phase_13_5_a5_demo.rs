@@ -123,7 +123,7 @@ fn make_echo_build(
         let o = outputs_tx.clone();
         let join = tokio::spawn(async move {
             let _keep_peace = peace_tx;
-            cell_task(p, rx, o, cell, None, None).await;
+            cell_task(p, rx, o, cell, None, None, None).await;
         });
         (tx, join, peace_rx, backstop_rx)
     }
@@ -225,7 +225,10 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 async fn all_registry(h: &ColonyHandle) -> Vec<meclaw_colony::api_dto::RegistryEntryDto> {

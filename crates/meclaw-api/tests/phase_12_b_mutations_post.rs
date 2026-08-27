@@ -44,7 +44,10 @@ async fn setup_template(h: &meclaw_testing::ColonyHandle, name: &str, cell_type:
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

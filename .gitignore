@@ -94,3 +94,4 @@ __pycache__/
 /w13-*.exit
 /w13-*.sh
 orphan-journal.jsonl
+workshop/evals/.exp-*/

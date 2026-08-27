@@ -1,0 +1,75 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "submissions": {
+        "id": "text",
+        "at": "text",
+        "kind": "text",
+        "tool_call_id": "text",
+        "manifest_sha256": "text",
+        "requester": "text",
+        "manifest": "json"
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "transfer": "none",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The submitter's whole memory, as ONE table: `submissions`, one row per submission in flight. `kind` separates the two uses of the same row -- `flight` is the FIFO correlation of the receipt (#438), `parked` is the manifest waiting out a broker round trip (#435). One table, because both rows describe the SAME submission and a sweeper would otherwise have to know two places.",
+    "use_when": "Inside the submit hive only, and reached only by `./gate`. A `code` cell has no `cell.db` (`docs/cell-types.md` § code), so the round trip to this store IS the gate's memory: the state of a multi-phase submission rides in the hop keys the internal edges promote to context and comes back on this store's answer.",
+    "not_in_scope": "It decides nothing and it checks nothing. It holds no policy -- the verdict is the gate's or, from #435 onward, the broker's -- and it holds no secret. `contract.write_surface` is `internal` because the audit trail of the one privileged lane in the tree may not have a second writer: the hive declares `params.ports: []`, so the only address is the hive path, and the only sender inside it is the gate."
+  }
+}

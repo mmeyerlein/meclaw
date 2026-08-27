@@ -11,7 +11,7 @@ pub mod vault_cli;
 pub use factories::built_in_factories;
 /// GH #84: the trip policy is a field of [`WatchdogTuning`] and of `colony.json`,
 /// so the CLI re-exports the substrate's type instead of mirroring it.
-pub use meclaw_colony::watchdog::{HostWitness, WatchdogOnTrip, WatchdogTrip};
+pub use meclaw_colony::watchdog::{HostWitness, WatchdogOnTrip, WatchdogTrip, WorkItem};
 
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -467,9 +467,9 @@ pub async fn run_with_hooks_tuned(
     //
     // The guard lives to the end of `run_with_hooks_tuned`, so every exit path —
     // `--validate`'s early return, a `?`, a panic unwind, SIGTERM's graceful
-    // shutdown — releases the root. The two `std::process::exit` calls below
-    // skip `Drop` by design; the lease they leave is a stale one, which the next
-    // boot reclaims after verifying the holder is gone.
+    // shutdown — releases the root. The `std::process::exit` call below skips
+    // `Drop` by design; the lease it leaves is a stale one, which the next boot
+    // reclaims after verifying the holder is gone.
     let _root_lease = lease::acquire(&cli.root)?;
 
     let db_path = cli.root.join("colony.db");
@@ -955,6 +955,12 @@ pub async fn run_with_hooks_tuned(
     // TTL slice (2026-06-11): keep the ingress TTL default before colony_config
     // moves into the runtime — the router consumes it below.
     let message_default_ttl = colony_config.message_default_ttl;
+    // GH #47: the same hoist, for the same reason — `colony_config` moves into
+    // the runtime one line below, and the shutdown sequence at the very end of
+    // this function needs the drain budget to size its ack wait. Carried as the
+    // scalar it is, never re-read from disk: a second parse could disagree with
+    // the one the colony is actually running.
+    let shutdown_drain_timeout_ms = colony_config.shutdown_drain_timeout_ms;
     let runtime = meclaw_colony::ColonyRuntime {
         inbox_tx: inbox_tx.clone(),
         outputs_tx: outputs_tx.clone(),
@@ -1123,6 +1129,14 @@ pub async fn run_with_hooks_tuned(
                 reason = %line,
                 starved = trip.starved(),
                 fatal = fatal,
+                // GH #439: a trip that happened inside a declared operation says
+                // which one, so the structured log answers "what was it doing"
+                // without a second lookup.
+                work_item = trip
+                    .work_item
+                    .as_ref()
+                    .map(meclaw_colony::watchdog::WorkItem::as_str)
+                    .unwrap_or("none"),
                 "watchdog trip"
             );
             if fatal {
@@ -1323,13 +1337,28 @@ pub async fn run_with_hooks_tuned(
     // Graceful Colony-Shutdown after axum has stopped accepting + drained:
     // send Shutdown → Colony drains in-flight work + fires ack → join the task.
     // Timeouts prevent indefinite hangs if Colony is wedged.
+    //
+    // GH #47: the trip verdict is read HERE, not at the end, because it decides
+    // WHICH shutdown door this process takes. The value is kept and still
+    // decides the exit code below (issue #6 is unchanged: a graceful shutdown
+    // whose CAUSE was a trip exits non-zero).
+    let trip_reason: Option<String> = trip_rx.try_recv().ok();
+
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    if inbox_tx
-        .send(meclaw_colony::ColonyMsg::Shutdown { ack: ack_tx })
-        .await
-        .is_ok()
-    {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), ack_rx).await;
+    let door = if trip_reason.is_some() {
+        // A wedged loop cannot drain. Skip straight to the teardown.
+        meclaw_colony::ColonyMsg::ShutdownNow { ack: ack_tx }
+    } else {
+        meclaw_colony::ColonyMsg::Shutdown { ack: ack_tx }
+    };
+    if inbox_tx.send(door).await.is_ok() {
+        // GH #47: the ack budget must outlast the drain it is waiting for, or
+        // the CLI would cut exactly the work the colony is saving. Drain budget
+        // plus five seconds of grace for the teardown itself (DLQ flush, writer
+        // join, sqlite close).
+        let ack_budget =
+            std::time::Duration::from_millis(shutdown_drain_timeout_ms.saturating_add(5_000));
+        let _ = tokio::time::timeout(ack_budget, ack_rx).await;
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
 
@@ -1347,7 +1376,9 @@ pub async fn run_with_hooks_tuned(
     // Issue #6, defect 2: the shutdown itself was graceful, its CAUSE was not.
     // A watchdog trip leaves the process with a non-zero exit code so that a
     // supervisor restarts and an alert fires; every other cause still exits 0.
-    if let Ok(reason) = trip_rx.try_recv() {
+    // GH #47 moved the read of this verdict above — the door it chose and the
+    // exit code it produces are the same one fact, read once.
+    if let Some(reason) = trip_reason {
         return Err(anyhow::anyhow!("watchdog trip: {reason}"));
     }
 

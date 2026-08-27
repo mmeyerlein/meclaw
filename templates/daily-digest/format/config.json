@@ -1,0 +1,55 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\nfrom html.parser import HTMLParser\n\nclass TextExtract(HTMLParser):\n    def __init__(self):\n        super().__init__(convert_charrefs=True)\n        self.parts = []\n        self.skip = 0\n    def handle_starttag(self, tag, attrs):\n        if tag in (\"script\", \"style\"):\n            self.skip += 1\n    def handle_endtag(self, tag):\n        if tag in (\"script\", \"style\") and self.skip:\n            self.skip -= 1\n    def handle_data(self, data):\n        if not self.skip:\n            self.parts.append(data)\n\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenvelope = doc[\"envelope\"]\nctx = envelope.get(\"header\", {}).get(\"context\", {})\n\nbody_text = \"\"\nfor m in d.get(\"messages\", []):\n    if m.get(\"type\") == \"tool_result\":\n        body_text = m.get(\"text\", \"\")\n        break\n\nif \"<\" in body_text:\n    p = TextExtract()\n    try:\n        p.feed(body_text)\n        p.close()\n        body_text = \" \".join(p.parts)\n    except Exception:\n        pass\nbody_text = \" \".join(body_text.split())\n\nexcerpt = body_text[:3500]\nif len(body_text) > 3500:\n    excerpt += \"\\n[truncated]\"\n\ntry:\n    chat_id = int(str(ctx.get(\"chat_id\", \"0\")))\nexcept ValueError:\n    chat_id = 0\n\nout = {\n    \"header\": { \"chat_id\": chat_id },\n    \"messages\": [\n        { \"origin\": \"assistant\", \"type\": \"text\", \"text\": \"Daily digest:\\n\" + excerpt }\n    ]\n}\nsys.stdout.write(json.dumps(out))\n",
+    "external_timeout_ms": 10000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "chat_id": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "chat_id": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Turns the fetcher's tool_result into a deliverable assistant turn: strips HTML tags (script/style dropped), collapses whitespace, truncates to a 3500-char excerpt under a 'Daily digest:' prefix, and recasts chat_id from context string to a numeric hop header.",
+    "use_when": "Between a tool cell and a proxy sink \u2014 the proxy needs an assistant turn and edges may not touch the body (body transforms are code-cell work by spec).",
+    "not_in_scope": "No summarization, no markdown rendering, no link extraction.",
+    "emits_meaning": "messages[]: one assistant text turn. hop.chat_id: numeric Telegram chat id, promoted to context by the out-edge for the proxy.",
+    "consumes_meaning": "messages[]: the fetcher's tool_result (first one wins). context.chat_id: the digest chat id as a string (from the timer's emit_headers via promotion).",
+    "examples": [
+      "tool_result '<html><body><h1>News</h1>...' + context.chat_id '12345' -> assistant 'Daily digest:\\nNews ...' (tag-free, whitespace-collapsed), hop { chat_id: 12345 }"
+    ]
+  }
+}

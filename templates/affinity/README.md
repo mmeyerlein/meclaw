@@ -210,12 +210,14 @@ into the subscribing brain's `system.identity` slot whenever it changes. Changin
 person is one write here; every brain that subscribed hears it on the next tick, and no
 file anywhere is edited. The brain holds a projection of a record, not a copy of a text.
 
-The counter-example ships in this same library. `templates/bot-basic/persona/config.json`
-puts the persona into `script_inline` as a literal and re-injects
-`system.identity.soul.text` on **every turn**, so the sentence exists once per cell that
-needs it and changing it means editing each of them -- the N-transcriptions shape. That is
-the right call for a two-cell demo with no hive behind it, and the wrong one the moment two
-brains have to agree about the same person.
+The counter-example is the persona **cell**: a `code` cell that carries the persona in its
+`script_inline` as a literal and re-injects `system.identity.soul.text` on **every turn**,
+so the sentence exists once per cell that needs it and changing it means editing each of
+them -- the N-transcriptions shape. That is the right call for a two-cell demo with no hive
+behind it, and the wrong one the moment two brains have to agree about the same person.
+The shipped library no longer carries an example of it: the demo bots that did have given
+way to the seed route (`templates/talky/brain/seed/system.jsonl`), which writes the
+identity once at birth instead of once per turn.
 
 **This template only offers the lane.** Which brains subscribe to what by default, and
 which cell in an assistant tree owns the subscription, is a composite decision and lands

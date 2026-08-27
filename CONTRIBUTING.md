@@ -4,12 +4,13 @@ meclaw is a framework for building agentic harnesses, and swarms of them, as a d
 Issues, discussions, and PRs are all open. This file tells you how to build it, how to test it,
 where the truth lives, and what makes a good first contribution.
 
-First rule: read the honest status before you start. meclaw is **v0.17.1**, a proof of concept
-for the DSL and the self-modifying substrate. The mutation substrate is real and tested. The
-builder-hive (plain English to topology) is **not** in this repository — it is built and tested in
-the private tree and is not on the public template allow-list. If a change claims macOS support, or
-claims federation / multi-builder / a native Anthropic provider, it does not match reality and
-will not land. Keep us honest.
+First rule: read the honest status before you start. meclaw is a **0.x** proof of concept
+for the DSL and the self-modifying substrate; the version that shipped last is the top entry
+in [`CHANGELOG.md`](CHANGELOG.md). The mutation substrate is real and tested, and so
+is the authoring path on top of it: `templates/builder` drafts a manifest, `templates/submit`
+hands it in, and the colony is what applies it. If a change claims macOS support, or claims
+federation / multi-builder / a native Anthropic provider, it does not match reality and will not
+land. Keep us honest.
 
 ## Build it
 

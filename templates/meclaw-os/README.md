@@ -1,4 +1,4 @@
-# `meclaw-os@1.1.1`
+# `meclaw-os@1.2.3`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds four occupants, one empty
@@ -22,8 +22,8 @@ a shell that grew one would have stopped being a boundary and become a participa
 
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
-| `access` | a `ref` to `access@2.2.0` — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
-| `steward` | a `ref` to `steward@2.0.11` — the control loop | one colony, one loop; it ships with every goal disabled |
+| `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
+| `steward` | a `ref` to the `steward` template — the control loop | one colony, one loop; it ships with every goal disabled |
 | `orgs` | a real, empty, open container hive that declares nothing | the address an organisation is instantiated **at**; the shell declares where, not which — and declares the container's lanes for it (see below) |
 
 Both occupants are pinned to an **exact** version. A bare name resolves to the newest
@@ -68,19 +68,22 @@ Nineteen of them are a door or an exit, and every declared lane has exactly one.
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Six wire two occupants to each other, and that is what owning a baumeister looks like.**
+**Eight wire two occupants to each other, and that is what owning a baumeister looks
+like.**
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
 share and sharing means being wired to it. The container reaches the builder on `build`
 with `hop.build_op == 'draft'`, reaches the submitter with `'apply'`, and both answer it
-back on `in_build_result`.
+back on `in_build_result`. Since GH #435 the submitter asks the broker as well, and that
+pair can only be drawn here for the same reason: the two are siblings at this level and
+nowhere else.
 
 ```json
 {"add_edges": [
   {"from": "<shell>",           "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'in_request'"},
   {"from": "<shell>",           "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'in_invoke'"},
-  {"from": "<shell>/access",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'grant'"},
+  {"from": "<shell>/access",    "to": "<shell>",         "condition": "!has(context.sub_ask) && has(hop.route) && hop.route == 'grant'"},
   {"from": "<shell>/access",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'ack'"},
   {"from": "<shell>/access",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>",           "to": "<shell>/steward", "condition": "has(hop.route) && hop.route == 'in_cycle'"},
@@ -103,9 +106,35 @@ back on `in_build_result`.
   {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'manifest'"},
   {"from": "<shell>/builder",   "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>/submit",    "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'receipt'"},
-  {"from": "<shell>/submit",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"}
+  {"from": "<shell>/submit",    "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'mutate'"},
+
+  {"from": "<shell>/submit",    "to": "<shell>/access",  "condition": "has(hop.route) && hop.route == 'ask'",
+   "modifier": {"set_hop": {"route": "'in_request'"},
+                "set_context": {"requester": "'/os/submit'", "sub_ask": "'1'",
+                                "sub_sha": "hop.manifest_sha256"}}},
+  {"from": "<shell>/access",    "to": "<shell>/submit",  "condition": "context.sub_ask == '1' && has(hop.route) && hop.route == 'grant'",
+   "modifier": {"set_hop": {"route": "'in_verdict'"}}}
 ]}
 ```
+
+**The submitter asks the broker, and only the shell can draw that pair.** The submitter
+holds no policy of its own: it parks a manifest under its digest and asks *may this
+identity have a manifest applied under this scope root*, once, in the check-only form.
+Three things about the outward edge are load-bearing and none of them is decoration.
+
+`context.requester` is stamped to the submit hive's own path, because the broker reads the
+requester from the **edge** and never from a body (R-AC-1) — the identity on whose behalf
+it asks travels as `subject` *inside* the question, so the delegation is visible in the
+rule ("submit may mutate on behalf of S under P") instead of implicit in a script.
+
+`context.sub_sha` carries the digest, because `hop.*` lives for exactly one hop and the
+verdict has to be matched back against the manifest it was asked about.
+
+The marker is `sub_ask`, in the **submitter's** key space. `access` overwrites `ac_phase`
+and `ac_carry` on its own internal edges, so a marker under those names would not come
+back. And the rim edge for `grant` now excludes it: edges **fan out**, so without that
+guard one check-only question would answer the submitter *and* hand a grant to whoever
+wired the shell's `grant` lane — an answer to a question the outside never asked.
 
 **`mutate` carries two senders now**, the control loop and the submitter, and that is this
 file's own precedent applied a third time: `ack` and `error` each carry two already, and a
@@ -163,7 +192,7 @@ but the level's promise is already true and already checkable on the day it ship
 ## What is deliberately not here
 
 **No second vault.** GH #302's original sketch listed `vault` beside `access` at this level.
-It is not here, and that is a ruling (Q20), not an omission: `access@2.2.0` already carries
+It is not here, and that is a ruling (Q20), not an omission: `access` already carries
 its own interior `vault`, reachable from nowhere outside, and the standalone `vault`
 template attests its inbound edges against `params.broker` and `params.sealed_neighbors`.
 With no broker at this level, a second one would boot locked and inert — a credential store
@@ -221,13 +250,13 @@ already a requirement of this composite.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.1.1"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@1.2.3"}],
           "add_edges": []}}
 ```
 
 One node and no edges at all: the shell is the outermost boundary, so what reaches it comes
 from outside the colony and what leaves it leaves the colony. The broker, the control loop,
-the `orgs` container, the baumeister, the submitter and the twenty-five edges between them
+the `orgs` container, the baumeister, the submitter and the twenty-seven edges between them
 came with the template.
 
 **One line is still missing, and it has to be written by hand:** the edge from the shell to

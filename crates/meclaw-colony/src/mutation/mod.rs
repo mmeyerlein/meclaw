@@ -10,6 +10,7 @@ pub mod hook;
 pub mod manifest;
 pub mod port_boundary;
 pub mod recovery;
+pub(crate) mod register;
 pub mod rejection;
 pub(crate) mod relocate;
 pub mod rename;
@@ -23,6 +24,103 @@ pub mod validate;
 pub use manifest::{ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome};
 
 use meclaw_core::Path;
+
+/// GH #437: the instantiation activity an `add_nodes` entry declares.
+///
+/// `docs/meclaw-overview.md` § Connectivity and activity states the one rule
+/// this value belongs to: the activity of a node is the result of the last
+/// connectivity computation that reached it, and *a node never reached keeps
+/// its **instantiation activity***. Until GH #437 that instantiation activity
+/// was a constant — "freshly instantiated nodes start active". This is that one
+/// word, made declarable.
+///
+/// It is deliberately NOT the Hot/Cold lifecycle status
+/// (`NotYetSpawned`/`Awake`/`Asleep`). The wire values are `active`/`inactive`,
+/// the two words `registry.status` in `colony.db` already uses, and not
+/// `asleep`: `Asleep` names a Hot/Cold state that a long-running cell — the
+/// case GH #437 was filed about — provably cannot be in, so a declaration
+/// spelled that way would be a documentation lie with an expiry date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Birth {
+    /// The shipped default and the pre-#437 behaviour: the node is registered
+    /// active and its task is built.
+    #[default]
+    Active,
+    /// Registered, addressable, persisted inactive — and no task. Woken by the
+    /// ordinary reconnect (`add_edges`, or a renewed `add_nodes` at the path),
+    /// which is the existing mechanism and needs no new operation.
+    Inactive,
+}
+
+impl Birth {
+    /// The wire spelling of [`Birth::Active`].
+    pub const WIRE_ACTIVE: &'static str = "active";
+    /// The wire spelling of [`Birth::Inactive`].
+    pub const WIRE_INACTIVE: &'static str = "inactive";
+
+    /// Read the declaration off one `add_nodes` entry.
+    ///
+    /// An absent key is [`Birth::Active`] — the shipped default, so a diff that
+    /// says nothing behaves exactly as it did. Anything else is a
+    /// [`MutationError::Schema`] refusal and NOT a new `error_code`: `schema`
+    /// is the token for "the diff says something the grammar does not know",
+    /// and a code of its own for a typo in an enum value would add a public
+    /// contract surface (README § Stability) carrying nothing `schema` does not
+    /// already carry.
+    ///
+    /// `at` is the site the message names, e.g. `add_nodes[0]`.
+    pub fn parse(entry: &meclaw_core::JsonValue, at: &str) -> Result<Birth, MutationError> {
+        let Some(v) = entry.get("birth") else {
+            return Ok(Birth::Active);
+        };
+        match v.as_str() {
+            Some(Self::WIRE_ACTIVE) => Ok(Birth::Active),
+            Some(Self::WIRE_INACTIVE) => Ok(Birth::Inactive),
+            _ => {
+                let shown = match v.as_str() {
+                    Some(s) => format!("'{s}'"),
+                    None => meclaw_core::serde_json::to_string(v).unwrap_or_else(|_| "?".into()),
+                };
+                Err(MutationError::Schema(format!(
+                    "{at}.birth {shown} is not a birth state \u{2014} it is one of: \
+                     {} (the default), {}",
+                    Self::WIRE_ACTIVE,
+                    Self::WIRE_INACTIVE
+                )))
+            }
+        }
+    }
+}
+
+/// GH #439: the label a running mutation beats under.
+///
+/// One line, no JSON, no private data — it is rendered into the watchdog trip
+/// line an operator reads, so it names the operation and nothing else.
+pub fn mutation_work_label(mutation_id: &str, scope: &str) -> crate::watchdog::WorkItem {
+    crate::watchdog::WorkItem::new(format!("mutation {mutation_id} scope={scope}"))
+}
+
+/// GH #439: the same label, narrowed to the cell currently being built.
+///
+/// `base` is what [`mutation_work_label`] returned; `i`/`n` count cells, not
+/// diff entries, because a 65-cell instantiation is one entry and the operator
+/// question is "how far along is it".
+pub fn cell_work_label(
+    base: &crate::watchdog::WorkItem,
+    i: usize,
+    n: usize,
+    template: &str,
+    cell: &str,
+) -> crate::watchdog::WorkItem {
+    crate::watchdog::WorkItem::new(format!(
+        "{} op=add_nodes[{}/{}] template={} cell={}",
+        base.as_str(),
+        i + 1,
+        n,
+        template,
+        cell
+    ))
+}
 
 /// Build an EDA error-reply message (Phase 6 T13).
 ///
@@ -217,6 +315,22 @@ pub enum MutationError {
     /// defensive, never-reached fallback to keep the spec error_code enum
     /// (overview Z.293) unchanged. Carries the failing rename's diagnostic string.
     LiveTreeMutated(String),
+    /// GH #440: an `add_templates[]` entry names something that could not be a
+    /// directory under `{templates_root}/local/` — a name outside
+    /// `^[a-z][a-z0-9-]{1,63}$`, or a file path that climbs out of it. The
+    /// colony BUILDS the target path and never takes one from the body, so
+    /// this is a refusal rather than a sanitisation: registering a template
+    /// under a name nobody asked for is worse than refusing the entry.
+    /// Pre-destructive — raised before a single byte is written.
+    InvalidTemplateName(String),
+    /// GH #440: an `add_templates[]` entry names a template the registry
+    /// already answers to. Refused AT ITS POSITION, with the entries before it
+    /// applied and the ones after it untouched. The alternative is what the
+    /// tree did before: write the directory, and let the NEXT `scan_templates_dir`
+    /// abort on the duplicate — after the fact, for everybody, with nothing at
+    /// the time of writing saying so (GH #277 ruling Q7 is what makes the scan
+    /// abort; this code is what makes it never happen).
+    TemplateNameTaken(String),
 }
 
 impl MutationError {
@@ -248,6 +362,8 @@ impl MutationError {
             // (overview Z.293) stays unchanged — LiveTreeMutated is a strict-fail
             // signal, not an over-the-wire reject code.
             Self::LiveTreeMutated(_) => "schema",
+            Self::InvalidTemplateName(_) => "invalid_template_name",
+            Self::TemplateNameTaken(_) => "template_name_taken",
         }
     }
 
@@ -282,7 +398,9 @@ impl MutationError {
             | Self::HivePortBoundary(s)
             | Self::RequiredDrainMissing(s)
             | Self::HiveContract(s)
-            | Self::LiveTreeMutated(s) => s.clone(),
+            | Self::LiveTreeMutated(s)
+            | Self::InvalidTemplateName(s)
+            | Self::TemplateNameTaken(s) => s.clone(),
             Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
         }
     }
@@ -336,9 +454,10 @@ mod tests {
     /// single existing test could carry the row:
     ///
     /// * `MutationError::error_code` — the validation refusals;
-    /// * two constants in `colony.rs` — `term_timeout` and
-    ///   `stop_wiring_unavailable` come from the lifecycle path, not from a
-    ///   `MutationError`, and are pinned individually there;
+    /// * three constants in `colony.rs` — `term_timeout`,
+    ///   `stop_wiring_unavailable` and `shutdown_draining` come from the
+    ///   lifecycle path, not from a `MutationError`, and are pinned
+    ///   individually there;
     /// * `subtree_resume_unsupported` — **reserved**: listed in the spec, with
     ///   no producer in the tree. It is named here so the gap is a recorded
     ///   decision rather than a hole somebody rediscovers.
@@ -378,10 +497,16 @@ mod tests {
             // Deliberately folded onto `schema`: a strict-fail signal, never an
             // over-the-wire reject code (see the comment at `error_code`).
             MutationError::LiveTreeMutated("x".into()).error_code(),
+            MutationError::InvalidTemplateName("x".into()).error_code(),
+            MutationError::TemplateNameTaken("x".into()).error_code(),
         ];
 
-        // The two the lifecycle path emits, pinned individually in `colony.rs`.
-        let lifecycle = ["term_timeout", "stop_wiring_unavailable"];
+        // The ones the lifecycle path emits, pinned individually in `colony.rs`.
+        let lifecycle = [
+            "term_timeout",
+            "stop_wiring_unavailable",
+            "shutdown_draining",
+        ];
         // Listed by the spec, produced by nothing. Named, not silently missing.
         let reserved = ["subtree_resume_unsupported"];
 
@@ -403,6 +528,9 @@ mod tests {
             "unknown_cell_type",
             "stop_wiring_unavailable",
             "term_timeout",
+            // GH #47: the third runtime refusal — the colony is draining and
+            // will not start new work.
+            "shutdown_draining",
             "resume_requires_stopped_cell",
             "subtree_resume_unsupported",
             "resume_type_mismatch",
@@ -413,6 +541,8 @@ mod tests {
             "required_drain_missing",
             "template_ref_cycle",
             "requirement_missing",
+            "invalid_template_name",
+            "template_name_taken",
         ]
         .into_iter()
         .collect();
@@ -432,7 +562,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 23, "the documented enum is 23 tokens wide");
+        assert_eq!(spec.len(), 26, "the documented enum is 26 tokens wide");
     }
 
     #[test]

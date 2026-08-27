@@ -267,9 +267,18 @@ print(render_candidate_line({
 }
 
 #[test]
-fn several_predecessors_render_chronologically_in_one_line() {
-    // The history list arrives in chain order (ascending valid_from), and the
-    // rendering preserves it: the reader gets the sequence, not a set.
+fn several_predecessors_render_as_the_one_that_was_replaced() {
+    // Ruling S6 (#296). Two deliberate decisions disagreed here, and this is the
+    // one that won: the reader gets the claim this one REPLACED, not the sequence
+    // that led to it. The history list still arrives in chain order (ascending
+    // valid_from), so the last entry is the immediate predecessor and everything
+    // older is the history OF that history -- a question nobody asked this round.
+    //
+    // The cut is not made here: `history_entries` makes it, and the JSON payload
+    // beside this text asks the same function, so the two renderers cannot part
+    // again (they had, for two releases). The whole chain is untouched in
+    // `recall_diagnostic.candidates[].history` -- pinned in
+    // `gh296_the_bundle_is_payload_not_plumbing::a_superseded_claim_still_announces_itself_without_its_chain`.
     let probe = r#"
 print(render_candidate_line({
  "kind":"fact","legs":["keyword","temporal"],"text":"vscode",
@@ -278,8 +287,35 @@ print(render_candidate_line({
 "#;
     assert_eq!(
         run_probe(probe),
-        "- [fact keyword/temporal] vscode \
-         (previously: Emacs until 2026-07-15; Helix until 2026-08-08)"
+        "- [fact keyword/temporal] vscode (previously: Helix until 2026-08-08)"
+    );
+}
+
+#[test]
+fn the_text_and_the_json_name_the_same_one_predecessor() {
+    // The whole point of S6 in one probe: a four-deep chain, and both halves of
+    // the message name the LAST entry -- the claim this one replaced -- because
+    // both asked `history_entries`. The third line is the counter-proof in the
+    // small: the candidate record handed in is not modified, so what the trace
+    // carries is untouched by what the renderers show.
+    let probe = r#"
+import json
+c = {"kind":"fact","legs":["temporal"],"subject":"person:example",
+     "predicate":"favorite_editor","text":"helix",
+     "valid_from":"2026-04-01T00:00:00Z",
+     "history":[{"claim":"vim","until":"2026-02-01T00:00:00Z"},
+                {"claim":"emacs","until":"2026-03-01T00:00:00Z"},
+                {"claim":"kakoune","until":"2026-04-01T00:00:00Z"}]}
+print(render_candidate_line(c))
+print(json.dumps(payload_candidate(c)["previously"], sort_keys=True))
+print(len(history_entries(c)), len(c["history"]))
+"#;
+    assert_eq!(
+        run_probe(probe),
+        "- [fact temporal] person:example favorite_editor: helix \
+         (previously: kakoune until 2026-04-01)\n\
+         [{\"claim\": \"kakoune\", \"until\": \"2026-04-01\"}]\n\
+         1 3"
     );
 }
 

@@ -261,7 +261,7 @@ an `error` into a cell that swallows it.
 
 ## Step three: the colony that measures itself
 
-`grow-steward.json` adds the [`steward@2.0.11`](../../templates/steward/) — seven more cells that
+`grow-steward.json` adds the [`steward@2.0.12`](../../templates/steward/) — seven more cells that
 read a charter, measure this colony out of its own ledger, have a model judge and simulate
 against those numbers, send the decided change to the cell it names, verify, and then keep the
 change or revert it against a plan authored beforehand. Every cycle writes a receipt.
@@ -299,7 +299,7 @@ at all — a `code` cell's numeric cap, like the collector's `max_iter`, comes b
 `key_outside_radius_<key>` with a receipt, rather than as a change nobody applied.
 
 Note the shape of the endpoint on the way out: it is the **hive**, not a cell inside it.
-`steward@2.0.11` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
+`steward@2.0.12` is sealed (`params.ports: []`), so `./steward/mutator` is not an address at all
 any more — a caller asks for the `mutate` lane and never learns which cell produces it. The
 other lane the hive offers, `error`, would be drawn at the hive for the same reason — but
 this declaration draws it nowhere (GH #284). A steward whose `error` ended in the sink would

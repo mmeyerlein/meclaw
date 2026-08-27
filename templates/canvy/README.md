@@ -28,7 +28,7 @@ cell held the positions, and the page was served by the HTTP API under
 | the camera was written back to the store | the camera never leaves the browser |
 
 That is a removal-shaped change on every address the template offered, which is
-the first digit (the `telegram-connector@2.0.0` precedent). An instance of 1.x is
+the first digit (the `telegram-connector` precedent). An instance of 1.x is
 not upgraded in place — it is instantiated fresh beside the old one, its saved
 positions replayed as object patches, and the old hive retired by disconnect.
 Running that is an operator's act and this repository only ships the recipe.
@@ -62,7 +62,7 @@ that matters:
    **Correction ([#402](https://github.com/mmeyerlein/meclaw/issues/402)):** this
    said the refusal was the bootstrap signal and the only one there is. It was
    not, and reading it that way made `canvy` unusable over its own substrate:
-   `canvy/web` is a `ref` to `web@1.1.0`, which **seeds a demo page at `/`**, so
+   `canvy/web` is a `ref` to `web`, which **seeds a demo page at `/`**, so
    the `query` succeeded, the branch never ran, the `canvy-*` components were
    never defined, and every `object.create` in the bundle came back
    `unknown_component` while the deletes landed. The bootstrap pass adopts a
@@ -73,7 +73,7 @@ that matters:
    turned one tick into two into four and wedged the routing loop on a full
    mailbox inside twenty seconds ([#161](https://github.com/mmeyerlein/meclaw/issues/161)).
 
-**`web`** is a reference to [`web@1.1.0`](../web/) with one default overridden:
+**`web`** is a reference to [`web`](../web/) with one default overridden:
 the port. It holds four tables — objects, components, pages, assets — renders
 its pages once into a materialised tree, and serves them from that. **A page
 load therefore costs no cell call at all**: a colony that is wedged still serves
@@ -191,7 +191,7 @@ two displays sharing a port is a bind race rather than a configuration.
 *"The port is **immutable once the cell exists**: a params update naming it is
 refused, loudly and without partial apply, because rebinding a live display
 would move it out from under whatever reverse proxy is pointed at it."* **That
-refusal is withdrawn** — `web@1.1.0` rebinds a running listener. The port is
+refusal is withdrawn** — the `web` template rebinds a running listener. The port is
 still chosen here, at instantiation, and it is still the identity that keeps two
 canvases apart; it is simply no longer irreversible. To move a live canvas, send
 its display cell a params update:
@@ -254,9 +254,10 @@ message content.
 **A `/colony/*` reply arrives on a fresh envelope**: new trace, no
 `parent_message_id`, no `correlation_id`, no `context`. So that leg could never
 be part of a browser's request — the answer would come back carrying nothing
-that says which browser asked. `templates/builder-hive` hits the same wall and
-works around it with an on-disk in-flight pointer, which is only sound because a
-lease guarantees one request at a time; with several browsers it is not.
+that says which browser asked. A cell has no way to say WHICH browser asked, so
+the pairing has to live somewhere. An on-disk pointer would only be sound under a
+lease that guarantees one request at a time; with several browsers it is not,
+which is why the correlation travels in the message instead.
 
 So the snapshot is taken where **nothing is waiting**. A colony's graph changes
 on mutation, not on mouse movement, which makes a minute an honest interval

@@ -72,7 +72,15 @@ async fn bounded_mailbox_blocks_send_when_full_then_unblocks_on_drain() {
         gate: Some(gate_rx),
     };
     let (otx, _orx) = mpsc::channel(8);
-    let join = tokio::spawn(cell_task(Path::new("/gate"), rx, otx, cell, None, None));
+    let join = tokio::spawn(cell_task(
+        Path::new("/gate"),
+        rx,
+        otx,
+        cell,
+        None,
+        None,
+        None,
+    ));
 
     let handle = ActorHandle::new(Path::new("/gate"), tx);
 

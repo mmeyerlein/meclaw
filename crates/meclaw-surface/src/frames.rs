@@ -2,11 +2,12 @@
 //!
 //! GH #381. The protocol is a JSON 5-tuple `[join_ref, ref, topic, event,
 //! payload]`, and a reply reuses both refs. That much is true for every
-//! consumer; what differs is who answers. [`super::socket::Connection`] asks a
-//! cell over the api's `Dispatcher`; the `web` cell answers out of its own
-//! materialised pages. Coupling the two would have meant one of them
-//! pretending to have a dispatcher, so the codec moved here and each side
-//! keeps its own loop.
+//! consumer; what differs is who answers. The codec was split out so it would
+//! not belong to either answering side: the `web` cell replies out of its own
+//! materialised pages and runs its own loop. The second loop it was once
+//! shared with — the api-side connection — went with GH #396, and the split
+//! outlived it, because a codec that knows nothing about who answers is the
+//! right shape either way.
 //!
 //! This module deliberately understands **no event names**. `node:moved` means
 //! nothing here: the name and value travel verbatim. The moment this layer

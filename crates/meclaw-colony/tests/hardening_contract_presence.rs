@@ -71,7 +71,8 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
     tokio::time::timeout(Duration::from_secs(30), ack_rx)
         .await
         .expect("rescan ack within 30s")
-        .expect("ack sender not dropped");
+        .expect("ack sender not dropped")
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 /// (1) A template without `contract.settings` → add_nodes is rejected

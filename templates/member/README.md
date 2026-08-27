@@ -4,9 +4,9 @@ One person, as a level. Three holders and one open container:
 
 | holder | what it holds |
 |---|---|
-| [`affinity@3.0.0`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
-| [`memory-hive@3.0.3`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
-| [`firewall@2.0.5`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
+| [`affinity`](../affinity/README.md) | **identity and meaning** — the curated record of who this person is and who their people are to them. Curated, fail-closed, quotable: it answers *who is X to me* and it is the only thing that answers it. |
+| [`memory-hive`](../memory-hive/README.md) | **observations**, tagged with the participant set they were learned in. Raw, allowed to be wrong, carrying a confidence — this is what was said, not what it means. |
+| [`firewall`](../firewall/README.md) | **the screen**. Every inbound turn is measured before it reaches anything of this person's, and the verdict is a comparison or a clock, never a model. |
 
 The fourth thing a channel needs — the channel itself — is the
 [`talky`](../talky/README.md)'s, and a talky lives inside an assistant, one level
@@ -57,7 +57,7 @@ version pinned above — nothing here describes a lane a holder lost.
 | `build` | an assistant | a structural wish or a submission leaving one of this person's generations, on its way to the one baumeister the colony shares. The member neither reads it nor answers it: everything between the tool surface and the OS level is transit (GH #425) |
 
 The last four rows are the assistant's, and they are the reason this level has
-an outward edge from `./assistants` at all. `assistant@1.1.0` emits **seven**
+an outward edge from `./assistants` at all. The `assistant` level emits **seven**
 lanes; three of them stop inside this member — `turn` at the screen, `recall`
 and `extraction` at the memory — and the other four have to leave, because
 nothing here consumes them. A level that declared them without the edge, or
@@ -83,7 +83,7 @@ that accepts a refusal and drops it is the one arrangement in which nobody finds
 out.
 
 The memory's half of that lane is not optional in the same loose sense:
-`memory-hive@3.0.3` declares `required_drains` pairings for `in_query`,
+`memory-hive` declares `required_drains` pairings for `in_query`,
 `in_remember` and `in_episode` against `reject`, and this level sends the first
 two. Whoever wires a member drains its `reject`.
 
@@ -159,8 +159,9 @@ slot's sake would additionally **seal** the member, which is the opposite of wha
 a level that gets wired into is for. No hive in this template carries a `ports`
 key.
 
-**What transits it**, derived from the contract of `assistant@1.1.0` and from
-what this member sends back down (`firewall@2.0.5`, `memory-hive@3.0.3`):
+**What transits it**, derived from the contract of `assistant` and from
+what this member sends back down (`firewall`, `memory-hive`), each at the
+version its `because` names:
 
 - **in** — `in_turn` (the screened turn), `in_bundle` (the memory's answer).
   Both are produced by a sibling of the container, not by a caller outside the
@@ -174,7 +175,7 @@ re-emitted on the member's own contract and leave; the parent drains them.
 
 ### Four inbound lanes this level deliberately does not carry
 
-`assistant@1.1.0` accepts six lanes. Two of them are handed down by a sibling of
+The `assistant` level accepts six lanes. Two of them are handed down by a sibling of
 the container: `in_turn` from the screen and `in_bundle` from the memory. The
 other four — **`in_advice`**, **`in_sweep`**, **`in_prune`** and
 **`in_round_sweep`** — are **not** lanes of this member, and that is a decision
@@ -243,7 +244,7 @@ at it.
   would force the writer to pick one before extraction has run, which is not a
   decision it can make. A group that owns an agent nobody owns personally is a
   **member** with its own name, instantiated from this template like any other.
-- **No close pass.** `memory-hive@3.0.3` has an `in_close_pass` lane; this level
+- **No close pass.** `memory-hive` has an `in_close_pass` lane; this level
   does not send it. Whether the close pass should cross the member boundary is a
   level question, and an unanswered one is better than a lane declared here that
   nothing opens.

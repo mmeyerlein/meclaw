@@ -13,7 +13,7 @@
 //! identity.
 
 use meclaw_core::serde_json::{Value, json};
-use meclaw_testing::{emit_one, run_shipped_script, shipped_script};
+use meclaw_testing::{emit_all, run_shipped_script, shipped_script};
 
 const SUBMIT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -21,11 +21,6 @@ const SUBMIT: &str = concat!(
 );
 
 const REQUESTER: &str = "/os/orgs/acme/members/alex/assistants/scribe/tools/apply";
-
-/// The policy that lets `REQUESTER` touch the shell and everything under it.
-fn open_policy() -> Value {
-    json!([{"requester_prefix": "/os/orgs/", "verdict": "allow", "scopes": ["/os"]}])
-}
 
 fn digest_of(decls: &Value) -> String {
     let program = concat!(
@@ -38,8 +33,19 @@ fn digest_of(decls: &Value) -> String {
     String::from_utf8(out.stdout).expect("hex")
 }
 
-fn run_submit(manifest: Value, claimed: &str, reply_to: &str, policy: Value) -> Value {
-    emit_one(
+/// The DECISION of phase A: the last thing the gate emits.
+///
+/// Since GH #438 an accepted submission is TWO emissions — the row it
+/// remembers, then what it does next — while every refusal stays one. The last
+/// one is the decision in both cases, and it is the one every assertion in this
+/// file is about; the row is measured in `gh438_the_submitter_has_a_memory`.
+///
+/// Since GH #435 that decision is a QUESTION rather than a submission: the
+/// manifest is parked and the broker is asked. The `mutate` emission moved one
+/// phase later, behind the verdict, and the tests below follow it there rather
+/// than pretending it never moved.
+fn run_submit(manifest: Value, claimed: &str, reply_to: &str) -> Value {
+    let mut out = emit_all(
         &shipped_script(SUBMIT),
         &json!({
             "target": "/os/submit",
@@ -49,14 +55,40 @@ fn run_submit(manifest: Value, claimed: &str, reply_to: &str, policy: Value) -> 
             "ttl": 64,
             "manifest": manifest,
             "messages": [],
-            "params": {"policy": policy},
+            "params": {},
         }),
-    )
+    );
+    out.pop().expect("the gate says something")
 }
 
 fn one_declaration() -> Value {
     json!([{"scope": "/os", "ctx": {},
             "diff": {"add_edges": [{"from": "./a", "to": "./b"}]}}])
+}
+
+/// The submission itself, one phase later: the broker said yes, the store hands
+/// the parked row back, and the gate emits `[delete, insert, mutate]`.
+fn run_unpark(decls: &Value, sha: &str, requester: &str) -> Value {
+    let rows = json!([{ "id": "p1", "manifest": decls, "requester": requester,
+                        "tool_call_id": "c2", "manifest_sha256": sha }]);
+    let out = emit_all(
+        &shipped_script(SUBMIT),
+        &json!({
+            "target": "/os/submit",
+            "header": {
+                "hop": {"operation": "select", "rows_affected": 1},
+                "context": {"sub_origin": "gate", "sub_phase": "parked",
+                            "sub_carry": "{\"status\":\"allowed\"}"}
+            },
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "x",
+                          "text": rows.to_string()}],
+            "params": {},
+        }),
+    );
+    out.into_iter()
+        .find(|m| m["header"]["route"] == json!("mutate"))
+        .expect("the un-parked manifest reaches the mutation lane")
 }
 
 #[test]
@@ -65,7 +97,7 @@ fn a_manifest_whose_bytes_changed_is_refused_by_name() {
     let honest = digest_of(&decls);
     let mut tampered = decls.clone();
     tampered[0]["diff"]["add_edges"][0]["to"] = json!("/os/steward");
-    let out = run_submit(tampered, &honest, REQUESTER, open_policy());
+    let out = run_submit(tampered, &honest, REQUESTER);
     assert_eq!(out["header"]["route"], json!("receipt"));
     assert_eq!(
         out["header"]["error_code"],
@@ -75,13 +107,20 @@ fn a_manifest_whose_bytes_changed_is_refused_by_name() {
         out.get("manifest").is_none(),
         "a refused submission emits no mutation body"
     );
+    // And nothing was asked either: a question about a manifest whose bytes are
+    // already wrong is a question whose answer cannot help.
+    assert_ne!(out["header"]["route"], json!("ask"));
 }
 
 #[test]
-fn an_honest_manifest_reaches_the_mutation_lane_once() {
+fn an_honest_manifest_asks_once_and_then_reaches_the_mutation_lane_once() {
     let decls = one_declaration();
     let d = digest_of(&decls);
-    let out = run_submit(decls, &d, REQUESTER, open_policy());
+    let asked = run_submit(decls.clone(), &d, REQUESTER);
+    assert_eq!(asked["header"]["route"], json!("ask"));
+    assert_eq!(asked["header"]["manifest_sha256"], json!(d));
+
+    let out = run_unpark(&decls, &d, REQUESTER);
     assert_eq!(out["header"]["route"], json!("mutate"));
     assert_eq!(out["header"]["declaration_count"], json!(1));
     assert!(
@@ -96,12 +135,22 @@ fn an_honest_manifest_reaches_the_mutation_lane_once() {
 
 #[test]
 fn the_requester_is_taken_from_the_envelope_and_never_from_the_body() {
-    // The body claims to be the steward. The envelope says otherwise.
+    // The body claims to be the steward. The envelope says otherwise, and the
+    // envelope is what the substrate wrote.
     let mut claiming = one_declaration();
     claiming[0]["ctx"] = json!({"requester": "/os/steward"});
     let claimed_digest = digest_of(&claiming);
-    let out = run_submit(claiming, &claimed_digest, REQUESTER, open_policy());
-    assert_eq!(out["header"]["route"], json!("mutate"));
+
+    // It is already true of the QUESTION: the identity travels as `subject`,
+    // and the claim in the body is never read.
+    let asked = run_submit(claiming.clone(), &claimed_digest, REQUESTER);
+    let args: Value = meclaw_core::serde_json::from_str(
+        asked["messages"][0]["text"].as_str().expect("a tool_call"),
+    )
+    .expect("the args are json");
+    assert_eq!(args["subject"], json!(REQUESTER));
+
+    let out = run_unpark(&claiming, &claimed_digest, REQUESTER);
     assert_eq!(
         out["manifest"][0]["ctx"]["requester"],
         json!(REQUESTER),
@@ -123,7 +172,7 @@ fn the_audit_stamp_lands_in_every_entry_because_a_manifest_has_no_shared_ctx() {
         {"scope": "/os", "ctx": {}, "diff": {"add_edges": [{"from": "./b", "to": "./c"}]}}
     ]);
     let d = digest_of(&decls);
-    let out = run_submit(decls, &d, REQUESTER, open_policy());
+    let out = run_unpark(&decls, &d, REQUESTER);
     for i in 0..2 {
         assert_eq!(
             out["manifest"][i]["ctx"]["requester"],
@@ -136,47 +185,22 @@ fn the_audit_stamp_lands_in_every_entry_because_a_manifest_has_no_shared_ctx() {
 }
 
 #[test]
-fn a_fresh_instance_submits_nothing() {
-    // The shipped default is an empty policy, the same discipline as `access`'s
-    // seed with `enabled: 0`. A colony nobody has authorised applies nothing.
-    let decls = one_declaration();
-    let d = digest_of(&decls);
-    let out = run_submit(decls, &d, REQUESTER, json!([]));
-    assert_eq!(
-        out["header"]["error_code"],
-        json!("requester_not_permitted")
-    );
-    assert!(out.get("manifest").is_none());
-}
-
-#[test]
-fn a_declaration_outside_the_permitted_scope_takes_the_whole_submission_down() {
-    let decls = json!([
-        {"scope": "/os/orgs/acme", "ctx": {}, "diff": {"add_edges": [{"from": "./a", "to": "./b"}]}},
-        {"scope": "/", "ctx": {}, "diff": {"add_edges": [{"from": "./x", "to": "./y"}]}}
-    ]);
-    let d = digest_of(&decls);
-    let policy = json!([{"requester_prefix": "/os/orgs/", "verdict": "allow",
-                         "scopes": ["/os/orgs/acme"]}]);
-    let out = run_submit(decls, &d, REQUESTER, policy);
-    assert_eq!(out["header"]["error_code"], json!("scope_not_permitted"));
-    assert!(
-        out.get("manifest").is_none(),
-        "the check is pre-destructive: a manifest rolls forward with no rollback, \
-         so half a submission is worse than none"
-    );
-}
-
-#[test]
 fn an_envelope_with_nobody_on_it_is_refused_rather_than_attributed_to_the_void() {
     let decls = one_declaration();
     let d = digest_of(&decls);
-    let out = run_submit(decls, &d, "", open_policy());
+    let out = run_submit(decls, &d, "");
     assert_eq!(out["header"]["error_code"], json!("requester_unknown"));
 }
 
 #[test]
-fn the_submitter_carries_the_policy_as_rows_and_ships_it_empty() {
+fn the_submitter_carries_no_policy_of_its_own_and_no_way_out() {
+    // GH #435 moved the decision. What is measured here is the shape that is
+    // left: a code cell with no politics in its params and no network to fetch
+    // any. The permission ROWS are the broker's now, and that they ship
+    // disabled is measured where they live —
+    // `gh435_the_broker_ships_its_first_row`; that `/os` does not permit
+    // `/oscar` is measured in `gh435_the_broker_compares_paths`, in the one
+    // comparator that decides it.
     let raw = std::fs::read_to_string(SUBMIT).expect("submit config");
     let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("json");
     assert_eq!(cfg["cell"]["type"], json!("code"));
@@ -185,23 +209,9 @@ fn the_submitter_carries_the_policy_as_rows_and_ships_it_empty() {
         json!("deny"),
         "the mutation door is not a network connection"
     );
-    let policy = &cfg["params"]["policy"];
-    let empty = match policy {
-        Value::Array(a) => a.is_empty(),
-        Value::String(s) => s.contains(":-[]") || s == "[]",
-        _ => false,
-    };
-    assert!(empty, "the shipped policy is not empty: {policy}");
-}
-
-#[test]
-fn a_permitted_scope_is_a_path_prefix_and_not_a_string_prefix() {
-    // `/os` permits `/os` and `/os/orgs`. It must not permit `/oscar` — a plain
-    // startswith would hand out a scope nobody named, which is the one mistake
-    // a permission check may not make.
-    let decls = json!([{"scope": "/oscar", "ctx": {},
-                        "diff": {"add_edges": [{"from": "./a", "to": "./b"}]}}]);
-    let d = digest_of(&decls);
-    let out = run_submit(decls, &d, REQUESTER, open_policy());
-    assert_eq!(out["header"]["error_code"], json!("scope_not_permitted"));
+    assert!(
+        cfg["params"].get("policy").is_none(),
+        "the decision moved to the broker; a second source of it in the ONE cell \
+         with the mutation edge is an audit trail that cannot say who decided"
+    );
 }

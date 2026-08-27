@@ -115,7 +115,10 @@ async fn try_boot(td: &tempfile::TempDir) -> Result<ColonyHandle, (ColonyHandle,
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 
     let mut reg = CellFactoryRegistry::new();
     reg.insert("persist_mock".into(), f);

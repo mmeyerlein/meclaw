@@ -93,10 +93,26 @@ pub struct ColonyConfig {
     pub watchdog_threshold: u32,
     /// Length of one heartbeat-watchdog supervisor period, in ms. Must be `>= 1`.
     pub watchdog_period_ms: u64,
+    /// GH #47: how long the shutdown drain waits for quiescence before it cuts
+    /// and names the rest. `0` disables the drain entirely and restores the
+    /// pre-#47 teardown.
+    ///
+    /// The default is anchored on systemd, not on taste: the shipped unit runs
+    /// `TimeoutStopSec=30`, and the drain is only the first of four budgets the
+    /// process spends after the signal (drain, shutdown ack, colony join,
+    /// bridge join). 10 s leaves the rest of that chain inside the window.
+    #[serde(default = "default_shutdown_drain_timeout_ms")]
+    pub shutdown_drain_timeout_ms: u64,
     /// What a watchdog trip does: end the process (`exit`, the default and the
     /// production contract of issue #6) or report it and keep running
     /// (`log-only`). See [`crate::watchdog::WatchdogOnTrip`].
     pub watchdog_on_trip: crate::watchdog::WatchdogOnTrip,
+}
+
+/// Serde/`Default` seed for [`ColonyConfig::shutdown_drain_timeout_ms`] — one
+/// source for both, so the two can never drift apart (GH #47).
+fn default_shutdown_drain_timeout_ms() -> u64 {
+    10_000
 }
 
 impl Default for ColonyConfig {
@@ -128,6 +144,10 @@ impl Default for ColonyConfig {
             watchdog_threshold: 5,
             watchdog_period_ms: 100,
             watchdog_on_trip: crate::watchdog::WatchdogOnTrip::Exit,
+            // GH #47: `0` stays a valid, documented choice (ruling O7), so this
+            // number is a default and never a floor — `parse_str` does not
+            // reject it the way it rejects a zero watchdog period.
+            shutdown_drain_timeout_ms: default_shutdown_drain_timeout_ms(),
         }
     }
 }
@@ -582,6 +602,32 @@ mod tests {
         .unwrap();
         let warns = capture_unwired_warns(&cfg);
         assert!(warns.is_empty(), "unexpected unwired-warns: {warns:?}");
+    }
+
+    // --- GH #47: the shutdown drain budget ---
+
+    /// GH #47: the drain budget is configurable and has an honest default.
+    #[test]
+    fn shutdown_drain_timeout_defaults_to_ten_seconds() {
+        let c = ColonyConfig::default();
+        assert_eq!(c.shutdown_drain_timeout_ms, 10_000);
+    }
+
+    /// GH #47 ruling O7: `0` is the documented off switch, not an error. It
+    /// restores the pre-drain teardown byte for byte, which is what makes this
+    /// change revertible without a redeploy.
+    #[test]
+    fn a_zero_shutdown_drain_timeout_is_accepted_and_means_off() {
+        let c = ColonyConfig::parse_str(r#"{"shutdown_drain_timeout_ms": 0}"#)
+            .expect("zero must parse");
+        assert_eq!(c.shutdown_drain_timeout_ms, 0);
+    }
+
+    #[test]
+    fn shutdown_drain_timeout_is_read_from_colony_json() {
+        let c =
+            ColonyConfig::parse_str(r#"{"shutdown_drain_timeout_ms": 2500}"#).expect("must parse");
+        assert_eq!(c.shutdown_drain_timeout_ms, 2_500);
     }
 
     #[test]

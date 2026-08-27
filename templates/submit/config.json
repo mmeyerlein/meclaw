@@ -10,6 +10,11 @@
           "route": "in_apply",
           "context": [],
           "because": "a manifest somebody drafted and now wants applied, under their own identity. The identity is NOT promoted by the edge and must not be: it is `envelope.reply_to`, stamped by the substrate on the emission itself. A context key would be a claim, and a claim is not an identity"
+        },
+        {
+          "route": "in_verdict",
+          "context": [],
+          "because": "the broker's answer to the ONE question this hive asks per submission. It is a separate lane rather than a reply on the asking one because the shell has to re-stamp it: `access` answers on `grant`, and `grant` at this level is the broker's rim lane for everybody else"
         }
       ],
       "emits": [
@@ -20,6 +25,10 @@
         {
           "route": "receipt",
           "because": "what happened, for whoever asked: how many declarations committed, at which position it stopped, and with which code. A refusal travels here too -- a submission that was not made is a fact its requester has to be told, not a silence"
+        },
+        {
+          "route": "ask",
+          "because": "may this identity have a manifest applied under this scope root -- asked ONCE per submission, in the check-only form, of whatever the composition wired as its broker. The cell decides nothing itself: a policy inside the ONE cell with an edge onto the mutation door is an audit trail that cannot say who decided"
         }
       ]
     },
@@ -28,6 +37,11 @@
         "accepts": "in_apply",
         "emits": "receipt",
         "because": "a caller that hands this hive a manifest and does not take the receipt back has asked for a change to the colony and arranged to never learn whether it happened. A manifest rolls forward with no rollback, so 'I do not know' is the one answer that cannot be recovered from. The two edges are one decision"
+      },
+      {
+        "accepts": "in_verdict",
+        "emits": "ask",
+        "because": "a composition that wires the question and not the answer has arranged for every submission to hang parked forever, under a digest nobody will ever quote again. The pair is one decision, and the instantiation refuses half of it rather than running silently un-policed"
       }
     ],
     "graph": {
@@ -39,6 +53,23 @@
         },
         {
           "from": "./gate",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'sstore'",
+          "modifier": {
+            "set_context": {
+              "sub_origin": "'gate'",
+              "sub_phase": "hop.phase",
+              "sub_carry": "hop.carry"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./gate",
+          "condition": "context.sub_origin == 'gate'"
+        },
+        {
+          "from": "./gate",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'mutate'"
         },
@@ -46,12 +77,22 @@
           "from": "./gate",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'receipt'"
+        },
+        {
+          "from": ".",
+          "to": "./gate",
+          "condition": "has(hop.route) && hop.route == 'in_verdict'"
+        },
+        {
+          "from": "./gate",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'ask'"
         }
       ]
     }
   },
   "description": {
-    "purpose": "The submission gate: one cell behind one door, and the only reach onto the mutation door in the whole tree.",
+    "purpose": "The submission gate: two occupants behind one door, and the only reach onto the mutation door in the whole tree. It asks who may submit; it does not answer it.",
     "use_when": "At the OS level, beside the builder that drafts -- and never inside it. The guardrail of R6 is a MISSING EDGE, and a missing edge can only be missing between two nodes.",
     "not_in_scope": "No drafting, no composing, no model, no disk, no network."
   }

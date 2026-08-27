@@ -114,20 +114,20 @@ jobs:
       # crates/meclaw-colony/tests/a4_adr_anchor_gate_drift.rs.
       - name: ADR anchors
         run: python3 scripts/check_adr_anchors.py --check
-      # GH #234 -- two gates USED to stand here: `build_librarian_seed.py
-      # --check` (GH #205) and `build_builder_hive.py --check` (GH #217),
-      # guarding the two committed trees that are generated. Do not put them
-      # back. Both generators live under workshop/, which is not part of this
-      # tree and is not meant to be, so the steps could not pass here -- they
-      # failed on a missing file, which says nothing about whether the artifacts
-      # drifted.
+      # GH #234 -- a gate USED to stand here: `build_librarian_seed.py --check`
+      # (GH #205), guarding a committed tree that is generated. Do not put it
+      # back. The generator lives under workshop/, which is not part of this
+      # tree and is not meant to be, so the step could not pass here -- it
+      # failed on a missing file, which says nothing about whether the artifact
+      # drifted. (A second such step, `build_builder_hive.py --check` (GH #217),
+      # stood beside it; that generator was retired with its tree, GH #434.)
       #
-      # They now run where their sources are: as R11 of the release gate, in the
+      # It now runs where its sources are: as R11 of the release gate, in the
       # tree that has workshop/, before an export is built. The shipped Rust
-      # twins (librarian_seed_corpus.rs, builder_hive_template_tree.rs) cover
-      # this clone and skip when no generator is present -- which here is
-      # always, so a green run of theirs asserts nothing about the corpus. That
-      # is intentional: the assertion belongs to the tree that can make it.
+      # twin (librarian_seed_corpus.rs) covers this clone and skips when no
+      # generator is present -- which here is always, so a green run of its own
+      # asserts nothing about the corpus. That is intentional: the assertion
+      # belongs to the tree that can make it.
 
   deny:
     runs-on: ubuntu-latest

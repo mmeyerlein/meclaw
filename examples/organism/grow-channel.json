@@ -7,11 +7,11 @@
     "add_nodes": [
       {
         "name": "channels/telegram-connector",
-        "template": "telegram-connector@2.0.0"
+        "template": "telegram-connector@2.0.1"
       },
       {
         "name": "channels/talky",
-        "template": "talky@4.2.2"
+        "template": "talky@4.2.3"
       }
     ],
     "add_edges": [

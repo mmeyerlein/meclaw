@@ -1,4 +1,4 @@
-# `builder-librarian@2.0.4`
+# `builder-librarian@2.0.6`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Two cells: `retrieve` (a `code` cell, the query/brief state

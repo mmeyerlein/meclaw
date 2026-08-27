@@ -50,6 +50,16 @@ The ordinary case. Scope is the hive the cell should live in; `name` is a
 }
 ```
 
+The `diff` knows seven operations — `add_nodes`, `remove_nodes`, `swap_nodes`,
+`move_nodes`, `add_edges`, `remove_edges`, `add_templates` — and **only** those
+seven: a key none of them reads is `schema`, not a silent no-op. The refusal
+names the key and the legal vocabulary before anything is written.
+
+An `add_nodes` entry may optionally carry `"birth": "inactive"` (GH #437): the cell is
+then wired, registered and persisted inactive **without** starting — useful for a cell
+whose counterpart tolerates only one consumer. The next mutation whose recompute
+reaches it wakes it.
+
 ```bash
 curl -X POST http://<host>:<port>/colony/mutations \
      -H 'content-type: application/json' -d @mutation.json
@@ -392,7 +402,7 @@ This is what it used to look like: one chat had a hive of its own.
 `channels/channel` held the connector inside a second hive wrapped around it, and
 next to it the slot the active talky generation sat in — six segments down to the
 proxy cell, for a plurality that never arrived. Since GH #303 the connector is
-**one** cell (`telegram-connector@2.0.0`), the `channel` level is retired, and the
+**one** cell (the `telegram-connector` cell), the `channel` level is retired, and the
 lanes it used to normalise belong to the level above it: `channels`.
 
 What follows is the conversion of a **running** tree — three mutations and one
@@ -420,9 +430,9 @@ Scope is `channels`, the hive that already exists.
   "ctx": {"model": "<the brain's model, as a resolved literal>"},
   "diff": {
     "add_nodes": [
-      {"name": "telegram", "template": "telegram-connector@2.0.0",
+      {"name": "telegram", "template": "telegram-connector@2.0.1",
        "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN}"}},
-      {"name": "talky", "template": "talky@4.2.2"}
+      {"name": "talky", "template": "talky@4.2.3"}
     ]
   }
 }

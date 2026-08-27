@@ -1,4 +1,4 @@
-# `telegram-connector@2.0.0`
+# `telegram-connector@2.0.1`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -17,13 +17,12 @@ failure. Taking a documented address away is neither of the two cases
 addition the second -- so it is the first (GH #303).
 
 **This is the building block the demo bots were welded around.** Every proxy cell
-the library shipped before this one sat inside a complete bot -- `bot-basic`,
-`slack-agent`, `egon`, `research-assistant`, `daily-digest` -- each with its own
-model, its own persona and a seal with no door, so a colony that had assembled
-its own agent had no way to put a chat surface in front of it and started with a
-hand-written proxy instead (GH #246).
+the library shipped before this one sat inside a complete bot -- each with its
+own model, its own persona and a seal with no door, so a colony that had
+assembled its own agent had no way to put a chat surface in front of it and
+started with a hand-written proxy instead (GH #246).
 
-**The cell is taken verbatim from `bot-basic@2.0.0`.** One field differs:
+**One field differs from the plain Telegram proxy:**
 `params.emit_to` points one level up (`..`) instead of at a persona cell, because
 here every emission is routed by the edges of whatever holds the connector.
 `emit_to` is only the no-route address; the substrate applies the edge table to a
@@ -33,7 +32,7 @@ source emission too.
 
 | path | type | from |
 |---|---|---|
-| the template root itself | `proxy` | `bot-basic@2.0.0`, verbatim but for `emit_to` |
+| the template root itself | `proxy` | the plain Telegram proxy, but for `emit_to` |
 
 Nothing sits below it. `./telegram-connector` is the node, not a scope with a
 door -- there is no `hive_port_boundary` to trip over and no lane name to hit.
@@ -86,8 +85,8 @@ way back -- no `set_hop` is needed, because the cell reads `messages[]` and
 survives one delivery. `chat_id` has to be in `context` before the turn reaches
 anything that will emit again, or the reply has no chat to go to and the proxy
 answers `missing_chat_id`. `channel` is the same identifier under the name every
-downstream template reads it by (`firewall@2.0.4` rate-limits per channel,
-`talky@4.2.2` mints one session per channel).
+downstream template reads it by (`firewall` rate-limits per channel,
+`talky` mints one session per channel).
 
 **Numbers on the hop need `int()`.** The proxy delivers JSON integers, CEL
 deserialises them as `uint`, and a bare `hop.user_id == 12345` is silently
@@ -105,7 +104,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.0.0",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.0.1",
  "override_params": {"bot_token": "${TELEGRAM_BOT_TOKEN_2}"}}
 ```
 
@@ -126,12 +125,12 @@ consequences, and both are load-bearing:
 ## What it is not
 
 - **Not a screen.** It has no allowlist and no rate limit; anybody who finds the
-  bot reaches your topology. Put [`firewall@2.0.0`](../firewall/) behind it --
+  bot reaches your topology. Put [`firewall`](../firewall/) behind it --
   shared across channels, so an attacker touching three of them is one pattern
   and not three thirds.
-- **Not a bot.** `bot-basic@2.0.0` is the other shape of the same cell: a whole
-  demo bot that answers by itself, which is why nothing is wired to it. Run that
-  one whole; build with this one.
+- **Not a bot.** This is the wire, and the agent behind it answers. A complete
+  bot is this connector plus something that produces answers -- see the
+  [`talky`](../talky/) template.
 - **Not a session, not a memory, not a history.** It reads `message.text` and
   nothing else -- a join or a leave carries no `text` and falls silently on the
   floor, so a topology that needs to know the participant set changed cannot

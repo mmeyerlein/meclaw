@@ -49,6 +49,10 @@ pub fn apply_mutation(
     env: &HashMap<String, String>,
     ctx: &HashMap<String, String>,
     factories: &crate::CellFactoryRegistry,
+    // GH #439: staging is the expensive half of an instantiation and it is
+    // SYNCHRONOUS, so the pulse has to be sync too. This function only passes it
+    // on; the beats happen at the cell loops inside `stage`/`subtree`.
+    pulse: &crate::watchdog::WorkPulse,
 ) -> Result<(Vec<StagedDir>, Vec<StagedSubtreeMerge>), MutationError> {
     let (staged, subtrees) = build_staging_tree_from_templates(
         root,
@@ -59,6 +63,7 @@ pub fn apply_mutation(
         env,
         ctx,
         factories,
+        pulse,
     )?;
     // A5b 2b (Phase-16 W1b): use the overwrite-superset rename. For a normal
     // add_nodes / swap-with the final path does NOT exist → identical to the old
@@ -159,6 +164,7 @@ mod tests {
             &Default::default(),
             &Default::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -183,6 +189,7 @@ mod tests {
             &Default::default(),
             &Default::default(),
             &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
         )
         .unwrap();
         assert!(staged.is_empty());

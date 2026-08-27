@@ -602,7 +602,10 @@ async fn a_bundle_survives_a_real_colony() {
         })
         .await
         .unwrap();
-    ack_rx.await.unwrap();
+    ack_rx
+        .await
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 
     // Grow the store and give its answers somewhere to go.
     let (ack_tx, ack_rx) = oneshot::channel();

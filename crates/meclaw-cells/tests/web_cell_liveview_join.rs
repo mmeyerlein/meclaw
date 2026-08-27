@@ -211,7 +211,7 @@ async fn a_join_is_answered_from_the_materialised_page() {
     assert_eq!(rendered["0"], json!("<p>on home</p>"));
     assert_eq!(
         reply[4]["response"]["liveview_version"],
-        json!(meclaw_surface::socket::LIVEVIEW_VERSION),
+        json!(meclaw_surface::LIVEVIEW_VERSION),
         "the version travels with the compiled-in bundle"
     );
 

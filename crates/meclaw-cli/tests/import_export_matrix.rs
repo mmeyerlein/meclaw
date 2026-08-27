@@ -326,7 +326,8 @@ async fn rescan_templates(inbox_tx: &mpsc::Sender<ColonyMsg>, templates_root: st
     tokio::time::timeout(MARKER, ack_rx)
         .await
         .expect("rescan ack timed out")
-        .unwrap();
+        .unwrap()
+        .expect("GH #440: the rescan must not have aborted");
 }
 
 // ────────────────────────────── copy helpers ─────────────────────────────

@@ -110,6 +110,13 @@ const CONSUMED_INSIDE: &[&str] = &[
     "in_apply",
     "manifest",
     "receipt",
+    // GH #435: the submitter asks the broker whether a manifest may be applied,
+    // and both halves of that question are siblings at THIS level. `ask` leaves
+    // the submitter and reaches the broker as `in_request`; the verdict leaves
+    // the broker as `grant` and reaches the submitter as `in_verdict`. Neither
+    // name crosses the rim, which is the same reason `build`/`in_apply` do not.
+    "ask",
+    "in_verdict",
 ];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.
