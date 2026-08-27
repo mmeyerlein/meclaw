@@ -1,12 +1,21 @@
-//! GH #425 — the design lane consults the corpus before it consults a model,
-//! and a corpus that is down must not be able to hang a build.
+//! GH #425 — the design lane asks the corpus, and a corpus that is down must
+//! not be able to hang a build.
 //!
-//! `builder-librarian` answers on `brief` even when retrieval failed, marked
-//! `degraded` (`templates/builder-librarian/retrieve/config.json`, the terminal
-//! arm). The `brief` cell carries that mark on rather than treating it as a
-//! failure of its own — retrieval is an ENHANCEMENT — and it TELLS the composer,
-//! because a model that was not told it is working without a corpus writes with
-//! the confidence of one that was given one.
+//! **What moved.** The lane used to PREFETCH one lookup into the briefing, so
+//! degradation was a property of the single pass and `brief` stamped
+//! `hop.degraded`. It is a tool loop now: the corpus is one of four eyes the
+//! model may call, and degradation is a property of ONE ROUND, observed where
+//! the round happens. The two tests that asserted the mark at `brief` —
+//! `a_degraded_briefing_still_reaches_the_composer_and_says_so` and
+//! `an_empty_result_set_is_degraded_even_though_the_lookup_succeeded` — live at
+//! the `lib` cell now, as
+//! `a_degraded_brief_is_an_observation_and_still_answers`
+//! (`crates/meclaw-cells/tests/builder_lib_adapts_both_ways.rs`).
+//!
+//! **What stayed here.** That the briefing reaches the composer with the
+//! question intact and the diff vocabulary named, and that the corpus is
+//! REFERENCED and never copied — the two statements this file has always been
+//! about that a tool loop does not touch.
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{emit_one, shipped_script};
@@ -41,67 +50,36 @@ fn instructions_of(out: &Value) -> String {
 }
 
 #[test]
-fn a_degraded_briefing_still_reaches_the_composer_and_says_so() {
+fn a_briefing_reaches_the_composer_carrying_the_question_and_the_vocabulary() {
+    // Recalibrated with the tool loop: there is no prefetched corpus in this
+    // body any more, so what is asserted is what the seeder still OWES the
+    // composer — the route, the thread it belongs to, the diff vocabulary, and
+    // the question itself. A pile of patterns with no question is what phase B
+    // of the librarian existed to prevent, and that has not changed.
     let out = run_brief(
-        json!({"route": "brief", "stage": "briefed", "hits": 0, "degraded": true}),
+        json!({"route": "brief", "stage": "briefed"}),
         json!([
-            {"origin": "user", "type": "text", "id": "", "text": "build me a digest pipeline"},
-            {"origin": "tool", "type": "tool_result", "id": "",
-             "text": "(retrieval unavailable: query_timeout)"}
+            {"origin": "user", "type": "text", "id": "", "text": "hang a drain on the error lane"}
         ]),
     );
     assert_eq!(out["header"]["route"], json!("compose"));
-    assert_eq!(out["header"]["degraded"], json!(true));
     assert!(
-        instructions_of(&out).contains("no patterns"),
-        "the composer must be TOLD it is working without the corpus, or it writes \
-         with the confidence of somebody who was given one"
+        out["header"]["build_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "a build is a thread now; every round has to be able to name what it \
+         belongs to"
     );
-    assert_eq!(
-        out["messages"][0]["text"],
-        json!("build me a digest pipeline"),
-        "the question survives the briefing — a pile of patterns with no question \
-         is what phase B of the librarian exists to prevent"
-    );
-}
-
-#[test]
-fn an_empty_result_set_is_degraded_even_though_the_lookup_succeeded() {
-    // The librarian's SUCCESS arm answers "(no matching patterns)" with no
-    // `degraded` mark. Reading that as a corpus is how a model gets told to
-    // lean on nothing while believing it was handed something.
-    let out = run_brief(
-        json!({"route": "brief", "stage": "briefed", "hits": 0}),
-        json!([
-            {"origin": "user", "type": "text", "id": "", "text": "grow me a thing"},
-            {"origin": "tool", "type": "tool_result", "id": "", "text": "(no matching patterns)"}
-        ]),
-    );
-    assert_eq!(out["header"]["degraded"], json!(true));
-    assert!(instructions_of(&out).contains("no patterns"));
-}
-
-#[test]
-fn a_real_briefing_reaches_the_composer_undegraded_and_carries_the_patterns() {
-    let out = run_brief(
-        json!({"route": "brief", "stage": "briefed", "hits": 3}),
-        json!([
-            {"origin": "user", "type": "text", "id": "", "text": "hang a drain on the error lane"},
-            {"origin": "tool", "type": "tool_result", "id": "",
-             "text": "### config.md -- required_drains (spec) [d-17]\na drain is …"}
-        ]),
-    );
-    assert_eq!(out["header"]["route"], json!("compose"));
-    assert_eq!(out["header"]["degraded"], json!(false));
     let text = instructions_of(&out);
-    assert!(
-        text.contains("required_drains"),
-        "the patterns reach the composer"
-    );
     assert!(
         text.contains("add_nodes") && text.contains("move_nodes"),
         "the composer is told the diff keys that EXIST — a manifest naming an \
          invented operation is refused at position k, after k-1 have applied"
+    );
+    assert_eq!(
+        out["messages"][0]["text"],
+        json!("hang a drain on the error lane"),
+        "the question survives the briefing"
     );
 }
 

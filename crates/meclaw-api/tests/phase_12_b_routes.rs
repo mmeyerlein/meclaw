@@ -356,3 +356,50 @@ async fn the_ledger_endpoint_answers_over_http() {
     assert_eq!(slot["scan_truncated"].as_bool(), Some(false));
     assert!(slot.get("unavailable").is_none(), "the read happened");
 }
+
+/// The HTTP door is the twin of the message door, not a smaller surface
+/// (`handlers/ledger.rs` § "An endpoint with only one of the two doors").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_graph_echoes_the_caller_tag() {
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/colony/graph?scope=/&tag=b7%231")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["graph"]["tag"], "b7#1");
+}
+
+/// Same twin rule for the registry door — and the echo stands BESIDE the list,
+/// never inside it, exactly as the message door builds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn get_registry_echoes_the_caller_tag() {
+    let test_h = meclaw_testing::ColonyHandle::new();
+    let (app, _blob_td) = app_from(&test_h);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/colony/registry?tag=b7%232")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["registry"].is_array());
+    assert_eq!(json["tag"], "b7#2");
+}

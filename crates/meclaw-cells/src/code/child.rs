@@ -74,10 +74,23 @@ pub(crate) async fn child_task(
     }) = jobs.recv().await
     {
         let outcome = serve(&cfg, &mut child, &document, timeout).await;
-        let _ = reply.send(outcome);
+        // GH #429, ordering half: the slot is reported free BEFORE the answer
+        // travels. The other order looks harmless and is not — it hands the
+        // caller its reply while the broker still believes this slot is busy,
+        // so a caller that sends its next job immediately (a serial stream,
+        // which is the common shape) races the freed-slot message and is given
+        // a DIFFERENT slot, waking a second interpreter that the pool then
+        // keeps. `a_serial_stream_stays_on_one_child_however_big_the_pool`
+        // catches it, but only under load, because the window is exactly the
+        // scheduling gap between these two lines. Reporting first closes it:
+        // the broker cannot dispatch into this slot before the loop comes back
+        // round, it can only queue into the slot's channel, which is what the
+        // channel is for.
         if idle.send(slot).await.is_err() {
+            let _ = reply.send(outcome);
             break;
         }
+        let _ = reply.send(outcome);
     }
     retire(&mut child, &cfg).await;
 }

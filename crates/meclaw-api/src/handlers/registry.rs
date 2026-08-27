@@ -6,7 +6,7 @@
 //! (default 100, cap 1000).
 
 use crate::ColonyHandle;
-use crate::handlers::clamp_limit;
+use crate::handlers::{clamp_limit, clamp_read_tag};
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -35,6 +35,9 @@ pub struct RegistryQuery {
     pub active: Option<bool>,
     /// Hard cap on returned entries (default 100, max 1000).
     pub limit: Option<usize>,
+    /// Opaque caller correlation token, echoed verbatim beside the list
+    /// (max 64 chars).
+    pub tag: Option<String>,
 }
 
 /// Handler for `GET /colony/registry`.
@@ -68,5 +71,9 @@ pub async fn get_registry(
             );
         }
     };
-    (StatusCode::OK, Json(json!({ "registry": reply.entries })))
+    let mut out = json!({ "registry": reply.entries });
+    if let (Some(t), Some(obj)) = (clamp_read_tag(q.tag), out.as_object_mut()) {
+        obj.insert("tag".into(), json!(t));
+    }
+    (StatusCode::OK, Json(out))
 }

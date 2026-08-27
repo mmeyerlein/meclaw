@@ -1,0 +1,98 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "\nimport sys, json\n\n# The adapter that keeps `builder-librarian` unchanged. Two directions, each\n# recognised POSITIVELY -- the librarian's own file records why: read phase B as\n# \"anything that is not a fresh request\" and a store error comes back looking\n# like a new question, which is the reply-to-fallback loop that really happened\n# here before the fix.\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nmsgs = doc[\"body\"].get(\"messages\") or []\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\n# ---- Direction B: the brief comes back. Recognised on the librarian's own\n# terminal marker, and ONLY on it.\nif hop.get(\"route\") == \"brief\" and hop.get(\"stage\") == \"briefed\":\n    call_id = str(ctx.get(\"lib_call_id\") or \"\")\n    rows = \"\"\n    for m in msgs:\n        if m.get(\"type\") == \"tool_result\" and m.get(\"text\"):\n            rows = m[\"text\"]\n    header = {\"route\": \"lib_out\", \"operation\": \"tool_result\",\n              \"tool_call_id\": call_id}\n    if hop.get(\"degraded\"):\n        # An OBSERVATION now, not an instruction: the model may weigh it and\n        # ask again. The guarantee that used to ride here lives in the brief\n        # HEAD, for the same reason GRAMMAR does.\n        header[\"degraded\"] = True\n    emit({\"header\": header,\n          \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                        \"text\": rows if rows else \"(no matching patterns)\"}]})\n\n# ---- Direction A: a tool_call goes out.\nname = str(hop.get(\"tool_name\") or \"\")\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nraw = \"\"\nfor m in msgs:\n    if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n        raw = m[\"text\"]\ntry:\n    args = json.loads(raw or \"{}\")\n    if not isinstance(args, dict):\n        args = {}\nexcept Exception:\n    args = {}\n\nquery = str(args.get(\"query\") or \"\").strip()\nif not query:\n    emit({\"header\": {\"route\": \"lib_out\", \"operation\": \"tool_result\",\n                     \"tool_call_id\": call_id, \"error_code\": \"query_missing\"},\n          \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                        \"text\": \"%s needs a non-empty `query` string\" % name}]})\n\nheader = {\"route\": \"lsearch_out\", \"lib_call_id\": call_id}\nif name == \"catalogue_lookup\":\n    # The same corpus, filtered to the rows that describe a template. Those are\n    # the rows whose first line opens with `CONTRACT --`, which is the sentence\n    # that stops `requirement_missing` before the door has to.\n    header[\"lib_kind\"] = \"template\"\nemit({\"header\": header,\n      \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"id\": \"\", \"text\": query}]})\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "capabilities": [
+      "shell:exec"
+    ],
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "lsearch_out",
+            "lib_out"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "tool_result"
+          ],
+          "required": false
+        },
+        "lib_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "lib_kind": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "degraded": {
+          "type": "boolean",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "query_missing"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The adapter that lets `builder-librarian@2.0.7` stay untouched: it turns a `librarian_search` or `catalogue_lookup` tool_call into the body shape that librarian already accepts, and turns the brief it answers with back into ONE tool_result under the id that asked for it.",
+    "use_when": "Reached on the tool edge for exactly two names -- `librarian_search` and `catalogue_lookup` -- and again on the way back, when the referenced librarian has answered on its terminal `brief`/`briefed` marker.",
+    "not_in_scope": "It does not retrieve: the corpus, the BM25 query and the ranking all belong to the referenced `builder-librarian`, and nothing here reads a store. It does not rank, summarise or filter the rows it carries back, and it does not decide what a degraded round means -- it says `degraded` and lets the model weigh it.",
+    "emits_meaning": "route lsearch_out is direction A -- the outbound question, spelled the way the librarian tokenises it: ONE `user` turn whose text is the bare query, because the librarian reads the first turn carrying text for its BM25 query and a json blob there is the query turned into noise. hop.lib_call_id carries the id that asked, so the answer can come back under it; hop.lib_kind == 'template' marks the catalogue, which is the same corpus filtered to the rows that open with `CONTRACT --`. route lib_out is direction B -- one tool_result under hop.tool_call_id, with hop.degraded == true when the round ran without a corpus, and hop.error_code == 'query_missing' when the call carried no usable `query`.",
+    "consumes_meaning": "messages[]: in direction A the tool_call turn, whose text is the JSON argument object the model wrote; in direction B the librarian's brief, whose last tool_result turn holds the corpus rows. hop.tool_name picks which of the two tool names was called -- both land on the same store. The id that asked survives the round trip in `context.lib_call_id`, not in hop, because hop is per-hop and the librarian overwrites it.",
+    "examples": [
+      "hop { tool_name: 'librarian_search', tool_call_id: 'c-1' } + a tool_call '{\"query\": \"a timer that writes a note\"}' -> route lsearch_out, hop.lib_call_id 'c-1', one user turn 'a timer that writes a note'",
+      "hop { tool_name: 'catalogue_lookup', tool_call_id: 'c-2' } -> the same lane plus hop.lib_kind 'template' -- the contract rows, which is what stops `requirement_missing` at source",
+      "hop { route: 'brief', stage: 'briefed', hits: 0, degraded: true } -> route lib_out, hop.degraded true, and STILL one tool_result: a corpus outage is a property of one round, never a stalled build"
+    ]
+  }
+}

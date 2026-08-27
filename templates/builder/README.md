@@ -1,4 +1,4 @@
-# `builder@1.0.3`
+# `builder@1.1.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -21,17 +21,25 @@ name, so a declaration can add to the library but never rewrite it.
 
 That is not a promise in this file. It is a property of the files:
 
-- **No cell in this template has an edge onto `/colony/*`.** A cell emission is
-  routed over the SENDER's out-edges — `target` on an emission is a diagnostic,
-  not an address — so a cell with no such edge cannot reach the mutation door
+- **No cell in this template has an edge onto anything but a READ.** The two
+  `/colony` edges it does have are `eyes → /colony/graph` and
+  `eyes → /colony/registry`, and both are reads. A cell emission is routed over
+  the SENDER's out-edges — `target` on an emission is a diagnostic, not an
+  address — so a cell without an edge onto the mutation door cannot reach it
   whatever its script does.
 - **The edge cannot be added later either.** `/colony/mutations` is not among
   the endpoints a mutation may draw (`MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` holds
-  `/colony/graph` and `/colony/ledger`, on every scope). The one edge onto the
-  mutation door lives in the BIRTH topology, and it belongs to the submitter.
+  `/colony/graph`, `/colony/registry` and `/colony/ledger`, on every scope). The
+  one edge onto the mutation door lives in the BIRTH topology, and it belongs to
+  the submitter.
 - **Both facts are measured**, off this tree, by
   `crates/meclaw-cells/tests/gh425_the_builder_cannot_reach_the_mutation_door.rs`
-  and, at runtime, by the scenario case `I2`.
+  — where the sharper half has an assertion of its own
+  (`no_config_in_the_builder_draws_an_edge_onto_the_mutation_door`), so widening
+  the read whitelist cannot quietly widen the guardrail — and, at runtime, by the
+  scenario case `I2`. ADR-0015 decision (2) is untouched in substance; its
+  amendment of 2026-08-27 changes the SHAPE of one assertion and nothing it
+  decides.
 
 ## This hive is sealed
 
@@ -47,14 +55,20 @@ address them.
 | `recipes` | `code` | The fast lane. Renders one of three predefined recipes straight into a manifest, deterministically. |
 | `librarian` | `ref builder-librarian` | Retrieval over the corpus. Referenced, never copied (ADR-0011). |
 | `brief` | `code` | Assembles the authoring prompt: the retrieved sections become instructions, the request stays a user turn. |
-| `compose` | `llm` | The one model call of the design lane. |
-| `normalise` | `code` | Reads the answer instead of forwarding it: extraction, shape, diff keys, control plane. Stamps the digest. |
+| `compose` | `llm` | The model call of the design lane — asked once per round, not once per build. |
+| `dispatch` | `ref dispatcher` | Which tools did that answer ask for, and is the bundle within budget? Fans one answer out into one call per tool, referenced rather than copied. |
+| `lib` | `code` | What does the corpus say? Adapts `librarian_search` and `catalogue_lookup` onto the referenced librarian and its briefing back into a `tool_result`. |
+| `eyes` | `code` | What does the colony actually look like right now? Turns `graph_read` and `registry_read` into a `/colony` question and the answer back into a `tool_result`. |
+| `unknown` | `code` | A tool that is not one of the four — answered, by name, with `unknown_tool`, so a round never waits for a call that will never run. |
+| `weave` | `code` | Is this round complete, and what happens next? The fan-in: it counts, it adopts a refusal, and it decides between another round, a draft and a named stop. |
+| `transcript` | `store` | What was said in this build so far? One row per turn, plus the binding row that lets a later refusal find the build it is talking about, plus the compare-and-set guard that lets exactly one path cross the re-entry edge. |
 
 ## Lanes
 
 | Direction | Lane | What travels |
 |---|---|---|
 | in | `in_build` | a structural wish. It carries no promoted identity: this hive never emits a mutation, so it has nothing to attribute, and an edge modifier cannot reach the envelope where the only real identity lives |
+| in | `in_receipt` | a draft that was refused at the mutation door, on its way back to the composer that wrote it. It carries `hop.error_code` and the digest of the manifest it refused — no identity, for the same reason `in_build` carries none |
 | out | `manifest` | the draft: the declaration list, `hop.manifest_sha256`, `hop.manifest_class`, `hop.declaration_count` |
 | out | `error` | a wish this hive did not turn into a manifest, named in `hop.error_code` |
 
@@ -100,6 +114,88 @@ all. Measured the same way: with the grammar in place and the contract still
 invisible, the same model encoded every entry correctly and was refused one level
 higher, with `requirement_missing`, for naming a template and passing it an empty
 `ctx` (`crates/meclaw-cells/tests/librarian_catalogue_carries_the_contract.rs`).
+
+## The design lane is a loop, and it is bounded four times
+
+The composer is asked, it may call one of four tools, the results come back, and
+it is asked again — until it answers with a manifest or until a bound stops it.
+Four bounds, and each one buys something different:
+
+| Bound | Where it lives | Default | What it stops |
+|---|---|---|---|
+| `BUILDER_MAX_ITER` | the condition of `./weave → ./compose` | 6 | a model that keeps looking and never writes |
+| `DISPATCHER_MAX_CALLS` | the referenced `dispatcher` | 16 | one answer asking for forty tools at once |
+| `BUILDER_MAX_REPAIRS` | the condition of the repair edge | 2 | a refusal being retried forever |
+| `BUILDER_ROUND_IDLE_MS` | arithmetic in `weave` | 120000 | a fan-in waiting on a result that will never come |
+
+The substrate's own guard is deliberately out of the game: the re-entry edge
+declares `restore_ttl`, so the loop pays for one round at a time instead of
+fitting all of them into one budget — about a dozen routing hops per round
+against a default `ttl` of 64 (`docs/store-backed-tool-loop.en.md` § *The TTL
+budget of one round*). That is why the four above have to carry. A TTL death
+would be silent: straight to the dead-letter queue, no `reply_to` cascade, and
+the `tool_call_id` waiting in `templates/tools/build` would never close.
+
+Three of the four are `params` of `weave` rather than environment variables, so
+two builders in one colony are tuned apart and a mutation retunes one without
+touching a colony-wide setting. A CEL condition cannot read `params`, so the two
+bounds that live on an edge are written twice — as a literal on the edge that
+enforces them and as a settings default in the cell that documents them — and
+the two spellings are held to one number off the tree by
+`crates/meclaw-cells/tests/builder_bounds_agree_with_their_settings.rs`.
+
+## Four eyes, and no hand
+
+| Tool | Answers the refusal | Reads |
+|---|---|---|
+| `catalogue_lookup` | `requirement_missing` | the corpus row that opens `CONTRACT —` |
+| `librarian_search` | a shape written from memory | the spec, the cookbook, the rewiring doc |
+| `graph_read` | the ISLAND | `/colony/graph` — activity is edge-derived, so it SHOWS |
+| `registry_read` | the wrong template, named plausibly | `/colony/registry` — what actually stands where |
+
+Each one answers a refusal this system has really produced
+(`plans/welle-2026-08-27/receipts/s12-luna-run.md`). That is the difference
+between this and a general harness: the vocabulary is closed, and its closedness
+is a property of the files
+(`crates/meclaw-cells/tests/builder_tool_vocabulary_is_closed.rs`).
+
+There is no fifth tool that applies anything. Submitting stays with whoever
+asked, under the identity the substrate stamped on the envelope — ADR-0015
+decision (2), amended on 2026-08-27 only in the shape of one assertion, not in
+what it decides.
+
+### The two eyes carry their own coordinate
+
+A `/colony` read is not a cell: it has no `cell.db`, no timer and no context of
+its own, and a reply to it starts a FRESH trace. So nothing of the round survives
+the roundtrip except what the question itself carried. That is the `tag`, an echo
+field this wave put on `GraphQuery` and `RegistryQuery`, and it holds the whole
+coordinate rather than the build alone — `<build_id>.<iter>.<repairs>#<tool_call_id>`,
+truncated to 64 characters rather than refused. `eyes` reads it back off the
+answer and puts the three numbers into `hop` again, where the edge to `weave`
+lifts them into `context`. Correlation is therefore a property of the message,
+not of a cell keeping notes: two builds and two rounds may be in flight at once
+and no answer can land in the wrong one. A round number that went missing here
+would leave a CEL modifier without its key, and a failed modifier SKIPS the edge
+— which is why the tag carries all three and never some of them.
+
+## A refusal comes back, twice at most
+
+A draft refused at the mutation door returns to this hive on `in_receipt`, and
+the code is NAMED in the turn the composer sees: `requirement_missing`,
+`scope_out_of_bounds`, `schema`. A refusal a model cannot name is one it cannot
+repair. After `BUILDER_MAX_REPAIRS` the build stops on the `error` lane carrying
+that same code — never as silence, and never as an empty manifest.
+
+**The attempt count is counted, not carried, and that is not a detail.** A
+receipt arrives on a foreign message chain — the submitter parked the build and
+popped it from its OWN store — so `context` does not survive the trip and there
+is no counter riding along to increment. What bridges it is a row: `normalise`
+writes a binding line when it mints a digest (`manifest_sha256 → build_id`), and
+`weave` adopts the receipt over that line and then counts the `receipt` rows the
+transcript holds for that build. The repair edge reads the resulting `hop.repairs`
+and refuses to fire above the cap. A number that is recomputed from rows cannot
+be lost by a hop that forgets to pass it on.
 
 ## The digest, and why it exists
 

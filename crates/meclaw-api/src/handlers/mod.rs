@@ -32,6 +32,20 @@ pub(crate) fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(100).clamp(1, 1000)
 }
 
+/// Maximum length of an echoed correlation `tag`, in characters — the bound the
+/// message door carries as `colony_dispatch::READ_TAG_MAX_CHARS`.
+pub(crate) const READ_TAG_MAX_CHARS: usize = 64;
+
+/// Clamp an echoed correlation `tag` to [`READ_TAG_MAX_CHARS`] characters.
+///
+/// Clamped is not dropped: a tag never touches the data, so shortening it
+/// cannot change the answer, while an unbounded one is a growth hazard. The
+/// doors that hand their query to `colony_dispatch` (`ledger`) get this for
+/// free; `graph` and `registry` build their own JSON and clamp here.
+pub(crate) fn clamp_read_tag(tag: Option<String>) -> Option<String> {
+    tag.map(|t| t.chars().take(READ_TAG_MAX_CHARS).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::clamp_limit;

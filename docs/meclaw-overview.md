@@ -842,11 +842,11 @@ Cells can override individual values via their `config.json` `params` or their `
 | Path | Purpose | Filter / query parameters | Writing? | Phase |
 |---|---|---|---|---|
 | `/colony/dead_letters` | Dead-letter queue: unresolvable routes, expired TTLs, routing errors | `?since=<ts>` *(functional since W2a/W2d -- filters via `WHERE created_at >= ?` on the dead-lettered message's `created_at`, see `handle_read_dead_letters` in `colony_dispatch.rs`)*, `?limit=<N>`, `?error_code=<code>` | both (read + drain) | 2 |
-| `/colony/registry` | Read the cell registry (list of all registered cells with paths, IDs, types, status). `?path=` for a single cell. Including inactive nodes with the `active` field. | `?path_prefix=<path>`, `?type=<celltype>`, `?path=<exact>`, `?active=true\|false` | no | 4 |
+| `/colony/registry` | Read the cell registry (list of all registered cells with paths, IDs, types, status). `?path=` for a single cell. Including inactive nodes with the `active` field. | `?path_prefix=<path>`, `?type=<celltype>`, `?path=<exact>`, `?active=true\|false`, `?tag=<token>` | no | 4 |
 | `/colony/templates` | Read the templates registry (for builder discovery) | `?type=<celltype>` (exact match on the template cell type; unknown values yield an empty list), `?name=<name>` | no | 5 |
 | `/colony/templates/rescan` | Trigger to re-read the templates directory (replacement for a `--rescan-templates` restart) | — | yes | 5 |
 | `/colony/mutations` | Mutation pipeline; builders send mutation diffs here | — (diff in the body) | yes | 6 |
-| `/colony/graph` | Read the topology of a scope (nodes + edges, runtime-projected) | `?scope=<path>` (default root) | no | 6 |
+| `/colony/graph` | Read the topology of a scope (nodes + edges, runtime-projected) | `?scope=<path>` (default root), `?tag=<token>` | no | 6 |
 | `/colony/trace` | Read the message log, built as a tree by `parent_message_id` when `trace_id` is set | `?trace_id=<uuid>`, `?path_prefix=<path>`, `?correlation_id=<uuid>` *(inert today, `correlation_id` is not originally set, see § Envelope setter authority)*, `?error=true`, `?since=<ts>`, `?limit=<N>` | no | 11 |
 | `/colony/ledger` | Counts and sums out of `message_log` / `dead_letters` / `mutation_log` for one time window (aggregates, no raw rows) | `?since=<ts>` (inclusive, default `now - 3600`), `?until=<ts>` (exclusive, default `now`), `?path_prefix=<path>`, `?cycle_id=<id>`, `?group_by=model`, `?tag=<token>`, `?scan_budget=<N>` | no | 0.20 |
 | `/colony/messages` | Browse the message log: newest-first list with filters + single message | `?id=<uuid>`, `?trace_id=<uuid>`, `?parent_message_id=<uuid>`, `?correlation_id=<uuid>`, `?to_path_prefix=<path>`, `?from_path_prefix=<path>`, `?body_kind=inline\|blob`, `?since=<ts>`, `?until=<ts>`, `?before_created_at=<ts>&before_id=<uuid>` (keyset cursor), `?limit=<N>`, `?scan_budget=<N>`, `?resolve_blob=true` | no | P1 |
@@ -859,7 +859,7 @@ Cells can override individual values via their `config.json` `params` or their `
 **Request body form (cell emissions / EDA):** a cell that emits to a `/colony/*` endpoint carries the endpoint-specific call as a top-level slot in the UBF body:
 
 - **`/colony/mutations`**: top-level `{ scope, diff, ctx }`: the mutation diff plus the `scope` plus an optional `ctx` substitution context (for the canonical form see § "Mutation format (builder → colony)"). The only writable EDA endpoint.
-- **`/colony/registry`, `/colony/templates`, `/colony/graph`, `/colony/trace`, `/colony/ledger` (reads)**: top-level `{ query: { … } }`: a `query` object whose fields correspond to the HTTP query parameters of the endpoint (`registry`: `path`/`path_prefix`/`cell_type`/`active`/`limit`; `templates`: `cell_type`/`name`/`limit`; `trace`: `trace_id`/`path_prefix`/`correlation_id`/`only_error`/`since`/`limit`; `graph`: `scope`; `ledger`: `since`/`until`/`path_prefix`/`cycle_id`/`group_by`/`tag`/`scan_budget`). If `query` or a single field is missing, the defaults apply (`limit` default 100, hard cap 1000; on the `ledger` `since` defaults to `now - 3600`, `until` to `now`, `scan_budget` to 50000). The read reply goes to the sender path (reply body form above).
+- **`/colony/registry`, `/colony/templates`, `/colony/graph`, `/colony/trace`, `/colony/ledger` (reads)**: top-level `{ query: { … } }`: a `query` object whose fields correspond to the HTTP query parameters of the endpoint (`registry`: `path`/`path_prefix`/`cell_type`/`active`/`limit`/`tag`; `templates`: `cell_type`/`name`/`limit`; `trace`: `trace_id`/`path_prefix`/`correlation_id`/`only_error`/`since`/`limit`; `graph`: `scope`/`tag`; `ledger`: `since`/`until`/`path_prefix`/`cycle_id`/`group_by`/`tag`/`scan_budget`). If `query` or a single field is missing, the defaults apply (`limit` default 100, hard cap 1000; on the `ledger` `since` defaults to `now - 3600`, `until` to `now`, `scan_budget` to 50000). The read reply goes to the sender path (reply body form above).
   **At all five reads a filter that arrives is never silently dropped** (GH #341, GH #359; the `ledger` is the fifth since GH #267 and inherits the rule rather than inventing its own): if a field is present but unreadable — `query` not an object, `scope`/`path`/`path_prefix`/`cell_type`/`name`/`group_by`/`tag`/`cycle_id` not a string, `active`/`only_error` not a boolean, `since`/`until`/`limit`/`scan_budget` not a number, `trace_id`/`correlation_id` not a valid UUID, `group_by` other than a declared value (v1: exactly `model`), `cycle_id` longer than 64 characters — the endpoint answers with an error instead of the unfiltered holdings: `{"<slot>": {"status": "error", "error_code": "invalid_query", "details": "…"}}`, with no result list (`<slot>` is `graph`, `registry`, `templates`, `trace` resp. `ledger`). An ignored filter and an empty filter must not look alike from the outside. A field that is missing or `null` still means the documented default. Clamping applies only within the valid values: a `limit` that is a non-negative integer stays clamped to 1…1000, and a `scan_budget` that is one stays clamped to 1…200000 — clamped is not dropped. A negative or fractional `limit` is not a valid count and is refused like any other unreadable filter, and so is a fractional `since` and a negative or fractional `until`/`scan_budget`. By the same rule `tag` is **truncated** to 64 characters rather than refused: the token filters nothing, it only travels back into the reply unchanged, and what never filters cannot change an answer by being shortened. `cycle_id`, conversely, is **refused rather than truncated**, because it *does* filter: a shortened correlation id would silently answer a different question than the one asked. An **empty window** is refused rather than answered — the one case in which no single field is unreadable and the endpoint still refuses: if resolving `since`/`until` yields `until <= since`, the `ledger` answers `invalid_query` with the details `empty window: until <= since` instead of zero counts. What is tested is the **resolved** window, not the one that was sent — `until` falls back to `now` and `since` to `now - 3600`, so a caller who sends neither still gets an answer. The reason is the one above the whole rule: zero counts are the one place where "we did not look" and "we looked and saw nothing" read alike from the outside. **No new `error_code`**: the `ledger` refuses under the same `invalid_query` as the other four. **Retracted (GH #341):** `/colony/graph` accepted a top-level `{ scope }` as an alias for exactly one release round. That round was 0.18.0; the alias is removed. A top-level `scope` is now an `invalid_query` error like any other unreadable filter — refused rather than ignored, so that a caller still sending the old shape does not mistake an unfiltered graph for an answer. Migration: send the documented shape `{"query": {"scope": "<path>"}}` instead of `{ scope }`.
 - **`/colony/dead_letters`**: **not** EDA-dispatchable and **not** body-operation-controlled: read vs. drain is decided by the HTTP method (`GET` = read / `DELETE` = drain) or the dedicated `ColonyMsg::ReadDeadLetters`/`DrainDeadLetters` inbox variant, **no** `body.operation` field (state W2d/W6d; the earlier `body.operation == "drain"` model is superseded). A cell emission to `/colony/dead_letters` is hard-rejected (see endpoint classification below).
 
@@ -867,6 +867,13 @@ Cells can override individual values via their `config.json` `params` or their `
 
 - **An unknown query parameter is ignored.** Every HTTP handler deserializes its query into a typed struct without `deny_unknown_fields`, so `?limt=5` is silently the default rather than a `400`. That is deliberate — it is what makes a new filter an additive change instead of a breaking one — and it means a typo is a wrong answer, not an error message. Check the parameter name against the endpoint table above before blaming the filter.
 - **Where the HTTP name and the EDA name differ, they stay differing.** The HTTP query says `?type=` and `?error=`; the EDA `query` object says `cell_type` and `only_error`. Aligning them is worth doing, and if it ever happens it happens as an **alias**: the new name starts working, the old name keeps working. A rename would break every stored URL, every dashboard and every `code` cell that builds a query object — so the old names are part of the contract, whatever a future spelling looks like.
+
+Three reads carry an opaque `tag`: `/colony/ledger`, `/colony/graph` and
+`/colony/registry`. It never filters and it never touches the data; it is
+truncated to 64 characters and comes back verbatim, in the `graph` object and
+beside the `registry` list respectively. It exists because a `/colony` reply
+starts a fresh trace, so a cell that asks twice has nothing else to tell the two
+answers apart with.
 
 **Endpoint classification for cell emissions (EDA, W2d ruling 2026-06-12):** the outputs arm dispatches a `/colony/*` emission target directly (§ Routing errors "Outputs arm: three disjoint cases", case 1), but not every endpoint is reachable from a cell:
 
@@ -1088,7 +1095,8 @@ first boot. Since #163 the lane is `-> .`, and the finding outlives the change o
 mechanism: a `web` cell is installed into a running colony by mutation and serves
 within the same boot.
 
-**The two absolute edges a mutation may draw** are `-> /colony/graph` (GH #163) and
+**The three absolute edges a mutation may draw** are `-> /colony/graph` (GH #163),
+`-> /colony/registry` (2026-08-27) and
 `-> /colony/ledger` (GH #267). They address no cell but the authority's own read-only
 endpoints — dispatched before any edge is consulted — and the graph is the *sanctioned*
 way to learn topology, because § Database isolation forbids reading `colony.db`.
@@ -1096,7 +1104,13 @@ Refusing the lane protected nothing; it only meant a display had to be born with
 somebody would read the database instead. The ledger joins the list because it
 **answers counts and never content** — sums over one time window, no raw row and no
 header — which is the class of the topology endpoint and explicitly not that of
-`/colony/trace`. `/colony/mutations` (authority transfer), `/colony/trace` and
+`/colony/trace`. The registry joins from the same class: it answers the colony's
+bookkeeping about its **own** cells (`path`, `cell_id`, `cell_type`,
+`lifecycle_status`, `active`, `failed`), which is strictly less than the graph hands
+out anyway. What forced it was not an argument but a measurement: `meclaw-os` carries
+the builder, whose second eye reads `/colony/registry`, and `meclaw-os` **grows** — by
+`grow` file, by manifest and by seed `ref` at boot. Without the entry the OS could not
+be instantiated at all. `/colony/mutations` (authority transfer), `/colony/trace` and
 `/colony/dead_letters` (other cells' message content) stay out of bounds — widening
 that list is a decision with its own argument, not a convenience.
 

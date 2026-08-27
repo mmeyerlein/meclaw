@@ -81,7 +81,7 @@ const CONTAINER: &str = "orgs";
 /// The one lane of the broker that is deliberately NOT re-emitted outward.
 const NOT_RE_EMITTED: &str = "connect";
 
-/// GH #425 — the six lanes an occupant of this level ships and this level
+/// GH #425 — the lanes an occupant of this level ships and this level
 /// deliberately does NOT declare, because a sibling INSIDE the level is the one
 /// that produces or consumes them.
 ///
@@ -99,6 +99,7 @@ const NOT_RE_EMITTED: &str = "connect";
 /// | `in_apply` | `submit`, accepted | produced by the `./orgs -> ./submit` edge |
 /// | `manifest` | `builder`, emitted | consumed by the `./builder -> ./orgs` edge |
 /// | `receipt` | `submit`, emitted | consumed by the `./submit -> ./orgs` edge |
+/// | `in_receipt` | `builder`, accepted | produced by the `./submit -> ./builder` edge |
 ///
 /// `mutate` is deliberately NOT here: the submitter emits it and the shell
 /// re-emits it, because it has to leave the level to reach the mutation door.
@@ -117,6 +118,14 @@ const CONSUMED_INSIDE: &[&str] = &[
     // name crosses the rim, which is the same reason `build`/`in_apply` do not.
     "ask",
     "in_verdict",
+    // The refine lane of the builder's tool loop, and the exact mirror of
+    // `build`/`in_build`: the submitter emits `receipt`, the
+    // `./submit -> ./builder` edge of THIS level renames it to `in_receipt`,
+    // and the baumeister takes the refusal back into a repair round. Producer
+    // and consumer are both siblings here, so the name never reaches the rim —
+    // declaring it outward would offer a caller a lane no edge of this level
+    // would ever fill.
+    "in_receipt",
 ];
 /// The template an organisation is grown from. Its lanes are read off the tree,
 /// never listed here — see `the_org_lanes_cross_this_level_unchanged`.

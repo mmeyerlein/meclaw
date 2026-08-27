@@ -177,7 +177,7 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
 }
 
 /// GH #163 — the absolute endpoints a mutation may address from inside a
-/// subtree: the colony's own read-only topology and ledger endpoints.
+/// subtree: the colony's own read-only topology, registry and ledger endpoints.
 ///
 /// Containment (`validate::validate_scope_containment`,
 /// `subtree::resolve_internal_edges`) exists so that a mutation cannot wire into
@@ -201,7 +201,32 @@ pub fn resolve_scoped_path(scope: &str, name: &str) -> meclaw_core::Path {
 /// explicitly not in the class of `/colony/trace`, which hands out exactly that
 /// content. A cell that needs to know how much moved may ask; it still may not
 /// learn what moved.
-pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] = &["/colony/graph", "/colony/ledger"];
+///
+/// **2026-08-27 — `/colony/registry` is the third entry, and it was forced by a
+/// measurement rather than argued into the list.** The agentic builder
+/// (`plans/welle-2026-08-27/receipts/e4-toolcall-builder-vorlage.md`, variant A)
+/// gives the baumeister four read tools, two of which are `/colony` reads:
+/// `./eyes -> /colony/graph` and `./eyes -> /colony/registry`. ADR-0015's
+/// amendment assumed the second could only ever be **birth** topology and
+/// therefore needed no entry here. That assumption does not survive contact with
+/// the tree: `meclaw-os` carries the builder, and `meclaw-os` is grown — by
+/// `examples/organism/grow-os.json`, by the `gh422` manifest, and by the
+/// `meclaw-os@1.2.3` seed `ref` at boot, all three of which resolve the subtree
+/// through `resolve_internal_edges`. Without this entry every one of those paths
+/// dies with `subtree edge endpoint /colony/registry escapes subtree root /os`,
+/// i.e. the OS stops being growable at all.
+///
+/// It passes the same test the other two passed, which is why the widening is a
+/// correction and not a concession. A registry read answers `path`, `cell_id`,
+/// `cell_type`, `lifecycle_status`, `active`, `failed` (`api_dto::RegistryEntryDto`)
+/// — the colony's own bookkeeping about its own cells, never a row of anybody's
+/// message and never a header. It is strictly less than `/colony/graph` already
+/// hands out, which is the whole topology including these same nodes. The line
+/// this list draws is unmoved: `/colony/mutations` is authority transfer,
+/// `/colony/trace` and `/colony/dead_letters` are other cells' content, and
+/// none of the three is in here.
+pub const MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS: &[&str] =
+    &["/colony/graph", "/colony/registry", "/colony/ledger"];
 
 /// Whether `endpoint` is an absolute virtual endpoint a mutation may draw an
 /// edge **to** (never `from` — a virtual endpoint emits nothing on its own).

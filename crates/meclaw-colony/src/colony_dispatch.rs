@@ -525,8 +525,10 @@ const LEDGER_SCAN_BUDGET_MIN: usize = 1;
 const LEDGER_SCAN_BUDGET_MAX: usize = 200_000;
 /// Default `scan_budget` when the caller names none.
 const LEDGER_SCAN_BUDGET_DEFAULT: usize = 50_000;
-/// Maximum length of the echoed correlation `tag`, in characters.
-const LEDGER_TAG_MAX_CHARS: usize = 64;
+/// Maximum length of an echoed correlation `tag`, in characters. Shared by
+/// `/colony/ledger`, `/colony/graph` and `/colony/registry`: three reads, one
+/// bound, so a caller does not have to remember which door truncates where.
+const READ_TAG_MAX_CHARS: usize = 64;
 /// Maximum length of a `cycle_id` filter, in characters. Refused, not clamped.
 const LEDGER_CYCLE_ID_MAX_CHARS: usize = 64;
 
@@ -561,7 +563,7 @@ pub async fn handle_read_ledger(
         .scan_budget
         .clamp(LEDGER_SCAN_BUDGET_MIN, LEDGER_SCAN_BUDGET_MAX);
     if let Some(tag) = query.tag.take() {
-        query.tag = Some(tag.chars().take(LEDGER_TAG_MAX_CHARS).collect());
+        query.tag = Some(tag.chars().take(READ_TAG_MAX_CHARS).collect());
     }
 
     let db_path = db_path.to_path_buf();
@@ -1005,6 +1007,9 @@ pub struct RegistryReadFilters {
     pub active: Option<bool>,
     /// Hard cap on returned entries.
     pub limit: usize,
+    /// Opaque caller correlation token, echoed verbatim beside the list.
+    /// Truncated to 64 characters, never refused.
+    pub tag: Option<String>,
 }
 
 /// The filters a `/colony/templates` read carries (GH #359).
@@ -1051,6 +1056,8 @@ pub fn parse_read_query_path_filters(
         cell_type: read_opt_str(q, "cell_type")?.map(String::from),
         active: read_opt_bool(q, "active")?,
         limit: read_limit(q)?,
+        tag: read_opt_str(q, "tag")?
+            .map(|t| t.chars().take(READ_TAG_MAX_CHARS).collect::<String>()),
     })
 }
 
@@ -1185,7 +1192,7 @@ pub fn parse_read_query_ledger_filters(
         cycle_id,
         group_by,
         tag: read_opt_str(q, "tag")?
-            .map(|t| t.chars().take(LEDGER_TAG_MAX_CHARS).collect::<String>()),
+            .map(|t| t.chars().take(READ_TAG_MAX_CHARS).collect::<String>()),
         scan_budget,
     })
 }
@@ -1201,6 +1208,35 @@ fn json_type_name(v: &meclaw_core::serde_json::Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Object(_) => "object",
     }
+}
+
+/// The filters a `/colony/graph` read carries: the scope it projects through,
+/// and the caller's own correlation token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphReadFilters {
+    /// Scope prefix; `/` when absent.
+    pub scope: Path,
+    /// Opaque caller correlation token, echoed verbatim. Truncated to 64
+    /// characters, never refused.
+    pub tag: Option<String>,
+}
+
+/// Parse `body.query.{scope,tag}` for `/colony/graph` reads.
+///
+/// The scope half is [`parse_graph_scope`], unchanged including the GH #341
+/// retraction of the top-level alias. The `tag` half is the ledger's discipline
+/// (GH #267): clamped, never refused — it never touches the data, so shortening
+/// it cannot change the answer.
+pub fn parse_read_query_graph_filters(
+    body: &meclaw_core::serde_json::Value,
+) -> Result<GraphReadFilters, ReadQueryError> {
+    let scope = parse_graph_scope(body)?;
+    let q = read_query_object(body)?;
+    Ok(GraphReadFilters {
+        scope,
+        tag: read_opt_str(q, "tag")?
+            .map(|t| t.chars().take(READ_TAG_MAX_CHARS).collect::<String>()),
+    })
 }
 
 /// Read the scope filter of a `/colony/graph` read out of the request body.
@@ -1270,8 +1306,11 @@ pub fn build_graph_read_reply(
     edges: &EdgeTable,
     body: &meclaw_core::serde_json::Value,
 ) -> meclaw_core::serde_json::Value {
-    match parse_graph_scope(body) {
-        Ok(scope) => build_graph_reply(&handle_read_graph(registry, edges, scope)),
+    match parse_read_query_graph_filters(body) {
+        Ok(f) => build_graph_reply(
+            &handle_read_graph(registry, edges, f.scope),
+            f.tag.as_deref(),
+        ),
         Err(e) => refuse_read("/colony/graph", "graph", &e),
     }
 }
@@ -1285,14 +1324,17 @@ pub fn build_registry_read_reply(
     body: &meclaw_core::serde_json::Value,
 ) -> meclaw_core::serde_json::Value {
     match parse_read_query_path_filters(body) {
-        Ok(f) => build_registry_reply(&handle_read_registry(
-            registry,
-            f.path,
-            f.path_prefix,
-            f.cell_type,
-            f.active,
-            f.limit,
-        )),
+        Ok(f) => build_registry_reply(
+            &handle_read_registry(
+                registry,
+                f.path,
+                f.path_prefix,
+                f.cell_type,
+                f.active,
+                f.limit,
+            ),
+            f.tag.as_deref(),
+        ),
         Err(e) => refuse_read("/colony/registry", "registry", &e),
     }
 }
@@ -1442,10 +1484,18 @@ pub fn mutation_door_reply(
 
 fn build_registry_reply(
     reply: &crate::api_dto::ReadRegistryReply,
+    tag: Option<&str>,
 ) -> meclaw_core::serde_json::Value {
-    meclaw_core::serde_json::json!({
+    let mut out = meclaw_core::serde_json::json!({
         "registry": meclaw_core::serde_json::to_value(&reply.entries).unwrap_or_default(),
-    })
+    });
+    if let (Some(t), Some(obj)) = (tag, out.as_object_mut()) {
+        obj.insert(
+            "tag".into(),
+            meclaw_core::serde_json::Value::String(t.into()),
+        );
+    }
+    out
 }
 
 fn build_templates_reply(
@@ -1467,15 +1517,23 @@ fn build_rescan_reply(
     }
 }
 
-fn build_graph_reply(reply: &crate::api_dto::ReadGraphReply) -> meclaw_core::serde_json::Value {
-    meclaw_core::serde_json::json!({
-        "graph": {
-            "scope": reply.scope,
-            "graph_version": reply.graph_version,
-            "nodes": meclaw_core::serde_json::to_value(&reply.nodes).unwrap_or_default(),
-            "edges": meclaw_core::serde_json::to_value(&reply.edges).unwrap_or_default(),
-        },
-    })
+fn build_graph_reply(
+    reply: &crate::api_dto::ReadGraphReply,
+    tag: Option<&str>,
+) -> meclaw_core::serde_json::Value {
+    let mut graph = meclaw_core::serde_json::json!({
+        "scope": reply.scope,
+        "graph_version": reply.graph_version,
+        "nodes": meclaw_core::serde_json::to_value(&reply.nodes).unwrap_or_default(),
+        "edges": meclaw_core::serde_json::to_value(&reply.edges).unwrap_or_default(),
+    });
+    if let (Some(t), Some(obj)) = (tag, graph.as_object_mut()) {
+        obj.insert(
+            "tag".into(),
+            meclaw_core::serde_json::Value::String(t.into()),
+        );
+    }
+    meclaw_core::serde_json::json!({ "graph": graph })
 }
 
 /// GH #341/#359: a `/colony` read whose filter could not be read answers in the

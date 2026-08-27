@@ -55,9 +55,10 @@ fn instructions_of(out: &Value) -> String {
         .to_string()
 }
 
-/// A briefing that DID retrieve patterns.
-fn briefed() -> String {
-    instructions_of(&run_brief(
+/// The WHOLE body of a briefing that DID retrieve patterns — `briefed()` reads
+/// its instructions off exactly this emission, so the two can never disagree.
+fn briefed_body() -> Value {
+    run_brief(
         json!({"route": "brief", "stage": "briefed", "hits": 3}),
         json!([
             {"origin": "user", "type": "text", "id": "",
@@ -65,7 +66,12 @@ fn briefed() -> String {
             {"origin": "tool", "type": "tool_result", "id": "",
              "text": "### config.md -- required_drains (spec) [d-17]\na drain is …"}
         ]),
-    ))
+    )
+}
+
+/// A briefing that DID retrieve patterns.
+fn briefed() -> String {
+    instructions_of(&briefed_body())
 }
 
 /// The same request with the corpus down.
@@ -162,6 +168,86 @@ fn the_briefing_says_how_a_templates_contract_is_met() {
     );
 }
 
+// ============================================================ THE ENDPOINT SET
+//
+// Measured on 2026-08-27, 3 of 4 runs
+// (`plans/welle-2026-08-27/receipts/builder-agentic-loop-messlauf.md` § 1): every
+// draft wrote
+//
+// ```json
+// {"scope": "/os/orgs/acme/apps", "diff": {"add_edges": [{"from": ".", "to": "./research"}]}}
+// ```
+//
+// and the door answered `edge_endpoints/edge_schema .: from='.' unknown`. The
+// prompt and the door contradicted each other: `CONNECTIVITY` demanded an edge
+// that crosses the new unit's boundary "in the same manifest", and the only
+// anchor a declaration names for "outside" is its own scope. But the scope is
+// not an endpoint.
+//
+// The rule, read off `crates/meclaw-colony/src/mutation/validate.rs`:
+//   * `scoped_name` (Z. 227) strips a leading `./` and then splits on `/`. `"."`
+//     survives as the short name `.`, and no cell or hive is ever called `.` --
+//     so `known(".")` is false, always. There is no special case anywhere.
+//   * `validate_scope_containment` (Z. 2186) refuses any endpoint starting with
+//     `/` or containing a `..` segment BEFORE membership is even looked at, with
+//     `scope_out_of_bounds` -- an absolute path is refused even when it points
+//     inside the scope. The single exemption is the `to` arm of
+//     `/colony/graph|registry|ledger`.
+//   * What IS legal: `./x` (a direct child of the scope, or any hive) and
+//     `./x/y` (deeper under it), including a node this same diff creates.
+//
+// So a declaration cannot draw the crossing edge from inside the unit it is
+// growing. It has to be scoped one level UP, name the container as `./c` and the
+// new cell as `./c/name` -- which is exactly what every shipped example does
+// (`examples/organism/grow-org.json` and its four siblings).
+
+#[test]
+fn the_briefing_rules_out_the_endpoint_the_door_refuses() {
+    let text = briefed();
+    assert!(
+        text.contains("edge_schema"),
+        "the refusal a model must be able to avoid has to be nameable in the \
+         prompt -- this is the one 3 of 4 acceptance runs died on"
+    );
+    assert!(
+        text.contains("\".\""),
+        "the prompt must say that \".\" -- the scope itself -- is not an edge \
+         endpoint; the door has no special case for it and every refused draft \
+         used it"
+    );
+    assert!(
+        text.contains("scope_out_of_bounds"),
+        "the obvious second guess after \".\" is an absolute path, and that is \
+         refused one stage EARLIER, with its own code"
+    );
+}
+
+#[test]
+fn no_example_in_the_briefing_draws_an_edge_from_the_scope() {
+    for text in [briefed(), degraded()] {
+        assert!(
+            !text.contains("\"from\": \".\""),
+            "a prompt that rules out an endpoint and then shows it is a prompt \
+             that shows it"
+        );
+    }
+}
+
+#[test]
+fn the_briefing_shows_how_to_reach_into_a_unit_it_is_growing() {
+    let text = briefed();
+    assert!(
+        text.contains("\"name\": \"c/"),
+        "the legal way to place a cell inside a container is a DEEP name in \
+         add_nodes, declared at the container's parent -- shown, not described"
+    );
+    assert!(
+        text.contains("\"./c/") && text.contains("\"./c\""),
+        "and the two endpoint spellings that go with it: `./c` for the \
+         container, `./c/<name>` for what this diff puts in it"
+    );
+}
+
 #[test]
 fn the_grammar_survives_a_corpus_outage() {
     // A degraded briefing is when the model has the LEAST to lean on. If the
@@ -175,4 +261,56 @@ fn the_grammar_survives_a_corpus_outage() {
     // down there is no catalogue row to read it off, and a model that does not
     // know a template can demand keys will not think to ask.
     assert!(text.contains("requirement_missing"));
+    // Same argument for the endpoint set: the corpus cannot be the place a
+    // model learns which spellings the door accepts.
+    assert!(text.contains("edge_schema") && text.contains("scope_out_of_bounds"));
+    assert!(text.contains("\".\""));
+}
+
+/// The briefing is a prompt SEEDER now: the corpus is a tool the model may call,
+/// so the four tool schemas travel in `system.tools.*` -- separately extracted,
+/// never concatenated into the system prompt (`docs/cell-types.md` § llm).
+#[test]
+fn the_briefing_seeds_four_tools_and_no_others() {
+    let out = briefed_body();
+    let tools = out["system"]["tools"]
+        .as_object()
+        .expect("system.tools declared");
+    let mut names: Vec<&String> = tools.keys().collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "catalogue_lookup",
+            "graph_read",
+            "librarian_search",
+            "registry_read"
+        ],
+        "the vocabulary is CLOSED: four eyes, no hand, nothing else"
+    );
+    for (name, slot) in tools {
+        let text = slot["text"].as_str().expect("each tool is one text leaf");
+        let fn_obj: meclaw_core::serde_json::Value =
+            meclaw_core::serde_json::from_str(text).expect("a stringified function object");
+        assert_eq!(fn_obj["type"], "function");
+        assert_eq!(fn_obj["function"]["name"].as_str(), Some(name.as_str()));
+    }
+}
+
+/// The retrieval guarantee moved. It used to be an instruction in the corpus
+/// arm; agentically that arm is a tool RESULT the model may overrule, so the
+/// duty rides in the HEAD -- the same argument that put GRAMMAR there.
+#[test]
+fn the_head_makes_retrieval_a_duty_rather_than_an_offer() {
+    for text in [briefed(), degraded()] {
+        assert!(
+            text.contains("catalogue_lookup"),
+            "the head names the tool that publishes a template's contract"
+        );
+        assert!(
+            text.contains("before") || text.contains("first"),
+            "a model that writes without looking is the new failure class this \
+             sentence exists to prevent"
+        );
+    }
 }

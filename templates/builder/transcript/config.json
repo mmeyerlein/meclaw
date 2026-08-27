@@ -1,0 +1,73 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "thread": {
+        "build_id": "text",
+        "iter": "int",
+        "role": "text",
+        "turn": "text",
+        "fired": "int",
+        "recorded_at": "text"
+      }
+    },
+    "query_timeout_ms": 15000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "write_surface": "internal",
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The round table of the builder's tool loop: one row per turn of one build. `build_id` correlates every row of one wish, `iter` names the round inside it, `role` is one of five: `user`, `assistant` and `tool` are the loop itself; `receipt` is a refusal handed back by the submitter, which belongs in the rebuilt thread but is not a tool answer, so no round set counts it; `manifest` is the binding row `normalise` writes when it mints a digest (`manifest_sha256` beside the `build_id`), which is how a later round finds the build a refusal is talking about. `turn` is the JSON-serialised UBF turn (or the array of assistant tool-call turns), and `fired` is the compare-and-set guard that grants exactly one weave path permission to cross the re-entry edge.",
+    "use_when": "Beside `weave`, inside the builder hive. Never addressed from outside: the hive is sealed and this cell has no lane of its own.",
+    "not_in_scope": "No retention policy and no pruning: a build is minutes long, not a session. No reading by anything but `weave` -- a second reader would be a second protocol over the same guard."
+  }
+}

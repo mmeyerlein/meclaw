@@ -1906,16 +1906,31 @@ fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
 /// and so is every `/colony/*` endpoint that is not one of these two —
 /// `/colony/mutations` above all, which would hand this hive every cell in the
 /// tree at once.
+///
+/// **This is the STEWARD's list, not the substrate's, and since 2026-08-27 the
+/// two differ.** The check below used to assert equality with
+/// `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`; it now asserts containment, and the
+/// difference is the point. The substrate gained `/colony/registry` for the
+/// agentic builder's second eye — a name this hive has no use for. Equality
+/// would have forced the steward's page and its carve-out to grow a lane the
+/// steward does not draw, which is the opposite of what a carve-out is for.
+/// Containment keeps the only direction that can go wrong: this list may never
+/// vouch for an endpoint the substrate refuses, so a name added HERE without
+/// being sanctioned THERE is red on the next run.
 const COLONY_READS: &[&str] = &["/colony/graph", "/colony/ledger"];
 
 #[test]
 fn every_edge_of_the_hive_stays_inside_it() {
-    // The carve-out is only as true as the substrate's own list: if a name is added
-    // there, this test would keep vouching for a shorter one.
-    assert_eq!(
-        COLONY_READS,
-        meclaw_colony::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS
-    );
+    // The carve-out is only as true as the substrate's own list. Containment,
+    // not equality (see `COLONY_READS`): a shorter local list is a stricter
+    // local rule and stays legal, but a name this test vouches for that the
+    // substrate would refuse is a promise no mutation could keep.
+    for endpoint in COLONY_READS {
+        assert!(
+            meclaw_colony::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS.contains(endpoint),
+            "{endpoint} is not one the substrate lets a mutation draw"
+        );
+    }
     let hive = config(HIVE);
     for edge in hive["params"]["graph"]["edges"].as_array().unwrap() {
         for role in ["from", "to"] {

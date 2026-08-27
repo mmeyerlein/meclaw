@@ -44,6 +44,13 @@ fn configs() -> Vec<(PathBuf, Value)> {
     out
 }
 
+/// The endpoints a mutation may ever draw an edge to
+/// (`crates/meclaw-colony/src/mutation/mod.rs`,
+/// `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`), plus the two reads that can only
+/// ever be birth topology. Anything outside this list is refused here, and
+/// `/colony/mutations` is outside it on purpose and for good.
+const BUILDER_MAY_ADDRESS: &[&str] = &["/colony/graph", "/colony/registry", "/colony/ledger"];
+
 #[test]
 fn no_config_in_the_builder_draws_an_edge_onto_the_control_plane() {
     for (path, cfg) in &configs() {
@@ -51,9 +58,36 @@ fn no_config_in_the_builder_draws_an_edge_onto_the_control_plane() {
         for edge in edges.into_iter().flatten() {
             for key in ["from", "to"] {
                 let ep = edge.get(key).and_then(Value::as_str).unwrap_or("");
+                if !ep.starts_with("/colony") {
+                    continue;
+                }
                 assert!(
-                    !ep.starts_with("/colony"),
-                    "{}: edge {key} = {ep} — the builder must not address the control plane",
+                    BUILDER_MAY_ADDRESS.contains(&ep),
+                    "{}: edge {key} = {ep} — the builder reads the control \
+                     plane and never writes it; {ep} is not one of {:?}",
+                    path.display(),
+                    BUILDER_MAY_ADDRESS
+                );
+            }
+        }
+    }
+}
+
+/// The half of the old assertion that did NOT weaken, said on its own so it
+/// cannot be lost in the whitelist above: the mutation door stays unreachable,
+/// and it cannot be added later either — `/colony/mutations` is absent from
+/// `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` on every scope, so such an edge would
+/// have to be birth topology, and birth topology is these files.
+#[test]
+fn no_config_in_the_builder_draws_an_edge_onto_the_mutation_door() {
+    for (path, cfg) in &configs() {
+        let edges = cfg.pointer("/params/graph/edges").and_then(Value::as_array);
+        for edge in edges.into_iter().flatten() {
+            for key in ["from", "to"] {
+                let ep = edge.get(key).and_then(Value::as_str).unwrap_or("");
+                assert!(
+                    !ep.starts_with("/colony/mutations"),
+                    "{}: edge {key} = {ep} — drafting is not applying",
                     path.display()
                 );
             }

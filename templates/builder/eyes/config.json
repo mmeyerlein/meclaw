@@ -1,0 +1,104 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json\n\n# The two /colony eyes. Their answers start a FRESH trace -- new trace_id,\n# parent_message_id null, correlation_id null -- so nothing of ours survives the\n# roundtrip except what we put INTO the question. That is the tag, and it is the\n# whole memory of the round: `<build_id>.<iter>.<repairs>#<tool_call_id>`.\n#\n# All three coordinates, not just the build: `weave` keys its slate on\n# (build_id, iter) and the re-entry edge reads `context.iter` and\n# `context.repairs`, so a tag that carried the build alone would come back to a\n# fan-in that cannot tell which round answered -- and to an edge whose CEL\n# modifier fails on an absent key and SKIPS. The loop would stop after the first\n# look, silently. Hence the coordinate travels whole and the edge back into\n# `weave` puts it into the context again.\n#\n# This cell has no cell.db and no timer, so it cannot notice its own silence.\n# What bounds it is that the endpoint always answers: a failed read answers\n# `unavailable`, an unreadable filter answers `invalid_query`. Beyond that the\n# fan-in's idle window in `weave` is the backstop.\ndoc = json.load(sys.stdin)\nenv = doc[\"envelope\"]\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nbody = doc[\"body\"]\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\ndef result(round_, call_id, text, code=None):\n    \"\"\"One tool_result, carrying the round coordinate back in the hop.\n\n    The three keys are ALWAYS present, empty rather than absent: the edge into\n    `weave` restores them with a `set_context` modifier, and a CEL modifier that\n    reads a missing key fails and skips its edge.\n    \"\"\"\n    build_id, it, repairs = round_\n    header = {\"route\": \"eye_out\", \"operation\": \"tool_result\",\n              \"tool_call_id\": call_id, \"build_id\": build_id,\n              \"iter\": it, \"repairs\": repairs}\n    if code:\n        header[\"error_code\"] = code\n    return {\"header\": header,\n            \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                          \"id\": call_id, \"text\": text}]}\n\n\ndef round_of(tag):\n    \"\"\"Read the round back out of the echo: ((build_id, iter, repairs), call_id).\n\n    Tolerant of a coordinate that carries the build alone, because the echo is\n    64 characters at most and a truncated tail must degrade to the origin of the\n    build rather than to a crash.\n    \"\"\"\n    coord, _, cid = str(tag or \"\").partition(\"#\")\n    parts = coord.split(\".\")\n    build_id = parts[0] if parts else \"\"\n    it = parts[1] if len(parts) > 1 else \"0\"\n    repairs = parts[2] if len(parts) > 2 else \"0\"\n    return (build_id, it, repairs), cid\n\n\ndef refusal_of(slot):\n    if isinstance(slot, dict) and str(slot.get(\"status\") or \"\") == \"error\":\n        return \"%s: %s\" % (slot.get(\"error_code\") or \"invalid_query\",\n                           slot.get(\"details\") or \"\")\n    return \"\"\n\n\n# ---- Direction B: an answer. Checked FIRST, and positively: a colony reply\n# carries no hop of ours, so without this it would fall through and be read as a\n# fresh order to look.\ngraph = body.get(\"graph\")\nif isinstance(graph, dict):\n    why = refusal_of(graph)\n    rnd, cid = round_of(graph.get(\"tag\"))\n    if why:\n        emit(result(rnd, cid, \"the graph read was refused: \" + why, \"read_refused\"))\n    nodes = graph.get(\"nodes\") or []\n    edges = graph.get(\"edges\") or []\n    lines = [\"scope %s, %d node(s), %d edge(s)\"\n             % (graph.get(\"scope\", \"/\"), len(nodes), len(edges))]\n    for n in nodes[:60]:\n        lines.append(\"node %s (%s)\" % (n.get(\"path\", \"?\"), n.get(\"cell_type\", \"?\")))\n    for e in edges[:60]:\n        lines.append(\"edge %s -> %s\" % (e.get(\"from\", \"?\"), e.get(\"to\", \"?\")))\n    # The island, said out loud, and said PER NODE. Activity is derived from\n    # edges alone, so a unit no edge names is born inactive with its whole\n    # subtree -- and in a scope that has any edges at all, that unit is exactly\n    # what a reader of the dump above would have to find by hand. Computed over\n    # the whole edge list, never over the 60 that were rendered.\n    touched = set()\n    for e in edges:\n        touched.add(e.get(\"from\"))\n        touched.add(e.get(\"to\"))\n    islands = [n.get(\"path\") for n in nodes if n.get(\"path\") not in touched]\n    if islands:\n        lines.append(\"no edge names these nodes: they are an ISLAND and would \"\n                     \"be born inactive: \"\n                     + \", \".join(str(p) for p in islands[:20]))\n    emit(result(rnd, cid, \"\\n\".join(lines)))\n\nregistry = body.get(\"registry\")\nif registry is not None:\n    why = refusal_of(registry)\n    rnd, cid = round_of(body.get(\"tag\"))\n    if why:\n        emit(result(rnd, cid, \"the registry read was refused: \" + why, \"read_refused\"))\n    rows = registry if isinstance(registry, list) else []\n    lines = [\"%d cell(s)\" % len(rows)]\n    for r in rows[:80]:\n        lines.append(\"%s (%s) active=%s lifecycle=%s\"\n                     % (r.get(\"path\", \"?\"), r.get(\"cell_type\", \"?\"),\n                        \"true\" if r.get(\"active\") else \"false\",\n                        r.get(\"lifecycle_status\", \"?\")))\n    inactive = [r.get(\"path\") for r in rows if not r.get(\"active\")]\n    if inactive:\n        lines.append(\"inactive: \" + \", \".join(str(p) for p in inactive[:20]))\n    emit(result(rnd, cid, \"\\n\".join(lines)))\n\n# ---- Direction A: a fresh look.\nname = str(hop.get(\"tool_name\") or \"\")\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nbuild_id = str(ctx.get(\"build_id\") or \"\")\nhere = (build_id, str(ctx.get(\"iter\", \"0\") or \"0\"),\n        str(ctx.get(\"repairs\", \"0\") or \"0\"))\nraw = \"\"\nfor m in (body.get(\"messages\") or []):\n    if m.get(\"type\") == \"tool_call\" and m.get(\"text\"):\n        raw = m[\"text\"]\ntry:\n    args = json.loads(raw or \"{}\")\n    if not isinstance(args, dict):\n        args = {}\nexcept Exception:\n    args = {}\n\ntag = \"%s.%s.%s#%s\" % (here[0], here[1], here[2], call_id)\nif name == \"graph_read\":\n    emit({\"header\": {\"route\": \"graph\", \"eye_tag\": tag}, \"messages\": [],\n          \"query\": {\"scope\": str(args.get(\"scope\") or \"/\"), \"tag\": tag}})\nif name == \"registry_read\":\n    q = {\"tag\": tag}\n    for key in (\"path\", \"path_prefix\", \"cell_type\"):\n        if args.get(key):\n            q[key] = str(args[key])\n    if isinstance(args.get(\"active\"), bool):\n        q[\"active\"] = args[\"active\"]\n    q[\"limit\"] = int(args.get(\"limit\") or 100)\n    emit({\"header\": {\"route\": \"registry\", \"eye_tag\": tag}, \"messages\": [],\n          \"query\": q})\n\nemit(result(here, call_id, \"no eye named %s\" % (name or \"(none)\"), \"unknown_tool\"))\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "capabilities": [
+      "shell:exec"
+    ],
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "query": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "graph",
+            "registry",
+            "eye_out"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "tool_result"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        },
+        "build_id": {
+          "type": "string",
+          "required": false
+        },
+        "iter": {
+          "type": "string",
+          "required": false
+        },
+        "repairs": {
+          "type": "string",
+          "required": false
+        },
+        "eye_tag": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "read_refused",
+            "unknown_tool"
+          ],
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {},
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The builder's two eyes onto the colony's own read surface: `graph_read` SHOWS the island instead of describing it -- activity is derived from edges alone -- and `registry_read` says what actually stands where, which is the other half of the wrong-template class the messreihe recorded.",
+    "use_when": "Reached on the tool edge for exactly two names -- `graph_read` and `registry_read` -- and again on the way back, when `/colony/graph` or `/colony/registry` has answered.",
+    "not_in_scope": "It reads no database: both answers arrive by message, because no cell reads state it does not own. It does not decide anything about what it saw -- the island is NAMED, never repaired -- and it owns no hand: nothing here mutates, applies or submits.",
+    "emits_meaning": "route graph / route registry are direction A -- one question each, spelled the way a `code` cell asks a colony endpoint: a header, an EMPTY `messages[]` (a UBF body needs one of system/messages/attachments, and an empty list is a valid one) and the question under `query`. `query.tag` carries `<build_id>.<iter>.<repairs>#<tool_call_id>` because a colony answer starts a fresh trace and the echo is the whole memory of the round -- all three coordinates, because the fan-in keys its slate on (build_id, iter) and the re-entry edge reads context.iter and context.repairs; hop.eye_tag repeats it for a reader. Direction B carries the same three back as hop keys, always present and empty rather than absent, so the edge into `weave` can put them into the context again with a `set_context` modifier that a missing key would make fail and skip. route eye_out is direction B -- ONE tool_result under the id the echo carried back, with hop.error_code == 'read_refused' when the endpoint refused the filter and 'unknown_tool' when no eye answers to the name that was called.",
+    "consumes_meaning": "In direction A the tool_call turn, whose text is the JSON argument object the model wrote, plus hop.tool_name to pick the eye and context.build_id / context.iter / context.repairs for the tag. In direction B the endpoint's own answer -- the `graph` object or the `registry` list beside its `tag`. `consumes.body` is deliberately EMPTY: every declared key is a demand the substrate enforces on ingress, and a colony answer carries no `messages[]`, so a `messages` entry here would bounce every answer this cell exists to read.",
+    "examples": [
+      "hop { tool_name: 'graph_read', tool_call_id: 'c-3' } + context { build_id: 'b7', iter: '0', repairs: '0' } + a tool_call '{\"scope\": \"/os/orgs/acme\"}' -> route graph, messages [], query { scope: '/os/orgs/acme', tag: 'b7.0.0#c-3' }",
+      "a graph answer in which some node is named by no edge -> one tool_result under 'c-3' that names those paths as an ISLAND that would be born inactive -- the finding, not a dump, and it holds in a scope that has edges of its own",
+      "a registry answer whose rows carry active=false -> one tool_result under 'c-4' naming the inactive paths, so the wrong-template correction has something to stand on",
+      "a refusal { status: 'error', error_code: 'invalid_query' } -> one tool_result naming the code, hop.error_code 'read_refused': a refusal the model cannot name is one it cannot correct"
+    ]
+  }
+}

@@ -10,6 +10,11 @@
           "route": "in_build",
           "context": [],
           "because": "a structural wish to draft a manifest for. It carries NO promoted identity, and that is a decision rather than an omission: this hive never emits a mutation, so it has nothing to attribute. Identity is read exactly once, at the submitter, off `envelope.reply_to` where the substrate stamped it -- and an edge modifier cannot reach the envelope, so a `context.requester` demanded here could only ever be filled with a constant somebody wrote down. A claim is not an identity, and one place that can verify it beats two that cannot."
+        },
+        {
+          "route": "in_receipt",
+          "context": [],
+          "because": "a refusal the submitter took at the door, on its way back to the composer that wrote the draft. It carries no identity either, for the same reason `in_build` does not: this hive still emits no mutation. What it carries is an error_code, and NAMING it is the whole of the lane -- a refusal the model cannot name is one it cannot repair. The repair budget is separate from the round budget and lives on the edge that spends it."
         }
       ],
       "emits": [
@@ -44,31 +49,181 @@
         },
         {
           "from": "./classify",
-          "to": "./librarian",
+          "to": "./brief",
           "condition": "has(hop.route) && hop.route == 'design'",
           "modifier": {
-            "set_hop": {
-              "route": "'in_request'"
-            },
             "set_context": {
               "build_scope": "hop.build_scope"
             }
           }
         },
         {
-          "from": "./librarian",
-          "to": "./brief",
-          "condition": "has(hop.route) && hop.route == 'brief'"
-        },
-        {
           "from": "./brief",
           "to": "./compose",
-          "condition": "has(hop.route) && hop.route == 'compose'"
+          "condition": "has(hop.route) && hop.route == 'compose'",
+          "modifier": {
+            "set_context": {
+              "build_id": "hop.build_id",
+              "iter": "'0'",
+              "repairs": "'0'"
+            }
+          }
+        },
+        {
+          "from": "./compose",
+          "to": "./dispatch",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'tool_calls'"
         },
         {
           "from": "./compose",
           "to": "./normalise",
-          "condition": "has(hop.finish_reason)"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'length')"
+        },
+        {
+          "from": "./compose",
+          "to": ".",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter')",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'",
+              "error_code": "'composer_failed'"
+            }
+          }
+        },
+        {
+          "from": "./dispatch",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'calls'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./lib",
+          "condition": "has(hop.tool_name) && (hop.tool_name == 'librarian_search' || hop.tool_name == 'catalogue_lookup')"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./eyes",
+          "condition": "has(hop.tool_name) && (hop.tool_name == 'graph_read' || hop.tool_name == 'registry_read')"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./unknown",
+          "default": true,
+          "condition": "has(hop.route) && hop.route == 'tool'"
+        },
+        {
+          "from": "./dispatch",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'result'"
+        },
+        {
+          "from": "./lib",
+          "to": "./librarian",
+          "condition": "has(hop.route) && hop.route == 'lsearch_out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_request'"
+            },
+            "set_context": {
+              "lib_call_id": "hop.lib_call_id"
+            }
+          }
+        },
+        {
+          "from": "./librarian",
+          "to": "./lib",
+          "condition": "has(hop.route) && hop.route == 'brief'"
+        },
+        {
+          "from": "./eyes",
+          "to": "/colony/graph",
+          "condition": "has(hop.route) && hop.route == 'graph'"
+        },
+        {
+          "from": "./eyes",
+          "to": "/colony/registry",
+          "condition": "has(hop.route) && hop.route == 'registry'"
+        },
+        {
+          "from": "./lib",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'lib_out'"
+        },
+        {
+          "from": "./eyes",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'eye_out'",
+          "modifier": {
+            "set_context": {
+              "build_id": "hop.build_id",
+              "iter": "hop.iter",
+              "repairs": "hop.repairs"
+            }
+          }
+        },
+        {
+          "from": "./unknown",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'unknown'"
+        },
+        {
+          "from": "./weave",
+          "to": "./transcript",
+          "condition": "has(hop.route) && hop.route == 'cstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'weave'"
+            }
+          }
+        },
+        {
+          "from": "./transcript",
+          "to": "./weave",
+          "condition": "context.store_origin == 'weave'"
+        },
+        {
+          "from": "./weave",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'fire' && int(context.iter) < 6",
+          "modifier": {
+            "set_context": {
+              "iter": "int(context.iter) + 1"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./weave",
+          "to": "./normalise",
+          "condition": "has(hop.route) && (hop.route == 'draft' || (hop.route == 'fire' && int(context.iter) >= 6))"
+        },
+        {
+          "from": ".",
+          "to": "./weave",
+          "condition": "has(hop.route) && hop.route == 'in_receipt'"
+        },
+        {
+          "from": "./weave",
+          "to": "./compose",
+          "condition": "has(hop.route) && hop.route == 'repair' && has(hop.repairs) && int(hop.repairs) <= 2",
+          "modifier": {
+            "set_context": {
+              "build_id": "hop.build_id",
+              "iter": "hop.iter",
+              "repairs": "hop.repairs"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./weave",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'give_up'",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            }
+          }
         },
         {
           "from": "./recipes",
@@ -117,6 +272,16 @@
           "modifier": {
             "set_hop": {
               "route": "'error'"
+            }
+          }
+        },
+        {
+          "from": "./normalise",
+          "to": "./transcript",
+          "condition": "has(hop.route) && hop.route == 'bind'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'weave'"
             }
           }
         }

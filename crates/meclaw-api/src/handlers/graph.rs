@@ -5,6 +5,7 @@
 //! `{scope, graph_version, nodes, edges}` (spec l.410).
 
 use crate::ColonyHandle;
+use crate::handlers::clamp_read_tag;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -21,6 +22,8 @@ use tokio::sync::oneshot;
 pub struct GraphQuery {
     /// Scope prefix; default `/` (everything).
     pub scope: Option<String>,
+    /// Opaque caller correlation token, echoed verbatim (max 64 chars).
+    pub tag: Option<String>,
 }
 
 /// Handler for `GET /colony/graph`.
@@ -46,15 +49,14 @@ pub async fn get_graph(
             );
         }
     };
-    (
-        StatusCode::OK,
-        Json(json!({
-            "graph": {
-                "scope": reply.scope,
-                "graph_version": reply.graph_version,
-                "nodes": reply.nodes,
-                "edges": reply.edges,
-            }
-        })),
-    )
+    let mut graph = json!({
+        "scope": reply.scope,
+        "graph_version": reply.graph_version,
+        "nodes": reply.nodes,
+        "edges": reply.edges,
+    });
+    if let (Some(t), Some(obj)) = (clamp_read_tag(q.tag), graph.as_object_mut()) {
+        obj.insert("tag".into(), json!(t));
+    }
+    (StatusCode::OK, Json(json!({ "graph": graph })))
 }

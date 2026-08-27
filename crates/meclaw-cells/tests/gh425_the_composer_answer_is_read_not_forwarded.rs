@@ -129,7 +129,13 @@ fn the_composer_speaks_the_same_wire_as_every_other_shipped_llm_cell() {
         "`provider` is the WIRE PROTOCOL, not the vendor (#387, ruled 2026-08-25)"
     );
     assert_eq!(cfg["params"]["temperature"], json!(0));
-    assert_eq!(cfg["params"]["system_order"], json!(["instructions"]));
+    assert_eq!(
+        cfg["params"]["system_order"],
+        json!(["instructions", "tools"]),
+        "the tool schemas are a SEPARATE slot: `docs/cell-types.md` § llm has \
+         them extracted rather than concatenated into the system prompt, and a \
+         composer that never declares the order never sends them"
+    );
     assert!(
         cfg["params"]["max_tokens"].as_u64().expect("max_tokens") >= 2048,
         "a manifest is longer than a spec — 512 truncates it into a refusal"

@@ -11,6 +11,152 @@ Rust crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-08-27
+
+### Added
+
+#### `builder@1.1.0`: the intake becomes an agentic tool loop
+
+The builder was a prefetch plus one model call. It is now a bounded, typed tool
+loop with four eyes, one refine ear and **no hand**: no cell in the template
+draws an edge onto `/colony/mutations`, and that is still a property of the
+files rather than a sentence in this text.
+
+- **A typed tool vocabulary of four.** `librarian_search` and
+  `catalogue_lookup` read the builder's own corpus in-colony, over ordinary
+  routing. `graph_read` and `registry_read` go to `/colony/graph` and
+  `/colony/registry`. Each of the four answers a refusal this system already
+  produces: a missing contract, an island, a template chosen by its name rather
+  than by what it does.
+- **Six cells inside the hive.** `dispatch` (a `ref` to `dispatcher`) fans out
+  by `hop.tool_name`; `weave` is the round table that fans in, rebuilds the
+  thread and fires the next round; `transcript` is the store underneath it;
+  `lib` and `eyes` translate the two families into tool results; `unknown`
+  answers an unknown tool name with an ordinary `tool_result` instead of a
+  dead letter.
+- **`transcript`: one row per turn of one build**, with `role` one of **five**
+  — `user`, `assistant` and `tool` are the loop itself, `receipt` is a refusal
+  handed back by the submitter (it belongs in the rebuilt thread but is not a
+  tool answer, so no round set counts it), and `manifest` is the binding row
+  `normalise` writes when it mints a digest. `fired` is the compare-and-set
+  guard that grants exactly one weave path permission to cross the re-entry
+  edge.
+- **A repair lane.** The contract gains the `accepts` route **`in_receipt`**: a
+  refusal the submitter took at the door travels back to the composer that drew
+  the draft, and naming the `error_code` is the whole of the lane. The repair
+  budget is **separate from the round budget** and is *derived* rather than
+  carried — it counts the `receipt` rows of the build's own slate, so nothing
+  had to be added to the freshly released `submit` contract to make it work.
+- **Four limits, each in its own place**: the round budget on the re-entry edge
+  condition, the repair budget on the repair edge, the call budget in
+  `dispatcher`, and a round idle window in `weave` for a fan-in whose result
+  never arrives. The substrate's TTL is deliberately taken out of play by
+  `restore_ttl` on the re-entry edge, which is why these four have to carry.
+- **Contract movement is `accepts`-only.** `emits` and `ports: []` are
+  unchanged; a caller can do something it was never promised, which is a second
+  digit (`docs/development-rules.md` § 4). Alongside it: `normalise` (cell
+  contract) 1.0.0 → 1.1.0 for `multi_send` and the binding lane, and
+  `builder-librarian` 2.0.6 → 2.0.7 for the regenerated corpus alone.
+
+#### HTTP API: an opaque `tag` echoes back from the graph and registry reads
+
+`GET /colony/graph` and `GET /colony/registry` (and the same queries at the
+message door) accept a `tag` and return it unchanged in the reply. It filters
+nothing, and is therefore **truncated** to 64 characters rather than refused —
+the same treatment, and the same reasoning, the `/colony/ledger` `tag` already
+had. The reason it was needed: a reply from `/colony` begins a fresh trace, so
+without an echoed token a caller with several reads in flight cannot tell the
+answers apart. Both language editions of `docs/meclaw-overview` are carried
+along.
+
+#### `/colony/registry` is drawable by a mutation
+
+It becomes the **third** entry in `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, beside
+`/colony/graph` and `/colony/ledger`. This was not a convenience: an edge from
+inside `meclaw-os` onto `/colony/registry` was refused as
+`scope_out_of_bounds`, which made `meclaw-os` uninstantiable altogether — and
+the builder lives inside `meclaw-os`. The line itself is unmoved:
+`/colony/mutations`, `/colony/trace` and `/colony/dead_letters` stay outside.
+The registry answer is colony bookkeeping over a colony's own cells
+(`path`/`cell_id`/`cell_type`/`lifecycle_status`/`active`/`failed`), never
+message content, and strictly less than `/colony/graph` already hands out. The
+ADR-0015 amendment of the same day claimed "a read that no mutation can draw at
+all"; it carries a visible correction block rather than a silent rewrite.
+
+#### The scenario suite drives the loop without a model
+
+`StubLLM` in `run_builder_scenarios.py` is scriptable: a per-case list of
+answers, the `tool_calls` wire shape, and a `finish_reason` per round. Two new
+cases exercise what the loop is for — `A1-an-eye-fixes-the-island` (an eye
+corrects an island before delivery) and `A2-a-refusal-repaired-once` (a refusal
+is repaired once and named on the second attempt) — on a new `eyes-min`
+scaffold with real nodes for `graph_read` to find.
+
+### Fixed
+
+- **A refusal from the submitter no longer claims to answer a tool call.** The
+  receipt turn was rendered as `{"role":"tool","tool_call_id":""}` — a message
+  that answers no call, and the provider rejected the **whole** request with
+  HTTP 400, which cost the loop its repair round. It now travels as the plain
+  `user` turn that `docs/cell-types.md` allows for a result outside a tool
+  round, with no id at all. In the same place: a receipt arrives on a foreign
+  chain without context and can only be filed under iteration 0, so `rebuild`
+  now sorts `receipt` rows to the **end** of the thread — otherwise a build with
+  two rounds would have read its own refusal in the middle of its transcript.
+- **The composer's connectivity instruction contradicted the door.** The
+  briefing asked for an edge that crosses the new unit's boundary "in the same
+  manifest", and the only anchor a declaration names is the scope itself — but
+  `"."` is not an edge endpoint, and a hive is a path prefix marker, not a cell.
+  A new `ENDPOINTS` block, derived from `mutation/validate.rs`, names the two
+  legal spellings and separates the two cases the text had conflated: a cell
+  into a **standing** unit needs an edge from next door, a unit the manifest
+  **creates itself** must be declared at the parent.
+- **`rounds_done` measures what `iter` does not.** `iter` keeps its meaning —
+  the slate is keyed on it and the repair edge restores it — but it is stamped
+  by `weave` with the value it *finds*, so it counts "looked twice", not
+  "looked". The number now travels beside it as `hop.rounds_done`, stamped on
+  the two routes that really close a round. The evaluation script had never
+  computed the figure at all; it does now, and shows the `iter` stamps next to
+  it so a reader can keep the two apart.
+- **A `code` cell's child task sent `reply` before `idle`.** A serial stream
+  therefore got a different slot for its next job and woke a second
+  interpreter. Not a flake — the sends are swapped.
+- **The builder's repair lane was dead on arrival**: `weave` never emitted the
+  `repair` route, so the refusal path never reached the composer again. Six
+  existing tests were green because none of them asked whether it did. Fixed
+  together with an off-by-one on the repair edge that swallowed the **second**
+  repair.
+
+### Known limitations
+
+- **The acceptance quota is missed, and it is reported as missed.** Measured
+  twice with n=4 against one model (`openai/gpt-5.6-luna`), before and after the
+  three follow-up fixes: "the composition lives" 0/4 both times, "it is what was
+  ordered" 0/4 both times. What holds is **"no silent death" 4/4** — every run
+  said how it ended, a draft with a digest and a named refusal or a named
+  `error`, never an empty manifest and never silence — and **"the loop
+  looked" 4/4** once the figure measured it. The bottleneck is manifest
+  **quality**, above all the choice of template; the loop itself runs, is
+  bounded and never goes quiet. Cost of both runs together: well under one
+  euro-cent per run, far from the configured ceiling.
+- **`declarations_not_a_list` is named as a risk, not as a finding.** The class
+  moved from 1/4 to 3/4 across the prompt change, and the direction is the wrong
+  one — but the same class has been measured at 2/6 and 7/8 for the same model
+  **without** that text, so 1/4 against 3/4 lies inside that noise. Separating
+  it needs a larger n against both prompt versions; it is not going to be
+  "disproved" by tuning after the fact.
+- **A caller's coordinates can lose a race.** The reply of a `/colony` eye
+  begins a fresh trace, and the re-entry edge restores exactly the three
+  coordinates the **loop** needs (`build_id`, `iter`, `repairs`). Everything the
+  **caller** needs — `build_call_id`, `agent`, `build_op`, `build_scope`,
+  `orig_request` — was never on that list. Which one survives is decided by
+  whichever leg of the round arrives last: a `lib` leg carries them, an eye does
+  not. Observed once, in a three-round build. It is older than the fixes above
+  and became visible only because the loop now gets that far.
+- **The wire fix is pinned by three tests and unproven in the field.** No run of
+  the follow-up measurement reached a repair round, so the corrected receipt
+  turn was never exercised against a live provider.
+
 ## [0.26.0] — 2026-08-27
 
 ### Breaking

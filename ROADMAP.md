@@ -44,7 +44,8 @@ Two of its sub-issues closed in August without being built, because a design
 round answered them: a talky generation ends when the **participant set** changes
 rather than at midnight, and what keeps one room's talk out of another is the
 audience an entry carries, not a memory store per channel. The memory half of
-that rule shipped in 0.16.0; the topology half stays with #122 below.
+that rule shipped in 0.16.0; the topology half is not work in this list — it is
+the target picture #122 became when it closed, described below.
 
 What is left of the epic as work:
 
@@ -223,6 +224,24 @@ disagree.
 
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
+
+- **v0.27.0 — the builder stops guessing and starts looking.** `builder@1.1.0`
+  turns the intake from a prefetch plus one model call into a bounded, typed
+  tool loop with four eyes, one refine ear and still **no hand**: no cell in the
+  tree draws an edge onto `/colony/mutations`. Two of the four tools read the
+  builder's own corpus in-colony, two read `/colony/graph` and
+  `/colony/registry`, and each answers a refusal this system already produces —
+  a missing contract, an island, a template chosen by its name rather than by
+  what it does. A repair lane carries a refusal the submitter took at the door
+  back to the composer that drew the draft; four separate budgets bound the
+  rounds, the repairs, the calls and a fan-in that never arrives. Beside it two
+  substrate additions the loop needed: `/colony/graph` and `/colony/registry`
+  echo an opaque `tag` back, so a caller with several reads in flight can tell
+  the answers apart, and `/colony/registry` becomes drawable by a mutation —
+  without it `meclaw-os` was uninstantiable. The acceptance quota is **missed
+  and reported as missed**: the loop runs, is bounded and never goes quiet
+  (4/4 on "no silent death"), but manifest quality — above all the choice of
+  template — is not there yet.
 
 - **v0.26.0 — a template arrives in a running colony, and the shutdown finally
   drains.** `add_templates` is the mutation the library was missing: a template

@@ -237,6 +237,16 @@
         },
         {
           "from": "./submit",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'receipt' && has(hop.error_code)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_receipt'"
+            }
+          }
+        },
+        {
+          "from": "./submit",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'mutate'"
         },

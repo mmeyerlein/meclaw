@@ -1,0 +1,151 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json, datetime\n\n# The fan-in of the builder's tool loop. A shrunk `collector/assemble`: the four\n# algorithms that carry, none of the eleven lanes that do not.\n#\n# Every knob is read from `params`, which the substrate always sets -- so two\n# builders in one colony are tuned apart, and a mutation retunes one without\n# touching a colony-wide environment.\ndoc = json.load(sys.stdin)\nd = doc[\"body\"]\nenv = doc[\"envelope\"]\nP = doc.get(\"params\") or {}\n\n\ndef _int(key, default):\n    v = P.get(key, default)\n    if v is None:\n        return default\n    if isinstance(v, str) and not v.strip():\n        return default\n    return int(v)\n\n\n# The loop begins at the seam, so the seam ends it. At the cap the collected\n# thread leaves for `normalise` instead of asking the composer again.\nMAX_ITER = _int(\"max_iter\", 6)\n# A SEPARATE budget, and that is the whole point: a model that burns its round\n# budget on searches would have none left for the refusal it could actually\n# repair.\nMAX_REPAIRS = _int(\"max_repairs\", 2)\n# A round whose result never arrives must not park until the TTL: a TTL death is\n# SILENT (direct to DLQ, no reply_to cascade), so the tool_call_id waiting at\n# `templates/tools/build` would never be closed.\nROUND_IDLE_MS = _int(\"round_idle_ms\", 120000)\n\nFMT = \"%Y-%m-%dT%H:%M:%S.%fZ\"\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(FMT)\n# Fixed-width UTC timestamps order lexicographically, so this is a string\n# compare. Pure arithmetic, no timer of the template's own.\nIDLE_CUT = (datetime.datetime.now(datetime.timezone.utc)\n            - datetime.timedelta(milliseconds=ROUND_IDLE_MS)).strftime(FMT)\n\nhop = (env.get(\"header\") or {}).get(\"hop\") or {}\nctx = (env.get(\"header\") or {}).get(\"context\") or {}\nbuild_id = str(ctx.get(\"build_id\") or hop.get(\"build_id\") or \"\")\nit = int(ctx.get(\"iter\", 0) or 0)\nrepairs = int(ctx.get(\"repairs\", 0) or 0)\nmsgs = d.get(\"messages\") or []\n\n\ndef park():\n    \"\"\"Terminal by design: an incomplete fan-in and a lost race emit NOTHING.\"\"\"\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n\ndef emit(out):\n    sys.stdout.write(json.dumps(out))\n    sys.exit(0)\n\n\ndef head(route, extra=None):\n    \"\"\"Every emission carries the full key set the edges read. A missing hop key\n    makes a CEL modifier fail, and a failed modifier SKIPS the edge -- so keys\n    are present and empty rather than absent.\"\"\"\n    out = {\"route\": route, \"build_id\": build_id, \"iter\": str(it),\n           \"repairs\": str(repairs)}\n    if extra:\n        out.update(extra)\n    return out\n\n\ndef store_bundle(ops):\n    \"\"\"Insert and read-back in ONE message (GH #419). The store runs a bundle's\n    ops in order over its one connection, so the trailing select sees the insert\n    in front of it: of N legs parking concurrently exactly ONE reads a complete\n    set. No guard row to win, no message to win it with.\"\"\"\n    return {\"header\": head(\"cstore\"),\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": name, \"text\": json.dumps(op)}\n                         for name, op in ops]}\n\n\ndef park_and_read(role, turn, fired=0, iter_=None):\n    return store_bundle([\n        (\"w-round-row\",\n         {\"operation\": \"insert\", \"table\": \"thread\",\n          \"row\": {\"build_id\": build_id, \"iter\": it if iter_ is None else iter_,\n                  \"role\": role, \"turn\": json.dumps(turn), \"fired\": fired,\n                  \"recorded_at\": now}}),\n        (\"w-round-read\",\n         {\"operation\": \"select\", \"table\": \"thread\",\n          \"columns\": [\"build_id\", \"iter\", \"role\", \"turn\", \"fired\", \"recorded_at\"],\n          \"where\": {\"build_id\": build_id}})])\n\n\n# The private format of a receipt turn: the code NAMED at the front. Written\n# here and read here, which is what lets the give_up header recover it without a\n# column the transcript does not have.\nREFUSED = \"the submission was refused: \"\n\n\ndef code_of(r):\n    \"\"\"The error_code a receipt row was written with, back out of its turn.\"\"\"\n    try:\n        t = json.loads(r.get(\"turn\") or \"null\")\n    except Exception:\n        return \"\"\n    text = str((t or {}).get(\"text\") or \"\") if isinstance(t, dict) else \"\"\n    if not text.startswith(REFUSED):\n        return \"\"\n    return text[len(REFUSED):].split(\" -- \", 1)[0].strip()\n\n\ndef has_slot(body, slot):\n    \"\"\"Whether a leg answered at all -- an empty result and an absent one are\n    different facts, and only one of them ends a build.\"\"\"\n    return any(m.get(\"id\") == slot for m in (body.get(\"messages\") or []))\n\n\ndef rows_of(body, slot):\n    \"\"\"The slate one leg of a bundle came back with. The store answers a bundle\n    with one `tool_result` turn per leg in `messages[]`, keyed by that leg's\n    `tool_call_id`; the top-level `results[]` slot carries per-op METADATA only\n    (`store/output.rs`, `build_bundle_result`), so the rows are read here.\"\"\"\n    for m in (body.get(\"messages\") or []):\n        if m.get(\"id\") == slot and m.get(\"text\"):\n            try:\n                r = json.loads(m[\"text\"])\n            except Exception:\n                return []\n            return r if isinstance(r, list) else []\n    return []\n\n\ndef round_sets(rows, iter_):\n    \"\"\"The fan-in state of ONE iteration, read from the slate: the call ids the\n    assistant expects, the ids that answered, and the newest write time of the\n    round -- its last PROGRESS. A row that cannot be dated counts as\n    progress-less rather than as old: an undatable round is never closed.\"\"\"\n    expected, received, progress = set(), set(), \"\"\n    for r in rows:\n        if int(r.get(\"iter\", 0) or 0) != iter_:\n            continue\n        role = r.get(\"role\")\n        if role not in (\"assistant\", \"tool\"):\n            continue\n        rec = str(r.get(\"recorded_at\") or \"\")\n        if rec > progress:\n            progress = rec\n        try:\n            t = json.loads(r.get(\"turn\") or \"null\")\n        except Exception:\n            continue\n        if role == \"assistant\":\n            items = t if isinstance(t, list) else [t]\n            expected.update(x.get(\"id\", \"\") for x in items\n                            if isinstance(x, dict) and x.get(\"type\") == \"tool_call\"\n                            and x.get(\"id\"))\n        else:\n            items = t if isinstance(t, list) else ([] if t is None else [t])\n            received.update(x.get(\"id\") for x in items\n                            if isinstance(x, dict) and x.get(\"id\"))\n    return expected, received, progress\n\n\ndef rebuild(rows):\n    \"\"\"The cumulative thread, in provider order: for each iteration the user\n    turn, then the assistant bundle, then its results.\"\"\"\n    out = []\n    def order(r):\n        # A `receipt` sorts LAST, ahead of no round: it arrives on a foreign\n        # chain that carries no context, so the ear can only file it under\n        # iteration 0 -- and a refusal buried between two tool rounds refuses\n        # something the thread has not shown yet.\n        late = 1 if r.get(\"role\") == \"receipt\" else 0\n        return (late, 0 if late else int(r.get(\"iter\", 0) or 0),\n                {\"user\": 0, \"assistant\": 1}.get(r.get(\"role\"), 2),\n                str(r.get(\"recorded_at\") or \"\"))\n\n    for r in sorted(rows, key=order):\n        try:\n            t = json.loads(r.get(\"turn\") or \"null\")\n        except Exception:\n            continue\n        if isinstance(t, list):\n            out.extend(x for x in t if isinstance(x, dict))\n        elif isinstance(t, dict):\n            out.append(t)\n    return out\n\n\n# ---- Lane: the composer asked for tools. The assistant turn IS the expectation\n# set, and it is parked before any result can reach us (PLAIN order at the\n# dispatcher guarantees it arrives first).\nif hop.get(\"route\") == \"calls\":\n    emit([park_and_read(\"assistant\", msgs)])\n\n# ---- Lane: one tool answered.\nif hop.get(\"operation\") == \"tool_result\" or hop.get(\"route\") == \"unknown\":\n    turn = msgs[0] if msgs else {}\n    emit([park_and_read(\"tool\", turn)])\n\n# ---- Lane: a receipt came back from the submitter (the refine ear).\n#\n# It arrives on a FOREIGN chain. `templates/submit/gate` renders a receipt off\n# its own remembered row -- \"the colony's answer begins a fresh trace and\n# carries neither\" -- and the `./submit -> ./builder` edge re-stamps `hop.route`\n# and nothing else. So `context.repairs` is 0 or absent here no matter what the\n# loop counted, and the budget is NOT decided on this lane. It is decided on the\n# read-back below, from the rows, which is the only counter that survives.\nif hop.get(\"route\") == \"in_receipt\":\n    code = str(hop.get(\"error_code\") or \"\")\n    said = \"\"\n    for m in msgs:\n        if m.get(\"text\"):\n            said = str(m[\"text\"])\n    if repairs >= MAX_REPAIRS:\n        # A belt, not the truth: when the context DID survive and already says\n        # the budget is spent, there is no reason to write another row first.\n        # Named, never silent, and never an empty manifest.\n        emit([{\"header\": head(\"give_up\", {\"error_code\": code or \"repair_budget_spent\"}),\n               \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                             \"text\": \"the build stops after %d repair(s): %s -- %s\"\n                                     % (repairs, code, said[:600])}]}])\n    # NAME the code in the turn. The model only sees the turn, and a refusal it\n    # cannot name is one it cannot repair.\n    #\n    # Role `receipt`, not `tool`: a refusal answers no tool_call, so `round_sets`\n    # -- which reads `assistant` and `tool` only -- must not count it as an\n    # answer, while `rebuild` still carries it to the composer. It is also what\n    # the read-back below counts the budget from.\n    text = REFUSED + (code or \"unnamed\")\n    if said:\n        text += \" -- \" + said[:600]\n\n    # NOT a `tool_result` turn. This thread goes straight back into\n    # `compose`, an llm cell: an id-less tool_result renders as\n    # {\"role\": \"tool\", \"tool_call_id\": \"\"}, a message that answers no call,\n    # and the provider refuses the WHOLE request with 400 (measured 3 of 3,\n    # plans/welle-2026-08-27/receipts/builder-agentic-loop-messlauf.md).\n    # A refusal answers no tool_call because it comes from the refine lane,\n    # so it travels as the plain turn docs/cell-types.md sanctions for a\n    # result used outside a tool loop -- carrying no id at all.\n    turn = {\"origin\": \"user\", \"type\": \"text\", \"text\": text}\n    if build_id:\n        emit([park_and_read(\"receipt\", turn)])\n    # No build_id -- the REAL wire, and the reason this cell correlates by\n    # digest at all. The submitter parks and pops a submission under\n    # `manifest_sha256`, so that is the one handle that survives the round trip;\n    # `normalise` wrote down which build the digest belongs to. Stage the\n    # refusal UNDER the digest so two builds refused at the same moment cannot\n    # pool into one, and ask who owns it in the same bundle.\n    sha = str(hop.get(\"manifest_sha256\") or \"\")\n    if not sha:\n        emit([{\"header\": head(\"give_up\", {\"error_code\": \"build_unknown\"}),\n               \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                             \"text\": \"a refusal arrived with neither a build nor \"\n                                     \"a manifest digest -- %s\" % text}]}])\n    emit([store_bundle([\n        (\"w-receipt-row\",\n         {\"operation\": \"insert\", \"table\": \"thread\",\n          \"row\": {\"build_id\": sha, \"iter\": it, \"role\": \"receipt\",\n                  \"turn\": json.dumps(turn), \"fired\": 0, \"recorded_at\": now}}),\n        (\"w-build-lookup\",\n         {\"operation\": \"select\", \"table\": \"thread\",\n          \"columns\": [\"build_id\", \"iter\", \"role\", \"turn\", \"fired\", \"recorded_at\"],\n          \"where\": {\"role\": \"manifest\", \"turn\": sha}})])])\n\n# ---- Lane: the store answered. This is where the round is decided.\nif hop.get(\"route\") == \"cstore\" or hop.get(\"operation\") in (\"bundle\", \"select\"):\n    # ---- The binding lookup answered: who owns this manifest digest?\n    if has_slot(d, \"w-build-lookup\"):\n        binds = rows_of(d, \"w-build-lookup\")\n        newest = max(binds, key=lambda r: str(r.get(\"recorded_at\") or \"\")) if binds else {}\n        owner = str(newest.get(\"build_id\") or \"\")\n        if not owner:\n            # A digest nobody in this hive composed. It must NOT park: a\n            # refusal that cannot find its build is still a build that stopped.\n            emit([{\"header\": head(\"give_up\", {\"error_code\": \"build_unknown\"}),\n                   \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                                 \"text\": \"no build in this hive composed the \"\n                                         \"refused manifest\"}]}])\n        # Two builds that drafted byte-identical manifests share a digest; the\n        # NEWEST binding wins, and either of them is repairing the same bytes.\n        emit([store_bundle([\n            (\"w-adopt\",\n             {\"operation\": \"update\", \"table\": \"thread\",\n              \"set\": {\"build_id\": owner},\n              \"where\": {\"build_id\": str(newest.get(\"turn\") or \"\"),\n                        \"role\": \"receipt\"}}),\n            (\"w-round-read\",\n             {\"operation\": \"select\", \"table\": \"thread\",\n              \"columns\": [\"build_id\", \"iter\", \"role\", \"turn\", \"fired\", \"recorded_at\"],\n              \"where\": {\"build_id\": owner}})])])\n\n    rows = rows_of(d, \"w-round-read\")\n    if not rows:\n        park()\n    # The slate says whose it is. On the receipt road the context arrived empty\n    # and the adopt bundle above put the rows under their build, so this is\n    # where the cell learns the name it will claim with.\n    if not build_id:\n        build_id = str(rows[0].get(\"build_id\") or \"\")\n    # ---- The refine ear's read-back, and it is decided BEFORE the fired check:\n    # a receipt refuses a round that has fired by definition, so the guard that\n    # keeps a late tool result out would silently swallow every repair -- and a\n    # build that stops has to say so.\n    #\n    # The budget is COUNTED FROM THE ROWS, never carried. A receipt arrives on a\n    # foreign chain that drops every counter the loop set (see the in_receipt\n    # lane), so `context.repairs` is worthless here -- but the refusals are all\n    # written down, and counting them is exact. `fired` is the hand-back claim,\n    # the same column and the same discipline the round election uses: an open\n    # receipt is one the composer has not seen, and claiming it is what stops a\n    # later read-back of the same slate from handing it back twice.\n    receipts = [r for r in rows if r.get(\"role\") == \"receipt\"]\n    open_receipts = [r for r in receipts if not int(r.get(\"fired\") or 0)]\n    if open_receipts:\n        done = len(receipts)\n        newest = max(open_receipts,\n                     key=lambda r: str(r.get(\"recorded_at\") or \"\"))\n        code = code_of(newest)\n        # One claim for both exits: a give_up that left its receipt open would\n        # be emitted again by the next read-back of the same slate.\n        claim = {\"header\": head(\"cstore\", {\"repairs\": str(done)}),\n                 \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                               \"id\": \"w-repair-done\",\n                               \"text\": json.dumps({\n                                   \"operation\": \"update\", \"table\": \"thread\",\n                                   \"set\": {\"fired\": 1},\n                                   \"where\": {\"build_id\": build_id,\n                                             \"role\": \"receipt\", \"fired\": 0}})}]}\n        if done > MAX_REPAIRS:\n            emit([{\"header\": head(\"give_up\", {\"repairs\": str(done),\n                                              \"error_code\": code or \"repair_budget_spent\"}),\n                   \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": \"\",\n                                 \"text\": \"the build stops after %d repair(s): %s\"\n                                         % (MAX_REPAIRS, code or \"unnamed\")}]},\n                  claim])\n        emit([{\"header\": head(\"repair\", {\"repairs\": str(done)}),\n               \"messages\": rebuild(rows)}, claim])\n    # The mark makes the election permanent: a result arriving after its round\n    # answered reads a complete set too, and without this it would send the\n    # thread to the composer a second time.\n    if any(int(r.get(\"fired\") or 0) for r in rows\n           if r.get(\"role\") == \"assistant\" and int(r.get(\"iter\", 0) or 0) == it):\n        park()\n    expected, received, progress = round_sets(rows, it)\n    missing = expected - received\n    if expected and missing and progress and progress < IDLE_CUT:\n        # The deterministic exit: the round went idle with calls open and a\n        # message reached us anyway. Stand-ins complete the fan-in and\n        # everything after this is the regular machine.\n        emit([park_and_read(\"tool\",\n                            {\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": mid,\n                             \"text\": \"tool result lost: the round went idle \"\n                                     \"before this call's result arrived\"})\n              for mid in sorted(missing)])\n    if not expected or missing:\n        park()\n\n    spent = it >= MAX_ITER\n    claim = {\"header\": head(\"cstore\"),\n             \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                           \"id\": \"w-round-done\",\n                           \"text\": json.dumps({\n                               \"operation\": \"update\", \"table\": \"thread\",\n                               \"set\": {\"fired\": 1},\n                               \"where\": {\"build_id\": build_id, \"iter\": it,\n                                         \"role\": \"assistant\", \"fired\": 0}})}]}\n    thread = rebuild(rows)\n    # `iter` is a COORDINATE -- the round this emission closed, counted from\n    # zero -- and it stays one: the slate is keyed on it, the repair edge\n    # restores context.iter from it, and a scenario asserts it. What an\n    # onlooker wants is a COUNT, and reading the coordinate as one made an\n    # acceptance run report 0 of 4 for a loop that had looked 4 of 4\n    # (builder-agentic-loop-messlauf.md, acceptance table, line 4). So the count is stamped\n    # beside it, on the two routes that actually close a round.\n    extra = {\"round_capped\": \"1\" if spent else \"0\",\n             \"rounds_done\": str(it + 1),\n             \"round_stale\": \"1\" if any(\"tool result lost\" in str(x.get(\"text\", \"\"))\n                                       for x in thread) else \"0\"}\n    emit([{\"header\": head(\"draft\" if spent else \"fire\", extra),\n           \"messages\": thread}, claim])\n\npark()\n",
+    "external_timeout_ms": 10000,
+    "max_iter": 6,
+    "max_repairs": 2,
+    "round_idle_ms": 120000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "max_iter": {
+        "type": "number",
+        "secret": false,
+        "default": 6,
+        "description": "BUILDER_MAX_ITER -- how many tool rounds one build may take. The loop begins at this seam, so this seam ends it: at the cap the collected thread leaves for `normalise` with hop.round_capped=1 instead of asking the composer again. It is NOT the dispatcher's call budget, which bounds one answer's bundle and lives at the dispatcher because only that cell sees the whole bundle."
+      },
+      "max_repairs": {
+        "type": "number",
+        "secret": false,
+        "default": 2,
+        "description": "BUILDER_MAX_REPAIRS -- how often a refused draft may be handed back to the composer with its error_code named. Deliberately a SEPARATE budget from max_iter: a model that spent its round budget on searches would have none left for the refusal it could actually repair. At the cap the build stops on the error lane with the code that refused it, never with an empty manifest."
+      },
+      "round_idle_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 120000,
+        "description": "BUILDER_ROUND_IDLE_MS -- idle window of one tool round. A round whose last progress lies behind this window while its fan-in is incomplete is closed at the NEXT message that reaches this cell anyway: the missing calls get synthetic error tool_results keeping their tool_call_id, then the round fires through its regular route with hop.round_stale=1. It matters because a /colony eye CAN stay silent -- it has no cell.db and no timer, so it cannot notice its own silence -- and a TTL death emits nothing at all towards the surface."
+      }
+    },
+    "multi_send_capable": true,
+    "capabilities": [
+      "shell:exec"
+    ],
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "cstore",
+            "fire",
+            "repair",
+            "draft",
+            "give_up"
+          ],
+          "required": true
+        },
+        "build_id": {
+          "type": "string",
+          "required": true
+        },
+        "iter": {
+          "type": "string",
+          "required": true
+        },
+        "repairs": {
+          "type": "string",
+          "required": true
+        },
+        "round_capped": {
+          "type": "string",
+          "required": false
+        },
+        "rounds_done": {
+          "type": "string",
+          "required": false
+        },
+        "round_stale": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "build_id": {
+          "type": "string",
+          "required": false
+        },
+        "iter": {
+          "type": "string",
+          "required": false
+        },
+        "repairs": {
+          "type": "string",
+          "required": false
+        },
+        "store_origin": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "operation": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The fan-in of the builder's tool loop, and the only place the loop can end. It parks every turn of a build in the `thread` table and reads the slate back in the SAME message (GH #419), so of N tool legs parking concurrently exactly one reads a complete round -- membership of call ids, never a row count, so arrival order cannot change the answer and a duplicate id cannot fake a set. The winning leg rebuilds the cumulative thread, sends it back over the re-entry edge on route `fire`, and claims the round in the same multi-send by setting `fired=1` on the assistant row: a result that arrives after its round was answered reads a complete set too, and the mark is what makes the election permanent. A refusal from the submitter takes the same road in the other direction: it is parked as a `receipt` row with its error_code NAMED in the turn (a refusal the model cannot name is one it cannot repair), and the read-back hands the thread back to the composer on route `repair` as long as the slate holds more receipts than context.repairs counts hand-backs -- the comparison is the whole guard, monotone and readable from the slate. Three bounds are its own, because `restore_ttl` on the re-entry edge deliberately takes TTL out of the game: params.max_iter ends the loop here (the thread leaves for `normalise` with hop.round_capped=1 instead of asking the composer again), params.max_repairs ends a refusal loop on route `give_up` with the error_code that refused it, and params.round_idle_ms closes a round whose result never came -- the missing calls get synthetic error tool_results keeping their tool_call_id, and the round fires through the REGULAR machine with hop.round_stale=1.",
+    "use_when": "Beside `transcript`, inside the builder hive: on the dispatcher's assistant turn (route `calls`), on every tool result of the eyes and of the librarian, on an `unknown` refusal, on the store's own bundle reply, and on the refine ear `in_receipt`. The re-entry edge `./weave -> ./compose` carries the counters AND `restore_ttl`.",
+    "not_in_scope": "No inference, no rendering, no manifest of its own -- what leaves on `draft` is the collected thread and `normalise` decides what a manifest is. No fan-OUT: naming the cell behind a tool is an edge's decision at `dispatch`. No timer and no schedule of its own: the idle exit is pure arithmetic over `recorded_at`, evaluated at the next message that reaches this cell anyway. No deletion and no retention: a build is minutes long. No second reader of the round table -- a second reader would be a second protocol over the same guard.",
+    "emits_meaning": "route cstore: store traffic of this cell -- the park-and-read bundle (`w-round-row` + `w-round-read`) and the guarded `fired=1` claim (`w-round-done`), which travels WITH the fire rather than one hop in front of it. route fire: THE re-entry, messages[] the cumulative thread in provider order (per iteration the user turn, the assistant bundle, then its results), hop.iter the COORDINATE of the round it closed -- counted from zero, because the re-entry edge is what raises it -- and hop.rounds_done the COUNT of rounds this build has closed, this one included. The two differ by one and the second exists because the first was read as a count once and reported a loop that had looked as one that never did. hop.round_stale=1 when a synthetic stand-in travels in it. route repair: the SAME thread with a refusal at the end of it, on its way back to the composer -- emitted when the slate holds more `receipt` rows than context.repairs counts hand-backs, which is what makes the re-entry edge raise the counter and what makes the repair budget reachable at all. route draft: the thread when the iteration budget is spent, with hop.round_capped=1 and hop.rounds_done -- the loop ends where it began. rounds_done rides on fire and draft and nowhere else: a `repair` hands a refusal back without a round having run, and `give_up` and `cstore` close none. route give_up: the repair budget is spent, hop.error_code the code that refused the submission, and never an empty manifest. An incomplete fan-in and a lost race emit NOTHING (empty multi-send, terminal by design).",
+    "consumes_meaning": "Lanes are read from hop: route `calls` (the assistant tool_call turn from the dispatcher -- it IS the expectation set and is parked before any result can reach this cell), hop.operation `tool_result` or route `unknown` (one tool answer, filed under the call it answers), route `in_receipt` (a submitter's refusal, correlated by context.build_id and NAMED in the turn, because a refusal the model cannot name is one it cannot repair), route `cstore` / hop.operation `bundle` (the store's reply, where the round is decided). context carries build_id, iter and repairs; the store's own reply lane carries them back through context.store_origin.",
+    "examples": [
+      "two calls in one bundle -> the assistant row is parked first, then two tool legs park concurrently -> the second one reads assistant+2 results, fires the thread on `fire` and claims the row in the same message; the first one read an incomplete set and emitted nothing",
+      "a third, late result for the same round -> it reads a complete set as well, sees fired=1 on the assistant row and parks: the mark makes the election permanent",
+      "a /colony eye stays silent -> the round parks; the next message that reaches this cell after params.round_idle_ms writes a 'tool result lost' stand-in under the missing tool_call_id, the fan-in completes through the regular machine and the thread fires with hop.round_stale=1",
+      "the model asks for tools a seventh time with params.max_iter=6 -> at iter == max_iter the thread leaves on `draft` with hop.round_capped=1 instead of re-entering the composer",
+      "the submitter refuses with requirement_missing and context.repairs=0 -> the code is parked as a `receipt` row naming it, the read-back finds one arrival against zero hand-backs and sends the whole thread back to the composer on `repair`; the re-entry edge raises context.repairs, so the same slate read again hands nothing back",
+      "the same refusal at repairs == params.max_repairs -> nothing is parked at all and the build leaves on `give_up` with hop.error_code=requirement_missing: a build that stops says so, it never falls silent"
+    ]
+  }
+}

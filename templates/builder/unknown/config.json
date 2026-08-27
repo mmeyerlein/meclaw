@@ -1,0 +1,88 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "script_inline": "import sys, json\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nname = str(hop.get(\"tool_name\") or \"\")\nasked = name if name else \"(none)\"\n# The four tools this hive wires, named in the refusal. A model that asked for\n# something else gets the LIST rather than a shrug: the vocabulary is closed,\n# so naming it is the whole of the correction.\ntext = (\"no tool named %s is wired into this builder. The tools are: \"\n        \"librarian_search, catalogue_lookup, graph_read, registry_read.\" % asked)\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"unknown\", \"operation\": \"unknown\",\n               \"error_code\": \"unknown_tool\", \"tool_name\": name,\n               \"tool_call_id\": str(hop.get(\"tool_call_id\") or \"\")},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                  \"id\": str(hop.get(\"tool_call_id\") or \"\"), \"text\": text}]}))\n",
+    "external_timeout_ms": 5000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "capabilities": [
+      "shell:exec"
+    ],
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "unknown"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "unknown"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "unknown_tool"
+          ],
+          "required": true
+        },
+        "tool_name": {
+          "type": "string",
+          "required": true
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "tool_name": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "The guarded default of the builder's tool fan-out: a tool_call whose name no positive edge matched is answered as an ordinary tool_result under the id that asked, naming the four tools that do exist.",
+    "use_when": "Never wired by hand and never addressed by name. Reached only when no positive tool edge fired, and only because the default edge's own guard held.",
+    "not_in_scope": "Not a tool: no arguments are read, nothing is executed. No guess at a near-miss name either. And not a drain -- a cell that accepted the call and emitted nothing would be the swallowing sink GH #284 removed.",
+    "emits_meaning": "route unknown: the lane the weave step folds a refusal back in on, distinct from the `tool_result` route the four wired eyes answer on, so the fan-in can count a refused call without mistaking it for a served one. hop.error_code is always `unknown_tool`; hop.tool_name is the name that was asked for -- verbatim, including the empty string when the call carried none; hop.tool_call_id is the id the fan-in is waiting on, and it is the whole reason this cell emits at all. messages[0] is ONE tool_result turn under that id, whose text names the asked-for tool and the closed vocabulary.",
+    "consumes_meaning": "messages[]: the tool_call turn as it arrived. It is not parsed -- what the call wanted is irrelevant once there is nothing to serve it. hop.tool_name: the name that missed every positive edge, read only to be quoted back; its absence is a case, not an error.",
+    "examples": [
+      "hop { tool_name: 'bash', tool_call_id: 'c-9' } -> tool_result id 'c-9' 'no tool named bash is wired into this builder. The tools are: librarian_search, catalogue_lookup, graph_read, registry_read.', hop { route: 'unknown', error_code: 'unknown_tool', tool_name: 'bash' }",
+      "hop { tool_call_id: 'c-10' } with no tool_name at all -> the same refusal under id 'c-10', tool_name empty and the text saying '(none)' -- the round closes and the composer learns its dispatcher lost the name, instead of the fan-in parking until the TTL runs out"
+    ]
+  }
+}

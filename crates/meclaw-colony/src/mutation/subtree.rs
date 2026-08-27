@@ -1183,7 +1183,8 @@ fn resolve_internal_edges(
             let from = Path::resolve(&hive_abs, &spec.from);
             let to = Path::resolve(&hive_abs, &spec.to);
             // GH #163, GH #267: a template's own lane to one of the colony's
-            // two read-only endpoints — `/colony/graph` (topology) and
+            // three read-only endpoints — `/colony/graph` (topology),
+            // `/colony/registry` (its own bookkeeping about its own cells) and
             // `/colony/ledger` (counts) — is in bounds; it addresses the
             // authority, not a cell outside the subtree (see
             // `crate::mutation::MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`). Only as a

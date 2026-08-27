@@ -106,6 +106,8 @@ PIN-ledger-aggregates-de	docs/meclaw-overview.md	keine Rohzeilen und keine Heade
 PIN-ledger-aggregates-en	docs/meclaw-overview.en.md	no raw rows and no header contents	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
 PIN-ledger-drawable-de	docs/meclaw-overview.md	Zählungen beantwortet und nie Inhalt	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
 PIN-ledger-drawable-en	docs/meclaw-overview.en.md	answers counts and never content	pinned	a_template_may_declare_its_own_lane_to_the_colony_ledger
+PIN-read-tag-echo-de	docs/meclaw-overview.md	gekürzt und kommt unverändert zurück	pinned	a_graph_tag_is_truncated_and_never_refused
+PIN-read-tag-echo-en	docs/meclaw-overview.en.md	truncated to 64 characters and comes back verbatim	pinned	a_graph_tag_is_truncated_and_never_refused
 PIN-graph-edge-default-de	docs/meclaw-overview.md	steht dagegen **immer da, auf beiden Werten**	pinned	every_edge_object_names_its_phase
 PIN-graph-edge-default-en	docs/meclaw-overview.en.md	is there **always, on both values**	pinned	every_edge_object_names_its_phase
 #
