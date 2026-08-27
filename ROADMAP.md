@@ -54,7 +54,7 @@ What is left of the epic as work:
 
 The rest of the epic left the tracker on 2026-08-27, for two different reasons.
 [#33](https://github.com/mmeyerlein/meclaw/issues/33) templates as the public
-app store is **done**: twenty-nine templates ship from `templates/`, every one of
+app store is **done**: thirty templates ship from `templates/`, every one of
 them with a row in [`templates/README.md`](templates/README.md) § *The library*,
 and two tests keep that table honest — one demands a row per exported template,
 the other checks each row's version against the template's own `template.json`.
@@ -70,10 +70,14 @@ moved is only where it is filed.
 
 Named flanks left by the pre-MVP waves, plus new findings from running the thing.
 
-- [#45](https://github.com/mmeyerlein/meclaw/issues/45) the code cell's 16 ms
-  interpreter start, which dominates serial hot paths
-- [#47](https://github.com/mmeyerlein/meclaw/issues/47) the async cell shutdown
-  drain: in-flight work is lost on EOF and child termination
+- [#443](https://github.com/mmeyerlein/meclaw/issues/443) an `add_templates`
+  declaration whose files are already in the instance-local library survives a
+  refusal one stage later in the same diff, so the retry is refused by name
+  until somebody removes the directory by hand
+
+The two flanks this list opened with left it by shipping, and each has its line
+under [§ Shipped](#shipped) instead: the `code` cell's interpreter start, and
+the async shutdown drain.
 
 Two more left this list on 2026-08-27 without being built.
 [#48](https://github.com/mmeyerlein/meclaw/issues/48) measuring what a
@@ -191,11 +195,11 @@ it speaks — earns its own issue when someone takes it, rather than a line here
 ## Ongoing: community templates
 
 The template surface is open: a template is a directory, a README and a
-`template.json`. Twenty-six are listed in
+`template.json`. Thirty are listed in
 [`templates/README.md`](templates/README.md) as worked examples. Among them the
 four composition levels — `meclaw-os`, `org`, `member`, `assistant` — the two
-agent composites `talky@4.2.1`, which references four of the smaller templates
-as sub-units, and `cogny@4.0.3`, which references two, and `memory-hive@3.0.1`,
+agent composites `talky@4.2.3`, which references four of the smaller templates
+as sub-units, and `cogny@4.0.3`, which references two, and `memory-hive@3.0.4`,
 a member's long-term memory as a hive of thirteen cells.
 
 New ones are welcome. What a hive template has to satisfy is
@@ -219,6 +223,53 @@ disagree.
 
 One line per release; details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
+
+- **v0.26.0 — a template arrives in a running colony, and the shutdown finally
+  drains.** `add_templates` is the mutation the library was missing: a template
+  is a class, and until now the only way to add one was to put a directory on
+  disk and rescan, which a colony cannot do to itself. Two named refusals guard
+  it (`invalid_template_name`, `template_name_taken`), and `add_nodes` now
+  declares the state a cell is born in rather than inheriting one. Beside it,
+  the async cell shutdown drain that had been an open flank since the pre-MVP
+  waves: in-flight work no longer disappears on EOF or child termination. The
+  submission policy moved to the broker, so `submit` asks `access` for a verdict
+  over the manifest's scope root instead of carrying a policy of its own
+  (breaking for `submit`); ten shipped `llm` cells were being killed by their
+  own message timeout, three orders of magnitude below where a backstop belongs;
+  a build order no longer stalls the colony; and an unknown `diff` key is
+  refused by name instead of silently ignored. The library was curated down to
+  36 templates, 30 of them public, and *private* became a reasoned class rather
+  than whatever was left over.
+
+- **v0.25.0 — a wish in the chat becomes a manifest somebody else submits.** The
+  builder intake ships as two sealed hives: `builder` turns a structural request
+  into an ordered list of mutation declarations, `submit` is the only cell in
+  the tree with an edge onto the control plane, and the digest is the contract
+  between what a human read and what gets applied. The builder never applies
+  anything, and that is a property of the files rather than a sentence in a
+  README. Underneath it, three substrate pieces the manifest needs: the manifest
+  door (an ordered list of mutations in one body, rolled off by the colony
+  itself, no rollback and that is the form rather than its defect), `--apply
+  <file|->` as one file and one command, and a first boot that grows its `ref`
+  markers, where the marker consumes itself. A vault behind a sealed hive can
+  open itself now, and `params.inject_map` is removed rather than deprecated.
+  The author path is published with a corpus of its own: the librarian's seed
+  does not travel, it is regenerated from the public sources alone.
+
+- **v0.24.0 — the vault delivers without giving anything away.** `access` holds
+  all access keys from here on, and delivery runs over ordinary messaging while
+  being mandatorily encrypted, because the `message_log` journals every body.
+  `vault.deliver` answers with a sealed box under a key the requester minted for
+  that one call; there is no vault long-term key, so there is nothing with which
+  an old box could be opened after the fact. The first consumer is the `llm`
+  cell, where the credential lives only in RAM. The `code` cell's interpreter
+  start stopped dominating serial hot paths: `warm` keeps one resident child and
+  rebuilds the namespace per message, `resident` keeps the namespace too, and
+  the price of the second is refuted rather than argued, with the shipped script
+  answering identically across a fresh and a persistent namespace. A tier-1
+  recall fell from 47 store messages to 6 by leaning on a property the `store`
+  already had, and the 69 bundle snapshots it is judged on diff byte-identical
+  across the rebuild.
 
 - **v0.23.0 — a display moves without being rebuilt.** `port` and `bind` were
   immutable: an update naming either was refused, and moving a display from

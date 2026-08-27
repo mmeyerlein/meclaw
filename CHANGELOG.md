@@ -15,906 +15,880 @@ Rust crates are internals and move without notice.
 
 ### Breaking
 
-#### `submit@2.0.0` + `access@2.3.0` + `meclaw-os@1.2.0` — die Einreich-Policy zieht zum Broker (GH #435)
+#### `submit@2.0.0` + `access@2.3.0` + `meclaw-os@1.2.0`: the submission policy moves to the broker (GH #435)
 
-**Breaking (`submit`):** `params.policy` ist **zurückgezogen**. Wer eine
-`submit`-Instanz mit `SUBMIT_POLICY` oder `override_params` fütterte, füttert ab
-jetzt ins Leere; die Entscheidung liegt beim Capability-Broker. `required_drains`
-wächst um das Paar `in_verdict`/`ask` — eine Komposition, die die Frage
-verkabelt und die Antwort nicht, wird an der Instanziierung abgelehnt, statt
-still un-policed zu laufen.
+**Breaking (`submit`):** `params.policy` is **withdrawn**. Whoever fed a
+`submit` instance with `SUBMIT_POLICY` or `override_params` is from now on
+feeding into the void; the decision lies with the capability broker.
+`required_drains` grows by the pair `in_verdict`/`ask`: a composition that wires
+the question and not the answer is refused at instantiation instead of running
+silently un-policed.
 
-Der Einreicher entscheidet nicht mehr, er **fragt** — und zwar in der
-**prüf-only**-Form: ein Verdikt, kein Grant. Die volle Broker-Lane hätte
-verlangt, dass irgendetwas den Grant einlöst, und „einlösen" heißt bei `access`
-`./invoke` → `connect` in einen Konnektor. Der Konnektor wäre die Mutations-Tür
-gewesen — eine **zweite** Kante auf `/colony/mutations`, und damit das Ende der
-einen Aussage, für die `submit` existiert.
+The submitter no longer decides, it **asks**, and it does so in the
+**check-only** form: a verdict, no grant. The full broker lane would have
+required that something redeem the grant, and with `access` "redeem" means
+`./invoke` → `connect` into a connector. The connector would have been the
+mutation door: a **second** edge onto `/colony/mutations`, and with it the end
+of the one statement `submit` exists for.
 
-- **Eine Frage je Einreichung**, über die **Scope-Wurzel** des Manifests (das
-  längste gemeinsame Pfad-*Segment*-Präfix). Liegt die Wurzel unter dem
-  erlaubten Präfix, liegt jede Deklaration darunter — das ist keine Näherung,
-  sondern ein Satz. Ein Manifest über zwei Äste fragt nach deren
-  Vereinigungspunkt, also strenger und nie großzügiger. Segmente statt Zeichen:
-  `/os` und `/oscar` treffen sich bei `/`.
-- **R-AC-1 bleibt unangetastet.** Der `requester` kommt beim Broker von der
-  Kante und sagt `/os/submit`; die vom Substrat gestempelte Identität des
-  Einreichenden reist als **`subject`**. Die Delegation steht damit sichtbar in
-  einer Regel statt implizit in einem Skript.
-- **Das Manifest wartet geparkt.** `access` antwortet mit einem `tool_result`,
-  der den Body ersetzt — das Manifest überlebt die Runde nur im Store, unter
-  seinem Digest, und wird von ihm wieder entparkt.
-- **Die Refusal-Namen bleiben.** Ein abgelehntes Verdikt heißt weiterhin
-  `requester_not_permitted`. Neu ist `submission_check_failed`: der Broker hat
-  **nicht** geantwortet — nicht dasselbe Faktum wie ein Nein, und nichts
-  erreicht die Tür.
-- **Der ehrliche Preis:** eine Kolonie, deren Broker nicht antwortet, reicht
-  nichts mehr ein — auch keine Reparatur ihrer selbst. Der Ausweg ist nicht die
-  Zelle, sondern die Operator-Tür: `POST /colony/mutations` und `--apply` hängen
-  nicht am Broker.
+- **One question per submission**, over the **scope root** of the manifest (the
+  longest common path *segment* prefix). If the root lies under the permitted
+  prefix, every declaration lies under it. That is not an approximation, it is a
+  theorem. A manifest spanning two branches asks about their join point, so
+  stricter and never more generous. Segments instead of characters: `/os` and
+  `/oscar` meet at `/`.
+- **R-AC-1 stays untouched.** At the broker the `requester` comes from the edge
+  and says `/os/submit`; the substrate-stamped identity of the submitter travels
+  as **`subject`**. The delegation thereby stands visibly in a rule instead of
+  implicitly in a script.
+- **The manifest waits parked.** `access` answers with a `tool_result` that
+  replaces the body. The manifest survives the round only in the store, under
+  its digest, and is unparked from it again.
+- **The refusal names stay.** A refused verdict is still called
+  `requester_not_permitted`. New is `submission_check_failed`: the broker did
+  **not** answer, which is not the same fact as a no, and nothing reaches the
+  door.
+- **The honest price:** a colony whose broker does not answer submits nothing
+  any more, not even a repair of itself. The way out is not the cell but the
+  operator door: `POST /colony/mutations` and `--apply` do not hang off the
+  broker.
 
-**`access@2.3.0`** (additiv):
+**`access@2.3.0`** (additive):
 
-- **`check_only`** in `access.request` — antwortet ein Verdikt und prägt
-  **keinen** Grant: eine `audit`-Zeile mit `outcome: "checked"`, `verdict:
-  "allowed"`, leere `grant_id`. Ein Grant, den niemand einlöst, ist eine
-  Bearer-Zeile mit Ablaufdatum, die nur `./sweep` je wieder anfasst. Präzedenz
-  im selben Skript: der `require_approval`-Zweig antwortet und prägt nichts.
-- **`scope_prefix`** als **reservierter** `scope_match`-Schlüssel, verglichen
-  als **Pfad**-Präfix gegen `resource.scope`. Ein neuer Schlüssel, weil eine
-  Umdeutung des bestehenden `scope` jede existierende Regel still verbreitert
-  hätte — die eine Änderung, die ein Berechtigungs-Vergleicher nicht machen
-  darf. Er beschreibt eine Erlaubnis, keine Adresse, und landet deshalb nicht im
-  eingefrorenen Grant-Scope (R-AC-2).
-- **Seed-Zeile `colony.mutate.default`**, `enabled: 0` — wer ein Manifest zur
-  Mutations-Tür tragen darf. Eine frische Kolonie reicht nichts ein.
-- **Bugfix:** `policy` erkannte den Rücklauf seines eigenen Stores an
-  `"operation" in hop`. Ein `hop.operation` schreibt aber, wer die Nachricht
-  emittiert — ein Aufrufer darf eines tragen, und der Broker fiel dann still in
-  seinen Echo-Zweig und **antwortete gar nicht**. Erkannt wird jetzt am Marker,
-  den die eigene Kante nach `context` hebt (`access_origin == 'policy'`).
+- **`check_only`** in `access.request`: answers a verdict and mints **no**
+  grant, an `audit` row with `outcome: "checked"`, `verdict: "allowed"`, empty
+  `grant_id`. A grant that nobody redeems is a bearer row with an expiry date
+  that only `./sweep` ever touches again. Precedent in the same script: the
+  `require_approval` branch answers and mints nothing.
+- **`scope_prefix`** as a **reserved** `scope_match` key, compared as a **path**
+  prefix against `resource.scope`. A new key, because reinterpreting the
+  existing `scope` would have silently widened every existing rule, the one
+  change a permission comparator must not make. It describes a permission, not
+  an address, and therefore does not land in the frozen grant scope (R-AC-2).
+- **Seed row `colony.mutate.default`**, `enabled: 0`: who may carry a manifest
+  to the mutation door. A fresh colony submits nothing.
+- **Bugfix:** `policy` recognized the return from its own store by `"operation"
+  in hop`. But a `hop.operation` is written by whoever emits the message, a
+  caller may carry one, and the broker then fell silently into its echo branch
+  and **did not answer at all**. Recognition now happens by the marker that its
+  own edge lifts into `context` (`access_origin == 'policy'`).
 
-**`meclaw-os@1.2.0`:** zwei Kanten, `./submit -> ./access` auf `ask` und
-`./access -> ./submit` auf `grant`. Nur diese Ebene kann sie ziehen — dort sind
-die beiden Geschwister. Die Rim-Kante für `grant` schließt die Runde des
-Einreichers jetzt aus (`!has(context.sub_ask)`): Kanten **fächern auf**, und
-ohne den Guard hätte eine prüf-only-Frage zugleich ein Grant nach draußen
-gereicht, auf eine Frage, die draußen niemand gestellt hat.
+**`meclaw-os@1.2.0`:** two edges, `./submit -> ./access` on `ask` and
+`./access -> ./submit` on `grant`. Only this level can draw them, that is where
+the two siblings are. The rim edge for `grant` now excludes the submitter's own
+round (`!has(context.sub_ask)`): edges **fan out**, and without the guard a
+check-only question would at the same time have handed a grant outwards, to a
+question nobody outside asked.
 
 ### Added
 
-#### Ein Template kommt in eine laufende Kolonie: `add_templates` (GH #440)
+#### A template arrives in a running colony: `add_templates` (GH #440)
 
-Der `diff` einer Mutation nimmt einen siebten Schlüssel. Ein Eintrag ist
-`{"name": …, "files": {"<relpfad>": "<inhalt>", …}}` mit `template.json` als
-Pflichtdatei; geschrieben wird **immer** nach `{templates_root}/local/<name>/`.
-Den Pfad **baut** die Colony aus der aufgelösten `--templates`-Wurzel und dem
-geklemmten Namen — kein Feld des Bodys wird zum Pfadsegment, und damit ist die
-ausgelieferte Bibliothek unerreichbar: eine Deklaration kann sie ergänzen, nie
-überschreiben. Die Operation besetzt keine Adresse und räumt keine; sie legt
-eine Klasse in die Bibliothek, keine Zelle in den Baum.
+The `diff` of a mutation takes a seventh key. An entry is
+`{"name": …, "files": {"<relpath>": "<content>", …}}` with `template.json` as
+the mandatory file; the write **always** goes to
+`{templates_root}/local/<name>/`. The colony **builds** that path from the
+resolved `--templates` root and the clamped name. No field of the body becomes a
+path segment, and that puts the shipped library out of reach: a declaration can
+add to it, never overwrite it. The operation claims no address and vacates none;
+it puts a class in the library, not a cell in the tree.
 
-Sie läuft als **erste** des Diffs, damit ein `add_nodes` desselben Diffs das
-Template per Namen auflösen kann, und im Manifest gilt dasselbe eine Ebene
-höher: ein späterer Eintrag löst auf, was ein früherer registriert hat. Genau
-das ist der Grund, warum die Registrierung eine Deklaration ist und kein
-Seitenkanal — und es war vorher nicht eingelöst, weil der Templates-
-Schnappschuss pro Manifest eingefroren war.
+It runs **first** in the diff, so an `add_nodes` of the same diff can resolve
+the template by name, and one level up the same holds inside a manifest: a later
+entry resolves what an earlier one registered. That is exactly why the
+registration is a declaration and not a side channel, and it was not redeemed
+before, because the templates snapshot was frozen per manifest.
 
-Geschrieben wird per Staging plus **einem** `rename(2)`; ein nebenläufiger
-Rescan sieht also nie eine halb geschriebene `template.json`. Die Registry-Zeile
-leitet **derselbe** Parser ab, den der Scan benutzt — Registrierung und Rescan
-können nicht auseinanderlaufen. `local/` ist dabei kein Sonderfall im Scanner,
-sondern eine Konvention der schreibenden Seite.
+The write is staging plus **one** `rename(2)`; a concurrent rescan therefore
+never sees a half-written `template.json`. The registry row is derived by **the
+same** parser the scan uses, so registration and rescan cannot diverge. `local/`
+is not a special case in the scanner but a convention of the writing side.
 
-Neu in der dokumentierten `error_code`-Enum (jetzt 25 Token, beide additiv):
+New in the documented `error_code` enum (now 25 tokens, both additive):
 
-- **`invalid_template_name`** — ein Name außerhalb `^[a-z][a-z0-9-]{1,63}$`
-  oder ein Dateipfad, der aus dem Template-Verzeichnis herausklettert.
-- **`template_name_taken`** — ein Name, den die Registry schon beantwortet;
-  verweigert **an seiner Position** statt als Abbruch des nächsten Rescans für
-  alle. Derselbe Code trägt ein Verzeichnis, das unter `local/<name>/` schon
-  liegt, ohne dass eine Registry-Zeile es nennt — benannt zurückgewiesen statt
-  überschrieben (No-Delete).
+- **`invalid_template_name`**: a name outside `^[a-z][a-z0-9-]{1,63}$` or a file
+  path that climbs out of the template directory.
+- **`template_name_taken`**: a name the registry already answers; refused **at
+  its position** rather than as an abort of the next rescan for everybody. The
+  same code carries a directory that already lies under `local/<name>/` without
+  a registry row naming it: refused by name rather than overwritten (No-Delete).
 
-Beide sind pre-destruktiv: ein verweigerter Eintrag hinterlässt nichts auf
-Platte. Die beiden Türen erben die Operation ohne eine Zeile — `--apply` und
-`POST /colony/mutations` fragen nur nach dem `manifest`-Schlüssel und tragen
-keine Op-Liste; nachgemessen statt behauptet. Der Builder trug eine und kennt
-`add_templates` jetzt (`builder@1.0.1`).
+Both are pre-destructive: a refused entry leaves nothing on disk. The two doors
+inherit the operation without a line: `--apply` and `POST /colony/mutations`
+only ask for the `manifest` key and carry no op list; measured rather than
+claimed. The builder carried one and now knows `add_templates`
+(`builder@1.0.1`).
 
-#### `add_nodes` deklariert seinen Geburtszustand (GH #437)
+#### `add_nodes` declares its birth state (GH #437)
 
-Es gab keine Art zu sagen „wachse diese Zelle, aber starte sie nicht". Ein
-`add_nodes`-Eintrag deklariert das jetzt: **`"birth": "active" | "inactive"`**,
-Default `"active"` — wer nichts sagt, bekommt exakt das bisherige Verhalten.
+There was no way to say "grow this cell but do not start it". An `add_nodes`
+entry declares that now: **`"birth": "active" | "inactive"`**, default
+`"active"`. Whoever says nothing gets exactly the previous behavior.
 
-Der Schlüssel setzt die **Instanziierungs-Aktivität**, nicht den
-Hot/Cold-Status. Ein inaktiv geborener Knoten ist registriert, adressierbar und
-wird inaktiv **persistiert**; es entsteht keine Task, also öffnet ein
-Long-Poll-Konsument seinen Upstream bei der Geburt nicht. Der Workaround, eine
-`base_url` auf eine unroutbare Adresse zu zeigen, entfällt. Auf einem Subtree
-gilt die Deklaration für jede Zelle des Baums — eine Einheit wird ganz geboren.
+The key sets the **instantiation activity**, not the hot/cold status. A node
+born inactive is registered, addressable and **persisted** as inactive; no task
+comes into being, so a long-poll consumer does not open its upstream at birth.
+The workaround of pointing a `base_url` at an unroutable address falls away. On
+a subtree the declaration holds for every cell of the tree: a unit is born
+whole.
 
-Die Deklaration gewinnt über den Konnektivitäts-Recompute **der Mutation, die
-den Knoten gebiert**. Damit lässt sich eine Zelle voll verkabelt **und**
-schlafend wachsen, was der eigentliche Fall des Issues ist. Jeder **spätere**
-Recompute behandelt sie wie jeden anderen Knoten, und genau das ist das Wecken:
-das gewöhnliche Reconnect (`add_edges` oder ein erneutes `add_nodes` am Pfad)
-flippt sie aktiv und startet ihre Long-Running-Cells sofort. **Kein neuer
-Operator, keine neue Message.**
+The declaration wins over the connectivity recompute **of the mutation that
+gives birth to the node**. That makes it possible to grow a cell fully wired
+**and** asleep, which is the actual case of the issue. Every **later** recompute
+treats it like any other node, and that is exactly the waking: the ordinary
+reconnect (`add_edges` or another `add_nodes` at the path) flips it active and
+starts its long-running cells immediately. **No new operator, no new message.**
 
-Zur Namensgebung: die Wire-Werte sind `active`/`inactive` — die beiden Wörter,
-die die Substrat-Registry selbst führt. `asleep` wurde verworfen, weil es einen
-Hot/Cold-Zustand benennt, in dem eine Long-Running-Cell — der Fall hier — per
-Spec gar nicht sein kann.
+On the naming: the wire values are `active`/`inactive`, the two words the
+substrate registry itself carries. `asleep` was rejected because it names a
+hot/cold state that a long-running cell (the case here) cannot be in at all per
+spec.
 
-Türen: die HTTP-Tür, die Manifest-Form und `--apply` reichen denselben
-untypisierten Diff durch und haben den Schlüssel ohne eine Zeile Code geerbt.
-Der `ref`-Marker geht **nicht** durch `add_nodes` (er wird als Growth geplant und
-vom Boot registriert) und hat deshalb eine eigene Deklaration bekommen: ein
-top-level `"birth"` neben `override_params` in der `config.json` des Markers.
+Doors: the HTTP door, the manifest form and `--apply` pass the same untyped diff
+through and inherited the key without a line of code. The `ref` marker does
+**not** go through `add_nodes` (it is planned as growth and registered by the
+boot) and therefore got a declaration of its own: a top-level `"birth"` next to
+`override_params` in the marker's `config.json`.
 
-Ein unbekannter Wert wird pre-destruktiv mit `error_code: "schema"`
-zurückgewiesen und nennt Site, Wert und die Werte, die es gibt. **Kein neuer
-error_code.**
+An unknown value is refused pre-destructively with `error_code: "schema"` and
+names site, value and the values that exist. **No new error_code.**
 
-**Klassifikation: Minor-Klasse.** Eine additive, nie versprochene neue Fähigkeit
-auf der Template-DSL-Fläche (`docs/development-rules.md` § 4).
+**Classification: minor class.** An additive, never-promised new capability on
+the template DSL surface (`docs/development-rules.md` § 4).
 
-#### Die Bibliothek ist kuratiert: 39 → 36 Templates, öffentlich 29 → 30 (GH #434, Rulings S1/S5)
+#### The library is curated: 39 → 36 templates, public 29 → 30 (GH #434, Rulings S1/S5)
 
-**Freigegeben: `daily-digest`** (privat → öffentlich). Die ausgelieferte
-Bibliothek wächst damit auf **30** Templates.
+**Released: `daily-digest`** (private → public). The shipped library thereby
+grows to **30** templates.
 
-**Stillgelegt: `builder-hive`, `bot-basic`, `llm-unit`.** Keines der drei war je
-Teil des veröffentlichten Subsets — **nichts, was ein veröffentlichter Baum
-nennt, hört auf aufzulösen**, und deshalb steht das hier nicht unter *Breaking*.
+**Decommissioned: `builder-hive`, `bot-basic`, `llm-unit`.** None of the three
+was ever part of the published subset. **Nothing a published tree names stops
+resolving**, and that is why this does not stand under *Breaking*.
 
-`builder-hive` war der Skript-Pfad zum Bauen: eine `code`-Zelle, die Zustand auf
-Platte hielt, um sich selbst zu serialisieren. Sein Nachfolger ist mit diesem
-Release vollständig — `builder` entwirft das Manifest, `submit` ist die einzige
-Kante zur Mutations-Tür, und `add_templates` legt jetzt auch die Klasse selbst in
-die laufende Bibliothek. Wer lieber schreibt als redet, nimmt
-`POST /colony/mutations` oder `meclaw --apply`; beide hängen an keiner Zelle.
-Gestorben sind mit dem Baum auch sein Generator, sein Zwilling, sechs
-Testdateien, zwei Eval-Scaffolds und drei Szenario-Fälle — in einem Zug, weil der
-Export sonst in beide Richtungen rot gewesen wäre. Die drei Pins, die nur dieser
-Baum trug, sind einzeln entschieden statt stillschweigend mitgestorben: zwei
-tragen jetzt eine stärkere Aussage (`docs/cell-types.md` § Overview statt eines
-generierten JSON; der Rescan-Verbatim misst gegen den echten Scanner statt gegen
-ein Fixture), einer starb mit der Mechanik, die es nicht mehr gibt.
+`builder-hive` was the script path to building: a `code` cell that held state on
+disk in order to serialize itself. Its successor is complete with this release:
+`builder` designs the manifest, `submit` is the only edge to the mutation door,
+and `add_templates` now also puts the class itself into the running library.
+Whoever would rather write than talk takes `POST /colony/mutations` or
+`meclaw --apply`; neither hangs off a cell. Dying with the tree were its
+generator, its twin, six test files, two eval scaffolds and three scenario
+cases, in one go, because otherwise the export would have been red in both
+directions. The three pins that only this tree carried were decided individually
+instead of silently dying along: two now carry a stronger statement
+(`docs/cell-types.md` § Overview instead of a generated JSON; the rescan
+verbatim measures against the real scanner instead of against a fixture), one
+died with the mechanism that no longer exists.
 
-`bot-basic` zeigte auf ein Template, das es nicht mehr gibt; `llm-unit` war ein
-Testgerüst, das seinen Anlass überlebt hatte. Git ist das Archiv.
+`bot-basic` pointed at a template that no longer exists; `llm-unit` was a test
+scaffold that had outlived its occasion. Git is the archive.
 
-**Und *privat* ist ab jetzt eine begründete Klasse statt einer Restmenge:**
-30 Templates öffentlich, 6 privat — Instanz-Ableitung (`egon`), Spielwiese
-(`research-assistant`) oder Staging mit benanntem Reifeziel (`coder-pipeline`,
-`llm-registry`, `slack-agent`, `_cell-types`). Das Verdikt **jedes** Templates
-steht im Export-Skript und wird von einer Mengengleichheit gehalten, nicht von
-einem Kommentar: der alte Doktrin-Text zählte die privaten in Prosa auf und
-endete auf „und die übrigen" — eine Formulierung, die nie altert, weil sie nichts
-behauptet, und die drei gelöschte Templates überlebt hatte, ohne rot zu werden.
+**And *private* is from now on a justified class instead of a remainder set:**
+30 templates public, 6 private, by instance derivation (`egon`), playground
+(`research-assistant`) or staging with a named maturity goal (`coder-pipeline`,
+`llm-registry`, `slack-agent`, `_cell-types`). The verdict for **every**
+template stands in the export script and is held by a set equality, not by a
+comment: the old doctrine text listed the private ones in prose and ended on
+"and the rest", a formulation that never ages because it asserts nothing, and
+that had survived three deleted templates without going red.
 
 ### Fixed
 
-#### Der Shutdown drainet jetzt wirklich (GH #47)
+#### The shutdown now really drains (GH #47)
 
-`docs/meclaw-overview.md` verspricht seit v0.1.0, dass ein Direct-Mode-Prozess
-bei stdin-EOF „die in-flight-Arbeit drainet und sich mit Exit-Code 0 beendet".
-Er tat es nicht: `cat fragen.txt | meclaw` mit einer async Zelle lieferte
-gemessen 0 von 20 Antworten, weil der Colony-Loop beim Shutdown sofort abbrach.
-Der Loop kennt jetzt eine zweite Zustandsdimension. Nach dem Shutdown-Signal
-nimmt er keinen neuen Ingress mehr an, lässt aber jede fliegende Message samt
-Folge-Hops bis zur Quiescence auslaufen — Colony-Inbox leer, Emissions-Kanal
-leer, keine Zell-Mailbox belegt, kein `handle()` mehr unterwegs. Dasselbe gilt
-für SIGTERM; ein Watchdog-Trip überspringt den Drain.
+`docs/meclaw-overview.md` has promised since v0.1.0 that on stdin EOF a
+direct-mode process "drains the in-flight work and exits with exit code 0". It
+did not: `cat questions.txt | meclaw` with an async cell delivered a measured 0
+of 20 answers, because the colony loop broke off immediately on shutdown. The
+loop now knows a second state dimension. After the shutdown signal it accepts no
+new ingress, but lets every in-flight message and its follow-on hops run out to
+quiescence: colony inbox empty, emission channel empty, no cell mailbox
+occupied, no `handle()` still under way. The same holds for SIGTERM; a watchdog
+trip skips the drain.
 
-Neu und additiv: `colony.json shutdown_drain_timeout_ms` (Default 10000, `0`
-schaltet den Drain ab), die Dead-Letter-Reason `shutdown_draining` und der
-Mutations-`error_code` `shutdown_draining`.
+New and additive: `colony.json shutdown_drain_timeout_ms` (default 10000, `0`
+turns the drain off), the dead-letter reason `shutdown_draining` and the
+mutation `error_code` `shutdown_draining`.
 
-**Einstufung: dritte Stelle.** Das ist die Einlösung einer bestehenden Zusage,
-und `docs/development-rules.md` § 4 zählt eine Reparatur auch dann als Patch,
-wenn sie Deklarationen mitbringt (Präzedenz 0.23.0/#410).
+**Grading: third position.** This is the redemption of an existing promise, and
+`docs/development-rules.md` § 4 counts a repair as a patch even when it brings
+declarations along (precedent 0.23.0/#410).
 
-**Der Korridor blieb zu.** `docs/roadmap.md` hatte für diesen Posten vorab eine
-Öffnung von `route()` sanktioniert. Sie wurde nicht gebraucht: das Liefer-Prädikat
-lebte schon im Wrapper `route_with_log`. Beide Fixture-Paare stehen unverändert,
-die Byte-Gates sind leer.
+**The corridor stayed shut.** `docs/roadmap.md` had sanctioned an opening of
+`route()` for this item in advance. It was not needed: the delivery predicate
+already lived in the wrapper `route_with_log`. Both fixture pairs stand
+unchanged, the byte gates are empty.
 
-#### Ein Bauauftrag hält die Kolonie nicht mehr an (GH #439)
+#### A build order no longer stops the colony (GH #439)
 
-Ein großer Bauauftrag konnte die Kolonie umbringen. Die Zeile aus dem Issue —
-`starved=colony_loop … colony_task=alive` — hatte eine Ursache, die eine Zeile
-lang ist: der `outputs_rx`-Arm der Colony-Loop hat sein Work-Item nie
-angemeldet. Eine **zell-emittierte** Mutation — genau der Weg, den der
-Builder-/`submit`-Flow geht — lief deshalb, während die letzte Phase, die der
-Supervisor gesehen hatte, `Parked` war. `in_flight_work` war damit `false`,
-`starved()` lieferte `colony_loop`, und dieses Verdikt ist unter dem
-ausgelieferten `watchdog_on_trip: exit` tödlich. Der Arm meldet sich jetzt, und
-ein Regression-Lock hält das fest.
+A large build order could kill the colony. The line from the issue,
+`starved=colony_loop … colony_task=alive`, had a cause that is one line long:
+the `outputs_rx` arm of the colony loop never registered its work item. A
+**cell-emitted** mutation, exactly the path the builder/`submit` flow takes,
+therefore ran while the last phase the supervisor had seen was `Parked`.
+`in_flight_work` was thereby `false`, `starved()` returned `colony_loop`, and
+that verdict is lethal under the shipped `watchdog_on_trip: exit`. The arm now
+registers itself, and a regression lock holds that down.
 
-**Das Fenster bleibt unverändert** (5 × 100 ms) — nichts hier weitet es. Statt
-dessen wird die Instanziierung hörbar und höflich: sie schlägt den Herzschlag
-**je Zelle** und gibt den Runtime-Scheduler **je Zelle** frei, sowohl im
-synchronen Staging-Durchgang (dem teuren) als auch in den beiden
-Registrierungsschleifen. Eine Mutation bleibt dabei **ein** Work-Item und **ein**
-Verdikt: die Registry wird inkrementell mutiert und zwei Laufzeit-Rejects nach
-dem Spawn-Schritt können den ganzen Diff noch zurücknehmen — würde die Loop
-zwischen zwei Zellen routen, wäre ein halb gebauter Subtree adressierbar und
-nicht mehr rückabwickelbar. Diese Serialisierung war bisher nur Prosa; sie hat
-jetzt ihren ersten Test.
+**The window stays unchanged** (5 × 100 ms), nothing here widens it. Instead,
+instantiation becomes audible and polite: it beats the heartbeat **per cell**
+and yields the runtime scheduler **per cell**, both in the synchronous staging
+pass (the expensive one) and in the two registration loops. A mutation stays
+**one** work item and **one** verdict in this: the registry is mutated
+incrementally and two runtime rejects after the spawn step can still take the
+whole diff back. If the loop routed between two cells, a half-built subtree
+would be addressable and no longer reversible. This serialization was so far
+only prose; it now has its first test.
 
-Dazu die Diagnose-Hälfte: der phasentragende Herzschlag kann ein **Label**
-tragen. Ein Trip innerhalb einer Mutation rendert
-`work_item=mutation <id> scope=<scope> op=add_nodes[i/n] template=<t> cell=<pfad>`
-— am **Ende** der Zeile, das issue-#6-Präfix bleibt byte-stabil — und sagt nicht
-mehr `colony_loop`.
+Plus the diagnostic half: the phase-carrying heartbeat can carry a **label**. A
+trip inside a mutation renders
+`work_item=mutation <id> scope=<scope> op=add_nodes[i/n] template=<t> cell=<path>`
+at the **end** of the line (the issue-#6 prefix stays byte-stable) and no longer
+says `colony_loop`.
 
-**Klassifikation: Patch-Klasse.** Reparatur einer bestehenden Zusage
-(„der Watchdog erkennt einen Stillstand, keine lange Operation", GH #165); keine
-der fünf öffentlichen Vertragsflächen ändert sich, die Trip-Zeile wächst nur
-hinten.
+**Classification: patch class.** Repair of an existing promise ("the watchdog
+detects a standstill, not a long operation", GH #165); none of the five public
+contract surfaces changes, the trip line only grows at the end.
 
-#### Zehn ausgelieferte `llm`-Zellen wurden von ihrem eigenen Backstop gekillt
+#### Ten shipped `llm` cells were killed by their own backstop
 
-`docs/meclaw-overview.md` § Timeouts kennt zwei Deckel und eine Reihenfolge: der
-Operation-Timeout A (`params.external_timeout_ms`) greift zuerst und liefert eine
-saubere Error-Message, der Substrat-Backstop B (`cell.message_timeout`) liegt
-**deutlich darüber** und fängt nur den unerklärten Hänger („B großzügig, A
-präzise", zugleich harte Regel 12 der `CLAUDE.md`). **Zehn ausgelieferte
-`llm`-Zellen hatten die Reihenfolge umgedreht** — und keine einzige sah danach
-aus, weil eine Zelle A deklariert und über B schweigt: B fiel auf den
-Colony-Default von 60 s, und der Watchdog killte die Zelle, bevor ihr Aufruf
-überhaupt ablaufen durfte. Was der Aufrufer bekam, war `message_timeout` und ein
-Restart statt einer Antwort.
+`docs/meclaw-overview.md` § Timeouts knows two caps and an order: operation
+timeout A (`params.external_timeout_ms`) takes effect first and delivers a clean
+error message, substrate backstop B (`cell.message_timeout`) lies
+**considerably above** it and catches only the unexplained hanger ("B generous,
+A precise", at the same time hard rule 12 of `CLAUDE.md`). **Ten shipped `llm`
+cells had the order reversed**, and not a single one looked like it, because a
+cell declares A and stays silent about B: B fell back to the colony default of
+60 s, and the watchdog killed the cell before its call was even allowed to run
+out. What the caller got was `message_timeout` and a restart instead of an
+answer.
 
-Der schärfste Fall ist `builder/compose` mit `external_timeout_ms: 170000` unter
-einem 60-s-Deckel. Gefunden hat ihn eine Messreihe über 34 Builds
-(`plans/welle-2026-08-27/receipts/builder-messreihe.md`), die den Defekt zuerst
-für eine Aussage über das **Modell** hielt: `reasoning_effort: high` starb 5 von
-6 Läufen, `low` nie — aus dem simplen Grund, dass Denktiefe genau den Aufruf
-verlängert, den der Backstop abschnitt. Die stillere Hälfte des Audits sind die
-Zellen, die **gar keinen** `external_timeout_ms` deklarieren: die machen
-trotzdem einen 110-s-Aufruf (`LlmParams`-Default) und lagen damit ebenfalls über
-den 60 s. Nichts zu deklarieren ist hier nicht neutral.
+The sharpest case is `builder/compose` with `external_timeout_ms: 170000` under
+a 60 s cap. It was found by a measurement series over 34 builds
+(`plans/welle-2026-08-27/receipts/builder-messreihe.md`) that first took the
+defect for a statement about the **model**: `reasoning_effort: high` died in 5
+of 6 runs, `low` never, for the simple reason that thinking depth lengthens
+exactly the call the backstop cut off. The quieter half of the audit are the
+cells that declare **no** `external_timeout_ms` at all: they still make a 110 s
+call (`LlmParams` default) and thereby also lay above the 60 s. Declaring
+nothing is not neutral here.
 
-Repariert, je Zelle als `cell.message_timeout` nach dem Vorbild, das
-`memory-hive` und `cogny` schon ausliefern: `builder/compose` 240000 (über
-170000), `talky/brain` 180000 (über 120000), `steward/judge` 180000 — dort stand
-**180**, drei Größenordnungen daneben, also nie ein Backstop, sondern ein
-Sofort-Kill —, und je 180000 für `coder-pipeline/{coder,planner,reviewer}`,
+Repaired, per cell as `cell.message_timeout` after the model that `memory-hive`
+and `cogny` already ship: `builder/compose` 240000 (above 170000),
+`talky/brain` 180000 (above 120000), `steward/judge` 180000 (there stood
+**180**, three orders of magnitude off, so never a backstop but an instant
+kill), and 180000 each for `coder-pipeline/{coder,planner,reviewer}`,
 `egon/worker`, `research-assistant/planner`, `slack-agent/worker`,
-`summarizer/writer`. `cogny/brain`, `cogny/brain_fast` und die vier
-`memory-hive`-Zellen waren schon richtig herum.
+`summarizer/writer`. `cogny/brain`, `cogny/brain_fast` and the four
+`memory-hive` cells were already the right way round.
 
-Dazu der zweite Deckel derselben Zelle: **`builder/compose` `max_tokens`
-8192 → 16384**. Auf der OpenAI-kompatiblen Wire, die diese Zelle spricht, sind
-Reasoning-Tokens Completion-Tokens — sie zählen gegen `max_tokens`, also kommt
-ein Modell, das über den Deckel hinaus denkt, mit `finish_reason: "length"` und
-**leerer** Antwort zurück, nicht mit einer abgeschnittenen. Gemessen, nicht
-gefolgert: 2 von 4 `high`-Läufen endeten bei exakt 8192 Completion-Tokens ohne
-ein Zeichen Antwort. Kein neuer Env-Knopf — beide Werte sind Eigenschaften
-dessen, was die Zelle tut, und eine Instanz überschreibt sie über `params`.
-Begründung im `templates/builder/README.md` § „The two caps the composer runs on".
+Plus the second cap of the same cell: **`builder/compose` `max_tokens`
+8192 → 16384**. On the OpenAI-compatible wire this cell speaks, reasoning tokens
+are completion tokens. They count against `max_tokens`, so a model that thinks
+beyond the cap comes back with `finish_reason: "length"` and an **empty**
+answer, not with a truncated one. Measured, not inferred: 2 of 4 `high` runs
+ended at exactly 8192 completion tokens without a single character of answer. No
+new env knob: both values are properties of what the cell does, and an instance
+overrides them via `params`. Rationale in `templates/builder/README.md` § "The
+two caps the composer runs on".
 
-Das Gate, das die Umkehrung ab jetzt verbietet, prüft **alle** ausgelieferten
-`llm`-Zellen und fragt beide Seiten beim Substrat selbst ab (`LlmParams` für A,
-`resolve_message_timeout` für B):
+The gate that forbids the reversal from now on checks **all** shipped `llm`
+cells and asks the substrate itself for both sides (`LlmParams` for A,
+`resolve_message_timeout` for B):
 `crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`.
 
-Klassifikation nach `docs/development-rules.md` § 4: **Reparatur**, dritte
-Stelle. Neun Template-Versionen ziehen nach — `builder@1.0.3`,
-`coder-pipeline@2.0.5`, `egon@2.0.2`, `research-assistant@2.0.4`,
-`slack-agent@2.0.2`, `summarizer@2.0.2`, `steward@2.0.12`, `talky@4.2.3` (eigene
-Zelle plus der `summarizer`-Pin) und `meclaw-os@1.2.3` (die `builder`- und
-`steward`-Pins).
+Classification per `docs/development-rules.md` § 4: **repair**, third position.
+Nine template versions follow: `builder@1.0.3`, `coder-pipeline@2.0.5`,
+`egon@2.0.2`, `research-assistant@2.0.4`, `slack-agent@2.0.2`,
+`summarizer@2.0.2`, `steward@2.0.12`, `talky@4.2.3` (its own cell plus the
+`summarizer` pin) and `meclaw-os@1.2.3` (the `builder` and `steward` pins).
 
-#### Ein unbekannter `diff`-Schlüssel wird abgewiesen statt still ignoriert
+#### An unknown `diff` key is refused instead of silently ignored
 
-Die Mutations-Tür las den `diff` Schlüssel für Schlüssel — `add_nodes`,
-`add_edges`, … — und fragte nie, was sonst noch drinstand. Was sie nicht kannte,
-fiel durch **alle** Arme und die Deklaration antwortete `committed`. Die Form,
-die es unhaltbar macht: eine Colony auf einem **älteren Binary** bekommt eine
-`add_templates`-Deklaration, hat keinen Arm dafür, registriert nichts, schreibt
-nichts — und meldet „angewandt". Dieselbe Lücke schluckt einen Tippfehler
-(`add_node`), einen Schlüssel aus einer neueren Schema-Version und jede geratene
-Vokabel. In jedem Fall behauptet das Receipt Arbeit, die nicht stattgefunden hat.
+The mutation door read the `diff` key by key (`add_nodes`, `add_edges`, …) and
+never asked what else was in it. What it did not know fell through **all** arms
+and the declaration answered `committed`. The shape that makes it untenable: a
+colony on an **older binary** receives an `add_templates` declaration, has no
+arm for it, registers nothing, writes nothing, and reports "applied". The same
+gap swallows a typo (`add_node`), a key from a newer schema version and any
+guessed vocabulary item. In every case the receipt claims work that did not
+happen.
 
-**Jetzt:** ein `diff`-Schlüssel, den keine Operation liest, ist eine Absage mit
-`error_code: schema`. Die `details` nennen den unlesbaren Schlüssel **und** die
-sieben, die die Colony ausführt — wer ein Wort vertippt hat, braucht die
-Vokabelliste, kein Urteil. Die Prüfung läuft auf dem **rohen** Diff, vor der
-Substitution und damit vor jedem gestagten, gespawnten, verdrahteten oder
-registrierten Byte; nichts aus dem Diff wird halb angewandt. Das Manifest erbt
-sie Eintrag für Eintrag (Stopp an der Position, frühere Einträge bleiben
-committed, spätere werden nie gelesen), `--apply` erbt sie als Einzelform.
+**Now:** a `diff` key that no operation reads is a refusal with
+`error_code: schema`. The `details` name the unreadable key **and** the seven
+the colony executes: whoever mistyped a word needs the vocabulary list, not a
+judgment. The check runs on the **raw** diff, before the substitution and
+thereby before any staged, spawned, wired or registered byte; nothing from the
+diff is half applied. The manifest inherits it entry by entry (stop at the
+position, earlier entries stay committed, later ones are never read), `--apply`
+inherits it as the single form.
 
-**Kein neuer `error_code`** (README § Stability): `schema` ist genau das, was ein
-formfalscher Body immer schon hieß. Klassifikation nach `docs/development-rules.md`
-§ 4 und der **#410-Präzedenz** eine **Reparatur des Substrat-Standards** — dass
-eine Tür meldet, was sie getan hat, ist Grundeigenschaft und war nie ein
-Sonderversprechen der Mutations-Tür; die Abweichung ist der Bug, nicht die
-Referenz. Ein Aufrufer, der heute rot wird, hat toten Ballast mitgeschickt, der
-noch nie eine Wirkung hatte.
+**No new `error_code`** (README § Stability): `schema` is exactly what a
+malformed body has always been called. Classified per
+`docs/development-rules.md` § 4 and the **#410 precedent** as a **repair of the
+substrate standard**: that a door reports what it did is a basic property and
+was never a special promise of the mutation door; the deviation is the bug, not
+the reference. A caller who goes red today has sent along dead ballast that
+never had an effect.
 
-Gemessen in `crates/meclaw-colony/tests/an_unknown_diff_key_is_refused.rs`:
-Einzelform, „nichts aus dem Diff wird angewandt", die Gegenprobe (legale
-Schlüssel committen weiter, ein leerer `diff` bleibt der No-op, der er war) und
-der Manifest-Stopp an der Position.
+Measured in `crates/meclaw-colony/tests/an_unknown_diff_key_is_refused.rs`: the
+single form, "nothing from the diff is applied", the counter-check (legal keys
+still commit, an empty `diff` stays the no-op it was) and the manifest stop at
+the position.
 
-#### `submit@1.0.1` — der Receipt trägt wieder die Id, die nach ihm gefragt hat (GH #438)
+#### `submit@1.0.1`: the receipt again carries the id that asked for it (GH #438)
 
-Eine Antwort von `/colony` beginnt einen **frischen Trace** — `emit_reply_or_done`
-baut eine nackte Message, ohne Header, ohne Kontext, ohne `reply_to`. Der
-Einreicher hielt zwischen seinen zwei Phasen nichts fest, also kam der
-`tool_result`, der die apply-Runde schließt, mit **leerer** `tool_call_id`
-zurück: ein Fan-in, das auf diese Id wartet, schloss auf ihr nicht.
+An answer from `/colony` begins a **fresh trace**: `emit_reply_or_done` builds a
+bare message, without header, without context, without `reply_to`. The submitter
+held on to nothing between its two phases, so the `tool_result` that closes the
+apply round came back with an **empty** `tool_call_id`: a fan-in waiting on that
+id did not close on it.
 
-Der Fix liegt vollständig im Template, nicht in der Colony. `emit_reply_or_done`
-bedient sieben Endpunkte, und „ein virtueller Endpunkt antwortet in einen
-frischen Trace" ist die Eigenschaft dieser Fläche, kein Versehen — wer über den
-Roundtrip hinaus etwas wissen will, muss es sich **merken**. Die `submit`-Hive
-bekommt dafür einen zweiten Bewohner:
+The fix lies entirely in the template, not in the colony. `emit_reply_or_done`
+serves seven endpoints, and "a virtual endpoint answers into a fresh trace" is
+the property of that surface, not an oversight: whoever wants to know something
+beyond the roundtrip has to **remember** it. The `submit` hive gets a second
+occupant for that:
 
-- **`submit/store`** (`write_surface: "internal"`, Tabelle `submissions`) —
-  eine Zeile je Einreichung im Flug: `tool_call_id`, `manifest_sha256`,
-  `requester`, `at`. Eine `code`-Zelle hat kein `cell.db`, der Store-Roundtrip
-  **ist** das Gedächtnis der Zelle.
-- **Zwei hive-interne Kanten** `gate ↔ store` im eigenen Schlüsselraum
-  (`sub_origin`/`sub_phase`/`sub_carry`) — der Broker überschreibt `ac_*` auf
-  seinen eigenen Kanten.
-- **Phase A** schreibt die Zeile als letzte Handlung vor der Einreichung; **kein**
-  Refusal-Pfad schreibt eine. Eine Zeile ohne kommende Antwort verschöbe jede
-  folgende Korrelation um eins.
-- **Phase B** rendert nichts mehr, sondern holt die älteste Zeile (`order_by at,
-  id`, `limit 1`); der Receipt-Stoff wartet im `hop.carry`. Der **Pop** löscht
-  die Zeile und stempelt `tool_call_id` + `manifest_sha256` auf Header und Turn.
-- **Fehlt die Zeile** (Neustart, `--apply` von außen, Store-Fehler), geht der
-  Receipt trotzdem raus, mit leerer Id: die Korrelation ist verloren, die
-  Tatsache nicht.
+- **`submit/store`** (`write_surface: "internal"`, table `submissions`): one row
+  per submission in flight, `tool_call_id`, `manifest_sha256`, `requester`,
+  `at`. A `code` cell has no `cell.db`, the store roundtrip **is** the cell's
+  memory.
+- **Two hive-internal edges** `gate ↔ store` in their own key space
+  (`sub_origin`/`sub_phase`/`sub_carry`): the broker overwrites `ac_*` on its
+  own edges.
+- **Phase A** writes the row as the last action before the submission; **no**
+  refusal path writes one. A row with no answer coming would shift every
+  following correlation by one.
+- **Phase B** no longer renders anything but fetches the oldest row (`order_by
+  at, id`, `limit 1`); the receipt material waits in `hop.carry`. The **pop**
+  deletes the row and stamps `tool_call_id` + `manifest_sha256` onto header and
+  turn.
+- **If the row is missing** (restart, `--apply` from outside, store error), the
+  receipt goes out anyway, with an empty id: the correlation is lost, the fact
+  is not.
 
-Bekannte Grenze, gemessen statt behauptet: die Korrelation gilt für **eine**
-Einreichung im Flug. Sind zwei gleichzeitig unterwegs, kann das `select` der
-zweiten Runde vor dem `delete` der ersten im Store laufen, und beide lesen
-dieselbe Zeile. Das Fenster schließt nur ein Claim im Read, und `store` hat
-keine Operation, die entfernt, was sie zurückgibt. Steht im README des Templates
-und im Kopf von `gh438_two_submissions_do_not_swap_receipts`.
+Known limit, measured rather than claimed: the correlation holds for **one**
+submission in flight. If two are under way at the same time, the `select` of the
+second round can run in the store before the `delete` of the first, and both
+read the same row. Only a claim in the read closes that window, and `store` has
+no operation that removes what it returns. Stated in the template's README and
+in the head of `gh438_two_submissions_do_not_swap_receipts`.
 
-Reparatur, dritte Stelle: ein `tool_result`, der die `tool_call_id` seines
-Aufrufs trägt, ist Substrat-Standardverhalten der Tool-Lane — die leere Id war
-die Abweichung (Präzedenz #410). Der Vertrag der Hive (`accepts`/`emits`) bleibt
-byte-gleich; `meclaw-os` pinnt `submit@1.0.1`.
+Repair, third position: a `tool_result` that carries the `tool_call_id` of its
+call is substrate standard behavior of the tool lane, the empty id was the
+deviation (precedent #410). The hive's contract (`accepts`/`emits`) stays
+byte-identical; `meclaw-os` pins `submit@1.0.1`.
 
-#### Der Template-Katalog veröffentlicht, was er erzwingt
+#### The template catalogue publishes what it enforces
 
 `builder@1.0.2`, `builder-librarian@2.0.6`, `meclaw-os@1.2.2`.
 
-Ein Template darf per `requires` Keys fordern, und die Mutations-Tür weist ohne
-sie mit `requirement_missing` ab (GH #292/#347) — nur stand das nirgends, wo ein
-Modell es beim Auswählen liest. Eine Katalog-Zeile des Librarians ist
-`json.dumps(template.json)`, eine `template.json` ist description-first
-serialisiert, und die `retrieve`-Zelle reicht `row["text"][:1200]` weiter. Für
-`cogny@4.0.3` gemessen: 3760 Zeichen Beschreibung in der Basis-Zeile, der
-`requires`-Block **gar nicht darin** — er begann 467 Zeichen tief in der ersten
-Fortsetzungszeile. Der Katalog nannte einem Modell also Templates und sagte ihm
-nie, was sie verlangen; das Modell griff `cogny` und übergab einen leeren `ctx`
+A template may demand keys via `requires`, and without them the mutation door
+refuses with `requirement_missing` (GH #292/#347). Only that stood nowhere a
+model reads it while choosing. A catalogue row of the librarian is
+`json.dumps(template.json)`, a `template.json` is serialized description-first,
+and the `retrieve` cell passes on `row["text"][:1200]`. Measured for
+`cogny@4.0.3`: 3760 characters of description in the base row, the `requires`
+block **not in it at all**, it began 467 characters deep into the first
+continuation row. So the catalogue named templates to a model and never told it
+what they demand; the model grabbed `cogny` and handed over an empty `ctx`
 (`plans/welle-2026-08-27/receipts/s12-luna-run.md`).
 
-Zwei Stellen, jede an ihrem Ort:
+Two places, each in its own spot:
 
-- **Jede Katalog-Zeile beginnt jetzt mit ihrem Vertrag** — `CONTRACT — …`, die
-  geforderten `ctx`- und `env`-Keys und der `error_code`, der ohne sie kommt.
-  Vorn, damit sie **innerhalb** der 1200-Zeichen-Kürzung des Retrievers liegt;
-  über die `ref`s vereinigt, weil die Tür für die Vereinigung abweist und eine
-  Zeile aus dem äußeren `template.json` allein unterberichten würde; und auch
-  **leer** ausgeschrieben, weil „fordert nichts" von „Zeile fehlt" sonst nicht zu
-  unterscheiden ist. 479 → 481 Chunks.
-- **Der Prompt-Kopf trägt die Regel** — ein `REQUIREMENTS`-Absatz neben
-  `GRAMMAR`: geforderte `ctx`-Keys gehören in den `ctx`-Block **derselben**
-  Deklaration, `override_params` ist nicht der Kanal, `ctx` ist mutations-weit,
-  `env`-Keys gehören der Kolonie. Im Kopf, weil es bei ausgefallenem Korpus keine
-  Katalog-Zeile zu lesen gibt.
+- **Every catalogue row now begins with its contract**: `CONTRACT — …`, the
+  demanded `ctx` and `env` keys and the `error_code` that comes without them. Up
+  front, so it lies **inside** the retriever's 1200-character truncation; united
+  over the `ref`s, because the door refuses for the union and a row from the
+  outer `template.json` alone would under-report; and written out even when
+  **empty**, because "demands nothing" would otherwise not be distinguishable
+  from "row missing". 479 → 481 chunks.
+- **The prompt head carries the rule**: a `REQUIREMENTS` paragraph next to
+  `GRAMMAR`. Demanded `ctx` keys belong in the `ctx` block of the **same**
+  declaration, `override_params` is not the channel, `ctx` is mutation-wide,
+  `env` keys belong to the colony. In the head, because when the corpus is out
+  there is no catalogue row to read.
 
-Gepinnt in `crates/meclaw-cells/tests/librarian_catalogue_carries_the_contract.rs`
-und zwei neuen Aussagen in `builder_brief_mutation_grammar.rs`.
+Pinned in `crates/meclaw-cells/tests/librarian_catalogue_carries_the_contract.rs`
+and two new statements in `builder_brief_mutation_grammar.rs`.
 
-**Damit lebt die Struktur.** Der Verifikationslauf gegen ein fähiges gehostetes
-Modell schrieb eine Deklaration, sie wurde angewandt, und was entstand ist eine
-**Komposition**: vier Einheiten unter einem Scope, drei zwischen ihnen kreuzende
-Kanten, alle 17 Zellen `active`. Keine Insel, kein erfundener Endpunkt, der
-geforderte `ctx` mitgebracht. Offen bleibt die **Auswahl**: das Modell nahm
-`research-assistant` für einen Collector und `submit` für einen Store.
+**With that the structure lives.** The verification run against a capable hosted
+model wrote a declaration, it was applied, and what came out is a
+**composition**: four units under one scope, three edges crossing between them,
+all 17 cells `active`. No island, no invented endpoint, the demanded `ctx`
+brought along. What stays open is the **selection**: the model took
+`research-assistant` for a collector and `submit` for a store.
 
-**Migration:** keine. Ein längerer Prompt und längere Katalog-Zeilen; die
-Verträge aller drei Templates sind unverändert.
+**Migration:** none. A longer prompt and longer catalogue rows; the contracts of
+all three templates are unchanged.
 
-#### Der Bauauftrag bekommt eine Grammatik, nicht nur ein Vokabular
+#### The build order gets a grammar, not just a vocabulary
 
 `builder@1.0.1`, `builder-librarian@2.0.5`, `meclaw-os@1.2.1`.
 
-Das Briefing der Design-Lane nannte die sechs Diff-Keys, die es gibt, und
-nirgends die **Form eines Eintrags**. Gemessen, nicht vermutet: ein fähiges
-gehostetes Modell entwarf dieselbe Topologie dreimal richtig und kodierte
-dreimal jeden `add_nodes`-Eintrag falsch — `path` statt `name`, `kind`/`type`
-statt einer `template`-Referenz —, und die Mutations-Tür wies alle drei bei
-Deklaration 1 mit `schema` ab
-(`plans/welle-2026-08-27/receipts/s12-luna-run.md`). Ein Modell füllt eine
-fehlende Grammatik mit der Form, die es anderswo am häufigsten gesehen hat.
+The design lane's briefing named the six diff keys that exist and nowhere the
+**shape of an entry**. Measured, not assumed: a capable hosted model designed
+the same topology correctly three times and encoded every `add_nodes` entry
+wrongly three times (`path` instead of `name`, `kind`/`type` instead of a
+`template` reference), and the mutation door refused all three at declaration 1
+with `schema` (`plans/welle-2026-08-27/receipts/s12-luna-run.md`). A model fills
+a missing grammar with the shape it has seen most often elsewhere.
 
-Der Prompt-Kopf trägt jetzt einen Grammatik-Block: die Eintragsform
-(`name` + `template`, beide Pflicht), die drei Schlüssel, die es nicht gibt, die
-Kantenform samt Endpunkt-Regel, die Konnektivitäts-Regel (eine Einheit ohne
-grenzüberschreitende Kante wird inaktiv geboren, GH #265) und ein Beispiel. Er
-sitzt im **Kopf** und nicht im Korpus-Arm: ein ausgefallener Korpus ist genau
-der Moment, in dem ein Modell am wenigsten hat, woran es sich halten kann.
-Gepinnt in `crates/meclaw-cells/tests/builder_brief_mutation_grammar.rs`.
+The prompt head now carries a grammar block: the entry shape (`name` +
+`template`, both mandatory), the three keys that do not exist, the edge shape
+including the endpoint rule, the connectivity rule (a unit without a
+boundary-crossing edge is born inactive, GH #265) and an example. It sits in the
+**head** and not in the corpus arm: a failed corpus is exactly the moment in
+which a model has the least to hold on to. Pinned in
+`crates/meclaw-cells/tests/builder_brief_mutation_grammar.rs`.
 
-Dazu die Tiefe: **`docs/rewiring.md` ist eine Korpus-Quelle** geworden
-(`workshop/tools/build_librarian_seed.py`, beide Quellenlisten — die englische
-Fassung reist seit GH #236 öffentlich). Es ist die Operator-Sicht auf das
-Mutations-Format und war das einzige Spec-Dokument über die Ausgabe des
-Builders, das dessen eigener Librarian nicht finden konnte. 452 → 479 Chunks.
+Plus the depth: **`docs/rewiring.md` has become a corpus source**
+(`workshop/tools/build_librarian_seed.py`, both source lists; the English
+version has travelled publicly since GH #236). It is the operator's view of the
+mutation format and was the only spec document about the builder's output that
+the builder's own librarian could not find. 452 → 479 chunks.
 
-Drittens: `compose.max_tokens` **2048 → 8192**. Ein Reasoning-Modell verbrauchte
-sein ganzes Budget mit Denken und kam mit `finish_reason: "length"` und leerer
-Antwort zurück; die Lane meldete das als `no_manifest_in_answer` — eine Aussage
-über den Deckel, die wie eine Aussage über das Modell aussah.
+Third: `compose.max_tokens` **2048 → 8192**. A reasoning model spent its whole
+budget on thinking and came back with `finish_reason: "length"` and an empty
+answer; the lane reported that as `no_manifest_in_answer`, a statement about the
+cap that looked like a statement about the model.
 
-**Migration:** keine. Ein längerer Prompt und ein größeres Antwort-Budget; die
-Verträge aller drei Templates sind unverändert.
+**Migration:** none. A longer prompt and a bigger answer budget; the contracts
+of all three templates are unchanged.
 
-**Grenze, offen benannt:** der Verifikationslauf schrieb danach ein
-form-korrektes Manifest mit kreuzenden Kanten — und wurde eine Ebene höher
-abgewiesen (`requirement_missing`), weil das Modell Templates nach Namen aus dem
-Katalog griff, ohne deren `requires`-Vertrag mitzubringen. Der Engpass ist von
-der Kodierung zur **Auswahl** gewandert. Nichts wurde angewandt. (Geschlossen im
-Eintrag darüber: der Katalog trägt den Vertrag jetzt sichtbar, und der nächste
-Lauf lief durch.)
+**Limit, named openly:** the verification run then wrote a form-correct manifest
+with crossing edges and was refused one level up (`requirement_missing`),
+because the model grabbed templates by name from the catalogue without bringing
+along their `requires` contract. The bottleneck has moved from the encoding to
+the **selection**. Nothing was applied. (Closed in the entry above: the
+catalogue now carries the contract visibly, and the next run went through.)
 
-#### `recall`: ein Vorgänger pro Kandidat, in beiden Renderern (GH #296, Ruling S6)
+#### `recall`: one predecessor per candidate, in both renderers (GH #296, Ruling S6)
 
-`memory-hive@3.0.4`. Der gerenderte Textblock eines Tier-1-Bundles beendete eine
-abgelöste Zeile mit der **ganzen** Versionskette
+`memory-hive@3.0.4`. The rendered text block of a tier-1 bundle ended a
+superseded row with the **whole** version chain
 (`(previously: vim until 2026-02-01; emacs until 2026-03-01; kakoune until 2026-04-01)`),
-während das JSON daneben seit 2.3.0 bei **einem** Vorgänger cappte. Beide Hälften
-reisen in **demselben** Prompt, also gab eine langlebige Achse einen Teil der
-#296-Ersparnis eine Slot weiter wieder her — und die zwei Pfade kodierten zwei
-absichtliche Entscheidungen, die sich widersprachen.
+while the JSON next to it has capped at **one** predecessor since 2.3.0. Both
+halves travel in the **same** prompt, so a long-lived axis gave part of the #296
+saving back one slot further along, and the two paths encoded two deliberate
+decisions that contradicted each other.
 
-Beide fragen jetzt **eine** Funktion, `history_entries(c, cap=1)`: den letzten
-Eintrag der nach Start sortierten Kette, also die Aussage, die diese hier ersetzt
-hat. Alles Ältere ist die Historie DIESER Historie.
+Both now ask **one** function, `history_entries(c, cap=1)`: the last entry of
+the chain sorted by start, that is, the statement that replaced this one here.
+Everything older is the history of THIS history.
 
-**Was das nicht ist: Historie weg.** `recall_diagnostic.candidates[].history` trägt
-die ganze Kette unverändert, in derselben Message — als Record, nicht als Prosa,
-und genau deshalb kann eine Rendering-Entscheidung sie nicht kürzen. Der
-Diagnose-Text (die flache gerankte Form) cappt mit, weil ein Helper für alle
-Renderer antwortet; wer die Kette braucht, liest den Record daneben.
+**What this is not: history gone.** `recall_diagnostic.candidates[].history`
+carries the whole chain unchanged, in the same message, as a record, not as
+prose, and exactly for that reason a rendering decision cannot shorten it. The
+diagnostic text (the flat ranked form) caps along, because one helper answers
+for all renderers; whoever needs the chain reads the record next to it.
 
-**Migration:** keine. Eine Zeile mit höchstens einem Vorgänger rendert byte für
-byte wie zuvor.
+**Migration:** none. A row with at most one predecessor renders byte for byte as
+before.
 
-#### `override_params`: die falsche Notation wird als Notation benannt (GH #436)
+#### `override_params`: the wrong notation is named as a notation (GH #436)
 
-Die zwei Schreibweisen von `override_params` sehen einander ähnlich, und die
-Absage für die falsche nannte einen Param, den es nicht gibt. Wer auf einem
-**Single-Cell-Template** die pfad-gekeyte Form `{"": {…}}` schrieb — legal auf
-einem `ref`-Marker und auf einem Subtree-Template —, bekam
-`override_params[''] names no param of <type> in template '<t>'`: laut,
-pre-destruktiv und über den falschen Fehler. Jetzt sagt die Absage, dass ein
-Single-Cell-Template ein **flaches** Params-Objekt nimmt, und nennt den
-Schlüssel, den der Aufrufer vermutlich meinte.
+The two spellings of `override_params` look alike, and the refusal for the wrong
+one named a param that does not exist. Whoever wrote the path-keyed form
+`{"": {…}}` on a **single-cell template**, legal on a `ref` marker and on a
+subtree template, got
+`override_params[''] names no param of <type> in template '<t>'`: loud,
+pre-destructive and about the wrong error. Now the refusal says that a
+single-cell template takes a **flat** params object, and names the key the
+caller probably meant.
 
-Derselbe `error_code` (`schema`), dieselbe pre-destruktive Position, **keine
-neue Vertragsfläche**. Die Alternative — beide Notationen annehmen — wurde
-verworfen: ein Manifest hat per Design kein Rollback, also zahlt ein Operator,
-der die Notationen vertauscht, mit einem halb gewachsenen Baum. Wer dafür
-zahlt, will es gesagt bekommen, nicht stillschweigend zurechtgebogen.
+The same `error_code` (`schema`), the same pre-destructive position, **no new
+contract surface**. The alternative, accepting both notations, was rejected: a
+manifest has no rollback by design, so an operator who swaps the notations pays
+with a half-grown tree. Whoever pays for that wants to be told, not silently
+straightened out.
 
-#### `POST /colony/templates/rescan` antwortet `422`, wenn der Scan abbrach (GH #440)
+#### `POST /colony/templates/rescan` answers `422` when the scan aborted (GH #440)
 
-Der Scanner benennt eine Namenskollision mit **beiden** Verzeichnissen, und die
-EDA-Tür reicht das seit jeher wörtlich durch. Die HTTP-Tür warf es weg: ihr Ack
-war `()`, `post_rescan` hatte genau einen Rückgabewert, und der sagte `ok` —
-auch für einen Scan, der nichts registriert hatte. Ein Baum mit zwei gleichen
-Namen meldete sich damit erst beim nächsten Boot, und der endet mit Exit 1.
-Jetzt: `200` mit `{"rescan":{"status":"ok"}}` oder `422` mit
-`{"rescan":{"status":"error","error":"<Wortlaut des Scanners>"}}` — beide Türen
-sagen dasselbe Wort.
+The scanner names a name collision with **both** directories, and the EDA door
+has always passed that through verbatim. The HTTP door threw it away: its ack
+was `()`, `post_rescan` had exactly one return value, and that one said `ok`,
+for a scan that had registered nothing too. A tree with two identical names
+therefore only spoke up at the next boot, and that one ends in exit 1. Now:
+`200` with `{"rescan":{"status":"ok"}}` or `422` with
+`{"rescan":{"status":"error","error":"<the scanner's own words>"}}`; both doors
+say the same word.
 
-**Sichtbar an einer öffentlichen Fläche, aber keine Breaking-Sektion**: `200 ok`
-auf einen abgebrochenen Scan war eine falsche Antwort, kein Vertrag. Der Abbruch
-selbst bleibt (GH #277, Ruling Q7) — er ist der Grund, warum eine Referenz per
-blankem Namen genau eine Antwort hat.
+**Visible on a public surface, but no Breaking section**: `200 ok` for an
+aborted scan was a wrong answer, not a contract. The abort itself stays (GH
+#277, Ruling Q7): it is the reason a reference by bare name has exactly one
+answer.
 
-#### Prosa nennt ein fremdes Template beim Namen, nicht bei der Version (GH #408, Ruling S2)
+#### Prose names a foreign template by name, not by version (GH #408, Ruling S2)
 
-Ein Querverweis in einem Template-Markdown las sich als `foo@1.2.0` — und war
-falsch in dem Moment, in dem `foo` einen Patch bekam. **73 solcher
-Gegenwarts-Verweise standen im Baum; jetzt sind es null.** Versionen leben allein
-dort, wo sie gepflegt werden: in `template.json` und in der Bibliothekstabelle,
-beide gegated. Ein neues grep-Gate hält den Zustand, mit vier Ausnahmen, die jede
-einzeln gegen den Baum verdient wurde — historische Aussagen, die eine bestimmte
-Version tatsächlich *meinen*.
+A cross-reference in a template markdown read as `foo@1.2.0` and was wrong the
+moment `foo` got a patch. **73 such present-tense references stood in the tree;
+now there are none.** Versions live only where they are maintained: in
+`template.json` and in the library table, both gated. A new grep gate holds the
+state, with four exceptions, each of which was earned individually against the
+tree: historical statements that actually *mean* a particular version.
 
-Genau **ein** Bump fiel dabei an: `telegram-connector@2.0.1`. Mitgekommen ist die
-Verallgemeinerung eines Tests, der dieselbe Defektklasse in sich trug
-(`gh303_the_connector_is_one_cell` pinnte den ganzen String `2.0.0`, gemeint war
-die erste Stelle).
+Exactly **one** bump came out of it: `telegram-connector@2.0.1`. Along with it
+came the generalization of a test that carried the same defect class inside
+itself (`gh303_the_connector_is_one_cell` pinned the whole string `2.0.0`, what
+was meant was the first position).
 
-**Migration:** keine. Kein Vertrag, kein Port, kein `error_code` ändert sich.
+**Migration:** none. No contract, no port, no `error_code` changes.
 
-#### `meclaw-surface` ist auf die genutzten Items zurückgebaut (GH #396)
+#### `meclaw-surface` is cut back to the items in use (GH #396)
 
-`Dispatcher` (Render-Cache und Diff-Push), `Connection`, die beiden Module
-`render` und `socket` sowie der Parser des `/surface/*`-URL-Schemas (`Target`,
-`parse_target`) sind entfernt. Sie konnten gehen, weil der `--api`-Rückbau
-(GH #383) ihren letzten Konsumenten mitgenommen hat: die `web`-Zelle beantwortet
-`phx_join` aus ihrem materialisierten Baum und hat nie einen Dispatcher benutzt,
-und die URLs, die `parse_target` zerlegt hat, gibt es seit #383 nicht mehr.
-`Dispatcher` war nur deshalb nicht compiler-tot, weil `Connection` ihn als Feld
-hielt — und `Connection` war für niemanden lebendig. Was bleibt, ist das, was
-der eine Konsument spricht: `frames`, `session`, `bundle` und
-`LIVEVIEW_VERSION`, das dabei von `socket` in die Crate-Wurzel gezogen ist
-(`meclaw_surface::LIVEVIEW_VERSION`). Die Crate hängt danach an genau einer
-Dependency, `meclaw-core`, und an keiner dev-dependency. Mitgekommen ist ein
-Wächter, den #383 unbeabsichtigt entfernt hatte: die Byte-Tabelle der
-einkompilierten LiveView-Bundles in `src/client/VERSIONS.md` wird wieder von
-einem Test geprüft. Git ist das Archiv.
+`Dispatcher` (render cache and diff push), `Connection`, the two modules
+`render` and `socket`, and the parser of the `/surface/*` URL scheme (`Target`,
+`parse_target`) are removed. They could go because the `--api` rollback
+(GH #383) took their last consumer with it: the `web` cell answers `phx_join`
+out of its materialized tree and never used a dispatcher, and the URLs that
+`parse_target` broke apart have not existed since #383. `Dispatcher` was only
+not compiler-dead because `Connection` held it as a field, and `Connection` was
+alive for nobody. What remains is what the one consumer speaks: `frames`,
+`session`, `bundle` and `LIVEVIEW_VERSION`, which in the process moved from
+`socket` into the crate root (`meclaw_surface::LIVEVIEW_VERSION`). The crate
+afterwards hangs off exactly one dependency, `meclaw-core`, and off no
+dev-dependency. Along with it came a guard that #383 had unintentionally
+removed: the byte table of the compiled-in LiveView bundles in
+`src/client/VERSIONS.md` is checked by a test again. Git is the archive.
 
-**Klassifikation: Patch-Klasse.** Die Rust-Crates sind laut Präambel Interna,
-und keine der fünf öffentlichen Vertragsflächen ist berührt. Die Crate teilt
-sich die Workspace-Version; dieser Rückbau bewegt keine Versionsdatei.
+**Classification: patch class.** The Rust crates are internals per the preamble,
+and none of the five public contract surfaces is touched. The crate shares the
+workspace version; this cutback moves no version file.
 
 ## [0.25.0] — 2026-08-27
 
 ### Breaking
 
-### `params.inject_map` ist entfernt (GH #428, Ruling R10)
+### `params.inject_map` is removed (GH #428, Ruling R10)
 
-Der Vault-Param, der beim Unlock jedes genannte Secret **im Klartext** als
-`params_update` an eine Connector-Zelle schob, ist ersatzlos weg — samt
-`Injection`-Typ, Parse-Block, `injections()` und `inject_all()`. Eine
-`vault`-Config, die den Key noch trägt, fällt beim Spawn **laut** durch
-(unbekannter Param) statt still nichts zu tun. `vault.deliver` ist der Weg,
-auf dem der WERT eines Credentials den Vault heute verlässt.
+The vault param that pushed every named secret **in cleartext** to a connector
+cell as a `params_update` on unlock is gone with no replacement, along with the
+`Injection` type, the parse block, `injections()` and `inject_all()`. A `vault`
+config that still carries the key fails **loudly** at spawn (unknown param)
+instead of quietly doing nothing. `vault.deliver` is the path on which the VALUE
+of a credential leaves the vault today.
 
-**Warum das unter Breaking steht, obwohl niemand betroffen ist.** Die
-Einstufung folgt der Fläche, nicht dem Schaden: `params` einer ausgelieferten
-Zelle sind öffentlicher Vertrag, und ein Key, der gestern akzeptiert wurde und
-heute den Boot abbricht, ist ein Bruch dieses Vertrags — auch wenn er
-niemandem wehtut. Dass er niemandem wehtut, ist gemessen und nicht vermutet:
-der Push hat **nie funktioniert**. Seine Emission ist ein reiner `params`-Body,
-das UBF-Schema verlangt einen von `system`/`messages`/`attachments`, also
-verwarf die Colony sie als `InvalidUbfBody` — sie starb in der
-Dead-Letter-Queue, bevor je eine `message_log`-Zeile entstand. Ein Pfad ohne
-Nutzer und ohne funktionierende Zustellung war keine Migration wert, deshalb
-wurde er entfernt statt repariert. **Migration:** den Key aus der
-`vault`-Config löschen; wer den Wert eines Credentials braucht, spendet ein
-Grant auf `vault.deliver`.
+**Why this stands under Breaking although nobody is affected.** The
+classification follows the surface, not the damage: the `params` of a shipped
+cell are public contract, and a key that was accepted yesterday and aborts the
+boot today is a breach of that contract, even if it hurts nobody. That it hurts
+nobody is measured and not assumed: the push **never worked**. Its emission is a
+pure `params` body, the UBF schema requires one of
+`system`/`messages`/`attachments`, so the colony discarded it as
+`InvalidUbfBody`. It died in the dead-letter queue before a single `message_log`
+row ever came into being. A path with no users and without working delivery was
+not worth a migration, so it was removed instead of repaired. **Migration:**
+delete the key from the `vault` config; whoever needs the value of a credential
+issues a grant on `vault.deliver`.
 
 ### Added
 
-### Der Autoren-Pfad wird veröffentlicht — mit einem eigenen Korpus (GH #441)
+### The authoring path is published, with a corpus of its own (GH #441)
 
-`builder`, `submit` und `builder-librarian` stehen ab sofort im öffentlichen
-Export-Subset. Damit trägt der veröffentlichte `meclaw-os` seine beiden neuen
-`ref`s nicht mehr ins Leere: die Ebene reist vollständig oder gar nicht, dieselbe
-Regel, unter der `access` und `affinity` in Welle 7 aufgenommen wurden. Die neun
-`gh425`-Tests, die `templates/builder|submit` zur Laufzeit lesen, und der
-`file:`-Anker von ADR-0015 auf `templates/builder/README.md` sind damit im
-öffentlichen Klon grün statt rot.
+`builder`, `submit` and `builder-librarian` are from now on part of the public
+export subset. With that, the published `meclaw-os` no longer carries its two new
+`ref`s into the void: the layer travels completely or not at all, the same rule
+under which `access` and `affinity` were taken in during wave 7. The nine
+`gh425` tests that read `templates/builder|submit` at runtime, and the `file:`
+anchor of ADR-0015 on `templates/builder/README.md`, are thereby green instead of
+red in the public clone.
 
-**Der Seed des Librarian reist NICHT mit — er wird ersetzt.** Jede andere Datei
-unter `templates/` ist eine Aussage über eine Topologie, und eine Topologie trägt
-kein Geheimnis. `builder-librarian/store/seed/docs.jsonl` ist die eine Ausnahme:
-sie ist eine **Kopie ihrer Quellen**, und 139 ihrer 452 Chunks kommen aus
-`workshop/`, das ausnahmslos privat ist; der Katalog beschreibt außerdem die
-Templates, die die Allow-List gerade nicht nennt. Kein bestehendes Gate sieht das,
-weil alle über PFADE urteilen und dieser Pfad erlaubt ist.
+**The librarian's seed does NOT travel along, it is replaced.** Every other file
+under `templates/` is a statement about a topology, and a topology carries no
+secret. `builder-librarian/store/seed/docs.jsonl` is the one exception: it is a
+**copy of its sources**, and 139 of its 452 chunks come from `workshop/`, which
+is private without exception; the catalog also describes the templates that the
+allow-list precisely does not name. No existing gate sees this, because all of
+them judge by PATHS and this path is allowed.
 
-`workshop/tools/build_librarian_seed.py --public --out PATH` baut deshalb einen
-zweiten Korpus aus demselben Chunker über eine andere Quellenliste: die drei
-Spec-Dokumente in ihrer englischen Fassung unter ihren öffentlichen Namen, plus
-der Katalog aus `PUBLIC_TEMPLATES` — gelesen aus dem Export-Skript, nicht zweitens
-deklariert. Der Export legt dieses Erzeugnis als Blob in den Index und **bricht ab**,
-wenn eine Zeile eine Quelle nennt, die der Index nicht ohnehin trägt, wenn ein
-`source` mit `workshop/` beginnt oder wenn eine Katalog-Zeile ein Template
-beschreibt, das nicht veröffentlicht ist (`public_librarian_seed()`, R16). Der
-committete private Korpus bleibt unberührt; `--check` vergleicht ihn weiter gegen
-seine Quellen. Der öffentliche Librarian ist damit kleiner — er beantwortet „was
-sagt die Spec" und „welche Templates gibt es", nicht „zeig mir das Pattern", weil
-Cookbook und Korpus-Briefs in der Werkstatt liegen.
+`workshop/tools/build_librarian_seed.py --public --out PATH` therefore builds a
+second corpus from the same chunker over a different source list: the three spec
+documents in their English version under their public names, plus the catalog
+from `PUBLIC_TEMPLATES`, read out of the export script, not declared a second
+time. The export puts this product into the index as a blob and **aborts** if a
+row names a source that the index does not carry anyway, if a `source` begins
+with `workshop/`, or if a catalog row describes a template that is not published
+(`public_librarian_seed()`, R16). The committed private corpus stays untouched;
+`--check` keeps comparing it against its sources. The public librarian is thus
+smaller: it answers "what does the spec say" and "which templates are there", not
+"show me the pattern", because the cookbook and the corpus briefs live in the
+workshop.
 
-**Nebenbei repariert:** der Generator kannte kein `argparse`. `--help` **baute den
-Korpus und schrieb ihn**, und jeder Tippfehler (`--chek`, `--dry-run`) fiel in
-denselben Schreibzweig. Ein Werkzeug, dessen Nur-Lese-Flag den Baum schreibt, ist
-eins, das niemand gefahrlos inspizieren kann — und dieses hier wird von einem
-Export aufgerufen. Unbekannte Argumente enden jetzt mit Exit 2, bevor eine Quelle
-geöffnet wird.
+**Repaired along the way:** the generator did not know `argparse`. `--help`
+**built the corpus and wrote it**, and every typo (`--chek`, `--dry-run`) fell
+into the same write branch. A tool whose read-only flag writes the tree is one
+that nobody can inspect safely, and this one here is called by an export. Unknown
+arguments now end with exit 2 before a source is opened.
 
-### Ein Vault hinter einer versiegelten Hive kann sich selbst öffnen (GH #427, Ruling R9)
+### A vault behind a sealed hive can open itself (GH #427, Ruling R9)
 
-`params.unlock_env` nennt die Umgebungsvariable mit der Passphrase; die Zelle
-liest sie beim ersten Gebrauch aus der Prozessumgebung und entriegelt sich
-selbst. **Default aus** — ohne den Key gilt die dokumentierte Zusage
-unverändert: ein geweckter Vault ist verriegelt und bleibt es.
+`params.unlock_env` names the environment variable holding the passphrase; the
+cell reads it from the process environment on first use and unlocks itself.
+**Off by default**: without the key the documented promise holds unchanged, a
+woken vault is locked and stays that way.
 
-Der Anlass ist eine Lücke, die beim Bau der Sealed-Delivery sichtbar wurde: ein
-Vault **innerhalb einer versiegelten Hive** war über den User-Kanal gar nicht
-erreichbar. Der User-Kanal ist per Definition eine Source-Message (kein
-`reply_to`), eine Source-Message erreicht keine hive-interne Zelle, und alles
-was sie erreichen kann ist eine Kante — die trägt immer `reply_to` und ist
-damit nie der User-Kanal. Da `unlock` im ACL user-channel-only ist, blieb so
-ein Vault sein Leben lang verriegelt und beantwortete jede Auslieferung mit
-`vault_locked`.
+The occasion is a gap that became visible while building sealed delivery: a vault
+**inside a sealed hive** was not reachable over the user channel at all. The user
+channel is by definition a source message (no `reply_to`), a source message
+reaches no hive-internal cell, and everything that can reach one is an edge,
+which always carries `reply_to` and is therefore never the user channel. Since
+`unlock` is user-channel-only in the ACL, such a vault stayed locked for its whole
+life and answered every delivery with `vault_locked`.
 
-- **Eine Unlock-Lane über Kanten ist ausdrücklich verworfen.** Eine
-  Unlock-Nachricht, die eine Kante fährt, trägt die Passphrase durch das
-  `message_log` — genau die Fehlerklasse, welche die Sealed-Delivery beseitigt
-  hat. Der Param nennt wie `key_source` eine **Quelle, nie Material**: der Wert
-  lebt in der Umgebung, die das Substrat ohnehin liest, also bleibt eine
-  gestohlene `cell.db` für sich genommen wertlos.
-- **Derselbe Pfad wie der User-Kanal:** die Attestation läuft, die Passphrase
-  wird gegen ein gespeichertes Secret bewiesen, `unlock_ttl_ms` gilt.
-- **Fehlt der Wert, ist die Verweigerung laut und benannt** — eine
-  `ERROR`-Zeile plus ein `invalid_input`, dessen Meldung die Variable nennt,
-  statt eines generischen `vault_locked`. `status` und `lock` lösen den
-  Selbst-Unlock bewusst nicht aus: beide brauchen keinen Schlüssel, und wer
-  eine kaputte Konfiguration diagnostiziert, braucht mindestens eine Operation,
-  die noch antwortet. Ein deklarierter, aber leerer Wert wird schon beim Parsen
-  abgelehnt — abschalten heißt den Key entfernen.
-- **Abnahme:** der Vault **in** der versiegelten `access`-Hive liefert nach
-  einem einfachen Boot eine Sealed-Box aus, die auf das gesäte Secret aufgeht;
-  niemand sendet einen Unlock, und weder Secret noch Passphrase stehen
-  irgendwo auf dem Draht. Der Refusal-Test daneben pinnt weiterhin den Default:
-  ohne den Param bleibt derselbe Hive verriegelt.
+- **An unlock lane over edges is explicitly rejected.** An unlock message that
+  travels an edge carries the passphrase through the `message_log`, exactly the
+  class of failure that sealed delivery eliminated. Like `key_source`, the param
+  names a **source, never material**: the value lives in the environment that the
+  substrate reads anyway, so a stolen `cell.db` remains worthless on its own.
+- **The same path as the user channel:** the attestation runs, the passphrase is
+  proven against a stored secret, `unlock_ttl_ms` applies.
+- **If the value is missing, the refusal is loud and named:** an `ERROR` line
+  plus an `invalid_input` whose message names the variable, instead of a generic
+  `vault_locked`. `status` and `lock` deliberately do not trigger the self-unlock:
+  neither needs a key, and whoever diagnoses a broken configuration needs at least
+  one operation that still answers. A declared but empty value is refused as early
+  as parsing. Switching it off means removing the key.
+- **Acceptance:** the vault **inside** the sealed `access` hive delivers, after a
+  plain boot, a sealed box that opens to the seeded secret; nobody sends an
+  unlock, and neither secret nor passphrase stands anywhere on the wire. The
+  refusal test next to it keeps pinning the default: without the param the same
+  hive stays locked.
 
-Kein neuer `error_code` — die dokumentierte geschlossene Liste bleibt
-unverändert.
+No new `error_code`. The documented closed list stays unchanged.
 
 
-### Der Builder-Intake: ein Wunsch im Chat wird ein Manifest, das der Auftraggeber einreicht (GH #425)
+### The builder intake: a wish in the chat becomes a manifest that the requester submits (GH #425)
 
-Zwei neue Templates, fuenf gebumpte Ebenen und eine ADR. Ein agentisch
-initiierter Strukturwunsch faehrt ab jetzt einen Weg, und es ist genau einer.
+Two new templates, five bumped layers and one ADR. An agentically initiated
+structural wish travels one path from now on, and it is exactly one.
 
-**`builder@1.0.0`** — die Aufnahme. Eine versiegelte Hive auf der OS-Ebene mit
-sechs Bewohnern: eine Weiche, eine Fast-Lane aus drei parametrisierten Rezepten
-(`rewire_edge`, `add_node`, `attach_drain`), der `builder-librarian` als `ref`,
-ein Briefing, ein Modellaufruf und eine Normalisierung. Zwei Klassen auf einer
-Lane: die Trivialklasse rendert **ohne Modellaufruf**, die komplexe fragt eines,
-gestuetzt auf den Korpus.
+**`builder@1.0.0`**: the intake. A sealed hive at the OS layer with six
+inhabitants: a switch, a fast lane made of three parameterized recipes
+(`rewire_edge`, `add_node`, `attach_drain`), the `builder-librarian` as a `ref`,
+a briefing, a model call and a normalization. Two classes on one lane: the
+trivial class renders **without a model call**, the complex one asks for one,
+backed by the corpus.
 
-**`submit@1.0.0`** — die Einreichung. Die einzige Zelle im Baum mit einer Kante
-auf die Mutations-Tuer. Sie prueft den Digest, nimmt die Identitaet vom
-UMSCHLAG (`envelope.reply_to`, vom Substrat gestempelt — ein Body, der sich
-selbst benennt, ist eine Behauptung), prueft eine Policy, die Zeilen in ihren
-eigenen `params` ist, und emittiert einmal. Ausgeliefert mit **leerer Policy**:
-eine frische Instanz reicht nichts ein.
+**`submit@1.0.0`**: the submission. The only cell in the tree with an edge onto
+the mutation door. It checks the digest, takes the identity from the ENVELOPE
+(`envelope.reply_to`, stamped by the substrate; a body that names itself is an
+assertion), checks a policy that is lines in its own `params`, and emits once.
+Shipped with an **empty policy**: a fresh instance submits nothing.
 
-**Der Builder wendet nie an, und das ist eine Eigenschaft der DATEIEN.** Keine
-Zelle in ihm hat eine Kante auf `/colony/*`, und sie kann auch keine bekommen:
-`/colony/mutations` steht nicht in `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, auf
-keinem Scope. Die eine privilegierte Kante lebt in der Geburts-Topologie. Drei
-Tests lesen das am ausgelieferten Baum, das Szenario `I2` misst es zur Laufzeit
-in drei Richtungen, und ADR-0015 schreibt die Entscheidung auf.
+**The builder never applies, and that is a property of the FILES.** No cell in it
+has an edge onto `/colony/*`, and it cannot get one either: `/colony/mutations`
+does not stand in `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS`, on no scope. The one
+privileged edge lives in the birth topology. Three tests read that off the shipped
+tree, the `I2` scenario measures it at runtime in three directions, and ADR-0015
+writes the decision down.
 
-**Der Digest ist der Vertrag zwischen dem, was ein Mensch gelesen hat, und dem,
-was angewandt wird.** Der Entwurf reist als `tool_result` in einen Chat, ein
-Mensch liest ihn, das Modell wiederholt ihn im zweiten Tool-Call. Ein sha256
-ueber die kanonischen Bytes reist mit; ein Manifest, dessen Bytes sich unterwegs
-geaendert haben, wird **beim Namen** verweigert.
+**The digest is the contract between what a human has read and what gets
+applied.** The draft travels as a `tool_result` into a chat, a human reads it, the
+model repeats it in the second tool call. A sha256 over the canonical bytes
+travels along; a manifest whose bytes have changed on the way is refused **by
+name**.
 
 ### Changed
 
-- **`tools@1.1.0`** — zwei Bewohner (`build`, `apply`), zwei Lanes und ein
-  zweites Drain-Paar. `tool_result` bleibt die EINE Ergebnis-Lane; `build` ist
-  eine andere Klasse, naemlich die **Reichweite** der Flaeche, und sie steht im
-  Vertrag statt in einer Fussnote — dieselbe Lehre wie `sandbox_union` eine
-  Ebene tiefer.
-- **`assistant@1.1.0`, `member@1.1.0`, `org@1.1.0`** — je `in_build_result`
-  hinein und `build` hinaus, plus zwei Kanten. Reiner Transit: keine der drei
-  Ebenen liest etwas darin, und `org` waechst dafuer keine Zelle.
-- **`meclaw-os@1.1.0`** — zwei weitere Refs (`builder`, `submit`) und sechs
-  innere Kanten. **Keine neue Lane an der Grenze**: das Paar kreuzt hier nichts,
-  weil der Baumeister innen steht. `mutate` traegt jetzt zwei Sender, wie `ack`
-  und `error` es schon tun.
-- **`examples/organism`** — 55 → **65** Zellen, 287 → **334** Kanten, 48 → **54**
-  handgeschriebene, 13 → **16** Templates. Nachgemessen, nicht geschaetzt.
+- **`tools@1.1.0`**: two inhabitants (`build`, `apply`), two lanes and a second
+  drain pair. `tool_result` stays the ONE result lane; `build` is a different
+  class, namely the **reach** of the surface, and it stands in the contract
+  instead of in a footnote, the same lesson as `sandbox_union` one layer down.
+- **`assistant@1.1.0`, `member@1.1.0`, `org@1.1.0`**: `in_build_result` inbound
+  and `build` outbound each, plus two edges. Pure transit: none of the three
+  layers reads anything in it, and `org` grows no cell for it.
+- **`meclaw-os@1.1.0`**: two more refs (`builder`, `submit`) and six inner edges.
+  **No new lane at the boundary**: the pair crosses nothing here, because the
+  builder stands inside. `mutate` now carries two senders, as `ack` and `error`
+  already do.
+- **`examples/organism`**: 55 → **65** cells, 287 → **334** edges, 48 → **54**
+  handwritten, 13 → **16** templates. Re-measured, not estimated.
 
 ### Known limitations
 
-- **Ein Anwendungs-Receipt verliert seine Korrelation** ueber den
-  `/colony`-Rundgang: die Antwort beginnt einen frischen Trace mit leerem
-  Kontext, und der Einreicher hat kein Gedaechtnis zwischen seinen zwei Phasen.
-  Der `tool_result`, der die Anwendungs-Runde schliesst, traegt eine LEERE
-  `tool_call_id`, und die Diskriminante am Generations-Container kann deshalb
-  nicht verlangt werden. Der Entwurf ist nicht betroffen — er kreuzt `/colony`
-  nie. Gemessen und assertiert in `I1`, benannt in `templates/submit/README.md`,
-  offen als [#438](https://github.com/mmeyerlein/meclaw/issues/438).
-- **Ein wiederverwendbares Template hat noch keinen Weg in eine Colony** ausser
-  ueber die privilegierte Rescan-Kante des alten Builders. Die Form, die passt,
-  ist eine Deklaration im Manifest; sie ist eine neue Mutations-OPERATION und
-  bewusst aufgeschoben ([#440](https://github.com/mmeyerlein/meclaw/issues/440)).
+- **An apply receipt loses its correlation** over the `/colony` round trip: the
+  reply begins a fresh trace with an empty context, and the submitter has no
+  memory between its two phases. The `tool_result` that closes the apply round
+  carries an EMPTY `tool_call_id`, and the discriminant on the generation
+  container can therefore not be required. The draft is not affected, it never
+  crosses `/colony`. Measured and asserted in `I1`, named in
+  `templates/submit/README.md`, open as
+  [#438](https://github.com/mmeyerlein/meclaw/issues/438).
+- **A reusable template still has no way into a colony** other than over the
+  privileged rescan edge of the old builder. The form that fits is a declaration
+  in the manifest; it is a new mutation OPERATION and deliberately deferred
+  ([#440](https://github.com/mmeyerlein/meclaw/issues/440)).
 
 
-### Die Manifest-Tür: eine geordnete Liste Mutationen in einem Body (GH #422)
+### The manifest door: an ordered list of mutations in one body (GH #422)
 
-`/colony/mutations` nimmt **additiv** eine zweite Body-Form an. Erkannt wird sie
-an genau einem Top-Level-Schluessel, `manifest`; ein Body ohne ihn nimmt
-byte-genau den Pfad, den er immer genommen hat.
+`/colony/mutations` accepts a second body form **additively**. It is recognized
+by exactly one top-level key, `manifest`; a body without it takes byte-exactly
+the path it has always taken.
 
 ```json
 { "manifest": [ { "scope": "/", "diff": { … } }, { "scope": "/os", "diff": { … } } ] }
 ```
 
-- **Die Colony rollt selbst ab** — in Reihenfolge, jeder Eintrag durch dieselbe
-  einstufige Validierung, die ein Einzel-Body bekommt, **Stopp bei der ersten
-  Refusal**, EIN Receipt. Jeder Eintrag ist byte-genau ein Einzelform-Body: kein
-  `kind`, kein `id`, keine manifest-weite `ctx`.
-- **Kein Rollback**, und das ist die Form, nicht ihr Mangel: was angewandt ist,
-  bleibt angewandt. Das Receipt nennt `applied`, `failed_at` (**1-basiert**) und
-  `remaining` (die nie angesehenen Eintraege), also genau das, was man braucht,
-  um den Rest erneut einzureichen. Der Audit traegt es mit: eine
-  `mutation_log`-Zeile pro angewandtem Eintrag plus die `rejected`-Zeile des
-  verweigernden.
-- **Kein neuer `error_code`.** Der Slot traegt den Code des verweigernden
-  Eintrags; ein form-kaputtes Manifest ist `schema`. HTTP wie die Einzelform:
-  `committed` → 200, `rejected` → 422.
-- **Manifest v1 ist mutations-only** — eine Message hat keine „angewandt"-Zeile,
-  und ein Receipt, das fuer die Haelfte seiner Eintraege luegt, ist schlechter
-  als eins, das die Haelfte nicht annimmt. Additiv nachruestbar ueber einen
-  `kind`-Diskriminator, dessen Abwesenheit `"mutation"` bedeutet.
+- **The colony unrolls it itself**, in order, every entry through the same
+  single-stage validation that a single body gets, **stop at the first refusal**,
+  ONE receipt. Every entry is byte-exactly a single-form body: no `kind`, no
+  `id`, no manifest-wide `ctx`.
+- **No rollback**, and that is the form, not its defect: what is applied stays
+  applied. The receipt names `applied`, `failed_at` (**1-based**) and `remaining`
+  (the entries never looked at), that is, exactly what one needs in order to
+  submit the rest again. The audit carries it along: one `mutation_log` row per
+  applied entry plus the `rejected` row of the refusing one.
+- **No new `error_code`.** The slot carries the code of the refusing entry; a
+  manifest broken in form is `schema`. HTTP as in the single form: `committed` →
+  200, `rejected` → 422.
+- **Manifest v1 is mutations-only**: a message has no "applied" row, and a
+  receipt that lies for half of its entries is worse than one that does not accept
+  that half. Retrofittable additively over a `kind` discriminator whose absence
+  means `"mutation"`.
 
-### `--apply <datei|->`: eine Datei, ein Kommando (GH #423)
+### `--apply <file|->`: one file, one command (GH #423)
 
-Ein Flag, kein Subcommand. Bootet, reicht ein Manifest an dieselbe Tuer und
-druckt das Receipt.
+One flag, no subcommand. Boots, hands a manifest to the same door and prints the
+receipt.
 
-| Aufruf | Verhalten |
+| Invocation | Behavior |
 |---|---|
-| `--apply f` | One-Shot: Boot → Apply → Receipt auf stdout → graceful Shutdown → Exit 0 bei `committed`, ≠ 0 sonst |
-| `--daemon --apply f` / `--api A --apply f` | laeuft weiter; ein `rejected` beendet den Daemon **nicht** (die Colony steht, die Mutation nicht) |
-| `--validate --apply f` | `--validate` hat Vorrang, mit `note:`-Zeile |
-| gegen einen gehaltenen Root | die Lease verweigert und nennt die haltende PID — **das ist richtig**: gegen eine laufende Colony mutiert man durch ihre HTTP-Tuer, und die nimmt dieselbe Manifest-Form, also ein `curl` statt fuenf |
+| `--apply f` | one-shot: boot → apply → receipt on stdout → graceful shutdown → exit 0 on `committed`, ≠ 0 otherwise |
+| `--daemon --apply f` / `--api A --apply f` | keeps running; a `rejected` does **not** end the daemon (the colony stands, the mutation does not) |
+| `--validate --apply f` | `--validate` takes precedence, with a `note:` line |
+| against a held root | the lease refuses and names the holding PID. **That is correct**: against a running colony one mutates through its HTTP door, and that one takes the same manifest form, so one `curl` instead of five |
 
-`--apply` schaltet die stdin/stdout-Bridge ab (sie saesse auf stdin und wartete,
-waehrend das Receipt schon geschrieben ist — und `--apply -` liest sein Manifest
-selbst von dort). Der Exit-Code-Vertrag gilt unveraendert; das Receipt ist
-Freitext und nennt bei einer Refusal Position, Grund und Wiederaufnahme.
+`--apply` switches the stdin/stdout bridge off (it would sit on stdin and wait
+while the receipt is already written, and `--apply -` reads its manifest from
+there itself). The exit code contract applies unchanged; the receipt is free text
+and names position, reason and resumption on a refusal.
 
-`examples/organism/grow.manifest.json` ist die ausgelieferte Form: die fuenf
-Deklarationen woertlich, in einem Body. `meclaw --root examples/organism/seed
---apply examples/organism/grow.manifest.json` waechst den ganzen Organismus aus
-einer Null-Zellen-Saat.
+`examples/organism/grow.manifest.json` is the shipped form: the five declarations
+verbatim, in one body. `meclaw --root examples/organism/seed
+--apply examples/organism/grow.manifest.json` grows the whole organism out of a
+zero-cell seed.
 
-### Der erste Boot wächst seine `ref`-Marker (GH #424)
+### The first boot grows its `ref` markers (GH #424)
 
-Die specified-not-built-Haelfte von GH #277 ist gebaut — in einer anderen Form
-als GH #352 sie skizziert hat. Eine `config.json` mit `cell.type: "ref"` im
-**Wurzelbaum** ist keine Zelle, sondern eine **Deklaration**: sie nennt das
-Template, das dort stehen soll. Der **erste** Boot loest sie auf und
-materialisiert sie ueber dieselbe Kette, die eine Mutation nimmt
-(`stage_subtree`) — dieselbe Registry-Aufloesung, dieselbe Versions-Pinnung,
-dieselbe `override_params`-Schichtung, derselbe Zyklus-Waechter, dieselben
-Refusals, woertlich weitergereicht. Auf einem **Reboot** ist derselbe Marker ein
-`unregistered_node` und wird gemeldet, nie gewachsen (A5b).
+The specified-not-built half of GH #277 is built, in a different form than GH #352
+sketched it. A `config.json` with `cell.type: "ref"` in the **root tree** is not a
+cell but a **declaration**: it names the template that is meant to stand there.
+The **first** boot resolves it and materializes it over the same chain that a
+mutation takes (`stage_subtree`): the same registry resolution, the same version
+pinning, the same `override_params` layering, the same cycle guard, the same
+refusals, passed on verbatim. On a **reboot** the same marker is an
+`unregistered_node` and is reported, never grown (A5b).
 
-- **Der Marker verzehrt sich**, und daraus FOLGEN zwei Dinge, statt gebucht zu
-  werden: ein zweiter Boot findet nichts mehr zu wachsen (Idempotenz ohne
-  Ledger, `cell_id`s stabil), und ein per `remove_nodes` abgehaengter Knoten kann
-  nicht auferstehen. Die No-Delete-Policy ist unberuehrt — sie schuetzt
-  Zell-Zustand, und ein Marker hat keinen.
-- **Verschachtelung**: die Uebernahme ist ein rekursiver Merge. Das Template
-  bringt Container, der Operator schreibt eine tiefere Deklaration hinein — das
-  sind verschiedene Adressen. Eine Adresse mit zwei Quellen ist eine benannte,
-  praedestruktive Verweigerung.
-- **`--validate`** listet geplantes Wachstum (`validate: growth: /os → …`) und
-  waechst nichts; eine unaufloesbare Referenz ist ein Fehler **auch ohne**
+- **The marker consumes itself**, and two things FOLLOW from that instead of
+  being booked: a second boot finds nothing left to grow (idempotence without a
+  ledger, `cell_id`s stable), and a node disconnected via `remove_nodes` cannot
+  rise again. The no-delete policy is untouched; it protects cell state, and a
+  marker has none.
+- **Nesting**: the takeover is a recursive merge. The template brings containers,
+  the operator writes a deeper declaration into it, and those are different
+  addresses. An address with two sources is a named, pre-destructive refusal.
+- **`--validate`** lists planned growth (`validate: growth: /os → …`) and grows
+  nothing; an unresolvable reference is an error **even without**
   `--validate-strict`.
-- **Abnahme**: `examples/organism/seed-ref/` bootet aus null Zellen und baut
-  **byte-identisch** denselben Subtree wie die Mutation `grow-os.json` — gleiche
-  Registry-Zeilen, gleiche Kantenmenge, gleiche Hive-Scopes, gleiche
-  `config.json`-Bytes nach UUID-Blanking.
-- **`params.graph.nodes` bleibt ein harter Boot-Fehler** — jetzt als gesagte
-  Grenze statt als Rueckstand. Es gibt genau eine Deklarationsform am Boot.
-- GH #352 ist als **superseded by #424** geschlossen; die acht
-  `specified-not-built`-Claims-Zeilen stehen auf `pinned`, beide
-  *(spezifiziert, nicht gebaut)*-Marker haben beide Sprachfassungen verlassen.
+- **Acceptance**: `examples/organism/seed-ref/` boots from zero cells and builds
+  **byte-identically** the same subtree as the mutation `grow-os.json`: the same
+  registry rows, the same edge set, the same hive scopes, the same
+  `config.json` bytes after UUID blanking.
+- **`params.graph.nodes` stays a hard boot error**, now as a stated boundary
+  instead of a backlog item. There is exactly one declaration form at boot.
+- GH #352 is closed as **superseded by #424**; the eight
+  `specified-not-built` claim rows stand at `pinned`, both
+  *(specified, not built)* markers have left both language versions.
 
-**Das Bootstrap-Wachstum traegt diesen Eintrag nicht** — es ist die Einloesung
-einer geschriebenen, markierten Zusage und damit fuer sich genommen eine
-Reparatur. Was die zweite Stelle traegt, sind #422 und #423: eine zweite
-Body-Form an einer oeffentlichen Vertragsflaeche und ein neues CLI-Flag, beide
-nie versprochen.
+**The bootstrap growth does not carry this entry**: it is the redemption of a
+written, marked promise and therefore, taken by itself, a repair. What carries
+the second digit are #422 and #423: a second body form on a public contract
+surface and a new CLI flag, both never promised.
 
 ### Fixed
 
-- **Ein Blob-Body an `/colony/mutations` meldete Erfolg und committete nichts**
+- **A blob body to `/colony/mutations` reported success and committed nothing**
   ([GH #432](https://github.com/mmeyerlein/meclaw/issues/432)). `body_value`
-  machte aus `Body::Blob(_)` ein `Value::Null`, `handle_mutation` fand kein
-  `diff` und antwortete `committed` — die Message-Tuer erbte die
-  Delivery-Grenzen-Aufloesung nicht, die jede Zelle bekommt, und ein Body gross
-  genug fuer den Offload war still ein No-Op. `dispatch_colony_endpoint` loest
-  jetzt durch dieselbe `resolve_blob_for_delivery` auf, bevor es dispatcht, und
-  dead-lettert statt zu dispatchen, wenn die Aufloesung scheitert.
-- **`examples/organism/grow-assistant.json` liess sich nicht anwenden**
+  turned `Body::Blob(_)` into a `Value::Null`, `handle_mutation` found no `diff`
+  and answered `committed`. The message door did not inherit the delivery
+  boundary resolution that every cell gets, and a body large enough for the
+  offload was quietly a no-op. `dispatch_colony_endpoint` now resolves through the
+  same `resolve_blob_for_delivery` before it dispatches, and dead-letters instead
+  of dispatching when the resolution fails.
+- **`examples/organism/grow-assistant.json` could not be applied**
   ([GH #433](https://github.com/mmeyerlein/meclaw/issues/433)):
-  `cogny/brain.temperature` stand als STRING `"0.2"` da, `LlmParams` will ein
-  `f64`. Kein Test hatte es bemerkt, weil jeder Test dieses Beispiels inerte
-  Factories registriert — der Defekt zeigt sich erst, wenn das ausgelieferte
-  Binary die ausgelieferte Datei anwendet. Genau das tut `--apply`.
-- **Die Hive-`params`-Verweigerung nennt jetzt auch die Datei**, nicht nur den
-  Schluessel — GH #353 hatte seine zwei Haelften an dieser Stelle nicht erreicht.
+  `cogny/brain.temperature` stood there as the STRING `"0.2"`, `LlmParams` wants
+  an `f64`. No test had noticed it, because every test of this example registers
+  inert factories. The defect only shows once the shipped binary applies the
+  shipped file. That is exactly what `--apply` does.
+- **The hive `params` refusal now names the file too**, not only the key. GH #353
+  had not reached its two halves at this spot.
 
-### Nicht breaking
+### Not breaking
 
-Ausdruecklich geprueft und behauptet: die Einzel-Mutations-Form ist byte-genau
-unveraendert (Schluesselmengen beider Verdikte gepinnt, `violations` weiterhin
-nicht auf dem Draht, unbekannte Top-Level-Schluessel aendern nichts, HTTP mit
-denselben zwei Codes), `params.graph.nodes` bricht den Boot wie zuvor, und jeder
-bestehende Baum ohne `ref`-Marker bootet unveraendert.
+Explicitly checked and asserted: the single-mutation form is byte-exactly
+unchanged (the key sets of both verdicts pinned, `violations` still not on the
+wire, unknown top-level keys change nothing, HTTP with the same two codes),
+`params.graph.nodes` breaks the boot as before, and every existing tree without a
+`ref` marker boots unchanged.
 
 ## [0.24.0] — 2026-08-26
 
 ### Added
 
-### Sealed-Box-Delivery: der Vault liefert aus, ohne etwas herzugeben (GH #421)
+### Sealed-box delivery: the vault delivers without giving anything away (GH #421)
 
-`access` haelt ab jetzt alle Zugriffsschluessel, und die `.env` schrumpft in
-Richtung Vault-Passphrase. Die Auslieferung laeuft ueber normales Messaging und
-ist dabei **zwingend verschluesselt**: das `message_log` journalisiert jeden
-Body, also darf dort nie ein Klartext-Credential landen.
+`access` from now on holds all access keys, and the `.env` shrinks towards the
+vault passphrase. Delivery runs over normal messaging and is **mandatorily
+encrypted** while doing so: the `message_log` journals every body, so a
+plaintext credential must never land there.
 
-- **`vault.deliver`** — die achte Operation. Der Empfaenger mintet **pro
-  Anfrage** ein ephemeres X25519-Paar und schickt den Public-Teil durch den
-  policy-gegateten Broker-Pfad; der Vault antwortet mit einer Sealed-Box
-  (X25519-Agreement, HMAC-SHA256 als KDF, XChaCha20-Poly1305 — dieselbe
-  Cipher-Familie wie at-rest). Der Vault mintet seine eigene ephemere Haelfte pro
-  Antwort: **einen Vault-Langzeit-Schluessel gibt es nicht**, und damit auch
-  nichts, womit man eine alte Box nachtraeglich oeffnen koennte.
-- **Die Box beweist nicht, wer sie versiegelt hat, und das ist Absicht.**
-  Authentizitaet ist die Topologie (der Vault beantwortet nur `params.broker`)
-  plus die Policy, die der Broker durchgesetzt hat. Eine Signatur ist spaeter
-  nachruestbar, ohne die Wire-Form zu brechen.
-- **Die Broker-Strasse ist wieder da** (`access@2.1.0`): zwei Kanten
-  `./invoke ↔ ./vault`, diesmal mit echtem Emitter — GH #307 hatte ein Paar
-  entfernt, das nichts befahren konnte. Ein Credential wird gespendet wie alles
-  andere: dieselben vier Grant-Pruefungen, dieselben Constraints, dieselben
-  `usage`/`grant_events`/`audit`-Zeilen. **Welches** Credential, steht im Grant
-  (`cred_ref`) — R-AC-2 auf den Vault angewandt. `avault` ist hive-INTERN; die
-  Box verlaesst den Hive auf der bestehenden `ack`-Lane, also aendert sich der
-  Lane-Contract der Hive nicht und `meclaw-os` muss nichts nachziehen.
-- **Die Attestation ist strenger** (`vault@1.1.0`): ein Vault, dessen Broker
-  nicht verdrahtet ist, bleibt verriegelt. Wenn die Topologie fuer die Signatur
-  einsteht, darf ihre Abwesenheit nicht attestieren.
-- **Erster Konsument: die `llm`-Zelle.** `params.credential_grant_id` (optional,
-  unveraenderlich) schaltet den Weg ein; der Credential lebt **nur im RAM**,
-  erreicht nie `cell.db` und ueberlebt keinen Schlaf. Ohne den Key verhaelt sich
-  die Zelle Byte fuer Byte wie vorher — `params.api_key` bleibt der Fallback,
-  eine Instanz stellt einzeln um. Neuer `error_code`: `credential_pending`.
-- **Gepinnt:** eine volle E2E-Runde (Anforderung, Auslieferung, Nutzung), deren
-  Beweis vom Mock-Provider selbst kommt (`Authorization: Bearer <secret>`),
-  danach `message_log` **und** das Blob-Verzeichnis nach dem Secret-Wert
-  durchsucht — plus ein Gegenbeweis-Test, der zeigt, dass diese Suche einen
-  Klartext auch wirklich faende.
-- **Deprecated:** `params.inject_map` (der Klartext-Push beim Unlock) — er legt
-  genau das ins `message_log`, was die Sealed-Delivery verhindert. Er bleibt
-  funktionsfaehig und entfaellt mit dem ersten Release, das Breaking Changes
-  buendelt (`docs/roadmap.md`).
-- **Neue Dependency:** `x25519-dalek` (sanktionierte Freigabe 2026-08-26, GH #421 D1). Sie ist die
-  einzige — AEAD, KDF und Zufallsquelle lagen schon im Baum.
+- **`vault.deliver`**: the eighth operation. The recipient mints an ephemeral
+  X25519 pair **per request** and sends the public half through the
+  policy-gated broker path; the vault answers with a sealed box (X25519
+  agreement, HMAC-SHA256 as the KDF, XChaCha20-Poly1305, the same cipher family
+  as at-rest). The vault mints its own ephemeral half per answer: **there is no
+  vault long-term key**, and hence nothing with which an old box could be
+  opened after the fact.
+- **The box does not prove who sealed it, and that is deliberate.**
+  Authenticity is the topology (the vault answers only `params.broker`) plus
+  the policy the broker enforced. A signature can be retrofitted later without
+  breaking the wire form.
+- **The broker road is back** (`access@2.1.0`): two edges
+  `./invoke ↔ ./vault`, this time with a real emitter. GH #307 had removed a
+  pair that nothing could drive on. A credential is dispensed like everything
+  else: the same four grant checks, the same constraints, the same
+  `usage`/`grant_events`/`audit` rows. **Which** credential is stated in the
+  grant (`cred_ref`), R-AC-2 applied to the vault. `avault` is hive-INTERNAL;
+  the box leaves the hive on the existing `ack` lane, so the hive's lane
+  contract does not change and `meclaw-os` has nothing to follow up.
+- **The attestation is stricter** (`vault@1.1.0`): a vault whose broker is not
+  wired stays locked. If the topology vouches for the signature, its absence
+  must not attest.
+- **First consumer: the `llm` cell.** `params.credential_grant_id` (optional,
+  immutable) switches the path on; the credential lives **only in RAM**, never
+  reaches `cell.db` and survives no sleep. Without the key the cell behaves
+  byte for byte as before: `params.api_key` remains the fallback, an instance
+  switches over one at a time. New `error_code`: `credential_pending`.
+- **Pinned:** a full E2E round (request, delivery, use) whose proof comes from
+  the mock provider itself (`Authorization: Bearer <secret>`), after which the
+  `message_log` **and** the blob directory are searched for the secret value,
+  plus a counter-proof test showing that this search really would find a
+  plaintext.
+- **Deprecated:** `params.inject_map` (the plaintext push at unlock). It puts
+  exactly that into the `message_log` which sealed delivery prevents. It stays
+  functional and goes away with the first release that bundles breaking changes
+  (`docs/roadmap.md`).
+- **New dependency:** `x25519-dalek` (sanctioned approval 2026-08-26, GH #421 D1). It is
+  the only one: AEAD, KDF and the randomness source were already in the tree.
 
-**Zwei Befunde, die dieser Strang gefunden und NICHT gefixt hat**, weil beide
-eine Entscheidung statt eines Patches sind: ein Vault innerhalb einer
-versiegelten Hive kann heute gar nicht entriegelt werden (GH #427 — der
-User-Channel ist eine Source-Message, und die erreicht keine hive-interne
-Zelle), und der `inject_map`-Push stirbt im Debug-Build als `InvalidUbfBody`
-in der Dead-Letter-Queue (GH #428).
+**Two findings this strand found and did NOT fix**, because both are a decision
+rather than a patch: a vault inside a sealed hive cannot be unlocked at all
+today (GH #427: the user channel is a source message, and that reaches no
+hive-internal cell), and the `inject_map` push dies in the debug build as
+`InvalidUbfBody` in the dead-letter queue (GH #428).
 ### Changed
 
 - **`talky/splitter` runs warm, `collector/assemble` runs resident**
@@ -1961,7 +1935,7 @@ in der Dead-Letter-Queue (GH #428).
   header contents**: whoever needs to know *how much* moved may ask, *what*
   moved stays out of the answer. That class distinction is what earns it the
   second slot in `MUTATION_DRAWABLE_VIRTUAL_ENDPOINTS` beside `/colony/graph`
-  (`docs/meclaw-overview.md` § Flächen (`/surface`)), so a template can declare its
+  (`docs/meclaw-overview.md` § Surfaces (`/surface`)), so a template can declare its
   own lane to it, and it is what keeps `/colony/trace` and `/colony/messages`
   out of that list.
 
@@ -4553,37 +4527,36 @@ of the wave: #258 and #259 came out of the review of #252, #260 out of building
   on the next generation of a channel, not on the open one. `session-keeper` 2.0.0 →
   2.0.1, `talky` 3.0.4 → 3.0.5.
 
-- **`memory-drain` frisst keinen Tag mehr, den es nicht ausliefern kann**
-  ([#269](https://github.com/mmeyerlein/meclaw/issues/269)). Die `in_episode`-Lane
-  der `memory-hive` verlangt seit dem Publikums-Gate (0.16.0) `audience_set` und
-  `channel` und weist ohne beides ab; `templates/memory-drain/config.json` nannte
-  keines von beiden. Der Eingang des Drains **trägt** den Teilnehmerkreis
-  allerdings sehr wohl: `context` wird Hop für Hop weitergereicht, und weder die
-  Kanten des Drain-Hives noch das Skript noch die Runde über den Ledger fassen
-  ihn an. Das Rezept war nicht unvollständig.
+- **`memory-drain` no longer eats a day it cannot deliver**
+  ([#269](https://github.com/mmeyerlein/meclaw/issues/269)). Since the audience
+  gate (0.16.0) the `in_episode` lane of the `memory-hive` requires
+  `audience_set` and `channel` and refuses without them;
+  `templates/memory-drain/config.json` named neither. The drain's entrance does
+  **carry** the audience after all: `context` is handed on hop by hop, and
+  neither the drain hive's edges nor the script nor the round through the ledger
+  touch it. The recipe was not incomplete.
 
-  Der Defekt lag eine Ebene tiefer und war zerstörend. Kam ein Batch **ohne**
-  Publikum, zerlegte der Drain ihn trotzdem, die Hive wies jeden Turn korrekt mit
-  `missing_audience` ab — und der Drain schrieb im **selben Multi-Send** die
-  `mark`, die den Tag als gedraint verbucht. Danach liefert keine spätere
-  Zustellung diese Turns je wieder aus: abgewiesen **und** als erledigt vermerkt,
-  von keiner Wiederholung, keinem Replay und keiner korrigierten Kante erreichbar.
-  Der laute Fehler der Hive und ein stiller, endgültiger Verlust im Ledger, im
-  selben Vorgang.
+  The defect sat one level deeper and was destructive. If a batch arrived
+  **without** an audience, the drain took it apart anyway, the hive correctly
+  refused every turn with `missing_audience`, and in the **same multi-send** the
+  drain wrote the `mark` that books the day as drained. After that no later
+  delivery ever ships those turns again: refused **and** recorded as done, out
+  of reach of any retry, any replay and any corrected edge. The hive's loud
+  error and a silent, final loss in the ledger, in the same operation.
 
-  Der Drain weist jetzt an der **eigenen** Tür ab, bevor irgendetwas geparkt wird:
-  Route `reject`, `hop.reject_reason` `missing_audience` oder `missing_channel`
-  (die Vokabel der Hive, damit ein Betreiber eine Ablehnung lesen kann, ohne zu
-  wissen, welche Zelle sie geschrieben hat), null Ledger-Zeilen, null Episoden.
-  Der Batch bleibt damit lieferbar — Verdrahtung korrigieren, denselben Tag noch
-  einmal schicken, alles landet. Geraten wird nichts: `["*"]` ist kein Default und
-  kann keiner sein, weil es „von jedem in jeder späteren Runde lesbar" heißt und
-  der eine Wert ist, den keine Zeile je wieder loswird.
+  The drain now refuses at its **own** door, before anything is parked: route
+  `reject`, `hop.reject_reason` `missing_audience` or `missing_channel` (the
+  hive's vocabulary, so that an operator can read a refusal without knowing
+  which cell wrote it), zero ledger rows, zero episodes. The batch therefore
+  stays deliverable: correct the wiring, send the same day once more, everything
+  lands. Nothing is guessed: `["*"]` is not a default and cannot be one, because
+  it means "readable by everyone in every later round" and is the one value no
+  row ever gets rid of again.
 
-  Beide ausgelieferten Beispiele deklarieren ihren Teilnehmerkreis jetzt an der
-  Eingangstür — `never-forgets` hatte seit 0.16.0 gar keinen und schrieb über
-  diesen Weg nichts mehr, was niemandem auffiel, weil das Ausbleiben einer
-  Erinnerung wie Stille aussieht.
+  Both shipped examples now declare their audience at the entrance door.
+  `never-forgets` had none at all since 0.16.0 and wrote nothing by this path
+  any more, which nobody noticed, because a memory failing to appear looks like
+  silence.
 
 - **An empty `api_key` is no `api_key`, and `llm` now says so on both wires**
   ([#271](https://github.com/mmeyerlein/meclaw/issues/271)). `LlmParams::parse`
@@ -4615,63 +4588,58 @@ of the wave: #258 and #259 came out of the review of #252, #260 out of building
   `.env.example`, whose header explained only the *missing* value although
   `VAR=` in a half-filled copy is exactly the form that kept #270 invisible.
 
-- **Der Bearer der `mcp`-Referenzvorlage stand an einer Stelle, die niemand liest**
+- **The bearer of the `mcp` reference template sat in a place nobody reads**
   ([#268](https://github.com/mmeyerlein/meclaw/issues/268)).
-  `templates/_cell-types/mcp-min/config.json` deklarierte den Token als
-  `params.bearer`; die `mcp`-Zelle liest ihn aus `params.auth.bearer`.
-  `MCP_BEARER` wurde aufgeloest, gespeichert und nie benutzt — es ging kein
-  `Authorization`-Header raus, und nichts meldete etwas, weil ein ungelesener
-  `params`-Schluessel kein Fehler ist. Diese Datei ist die Vorlage, aus der ein
-  Autor die Vertragsform kopiert, also pflanzte sich die falsche Form in jede
-  Kolonie fort, die von ihr ausging.
+  `templates/_cell-types/mcp-min/config.json` declared the token as
+  `params.bearer`; the `mcp` cell reads it from `params.auth.bearer`.
+  `MCP_BEARER` was resolved, stored and never used: no `Authorization` header
+  went out, and nothing reported anything, because an unread `params` key is not
+  an error. This file is the template an author copies the contract shape from,
+  so the wrong shape propagated into every colony that came out of it.
 
-  Sieben von acht angrenzenden Prosa-Behauptungen bestaetigt und korrigiert, eine
-  widerlegt. Die schwerste war `access/README.md`: es verschwieg die
-  `vault`-Zelle, die das Template mitliefert, und behauptete darueber, eine
-  verschluesselte Tabelle in dieser Hive gaebe es nicht und solle es nicht geben —
-  wer liest, um zu entscheiden, ob er dem Template ein Geheimnis anvertraut,
-  bekam ein falsches Bild davon, wo das Geheimnis liegt. Dazu: `llm-unit` und
-  `builder-hive` fuehrten sich als „not sealed", obwohl beide `ports: []`
-  deklarieren; `firewall`, `llm-registry` und `receptionist` nannten Innenzellen
-  als Endpunkte, die eine Mutation heute mit `hive_port_boundary` abweist;
-  `memory-drain` nannte einen `turn-write`-Port der `memory-hive`, deren Lane
-  `in_episode` heisst; `door` beschrieb einen HTTP-Ingress ohne `hop`, den es seit
-  #175 so nicht mehr gibt.
+  Seven of eight adjacent prose claims confirmed and corrected, one refuted. The
+  gravest was `access/README.md`: it kept quiet about the `vault` cell the
+  template ships with, and claimed on top of that there was no encrypted table
+  in this hive and there should not be one. Whoever reads to decide whether to
+  entrust a secret to the template got a false picture of where the secret lies.
+  In addition: `llm-unit` and `builder-hive` listed themselves as "not sealed"
+  although both declare `ports: []`; `firewall`, `llm-registry` and
+  `receptionist` named inner cells as endpoints that a mutation today refuses
+  with `hive_port_boundary`; `memory-drain` named a `turn-write` port of the
+  `memory-hive`, whose lane is called `in_episode`; `door` described an HTTP
+  ingress without `hop`, which has not existed in that form since #175.
 
-  Neu gepinnt: jedes `"template": "name@version"` in einem ausgelieferten Dokument
-  muss durch `TemplatesRegistry::resolve` gehen — `channel`s zwei
-  Generationswechsel-Mutationen nannten `talky@3.1.0` und `cogny`s Beispiel
-  `cogny@2.0.0`, beides `TemplateMissing` fuer ein Template, das auf der Platte
-  liegt.
+  Newly pinned: every `"template": "name@version"` in a shipped document has to
+  go through `TemplatesRegistry::resolve`. `channel`'s two generation-change
+  mutations named `talky@3.1.0` and `cogny`'s example named `cogny@2.0.0`, both
+  `TemplateMissing` for a template that is lying on the disk.
 
-- **Ein leerer Bearer ist kein Bearer**
-  ([#270](https://github.com/mmeyerlein/meclaw/issues/270)). `web_search` nahm
-  `params.api_key` ohne Leer-Filter — `Some("")` ist nicht `None`, also trug
-  **jede** Suche `Authorization: Bearer ` mit nichts dahinter. Der Schluessel ist
-  in allen drei ausgelieferten Konfigurationen als `${SEARCH_API_KEY:-}`
-  deklariert, und `.env.example` liefert die Variable **leer gesetzt** aus, mit
-  dem Satz darueber, sie duerfe „left empty for an unauthenticated local SearXNG
-  instance" bleiben. Das war also nicht der Sonderfall, sondern der
-  dokumentierte. Gegen einen Endpunkt, der anonym geantwortet haette, kann dieser
-  Header eine harte Ablehnung sein — und die sieht nach „Suchdienst kaputt" aus
-  statt nach „nie konfiguriert". Dieselbe Reparatur, die #268 eine Zelle weiter in
-  `mcp` gemacht hat; eine dritte optionale Fundstelle hat der Durchgang ueber alle
-  sechs Credential-→-Header-Stellen nicht gefunden.
+- **An empty bearer is no bearer**
+  ([#270](https://github.com/mmeyerlein/meclaw/issues/270)). `web_search` took
+  `params.api_key` without an empty filter. `Some("")` is not `None`, so
+  **every** search carried `Authorization: Bearer ` with nothing after it. The
+  key is declared as `${SEARCH_API_KEY:-}` in all three shipped configurations,
+  and `.env.example` ships the variable **set empty**, with the sentence above
+  it that it may be "left empty for an unauthenticated local SearXNG instance".
+  So this was not the special case but the documented one. Against an endpoint
+  that would have answered anonymously this header can be a flat refusal, and
+  that reads as "search service broken" rather than as "never configured". The
+  same repair #268 made one cell over in `mcp`; the pass over all six
+  credential-→-header sites found no third optional site.
 
-  Die gespiegelte Frage — wo wird ein leerer **Pflicht**-Wert akzeptiert — hat
-  fuenf gefunden, im selben Zug repariert: `mcp`s `endpoint` und `command`, das
-  `bot_token` der Telegram-Variante sowie `app_token` und `bot_token` der
-  Slack-Variante. Alle fuenf sind als `${VAR}` ohne Default deklariert, die
-  *nicht gesetzte* Variable scheiterte also laengst laut und mit Namen; das Loch
-  war `VAR=` in einer `.env` — die Form, die eine halb ausgefuellte Kopie von
-  `.env.example` hat. Ein leerer Wert wird jetzt beim Parsen abgelehnt, mit
-  derselben Meldung und demselben Variablennamen wie der fehlende, statt eine
-  Zelle zu erzeugen, die gesund aussieht und bei jedem Aufruf an einem Dritten
-  scheitert.
+  The mirrored question (where is an empty **required** value accepted) found
+  five, repaired in the same move: `mcp`'s `endpoint` and `command`, the
+  Telegram variant's `bot_token` as well as the Slack variant's `app_token` and
+  `bot_token`. All five are declared as `${VAR}` without a default, so the
+  *unset* variable had long been failing loudly and by name; the hole was `VAR=`
+  in a `.env`, the form a half-filled copy of `.env.example` has. An empty value
+  is now refused at parse time, with the same message and the same variable name
+  as the missing one, instead of producing a cell that looks healthy and fails
+  at a third party on every call.
 
-  Beide Haelften sind am **aufgezeichneten Request-Header** gepinnt, nicht am
-  gesetzten Param — dass der Param leer ist, war schon vorher gruen, geschickt
-  wurde er trotzdem.
+  Both halves are pinned on the **recorded request header**, not on the param
+  that was set: that the param is empty was green before as well, and it was
+  sent anyway.
 
 - **The `json` form of the recall bundle can be revoked — `collector@2.0.4`**
   ([#266](https://github.com/mmeyerlein/meclaw/issues/266)). #259 built the
