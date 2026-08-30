@@ -31,22 +31,51 @@
 //!     German twin is absent — the rows really did change language, rather than
 //!     the label alone moving.
 //!
-//! **R2b guard.** The corpus does not ship outside the private tree; where it
-//! is absent this skips rather than failing on a dead reference.
+//! **Both trees run this.** The corpus DOES ship: the export replaces it with a
+//! public-only regeneration over the subset of sources that travel (R16 of
+//! `make_export.py`). What differs is the LABEL, and it differs by exactly the
+//! rename the export performs: in the private tree the English edition is
+//! `docs/X.en.md`, in the published tree the same bytes are `docs/X.md` and no
+//! German twin exists there at all. So "a German original" is a different set of
+//! four names per tree, and the discriminator is the one thing that is only true
+//! of the private tree: `docs/meclaw-overview.en.md` on disk. Reading the private
+//! set in the published tree is what turned the 0.28.0 release CI red -- with all
+//! 283 spec rows reported as German, in a tree that carries no German at all.
+//! Where the corpus is absent entirely this skips rather than failing on a dead
+//! reference.
 
 use meclaw_core::serde_json::Value;
 use std::path::PathBuf;
 
 const CORPUS: &str = "templates/builder-librarian/store/seed/docs.jsonl";
 
-/// The four spec documents, by the name their GERMAN original carries. A row
-/// citing one of these is a row of German prose.
+/// The four spec documents, by the name their GERMAN original carries **in the
+/// private tree**. A row citing one of these there is a row of German prose.
 const GERMAN_ORIGINALS: [&str; 4] = [
     "docs/meclaw-overview.md",
     "docs/cell-types.md",
     "docs/config.md",
     "docs/rewiring.md",
 ];
+
+/// The same four, by the name the ENGLISH edition carries in the private tree.
+/// In the published tree these files do not exist -- the export publishes their
+/// bytes under the plain names above -- so a row citing one there is a row
+/// pointing at a file its own tree does not have.
+const ENGLISH_EDITIONS: [&str; 4] = [
+    "docs/meclaw-overview.en.md",
+    "docs/cell-types.en.md",
+    "docs/config.en.md",
+    "docs/rewiring.en.md",
+];
+
+/// Which tree this is. Only the private one carries the `.en.md` editions beside
+/// their German twins; the export ships one edition under one name.
+fn private_tree() -> bool {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/meclaw-overview.en.md")
+        .exists()
+}
 
 /// One sentence per language, from the same paragraph of the same section
 /// (`meclaw-overview` § Flags). It is the paragraph GH #344 measured falling
@@ -76,6 +105,14 @@ fn rows(raw: &str) -> Vec<Value> {
 fn no_spec_row_is_chunked_from_a_german_original() {
     let Some(raw) = corpus() else { return };
 
+    // Two trees, two spellings of the same claim: the row must cite the English
+    // edition under the name THIS tree gives it, and never the other one.
+    let (wrong, right): (&[&str], &[&str]) = if private_tree() {
+        (&GERMAN_ORIGINALS, &ENGLISH_EDITIONS)
+    } else {
+        (&ENGLISH_EDITIONS, &GERMAN_ORIGINALS)
+    };
+
     let mut german = Vec::new();
     let mut english = 0usize;
     for row in rows(&raw) {
@@ -83,30 +120,34 @@ fn no_spec_row_is_chunked_from_a_german_original() {
             continue;
         }
         let source = row["source"].as_str().unwrap_or("?").to_string();
-        if GERMAN_ORIGINALS.contains(&source.as_str()) {
+        if wrong.contains(&source.as_str()) {
             german.push(format!(
                 "{} ({})",
                 row["id"].as_str().unwrap_or("?"),
                 source
             ));
-        } else if source.ends_with(".en.md") {
+        } else if right.contains(&source.as_str()) {
             english += 1;
         }
     }
 
     assert!(
         german.is_empty(),
-        "{} of the corpus's `spec` rows are chunked from a German original:\n  {}\n\
+        "{} of the corpus's `spec` rows cite the wrong edition for this tree \
+         (private tree: {}):\n  {}\n\
          The lane that reads them briefs, asks and answers in English (GH #497). The \
          generator reads the `.en.md` edition — SPEC_DOCS in \
-         workshop/tools/build_librarian_seed.py — so a row citing a `.md` twin means a \
-         spec document was added to that list under its German name.",
+         workshop/tools/build_librarian_seed.py — and the export relabels it to the \
+         plain name it publishes those bytes under (R16). A row on the other side of \
+         that pair means a spec document was added under its German name, or the \
+         public regeneration stopped relabelling.",
         german.len(),
+        private_tree(),
         german.join("\n  "),
     );
     assert!(
         english > 0,
-        "the corpus carries no `spec` row from an `.en.md` source at all. The \
+        "the corpus carries no `spec` row from the English edition at all. The \
          specification is over half of it; an empty half satisfies the assertion above \
          for the wrong reason."
     );

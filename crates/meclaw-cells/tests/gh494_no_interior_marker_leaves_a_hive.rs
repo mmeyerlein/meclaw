@@ -256,8 +256,17 @@ fn no_interior_context_key_of_a_hive_survives_one_of_its_exit_edges() {
         }
     }
 
+    // The floor catches a DEGENERATE sweep -- a refactor that leaves
+    // `shipped_hives()` empty, or an `interior_keys()` that stops recognising
+    // the shape -- and it has to be a number BOTH trees clear. The published
+    // subset carries 38 of the 44 templates (`PUBLIC_TEMPLATES`), so a floor
+    // read off the private tree is a floor the public CI cannot meet: measured
+    // 2026-08-30, the published tree sweeps 99 exit edges over 98 keys while
+    // the private one is at or above 98/99, and a floor of 99 keys turned the
+    // 0.28.0 release CI red for a reason that was not the code's. Same class,
+    // same remedy as the count floor in `gh80_shipped_conditions_are_guarded`.
     assert!(
-        edges_checked >= 98 && keys_checked >= 99,
+        edges_checked >= 80 && keys_checked >= 80,
         "the sweep degenerated: {edges_checked} exit edges, {keys_checked} keys"
     );
     assert!(
